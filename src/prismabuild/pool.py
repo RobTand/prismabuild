@@ -2507,6 +2507,60 @@ class PoolContentionProbe:
                 "start_gate_self_probes": self.gate_self_probes}
 
 
+def _stall_due(watch: ProgressWatch | ActivityWatch, *, now: float) -> bool:
+    return now >= watch.stall_deadline()
+
+
+def _supervision_records(
+    watch: ProgressWatch | ActivityWatch, *, now: float,
+    stalled: bool, contention: PoolContentionProbe | None = None,
+) -> dict[str, object]:
+    observation = watch.as_record(now=now)
+    records: dict[str, object] = {"progress_observation": observation}
+    stall: dict[str, object] | None = None
+    if isinstance(watch, ProgressWatch):
+        if contention is not None:
+            observation["pool_contention"] = contention.as_record()
+        if stalled:
+            delivered = watch.delivered_units_per_s(now=now)
+            stall = {
+                "allowance_s": watch.grace_s,
+                "phase": watch.policy.phases[watch.phase_index].name,
+                "last_landing": watch.last_accepted,
+                "quiet_s": max(0.0, now - watch.last_advance_monotonic),
+                "credited_s": {
+                    "staged_wait": watch.staged_wait_exempt_s,
+                    "pool_contention": watch.pool_contention_exempt_s,
+                    "start_gate": watch.start_gate_exempt_s,
+                    "reader_plan": watch.reader_plan_exempt_s,
+                    "export_wait": watch.export_wait_exempt_s,
+                    "queued_child_wait": watch.queued_child_wait_exempt_s},
+                "delivered_units_per_s": delivered,
+                "delivered_bytes_per_s": (
+                    delivered if contention is not None else None),
+                "priced_bytes_per_s": (
+                    contention.priced_bytes_per_s
+                    if contention is not None else None),
+                "pool": contention.last if contention is not None else None,
+                "start_gate_holder": (
+                    contention.gate_holder if contention is not None else None)}
+    elif stalled:
+        stall = {
+            "allowance_s": watch.allowance_s,
+            "phase": "activity",
+            "last_landing": None,
+            "quiet_s": max(0.0, now - watch.last_activity_monotonic),
+            "stdout_bytes": watch.stdout_bytes,
+            "stderr_bytes": watch.stderr_bytes,
+            "cpu_seconds": watch.cpu_seconds,
+            "observations": watch.observations,
+            "advances": watch.advances,
+        }
+    if stall is not None:
+        records["stall"] = stall
+    return records
+
+
 def read_staged_wait(path: Path, *, token: str
                      ) -> tuple[dict[str, object] | None, str]:
     """A launch's staged-wait record, or ``None`` and why not (#989).
@@ -29425,65 +29479,11 @@ class PoolQueue:
                 them agreeing about what a record carries and one not.
                 """
 
-                stall: dict[str, object] | None = None
-                if watch is not None:
-                    ended = time.monotonic()
-                    outcome["progress_observation"] = watch.as_record(now=ended)
-                    if contention is not None:
-                        outcome["progress_observation"]["pool_contention"] = (
-                            contention.as_record())
-                    if outcome.get("termination_reason") == "no_progress":
-                        # What the kill measured the action against (#1010):
-                        # its allowance, its last landing, every credit, and
-                        # the rate it delivered beside the rate it was priced.
-                        delivered = watch.delivered_units_per_s(now=ended)
-                        stall = {
-                            "allowance_s": watch.grace_s,
-                            "phase": watch.policy.phases[watch.phase_index].name,
-                            "last_landing": watch.last_accepted,
-                            "quiet_s": max(0.0, ended - watch.last_advance_monotonic),
-                            "credited_s": {
-                                "staged_wait": watch.staged_wait_exempt_s,
-                                "pool_contention": watch.pool_contention_exempt_s,
-                                "start_gate": watch.start_gate_exempt_s,
-                                "reader_plan": watch.reader_plan_exempt_s,
-                                "export_wait": watch.export_wait_exempt_s,
-                                "queued_child_wait": watch.queued_child_wait_exempt_s},
-                            "delivered_units_per_s": delivered,
-                            "delivered_bytes_per_s": (
-                                delivered if contention is not None else None),
-                            "priced_bytes_per_s": (
-                                contention.priced_bytes_per_s
-                                if contention is not None else None),
-                            "pool": (contention.last if contention is not None
-                                     else None),
-                            # Who held the stage's ownership lock at the
-                            # gate's last look (#1021).
-                            "start_gate_holder": (
-                                contention.gate_holder if contention is not None
-                                else None)}
-                elif activity is not None:
-                    ended = time.monotonic()
-                    outcome["progress_observation"] = activity.as_record(now=ended)
-                    if outcome.get("termination_reason") == "no_progress":
-                        # What the default stall watch measured (#1707): the
-                        # allowance, the silence past it, and the output and
-                        # CPU totals that did not move inside it.
-                        stall = {
-                            "allowance_s": activity.allowance_s,
-                            "phase": "activity",
-                            "last_landing": None,
-                            "quiet_s": max(0.0, ended - activity.last_activity_monotonic),
-                            "stdout_bytes": activity.stdout_bytes,
-                            "stderr_bytes": activity.stderr_bytes,
-                            "cpu_seconds": activity.cpu_seconds,
-                            "observations": activity.observations,
-                            "advances": activity.advances,
-                        }
-                if stall is not None:
-                    # Outside the diagnosis read below, so a failure there
-                    # never loses what the kill was measured against.
-                    outcome["stall"] = stall
+                supervised = watch if watch is not None else activity
+                if supervised is not None:
+                    outcome.update(_supervision_records(
+                        supervised, now=time.monotonic(), contention=contention,
+                        stalled=outcome.get("termination_reason") == "no_progress"))
                 if (outcome.get("status") == "withdrawn"
                         or outcome.get("termination_reason") in (
                             "no_progress", "execution_deadline")):
@@ -29718,7 +29718,7 @@ class PoolQueue:
                             outcome["profile_settle"] = settled
                         return ending(outcome)
                     if (activity is not None
-                            and time.monotonic() >= activity.stall_deadline()):
+                            and _stall_due(activity, now=time.monotonic())):
                         # The default stall watch (#1707): the observation
                         # above is already fresh from this checkpoint, so no
                         # second read can show activity this poll missed.
@@ -29754,7 +29754,7 @@ class PoolQueue:
                             "cpu_allocation": allocation,
                         })
                     if (watch is not None
-                            and time.monotonic() >= watch.stall_deadline()):
+                            and _stall_due(watch, now=time.monotonic())):
                         # One more read before ending it.  The boundary is
                         # exactly where a reporter that publishes every few
                         # seconds lands, and a record already on disk is
@@ -29796,7 +29796,7 @@ class PoolQueue:
                             if deadline is not None:
                                 deadline += spent
                         if (not advanced
-                                and time.monotonic() >= watch.stall_deadline()):
+                                and _stall_due(watch, now=time.monotonic())):
                             # An owner blocked on its own produced-output
                             # exports, one of which shows progress, is
                             # waiting on its own work rather than stuck
@@ -29824,7 +29824,7 @@ class PoolQueue:
                             if deadline is not None:
                                 deadline += spent
                         if (not advanced
-                                and time.monotonic() >= watch.stall_deadline()):
+                                and _stall_due(watch, now=time.monotonic())):
                             # A stage mover standing aside for a copy a
                             # claimed consumer is blocked on lands nothing on
                             # purpose (#1091 review 1).  Judged from the tier
@@ -29850,7 +29850,7 @@ class PoolQueue:
                             if deadline is not None:
                                 deadline += spent
                         if (not advanced
-                                and time.monotonic() >= watch.stall_deadline()):
+                                and _stall_due(watch, now=time.monotonic())):
                             # A coordinator waiting on its declared queued
                             # children, one of which is ready or claimed, is
                             # waiting on admission rather than stuck (#1666).
@@ -29868,7 +29868,7 @@ class PoolQueue:
                             if deadline is not None:
                                 deadline += spent
                         if (not advanced
-                                and time.monotonic() >= watch.stall_deadline()):
+                                and _stall_due(watch, now=time.monotonic())):
                             # Same three grace budgets, same precedence: this
                             # rung is reached only when containment,
                             # withdrawal and the requested deadline all had

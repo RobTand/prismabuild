@@ -4076,6 +4076,20 @@ once more immediately before a stall would end the action so a record
 published between polls still counts. Normal completion also samples the final
 report before removing it, without changing the completed action's verdict.
 
+Within `pool.py`, `ProgressWatch` owns authenticated report reading, semantic
+advancement, phase grants, verified wait credits and delivered-work rates.
+`_observe_execution` samples output bytes and payload CPU independently;
+`ActivityWatch` accounts for that activity for actions without a semantic
+policy. `_stall_due` compares a supplied monotonic time with a watch's stall
+deadline. `_supervision_records` constructs the existing progress observation
+and terminal stall fields from the watch and contention state, without sampling
+or terminating a process. `PoolQueue.execute` remains the integrated interface:
+its execution loop schedules samples, refunds checkpoint intervals, verifies
+waits, samples the final report and applies termination precedence. Output
+still renews only the activity watch; output from a semantic action does not
+renew its semantic allowance. This internal separation preserves supervision
+outcomes and record fields. It establishes no new default or deployment claim.
+
 Reports use the existing stable no-follow regular-file reader with a 64 KiB
 accepted-byte limit. Symlinks, FIFOs, oversized or changing files are rejected;
 strict UTF-8 JSON rejects duplicate keys, malformed data and non-finite values.
