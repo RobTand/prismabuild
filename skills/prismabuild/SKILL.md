@@ -160,6 +160,14 @@ actually advanced (RobTand/prismabuild#480).
 repeat it for each phase. Both spellings require a caller-selected stall
 allowance and seal the same policy.
 
+An action that declares no phases runs under the same supervision with a
+default watch on output and payload CPU activity (issue #1707): steady work
+runs with no total-duration limit, and silence past the allowance ends it as
+a stall. The allowance defaults to 1800 s; `--stall-s SECONDS` seals another
+value, and the worker ceiling clamps it like a phase grace. `--timeout-s`
+still ends such an action at its limit, and the D30 memory guard still ends
+it first.
+
 For loops that repeat phases, add `--progress-cycle` (campaign row
 `progress_cycle: true`). Example: `--progress encode=200 --progress publish=5
 --progress-cycle`. After durably publishing a unit and reporting its cumulative
