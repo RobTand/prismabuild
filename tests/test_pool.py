@@ -128,11 +128,22 @@ def test_stale_lease_is_requeued(queue: pool.PoolQueue) -> None:
 
 
 def test_a_claim_with_no_lease_at_all_is_stale(queue: pool.PoolQueue) -> None:
-    """The claimant died between the rename and its first heartbeat."""
+    """The claimant died between the rename and its first heartbeat.
+
+    "No lease" alone is not enough to call it dead -- a claim made microseconds
+    ago also has no lease yet, and reaping that one steals live work (see
+    ``test_reap_does_not_steal_a_claim_made_moments_ago``).  Death is "no lease
+    AND the claim itself is older than the grace period", so this test ages the
+    claim record, which is what a real dead claimant's would be.
+    """
 
     _publish(queue, KEY_A)
     queue.claim()
     queue.lease_path(KEY_A).unlink()
+    path = queue.item_path(pool.CLAIMED, KEY_A)
+    record = json.loads(path.read_bytes())
+    record["claimed_unix"] = record["claimed_unix"] - (pool.HEARTBEAT_S + 60.0)
+    path.write_text(json.dumps(record))
     assert queue.reap_stale() == [KEY_A]
 
 
@@ -292,3 +303,40 @@ def test_schema_strings_keep_the_published_namespace() -> None:
         pool.POOL_OUTCOME_SCHEMA_V1,
     ):
         assert schema.startswith("prismaquant.prismabuild.")
+
+
+def test_reap_does_not_steal_a_claim_made_moments_ago(tmp_path):
+    """The rename/write_lease window must not look like a dead claimant.
+
+    claim() renames the item and only then writes the lease.  A reaper landing
+    in between sees a claimed item with no lease.  Before the grace period it
+    requeued that item, so a second worker could claim and run work the first
+    worker was still about to start -- duplicated effort, bounded only by the
+    CAS.  Simulated here by deleting the lease immediately after a claim.
+    """
+
+    queue = pool.PoolQueue(tmp_path / "q")
+    queue.publish(
+        action_key="a" * 64,
+        cas_root=tmp_path / "cas",
+        checkout_root=tmp_path / "co",
+        worker_script=tmp_path / "w.py",
+    )
+    item = queue.claim(tags=(), has_gpu=False, owner="worker-1")
+    assert item is not None
+    key = item["action_key"]
+
+    # Reproduce the window exactly: claimed, lease not yet written.
+    queue.lease_path(key).unlink()
+    assert queue.lease_age(key) is None
+
+    assert queue.reap_stale() == []
+    assert queue.claim(tags=(), has_gpu=False, owner="worker-2") is None
+
+    # A claim old enough to be genuinely dead is still reaped.
+    stale = queue.item_path(pool.CLAIMED, key)
+    record = json.loads(stale.read_text())
+    record["claimed_unix"] = record["claimed_unix"] - (pool.HEARTBEAT_S + 60.0)
+    stale.write_text(json.dumps(record))
+    assert queue.reap_stale() == [key]
+    assert queue.claim(tags=(), has_gpu=False, owner="worker-2") is not None

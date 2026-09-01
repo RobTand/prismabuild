@@ -320,8 +320,20 @@ class PoolQueue:
         between the rename and the first heartbeat.  Requeueing is safe at any
         time because re-execution hits the CAS, so the worst case of reaping a
         live-but-stalled worker is duplicated work, never a corrupted result.
+
+        **The claim is not atomic with its lease.**  ``claim()`` renames the
+        item, then writes the lease; a reaper running inside that window sees a
+        claimed item with no lease and would requeue a worker that is alive and
+        about to start.  So a missing lease is only stale once the claim itself
+        has aged past ``grace_s`` -- and ``claimed_unix`` is written into the
+        claim record *before* the lease exists, which is what makes it a usable
+        clock here.  A genuinely dead claimant still gets reaped, one grace
+        period later.  The default grace is the heartbeat interval: longer than
+        the microseconds the window actually spans, far shorter than the lease
+        timeout that governs the normal case.
         """
 
+        grace_s = HEARTBEAT_S
         requeued: list[str] = []
         claimed = self.dir(CLAIMED)
         if not claimed.is_dir():
@@ -331,6 +343,12 @@ class PoolQueue:
             age = self.lease_age(key)
             if age is not None and age <= timeout_s:
                 continue
+            if age is None:
+                record = _read_json(path) or {}
+                claimed_unix = record.get("claimed_unix")
+                if isinstance(claimed_unix, (int, float)):
+                    if _now() - float(claimed_unix) <= grace_s:
+                        continue          # claimed moments ago; lease imminent
             try:
                 os.rename(path, self.item_path(READY, key))
             except (FileNotFoundError, NotADirectoryError):
