@@ -19,14 +19,31 @@ and two boxes of production use:
   intent-before-``sbatch`` discipline, so a crash between the two is
   diagnosable rather than invisible.
 
-**What is deliberately NOT ported: the reservation ledger.**  pqwork's ledger is
-its largest and subtlest component, and the evidence says it is also where this
-fleet actually breaks -- the one documented live defect
-(``/mnt/shared/pq-ops/starvation/REPRO-2026-08-30``) is an admission/reservation
-failure, not a transport failure.  Reproducing a naive static reservation model
-would be importing the known failure mode on day one.  v1 admits one action per
-worker slot and nothing more; capacity-aware admission is a later, evidence-led
-decision.
+**Admission is capacity-aware, and it is built from that live defect rather than
+around it.**  The one documented failure on this fleet
+(``/mnt/shared/pq-ops/starvation/REPRO-2026-08-30``) was an admission failure,
+not a transport failure, and it named three bugs.  This ledger answers each
+structurally rather than by policy:
+
+* **Hold-while-gated.**  There, an actor acquired both boxes' whole memory
+  budget and *then* waited for a drain condition its own hold prevented from
+  ever being observed.  Here a reservation is acquired inside ``claim`` and
+  released in ``finish``, so a holder is by construction *running*, never
+  waiting.  There is no window in which holding and waiting overlap, so the
+  circularity has nowhere to form.
+* **No aging.**  There, ``evicted_5x_does_not_fit`` was counted and then the job
+  was abandoned: "an eviction counter that only counts is a starvation detector
+  wired to nothing."  Here a denial increments ``passes``, ``passes`` is the
+  first term of the ready ordering, and past ``STARVATION_FLOOR`` a denied item
+  *withholds the host* -- a worker that cannot admit the starved item declines
+  to admit a smaller one instead of leapfrogging it.  The counter is wired to
+  the decision it describes.
+* **Partial-hold waste.**  Acquisition is all-or-nothing: a demand that cannot
+  be met in full releases every token it took before returning.
+
+The deadlock the floor could otherwise cause is handled explicitly: an item
+whose demand exceeds this host's *total* capacity can never run here, so it is
+skipped rather than allowed to withhold a box it would never use.
 
 **Idempotence is free and is not reimplemented.**  ``run_local_action`` looks the
 action key up in the CAS first and returns ``cache_hit`` without executing, so a
@@ -72,6 +89,21 @@ _STATES = (READY, CLAIMED, DONE, FAILED, INTENT)
 # what absorbs an NFS stall or a long GC pause without a spurious requeue.
 HEARTBEAT_S = 30.0
 LEASE_TIMEOUT_S = 300.0
+
+# Retries exist because the CAS makes them free: re-running a completed action
+# is a receipt lookup, so the only cost of one more attempt is the attempt.
+DEFAULT_MAX_ATTEMPTS = 3
+
+# How many admission denials before a ready item stops being overtaken.  The
+# repro's job died at `evicted_5x_does_not_fit`, so five is the count at which
+# the old system gave up; the floor has to bite strictly before that or it
+# inherits the same outcome.  Three is chosen on that ground alone -- it is a
+# policy knob, not a derived constant, and nothing downstream depends on its
+# value beyond "small, and less than five".
+STARVATION_FLOOR = 3
+
+RESERVATIONS = "reservations"
+PASSES = "passes"
 
 DEFAULT_POOL_ROOT = Path(
     os.environ.get("PRISMABUILD_POOL_ROOT", "/mnt/shared/pb-queue")
@@ -155,6 +187,156 @@ def worker_argv(
     ]
 
 
+class _Insufficient(Exception):
+    """Internal: a demand could not be met in full."""
+
+
+class ResourceLedger:
+    """Per-host capacity, held as tokens that are acquired by ``rename``.
+
+    Capacity is expressed as *countable* tokens rather than as a number in a
+    file that everyone read-modify-writes, because this queue has exactly one
+    concurrency primitive it trusts on NFS -- ``rename`` -- and a ledger that
+    needed a second one would be a ledger with a second failure mode.  One
+    token is one indivisible unit of a resource (``gpu`` is a device, ``mem_gb``
+    is a gigabyte), so acquiring is renaming N of them out of ``free/`` and
+    releasing is renaming them back.  A worker that dies holding tokens is
+    recovered by the same reaper that recovers its claim, since the tokens are
+    filed under the action key.
+
+    Capacity is grown but never shrunk here: removing a token that another
+    process holds is not expressible as a rename, and a box whose capacity
+    dropped mid-flight is a configuration change, not a queue operation.
+    """
+
+    def __init__(self, root: str | Path, host: str | None = None) -> None:
+        self.root = Path(root)
+        self.host = host or socket.gethostname()
+
+    @property
+    def base(self) -> Path:
+        return self.root / self.host
+
+    @property
+    def free_dir(self) -> Path:
+        return self.base / "free"
+
+    @property
+    def held_dir(self) -> Path:
+        return self.base / "held"
+
+    def ensure_capacity(self, capacity: Mapping[str, int]) -> None:
+        """Create any missing token of each declared kind, idempotently.
+
+        A token index is present if it is either free or held, so two workers
+        declaring the same capacity converge and neither hands back a token the
+        other is using.
+        """
+
+        self.free_dir.mkdir(parents=True, exist_ok=True)
+        self.held_dir.mkdir(parents=True, exist_ok=True)
+        for kind, count in sorted(capacity.items()):
+            total = int(count)
+            if total < 0:
+                raise PoolContractError(f"capacity for {kind!r} must not be negative")
+            present = {path.name for path in self.free_dir.glob(f"{kind}-*")}
+            for holder in self.held_dir.iterdir() if self.held_dir.is_dir() else []:
+                if holder.is_dir():
+                    present.update(path.name for path in holder.glob(f"{kind}-*"))
+            for index in range(total):
+                name = f"{kind}-{index:04d}"
+                if name in present:
+                    continue
+                token = self.free_dir / name
+                try:
+                    descriptor = os.open(token, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                except FileExistsError:
+                    continue
+                os.close(descriptor)
+
+    def capacity(self) -> dict[str, int]:
+        """Total tokens of each kind, free or held."""
+
+        counts: dict[str, int] = {}
+        for path in list(self.free_dir.glob("*-*")) if self.free_dir.is_dir() else []:
+            counts[path.name.rsplit("-", 1)[0]] = counts.get(path.name.rsplit("-", 1)[0], 0) + 1
+        if self.held_dir.is_dir():
+            for holder in self.held_dir.iterdir():
+                if not holder.is_dir():
+                    continue
+                for path in holder.glob("*-*"):
+                    kind = path.name.rsplit("-", 1)[0]
+                    counts[kind] = counts.get(kind, 0) + 1
+        return counts
+
+    def available(self) -> dict[str, int]:
+        """Tokens of each kind not currently held."""
+
+        counts: dict[str, int] = {}
+        if not self.free_dir.is_dir():
+            return counts
+        for path in self.free_dir.glob("*-*"):
+            kind = path.name.rsplit("-", 1)[0]
+            counts[kind] = counts.get(kind, 0) + 1
+        return counts
+
+    def acquire(self, action_key: str, demand: Mapping[str, int]) -> bool:
+        """Take every token the demand asks for, or none of them.
+
+        All-or-nothing is the repro's third bug stated as code: a multi-resource
+        actor that keeps what it managed to get while blocked on what it did not
+        is holding resources it cannot use.
+        """
+
+        wanted = {k: int(v) for k, v in demand.items() if int(v) > 0}
+        if not wanted:
+            return True
+        destination = self.held_dir / action_key
+        destination.mkdir(parents=True, exist_ok=True)
+        try:
+            for kind, need in sorted(wanted.items()):
+                taken = 0
+                for token in sorted(self.free_dir.glob(f"{kind}-*")):
+                    if taken >= need:
+                        break
+                    try:
+                        os.rename(token, destination / token.name)
+                    except (FileNotFoundError, NotADirectoryError):
+                        continue      # another worker took it first
+                    taken += 1
+                if taken < need:
+                    raise _Insufficient(kind)
+        except _Insufficient:
+            self.release(action_key)
+            return False
+        return True
+
+    def release(self, action_key: str) -> int:
+        """Return every token held for this action.  Safe to call twice."""
+
+        destination = self.held_dir / action_key
+        if not destination.is_dir():
+            return 0
+        released = 0
+        self.free_dir.mkdir(parents=True, exist_ok=True)
+        for token in sorted(destination.iterdir()):
+            try:
+                os.rename(token, self.free_dir / token.name)
+            except OSError:
+                continue
+            released += 1
+        try:
+            destination.rmdir()
+        except OSError:
+            pass
+        return released
+
+    def held_keys(self) -> list[str]:
+        if not self.held_dir.is_dir():
+            return []
+        return sorted(path.name for path in self.held_dir.iterdir() if path.is_dir())
+
+
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
@@ -192,11 +374,25 @@ class PoolQueue:
         tags: Sequence[str] = (),
         needs_gpu: bool = False,
         priority: int = 0,
+        resources: Mapping[str, int] | None = None,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     ) -> Path:
-        """Enqueue one sealed action.  The action itself already lives in the CAS."""
+        """Enqueue one sealed action.  The action itself already lives in the CAS.
+
+        ``resources`` is what this action needs to run on one box -- e.g.
+        ``{"gpu": 1, "mem_gb": 8}``.  It is a claim about the action, made by
+        the producer that knows it; a worker's ``capacity`` is the matching
+        claim about the box.  Omitting it means the action is admitted on
+        placement alone, which is the pre-ledger behaviour.
+        """
 
         if not isinstance(action_key, str) or len(action_key) != 64:
             raise PoolContractError("action_key must be a 64-character digest")
+        demand = {str(k): int(v) for k, v in dict(resources or {}).items()}
+        if any(v < 0 for v in demand.values()):
+            raise PoolContractError("resource demand must not be negative")
+        if int(max_attempts) < 1:
+            raise PoolContractError("max_attempts must be at least 1")
         self.ensure_layout()
         item = {
             "schema": POOL_ITEM_SCHEMA_V1,
@@ -207,6 +403,9 @@ class PoolQueue:
             "tags": sorted(str(t) for t in tags),
             "needs_gpu": bool(needs_gpu),
             "priority": int(priority),
+            "resources": demand,
+            "attempts": 0,
+            "max_attempts": int(max_attempts),
             "published_unix": _now(),
             "published_by": socket.gethostname(),
         }
@@ -234,12 +433,50 @@ class PoolQueue:
         for path in sorted(ready.glob("*.json")):
             record = _read_json(path)
             if record is not None:
+                record["passes"] = self.passes(str(record.get("action_key", "")))
                 out.append(record)
-        # Oldest first within a priority band, so a long queue drains in the
-        # order it was filled rather than by digest.  Not a scheduler; just a
-        # tie-break that makes behaviour predictable enough to debug.
-        out.sort(key=lambda r: (-int(r.get("priority", 0)), float(r.get("published_unix", 0.0))))
+        # Aging first, then priority, then oldest.  An item that has been denied
+        # admission repeatedly is not merely unlucky -- it is being overtaken --
+        # so its denial count outranks the band it was published in.  Within a
+        # band a long queue still drains in the order it was filled rather than
+        # by digest.  Not a scheduler; a tie-break predictable enough to debug.
+        out.sort(
+            key=lambda r: (
+                -int(r.get("passes", 0)),
+                -int(r.get("priority", 0)),
+                float(r.get("published_unix", 0.0)),
+            )
+        )
         return out
+
+    # -- aging ----------------------------------------------------------
+
+    def passes_path(self, action_key: str) -> Path:
+        return self.root / PASSES / f"{action_key}.json"
+
+    def passes(self, action_key: str) -> int:
+        record = _read_json(self.passes_path(action_key))
+        if record is None:
+            return 0
+        value = record.get("passes", 0)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    def record_pass(self, action_key: str) -> int:
+        """Count one admission denial.
+
+        Kept in a sidecar rather than in the item, because rewriting a ready
+        item races the claim that may already have moved it: the writer would
+        resurrect a claimed action into ``ready`` and hand it to a second
+        worker.  A lost increment under contention costs a little ordering
+        fairness; a resurrected item costs correctness.
+        """
+
+        count = self.passes(action_key) + 1
+        _write_json_atomic(
+            self.passes_path(action_key),
+            {"action_key": action_key, "passes": count, "updated_unix": _now()},
+        )
+        return count
 
     def _write_claim_intent(self, action_key: str, *, owner: str) -> None:
         _write_json_atomic(
@@ -267,8 +504,23 @@ class PoolQueue:
             },
         )
 
+    def ledger(self, host: str | None = None) -> ResourceLedger:
+        return ResourceLedger(self.root / RESERVATIONS, host=host)
+
+    @staticmethod
+    def demand_of(item: Mapping[str, object]) -> dict[str, int]:
+        raw = item.get("resources") or {}
+        if not isinstance(raw, Mapping):
+            raise PoolContractError("pool item resources must be an object")
+        return {str(k): int(v) for k, v in raw.items() if int(v) > 0}
+
     def claim(
-        self, *, tags: Iterable[str] = (), has_gpu: bool = False, owner: str | None = None
+        self,
+        *,
+        tags: Iterable[str] = (),
+        has_gpu: bool = False,
+        owner: str | None = None,
+        capacity: Mapping[str, int] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -276,15 +528,39 @@ class PoolQueue:
         it; exactly one succeeds and the loser sees ``FileNotFoundError`` and
         moves on.  Nothing else in this method may fail in a way that leaves the
         item in neither directory.
+
+        When ``capacity`` is given, admission runs *before* the rename and the
+        tokens are released again if the rename is lost -- so a worker never
+        holds capacity it is not about to use, and never waits while holding.
+        A starved item (``passes >= STARVATION_FLOOR``) that this host could
+        eventually fit withholds the host rather than being overtaken; one it
+        could never fit is skipped, because withholding a box for work that
+        will never run there is the deadlock, not the fix.
         """
 
         owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         tagset = frozenset(str(t) for t in tags)
         self.ensure_layout()
+        ledger = None
+        total: dict[str, int] = {}
+        if capacity is not None:
+            ledger = self.ledger()
+            ledger.ensure_capacity(capacity)
+            total = ledger.capacity()
         for item in self.ready_items():
             key = str(item.get("action_key", ""))
             if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
                 continue
+            demand = self.demand_of(item)
+            if ledger is not None and demand:
+                if any(total.get(kind, 0) < need for kind, need in demand.items()):
+                    continue      # never fits this box; not this box's to hold
+                if not ledger.acquire(key, demand):
+                    denials = self.record_pass(key)
+                    if denials >= STARVATION_FLOOR:
+                        # Wired to the decision: stop letting smaller work pass it.
+                        return None
+                    continue
             # Intent precedes the claim, so a crash in between leaves evidence.
             self._write_claim_intent(key, owner=owner)
             src = self.item_path(READY, key)
@@ -292,13 +568,17 @@ class PoolQueue:
             try:
                 os.rename(src, dst)
             except (FileNotFoundError, NotADirectoryError):
-                continue          # lost the race; another worker has it
+                if ledger is not None:
+                    ledger.release(key)   # lost the race: hold nothing
+                continue
             claimed = dict(item)
             claimed["claimed_by"] = owner
             claimed["claimed_unix"] = _now()
             claimed["claimed_host"] = socket.gethostname()
+            claimed["reserved_on"] = socket.gethostname() if demand else None
             _write_json_atomic(dst, claimed)
             self.write_lease(key, owner=owner)
+            self.passes_path(key).unlink(missing_ok=True)
             return claimed
         return None
 
@@ -349,10 +629,40 @@ class PoolQueue:
                 if isinstance(claimed_unix, (int, float)):
                     if _now() - float(claimed_unix) <= grace_s:
                         continue          # claimed moments ago; lease imminent
-            try:
-                os.rename(path, self.item_path(READY, key))
-            except (FileNotFoundError, NotADirectoryError):
-                continue
+            record = _read_json(path) or {}
+            # Read the holder's identity BEFORE the requeue branch strips it.
+            # The reaper is frequently NOT the dead claimant's box, and its
+            # tokens live under the claimant's ledger, not the reaper's.
+            holder = record.get("claimed_host")
+            attempts = int(record.get("attempts", 0)) + 1
+            limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
+            if attempts >= limit:
+                # Exhausted: a claim whose lease keeps dying is not made healthy
+                # by a fourth box trying it.  Record it terminally instead.
+                record.update(
+                    {
+                        "schema": POOL_OUTCOME_SCHEMA_V1,
+                        "status": "lease_lost_max_attempts",
+                        "attempts": attempts,
+                        "finished_unix": _now(),
+                        "finished_host": socket.gethostname(),
+                    }
+                )
+                _write_json_atomic(self.item_path(FAILED, key), record)
+                path.unlink(missing_ok=True)
+            else:
+                record["attempts"] = attempts
+                record["requeued_unix"] = _now()
+                for transient in ("claimed_by", "claimed_unix", "claimed_host"):
+                    record.pop(transient, None)
+                try:
+                    _write_json_atomic(self.item_path(READY, key), record)
+                except OSError:
+                    continue
+                path.unlink(missing_ok=True)
+            # Whatever the outcome, the dead claimant's capacity goes back.  A
+            # reservation outliving its holder is the starvation bug's shape.
+            self.ledger(holder if isinstance(holder, str) else None).release(key)
             self.lease_path(key).unlink(missing_ok=True)
             requeued.append(key)
         return requeued
@@ -366,19 +676,35 @@ class PoolQueue:
         status: str,
         detail: Mapping[str, object] | None = None,
     ) -> Path:
-        state = DONE if status in {"executed", "cache_hit"} else FAILED
+        succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
         record = _read_json(src) or {"action_key": action_key}
+        host = record.get("claimed_host")
+        attempts = int(record.get("attempts", 0)) + 1
+        limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
         record.update(
             {
                 "schema": POOL_OUTCOME_SCHEMA_V1,
                 "status": status,
+                "attempts": attempts,
                 "finished_unix": _now(),
                 "finished_host": socket.gethostname(),
                 "detail": dict(detail or {}),
             }
         )
-        dst = self.item_path(state, action_key)
+        # Capacity is released before the item is filed, so the next worker to
+        # look sees the tokens free rather than racing this rename.
+        self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
+        if succeeded or attempts >= limit:
+            dst = self.item_path(DONE if succeeded else FAILED, action_key)
+        else:
+            # Retry is cheap by construction: a re-run of work that did land is
+            # a CAS receipt lookup, so the only thing another attempt can cost
+            # is the attempt.  Failing once is not evidence the action is bad.
+            record["requeued_unix"] = _now()
+            for transient in ("claimed_by", "claimed_unix", "claimed_host"):
+                record.pop(transient, None)
+            dst = self.item_path(READY, action_key)
         _write_json_atomic(dst, record)
         src.unlink(missing_ok=True)
         self.lease_path(action_key).unlink(missing_ok=True)
@@ -448,11 +774,18 @@ class PoolQueue:
         has_gpu: bool = False,
         python: str | Path = sys.executable,
         timeout_s: float | None = None,
+        capacity: Mapping[str, int] | None = None,
     ) -> dict[str, object] | None:
-        """Reap, claim, run, record.  ``None`` when the queue had nothing."""
+        """Reap, claim, run, record.  ``None`` when the queue had nothing.
+
+        ``None`` also means "nothing this box may admit right now" once
+        ``capacity`` is in play -- including the deliberate case where a starved
+        item is withholding the host.  A caller that loops should treat it as
+        back-pressure and poll again, not as an empty queue.
+        """
 
         self.reap_stale()
-        item = self.claim(tags=tags, has_gpu=has_gpu)
+        item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity)
         if item is None:
             return None
         key = str(item["action_key"])

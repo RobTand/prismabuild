@@ -54,12 +54,10 @@ difference rather than proving equivalence.
 - **One action, one worker at a time.** The claim race is covered by unit tests
   (8 threads, one barrier, exactly one winner) but has **not** been exercised
   with two real boxes contending on NFS simultaneously.
-- **No reservation ledger**, by design — so nothing yet prevents two GPU actions
-  landing on one box. v1 admits one action per worker invocation.
-- **No queue daemon.** `serve_once` runs one item and exits; there is no
-  long-running unit, and pqwork's live units were left untouched.
-- The shared checkout means both boxes verify the *same* code-closure bytes.
-  A per-box checkout is untested and would need the closure to match.
+- ~~**No reservation ledger**, by design~~ — **closed 2026-09-01.** `pool.py`
+  now admits by rename-acquired capacity tokens with aging and a starvation
+  floor, built from `REPRO-2026-08-30`. Workers declare `--gpu-slots/--mem-gb`;
+  actions declare `resources`. See `README.md` and `tests/test_pool.py`.
 
 ## Next
 

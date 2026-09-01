@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import threading
+from unittest import mock
 
 import pytest
 
@@ -161,10 +162,12 @@ def test_heartbeat_refresh_keeps_a_claim_alive(queue: pool.PoolQueue) -> None:
     assert queue.reap_stale(timeout_s=1.0) == []
 
 
-def test_finish_routes_to_done_or_failed(queue: pool.PoolQueue) -> None:
+def test_finish_routes_to_done_or_retry(queue: pool.PoolQueue) -> None:
+    """Success is terminal; a first failure is a retry, not a verdict."""
+
     for key, status, state in (
         (KEY_A, "executed", pool.DONE),
-        (KEY_B, "failed", pool.FAILED),
+        (KEY_B, "failed", pool.READY),
     ):
         _publish(queue, key)
         queue.claim()
@@ -172,6 +175,32 @@ def test_finish_routes_to_done_or_failed(queue: pool.PoolQueue) -> None:
         assert queue.item_path(state, key).exists()
         assert not queue.item_path(pool.CLAIMED, key).exists()
         assert not queue.lease_path(key).exists()
+
+
+def test_a_failure_retries_until_its_attempts_are_spent(queue: pool.PoolQueue) -> None:
+    """Three strikes, then terminal -- and the count survives the requeue."""
+
+    _publish(queue, KEY_A, max_attempts=3)
+    for attempt in (1, 2):
+        assert queue.claim() is not None
+        queue.finish(KEY_A, status="failed")
+        requeued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+        assert requeued["attempts"] == attempt
+        # A requeued item must not carry the dead claimant's identity forward.
+        assert "claimed_by" not in requeued
+    assert queue.claim() is not None
+    queue.finish(KEY_A, status="failed")
+    assert queue.item_path(pool.FAILED, KEY_A).exists()
+    assert not queue.item_path(pool.READY, KEY_A).exists()
+
+
+def test_max_attempts_of_one_is_terminal_on_the_first_failure(
+    queue: pool.PoolQueue,
+) -> None:
+    _publish(queue, KEY_A, max_attempts=1)
+    queue.claim()
+    queue.finish(KEY_A, status="failed")
+    assert queue.item_path(pool.FAILED, KEY_A).exists()
 
 
 def test_cache_hit_counts_as_done_not_failed(queue: pool.PoolQueue) -> None:
@@ -234,7 +263,7 @@ def test_serve_once_records_a_failing_worker_as_failed(
 ) -> None:
     stub = tmp_path / "bad_worker.py"
     stub.write_text("import sys; sys.exit(3)\n")
-    _publish(queue, KEY_A, worker_script=str(stub))
+    _publish(queue, KEY_A, worker_script=str(stub), max_attempts=1)
     outcome = queue.serve_once()
     assert outcome["status"] == "failed" and outcome["returncode"] == 3
     assert queue.item_path(pool.FAILED, KEY_A).exists()
@@ -277,8 +306,11 @@ def test_a_crashing_execute_never_leaves_a_dangling_claim(
     monkeypatch.setattr(queue, "execute", boom)
     with pytest.raises(RuntimeError):
         queue.serve_once()
+    # The invariant is that the claim is gone, not where it went: an unexpected
+    # crash still has retries left, so it is requeued rather than condemned.
     assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert queue.item_path(pool.FAILED, KEY_A).exists()
+    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.lease_path(KEY_A).exists()
 
 
 def test_reap_then_reclaim_is_the_self_healing_path(queue: pool.PoolQueue) -> None:
@@ -340,3 +372,202 @@ def test_reap_does_not_steal_a_claim_made_moments_ago(tmp_path):
     stale.write_text(json.dumps(record))
     assert queue.reap_stale() == [key]
     assert queue.claim(tags=(), has_gpu=False, owner="worker-2") is not None
+
+
+# --- admission: the ledger, built from REPRO-2026-08-30 ---------------------
+
+
+def test_capacity_tokens_are_created_idempotently(queue: pool.PoolQueue) -> None:
+    ledger = queue.ledger(host="box")
+    ledger.ensure_capacity({"gpu": 2, "mem_gb": 4})
+    ledger.ensure_capacity({"gpu": 2, "mem_gb": 4})
+    assert ledger.capacity() == {"gpu": 2, "mem_gb": 4}
+    assert ledger.available() == {"gpu": 2, "mem_gb": 4}
+
+
+def test_acquire_is_all_or_nothing(queue: pool.PoolQueue) -> None:
+    """The repro's third bug: never keep what you got while blocked on the rest."""
+
+    ledger = queue.ledger(host="box")
+    ledger.ensure_capacity({"gpu": 1, "mem_gb": 2})
+    assert ledger.acquire(KEY_A, {"gpu": 1, "mem_gb": 8}) is False
+    # The gpu token it *could* take must not be left held.
+    assert ledger.available() == {"gpu": 1, "mem_gb": 2}
+    assert ledger.held_keys() == []
+
+
+def test_capacity_is_not_oversubscribed_under_contention(
+    queue: pool.PoolQueue,
+) -> None:
+    """Eight threads, three tokens: exactly three win."""
+
+    ledger = queue.ledger(host="box")
+    ledger.ensure_capacity({"gpu": 3})
+    won: list[str] = []
+    lock = threading.Lock()
+
+    def grab(n: int) -> None:
+        if ledger.acquire(f"{n:064d}", {"gpu": 1}):
+            with lock:
+                won.append(f"{n:064d}")
+
+    threads = [threading.Thread(target=grab, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(won) == 3
+    assert ledger.available().get("gpu", 0) == 0
+
+
+def test_admission_refuses_when_the_box_is_full(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_A, resources={"gpu": 1})
+    _publish(queue, KEY_B, resources={"gpu": 1})
+    capacity = {"gpu": 1}
+    assert queue.claim(capacity=capacity) is not None
+    # One token, one running action: the second is denied, and stays ready.
+    assert queue.claim(capacity=capacity) is None
+    assert queue.item_path(pool.READY, KEY_B).exists()
+
+
+def test_finishing_an_action_returns_its_capacity(queue: pool.PoolQueue) -> None:
+    """A reservation is held only while running -- the repro's first bug."""
+
+    _publish(queue, KEY_A, resources={"gpu": 1})
+    _publish(queue, KEY_B, resources={"gpu": 1})
+    capacity = {"gpu": 1}
+    first = queue.claim(capacity=capacity)
+    assert first is not None
+    assert queue.claim(capacity=capacity) is None
+    queue.finish(KEY_A, status="executed")
+    assert queue.ledger().available().get("gpu", 0) == 1
+    assert queue.claim(capacity=capacity) is not None
+
+
+def test_reaping_a_dead_claimant_returns_its_capacity(queue: pool.PoolQueue) -> None:
+    """A reservation must not outlive its holder, or the box never recovers."""
+
+    _publish(queue, KEY_A, resources={"gpu": 1})
+    assert queue.claim(capacity={"gpu": 1}) is not None
+    assert queue.ledger().available().get("gpu", 0) == 0
+    queue.reap_stale(timeout_s=-1.0)
+    assert queue.ledger().available().get("gpu", 0) == 1
+
+
+def test_losing_the_claim_race_releases_the_tokens(queue: pool.PoolQueue) -> None:
+    """Admission runs before the rename, so a loser must hold nothing."""
+
+    _publish(queue, KEY_A, resources={"gpu": 1})
+    ledger = queue.ledger()
+    ledger.ensure_capacity({"gpu": 1})
+    # Simulate the race: the item vanishes between admission and the rename.
+    original = os.rename
+
+    def steal(src: object, dst: object) -> None:
+        if str(src).endswith(f"{KEY_A}.json") and pool.READY in str(src):
+            raise FileNotFoundError(src)
+        original(src, dst)
+
+    with mock.patch.object(pool.os, "rename", steal):
+        assert queue.claim(capacity={"gpu": 1}) is None
+    assert ledger.available().get("gpu", 0) == 1
+    assert ledger.held_keys() == []
+
+
+def test_denials_age_an_item_to_the_front(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_A)
+    _publish(queue, KEY_B)
+    queue.record_pass(KEY_B)
+    assert [r["action_key"] for r in queue.ready_items()][0] == KEY_B
+    assert queue.passes(KEY_B) == 1
+
+
+def test_a_starved_item_withholds_the_host_instead_of_being_overtaken(
+    queue: pool.PoolQueue,
+) -> None:
+    """The repro's second bug: a counter wired to nothing is not a fix.
+
+    A big item that keeps losing admission to small ones must eventually stop
+    being overtaken, or it never runs while the queue stays busy.
+    """
+
+    _publish(queue, KEY_A, resources={"gpu": 4})      # the big, starved one
+    _publish(queue, KEY_B, resources={"gpu": 1})      # the small overtaker
+    capacity = {"gpu": 4}
+    ledger = queue.ledger()
+    ledger.ensure_capacity(capacity)
+    # Occupy two tokens so the big item cannot fit but the small one could.
+    assert ledger.acquire("0" * 64, {"gpu": 2}) is True
+
+    for _ in range(pool.STARVATION_FLOOR - 1):
+        taken = queue.claim(capacity=capacity)
+        assert taken is not None and taken["action_key"] == KEY_B
+        queue.finish(KEY_B, status="executed")
+        queue.item_path(pool.DONE, KEY_B).unlink()
+        _publish(queue, KEY_B, resources={"gpu": 1})
+
+    assert queue.passes(KEY_A) >= pool.STARVATION_FLOOR - 1
+    queue.record_pass(KEY_A)
+    # Now the floor is reached: the host is withheld rather than handed to KEY_B.
+    assert queue.claim(capacity=capacity) is None
+    assert queue.item_path(pool.READY, KEY_B).exists()
+
+
+def test_work_that_can_never_fit_here_does_not_deadlock_the_box(
+    queue: pool.PoolQueue,
+) -> None:
+    """Withholding a box for work it could never run is the deadlock, not the fix."""
+
+    _publish(queue, KEY_A, resources={"gpu": 99})     # never fits this host
+    _publish(queue, KEY_B, resources={"gpu": 1})
+    for _ in range(pool.STARVATION_FLOOR + 2):
+        queue.record_pass(KEY_A)
+    taken = queue.claim(capacity={"gpu": 2})
+    assert taken is not None and taken["action_key"] == KEY_B
+
+
+def test_a_claim_clears_its_own_denial_history(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_A, resources={"gpu": 1})
+    queue.record_pass(KEY_A)
+    assert queue.claim(capacity={"gpu": 1}) is not None
+    assert queue.passes(KEY_A) == 0
+
+
+def test_admission_is_skipped_when_no_capacity_is_declared(
+    queue: pool.PoolQueue,
+) -> None:
+    """Pre-ledger behaviour is intact for callers that declare nothing."""
+
+    _publish(queue, KEY_A, resources={"gpu": 99})
+    assert queue.claim() is not None
+
+
+def test_reaping_a_foreign_claimant_returns_capacity_to_that_host(
+    queue: pool.PoolQueue,
+) -> None:
+    """The reaper is usually not the box that died.
+
+    Tokens live under the *claimant's* ledger.  A reaper that released against
+    its own hostname would leak the dead box's capacity permanently, and the
+    leak is invisible: the box simply stops admitting work, every worker loop
+    exits on max-idle, and it looks exactly like an empty queue.
+    """
+
+    _publish(queue, KEY_A, resources={"gpu": 2})
+    assert queue.claim(capacity={"gpu": 2}) is not None
+
+    # Re-file the claim as though a *different* box had taken it, and move the
+    # tokens to that box's ledger -- the real cross-box shape.
+    record = json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text())
+    mine = record["claimed_host"]
+    record["claimed_host"] = "other-box"
+    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
+    queue.ledger(mine).release(KEY_A)
+    queue.ledger("other-box").ensure_capacity({"gpu": 2})
+    assert queue.ledger("other-box").acquire(KEY_A, {"gpu": 2}) is True
+
+    queue.reap_stale(timeout_s=-1.0)
+
+    assert queue.ledger("other-box").available().get("gpu", 0) == 2
+    assert queue.ledger("other-box").held_keys() == []
+    assert queue.item_path(pool.READY, KEY_A).exists()

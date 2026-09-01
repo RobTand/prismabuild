@@ -21,11 +21,17 @@ submitted, so a result does not depend on which transport delivered it.
 Sparks — is the **predecessor** PrismaBuild replaces. Its NFS-safe primitives
 (claim-by-rename, lease heartbeat, stale requeue) are ported into `pool.py`
 because they were argued out against real NFS behaviour. Its **reservation
-ledger is deliberately not ported**: the one documented live defect on this
-fleet is an admission/reservation failure, not a transport one, so reproducing a
-naive static reservation model would import the known failure mode. What pqwork
-lacks, and PrismaBuild has, is action-key determinism and CAS receipts — which
-is what quantization work needs, since an artifact you cannot reproduce is
+ledger is not ported but rebuilt**, from the one documented live defect on this
+fleet (`/mnt/shared/pq-ops/starvation/REPRO-2026-08-30`) rather than around it:
+capacity is held as rename-acquired tokens, acquired inside `claim` and released
+in `finish`, so a holder is always *running* and never waiting — the hold-while-
+gated circularity has nowhere to form. Denials age an item to the front of the
+ready order, and past `STARVATION_FLOOR` a denied item withholds the host
+instead of being overtaken, because "an eviction counter that only counts is a
+starvation detector wired to nothing". Retries are bounded by `max_attempts` and
+cheap by construction: re-running work that landed is a receipt lookup. What
+pqwork lacks, and PrismaBuild has, is action-key determinism and CAS receipts —
+which is what quantization work needs, since an artifact you cannot reproduce is
 quarantined.
 
 ## Provenance
