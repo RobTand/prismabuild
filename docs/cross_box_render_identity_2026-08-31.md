@@ -32,6 +32,25 @@ float32, which would hide a low-bit difference):
 torch 2.11.0+cu130. The synthetic activations hash identically on both boxes
 first, so any render difference would have been the render, not the input.
 
+## The first run of this measured the wrong code path
+
+Worth recording, because the failure was silent and the class of it recurs.
+`render_production_weight` looks its activations up by **qname**
+(`activations.get(qname)`), and the first version of this script passed
+`{"input": X}`. The lookup returned `None`, GPTQ had nothing to run on, and all
+four lever settings — full, no-JSO, no-GPTQ, bare RTN — produced **the same
+digest**. Nothing raised. The 6/6 identity result was real but it was identity
+of the *RTN* path, while this document claimed the shipping levers.
+
+A wrong activation key is therefore not a crash, it is a quiet demotion to a
+weaker render. The script now proves the levers engaged before it will report
+anything: it renders one tensor with `levers={}` and exits non-zero unless that
+digest **differs** from the levered one. Both boxes report
+`levers engaged: True`, with matching levered (`7498639d…`) and RTN
+(`dfc49c9c…`) digests, and the proof is asserted to describe a row in the table
+above rather than a separate render. The lesson is the repo's own: *check the
+code executes before believing the number it produced.*
+
 ## What this does and does not clear
 
 **Cleared:** distributing the **production-cache render** across these two
@@ -55,3 +74,6 @@ without the CAS silently conflating two different results.
   heterogeneous hardware, and the fleet doc's `rocm-16g` class is untested.
 - This is a **weight-space digest**, not a served metric. It says the bytes
   agree, not that the artifact is good.
+- **One lever setting.** The proof above shows the levers engaged; it does not
+  survey them. Identity is measured for `{gptq, static_act_order,
+  joint_scale_opt}` only, not for every combination the pipeline can select.
