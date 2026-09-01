@@ -1,0 +1,294 @@
+"""The pull-queue transport, exercised on the primitives that can lose work."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+import threading
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from prismabuild import pool  # noqa: E402
+
+KEY_A = "a" * 64
+KEY_B = "b" * 64
+
+
+@pytest.fixture()
+def queue(tmp_path: Path) -> pool.PoolQueue:
+    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q.ensure_layout()
+    return q
+
+
+def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
+    q.publish(
+        action_key=key,
+        cas_root=kw.pop("cas_root", "/cas"),
+        checkout_root=kw.pop("checkout_root", "/co"),
+        worker_script=kw.pop("worker_script", "/w.py"),
+        **kw,
+    )
+
+
+def test_pool_root_must_be_absolute(tmp_path: Path) -> None:
+    with pytest.raises(pool.PoolContractError):
+        pool.PoolQueue("relative/path")
+
+
+def test_action_key_must_be_a_digest(queue: pool.PoolQueue) -> None:
+    with pytest.raises(pool.PoolContractError):
+        _publish(queue, "short")
+
+
+def test_publish_then_claim_moves_between_directories(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_A)
+    assert queue.item_path(pool.READY, KEY_A).exists()
+    item = queue.claim()
+    assert item is not None and item["action_key"] == KEY_A
+    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert queue.lease_path(KEY_A).exists()
+
+
+def test_claim_returns_none_on_empty_queue(queue: pool.PoolQueue) -> None:
+    assert queue.claim() is None
+
+
+def test_exactly_one_of_many_threads_claims_an_item(queue: pool.PoolQueue) -> None:
+    """The race the whole design rests on: rename is the arbiter."""
+
+    _publish(queue, KEY_A)
+    winners: list[object] = []
+    barrier = threading.Barrier(8)
+
+    def contend() -> None:
+        barrier.wait()
+        got = queue.claim()
+        if got is not None:
+            winners.append(got)
+
+    threads = [threading.Thread(target=contend) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(winners) == 1, f"{len(winners)} workers claimed the same action"
+
+
+def test_two_items_two_claimants_no_double_claim(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_A)
+    _publish(queue, KEY_B)
+    first = queue.claim()
+    second = queue.claim()
+    assert first is not None and second is not None
+    assert {first["action_key"], second["action_key"]} == {KEY_A, KEY_B}
+    assert queue.claim() is None
+
+
+def test_gpu_placement_is_respected(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_A, needs_gpu=True)
+    assert queue.claim(has_gpu=False) is None
+    assert queue.claim(has_gpu=True) is not None
+
+
+def test_tag_placement_requires_every_tag(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_A, tags=["gb10", "cuda"])
+    assert queue.claim(tags=["gb10"]) is None
+    assert queue.claim(tags=["gb10", "cuda", "extra"]) is not None
+
+
+def test_priority_then_age_orders_the_queue(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_A, priority=0)
+    _publish(queue, KEY_B, priority=5)
+    assert queue.claim()["action_key"] == KEY_B
+
+
+def test_intent_is_written_before_the_claim(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_A)
+    queue.claim()
+    intent = json.loads(queue.item_path(pool.INTENT, KEY_A).read_bytes())
+    assert intent["schema"] == pool.POOL_CLAIM_INTENT_SCHEMA_V1
+    assert intent["action_key"] == KEY_A
+
+
+def test_stale_lease_is_requeued(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_A)
+    queue.claim()
+    assert queue.reap_stale(timeout_s=1e6) == []          # fresh lease: untouched
+    assert queue.reap_stale(timeout_s=-1.0) == [KEY_A]    # expired: back to ready
+    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.lease_path(KEY_A).exists()
+
+
+def test_a_claim_with_no_lease_at_all_is_stale(queue: pool.PoolQueue) -> None:
+    """The claimant died between the rename and its first heartbeat."""
+
+    _publish(queue, KEY_A)
+    queue.claim()
+    queue.lease_path(KEY_A).unlink()
+    assert queue.reap_stale() == [KEY_A]
+
+
+def test_heartbeat_refresh_keeps_a_claim_alive(queue: pool.PoolQueue) -> None:
+    """Assert the stored heartbeat advances, not that a derived age shrank --
+    two ages sampled at different instants are not comparable."""
+
+    _publish(queue, KEY_A)
+    item = queue.claim()
+    first = json.loads(queue.lease_path(KEY_A).read_bytes())["heartbeat_unix"]
+    time.sleep(0.01)
+    queue.write_lease(KEY_A, owner=str(item["claimed_by"]))
+    second = json.loads(queue.lease_path(KEY_A).read_bytes())["heartbeat_unix"]
+    assert second > first
+    assert queue.reap_stale(timeout_s=1.0) == []
+
+
+def test_finish_routes_to_done_or_failed(queue: pool.PoolQueue) -> None:
+    for key, status, state in (
+        (KEY_A, "executed", pool.DONE),
+        (KEY_B, "failed", pool.FAILED),
+    ):
+        _publish(queue, key)
+        queue.claim()
+        queue.finish(key, status=status)
+        assert queue.item_path(state, key).exists()
+        assert not queue.item_path(pool.CLAIMED, key).exists()
+        assert not queue.lease_path(key).exists()
+
+
+def test_cache_hit_counts_as_done_not_failed(queue: pool.PoolQueue) -> None:
+    """A CAS hit is a successful outcome -- the work exists, it just already did."""
+
+    _publish(queue, KEY_A)
+    queue.claim()
+    queue.finish(KEY_A, status="cache_hit")
+    assert queue.item_path(pool.DONE, KEY_A).exists()
+
+
+def test_worker_argv_matches_slurms_canonical_launch_minus_its_gate() -> None:
+    argv = pool.worker_argv(
+        worker_script="/w.py", action_key=KEY_A, cas_root="/cas", checkout_root="/co"
+    )
+    assert argv == [
+        "/w.py",
+        "run-local",
+        "--action",
+        f"/cas/requests/aa/{KEY_A}.json",
+        "--cas-root",
+        "/cas",
+        "--checkout-root",
+        "/co",
+    ]
+    assert "--require-slurm-initial-start" not in argv
+
+
+def test_atomic_write_leaves_no_partial_file(queue: pool.PoolQueue, tmp_path: Path) -> None:
+    target = tmp_path / "rec.json"
+    pool._write_json_atomic(target, {"schema": "x", "n": 1})
+    assert json.loads(target.read_bytes())["n"] == 1
+    assert not list(tmp_path.glob(".*tmp"))
+
+
+def test_serve_once_returns_none_on_empty_queue(queue: pool.PoolQueue) -> None:
+    assert queue.serve_once() is None
+
+
+def test_serve_once_executes_and_records(queue: pool.PoolQueue, tmp_path: Path) -> None:
+    """End to end against a stub worker: claim -> run -> done."""
+
+    marker = tmp_path / "ran"
+    stub = tmp_path / "stub_worker.py"
+    stub.write_text(
+        "import sys, pathlib\n"
+        f"pathlib.Path({str(marker)!r}).write_text(' '.join(sys.argv[1:]))\n"
+        "sys.exit(0)\n"
+    )
+    _publish(queue, KEY_A, worker_script=str(stub))
+    outcome = queue.serve_once()
+    assert outcome is not None and outcome["status"] == "executed"
+    assert outcome["returncode"] == 0
+    assert marker.read_text().startswith("run-local --action")
+    assert queue.item_path(pool.DONE, KEY_A).exists()
+
+
+def test_serve_once_records_a_failing_worker_as_failed(
+    queue: pool.PoolQueue, tmp_path: Path
+) -> None:
+    stub = tmp_path / "bad_worker.py"
+    stub.write_text("import sys; sys.exit(3)\n")
+    _publish(queue, KEY_A, worker_script=str(stub))
+    outcome = queue.serve_once()
+    assert outcome["status"] == "failed" and outcome["returncode"] == 3
+    assert queue.item_path(pool.FAILED, KEY_A).exists()
+
+
+def test_execute_refreshes_the_lease_across_a_slow_action(
+    queue: pool.PoolQueue, tmp_path: Path
+) -> None:
+    """A long action must not be reaped out from under itself."""
+
+    stub = tmp_path / "slow_worker.py"
+    stub.write_text("import time; time.sleep(0.6)\n")
+    _publish(queue, KEY_A, worker_script=str(stub))
+    item = queue.claim()
+    before = queue.lease_path(KEY_A).stat().st_mtime_ns
+    outcome = queue.execute(item, heartbeat_s=0.15)
+    assert outcome["status"] == "executed"
+    assert queue.lease_path(KEY_A).stat().st_mtime_ns > before
+
+
+def test_execute_times_out_and_kills_the_child(
+    queue: pool.PoolQueue, tmp_path: Path
+) -> None:
+    stub = tmp_path / "hang_worker.py"
+    stub.write_text("import time; time.sleep(60)\n")
+    _publish(queue, KEY_A, worker_script=str(stub))
+    item = queue.claim()
+    outcome = queue.execute(item, heartbeat_s=0.1, timeout_s=0.3)
+    assert outcome["status"] == "timeout"
+
+
+def test_a_crashing_execute_never_leaves_a_dangling_claim(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish(queue, KEY_A)
+
+    def boom(*a: object, **k: object) -> None:
+        raise RuntimeError("worker exploded")
+
+    monkeypatch.setattr(queue, "execute", boom)
+    with pytest.raises(RuntimeError):
+        queue.serve_once()
+    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert queue.item_path(pool.FAILED, KEY_A).exists()
+
+
+def test_reap_then_reclaim_is_the_self_healing_path(queue: pool.PoolQueue) -> None:
+    """A dead box's work returns to the pool and another worker takes it."""
+
+    _publish(queue, KEY_A)
+    first = queue.claim(owner="dead-box:1")
+    assert first is not None
+    queue.reap_stale(timeout_s=-1.0)
+    second = queue.claim(owner="live-box:2")
+    assert second is not None
+    assert second["claimed_by"] != first["claimed_by"]
+
+
+def test_schema_strings_keep_the_published_namespace() -> None:
+    """Renaming these would orphan every receipt already in the CAS."""
+
+    for schema in (
+        pool.POOL_ITEM_SCHEMA_V1,
+        pool.POOL_CLAIM_INTENT_SCHEMA_V1,
+        pool.POOL_LEASE_SCHEMA_V1,
+        pool.POOL_OUTCOME_SCHEMA_V1,
+    ):
+        assert schema.startswith("prismaquant.prismabuild.")
