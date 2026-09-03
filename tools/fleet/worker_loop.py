@@ -43,16 +43,23 @@ def main():
                     help="concurrent GPU actions this box admits")
     ap.add_argument("--mem-gb", type=int, default=96,
                     help="memory this box offers the queue, of ~121 GB total")
+    ap.add_argument("--tag", action="append", default=[],
+                    help="extra placement tag this box offers")
     args = ap.parse_args()
     capacity = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb}
 
     queue = pool.PoolQueue(SH / "pb-queue")
     host = socket.gethostname()
+    # A box offers its own hostname as well as its class.  Item tags must be a
+    # subset of the worker's, so without this an action pinned to one box --
+    # which is every action whose checkout is a box-local worktree rather than
+    # shared storage -- matches no worker and never runs.
+    offered = ["gb10", host, *args.tag]
     idle = 0
     served = 0
     while True:
         outcome = queue.serve_once(
-            tags=["gb10"], has_gpu=True, python="/usr/bin/python3",
+            tags=offered, has_gpu=True, python="/usr/bin/python3",
             timeout_s=args.timeout_s, capacity=capacity,
         )
         if outcome is None:
