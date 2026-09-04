@@ -1,10 +1,10 @@
 """Shared-filesystem pull-queue transport: dispatch without a scheduler.
 
 ``slurm.py`` and ``dagster.py`` both assume a scheduler that is not installed on
-this fleet, so PrismaBuild has never dispatched anything.  This module is the
-third transport and the one that runs here: workers pull sealed actions from a
-directory on the shared NFS mount and execute them through the *same* canonical
-worker argv SLURM would have submitted.
+this fleet, so neither is its live transport.  This module is the deployed
+transport: workers pull sealed actions from a directory on the shared NFS mount
+and execute them through the *same* canonical worker argv SLURM would have
+submitted.
 
 **Every primitive here is ported from ``pqwork``**, the predecessor this
 replaces, because those primitives were argued out against real NFS behaviour
