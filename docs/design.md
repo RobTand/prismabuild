@@ -171,6 +171,15 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   are verified when possible, while unresolved inputs and descriptive
   toolchain fields remain permitted and are visibly absent from the
   attestation's verified subsets.
+- A `fleet/pbrun` cache miss additionally parses its closure stamp and
+  recomputes the live checkout's Git identity immediately before argv. The
+  canonical computation is one core function shared by submitter and worker:
+  `HEAD`, the tracked delta, and the content digest of every untracked file
+  (including files below a newly-added directory). A stamp whose bytes are
+  intact but whose claim no longer matches therefore refuses before execution.
+  This closes queued/retry drift; it does not make a live worktree immutable
+  after preflight. Commit-addressed per-action materialisation is the remaining
+  boundary, tracked in #5.
 
 The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
 dependency-free `ingest-input` CLI. It takes a stable regular-file snapshot,

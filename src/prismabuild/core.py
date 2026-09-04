@@ -41,6 +41,8 @@ CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
 CAS_RECEIPT_SCHEMA_V3 = "prismaquant.prismabuild.cas_receipt.v3"
 WORKER_ATTESTATION_SCHEMA_V2 = "prismaquant.prismabuild.worker_attestation.v2"
 WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
+PBRUN_STAMP_PREFIX = ".pbrun-closure."
+PBRUN_RESULT_PREFIX = "pbrun_result."
 LOCAL_RESULT_CLAIM_SCHEMA_V1 = "prismaquant.prismabuild.local_result_claim.v1"
 INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1 = (
     "prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1"
@@ -1145,6 +1147,112 @@ def verify_code_closure(value: object, root: str | Path) -> dict[str, object]:
             "live code closure differs from the action-pinned closure"
         )
     return expected
+
+
+def git_checkout_identity(root: str | Path) -> dict[str, str]:
+    """Return pbrun's canonical commit-plus-working-tree identity.
+
+    The submitter and the trusted worker must call this same implementation.
+    Hashing a JSON file that merely *claims* this identity does not bind the
+    tree: a queued or retried action can otherwise execute whatever bytes the
+    checkout contains when a worker eventually claims it.
+
+    A plain directory remains representable as ``no-git`` for the legacy
+    path-addressed pbrun mode. Commit-addressed materialisation is responsible
+    for refusing that mode when portability is requested.
+    """
+
+    checkout = Path(root)
+
+    def _git(*args: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(checkout), *args],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return completed.stdout if completed.returncode == 0 else ""
+        except Exception:  # noqa: BLE001 - identity is total for legacy no-git mode
+            return ""
+
+    head = _git("rev-parse", "HEAD").strip() or "no-git"
+    # ``--untracked-files=all`` is material: plain porcelain abbreviates a
+    # whole new tree as ``?? directory/``. The former implementation skipped
+    # directory entries, so editing ``directory/campaign.py`` did not move the
+    # action key at all.
+    porcelain = "\n".join(
+        line
+        for line in _git(
+            "status", "--porcelain", "--untracked-files=all"
+        ).splitlines()
+        if PBRUN_STAMP_PREFIX not in line and PBRUN_RESULT_PREFIX not in line
+    )
+    untracked: list[str] = []
+    for line in porcelain.splitlines():
+        if not line.startswith("?? "):
+            continue
+        member = checkout / line[3:].strip().strip('"')
+        if member.is_dir() or not member.exists():
+            continue
+        try:
+            digest = hashlib.sha256()
+            with member.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(chunk)
+            untracked.append(f"{line[3:]}:{digest.hexdigest()}")
+        except OSError:
+            untracked.append(f"{line[3:]}:unreadable")
+    dirty = porcelain + _git("diff", "HEAD") + "\n".join(sorted(untracked))
+    return {
+        "head": head,
+        "dirty_sha256": hashlib.sha256(dirty.encode()).hexdigest(),
+    }
+
+
+def _verify_pbrun_checkout_identity(
+    action: Mapping[str, object], root: Path
+) -> None:
+    """Verify the live Git semantics claimed by a pbrun closure stamp."""
+
+    task = action["task"]
+    assert isinstance(task, Mapping)
+    if task["definition_id"] != "fleet/pbrun":
+        return
+    closure = action["code_closure"]
+    assert isinstance(closure, Mapping)
+    raw_files = closure["files"]
+    assert isinstance(raw_files, list)
+    stamps = [
+        str(entry["path"])
+        for entry in raw_files
+        if isinstance(entry, Mapping)
+        and Path(str(entry["path"])).name.startswith(PBRUN_STAMP_PREFIX)
+    ]
+    if len(stamps) != 1:
+        raise ActionContractError(
+            "fleet/pbrun code closure must contain exactly one pbrun stamp"
+        )
+    raw = _read_regular_file_nofollow(
+        root / stamps[0], where="pbrun checkout identity stamp", max_bytes=4096
+    )
+    stamp = _exact_mapping(
+        _decode_strict_json(raw, where="pbrun checkout identity stamp"),
+        keys=frozenset({"cwd", "head", "dirty_sha256"}),
+        where="pbrun checkout identity stamp",
+    )
+    recorded = {
+        "head": _text(stamp["head"], where="pbrun checkout identity stamp.head"),
+        "dirty_sha256": _sha256(
+            stamp["dirty_sha256"],
+            where="pbrun checkout identity stamp.dirty_sha256",
+        ),
+    }
+    _text(stamp["cwd"], where="pbrun checkout identity stamp.cwd")
+    if git_checkout_identity(root) != recorded:
+        raise ActionContractError(
+            "live pbrun checkout identity differs from its sealed stamp"
+        )
 
 
 def _normalize_inputs(value: object) -> list[dict[str, object]]:
@@ -2256,6 +2364,7 @@ def preflight_action(
     if not root.is_absolute():
         _fail("checkout_root must be absolute")
     verify_code_closure(normalized["code_closure"], root)
+    _verify_pbrun_checkout_identity(normalized, root)
     evidence = _collect_worker_evidence()
     scope = normalized["execution_scope"]
     assert isinstance(scope, Mapping)
@@ -4343,6 +4452,8 @@ __all__ = [
     "INITIAL_MISS_RENDEZVOUS_READY_SCHEMA_V1",
     "INITIAL_MISS_RENDEZVOUS_RECEIPT_SCHEMA_V1",
     "LOCAL_RESULT_CLAIM_SCHEMA_V1",
+    "PBRUN_RESULT_PREFIX",
+    "PBRUN_STAMP_PREFIX",
     "WORKER_ATTESTATION_SCHEMA_V2",
     "WORKER_RUNTIME_SCHEMA_V1",
     "ActionContractError",
@@ -4355,6 +4466,7 @@ __all__ = [
     "PrismaBuildError",
     "build_code_closure",
     "executable_toolchain_contract",
+    "git_checkout_identity",
     "identify_executable",
     "main",
     "preflight_action",

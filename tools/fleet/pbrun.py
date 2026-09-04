@@ -97,7 +97,10 @@ def published_commit() -> str:
 #: whatever a neighbouring shard did).  Hence "live code closure differs from
 #: the action-pinned closure", ten of them in one fan-out.  Atomic writing
 #: fixes torn reads and does nothing for this; separate files fix both.
-STAMP_PREFIX = ".pbrun-closure."
+# Keep ``--help`` usable while a coherent runtime publication is rolling from
+# an older core to this pbrun. A real submission still calls the new shared
+# identity function below and therefore fails closed rather than mixing rules.
+STAMP_PREFIX = getattr(pb, "PBRUN_STAMP_PREFIX", ".pbrun-closure.")
 #: Every action tees its output to a file inside the checkout, and the
 #: worker refuses to start when that file already exists.  A fixed name
 #: therefore lets the first submit from a tree poison every later one:
@@ -106,68 +109,16 @@ STAMP_PREFIX = ".pbrun-closure."
 #: from what distinguishes the action, so two different commands get two
 #: files while a resubmit of the same command still lands on the same
 #: name and stays a CAS hit.
-RESULT_PREFIX = "pbrun_result."
+RESULT_PREFIX = getattr(pb, "PBRUN_RESULT_PREFIX", "pbrun_result.")
 CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 CONTAINER_WRAPPER_DIR = RUNTIME_ROOT / "tools"
 
 
 def _git_identity(cwd: Path) -> dict[str, str]:
-    """Commit plus a digest of the working-tree delta.  Never raises."""
+    """Commit plus a digest of the working-tree delta. Never raises."""
 
-    def _git(*args: str) -> str:
-        try:
-            out = subprocess.run(
-                ["git", "-C", str(cwd), *args],
-                capture_output=True, text=True, timeout=30,
-            )
-            return out.stdout if out.returncode == 0 else ""
-        except Exception:                                    # noqa: BLE001
-            return ""
-
-    head = _git("rev-parse", "HEAD").strip() or "no-git"
-    # Content of the delta, not just its file list: a re-edit that restores
-    # the same bytes is the same action, and a one-character change is not.
-    # The stamp itself is filtered out: it is written into this tree by the
-    # submit that is computing this very digest.  So are the result logs: a
-    # leftover one is output *about* a previous action, not a change to the
-    # code this action runs, and leaving it in moved the key on every submit
-    # after the first -- a cache miss dressed up as a different action.
-    porcelain = "\n".join(
-        line for line in _git("status", "--porcelain").splitlines()
-        if STAMP_PREFIX not in line and RESULT_PREFIX not in line
-    )
-    # `git diff HEAD` covers tracked edits.  It says nothing about an
-    # UNTRACKED file, whose name appears in porcelain as "?? path" while its
-    # bytes appear nowhere -- so editing an untracked script left the action
-    # key unmoved and the CAS replayed the previous run's stdout.  That failure
-    # is invisible from the outside: a stale result is indistinguishable from a
-    # fresh one unless you notice the traceback points at a line the file no
-    # longer has, which is exactly how it was caught.
-    untracked = []
-    for line in porcelain.splitlines():
-        if not line.startswith("?? "):
-            continue
-        member = cwd / line[3:].strip().strip('"')
-        if member.is_dir() or not member.exists():
-            continue                 # a directory entry is expanded by git itself
-        try:
-            untracked.append(f"{line[3:]}:{_sha256_file(member)}")
-        except OSError:
-            untracked.append(f"{line[3:]}:unreadable")
-    dirty = porcelain + _git("diff", "HEAD") + "\n".join(sorted(untracked))
-    return {
-        "head": head,
-        "dirty_sha256": hashlib.sha256(dirty.encode()).hexdigest(),
-    }
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return pb.git_checkout_identity(cwd)
 
 
 def _parse_demand(text: str) -> dict[str, int]:

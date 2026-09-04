@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -14,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 # beside its own entry point at the front of ``sys.path`` so a live submitter
 # binds one published generation.  Binding the checkout's package first keeps
 # this direct module-load test self-contained too.
+from prismabuild import core as core_module  # noqa: E402
 from prismabuild import pool as pool_module  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -23,6 +26,59 @@ pbrun = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(pbrun)                       # type: ignore[union-attr]
 
 HOST = "sparky"
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True,
+        check=False,
+    )
+
+
+def _git_checkout(tmp_path: Path) -> Path:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    assert _git(checkout, "init", "-q").returncode == 0
+    assert _git(checkout, "config", "user.email", "test@example.invalid").returncode == 0
+    assert _git(checkout, "config", "user.name", "PrismaBuild test").returncode == 0
+    (checkout / "task.py").write_text("VALUE = 'sealed'\n")
+    assert _git(checkout, "add", "task.py").returncode == 0
+    assert _git(checkout, "commit", "-qm", "sealed tree").returncode == 0
+    return checkout
+
+
+def _sealed_pbrun_action(checkout: Path, stamp_name: str) -> dict[str, object]:
+    return core_module.seal_action(
+        {
+            "schema": core_module.ACTION_SCHEMA_V2,
+            "task": {
+                "definition_id": "fleet/pbrun",
+                "definition_version": "v1",
+                "task_class": "generation",
+                "determinism": "stochastic",
+                "artifact_family": "generic",
+                "artifact_kind": "generic",
+                "argv": ["/bin/true"],
+                "working_directory": ".",
+                "result_path": "result.txt",
+            },
+            "inputs": [],
+            "code_closure": core_module.build_code_closure(
+                checkout, [stamp_name]
+            ),
+            "params": {
+                "command": ["/bin/true"],
+                "cwd": str(checkout),
+                "demand": {"cpu": 1},
+            },
+            "environment": {"variables": {}, "toolchain": {}},
+            "execution_scope": {
+                "portability": "portable",
+                "platform_key": None,
+                "host_class": None,
+            },
+        }
+    )
 
 
 def _tags(cwd: str, **kw: object) -> list[str]:
@@ -111,6 +167,54 @@ def test_the_result_and_stamp_names_move_with_the_commit(tmp_path, monkeypatch):
             ["pytest", "-q"], tmp_path, {"cpu": 1}, {"LANG": "C.UTF-8"}))
     assert names[0] != names[1], "two commits shared one result path"
     assert names[0] == names[2], "the same commit must still dedup"
+
+
+def test_pbrun_preflight_refuses_checkout_drift_after_sealing(tmp_path) -> None:
+    """The worker must verify what the stamp says, not only the stamp bytes.
+
+    A retry of Tessera action ``6c90ba1b`` kept its original stamp while the
+    checkout advanced, then executed and published under the old action key.
+    This is that race without a queue: seal, change a tracked source file, and
+    ask the trusted worker preflight whether it may launch the argv.
+    """
+
+    checkout = _git_checkout(tmp_path)
+    stamp_name = f"{pbrun.STAMP_PREFIX}test.json"
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
+    )
+    action = _sealed_pbrun_action(checkout, stamp_name)
+
+    (checkout / "task.py").write_text("VALUE = 'changed after seal'\n")
+
+    with pytest.raises(
+        core_module.ActionContractError,
+        match="live pbrun checkout identity differs from its sealed stamp",
+    ):
+        core_module.preflight_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+
+def test_pbrun_identity_includes_bytes_below_an_untracked_directory(tmp_path) -> None:
+    """Git abbreviates an untracked tree as ``?? directory/`` by default.
+
+    The old identity skipped directory entries on the mistaken premise that
+    porcelain expands them, so changing an untracked helper below one left the
+    action key unchanged. The identity must move with the helper's bytes.
+    """
+
+    checkout = _git_checkout(tmp_path)
+    helper = checkout / "experiments" / "campaign.py"
+    helper.parent.mkdir()
+    helper.write_text("print('first')\n")
+    before = pbrun._git_identity(checkout)
+
+    helper.write_text("print('second')\n")
+
+    assert pbrun._git_identity(checkout) != before
 
 
 def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> None:
