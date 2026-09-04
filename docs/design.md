@@ -140,6 +140,13 @@ matters). Rules:
   including a derived hostname pin. The normalized constraint moves the action
   key, result/stamp fingerprint, and container owner. CLI spelling, order, and
   duplicate tags do not; changing the admissible worker population does.
+- **Container ownership is complete pre-owner action identity** — the Docker
+  owner is a versioned digest of the normalized command, logical checkout and
+  checkout identity, demand, environment (including the deployed wrapper),
+  placement, task determinism, retry policy, and marker namespace. The owner
+  and marker variables themselves are the only recursive exclusions. Exact
+  repeats therefore share an owner, while every supported semantic distinction
+  that moves the `pbrun` action key moves the cleanup namespace too.
 - Re-enqueue of an existing verified key is a tested cache-hit no-op. A future
   speculative policy could build on that property, but no such enqueueing or
   superseded-key scheduler exists yet.

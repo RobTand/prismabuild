@@ -102,7 +102,12 @@ into retryable work.
 Container work is part of that reservation even after Docker reparents it away
 from the action's process group. `pbrun` seals a derived owner id and places a
 Docker shim first on `PATH`; the shim labels created containers and marks that
-the Docker lifecycle was entered. Finish, withdrawal and stale reaping remove
+the Docker lifecycle was entered. The owner hashes one versioned pre-owner
+identity containing the normalized command, checkout, demand, environment,
+placement, determinism, retry policy, marker namespace, and deployed wrapper
+path. Only the recursively derived owner and marker variables are excluded, so
+an exact repeat keeps its owner while any supported semantic action distinction
+moves it. Finish, withdrawal and stale reaping remove
 and re-query those labels on the claiming host before returning tokens. A
 remote check, a still-running create transaction, or a Docker error leaves the
 claim and its capacity held rather than admitting work on top of an unverified

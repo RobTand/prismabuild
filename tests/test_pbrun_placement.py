@@ -330,9 +330,15 @@ def test_portable_submission_identity_ignores_the_source_checkout_path() -> None
     assert first == second
     assert pbrun.container_owner(
         command, Path("/home/rob/tmp/first"), demand, variables,
+        determinism="stochastic",
+        retry_policy={"max_attempts": 1, "retry_safe": False},
+        marker_root="/mnt/shared/prismabuild-fleet/pb-queue/container-owners",
         identity=identity, logical_cwd=".",
     ) == pbrun.container_owner(
         command, Path("/mnt/shared/second"), demand, variables,
+        determinism="stochastic",
+        retry_policy={"max_attempts": 1, "retry_safe": False},
+        marker_root="/mnt/shared/prismabuild-fleet/pb-queue/container-owners",
         identity=identity, logical_cwd=".",
     )
 
@@ -393,6 +399,73 @@ def test_effective_placement_is_normalized_into_action_identity(
     results = [action["task"]["result_path"] for action in sealed]
     assert results[0] == results[1]
     assert results[0] != results[2]
+
+
+def test_container_owner_tracks_every_pre_owner_semantic_distinction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Distinct actions cannot share one Docker cleanup namespace."""
+
+    checkout = _git_checkout(tmp_path)
+    fleet = tmp_path / "fleet"
+    sealed: list[dict[str, object]] = []
+    real_seal = core_module.seal_action
+
+    class StopAfterSeal(Exception):
+        pass
+
+    def capture(body):
+        sealed.append(real_seal(body))
+        raise StopAfterSeal
+
+    monkeypatch.setattr(pbrun.pb, "seal_action", capture)
+    monkeypatch.setattr(pbrun, "SH", fleet)
+    monkeypatch.setattr(
+        pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
+    )
+
+    policies = [
+        [],
+        [],  # exact repeat
+        ["--deterministic"],
+        ["--retry-safe"],
+        ["--retry-safe", "--max-attempts", "2"],
+        ["--retry-safe", "--max-attempts", "3"],
+    ]
+    for policy in policies:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["pbrun.py", "--cwd", str(checkout), "--wait-s", "0", *policy,
+             "--", "true"],
+        )
+        with pytest.raises(StopAfterSeal):
+            pbrun.main()
+
+    # Runtime publication changes the wrapper path sealed in both argv and
+    # PATH. A still-running action from the prior runtime must keep a distinct
+    # cleanup namespace during that overlap window.
+    monkeypatch.setattr(
+        pbrun, "CONTAINER_WRAPPER_DIR", fleet / "next-runtime" / "tools"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["pbrun.py", "--cwd", str(checkout), "--wait-s", "0", "--", "true"],
+    )
+    with pytest.raises(StopAfterSeal):
+        pbrun.main()
+
+    keys = [str(action["action_key"]) for action in sealed]
+    owners = [
+        str(action["environment"]["variables"]["PRISMABUILD_CONTAINER_OWNER"])
+        for action in sealed
+    ]
+    assert keys[0] == keys[1] and owners[0] == owners[1]
+    assert len(set(keys)) == len(sealed) - 1
+    assert len(set(owners)) == len(sealed) - 1, (
+        "an action-key semantic distinction shared a Docker cleanup owner"
+    )
 
 
 def test_pbrun_preflight_refuses_checkout_drift_after_sealing(tmp_path) -> None:
