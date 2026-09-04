@@ -111,8 +111,22 @@ def main():
             pass
 
     queue = pool.PoolQueue(SH / "pb-queue")
-    if args.honest_memory:
-        queue.ledger().retire_free_capacity({"mem_gb": capacity["mem_gb"]})
+    # Every kind, every start -- not just memory, and not just under a flag.
+    #
+    # ``ensure_capacity`` is increase-only by design, and it runs on every
+    # claim attempt, so a ledger only ever remembers the LARGEST capacity any
+    # worker ever declared for this box.  The offer file is last-writer-wins
+    # and had fallen; the tokens had not.  Measured on the live fleet
+    # 2026-09-04: sparklina offered ``gpu: 1`` with FOUR free gpu tokens and
+    # three worker processes able to claim against them, and dl380g10 offered
+    # 60 GB with 180 tokens.  Admission is by token, placement is by offer, so
+    # the box was one busy night away from admitting three GPU actions to a
+    # one-slot box -- which is how sparklina went down on 2026-09-03.
+    #
+    # Retiring is safe to do bluntly: it deletes FREE tokens only, so a
+    # running action never loses the reservation it is executing under, and
+    # the total falls the rest of the way as holders finish.
+    queue.ledger().retire_free_capacity(capacity)
     host = socket.gethostname()
     # A box offers its own hostname as well as its class.  Item tags must be a
     # subset of the worker's, so without this an action pinned to one box --

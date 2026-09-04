@@ -319,7 +319,21 @@ class ResourceLedger:
             )
             # Never retire below what is already held: those tokens exist.
             excess = max(0, len(free) + held - target)
-            for token in free[:excess] if excess else []:
+            # Retire the HIGHEST-indexed free tokens, not the lowest.
+            #
+            # ``ensure_capacity`` runs on every claim attempt and fills the
+            # slots ``kind-0000 .. kind-{target-1}``, so a retire that ate the
+            # low names left a hole the next poll re-minted: a ledger dropped
+            # from 96 GB to 40 kept 8 high tokens, and eight of the forty slots
+            # below them came straight back.  Measured, not reasoned: gpu 4 ->
+            # 1 settled at 2, mem 96 -> 40 settled at 48.  Retiring downward
+            # leaves a contiguous prefix, which is exactly the set
+            # ``ensure_capacity`` then finds already present.
+            #
+            # A holder sitting on a high index still causes a partial re-mint,
+            # and that is the documented behaviour: the total falls the rest of
+            # the way as holders finish and their tokens are not re-created.
+            for token in sorted(free, reverse=True)[:excess] if excess else []:
                 try:
                     token.unlink()
                     retired[kind] = retired.get(kind, 0) + 1
