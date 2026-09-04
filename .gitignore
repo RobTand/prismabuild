@@ -1,2 +1,13 @@
 __pycache__/
 *.pyc
+
+# pbrun writes these into whatever tree it submits from.  They are ignored
+# here, in the tracked file, rather than in one checkout's .git/info/exclude,
+# because the damage is done by whoever's checkout lacks the rule: an
+# untracked stamp is filtered out of the action key by name (pbrun.py's
+# _git_identity), but a *committed* one is not -- `git diff HEAD` is appended
+# to the digest unfiltered, so a tracked stamp moves the key on every submit,
+# which is the "cache miss dressed up as a different action" that filter
+# exists to prevent.  One `git add -A` from a shared checkout re-opens it.
+.pbrun-closure.*
+pbrun_result.*
