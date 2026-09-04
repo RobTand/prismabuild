@@ -72,9 +72,20 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import core as pb, pool  # noqa: E402
+from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 POLL_S = 5.0
+#: Which transport carries a submission.  The pull queue is still the default:
+#: SLURM is installed box by box, and the day a controller comes up is not the
+#: day every agent's ``pbrun`` should start talking to it.  Cutover is one
+#: environment variable, and rollback is unsetting it -- the pool path below is
+#: untouched by any of this.
+TRANSPORTS = ("pool", "slurm")
+DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
+#: What ``pbrun`` exits with when it stopped waiting before the work finished.
+#: The pool path already spells it this way; the SLURM path means the same
+#: thing by it, and in both cases the work is still running.
+GAVE_UP_EXIT = 75
 # An arbitrary command can write state outside its declared CAS result before
 # a later check fails.  Retrying that command is never implied by numerical
 # determinism; the producer must opt the whole action into a larger bound.
@@ -1250,6 +1261,158 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
     return 1
 
 
+def slurm_outcome(
+    action,
+    *,
+    cas,
+    request_path,
+    tags: list[str],
+    demand: dict,
+    exclusive: bool,
+    timeout_s: float,
+    wait_s: float,
+    retry_safe: bool,
+    max_attempts: int,
+    runtime_root: Path = RUNTIME_ROOT,
+    lane_root=None,
+    **lane_commands,
+) -> int:
+    """Run one sealed action through SLURM and report it the way the pool does.
+
+    The user-facing contract is this transport's whole point of contact: an
+    agent that submits with ``--transport slurm`` must read the same lines and
+    get the same exit codes it got from the queue, or the cutover is a change
+    to every caller rather than a change to one dispatcher.
+
+    So the verdict comes from the CAS, not from ``sbatch``.  A receipt means
+    the work was done -- whatever the job's exit status said afterwards -- and
+    no receipt means it was not, even from a job that exited zero.  That is the
+    rule ``PoolQueue.finish`` already applies; only the machinery underneath it
+    differs.
+    """
+
+    key = str(action["action_key"])
+    resources = slurm_lane.LaneResources.from_demand(demand, exclusive=exclusive)
+    result = slurm_lane.run(
+        action,
+        cas=cas,
+        request_path=request_path,
+        placement=tags,
+        resources=resources,
+        timeout_s=timeout_s,
+        worker_script=runtime_root / "tools" / "prismabuild_worker.py",
+        job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
+        retry_safe=retry_safe,
+        max_attempts=max_attempts,
+        root=lane_root,
+        wait_s=wait_s,
+        on_submit=lambda job: print(
+            f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
+            f"(attempt {job.attempt}) tags={tags} demand={demand}",
+            file=sys.stderr, flush=True),
+        **lane_commands,
+    )
+
+    last = result.last
+    if last is None:                       # unreachable: run always submits
+        print("pbrun: nothing was submitted", file=sys.stderr)
+        return 1
+    job, outcome = last
+    total = len(result.attempts)
+    for index, (attempted, reported) in enumerate(result.attempts, start=1):
+        print(f"pbrun: attempt {index}/{total} slurm job {attempted.job_id} "
+              f"{reported.state}", file=sys.stderr)
+        _echo(attempted.stdout_path, sys.stdout)
+        _echo(attempted.stderr_path, sys.stderr)
+
+    if result.receipt is not None:
+        print(f"pbrun: executed via slurm job {job.job_id} ({outcome.state})",
+              file=sys.stderr)
+        return 0
+    if outcome.state == "CANCELLED":
+        print(f"pbrun: withdrawn -- slurm job {job.job_id} was cancelled",
+              file=sys.stderr)
+        return WITHDRAWN_EXIT
+    if outcome.state == slurm_lane.WAIT_TIMEOUT_STATE:
+        print(f"pbrun: gave up waiting for {key[:12]}; slurm job "
+              f"{job.job_id} is still queued or running "
+              f"(pbrun --transport slurm --withdraw {key[:12]} stops it)",
+              file=sys.stderr)
+        return GAVE_UP_EXIT
+    # Say the thing that is actually wrong.  A job that exits zero without
+    # publishing a receipt has not done the work, and reporting its status
+    # would report success for an action nothing can look up.
+    if outcome.exit_code == 0:
+        print(f"pbrun: slurm job {job.job_id} exited 0 but published no "
+              f"receipt for {key[:12]}; see {job.stdout_path} and "
+              f"{job.stderr_path}", file=sys.stderr)
+        return 1
+    print(f"pbrun: failed ({outcome.state}) after {total} attempt(s); "
+          f"logs {job.stdout_path} and {job.stderr_path}", file=sys.stderr)
+    if isinstance(outcome.exit_code, int) and outcome.exit_code:
+        return outcome.exit_code
+    return 1
+
+
+def _echo(path, stream) -> None:
+    """Print a job log if it is there, and say nothing when it is not.
+
+    An absent log is normal -- a job cancelled before it started never opened
+    one -- and turning that into an error would replace the reason the action
+    failed with a complaint about the file that would have explained it.
+    """
+
+    try:
+        stream.write(Path(path).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return
+
+
+def withdraw_slurm_main(
+    prefixes, *, reason: str = "", by: str = "", lane_root=None,
+    scancel: str = "scancel",
+) -> int:
+    """Cancel each named action's recorded job, refusing an ambiguous prefix.
+
+    Same shape as the pool's withdrawal and for the same reasons: a prefix is
+    what an operator has, one bad name must not stop the other three, and a
+    prefix matching two actions is refused rather than guessed -- the wrong
+    guess here kills somebody else's work.
+
+    There is no ``withdrawn/`` marker to file.  Under SLURM the cancellation IS
+    the record: ``scancel`` puts the job in ``CANCELLED``, the lane maps that to
+    the same exit status the pool's marker produces, and the Epilog still
+    removes the action's containers and its materialized tree.
+    """
+
+    rc = 0
+    for prefix in prefixes:
+        found = slurm_lane.resolve_recorded(str(prefix), root=lane_root)
+        if not found:
+            print(f"pbrun: no slurm submission matches {prefix!r}",
+                  file=sys.stderr)
+            rc = 2
+            continue
+        if len(found) > 1:
+            keys = ", ".join(sorted(str(r["action_key"])[:12] for r in found))
+            print(f"pbrun: {prefix!r} matches {len(found)} submissions "
+                  f"({keys}); name more characters", file=sys.stderr)
+            rc = 2
+            continue
+        record = found[0]
+        key = str(record["action_key"])
+        job_id = str(record["job_id"])
+        if slurm_lane.cancel(job_id, scancel=scancel):
+            why = f" -- {reason}" if reason else ""
+            print(f"pbrun: cancelled slurm job {job_id} for {key[:12]}"
+                  f" by {by or 'an operator'}{why}", file=sys.stderr)
+        else:
+            print(f"pbrun: scancel refused slurm job {job_id} for {key[:12]}; "
+                  f"it may already have finished", file=sys.stderr)
+            rc = 2
+    return rc
+
+
 def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
     """Withdraw each named action and say what happened to it.
 
@@ -1376,7 +1539,14 @@ def main() -> int:
         help=("bounded attempts for a --retry-safe action; arbitrary commands "
               "default to one"),
     )
-    ap.add_argument("--timeout-s", type=float, default=7200.0)
+    # Honoured on the SLURM path, where it becomes --time and the scheduler
+    # enforces it (TERM, then KILL after KillWait).  On the pool path it is
+    # still only parsed: the worker loop's own --timeout-s bounds an action
+    # there, and a submitter-declared bound has nowhere to be recorded.  See
+    # issue #32; the SLURM lane is the half of it that this closes.
+    ap.add_argument("--timeout-s", type=float, default=7200.0,
+                    help="wall-clock limit for the action itself; enforced by "
+                         "SLURM under --transport slurm")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument("--priority", type=int, default=0)
@@ -1389,6 +1559,12 @@ def main() -> int:
                          "enough) instead of submitting; repeatable")
     ap.add_argument("--reason", default="",
                     help="why, recorded on the withdrawal record")
+    ap.add_argument(
+        "--transport", choices=TRANSPORTS,
+        default=os.environ.get(DEFAULT_TRANSPORT_ENV) or "pool",
+        help="which dispatcher carries this submission (env "
+             "PRISMABUILD_TRANSPORT); the pull queue stays the default until "
+             "the fleet has cut over to SLURM")
     ap.add_argument("command", nargs=argparse.REMAINDER)
     args = ap.parse_args()
 
@@ -1402,6 +1578,11 @@ def main() -> int:
             who = getpass.getuser()
         except Exception:                                        # noqa: BLE001
             who = "unknown"      # no passwd entry is not a reason to refuse
+        if args.transport == "slurm":
+            return withdraw_slurm_main(
+                args.withdraw, reason=args.reason,
+                by=f"{who}@{socket.gethostname()}",
+            )
         return withdraw_main(
             pool.PoolQueue(SH / "pb-queue"), args.withdraw,
             reason=args.reason, by=f"{who}@{socket.gethostname()}",
@@ -1525,7 +1706,14 @@ def main() -> int:
         )
     )
     placement = {"required_tags": tags}
-    if args.exclusive:
+    if args.exclusive and args.transport == "slurm":
+        # SLURM already has a word for the whole device.  ``gpu:1`` and
+        # ``shard:N`` are mutually exclusive requests against one GPU, so
+        # exclusivity is a different GRES name rather than a bigger count, and
+        # the count the pool had to read off worker offers is not needed.
+        demand["gpu"] = args.gpu_capacity or 1
+        demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
+    elif args.exclusive:
         # "All of one box" is a fact about the boxes, and guessing it does not
         # fail loudly -- it fails as an action nobody can ever claim.  The
         # default was 4 while sparky declares 2 and sparklina 1, so every
@@ -1696,7 +1884,29 @@ def main() -> int:
     action = pb.seal_action(body)
     key = str(action["action_key"])
 
-    cas.publish_action_request(action)
+    request_path = cas.publish_action_request(action)
+
+    if args.transport == "slurm":
+        # Everything below this point reads the pull queue -- worker offers,
+        # the placement census, the ready directory -- and none of it describes
+        # a SLURM fleet.  Worse, it would answer *wrongly*: a retained offer
+        # from a loop that has been stopped for the cutover would refuse a
+        # submission the scheduler can place perfectly well.  The capability
+        # check SLURM keeps is its own: an unknown Feature or an impossible
+        # GRES makes ``sbatch`` refuse at submit time, which is the same moment
+        # and the same intent as ``capability_verdict`` below.
+        return slurm_outcome(
+            action,
+            cas=cas,
+            request_path=request_path,
+            tags=tags,
+            demand=demand,
+            exclusive=args.exclusive,
+            timeout_s=args.timeout_s,
+            wait_s=args.wait_s,
+            retry_safe=args.retry_safe,
+            max_attempts=args.max_attempts,
+        )
 
     q = pool.PoolQueue(SH / "pb-queue")
 
