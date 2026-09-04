@@ -1152,6 +1152,40 @@ def test_a_malformed_snapshot_ref_refuses_by_name(
         pbrun.main()
 
 
+def test_git_snapshot_bounds_a_bundle_its_history_made_large(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compressed-bundle ceiling now measures ancestry, not just the tree.
+
+    Before the snapshot carried a parent, the bundle was roughly the
+    compressed working tree, so the two tree-side bounds covered it by
+    proxy.  A small tree over a heavy history is a new way to exceed the
+    limit -- and the limit, not the design, is what has to keep saying no.
+    """
+
+    checkout = _git_checkout(tmp_path)
+    heavy = checkout / "deleted-later.bin"
+    heavy.write_bytes(os.urandom(512 * 1024))
+    assert _git(checkout, "add", "deleted-later.bin").returncode == 0
+    assert _git(checkout, "commit", "-qm", "heavy history").returncode == 0
+    assert _git(checkout, "rm", "-q", "deleted-later.bin").returncode == 0
+    assert _git(checkout, "commit", "-qm", "small tree again").returncode == 0
+    stamp_name = f"{pbrun.STAMP_PREFIX}bundle-size-test.json"
+    _stamped(checkout, stamp_name)
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    # Both tree-side bounds pass on this checkout; the bundle bound is the
+    # only thing between a heavy history and CAS ingestion.
+    monkeypatch.setattr(pbrun, "require_working_tree_size", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        pbrun, "require_supported_snapshot_tree", lambda *_a, **_k: None
+    )
+    with pytest.raises(SystemExit, match="above the .* safety limit"):
+        pbrun.build_git_checkout_snapshot(
+            checkout, stamp_name=stamp_name, cas=cas, max_bytes=64 * 1024
+        )
+
+
 def test_git_snapshot_refuses_a_shallow_source_by_name(tmp_path: Path) -> None:
     """Ancestry a source does not have cannot be sealed into a bundle.
 
