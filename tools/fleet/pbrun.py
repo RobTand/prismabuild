@@ -116,9 +116,12 @@ CONTAINER_WRAPPER_DIR = RUNTIME_ROOT / "tools"
 
 
 def _git_identity(cwd: Path) -> dict[str, str]:
-    """Commit plus a digest of the working-tree delta. Never raises."""
+    """Commit plus a digest of the working-tree delta, or a named refusal."""
 
-    return pb.git_checkout_identity(cwd)
+    try:
+        return pb.git_checkout_identity(cwd)
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: cannot identify checkout: {exc}") from None
 
 
 def _parse_demand(text: str) -> dict[str, int]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -252,6 +253,75 @@ def test_pbrun_identity_hashes_symlink_text_not_target_contents(tmp_path) -> Non
     link.symlink_to("../outside-b.py")
 
     assert pbrun._git_identity(checkout) != before
+
+
+def test_pbrun_identity_refuses_an_untracked_fifo_without_opening_it(
+    tmp_path: Path,
+) -> None:
+    """A special inode is neither stable payload bytes nor safe to open."""
+
+    checkout = _git_checkout(tmp_path)
+    os.mkfifo(checkout / "blocked.pipe")
+    repository_root = Path(__file__).resolve().parents[1]
+    program = """
+from prismabuild import core
+import sys
+try:
+    core.git_checkout_identity(sys.argv[1])
+except core.ActionContractError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(2)
+raise SystemExit('accepted an untracked FIFO')
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", program, str(checkout)],
+        capture_output=True,
+        text=True,
+        timeout=1,
+        env={**os.environ, "PYTHONPATH": str(repository_root / "src")},
+    )
+
+    assert completed.returncode == 2
+    assert "unsupported file type" in completed.stderr
+
+
+def test_pbrun_reports_an_unsupported_identity_without_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = _git_checkout(tmp_path)
+
+    def refuse(_root):
+        raise core_module.ActionContractError("unsupported file type: 'socket'")
+
+    monkeypatch.setattr(core_module, "git_checkout_identity", refuse)
+    with pytest.raises(SystemExit, match="unsupported file type"):
+        pbrun._git_identity(checkout)
+
+
+def test_pbrun_identity_prunes_git_ignored_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The special-file scan must not descend into excluded cache trees."""
+
+    checkout = _git_checkout(tmp_path)
+    (checkout / ".gitignore").write_text("ignored-cache/\n")
+    assert _git(checkout, "add", ".gitignore").returncode == 0
+    assert _git(checkout, "commit", "-qm", "ignore generated cache").returncode == 0
+    ignored = checkout / "ignored-cache"
+    ignored.mkdir()
+    os.mkfifo(ignored / "worker.pipe")
+    visited: list[Path] = []
+    real_scandir = os.scandir
+
+    def observed_scandir(path):
+        visited.append(Path(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(core_module.os, "scandir", observed_scandir)
+    pbrun._git_identity(checkout)
+
+    assert checkout in visited
+    assert ignored not in visited
 
 
 def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> None:

@@ -1164,12 +1164,13 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
 
     checkout = Path(root)
 
-    def _git(*args: str) -> str:
+    def _git(*args: str, input_text: str | None = None) -> str:
         try:
             completed = subprocess.run(
                 ["git", "-C", str(checkout), *args],
                 capture_output=True,
                 text=True,
+                input=input_text,
                 timeout=30,
             )
             return completed.stdout if completed.returncode == 0 else ""
@@ -1188,6 +1189,78 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
         ).splitlines()
         if PBRUN_STAMP_PREFIX not in line and PBRUN_RESULT_PREFIX not in line
     )
+    # Git deliberately omits FIFOs, sockets, and device nodes from its
+    # untracked roster. Find those without opening them: opening a FIFO can
+    # block forever, and no special inode has stable bytes Git can transport.
+    # Prune Git-ignored directories before walking so an ignored environment
+    # or cache does not turn identity into an unrelated filesystem crawl.
+    ignored_directory_output = _git(
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "-z",
+    )
+    ignored_directories = {
+        value.rstrip("/")
+        for value in ignored_directory_output.split("\0")
+        if value.endswith("/")
+    }
+    special_paths: list[str] = []
+
+    # Use scandir directly rather than os.walk followed by a second lstat for
+    # every entry.  Identity is on pbrun's submission hot path, and DirEntry
+    # can answer the supported-kind predicates from the directory record on
+    # common filesystems while preserving fail-closed error handling.
+    pending = [checkout]
+    while pending:
+        current = pending.pop()
+        relative_directory = current.relative_to(checkout)
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    relative = (relative_directory / entry.name).as_posix()
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            if (
+                                entry.name != ".git"
+                                and relative not in ignored_directories
+                            ):
+                                pending.append(Path(entry.path))
+                            continue
+                        if entry.is_file(follow_symlinks=False):
+                            continue
+                    except OSError as exc:
+                        raise ActionContractError(
+                            "cannot inspect pbrun checkout path "
+                            f"{relative!r}: {exc}"
+                        ) from exc
+                    special_paths.append(relative)
+        except OSError as exc:
+            raise ActionContractError(
+                f"cannot inspect pbrun checkout identity: {exc}"
+            ) from exc
+    if special_paths:
+        ignored_specials = set(
+            value
+            for value in _git(
+                "check-ignore",
+                "--no-index",
+                "-z",
+                "--stdin",
+                input_text="\0".join(special_paths) + "\0",
+            ).split("\0")
+            if value
+        )
+        unsupported = sorted(set(special_paths) - ignored_specials)
+        if unsupported:
+            raise ActionContractError(
+                "pbrun checkout identity refuses untracked paths with an "
+                "unsupported file type: " + ", ".join(map(repr, unsupported))
+            )
     untracked: list[str] = []
     for line in porcelain.splitlines():
         if not line.startswith("?? "):
@@ -1201,11 +1274,16 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
             if stat.S_ISLNK(member_stat.st_mode):
                 digest.update(b"symlink\0")
                 digest.update(os.fsencode(os.readlink(member)))
-            else:
+            elif stat.S_ISREG(member_stat.st_mode):
                 digest.update(b"file\0")
                 with member.open("rb") as handle:
                     for chunk in iter(lambda: handle.read(1 << 20), b""):
                         digest.update(chunk)
+            else:
+                raise ActionContractError(
+                    "pbrun checkout identity refuses an untracked path with "
+                    f"an unsupported file type: {line[3:]!r}"
+                )
             untracked.append(f"{line[3:]}:{digest.hexdigest()}")
         except OSError:
             untracked.append(f"{line[3:]}:unreadable")
