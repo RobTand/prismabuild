@@ -64,6 +64,28 @@ receipts, attestation, and the git-bundle checkout snapshot are the same objects
 under either transport, and `slurm_job.py` materializes a snapshot through the
 same `prismabuild.materialize` code that a pull-queue worker runs.
 
+It also does not replace the queue's *records*. Eleven fleet tools and
+Tessera's `merge_suite.py` read one action's ending out of
+`pb-queue/done/<key>.json` or `pb-queue/failed/<key>.json`, and `pool_reset`
+reads `pb-queue/withdrawn/` before it re-submits anything. The pull queue writes
+those from `PoolQueue.finish`, on the worker holding the claim. Under SLURM
+there is no such worker, so the submitting `pbrun` writes them instead, into the
+same three directories, under the schema id
+`prismaquant.prismabuild.slurm_outcome.v1`. Readers that take these records by
+field name keep working across the cutover with no change; a reader that wants
+to tell a SLURM ending from a pull-queue one has the `schema` and `transport`
+fields to do it with.
+
+One gap in that arrangement is worth knowing before the cutover, because it is
+structural rather than a defect. **The submitter is the writer.** A `pbrun`
+killed mid-wait, or one whose `--wait-s` expired, files no terminal record for a
+job that ends afterwards; `finish` runs on the box doing the work and cannot
+miss it. The job's own `.out`, `.err` and submission record are all still under
+`/mnt/shared/prismabuild-fleet/slurm/<action key>/`, and the CAS receipt is
+still the authority on whether the work was done, so nothing is lost except the
+summary. Closing it would mean writing the record from the job script's exit
+trap, which cannot see the CAS verdict the record reports.
+
 Two capabilities of the pull queue have no equivalent yet:
 
 - **Aging.** `pool.py` counts denials in `passes` and lets a starved item
@@ -73,7 +95,10 @@ Two capabilities of the pull queue have no equivalent yet:
 - **`sacct`.** With `AccountingStorageType=accounting_storage/none`, `sacct`
   fails for every job. The lane tries it first anyway and falls back to
   `scontrol` and `squeue`, so deploying `slurmdbd` later is a configuration
-  change and not a code change.
+  change and not a code change. Until it is deployed, `scontrol` answers the
+  provenance the terminal record carries -- `claimed_host`, `elapsed_s`,
+  the start and end times -- and only for as long as `MinJobAge` keeps the job.
+  Past that the record files nulls in those fields rather than guesses.
 
 ## Fleet layout
 

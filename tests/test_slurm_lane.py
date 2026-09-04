@@ -98,8 +98,15 @@ record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
 if not record.exists():
     raise SystemExit(0)
 state, code = record.read_text().strip().split("|")
-print(f"{job}|{state}|{code}")
-print(f"{job}.batch|{state}|{code}")
+extra = "|".join([
+    os.environ.get("FAKE_SACCT_START", "2026-09-04T10:00:00"),
+    os.environ.get("FAKE_SACCT_END", "2026-09-04T10:00:10"),
+    os.environ.get("FAKE_SACCT_ELAPSED", "00:00:10"),
+    os.environ.get("FAKE_SACCT_NODELIST", "sparky"),
+    os.environ.get("FAKE_SACCT_PARTITION", "all"),
+])
+print(f"{job}|{state}|{code}|{extra}")
+print(f"{job}.batch|{state}|{code}|{extra}")
 '''
 
 _SCONTROL = '''\
@@ -112,7 +119,14 @@ if not record.exists():
     sys.stderr.write(f"slurm_load_jobs error: Invalid job id specified\\n")
     raise SystemExit(1)
 state, code = record.read_text().strip().split("|")
-print(f"JobId={job} JobName=pb-test JobState={state} Reason=None ExitCode={code}")
+print(
+    f"JobId={job} JobName=pb-test JobState={state} Reason=None ExitCode={code} "
+    f"StartTime={os.environ.get('FAKE_SACCT_START', '2026-09-04T10:00:00')} "
+    f"EndTime={os.environ.get('FAKE_SACCT_END', '2026-09-04T10:00:10')} "
+    f"RunTime={os.environ.get('FAKE_SACCT_ELAPSED', '00:00:10')} "
+    f"NodeList={os.environ.get('FAKE_SACCT_NODELIST', 'sparky')} "
+    f"Partition={os.environ.get('FAKE_SACCT_PARTITION', 'all')}"
+)
 '''
 
 _SQUEUE = '''\

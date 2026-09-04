@@ -1275,6 +1275,7 @@ def slurm_outcome(
     max_attempts: int,
     runtime_root: Path = RUNTIME_ROOT,
     lane_root=None,
+    queue_root=None,
     **lane_commands,
 ) -> int:
     """Run one sealed action through SLURM and report it the way the pool does.
@@ -1311,6 +1312,10 @@ def slurm_outcome(
             retry_safe=retry_safe,
             max_attempts=max_attempts,
             root=lane_root,
+            # Eleven fleet tools and Tessera's ``merge_suite`` read one action's
+            # ending out of this directory.  The lane files it there so the
+            # cutover is a change to one dispatcher and not to every reader.
+            queue_root=SH / "pb-queue" if queue_root is None else queue_root,
             wait_s=wait_s,
             on_submit=lambda job: print(
                 f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
@@ -1384,7 +1389,7 @@ def _echo(path, stream) -> None:
 
 def withdraw_slurm_main(
     prefixes, *, reason: str = "", by: str = "", lane_root=None,
-    scancel: str = "scancel",
+    queue_root=None, scancel: str = "scancel",
 ) -> int:
     """Cancel each named action's recorded job, refusing an ambiguous prefix.
 
@@ -1393,10 +1398,15 @@ def withdraw_slurm_main(
     prefix matching two actions is refused rather than guessed -- the wrong
     guess here kills somebody else's work.
 
-    There is no ``withdrawn/`` marker to file.  Under SLURM the cancellation IS
-    the record: ``scancel`` puts the job in ``CANCELLED``, the lane maps that to
-    the same exit status the pool's marker produces, and the Epilog still
-    removes the action's containers and its materialized tree.
+    The marker and the terminal record are written *before* ``scancel``, as the
+    pool writes its marker before it signals anything.  Two things depend on
+    that order.  ``pool_reset`` skips a re-submission only on a marker or a
+    ``withdrawn_unix``, so a cancellation with neither is re-submitted by the
+    next bulk reset -- a decision undone by a tool that could not see it was a
+    decision.  And the submitting ``pbrun``, still blocked in ``wait``, will
+    file its own account of the same generation the moment the job reports
+    ``CANCELLED``; whichever arrives first is kept, and this one knows who
+    asked and why, which the other cannot.
     """
 
     rc = 0
@@ -1416,6 +1426,13 @@ def withdraw_slurm_main(
         record = found[0]
         key = str(record["action_key"])
         job_id = str(record["job_id"])
+        queue = SH / "pb-queue" if queue_root is None else Path(queue_root)
+        marker = _file_slurm_withdrawal(
+            queue, record, reason=reason, by=by, scancel_command=scancel)
+        if marker is None:
+            print(f"pbrun: {key[:12]} already has an outcome filed; "
+                  f"nothing to withdraw", file=sys.stderr)
+            continue
         if slurm_lane.cancel(job_id, scancel=scancel):
             why = f" -- {reason}" if reason else ""
             print(f"pbrun: cancelled slurm job {job_id} for {key[:12]}"
@@ -1425,6 +1442,70 @@ def withdraw_slurm_main(
                   f"it may already have finished", file=sys.stderr)
             rc = 2
     return rc
+
+
+def _file_slurm_withdrawal(
+    queue_root: Path, submission, *, reason: str, by: str, scancel_command: str,
+):
+    """File the marker and the terminal record for one cancellation.
+
+    Returns ``None`` when this generation already has an outcome filed -- the
+    action finished a moment before the operator asked, which is them getting
+    what they wanted rather than them mistyping, and is what
+    ``PoolQueue.withdraw`` reports as ``already_finished``.
+    """
+
+    key = str(submission["action_key"])
+    published_unix = submission.get("published_unix")
+    if not isinstance(published_unix, (int, float)):
+        # A submission record from before the generation stamp. Withdraw it,
+        # but do not claim to know which request it belonged to.
+        published_unix = float(submission.get("submitted_unix") or 0.0)
+    for state in (pool.DONE, pool.FAILED):
+        filed = queue_root / state / f"{key}.json"
+        if filed.exists() and slurm_lane._same_generation(filed, published_unix):
+            return None
+
+    _, marker = slurm_lane.publish_withdrawal(
+        queue_root=queue_root, action_key=key, reason=reason, by=by,
+        submission=submission,
+    )
+    job_id = str(submission["job_id"])
+    directory = Path(str(submission.get("directory") or "."))
+    slurm_lane.publish_outcome(
+        queue_root=queue_root,
+        action_key=key,
+        published_unix=published_unix,
+        published_by=str(submission.get("published_by") or ""),
+        status="withdrawn",
+        attempts=int(submission.get("attempt") or 1),
+        max_attempts=int(submission.get("max_attempts") or 1),
+        retry_safe=submission.get("retry_safe"),
+        addressing={},
+        resources=submission.get("resources") or {},
+        tags=submission.get("constraint") or [],
+        detail={
+            "slurm": {
+                "job_id": job_id,
+                "state": "CANCELLED",
+                "partition": None,
+                "submission_record_path": str(
+                    directory / "submissions"
+                    / f"{int(submission.get('attempt') or 1):03d}.json"),
+                "stdout_path": str(submission.get("stdout") or ""),
+                "stderr_path": str(submission.get("stderr") or ""),
+            },
+            "cancelled_with": scancel_command,
+        },
+        # No ``SubmittedJob`` here -- this runs from the operator's box, off the
+        # recorded submission -- so the job id the readers use as ``claimed_by``
+        # is passed rather than derived.
+        claimed_by=job_id,
+        withdrawn_by=marker.get("withdrawn_by"),
+        withdrawn_unix=marker.get("withdrawn_unix"),
+        reason=str(marker.get("reason") or ""),
+    )
+    return marker
 
 
 def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
