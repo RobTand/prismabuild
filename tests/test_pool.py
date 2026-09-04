@@ -571,3 +571,38 @@ def test_reaping_a_foreign_claimant_returns_capacity_to_that_host(
     assert queue.ledger("other-box").available().get("gpu", 0) == 2
     assert queue.ledger("other-box").held_keys() == []
     assert queue.item_path(pool.READY, KEY_A).exists()
+
+
+def test_retire_free_capacity_lowers_the_offer_but_never_a_held_token(tmp_path):
+    """A box's honest offer falls when work the pool did not schedule arrives.
+
+    ``ensure_capacity`` only ever adds, so without this the ledger keeps
+    advertising the high-water mark -- a GB10 offering 96 GB while holding
+    10 GB free, which is a promise the box cannot keep rather than admission
+    control.
+    """
+
+    from prismabuild import pool
+
+    queue = pool.PoolQueue(tmp_path / "q")
+    queue.ensure_layout()
+    ledger = queue.ledger("box")
+    ledger.ensure_capacity({"mem_gb": 16, "gpu": 2})
+    assert ledger.capacity() == {"mem_gb": 16, "gpu": 2}
+
+    # Something is running under a reservation the pool granted earlier.
+    assert ledger.acquire("running-action", {"mem_gb": 6, "gpu": 1}) is True
+
+    retired = ledger.retire_free_capacity({"mem_gb": 8})
+    assert retired == {"mem_gb": 8}
+    assert ledger.capacity()["mem_gb"] == 8
+    # The running action keeps every token it is executing under.
+    assert ledger.available()["mem_gb"] == 2
+    assert "running-action" in ledger.held_keys()
+    # gpu was not named, so it is untouched.
+    assert ledger.capacity()["gpu"] == 2
+
+    # Retiring below what is already held cannot delete a held token.
+    ledger.retire_free_capacity({"mem_gb": 1})
+    assert ledger.capacity()["mem_gb"] >= 6
+    assert ledger.release("running-action") == 7

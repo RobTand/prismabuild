@@ -45,10 +45,30 @@ def main():
                     help="memory this box offers the queue, of ~121 GB total")
     ap.add_argument("--tag", action="append", default=[],
                     help="extra placement tag this box offers")
+    ap.add_argument("--honest-memory", action="store_true",
+                    help="clamp the memory offer to what the box actually has free")
     args = ap.parse_args()
     capacity = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb}
+    if args.honest_memory:
+        # The declared figure is what this box offers when the pool is the only
+        # thing on it.  While work the pool did not schedule is running, the
+        # honest offer is lower, and a ledger advertising the high-water mark
+        # is a promise the box cannot keep.
+        try:
+            with open("/proc/meminfo", encoding="utf-8") as handle:
+                fields = dict(
+                    (line.split(":", 1)[0], int(line.split()[1]))
+                    for line in handle if ":" in line
+                )
+            free_gb = fields.get("MemAvailable", 0) // (1024 * 1024)
+            # Leave the box a working margin rather than offering the last byte.
+            capacity["mem_gb"] = max(0, min(args.mem_gb, free_gb - 8))
+        except OSError:
+            pass
 
     queue = pool.PoolQueue(SH / "pb-queue")
+    if args.honest_memory:
+        queue.ledger().retire_free_capacity({"mem_gb": capacity["mem_gb"]})
     host = socket.gethostname()
     # A box offers its own hostname as well as its class.  Item tags must be a
     # subset of the worker's, so without this an action pinned to one box --

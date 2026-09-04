@@ -254,6 +254,44 @@ class ResourceLedger:
                     continue
                 os.close(descriptor)
 
+    def retire_free_capacity(self, capacity: Mapping[str, int]) -> dict[str, int]:
+        """Lower a kind's total to ``capacity`` by deleting FREE tokens only.
+
+        ``ensure_capacity`` is monotonically increasing on purpose -- two
+        workers declaring the same box converge, and neither takes back a
+        token the other is using.  But a box's honest offer *falls* when work
+        arrives that the pool did not schedule, and with only an increasing
+        primitive the ledger keeps advertising the high-water mark: a GB10
+        offering 96 GB while holding 10 GB free is not admission control, it
+        is a promise the box cannot keep.
+
+        Only free tokens are retired, so a running action never loses the
+        reservation it is executing under; the total falls as holders finish
+        and their tokens are not re-created.  Returns what was retired.
+        """
+
+        retired: dict[str, int] = {}
+        for kind, count in sorted(capacity.items()):
+            target = int(count)
+            if target < 0:
+                raise PoolContractError(f"capacity for {kind!r} must not be negative")
+            free = sorted(self.free_dir.glob(f"{kind}-*"))
+            held = sum(
+                1 for holder in (self.held_dir.iterdir()
+                                 if self.held_dir.is_dir() else [])
+                if holder.is_dir()
+                for _ in holder.glob(f"{kind}-*")
+            )
+            # Never retire below what is already held: those tokens exist.
+            excess = max(0, len(free) + held - target)
+            for token in free[:excess] if excess else []:
+                try:
+                    token.unlink()
+                    retired[kind] = retired.get(kind, 0) + 1
+                except OSError:
+                    pass
+        return retired
+
     def capacity(self) -> dict[str, int]:
         """Total tokens of each kind, free or held."""
 
