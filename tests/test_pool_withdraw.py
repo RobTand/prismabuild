@@ -287,6 +287,51 @@ def test_finish_cannot_retry_what_was_withdrawn(queue: pool.PoolQueue) -> None:
     assert queue.claim() is None
 
 
+def test_a_pre_publish_worker_cannot_requeue_what_was_withdrawn(
+    queue: pool.PoolQueue, monkeypatch
+) -> None:
+    """The last of the race that bytes on this side can reach.
+
+    A worker running pre-withdraw bytes cannot see ``withdrawn/`` at all, so
+    the marker does not stop it.  What does is the ``max_attempts: 1`` the verb
+    writes into the live claimed record before it signals anything -- step one
+    of the operator's old hand-edit, now done atomically and with the decision
+    already filed, so nobody has to win the race by hand.  The window that
+    matters is the signal ladder: seconds long, and exactly when the worker
+    this withdrawal just SIGTERMed calls ``finish``.
+
+    The interleaving is scheduled rather than hoped for: ``withdraw`` calls
+    ``ledger`` once, between the ladder and its cleanup, so hooking it drops
+    the old worker's ``finish`` into that window every run.  The ``finish``
+    that runs is the real one, on the real files.
+    """
+
+    _publish(queue, KEY_A, max_attempts=3)
+    queue.claim()
+    old = _old_bytes(queue, monkeypatch)
+
+    real_ledger = queue.ledger
+    fired: list[bool] = []
+
+    def racing_ledger(host=None):
+        if not fired:
+            fired.append(True)
+            old.finish(KEY_A, status="failed", detail={"returncode": -15})
+        return real_ledger(host)
+
+    monkeypatch.setattr(queue, "ledger", racing_ledger)
+    queue.withdraw(KEY_A, signal_child=False)
+
+    assert fired, "the interleaving did not happen; the test proves nothing"
+    assert not queue.item_path(pool.READY, KEY_A).exists(), (
+        "a worker that cannot see the marker still must not requeue the action")
+    filed = json.loads(queue.item_path(pool.FAILED, KEY_A).read_text())
+    assert filed["attempts"] == 1 and filed["max_attempts"] == 1
+    assert filed["withdrawn_by"] == "", "the decision travels onto the record"
+    assert "withdrawn_note" in filed
+    assert queue.claim() is None
+
+
 def test_a_completed_action_that_lost_its_claim_is_filed_under_done(
     queue: pool.PoolQueue
 ) -> None:

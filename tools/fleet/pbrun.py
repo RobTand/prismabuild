@@ -66,6 +66,19 @@ POLL_S = 5.0
 #: Non-zero because the command did not run; distinct from a real failure
 #: because nothing about it was a defect.
 WITHDRAWN_EXIT = 143
+#: The receipt ``publish_runtime`` leaves for which bytes the fleet is serving.
+#: A worker loop holds the module it imported at start, so this is the only
+#: thing that says whether a given box's loop can see a withdrawal at all.
+RUNTIME_VERSION = SH / "repo" / "RUNTIME_VERSION.json"
+
+
+def published_commit() -> str:
+    """The commit whose bytes are currently published, or "" if unknown."""
+
+    try:
+        return str(json.loads(RUNTIME_VERSION.read_text()).get("commit") or "")
+    except (OSError, ValueError):
+        return ""
 #: One stamp per ACTION, not per checkout.  A single shared name looked
 #: harmless because concurrent submits from one tree write the same bytes --
 #: but the worker re-verifies the live stamp against the closure its action
@@ -353,6 +366,7 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
     """
 
     rc = 0
+    published = published_commit()
     for prefix in prefixes:
         try:
             key = q.find_key(str(prefix))
@@ -384,6 +398,29 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
             note.insert(0, "already withdrawn")
         print(f"pbrun: withdrew {key[:12]} from {where}; " + "; ".join(note),
               file=sys.stderr)
+        # Say when the withdrawal is one the holder's worker cannot see.  Every
+        # guard this verb relies on lives in bytes the loop imported at start,
+        # so a box that has not rolled runs the action to completion -- with
+        # the tokens this just handed back, which is the load-average-371
+        # shape the issue is about.  The record is filed and the retry is
+        # closed either way; what is not bounded is the current run.
+        if where == "claimed":
+            runtime = result.get("holder_runtime")
+            host = result.get("host") or "the holder"
+            if runtime is None:
+                print(f"pbrun: WARNING no live offer from {host}; cannot tell "
+                      f"whether its worker can see this withdrawal",
+                      file=sys.stderr)
+            elif not runtime:
+                print(f"pbrun: WARNING {host} announces no runtime commit; "
+                      f"cannot tell whether its worker can see this withdrawal",
+                      file=sys.stderr)
+            elif published and runtime != published:
+                print(f"pbrun: WARNING {host} is running runtime "
+                      f"{runtime[:12]}, not the published {published[:12]}: "
+                      f"its loop cannot see withdrawn/, so the action may run "
+                      f"to completion with the tokens just released.  Roll the "
+                      f"fleet, or watch the box.", file=sys.stderr)
     return rc
 
 

@@ -147,6 +147,64 @@ def test_a_claimed_action_on_another_box_says_the_signal_did_not_land(
     assert "stops within a heartbeat" in err
 
 
+def test_a_withdrawal_the_holder_cannot_see_is_said_out_loud(
+    queue: pool.PoolQueue, capsys, monkeypatch
+) -> None:
+    """Every guard the verb relies on lives in bytes the loop imported at start.
+
+    A box that has not rolled runs the action to completion -- with the tokens
+    this withdrawal just handed back, which is the load-average-371 shape the
+    issue is about.  New bytes cannot reach that worker; what they can do is
+    stop pretending the work has stopped.
+    """
+
+    _publish(queue, KEY_A)
+    record = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    record["claimed_host"] = "dl380g10"
+    queue.item_path(pool.READY, KEY_A).unlink()
+    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
+    queue.announce(host="dl380g10", tags=["x86"], has_gpu=False,
+                   runtime_commit="a" * 40)
+    monkeypatch.setattr(pbrun, "published_commit", lambda: "b" * 40)
+
+    assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
+    err = capsys.readouterr().err
+    assert "WARNING dl380g10 is running runtime " + "a" * 12 in err
+    assert "not the published " + "b" * 12 in err
+
+
+def test_a_holder_that_never_announced_is_reported_as_unknown(
+    queue: pool.PoolQueue, capsys, monkeypatch
+) -> None:
+    """"Cannot tell" is a third answer, and it is not "it stopped"."""
+
+    _publish(queue, KEY_A)
+    record = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    record["claimed_host"] = "dl380g10"
+    queue.item_path(pool.READY, KEY_A).unlink()
+    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
+    monkeypatch.setattr(pbrun, "published_commit", lambda: "b" * 40)
+
+    assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
+    assert "no live offer from dl380g10" in capsys.readouterr().err
+
+
+def test_a_worker_on_the_published_bytes_draws_no_warning(
+    queue: pool.PoolQueue, capsys, monkeypatch
+) -> None:
+    _publish(queue, KEY_A)
+    record = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    record["claimed_host"] = "dl380g10"
+    queue.item_path(pool.READY, KEY_A).unlink()
+    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
+    queue.announce(host="dl380g10", tags=["x86"], has_gpu=False,
+                   runtime_commit="b" * 40)
+    monkeypatch.setattr(pbrun, "published_commit", lambda: "b" * 40)
+
+    assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
+    assert "WARNING" not in capsys.readouterr().err
+
+
 def test_the_wait_loop_does_not_answer_a_new_run_with_an_old_withdrawal(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

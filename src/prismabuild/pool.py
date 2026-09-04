@@ -1514,6 +1514,22 @@ class PoolQueue:
                 return None
         return marker
 
+    def runtime_of(self, host: str | None) -> str | None:
+        """Which published bytes the worker on ``host`` is answering with.
+
+        ``None`` when no live offer names the host at all.  The empty string
+        when the offer predates ``runtime_commit`` -- both mean "cannot tell",
+        and a withdrawal that cannot tell has to say so rather than imply the
+        worker will honour it.
+        """
+
+        if not host:
+            return None
+        for offer in self.offers():
+            if str(offer.get("host")) == str(host):
+                return str(offer.get("runtime_commit") or "")
+        return None
+
     def find_key(self, prefix: str) -> str:
         """Resolve a key prefix to the one action it names.
 
@@ -1668,6 +1684,37 @@ class PoolQueue:
         else:
             filed = existing
 
+        # Step one of the hand-edit, done by the verb: ``max_attempts: 1``
+        # written into the live claimed record.  The marker above stops every
+        # worker running THESE bytes, but a loop holds the module it imported
+        # at start, so part of the fleet cannot see it until the runtime rolls
+        # -- and the signal ladder below runs for seconds, which is exactly
+        # when a worker this withdrawal just SIGTERMed calls ``finish``.  An
+        # old ``finish`` reads this record: with the limit at one attempt its
+        # retry branch is unreachable, so the outcome is filed terminally
+        # instead of being requeued and re-run.  That is the race the operator
+        # used to have to win by hand, and it is the last of it that new bytes
+        # can reach.
+        if origin == CLAIMED and isinstance(record, Mapping):
+            poisoned = dict(record)
+            poisoned["max_attempts"] = 1
+            poisoned["withdrawn_unix"] = filed.get("withdrawn_unix")
+            poisoned["withdrawn_by"] = str(filed.get("withdrawn_by") or by)
+            poisoned["withdrawn_note"] = (
+                "withdrawn by an operator; the retry is closed so a worker "
+                "that cannot see withdrawn/ files this terminally"
+            )
+            _write_json_atomic(claimed_path, poisoned)
+
+        # The ready record goes NOW, not after the ladder.  The ladder can run
+        # for seconds; a re-submission landing inside it would otherwise be
+        # unlinked by a withdrawal that had already been superseded -- the
+        # blocker again, in this verb's own hand.  Gated on the generation for
+        # the same reason every other guard is.
+        if self.withdrawal_covers(
+                _read_json(ready_path), action_key=key) is not None:
+            ready_path.unlink(missing_ok=True)
+
         # Signal before releasing, so this box does not admit work on top of an
         # action that is still dying.
         #
@@ -1694,7 +1741,6 @@ class PoolQueue:
 
         released = self.ledger(host).release(key)
         claimed_path.unlink(missing_ok=True)
-        ready_path.unlink(missing_ok=True)
         self.lease_path(key).unlink(missing_ok=True)
         self.passes_path(key).unlink(missing_ok=True)
         return {
@@ -1702,6 +1748,11 @@ class PoolQueue:
             "status": "already_withdrawn" if existing is not None else "withdrawn",
             "state": origin,
             "host": host,
+            # What the holder's worker is running, so the caller can be told
+            # whether this withdrawal is one it can see.  ``None`` means no
+            # live offer names the host; ``""`` means the offer predates the
+            # field.  Both are "cannot tell", and the CLI says so.
+            "holder_runtime": self.runtime_of(host),
             "released": released,
             "signalled": signalled,
             "path": str(withdrawn_path),
