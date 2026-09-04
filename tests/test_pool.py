@@ -910,3 +910,77 @@ def test_a_lease_beside_its_record_is_never_swept(tmp_path) -> None:
 
     assert queue.sweep_widowed_leases(timeout_s=60.0) == []
     assert queue.lease_path(KEY_A).exists()
+
+
+def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
+    queue: pool.PoolQueue,
+) -> None:
+    """The guard must bound itself, or it becomes what it was written to prevent.
+
+    Measured on the live fleet 2026-09-04: a GPU action at the head of sparky's
+    ready queue reached **293** denied passes while two multi-hour actions held
+    both GPU slots.  It withheld the box for every one of them, and 41 items
+    queued behind it -- 24 CPU-only, admissible against five free cores the
+    starved item was not competing for.  ``STARVATION_FLOOR`` assumes the block
+    is transient; when the blocking resource is held for hours it inverts.
+
+    Past ``WITHHOLD_CEILING_S`` the item keeps every pass, and passes are the
+    first term of the ready ordering -- so it loses the veto, not the priority.
+    """
+
+    _publish(queue, KEY_A, resources={"gpu": 4})      # the big, starved one
+    _publish(queue, KEY_B, resources={"gpu": 1})      # the small overtaker
+    capacity = {"gpu": 4}
+    ledger = queue.ledger()
+    ledger.ensure_capacity(capacity)
+    assert ledger.acquire("0" * 64, {"gpu": 2}) is True
+
+    for _ in range(pool.STARVATION_FLOOR):
+        queue.record_pass(KEY_A)
+    # Inside the ceiling: the host is withheld, exactly as before this change.
+    assert queue.claim(capacity=capacity) is None
+    assert queue.item_path(pool.READY, KEY_B).exists()
+
+    # Age the block itself past the ceiling -- and only the block.  ``passes``
+    # is untouched, which is the property under test.
+    record = json.loads(queue.passes_path(KEY_A).read_text())
+    before = record["passes"]
+    record["first_unix"] -= pool.WITHHOLD_CEILING_S + 1.0
+    queue.passes_path(KEY_A).write_text(json.dumps(record))
+    assert queue.withhold_age(KEY_A) > pool.WITHHOLD_CEILING_S
+
+    taken = queue.claim(capacity=capacity)
+    assert taken is not None and taken["action_key"] == KEY_B, (
+        "past the ceiling the box must stop being held shut for work it cannot admit"
+    )
+    assert queue.passes(KEY_A) >= before, (
+        "the starved item must keep its passes, and so its place in the ordering"
+    )
+    assert queue.item_path(pool.READY, KEY_A).exists(), "it is still queued, not dropped"
+
+
+def test_the_first_denial_stamp_is_the_age_of_the_block_not_of_the_last_denial(
+    queue: pool.PoolQueue,
+) -> None:
+    """``withhold_age`` must not reset every time the item is denied again.
+
+    If it read ``updated_unix`` the ceiling would never be reached: a queue busy
+    enough to starve an item is busy enough to re-deny it every few seconds.
+    """
+
+    _publish(queue, KEY_A, resources={"gpu": 4})
+    queue.record_pass(KEY_A)
+    stamped = json.loads(queue.passes_path(KEY_A).read_text())
+    stamped["first_unix"] -= 600.0
+    stamped["updated_unix"] -= 600.0
+    queue.passes_path(KEY_A).write_text(json.dumps(stamped))
+
+    queue.record_pass(KEY_A)          # denied again, right now
+    assert queue.withhold_age(KEY_A) >= 600.0, (
+        "a later denial reset the clock, so the ceiling can never be reached"
+    )
+    assert queue.passes(KEY_A) == 2
+
+
+def test_an_item_never_denied_has_no_withhold_age(queue: pool.PoolQueue) -> None:
+    assert queue.withhold_age(KEY_A) == 0.0

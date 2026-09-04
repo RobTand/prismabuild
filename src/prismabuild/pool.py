@@ -103,6 +103,26 @@ DEFAULT_MAX_ATTEMPTS = 3
 # value beyond "small, and less than five".
 STARVATION_FLOOR = 3
 
+#: How long a starved item may withhold a host before it keeps its place in the
+#: ordering but loses its veto.
+#:
+#: The withhold exists so small work cannot indefinitely overtake big work.  It
+#: assumed the block is transient -- the box is busy *now* and will free up.
+#: When the blocking resource is held for hours that assumption inverts and the
+#: guard becomes the deadlock it was written to prevent.  Measured on the live
+#: fleet 2026-09-04: one GPU action at the head of sparky's queue accumulated
+#: **293** denied passes while two multi-hour GPU actions held both slots, and
+#: withheld the box the whole time.  Forty-one items queued behind it, 24 of
+#: them CPU-only and admissible against the five free cores it was not using.
+#:
+#: Past this ceiling the item stops *blocking* but keeps every pass it has
+#: earned, and passes are the first term of the ready ordering -- so it still
+#: gets first refusal on every claim, on every box, ahead of everything behind
+#: it.  It loses the veto, not the priority.  Fifteen minutes is longer than
+#: any transient this pool produces (the lease timeout is five) and far shorter
+#: than the multi-hour actions that turn the guard pathological.
+WITHHOLD_CEILING_S = 900.0
+
 RESERVATIONS = "reservations"
 PASSES = "passes"
 WORKERS = "workers"
@@ -662,12 +682,30 @@ class PoolQueue:
         fairness; a resurrected item costs correctness.
         """
 
+        now = _now()
+        # ``first_unix`` is set once and carried forward: it is the clock the
+        # withhold ceiling reads, so it must measure the age of the *block*,
+        # not the age of the most recent denial.
+        prior = _read_json(self.passes_path(action_key)) or {}
+        first = prior.get("first_unix")
+        if not isinstance(first, (int, float)):
+            first = now
         count = self.passes(action_key) + 1
         _write_json_atomic(
             self.passes_path(action_key),
-            {"action_key": action_key, "passes": count, "updated_unix": _now()},
+            {"action_key": action_key, "passes": count,
+             "first_unix": float(first), "updated_unix": now},
         )
         return count
+
+    def withhold_age(self, action_key: str) -> float:
+        """Seconds since this item was first denied admission; 0.0 if never."""
+
+        record = _read_json(self.passes_path(action_key)) or {}
+        first = record.get("first_unix")
+        if not isinstance(first, (int, float)):
+            return 0.0
+        return max(0.0, _now() - float(first))
 
     def _write_claim_intent(self, action_key: str, *, owner: str) -> None:
         _write_json_atomic(
@@ -748,9 +786,13 @@ class PoolQueue:
                     continue      # never fits this box; not this box's to hold
                 if not ledger.acquire(key, demand):
                     denials = self.record_pass(key)
-                    if denials >= STARVATION_FLOOR:
+                    if (denials >= STARVATION_FLOOR
+                            and self.withhold_age(key) <= WITHHOLD_CEILING_S):
                         # Wired to the decision: stop letting smaller work pass it.
                         return None
+                    # Past the ceiling it keeps its passes -- and so its place at
+                    # the head of the ordering -- but stops holding the box shut
+                    # for work it cannot do anything with.
                     continue
             # Intent precedes the claim, so a crash in between leaves evidence.
             self._write_claim_intent(key, owner=owner)
