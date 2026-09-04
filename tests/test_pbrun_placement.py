@@ -13,10 +13,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-# Imported BEFORE ``pbrun`` is exec'd, on purpose.  ``pbrun`` puts the source
-# beside its own entry point at the front of ``sys.path`` so a live submitter
-# binds one published generation.  Binding the checkout's package first keeps
-# this direct module-load test self-contained too.
+# Imported BEFORE ``pbrun`` is exec'd, on purpose.  ``pbrun`` puts the
+# published mirror (``/mnt/shared/prismabuild-fleet/repo/src``) at the front of
+# ``sys.path`` so a submitter runs the fleet's bytes, which means a bare
+# ``pytest tests/test_pbrun_placement.py`` would otherwise test THIS checkout's
+# pbrun against the MIRROR's pool -- and report a missing method as a failure
+# of code that is right here.  Binding the package first makes the file
+# self-contained however it is invoked.
 from prismabuild import core as core_module  # noqa: E402
 from prismabuild import pool as pool_module  # noqa: E402
 
@@ -116,6 +119,144 @@ def test_a_box_local_checkout_is_pinned_to_that_box() -> None:
     assert _tags("/home/rob/tmp/ts50") == [HOST]
 
 
+def test_portable_snapshot_keeps_a_box_local_executable_host_pin(
+    tmp_path: Path,
+) -> None:
+    """Transporting source does not transport a user-local interpreter."""
+
+    checkout = _git_checkout(tmp_path)
+    interpreter = tmp_path / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"ELF test executable")
+    interpreter.chmod(0o755)
+
+    assert pbrun.placement_tags(
+        checkout,
+        explicit=[],
+        here=False,
+        hostname=HOST,
+        portable_checkout=True,
+        command=[str(interpreter), "-V"],
+        repository_root=checkout,
+        environment={"PATH": "/usr/bin:/bin"},
+    ) == [HOST]
+
+
+def test_explicit_tag_owns_a_missing_external_executable_path(
+    tmp_path: Path,
+) -> None:
+    """A caller may name the worker class that owns a box-absent interpreter."""
+
+    checkout = _git_checkout(tmp_path)
+    assert pbrun.placement_tags(
+        checkout,
+        explicit=["dl380g10"],
+        here=False,
+        hostname=HOST,
+        portable_checkout=True,
+        command=["/home/rob/venvs/pb-cpu/bin/python", "-V"],
+        repository_root=checkout,
+        environment={"PATH": "/usr/bin:/bin"},
+    ) == ["dl380g10"]
+
+
+def test_portable_snapshot_refuses_an_unplaced_missing_executable(
+    tmp_path: Path,
+) -> None:
+    checkout = _git_checkout(tmp_path)
+
+    with pytest.raises(SystemExit, match="--tag"):
+        pbrun.placement_tags(
+            checkout,
+            explicit=[],
+            here=False,
+            hostname=HOST,
+            portable_checkout=True,
+            command=["/home/rob/venvs/missing/bin/python", "-V"],
+            repository_root=checkout,
+            environment={"PATH": "/usr/bin:/bin"},
+        )
+
+
+def test_portable_snapshot_resolves_a_bare_executable_through_declared_path(
+    tmp_path: Path,
+) -> None:
+    checkout = _git_checkout(tmp_path)
+    binary = tmp_path / "venv" / "bin" / "python3"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+
+    assert pbrun.placement_tags(
+        checkout,
+        explicit=[],
+        here=False,
+        hostname=HOST,
+        portable_checkout=True,
+        command=["python3", "-V"],
+        repository_root=checkout,
+        environment={"PATH": str(binary.parent)},
+    ) == [HOST]
+
+
+def test_portable_snapshot_pins_a_direct_flag_value_outside_the_snapshot(
+    tmp_path: Path,
+) -> None:
+    checkout = _git_checkout(tmp_path)
+    executable = checkout / "task.py"
+    executable.chmod(0o755)
+    model = tmp_path / "model" / "config.json"
+    model.parent.mkdir()
+    model.write_text("{}\n")
+
+    assert pbrun.placement_tags(
+        checkout,
+        explicit=[],
+        here=False,
+        hostname=HOST,
+        portable_checkout=True,
+        command=["./task.py", f"--model={model}"],
+        repository_root=checkout,
+        environment={"PATH": "/usr/bin:/bin"},
+    ) == [HOST]
+
+
+def test_portable_snapshot_screens_caller_environment_paths(tmp_path: Path) -> None:
+    checkout = _git_checkout(tmp_path)
+    executable = checkout / "task.py"
+    executable.chmod(0o755)
+    cache = tmp_path / "model-cache"
+    cache.mkdir()
+
+    assert pbrun.placement_tags(
+        checkout,
+        explicit=[],
+        here=False,
+        hostname=HOST,
+        portable_checkout=True,
+        command=["./task.py"],
+        repository_root=checkout,
+        environment={"PATH": "/usr/bin:/bin"},
+        caller_environment={"MODEL_CACHE": str(cache)},
+    ) == [HOST]
+
+
+def test_anywhere_is_an_explicit_external_portability_assertion(tmp_path: Path) -> None:
+    checkout = _git_checkout(tmp_path)
+
+    assert pbrun.placement_tags(
+        checkout,
+        explicit=[],
+        here=False,
+        hostname=HOST,
+        portable_checkout=True,
+        command=["/worker/owned/python", "--model=/worker/owned/model"],
+        repository_root=checkout,
+        environment={"PATH": "/usr/bin:/bin"},
+        anywhere=True,
+    ) == []
+
+
 def test_here_pins_a_shared_checkout_on_purpose() -> None:
     assert _tags("/mnt/shared/tessera-x86", here=True) == [HOST]
 
@@ -168,6 +309,32 @@ def test_the_result_and_stamp_names_move_with_the_commit(tmp_path, monkeypatch):
             ["pytest", "-q"], tmp_path, {"cpu": 1}, {"LANG": "C.UTF-8"}))
     assert names[0] != names[1], "two commits shared one result path"
     assert names[0] == names[2], "the same commit must still dedup"
+
+
+def test_portable_submission_identity_ignores_the_source_checkout_path() -> None:
+    """Two clones of one tree must seal the same action, not merely run it."""
+
+    identity = {"head": "a" * 40, "dirty_sha256": "b" * 64}
+    command = ["python", "task.py"]
+    demand = {"cpu": 1}
+    variables = {"LANG": "C.UTF-8"}
+    first = pbrun.result_and_stamp_names(
+        command, Path("/home/rob/tmp/first"), demand, variables,
+        identity=identity, logical_cwd=".",
+    )
+    second = pbrun.result_and_stamp_names(
+        command, Path("/mnt/shared/second"), demand, variables,
+        identity=identity, logical_cwd=".",
+    )
+
+    assert first == second
+    assert pbrun.container_owner(
+        command, Path("/home/rob/tmp/first"), demand, variables,
+        identity=identity, logical_cwd=".",
+    ) == pbrun.container_owner(
+        command, Path("/mnt/shared/second"), demand, variables,
+        identity=identity, logical_cwd=".",
+    )
 
 
 def test_pbrun_preflight_refuses_checkout_drift_after_sealing(tmp_path) -> None:
@@ -433,6 +600,360 @@ def test_pbrun_identity_refuses_failed_initial_git_detection(
     monkeypatch.setattr(core_module.subprocess, "run", fail_toplevel)
     with pytest.raises(SystemExit, match="cannot compute pbrun checkout identity"):
         pbrun._git_identity(checkout)
+def test_git_snapshot_moves_with_nested_untracked_bytes(tmp_path) -> None:
+    """The portable tree is the submitted dirty tree, not merely ``HEAD``."""
+
+    checkout = _git_checkout(tmp_path)
+    helper = checkout / "experiments" / "campaign.py"
+    helper.parent.mkdir()
+    helper.write_text("print('first')\n")
+    stamp_name = f"{pbrun.STAMP_PREFIX}snapshot-test.json"
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
+    )
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+    first = pbrun.build_git_checkout_snapshot(
+        checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+    )
+
+    helper.write_text("print('second')\n")
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
+    )
+    second = pbrun.build_git_checkout_snapshot(
+        checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+    )
+
+    assert first["commit"] != second["commit"]
+    assert first["input"] != second["input"]
+
+
+def test_git_snapshot_keeps_a_tracked_file_that_now_matches_ignore(
+    tmp_path: Path,
+) -> None:
+    """The synthetic index starts from HEAD before overlaying live bytes."""
+
+    checkout = _git_checkout(tmp_path)
+    ignored = checkout / "tracked.cache"
+    ignored.write_text("still part of the checkout\n")
+    (checkout / ".gitignore").write_text("*.cache\n")
+    assert _git(checkout, "add", ".gitignore").returncode == 0
+    assert _git(checkout, "add", "-f", "tracked.cache").returncode == 0
+    assert _git(checkout, "commit", "-qm", "track ignored input").returncode == 0
+    stamp_name = f"{pbrun.STAMP_PREFIX}ignored-test.json"
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
+    )
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    snapshot = pbrun.build_git_checkout_snapshot(
+        checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+    )
+    materialized = tmp_path / "materialized"
+    bundle = cas.input_path(snapshot["input"])
+    materialized.mkdir()
+    assert _git(materialized, "init", "-q").returncode == 0
+    assert _git(
+        materialized,
+        "fetch",
+        "-q",
+        str(bundle),
+        "refs/heads/prismabuild-snapshot",
+    ).returncode == 0
+    assert _git(
+        materialized, "checkout", "-q", "--detach", str(snapshot["commit"])
+    ).returncode == 0
+
+    assert (materialized / "tracked.cache").read_text() == (
+        "still part of the checkout\n"
+    )
+
+
+def test_git_snapshot_from_a_linked_worktree_is_self_contained(
+    tmp_path: Path,
+) -> None:
+    """A box-local Git common dir must not leak into worker materialization."""
+
+    primary = _git_checkout(tmp_path)
+    linked = tmp_path / "linked"
+    assert _git(
+        primary, "worktree", "add", "-q", "--detach", str(linked)
+    ).returncode == 0
+    assert (linked / ".git").is_file()
+    common_dir = Path(_git(linked, "rev-parse", "--git-common-dir").stdout.strip())
+    assert common_dir.is_absolute()
+    assert linked not in common_dir.parents
+    assert pbrun.placement_tags(
+        linked,
+        explicit=[],
+        here=False,
+        hostname=HOST,
+        portable_checkout=True,
+    ) == []
+
+    (linked / "linked-only.txt").write_text("sealed linked worktree bytes\n")
+    stamp_name = f"{pbrun.STAMP_PREFIX}linked-test.json"
+    (linked / stamp_name).write_text(
+        json.dumps({"cwd": ".", **pbrun._git_identity(linked)})
+    )
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+    snapshot = pbrun.build_git_checkout_snapshot(
+        linked, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+    )
+
+    materialized = tmp_path / "materialized-linked"
+    materialized.mkdir()
+    assert _git(materialized, "init", "-q").returncode == 0
+    assert _git(
+        materialized,
+        "fetch",
+        "-q",
+        str(cas.input_path(snapshot["input"])),
+        "refs/heads/prismabuild-snapshot",
+    ).returncode == 0
+    assert _git(
+        materialized, "checkout", "-q", "--detach", str(snapshot["commit"])
+    ).returncode == 0
+    assert (materialized / "linked-only.txt").read_text() == (
+        "sealed linked worktree bytes\n"
+    )
+
+
+def test_git_snapshot_limits_logical_tree_bytes_after_indexing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The authoritative written tree retains the worker expansion bound."""
+
+    checkout = _git_checkout(tmp_path)
+    (checkout / "mostly-zero.bin").write_bytes(b"\0" * (256 * 1024))
+    stamp_name = f"{pbrun.STAMP_PREFIX}logical-size-test.json"
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
+    )
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    monkeypatch.setattr(pbrun, "require_working_tree_size", lambda *_a, **_kw: 0)
+    with pytest.raises(SystemExit, match="logical checkout tree"):
+        pbrun.build_git_checkout_snapshot(
+            checkout, stamp_name=stamp_name, cas=cas, max_bytes=32 * 1024
+        )
+
+
+def test_git_snapshot_refuses_oversize_before_git_add_hashes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The submitter bound fires before Git hashes a sparse or huge file."""
+
+    checkout = _git_checkout(tmp_path)
+    oversized = checkout / "sparse-cache.bin"
+    with oversized.open("wb") as handle:
+        handle.truncate(256 * 1024)
+    stamp_name = f"{pbrun.STAMP_PREFIX}early-size-test.json"
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
+    )
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+    real_snapshot_git = pbrun._snapshot_git
+
+    def observed_snapshot_git(cwd, argv, **kwargs):
+        if argv[:2] == ["add", "-A"]:
+            pytest.fail("git add -A ran before the logical-size refusal")
+        return real_snapshot_git(cwd, argv, **kwargs)
+
+    monkeypatch.setattr(pbrun, "_snapshot_git", observed_snapshot_git)
+    with pytest.raises(SystemExit, match="logical working tree"):
+        pbrun.build_git_checkout_snapshot(
+            checkout, stamp_name=stamp_name, cas=cas, max_bytes=32 * 1024
+        )
+
+
+def test_git_snapshot_limit_cannot_exceed_the_hard_fleet_ceiling(
+    tmp_path: Path,
+) -> None:
+    """A caller cannot authorize unaccounted worker-local disk expansion."""
+
+    checkout = _git_checkout(tmp_path)
+    stamp_name = f"{pbrun.STAMP_PREFIX}hard-limit-test.json"
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": ".", **pbrun._git_identity(checkout)})
+    )
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(SystemExit, match="hard fleet ceiling"):
+        pbrun.build_git_checkout_snapshot(
+            checkout,
+            stamp_name=stamp_name,
+            cas=cas,
+            max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES + 1,
+        )
+
+
+@pytest.mark.parametrize("target", ["../large-data", "/home/rob/model-cache"])
+def test_git_snapshot_refuses_a_symlink_that_escapes_the_repository(
+    tmp_path: Path, target: str,
+) -> None:
+    """A worker-local checkout must not reinterpret a source-external link."""
+
+    checkout = _git_checkout(tmp_path)
+    (checkout / "data").symlink_to(target, target_is_directory=True)
+    stamp_name = f"{pbrun.STAMP_PREFIX}escaping-link-test.json"
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": ".", **pbrun._git_identity(checkout)})
+    )
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(SystemExit, match="symlink.*outside"):
+        pbrun.build_git_checkout_snapshot(
+            checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        )
+
+
+def test_git_snapshot_allows_an_internal_relative_symlink(tmp_path: Path) -> None:
+    checkout = _git_checkout(tmp_path)
+    target = checkout / "assets" / "payload.txt"
+    target.parent.mkdir()
+    target.write_text("sealed bytes\n")
+    (checkout / "data").symlink_to("assets")
+    stamp_name = f"{pbrun.STAMP_PREFIX}internal-link-test.json"
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": ".", **pbrun._git_identity(checkout)})
+    )
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    pbrun.build_git_checkout_snapshot(
+        checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+    )
+
+
+def test_git_snapshot_refuses_a_gitlink_whose_working_bytes_are_not_bundled(
+    tmp_path: Path,
+) -> None:
+    """A parent bundle cannot claim the separately owned submodule checkout."""
+
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    assert _git(dependency, "init", "-q").returncode == 0
+    assert _git(dependency, "config", "user.email", "test@example.invalid").returncode == 0
+    assert _git(dependency, "config", "user.name", "PrismaBuild test").returncode == 0
+    (dependency / "dependency.py").write_text("VALUE = 'external object store'\n")
+    assert _git(dependency, "add", "dependency.py").returncode == 0
+    assert _git(dependency, "commit", "-qm", "dependency").returncode == 0
+
+    checkout = _git_checkout(tmp_path)
+    assert _git(
+        checkout,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(dependency),
+        "vendor/dependency",
+    ).returncode == 0
+    assert _git(checkout, "commit", "-qam", "add submodule").returncode == 0
+    stamp_name = f"{pbrun.STAMP_PREFIX}gitlink-test.json"
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
+    )
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(SystemExit, match="gitlink"):
+        pbrun.build_git_checkout_snapshot(
+            checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        )
+
+
+def test_git_snapshot_refuses_an_active_clean_filter(
+    tmp_path: Path,
+) -> None:
+    """Git filters would snapshot canonical blobs, not exact worktree bytes."""
+
+    checkout = _git_checkout(tmp_path)
+    (checkout / ".gitattributes").write_text("filtered.txt filter=rewrite\n")
+    (checkout / "filtered.txt").write_text("WORKTREE\n")
+    assert _git(
+        checkout, "config", "filter.rewrite.clean", "sed s/WORKTREE/CANONICAL/"
+    ).returncode == 0
+    assert _git(checkout, "config", "filter.rewrite.smudge", "cat").returncode == 0
+    assert _git(checkout, "config", "filter.rewrite.required", "true").returncode == 0
+    stamp_name = f"{pbrun.STAMP_PREFIX}filter-test.json"
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
+    )
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(SystemExit, match="content transform"):
+        pbrun.build_git_checkout_snapshot(
+            checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        )
+
+
+def test_portable_checkout_refuses_a_submitter_local_path_in_argv(tmp_path) -> None:
+    """Relocation must not leave an argv escape back into the live checkout."""
+
+    checkout = _git_checkout(tmp_path)
+
+    with pytest.raises(SystemExit, match="submitter checkout path"):
+        pbrun.require_relocatable_checkout(
+            ["/bin/bash", "-lc", f"python {checkout}/task.py"],
+            {"PYTHONPATH": str(checkout / "src")},
+            checkout,
+        )
+
+
+def test_portable_subdirectory_refuses_an_absolute_repository_sibling(
+    tmp_path: Path,
+) -> None:
+    """Relocation closes over the repository root, not only requested cwd."""
+
+    checkout = _git_checkout(tmp_path)
+    requested = checkout / "package"
+    requested.mkdir()
+    sibling = checkout / "tools" / "helper.py"
+    sibling.parent.mkdir()
+    sibling.write_text("print('helper')\n")
+
+    with pytest.raises(SystemExit, match="submitter repository path"):
+        pbrun.require_relocatable_checkout(
+            ["python", str(sibling)], {}, requested, repository_root=checkout
+        )
+
+
+def test_portable_subdirectory_allows_a_relative_repository_sibling_script(
+    tmp_path: Path,
+) -> None:
+    """The repository snapshot, not requested cwd, owns relative helpers."""
+
+    checkout = _git_checkout(tmp_path)
+    requested = checkout / "package"
+    requested.mkdir()
+    sibling = checkout / "tools" / "helper.py"
+    sibling.parent.mkdir()
+    sibling.write_text("print('helper')\n")
+
+    pbrun.require_checkout_owned_scripts(
+        ["python", "../tools/helper.py"],
+        requested,
+        repository_root=checkout,
+    )
+
+
+def test_a_non_git_checkout_cannot_fall_back_to_mutable_execution(
+    tmp_path, monkeypatch,
+) -> None:
+    """Every new pbrun action must execute bytes carried through the CAS."""
+
+    from unittest import mock
+
+    work = tmp_path / "plain-directory"
+    work.mkdir()
+    fleet = tmp_path / "fleet"
+    with mock.patch.object(pbrun, "SH", fleet), \
+         mock.patch.object(sys, "argv", [
+             "pbrun.py", "--cwd", str(work), "--wait-s", "0", "--", "true",
+        ]):
+        with pytest.raises(SystemExit, match="Git checkout"):
+            pbrun.main()
 
 
 def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> None:
@@ -455,7 +976,7 @@ def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> N
 
     message = str(caught.value)
     assert str(helper) in message
-    assert "outside the stamped checkout" in message
+    assert "outside the snapshotted repository" in message
 
 
 def test_a_script_inside_the_checkout_is_bound_by_its_identity(tmp_path) -> None:
@@ -705,7 +1226,7 @@ def test_an_unannounced_fleet_reports_unknown_rather_than_zero(tmp_path) -> None
 
 
 def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> None:
-    """A pin the submitter learns about after the fact is a receipt, not a warning.
+    """An intentional pin learned after the fact is a receipt, not a warning.
 
     Driven through ``main()`` against a private pool root rather than asserted
     on the source, because what matters is that the sentence reaches the
@@ -716,9 +1237,7 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
     import socket
     from unittest import mock
 
-    work = tmp_path / "tree"
-    work.mkdir()
-    (work / "hello.txt").write_text("hi\n")
+    work = _git_checkout(tmp_path)
     queue = pool_module.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
                    capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
@@ -727,10 +1246,11 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
 
     with mock.patch.object(pbrun, "SH", tmp_path), \
          mock.patch.object(pbrun, "POLL_S", 0.001), \
-         mock.patch.object(socket, "gethostname", return_value=HOST), \
-         mock.patch.object(sys, "argv",
-                           ["pbrun.py", "--cwd", str(work), "--wait-s", "0.01",
-                            "--", "echo", "hi"]):
+             mock.patch.object(socket, "gethostname", return_value=HOST), \
+             mock.patch.object(sys, "argv",
+                               ["pbrun.py", "--cwd", str(work), "--here",
+                                "--wait-s", "0.01",
+                                "--", "echo", "hi"]):
         assert pbrun.main() == 75          # nothing is running to claim it
 
     err = capsys.readouterr().err
@@ -754,9 +1274,7 @@ def test_a_matching_stale_offer_outvotes_a_fresh_nonmatch_at_submit(
     import socket
     from unittest import mock
 
-    work = tmp_path / "tree"
-    work.mkdir()
-    (work / "hello.txt").write_text("hi\n")
+    work = _git_checkout(tmp_path)
     now = [1_000.0]
     monkeypatch.setattr(pool_module, "_now", lambda: now[0])
     queue = pool_module.PoolQueue(tmp_path / "pb-queue")

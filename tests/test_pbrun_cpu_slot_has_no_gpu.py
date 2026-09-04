@@ -15,6 +15,7 @@ already trusts for its own no-device escape hatch.
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -28,6 +29,18 @@ def _variables(argv, monkeypatch, tmp_path):
     """Build one submission's environment, stopping before it is published."""
 
     captured = []
+    assert subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=False
+    ).returncode == 0
+    assert subprocess.run(
+        [
+            "git", "-C", str(tmp_path),
+            "-c", "user.name=PrismaBuild test",
+            "-c", "user.email=test@example.invalid",
+            "commit", "--allow-empty", "-qm", "fixture",
+        ],
+        check=False,
+    ).returncode == 0
 
     def _stop(body, *_a, **_kw):
         captured.append(body)
@@ -37,6 +50,13 @@ def _variables(argv, monkeypatch, tmp_path):
         pass
 
     monkeypatch.setattr(pbrun.pb, "seal_action", _stop)
+    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(
+        pbrun,
+        "build_git_checkout_snapshot",
+        lambda *_args, **_kwargs: {"input": {"id": "test"}},
+    )
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(tmp_path), *argv])
     with pytest.raises(_Stop):
         pbrun.main()

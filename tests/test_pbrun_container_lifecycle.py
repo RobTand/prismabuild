@@ -20,6 +20,18 @@ import pbrun  # noqa: E402
 
 def _submission_variables(argv, monkeypatch, tmp_path):
     captured = []
+    assert subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=False
+    ).returncode == 0
+    assert subprocess.run(
+        [
+            "git", "-C", str(tmp_path),
+            "-c", "user.name=PrismaBuild test",
+            "-c", "user.email=test@example.invalid",
+            "commit", "--allow-empty", "-qm", "fixture",
+        ],
+        check=False,
+    ).returncode == 0
 
     class Stop(Exception):
         pass
@@ -29,6 +41,16 @@ def _submission_variables(argv, monkeypatch, tmp_path):
         raise Stop()
 
     monkeypatch.setattr(pbrun.pb, "seal_action", stop)
+    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(
+        pbrun, "CONTAINER_WRAPPER_DIR", tmp_path / "fleet" / "repo" / "tools"
+    )
+    monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(
+        pbrun,
+        "build_git_checkout_snapshot",
+        lambda *_args, **_kwargs: {"input": {"id": "test"}},
+    )
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(tmp_path), *argv])
     with pytest.raises(Stop):
         pbrun.main()
@@ -43,7 +65,9 @@ def test_every_submission_gets_a_sealed_container_owner(
     marker = variables["PRISMABUILD_CONTAINER_MARKER"]
     assert len(owner) == 64 and set(owner) <= set("0123456789abcdef")
     assert marker.endswith(f"/container-owners/{owner}.used")
-    assert variables["PATH"].split(":")[0] == str(pbrun.RUNTIME_ROOT / "tools")
+    assert variables["PATH"].split(":")[0] == str(
+        tmp_path / "fleet" / "repo" / "tools"
+    )
 
 
 def test_pool_item_carries_the_same_container_owner(tmp_path: Path) -> None:

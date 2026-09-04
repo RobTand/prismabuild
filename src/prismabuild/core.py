@@ -44,6 +44,10 @@ WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
+PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1 = (
+    "prismaquant.prismabuild.pbrun_checkout_snapshot.v1"
+)
+PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID = "pbrun.checkout-snapshot"
 LOCAL_RESULT_CLAIM_SCHEMA_V1 = "prismaquant.prismabuild.local_result_claim.v1"
 INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1 = (
     "prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1"
@@ -216,6 +220,7 @@ _INITIAL_MISS_RENDEZVOUS_RECEIPT_KEYS = (
 )
 
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,255}\Z")
+_GIT_OBJECT_ID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}\Z")
 _SCOPE_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:/-]{0,255}\Z")
 _ENV_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -1375,6 +1380,41 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
     }
 
 
+def validate_pbrun_checkout_snapshot(value: object) -> dict[str, object]:
+    """Validate the immutable Git bundle a pbrun action executes from."""
+
+    raw = _exact_mapping(
+        value,
+        keys=frozenset({"schema", "commit", "subdirectory", "input"}),
+        where="pbrun checkout snapshot",
+    )
+    if raw["schema"] != PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1:
+        _fail(
+            "pbrun checkout snapshot.schema must be "
+            f"{PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1!r}"
+        )
+    snapshot_input = validate_input_contract(raw["input"])
+    if snapshot_input["id"] != PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID:
+        _fail(
+            "pbrun checkout snapshot input.id must be "
+            f"{PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID!r}"
+        )
+    return {
+        "schema": PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+        "commit": _text(
+            raw["commit"],
+            where="pbrun checkout snapshot.commit",
+            pattern=_GIT_OBJECT_ID_RE,
+        ),
+        "subdirectory": _normalize_relative_path(
+            raw["subdirectory"],
+            where="pbrun checkout snapshot.subdirectory",
+            dot_ok=True,
+        ),
+        "input": snapshot_input,
+    }
+
+
 def _verify_pbrun_checkout_identity(
     action: Mapping[str, object], root: Path
 ) -> None:
@@ -1413,7 +1453,36 @@ def _verify_pbrun_checkout_identity(
             where="pbrun checkout identity stamp.dirty_sha256",
         ),
     }
-    _text(stamp["cwd"], where="pbrun checkout identity stamp.cwd")
+    stamped_cwd = _text(
+        stamp["cwd"], where="pbrun checkout identity stamp.cwd"
+    )
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    source_cwd = _text(params.get("cwd"), where="fleet/pbrun params.cwd")
+    if stamped_cwd != source_cwd:
+        raise ActionContractError(
+            "pbrun checkout identity stamp cwd differs from action params"
+        )
+    raw_snapshot = params.get("checkout_snapshot")
+    if raw_snapshot is not None:
+        snapshot = validate_pbrun_checkout_snapshot(raw_snapshot)
+        if source_cwd != snapshot["subdirectory"]:
+            raise ActionContractError(
+                "pbrun checkout stamp cwd differs from snapshot subdirectory"
+            )
+        inputs = action["inputs"]
+        assert isinstance(inputs, list)
+        if snapshot["input"] not in inputs:
+            raise ActionContractError(
+                "pbrun checkout snapshot is absent from action.inputs"
+            )
+        live = git_checkout_identity(root)
+        clean = hashlib.sha256(b"").hexdigest()
+        if live != {"head": snapshot["commit"], "dirty_sha256": clean}:
+            raise ActionContractError(
+                "materialized pbrun checkout differs from its sealed commit"
+            )
+        return
     if git_checkout_identity(root) != recorded:
         raise ActionContractError(
             "live pbrun checkout identity differs from its sealed stamp"
@@ -4618,6 +4687,8 @@ __all__ = [
     "INITIAL_MISS_RENDEZVOUS_RECEIPT_SCHEMA_V1",
     "LOCAL_RESULT_CLAIM_SCHEMA_V1",
     "PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH",
+    "PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID",
+    "PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1",
     "PBRUN_RESULT_PREFIX",
     "PBRUN_STAMP_PREFIX",
     "WORKER_ATTESTATION_SCHEMA_V2",
@@ -4645,6 +4716,7 @@ __all__ = [
     "validate_action",
     "validate_code_closure",
     "validate_input_contract",
+    "validate_pbrun_checkout_snapshot",
     "validate_worker_scope",
     "validate_worker_attestation",
     "verify_code_closure",

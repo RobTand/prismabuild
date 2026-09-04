@@ -14,10 +14,12 @@ that into exclusion for free, and ``STARVATION_FLOOR`` stops a big demand
 being leapfrogged forever by small ones.  A second "exclusive" lock would be
 policy where arithmetic already answers.
 
-*The closure is the checkout's git identity.*  A code closure needs at least
-one real file, and the honest identity of "this command against this tree" is
-the commit plus whatever is dirty on top of it.  Binding that makes a cache
-hit correct rather than lucky: change the code and the action key moves.
+*The closure is an immutable checkout.* A Git working tree, including its
+dirty and untracked bytes, is synthesized as a shallow root commit and carried
+through the CAS. The claiming box executes a fresh local checkout, while the
+closure stamp keeps the source identity visible in the action. New submissions
+that cannot be snapshotted refuse; only already-published legacy queue records
+retain mutable path addressing while they drain.
 
 *Cancelling is a first-class verb, not an edit.*  ``--withdraw`` is the other
 half of the submit path: this is the only way an agent may put work on the
@@ -40,10 +42,14 @@ import getpass
 import hashlib
 import json
 import os
+import posixpath
 import shlex
+import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -69,6 +75,10 @@ POLL_S = 5.0
 #: inventing a second placement rule; workers still use the ordinary live
 #: window when deciding what may claim now.
 RECORDED_OFFER_MAX_AGE_S = float("inf")
+CHECKOUT_SNAPSHOT_MAX_BYTES = 512 * 1024 * 1024
+CONTENT_TRANSFORM_ATTRIBUTES = frozenset(
+    {"crlf", "eol", "filter", "ident", "text", "working-tree-encoding"}
+)
 #: What ``pbrun`` exits with when the action it was waiting for was withdrawn.
 #: 128+SIGTERM, which is the shell's own word for "this was stopped on purpose",
 #: and it is literally the signal a withdrawal sends to the action's process
@@ -80,6 +90,20 @@ WITHDRAWN_EXIT = 143
 #: A worker loop holds the module it imported at start, so this is the only
 #: thing that says whether a given box's loop can see a withdrawal at all.
 RUNTIME_VERSION = RUNTIME_ROOT / "RUNTIME_VERSION.json"
+
+
+def require_checkout_snapshot_limit(max_bytes: int) -> int:
+    """Validate a caller's lowering of the fleet-wide checkout disk bound."""
+
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise SystemExit("pbrun: checkout snapshot byte limit must be positive")
+    if max_bytes > CHECKOUT_SNAPSHOT_MAX_BYTES:
+        raise SystemExit(
+            "pbrun: checkout snapshot byte limit exceeds the hard fleet "
+            f"ceiling of {CHECKOUT_SNAPSHOT_MAX_BYTES} bytes; the per-action "
+            "flag may only lower this unaccounted local-disk bound"
+        )
+    return max_bytes
 
 
 def published_commit() -> str:
@@ -124,6 +148,382 @@ def _git_identity(cwd: Path) -> dict[str, str]:
         raise SystemExit(f"pbrun: cannot identify checkout: {exc}") from None
 
 
+def git_repository_root(cwd: Path) -> Path | None:
+    """Return the worktree root, or ``None`` when it cannot be snapshotted."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    root = Path(completed.stdout.strip()).resolve()
+    try:
+        cwd.resolve().relative_to(root)
+    except ValueError:
+        return None
+    return root
+
+
+def _snapshot_git(
+    cwd: Path,
+    argv: list[str],
+    *,
+    environment: dict[str, str] | None = None,
+    input_text: str | None = None,
+    accepted_returncodes: tuple[int, ...] = (0,),
+    strip: bool = True,
+) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), *argv],
+            env=environment,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            errors="surrogateescape",
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SystemExit(f"pbrun: cannot snapshot checkout: {exc}") from exc
+    if completed.returncode not in accepted_returncodes:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise SystemExit(
+            f"pbrun: cannot snapshot checkout: {detail or completed.returncode}"
+        )
+    return completed.stdout.strip() if strip else completed.stdout
+
+
+def snapshot_path_roster(
+    root: Path, *, extra_paths: tuple[str, ...] = ()
+) -> list[str]:
+    """Tracked plus nonignored-untracked paths, each counted once."""
+
+    raw_paths = _snapshot_git(
+        root,
+        ["ls-files", "-co", "--exclude-standard", "-z"],
+        strip=False,
+    )
+    return list(dict.fromkeys(
+        [path for path in raw_paths.split("\0") if path] + list(extra_paths)
+    ))
+
+
+def require_working_tree_size(
+    root: Path, paths: list[str], *, max_bytes: int
+) -> int:
+    """Cheap pre-hash bound over logical bytes at each checkout path."""
+
+    logical_bytes = 0
+    for relative in paths:
+        candidate = root / relative
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            continue  # a tracked deletion contributes no materialized bytes
+        except OSError as exc:
+            raise SystemExit(
+                f"pbrun: cannot inspect checkout path {relative!r}: {exc}"
+            ) from exc
+        if stat.S_ISREG(metadata.st_mode):
+            size = metadata.st_size
+        elif stat.S_ISLNK(metadata.st_mode):
+            try:
+                size = len(os.fsencode(os.readlink(candidate)))
+            except OSError as exc:
+                raise SystemExit(
+                    f"pbrun: cannot read checkout symlink {relative!r}: {exc}"
+                ) from exc
+        elif stat.S_ISDIR(metadata.st_mode):
+            # ``ls-files`` emits a directory path only for a gitlink. The
+            # authoritative tree pass below refuses mode 160000 by name.
+            continue
+        else:
+            raise SystemExit(
+                "pbrun: checkout path has an unsupported file type: "
+                f"{relative!r}"
+            )
+        # Per path, deliberately: hard-linked files become separate checkout
+        # files and therefore consume their logical size more than once.
+        logical_bytes += size
+    if logical_bytes > max_bytes:
+        raise SystemExit(
+            "pbrun: logical working tree is "
+            f"{logical_bytes} bytes, above the {max_bytes}-byte safety limit; "
+            "refused before Git hashes or compresses the checkout"
+        )
+    return logical_bytes
+
+
+def require_untransformed_checkout(root: Path, paths: list[str]) -> None:
+    """Refuse Git clean/smudge rules that can change snapshotted bytes."""
+
+    autocrlf = _snapshot_git(
+        root,
+        ["config", "--get", "core.autocrlf"],
+        accepted_returncodes=(0, 1),
+    ).strip().lower()
+    if autocrlf not in {"", "0", "false", "no", "off"}:
+        raise SystemExit(
+            "pbrun: checkout has an active Git content transform: "
+            f"core.autocrlf={autocrlf!r}. Disable it before snapshotting."
+        )
+
+    if not paths:
+        return
+    attributes = _snapshot_git(
+        root,
+        ["check-attr", "-z", "-a", "--stdin"],
+        input_text="\0".join(paths) + "\0",
+        strip=False,
+    ).split("\0")
+    if attributes and attributes[-1] == "":
+        attributes.pop()
+    if len(attributes) % 3:
+        raise SystemExit("pbrun: Git returned malformed content attributes")
+    for index in range(0, len(attributes), 3):
+        path, name, value = attributes[index:index + 3]
+        if (
+            name in CONTENT_TRANSFORM_ATTRIBUTES
+            and value not in {"unset", "unspecified"}
+        ):
+            raise SystemExit(
+                "pbrun: checkout has an active Git content transform at "
+                f"{path!r}: {name}={value!r}. Snapshot transport supports "
+                "only worktree bytes that Git stores and checks out unchanged."
+            )
+
+
+def require_supported_snapshot_tree(
+    root: Path,
+    tree: str,
+    *,
+    environment: dict[str, str],
+    max_bytes: int,
+) -> int:
+    """Return logical checkout bytes after rejecting unbundled gitlinks."""
+
+    listing = _snapshot_git(
+        root,
+        ["ls-tree", "-r", "-l", "-z", tree],
+        environment=environment,
+        strip=False,
+    )
+    logical_bytes = 0
+    for row in listing.split("\0"):
+        if not row:
+            continue
+        metadata, separator, path = row.partition("\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 4:
+            raise SystemExit("pbrun: Git returned a malformed snapshot tree")
+        mode, kind, object_id, size = fields
+        if mode == "160000" or kind == "commit":
+            raise SystemExit(
+                "pbrun: checkout snapshot refuses gitlink/submodule path "
+                f"{path!r}; the parent Git bundle does not carry its working bytes"
+            )
+        if kind != "blob" or not size.isdigit():
+            raise SystemExit(
+                "pbrun: checkout snapshot contains unsupported Git entry "
+                f"{path!r} ({mode} {kind})"
+            )
+        if mode == "120000":
+            target = _snapshot_git(
+                root,
+                ["cat-file", "blob", object_id],
+                environment=environment,
+                strip=False,
+            )
+            normalized = posixpath.normpath(
+                posixpath.join(posixpath.dirname(path), target)
+            )
+            if (
+                not target
+                or target.startswith("/")
+                or normalized == ".."
+                or normalized.startswith("../")
+                or normalized == ".git"
+                or normalized.startswith(".git/")
+            ):
+                raise SystemExit(
+                    "pbrun: checkout snapshot symlink points outside the "
+                    f"sealed repository: {path!r} -> {target!r}"
+                )
+        # Count each materialized pathname, not unique object ids: two paths
+        # naming one blob occupy two files in the worker checkout.
+        logical_bytes += int(size)
+    if logical_bytes > max_bytes:
+        raise SystemExit(
+            "pbrun: logical checkout tree is "
+            f"{logical_bytes} bytes, above the {max_bytes}-byte safety limit; "
+            "remove generated data from the worktree or lower its footprint"
+        )
+    return logical_bytes
+
+
+def build_git_checkout_snapshot(
+    cwd: Path,
+    *,
+    stamp_name: str,
+    cas: pb.PrismaBuildCAS,
+    max_bytes: int = CHECKOUT_SNAPSHOT_MAX_BYTES,
+    expected_identity: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Publish the exact dirty tree as an immutable, shallow Git bundle."""
+
+    root = git_repository_root(cwd)
+    if root is None:
+        raise SystemExit("pbrun: a non-Git checkout cannot be materialized")
+    require_checkout_snapshot_limit(max_bytes)
+    declared_stamp = cwd / stamp_name
+    if declared_stamp.is_symlink():
+        raise SystemExit("pbrun: checkout stamp must not be a symlink")
+    stamp = declared_stamp.resolve(strict=True)
+    try:
+        observed_stamp_relative = stamp.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise SystemExit("pbrun: checkout stamp is outside its Git worktree") from exc
+    if not stamp.is_file():
+        raise SystemExit("pbrun: checkout stamp must be a regular file")
+    subdirectory = cwd.relative_to(root).as_posix() or "."
+    stamp_relative = (
+        Path(stamp_name)
+        if subdirectory == "."
+        else Path(subdirectory) / stamp_name
+    ).as_posix()
+    if observed_stamp_relative != stamp_relative:
+        raise SystemExit("pbrun: checkout stamp resolves through a symlinked path")
+    paths = snapshot_path_roster(root, extra_paths=(stamp_relative,))
+    require_working_tree_size(root, paths, max_bytes=max_bytes)
+    require_untransformed_checkout(root, paths)
+    identity = expected_identity or _git_identity(cwd)
+    if _git_identity(cwd) != identity:
+        raise SystemExit("pbrun: checkout changed before it could be snapshotted")
+
+    with tempfile.TemporaryDirectory(prefix="pbrun-snapshot.") as temporary_raw:
+        temporary = Path(temporary_raw)
+        object_directory = temporary / "objects"
+        (object_directory / "info").mkdir(parents=True)
+        (object_directory / "pack").mkdir()
+        index = temporary / "index"
+        source_objects_raw = _snapshot_git(root, ["rev-parse", "--git-path", "objects"])
+        source_objects = Path(source_objects_raw)
+        if not source_objects.is_absolute():
+            source_objects = root / source_objects
+        object_environment = dict(os.environ)
+        object_environment.update(
+            {
+                "GIT_INDEX_FILE": str(index),
+                "GIT_OBJECT_DIRECTORY": str(object_directory),
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(source_objects.resolve()),
+                "GIT_AUTHOR_NAME": "PrismaBuild",
+                "GIT_AUTHOR_EMAIL": "prismabuild@example.invalid",
+                "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
+                "GIT_COMMITTER_NAME": "PrismaBuild",
+                "GIT_COMMITTER_EMAIL": "prismabuild@example.invalid",
+                "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
+            }
+        )
+        # An alternate index begins empty. Overlaying the worktree directly
+        # would therefore treat a HEAD-tracked file that now matches an ignore
+        # rule as untracked and omit it. Seed the exact tracked roster first;
+        # ``git add -A`` then applies deletions and live-byte changes on top.
+        _snapshot_git(
+            root, ["read-tree", "HEAD"], environment=object_environment
+        )
+        _snapshot_git(root, ["add", "-A"], environment=object_environment)
+        _snapshot_git(
+            root,
+            ["add", "-f", "--", stamp_relative],
+            environment=object_environment,
+        )
+        tree = _snapshot_git(root, ["write-tree"], environment=object_environment)
+        require_supported_snapshot_tree(
+            root,
+            tree,
+            environment=object_environment,
+            max_bytes=max_bytes,
+        )
+        commit = _snapshot_git(
+            root,
+            ["commit-tree", tree],
+            environment=object_environment,
+            input_text="PrismaBuild pbrun checkout snapshot v1\n",
+        )
+        bare = temporary / "bundle.git"
+        _snapshot_git(root, ["init", "-q", "--bare", str(bare)])
+        ref = "refs/heads/prismabuild-snapshot"
+        _snapshot_git(
+            root,
+            [f"--git-dir={bare}", "update-ref", ref, commit],
+            environment=object_environment,
+        )
+        bundle = temporary / "checkout.bundle"
+        _snapshot_git(
+            root,
+            [f"--git-dir={bare}", "bundle", "create", str(bundle), ref],
+            environment=object_environment,
+        )
+        size = bundle.stat().st_size
+        if size > max_bytes:
+            raise SystemExit(
+                "pbrun: checkout snapshot is "
+                f"{size} bytes, above the {max_bytes}-byte safety limit; "
+                "remove generated data from the worktree or lower its footprint"
+            )
+        if _git_identity(cwd) != identity:
+            raise SystemExit("pbrun: checkout changed while it was snapshotted")
+        snapshot_input, _ = cas.ingest_input(
+            bundle, input_id=pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID
+        )
+    return pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+            "commit": commit,
+            "subdirectory": subdirectory,
+            "input": snapshot_input,
+        }
+    )
+
+
+def require_relocatable_checkout(
+    command: list[str],
+    variables: dict[str, str],
+    cwd: Path,
+    *,
+    repository_root: Path | None = None,
+) -> None:
+    """Refuse any value that would escape a materialized tree to the source."""
+
+    root = repository_root or git_repository_root(cwd)
+    if root is None:
+        raise SystemExit(
+            "pbrun: cannot verify relocation outside a Git checkout"
+        )
+    source = str(root.resolve())
+    offenders = [f"argv: {token}" for token in command if source in str(token)]
+    offenders.extend(
+        f"environment {name}: {value}"
+        for name, value in variables.items()
+        if source in str(value)
+    )
+    if offenders:
+        rendered = "\n".join(f"  - {value}" for value in offenders)
+        raise SystemExit(
+            "pbrun: portable execution refuses a submitter repository path "
+            "(a submitter checkout path):\n"
+            f"{rendered}\n"
+            "Use paths relative to --cwd, move external data outside the "
+            "checkout, or ingest external data as a declared CAS input."
+        )
+
+
 def _parse_demand(text: str) -> dict[str, int]:
     demand: dict[str, int] = {}
     for part in text.split(","):
@@ -164,7 +564,15 @@ def exclusive_gpu_demand(queue, tags) -> int:
     return best
 
 
-def result_and_stamp_names(command, cwd, demand, variables):
+def result_and_stamp_names(
+    command,
+    cwd,
+    demand,
+    variables,
+    *,
+    identity=None,
+    logical_cwd=None,
+):
     """The result file and the closure stamp this submission writes.
 
     Returned together because they share one fingerprint and one reason for
@@ -188,16 +596,25 @@ def result_and_stamp_names(command, cwd, demand, variables):
     case where sharing the path was safe all along.
     """
 
-    identity = _git_identity(cwd)
+    identity = _git_identity(cwd) if identity is None else identity
+    cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
     fingerprint = hashlib.sha256(
-        json.dumps([command, str(cwd), demand, variables, identity],
+        json.dumps([command, cwd_identity, demand, variables, identity],
                    sort_keys=True).encode()
     ).hexdigest()[:16]
     return (f"{RESULT_PREFIX}{fingerprint}.txt",
             f"{STAMP_PREFIX}{fingerprint}.json")
 
 
-def container_owner(command, cwd, demand, variables) -> str:
+def container_owner(
+    command,
+    cwd,
+    demand,
+    variables,
+    *,
+    identity=None,
+    logical_cwd=None,
+) -> str:
     """Stable ownership id sealed before the action key exists.
 
     The action key includes the environment, and the environment needs this id,
@@ -206,10 +623,11 @@ def container_owner(command, cwd, demand, variables) -> str:
     deterministic and leaves no caller-chosen ownership namespace.
     """
 
-    identity = _git_identity(Path(cwd))
+    identity = _git_identity(Path(cwd)) if identity is None else identity
+    cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
     return hashlib.sha256(
         json.dumps(
-            ["prismabuild.container-owner.v1", command, str(cwd), demand,
+            ["prismabuild.container-owner.v1", command, cwd_identity, demand,
              variables, identity],
             sort_keys=True,
         ).encode()
@@ -304,6 +722,12 @@ def placement_tags(
     explicit: list[str],
     here: bool,
     hostname: str,
+    portable_checkout: bool = False,
+    command: list[str] | None = None,
+    repository_root: Path | None = None,
+    environment: dict[str, str] | None = None,
+    caller_environment: dict[str, str] | None = None,
+    anywhere: bool = False,
 ) -> list[str]:
     """Return the placement tags for an action whose working directory is ``cwd``.
 
@@ -312,15 +736,18 @@ def placement_tags(
     hardware class the work requires -- and everything else follows from where
     the checkout lives:
 
-    * A checkout under ``/mnt/shared`` is mounted at the same path on every
-      box, so **any** worker that satisfies the demand can run the action and
-      no host tag is added.  This is the case that used to need ``--anywhere``,
-      and forgetting the flag was invisible: the work ran, correctly, on one
-      box, while the others sat idle.  A default that has to be remembered to
-      be right is not a default.
-    * A checkout anywhere else exists on exactly one box, so the action is
-      pinned to this host.  ``--here`` forces that pin even on shared storage,
-      for the rare action that is genuinely about *this* machine.
+    * A Git checkout is snapshotted through the CAS. Its command executable is
+      resolved exactly from argv[0] and the declared PATH. A submitter-local
+      executable retains the source-host pin; an absent executable refuses.
+      Direct argv and caller-environment paths are also screened
+      conservatively. This lexical screen is not proof of a shell program's or
+      application code's indirect inputs: ``--tag`` names the worker class
+      owning those dependencies, while ``--anywhere`` explicitly asserts they
+      are portable.
+    * The path rule remains only for already-published legacy queue records.
+      New ``pbrun`` submissions refuse a non-Git directory rather than execute
+      mutable bytes. ``--here`` still forces a host pin for work genuinely
+      about *this* machine.
 
     Nothing here decides *which* free box runs a shared-checkout action; the
     queue does, from the demand and what each worker offers.  That separation
@@ -331,6 +758,113 @@ def placement_tags(
         return list(explicit)
     if here:
         return [hostname]
+    if anywhere:
+        return []
+    if portable_checkout:
+        root = (repository_root or cwd).resolve()
+        if command is None:
+            # Library callers asking only about source-checkout placement do
+            # not have a command contract to classify. The CLI always passes
+            # argv and therefore always takes the exact executable gate below.
+            return []
+
+        def scope(candidate: Path) -> tuple[Path, bool, bool]:
+            try:
+                resolved_path = candidate.resolve(strict=False)
+            except (OSError, RuntimeError) as exc:
+                raise SystemExit(
+                    f"pbrun: cannot resolve declared path {candidate}: {exc}"
+                ) from exc
+            try:
+                resolved_path.relative_to(root)
+                inside_repository = True
+            except ValueError:
+                inside_repository = False
+            try:
+                resolved_path.relative_to(SHARED_ROOT.resolve())
+                on_shared_storage = True
+            except ValueError:
+                on_shared_storage = False
+            return resolved_path, inside_repository, on_shared_storage
+
+        def command_executable() -> Path:
+            if not command or not command[0]:
+                raise SystemExit("pbrun: portable placement requires argv[0]")
+            raw = command[0]
+            if os.sep in raw:
+                candidate = Path(raw)
+                if not candidate.is_absolute():
+                    candidate = cwd / candidate
+                executable = candidate.resolve(strict=False)
+                if not executable.is_file() or not os.access(executable, os.X_OK):
+                    raise SystemExit(
+                        "pbrun: command executable is absent or not executable "
+                        f"on the submitting box: {raw!r}. Pass --tag for the "
+                        "worker class that owns it, or --anywhere to assert an "
+                        "identical executable contract on every eligible worker."
+                    )
+                return executable
+
+            declared_path = (environment or {}).get("PATH") or os.defpath
+            search_parts = []
+            for entry in declared_path.split(os.pathsep):
+                directory = Path(entry) if entry else cwd
+                if not directory.is_absolute():
+                    directory = cwd / directory
+                search_parts.append(str(directory.resolve(strict=False)))
+            found = shutil.which(raw, path=os.pathsep.join(search_parts))
+            if found is None:
+                raise SystemExit(
+                    "pbrun: command executable cannot be resolved from the "
+                    f"declared PATH: {raw!r}. Pass --tag for the worker class "
+                    "that owns it, or --anywhere to assert an identical "
+                    "executable contract on every eligible worker."
+                )
+            return Path(found).resolve(strict=True)
+
+        executable, executable_in_repo, executable_shared = scope(
+            command_executable()
+        )
+        if not executable_in_repo and not executable_shared:
+            return [hostname]
+
+        # This is intentionally a conservative lexical screen, never the
+        # authority for command interpretation. argv[0] above is exact. Here
+        # only direct path-shaped tokens and caller-declared values can add a
+        # host pin; shell strings and application configuration remain the
+        # caller's explicit --tag/--anywhere responsibility.
+        candidates: list[Path] = []
+        for token in (command or [])[1:]:
+            raw = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
+            if token.startswith("-") and raw == token:
+                continue
+            candidate = Path(raw)
+            relative_candidate = cwd / candidate
+            if candidate.is_absolute() or os.sep in raw or relative_candidate.exists():
+                candidates.append(candidate)
+        for name, value in (caller_environment or {}).items():
+            if name == "PATH":
+                continue  # argv[0] was resolved against the complete value above
+            for raw in value.split(os.pathsep):
+                candidate = Path(raw)
+                relative_candidate = cwd / candidate
+                if candidate.is_absolute() or os.sep in raw or relative_candidate.exists():
+                    candidates.append(candidate)
+
+        for candidate in dict.fromkeys(candidates):
+            path = candidate if candidate.is_absolute() else cwd / candidate
+            resolved_path, inside_repository, on_shared_storage = scope(path)
+            if inside_repository or on_shared_storage:
+                continue
+            if not resolved_path.exists() and not resolved_path.is_symlink():
+                raise SystemExit(
+                    "pbrun: direct argv or caller environment names an "
+                    "external path absent from the submitting box: "
+                    f"{candidate}. Pass --tag for the worker class that owns "
+                    "it, or --anywhere to assert its portability."
+                )
+            return [hostname]
+        return []
     return [hostname] if is_box_local(cwd) else []
 
 
@@ -348,14 +882,21 @@ def is_box_local(cwd: Path) -> bool:
     return pool.is_box_local_path(cwd.resolve())
 
 
-def require_checkout_owned_scripts(command: list[str], cwd: Path) -> None:
-    """Refuse script files whose bytes the checkout identity cannot bind.
+def require_checkout_owned_scripts(
+    command: list[str],
+    cwd: Path,
+    *,
+    repository_root: Path | None = None,
+) -> None:
+    """Refuse script files whose bytes the repository snapshot cannot bind.
 
     The literal argv is part of an action, but a pathname is not the bytes at
     that pathname.  ``pbrun``'s code closure binds the checkout HEAD and dirty
-    state, so a script below ``cwd`` is covered; a helper beside the checkout
-    is not.  That outside helper could change after the action was sealed and
-    the same action key would then execute different code.
+    state, so a script anywhere below the repository root is covered. Relative
+    tokens are resolved from the requested working directory, exactly as task
+    argv will resolve them after relocation. A helper outside the repository
+    could change after the action was sealed and the same action key would then
+    execute different code.
 
     This checks every *direct* argv token that resolves to a script, including
     an interpreter's ``python /path/tool.py`` argument.  It does not pretend
@@ -365,7 +906,8 @@ def require_checkout_owned_scripts(command: list[str], cwd: Path) -> None:
     by this gate.
     """
 
-    root = cwd.resolve()
+    working_directory = cwd.resolve()
+    root = (repository_root or working_directory).resolve()
     offenders: list[Path] = []
     script_suffixes = {".bash", ".py", ".rb", ".sh"}
     for token in command:
@@ -373,7 +915,7 @@ def require_checkout_owned_scripts(command: list[str], cwd: Path) -> None:
             continue
         candidate = Path(token)
         if not candidate.is_absolute():
-            candidate = root / candidate
+            candidate = working_directory / candidate
         try:
             resolved = candidate.resolve(strict=True)
         except (OSError, RuntimeError):
@@ -395,9 +937,10 @@ def require_checkout_owned_scripts(command: list[str], cwd: Path) -> None:
     if offenders:
         rendered = "\n".join(f"  - {path}" for path in sorted(set(offenders)))
         raise SystemExit(
-            "pbrun: executable script bytes are outside the stamped checkout:\n"
+            "pbrun: executable script bytes are outside the snapshotted "
+            "repository:\n"
             f"{rendered}\n"
-            "Move each helper under the checkout so its bytes are bound by "
+            "Move each helper under the repository so its bytes are bound by "
             "the action's code closure. Shell-indirected helpers must follow "
             "the same rule."
         )
@@ -427,7 +970,15 @@ def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
             f"{', '.join(others)}.")
 
 
-def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool) -> str:
+def pin_notice(
+    queue,
+    intent,
+    *,
+    cwd: Path,
+    hostname: str,
+    here: bool,
+    portable_checkout: bool = False,
+) -> str:
     """What the submitter is not otherwise told: this action is one box wide.
 
     The pin is a silent consequence of a path.  ``pbrun`` printed
@@ -463,12 +1014,12 @@ def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool) -> str:
     checkout is indistinguishable from ``--tag <this host>`` by tags alone,
     and the override needs to know it was asked for.
 
-    Returns "" when there is nothing to say -- a shared checkout that was
+    Returns "" when there is nothing to say -- an immutable snapshot that was
     already free to run anywhere.
     """
 
     tags = [str(t) for t in (intent.get("tags") or [])]
-    local = is_box_local(cwd)
+    local = is_box_local(cwd) and not portable_checkout
     pinned = hostname in tags               # the pin as it landed, not as asked
     claimants = queue.placeable_hosts(intent)
     others = None if claimants is None else sorted(
@@ -722,10 +1273,17 @@ def main() -> int:
     ap.add_argument("--tag", action="append", default=[],
                     help="require a box offering this tag (e.g. a hardware class)")
     ap.add_argument("--anywhere", action="store_true",
-                    help="accepted and ignored; a shared checkout is already free "
-                         "to run anywhere")
+                    help="assert that command/tool/data dependencies outside "
+                         "the snapshot are identical on every eligible worker")
     ap.add_argument("--here", action="store_true",
-                    help="pin to this box even though the checkout is shared")
+                    help="pin the materialized checkout to this box")
+    ap.add_argument(
+        "--checkout-snapshot-max-bytes",
+        type=int,
+        default=CHECKOUT_SNAPSHOT_MAX_BYTES,
+        help="lower the hard fleet ceiling for both the logical materialized "
+             "Git tree and compressed bundle (cannot raise it)",
+    )
     ap.add_argument("--cwd", default=os.getcwd())
     ap.add_argument("--deterministic", action="store_true",
                     help="declare byte-identical output; enables CAS reuse")
@@ -785,7 +1343,54 @@ def main() -> int:
             f"shared, the filesystem is not."
         )
 
-    require_checkout_owned_scripts(command, cwd)
+    repository_root = git_repository_root(cwd)
+    if repository_root is None:
+        raise SystemExit(
+            "pbrun: --cwd must be inside a Git checkout so its exact bytes "
+            "can be sealed and materialized through the CAS; mutable "
+            "path-addressed submission is not supported"
+        )
+    require_checkout_snapshot_limit(args.checkout_snapshot_max_bytes)
+    early_paths = snapshot_path_roster(repository_root)
+    require_working_tree_size(
+        repository_root,
+        early_paths,
+        max_bytes=args.checkout_snapshot_max_bytes,
+    )
+    require_untransformed_checkout(repository_root, early_paths)
+    require_checkout_owned_scripts(
+        command, cwd, repository_root=repository_root
+    )
+    portable_checkout = True
+    logical_cwd = cwd.relative_to(repository_root).as_posix() or "."
+
+    # `run_local_action` builds the child's environment from *these* and
+    # nothing else, so an empty dict is not "inherit the caller". Keep the
+    # caller's additions separate as well: placement resolves argv[0] against
+    # the complete declared PATH, while its conservative data-path screen must
+    # not mistake fleet-owned defaults for caller-owned external inputs.
+    variables = {} if args.no_default_env else {
+        "HOME": "/home/rob",
+        "TMPDIR": "/home/rob/tmp",
+        "TRITON_CACHE_DIR": "/home/rob/.triton-cache",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "OMP_NUM_THREADS": "4",
+        "MKL_NUM_THREADS": "4",
+        "OPENBLAS_NUM_THREADS": "4",
+    }
+    caller_variables: dict[str, str] = {}
+    for entry in args.env:
+        if "=" not in entry:
+            raise SystemExit(f"--env expects K=V, got {entry!r}")
+        key, value = entry.split("=", 1)
+        if key in {CONTAINER_OWNER_ENV, CONTAINER_MARKER_ENV}:
+            raise SystemExit(
+                f"pbrun: {key} is derived by the container lifecycle; "
+                "callers may not set it")
+        variables[key] = value
+        caller_variables[key] = value
 
     demand = _parse_demand(args.demand)
     if args.gpu:
@@ -809,6 +1414,12 @@ def main() -> int:
         explicit=list(args.tag),
         here=args.here,
         hostname=socket.gethostname(),
+        portable_checkout=portable_checkout,
+        command=command,
+        repository_root=repository_root,
+        environment=variables,
+        caller_environment=caller_variables,
+        anywhere=args.anywhere,
     )
     if args.exclusive:
         # "All of one box" is a fact about the boxes, and guessing it does not
@@ -821,46 +1432,10 @@ def main() -> int:
             pool.PoolQueue(SH / "pb-queue"), tags)
         demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
 
-    # `run_local_action` builds the child's environment from *these* and
-    # nothing else, so an empty dict is not "inherit the caller" -- it is an
-    # empty environment, rescued only by `bash -lc` sourcing a profile.  That
-    # is why TRITON_CACHE_DIR never reached a worker and 38 tests failed on a
-    # root-owned cache; the fix is to declare the few the fleet actually needs.
-    #
-    # Every value here is deliberately the same string on every box, so the
-    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:
-    # the path must be box-LOCAL (never /mnt/shared, where concurrent boxes
-    # corrupt each other's cache), and it is local precisely because each box
-    # has its own /home/rob -- same string, different disk.
-    variables = {} if args.no_default_env else {
-        "HOME": "/home/rob",
-        "TMPDIR": "/home/rob/tmp",
-        "TRITON_CACHE_DIR": "/home/rob/.triton-cache",
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        # Torch, numpy and OpenBLAS each size their thread pool from the
-        # machine's core count, and the pool admits many actions per box, so
-        # the default multiplies: dl380g10 ran a 24-worker pytest under 16
-        # worker loops and reached a load average of **927** on 80 cores, with
-        # every process fighting for a scheduler slot it did not need.  A
-        # fleet gets its parallelism from running many actions, not from each
-        # action taking the whole box, so the per-process share is small by
-        # default.  An action that genuinely wants threads says so with
-        # ``--env OMP_NUM_THREADS=N``, which overrides this.
-        "OMP_NUM_THREADS": "4",
-        "MKL_NUM_THREADS": "4",
-        "OPENBLAS_NUM_THREADS": "4",
-    }
-    for entry in args.env:
-        if "=" not in entry:
-            raise SystemExit(f"--env expects K=V, got {entry!r}")
-        key, value = entry.split("=", 1)
-        if key in {CONTAINER_OWNER_ENV, CONTAINER_MARKER_ENV}:
-            raise SystemExit(
-                f"pbrun: {key} is derived by the container lifecycle; "
-                "callers may not set it")
-        variables[key] = value
+    if portable_checkout:
+        require_relocatable_checkout(
+            command, variables, cwd, repository_root=repository_root
+        )
 
     # Docker's payload is reparented to containerd-shim and therefore survives
     # a kill of every process group below the action launcher.  Put the fleet's
@@ -868,7 +1443,15 @@ def main() -> int:
     # and adds the derived ownership label which withdrawal/finish query before
     # returning capacity.  This is control-plane state, not an optional action
     # convenience, so a caller cannot override either identity variable.
-    owner = container_owner(command, cwd, demand, variables)
+    identity = _git_identity(cwd)
+    owner = container_owner(
+        command,
+        cwd,
+        demand,
+        variables,
+        identity=identity,
+        logical_cwd=logical_cwd,
+    )
     marker = SH / "pb-queue" / pool.CONTAINER_OWNERS / f"{owner}.used"
     prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
     variables["PATH"] = f"{CONTAINER_WRAPPER_DIR}:{prior_path}"
@@ -908,10 +1491,15 @@ def main() -> int:
     # hidden for this submission even though the new grammar is exact.
     keep_droppings_out_of_git(cwd)
     log_name, stamp_name = result_and_stamp_names(
-        command, cwd, demand, variables)
+        command,
+        cwd,
+        demand,
+        variables,
+        identity=identity,
+        logical_cwd=logical_cwd,
+    )
     # The closure member must be under checkout_root: that is where the
     # worker re-verifies it, on whichever box claimed the action.
-    identity = _git_identity(cwd)
     # Written through a private temp file and renamed, because rename is the
     # one primitive this fleet trusts on NFS and a plain write is not atomic.
     # Concurrent submits from one checkout -- forty test shards, say -- all
@@ -921,7 +1509,9 @@ def main() -> int:
     # those submits *because the commit is in the name*, so atomicity is the
     # whole fix and ordering does not matter.  It was not identical before
     # that: the name held the command and the content held the commit.
-    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)
+    payload = json.dumps(
+        {"cwd": logical_cwd, **identity}, indent=1, sort_keys=True
+    )
     scratch = cwd / f"{stamp_name}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
     try:
         # fsync both the file and its directory before publishing.  The submit
@@ -947,6 +1537,14 @@ def main() -> int:
     finally:
         if scratch.exists():
             scratch.unlink()
+    cas = pb.PrismaBuildCAS(SH / "cas")
+    checkout_snapshot = build_git_checkout_snapshot(
+        cwd,
+        stamp_name=stamp_name,
+        cas=cas,
+        max_bytes=args.checkout_snapshot_max_bytes,
+        expected_identity=identity,
+    )
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
@@ -966,9 +1564,14 @@ def main() -> int:
             "working_directory": ".",
             "result_path": log_name,
         },
-        "inputs": [],
+        "inputs": [checkout_snapshot["input"]],
         "code_closure": pb.build_code_closure(cwd, [stamp_name]),
-        "params": {"command": command, "cwd": str(cwd), "demand": demand},
+        "params": {
+            "command": command,
+            "cwd": logical_cwd,
+            "demand": demand,
+            "checkout_snapshot": checkout_snapshot,
+        },
         "environment": {"variables": variables, "toolchain": {}},
         "execution_scope": {
             "portability": "portable", "platform_key": None, "host_class": None,
@@ -977,7 +1580,6 @@ def main() -> int:
     action = pb.seal_action(body)
     key = str(action["action_key"])
 
-    cas = pb.PrismaBuildCAS(SH / "cas")
     cas.publish_action_request(action)
 
     q = pool.PoolQueue(SH / "pb-queue")
@@ -1002,8 +1604,14 @@ def main() -> int:
     # Say how wide this action is before saying it was queued.  A pin is a
     # consequence of the checkout path, and nothing used to report it, so a
     # submitter narrowed the fleet to one box without being told.
-    notice = pin_notice(q, intent, cwd=cwd, hostname=socket.gethostname(),
-                        here=args.here)
+    notice = pin_notice(
+        q,
+        intent,
+        cwd=cwd,
+        hostname=socket.gethostname(),
+        here=args.here,
+        portable_checkout=portable_checkout,
+    )
     if notice:
         print(notice, file=sys.stderr, flush=True)
     live_verdict = q.placeable(intent)
@@ -1041,17 +1649,18 @@ def main() -> int:
     except (OSError, ValueError):
         superseding = None
 
-    q.publish(
-        action_key=key,
-        cas_root=str(SH / "cas"),
-        checkout_root=str(cwd),
-        worker_script=str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
-        tags=tags,
-        needs_gpu=bool(demand.get("gpu")),
-        priority=args.priority,
-        resources=demand,
-        container_owner=owner,
-    )
+    publication = {
+        "action_key": key,
+        "cas_root": str(SH / "cas"),
+        "worker_script": str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
+        "tags": tags,
+        "needs_gpu": bool(demand.get("gpu")),
+        "priority": args.priority,
+        "resources": demand,
+        "container_owner": owner,
+    }
+    publication["checkout_snapshot"] = checkout_snapshot
+    q.publish(**publication)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
