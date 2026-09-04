@@ -310,6 +310,15 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
     status = str(outcome.get("status"))
     print(f"pbrun: {status} on {outcome.get('finished_host')} "
           f"in {detail.get('elapsed_s', 0):.0f}s", file=sys.stderr)
+    if detail.get("oom_killed"):
+        # The one failure whose cause is already known.  Saying it here is the
+        # difference between "my job died" and "my job asked for four
+        # gigabytes and took more", which is a thing the submitter can fix.
+        declared = detail.get("declared_mem_gb")
+        print(f"pbrun: killed by its own cgroup -- this action declared "
+              f"mem_gb={declared} and exceeded it. Raise it with "
+              f"--demand mem_gb=N (the default for a non-GPU action is 4).",
+              file=sys.stderr)
     if status == "cache_hit":
         return 0
     rc = detail.get("returncode")

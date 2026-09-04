@@ -1354,59 +1354,69 @@ class PoolQueue:
         process = subprocess.Popen(
             launch, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
-        # Refresh the lease while the child runs; a long action must not be
-        # reaped out from under itself.
-        while True:
-            try:
-                out, err = process.communicate(timeout=heartbeat_s)
-                break
-            except subprocess.TimeoutExpired:
-                self.write_lease(key, owner=owner)
-                if timeout_s is not None and _now() - started > timeout_s:
-                    if unit is not None:
-                        # Killing ``systemd-run`` does not stop the service it
-                        # started, and under ``--pipe`` the service holds the
-                        # pipe this call is about to read -- so a plain kill
-                        # here would leave the timeout bounding nothing and
-                        # block on ``communicate`` until the work ended by
-                        # itself.  Stop the unit; the launcher then exits.
-                        _systemctl("stop", unit, timeout_s=30.0)
-                    process.kill()
-                    out, err = process.communicate()
-                    if unit is not None:
-                        _systemctl("reset-failed", unit)
-                    return {
-                        "status": "timeout",
-                        "returncode": None,
-                        "stdout": out,
-                        "stderr": err,
-                        "elapsed_s": _now() - started,
-                        "argv": argv,
-                        **cap_fields,
-                    }
-        returncode = process.returncode
-        if unit is not None:
-            reported = unit_outcome(unit)
-            _systemctl("reset-failed", unit)
-            if reported.get("returncode") is not None:
-                returncode = int(reported["returncode"])   # type: ignore[arg-type]
-            cap_fields["unit_result"] = reported.get("result", "")
-            cap_fields["oom_killed"] = bool(reported.get("oom_killed"))
-            cap_fields["memory_peak_bytes"] = reported.get("memory_peak")
-            if reported.get("oom_killed"):
-                err = (err or "") + (
-                    f"\n[prismabuild] killed by its own cgroup: this action "
-                    f"declared {cap_gb} GB and exceeded it.\n"
-                )
-        return {
-            "status": "executed" if returncode == 0 else "failed",
-            "returncode": returncode,
-            "stdout": out,
-            "stderr": err,
-            "elapsed_s": _now() - started,
-            "argv": argv,
-            **cap_fields,
-        }
+        try:
+            # Refresh the lease while the child runs; a long action must not be
+            # reaped out from under itself.
+            while True:
+                try:
+                    out, err = process.communicate(timeout=heartbeat_s)
+                    break
+                except subprocess.TimeoutExpired:
+                    self.write_lease(key, owner=owner)
+                    if timeout_s is not None and _now() - started > timeout_s:
+                        if unit is not None:
+                            # Killing ``systemd-run`` does not stop the service
+                            # it started, and under ``--pipe`` the service
+                            # holds the pipe this call is about to read -- so a
+                            # plain kill here would leave the timeout bounding
+                            # nothing and block on ``communicate`` until the
+                            # work ended by itself.  Measured with the stop
+                            # suppressed: a one-second timeout was still
+                            # running 100 s later with its unit active.  Stop
+                            # the unit; the launcher then exits.
+                            _systemctl("stop", unit, timeout_s=30.0)
+                        process.kill()
+                        out, err = process.communicate()
+                        return {
+                            "status": "timeout",
+                            "returncode": None,
+                            "stdout": out,
+                            "stderr": err,
+                            "elapsed_s": _now() - started,
+                            "argv": argv,
+                            **cap_fields,
+                        }
+            returncode = process.returncode
+            if unit is not None:
+                reported = unit_outcome(unit)
+                if reported.get("returncode") is not None:
+                    returncode = int(reported["returncode"])  # type: ignore[arg-type]
+                cap_fields["unit_result"] = reported.get("result", "")
+                cap_fields["oom_killed"] = bool(reported.get("oom_killed"))
+                cap_fields["memory_peak_bytes"] = reported.get("memory_peak")
+                if reported.get("oom_killed"):
+                    err = (err or "") + (
+                        f"\n[prismabuild] killed by its own cgroup: this action "
+                        f"declared {cap_gb} GB and exceeded it.\n"
+                    )
+            return {
+                "status": "executed" if returncode == 0 else "failed",
+                "returncode": returncode,
+                "stdout": out,
+                "stderr": err,
+                "elapsed_s": _now() - started,
+                "argv": argv,
+                **cap_fields,
+            }
+        finally:
+            # A failed transient unit lingers until somebody resets it, and the
+            # name carries a per-attempt nonce, so a leak is never cleaned up
+            # by the next launch.  In ``finally`` because the paths that skip
+            # it are the ones that leak: an exception between the launch and
+            # the return is exactly what ``serve_once``'s own handler exists
+            # for.
+            if unit is not None:
+                _systemctl("reset-failed", unit)
 
     def serve_once(
         self,
