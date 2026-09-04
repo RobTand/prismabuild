@@ -554,6 +554,29 @@ def test_a_cancelled_job_is_never_retried_around(
     assert result.attempts[0][1].state == "CANCELLED"
 
 
+def test_a_timed_out_job_is_retried_exactly_as_the_pull_queue_retries_one(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The queue's ``finish`` counts only ``executed`` and ``cache_hit`` as
+    success, so an action it killed at ``timeout_s`` is requeued while attempts
+    remain.  ``--retries 3`` has to mean three runs on either transport, or the
+    flag means two different things depending on how the action was posted."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "TIMEOUT")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "timed-out")
+    request = cas.publish_action_request(action)
+    result = sl.run(
+        action, cas=cas, request_path=request,
+        resources=sl.LaneResources(), timeout_s=600.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY,
+        retry_safe=True, max_attempts=3, poll_s=0.0,
+    )
+    assert [job.attempt for job, _ in result.attempts] == [1, 2, 3]
+    assert {outcome.state for _, outcome in result.attempts} == {"TIMEOUT"}
+    assert result.receipt is None
+
+
 # --------------------------------------------------------------------------
 # Withdrawal
 # --------------------------------------------------------------------------

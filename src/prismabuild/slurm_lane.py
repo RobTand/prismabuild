@@ -94,11 +94,21 @@ TERMINAL_STATES = frozenset({
     "OUT_OF_MEMORY", "PREEMPTED", "REVOKED", "SPECIAL_EXIT", "TIMEOUT",
 })
 
-#: The terminal states a *retry* can honestly answer.  ``CANCELLED`` is an
-#: operator's decision and re-running it would be overruling them; ``TIMEOUT``
-#: and ``DEADLINE`` describe a wall clock the retry would meet identically.
+#: The terminal states a *retry* can honestly answer.
+#:
+#: ``TIMEOUT`` is in the set because the pull queue puts it there: ``finish``
+#: reads ``succeeded = status in {"executed", "cache_hit"}``, so an action its
+#: ``execute`` killed at ``timeout_s`` is dispositioned ``requeued`` while
+#: attempts remain.  The same ``--retries`` therefore buys the same number of
+#: runs on either transport.  It earns its keep when the first attempt was
+#: starved rather than slow -- and under SLURM the retry can land on a
+#: different node, which the queue's retry could not.
+#:
+#: ``CANCELLED`` stays out: it is an operator's decision, and re-running it
+#: would be overruling them.  ``DEADLINE`` stays out too -- that is a partition
+#: or QOS deadline in absolute time, so a resubmission meets it immediately.
 RETRIABLE_STATES = frozenset({
-    "BOOT_FAIL", "FAILED", "NODE_FAIL", "OUT_OF_MEMORY", "PREEMPTED",
+    "BOOT_FAIL", "FAILED", "NODE_FAIL", "OUT_OF_MEMORY", "PREEMPTED", "TIMEOUT",
 })
 
 #: What ``wait`` reports when the caller's own patience ran out first.  The job
