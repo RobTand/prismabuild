@@ -1,8 +1,8 @@
 # Scheduler decision: keep the core, replace the pull queue with SLURM
 
-Status: **decision record, awaiting Rob's ratification.** Written 2026-09-04 on
-`main` = `44b9f8f` plus the fixes branch `claude/pb-fixes-2026-09-04`. It
-answers one question Rob asked that day:
+Status: **ratified.** Rob endorsed SLURM on 2026-09-04 (*"yes, I endorse
+SLURM"*). Written that day on `main` = `44b9f8f` plus the fixes branch
+`claude/pb-fixes-2026-09-04`; it answers one question Rob asked:
 
 > Figure out if PrismaBuild, as we've built it, is the "right" thing to do, or
 > if there's another open source project out there that does something similar
@@ -150,8 +150,9 @@ needed it; move this document's issue table to closed.
 ## 7. Open issues, dispositioned
 
 `fixed` means on the fixes branch with a pre-fix failure line in the commit.
-`moot` means the defect cannot exist under SLURM; those stay open until Rob
-ratifies, then close with the cutover PR. Nothing is closed by this document.
+`moot` means the defect cannot exist under SLURM; with the decision ratified
+they close with the cutover PR, not before, because the pool stays the live
+plane until then. Nothing is closed by this document.
 
 | # | Title (short) | Class | Disposition |
 |---|---|---|---|
