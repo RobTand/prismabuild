@@ -1481,9 +1481,14 @@ class PoolQueue:
         stamps a fresh one and every requeue -- ``finish``'s retry branch and
         ``reap_stale``'s -- carries the original forward, so the losing half
         of a withdrawal race and a fresh submission are distinguishable
-        without asking either of them to declare which it is.  A record
-        stamped LATER than the withdrawal is a later request and is not
-        covered.
+        without asking either of them to declare which it is.  The test is
+        equality, not "newer than": only two writers ever put a record in
+        ``ready`` -- ``publish``, which stamps a fresh ``published_unix``, and
+        the two requeue branches, which copy the original through unchanged --
+        so a record whose stamp DIFFERS from the withdrawal's is a different
+        request whichever way the difference runs.  Ordering would have made
+        the guard depend on the clock never stepping backwards between two
+        submissions, which is a promise nothing here needs to make.
 
         A record with no generation to compare is treated as covered, which is
         the safe direction: the cancelled work does not run.  Every caller
@@ -1510,7 +1515,7 @@ class PoolQueue:
         mine = record.get("published_unix")
         theirs = marker.get("published_unix")
         if isinstance(mine, (int, float)) and isinstance(theirs, (int, float)):
-            if float(mine) > float(theirs):
+            if float(mine) != float(theirs):
                 return None
         return marker
 

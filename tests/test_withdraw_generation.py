@@ -202,3 +202,31 @@ def test_a_fresh_submission_survives_a_marker_that_is_still_live(
     item = queue.claim()
     assert item is not None, "a newer generation is not what was withdrawn"
     assert item["published_unix"] > marker["published_unix"]
+
+
+def test_the_generation_test_does_not_lean_on_the_clock(
+    queue: pool.PoolQueue
+) -> None:
+    """A different generation is a different request, whichever way it runs.
+
+    Only ``publish`` and the two requeue branches ever write to ``ready``, and
+    the requeues copy ``published_unix`` through unchanged, so equality is the
+    whole test.  Ordering would have made a cancelled action re-runnable, or a
+    fresh submission eatable, on nothing worse than NTP stepping a clock
+    backwards between two submissions.
+    """
+
+    _publish(queue, KEY_A)
+    queue.withdraw(KEY_A)
+    marker = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+
+    _publish(queue, KEY_A)
+    queue.item_path(pool.WITHDRAWN, KEY_A).write_text(json.dumps(marker))
+    # The clock stepped back between the withdrawal and the re-submission.
+    ready = queue.item_path(pool.READY, KEY_A)
+    item = json.loads(ready.read_text())
+    item["published_unix"] = marker["published_unix"] - 1.0
+    ready.write_text(json.dumps(item))
+
+    assert queue.claim() is not None, (
+        "an earlier stamp is still a different request, not the withdrawn one")
