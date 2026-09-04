@@ -880,6 +880,15 @@ keep streaming regardless.
 
 ## Sequencing
 
+> **2026-09-04.** Step 1 below was never executed: no box ever had `sbatch`,
+> and `pool.py` filled the gap as the sole execution plane. The review of that
+> day found the pull queue to be the "roll-your-own queue dir" declined above
+> and recommends carrying out step 1 now, with a thin `pbrun --transport slurm`
+> lane instead of the Dagster seam; see
+> `docs/scheduler_decision_2026-09-04.md` for the evidence, the alternatives
+> (HTCondor is the runner-up), the per-issue dispositions and the migration
+> plan. It proposes; Rob ratifies.
+
 1. (May precede GLM v1, CPU-side only) Minimal SLURM: controller on dl380,
    slurmd on both Sparks, `interactive` reservation on sparky; drive
    existing scripts via sbatch unchanged.
