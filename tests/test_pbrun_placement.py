@@ -1019,6 +1019,237 @@ def test_git_snapshot_refuses_an_active_clean_filter(
         )
 
 
+def _stamped(checkout: Path, stamp_name: str) -> None:
+    (checkout / stamp_name).write_text(
+        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
+    )
+
+
+def _materialized(snapshot: dict[str, object], cas_root: Path):
+    """Materialize a sealed snapshot exactly the way a worker does."""
+
+    return pool_module._execution_checkout(
+        {
+            "action_key": "a" * 64,
+            "cas_root": str(cas_root),
+            "checkout_snapshot": snapshot,
+        }
+    )
+
+
+def test_git_snapshot_keeps_the_source_commit_as_its_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A diff-derived gate needs ancestry, and a root commit has none.
+
+    ``tools/impacted_tests.py --ref BASE...HEAD`` is a required pre-merge gate
+    in the Tessera checkout.  Under the parentless snapshot every one of its
+    revision arguments -- ``HEAD~1``, ``merge-base``, the symmetric difference
+    -- was a ``fatal: ambiguous argument``, so the gate could not run under
+    portable pbrun execution at all.  The sealed commit therefore keeps the
+    source's HEAD as its parent, and the bundle carries the ancestry that
+    makes those spellings resolve.
+    """
+
+    checkout = _git_checkout(tmp_path)
+    source_head = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+    (checkout / "task.py").write_text("VALUE = 'edited after the commit'\n")
+    stamp_name = f"{pbrun.STAMP_PREFIX}ancestry-test.json"
+    _stamped(checkout, stamp_name)
+    cas_root = tmp_path / "cas"
+    cas = core_module.PrismaBuildCAS(cas_root)
+
+    snapshot = pbrun.build_git_checkout_snapshot(
+        checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+    )
+    assert snapshot["parent"] == source_head
+
+    monkeypatch.setattr(
+        pool_module, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized",
+        raising=False,
+    )
+    with _materialized(snapshot, cas_root) as root:
+        assert _git(root, "rev-parse", "HEAD~1").stdout.strip() == source_head
+        diff = _git(root, "diff", "--name-only", f"{source_head}...HEAD")
+        assert diff.returncode == 0, diff.stderr
+        assert "task.py" in diff.stdout.split()
+
+
+def test_git_snapshot_advertises_a_requested_branch_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``BASE...HEAD`` is usually spelled with a branch name, not a hash."""
+
+    checkout = _git_checkout(tmp_path)
+    branch = _git(checkout, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    source_head = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+    (checkout / "task.py").write_text("VALUE = 'edited after the commit'\n")
+    stamp_name = f"{pbrun.STAMP_PREFIX}named-ref-test.json"
+    _stamped(checkout, stamp_name)
+    cas_root = tmp_path / "cas"
+    cas = core_module.PrismaBuildCAS(cas_root)
+
+    snapshot = pbrun.build_git_checkout_snapshot(
+        checkout,
+        stamp_name=stamp_name,
+        cas=cas,
+        max_bytes=16 * 1024 * 1024,
+        snapshot_refs=(branch,),
+    )
+    assert snapshot["refs"] == {branch: source_head}
+
+    monkeypatch.setattr(
+        pool_module, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized",
+        raising=False,
+    )
+    with _materialized(snapshot, cas_root) as root:
+        assert _git(root, "rev-parse", branch).stdout.strip() == source_head
+        diff = _git(root, "diff", "--name-only", f"{branch}...HEAD")
+        assert diff.returncode == 0, diff.stderr
+        assert "task.py" in diff.stdout.split()
+
+
+def test_an_unknown_snapshot_ref_refuses_before_anything_is_sealed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A name the source cannot resolve is a typo, not a queue item."""
+
+    checkout = _git_checkout(tmp_path)
+
+    def unreachable(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("a refused --snapshot-ref reached the CAS")
+
+    monkeypatch.setattr(pbrun, "build_git_checkout_snapshot", unreachable)
+    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(
+        sys, "argv",
+        ["pbrun.py", "--cwd", str(checkout), "--snapshot-ref", "no-such-branch",
+         "--", "true"],
+    )
+    with pytest.raises(SystemExit) as raised:
+        pbrun.main()
+
+    message = str(raised.value)
+    assert message.startswith("pbrun: ")
+    assert "no-such-branch" in message
+    assert not list(checkout.glob(f"{pbrun.STAMP_PREFIX}*"))
+    assert not (tmp_path / "fleet").exists()
+
+
+def test_a_malformed_snapshot_ref_refuses_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The name becomes a refspec on a worker; Git's own check owns it."""
+
+    checkout = _git_checkout(tmp_path)
+    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(
+        sys, "argv",
+        ["pbrun.py", "--cwd", str(checkout), "--snapshot-ref", "bad name",
+         "--", "true"],
+    )
+    with pytest.raises(SystemExit, match="pbrun: .*bad name"):
+        pbrun.main()
+
+
+def test_git_snapshot_bounds_a_bundle_its_history_made_large(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compressed-bundle ceiling now measures ancestry, not just the tree.
+
+    Before the snapshot carried a parent, the bundle was roughly the
+    compressed working tree, so the two tree-side bounds covered it by
+    proxy.  A small tree over a heavy history is a new way to exceed the
+    limit -- and the limit, not the design, is what has to keep saying no.
+    """
+
+    checkout = _git_checkout(tmp_path)
+    heavy = checkout / "deleted-later.bin"
+    heavy.write_bytes(os.urandom(512 * 1024))
+    assert _git(checkout, "add", "deleted-later.bin").returncode == 0
+    assert _git(checkout, "commit", "-qm", "heavy history").returncode == 0
+    assert _git(checkout, "rm", "-q", "deleted-later.bin").returncode == 0
+    assert _git(checkout, "commit", "-qm", "small tree again").returncode == 0
+    stamp_name = f"{pbrun.STAMP_PREFIX}bundle-size-test.json"
+    _stamped(checkout, stamp_name)
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    # Both tree-side bounds pass on this checkout; the bundle bound is the
+    # only thing between a heavy history and CAS ingestion.
+    monkeypatch.setattr(pbrun, "require_working_tree_size", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        pbrun, "require_supported_snapshot_tree", lambda *_a, **_k: None
+    )
+    with pytest.raises(SystemExit, match="above the .* safety limit"):
+        pbrun.build_git_checkout_snapshot(
+            checkout, stamp_name=stamp_name, cas=cas, max_bytes=64 * 1024
+        )
+
+
+def test_git_snapshot_refuses_a_shallow_source_by_name(tmp_path: Path) -> None:
+    """Ancestry a source does not have cannot be sealed into a bundle.
+
+    ``bundle create`` walks parents now, so a shallow clone dies inside
+    pack-objects with ``Failed to traverse parents of commit`` -- a message
+    about Git's internals, arriving after the tree has been hashed.  Refuse
+    it up front, in a sentence that names the fix.
+    """
+
+    origin = _git_checkout(tmp_path)
+    (origin / "second.txt").write_text("later history\n")
+    assert _git(origin, "add", "second.txt").returncode == 0
+    assert _git(origin, "commit", "-qm", "second").returncode == 0
+    shallow = tmp_path / "shallow"
+    assert subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{origin}", str(shallow)],
+        capture_output=True, text=True,
+    ).returncode == 0
+    assert _git(
+        shallow, "config", "user.email", "test@example.invalid"
+    ).returncode == 0
+    assert _git(
+        shallow, "config", "user.name", "PrismaBuild test"
+    ).returncode == 0
+    stamp_name = f"{pbrun.STAMP_PREFIX}shallow-test.json"
+    _stamped(shallow, stamp_name)
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(SystemExit, match="shallow clone"):
+        pbrun.build_git_checkout_snapshot(
+            shallow, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        )
+
+
+def test_git_snapshot_refuses_a_repository_with_no_commits(
+    tmp_path: Path,
+) -> None:
+    """An unborn HEAD refuses, exactly as it did before ancestry was sealed.
+
+    ``parent: null`` exists in the v2 contract so the shape is total, but the
+    submitter never produces it: identity is taken before the snapshot and
+    ``rev-parse HEAD`` fails on a repository with no commits.  Recorded here
+    so the refusal stays a decision rather than an accident.
+    """
+
+    checkout = tmp_path / "unborn"
+    checkout.mkdir()
+    assert _git(checkout, "init", "-q").returncode == 0
+    assert _git(
+        checkout, "config", "user.email", "test@example.invalid"
+    ).returncode == 0
+    assert _git(
+        checkout, "config", "user.name", "PrismaBuild test"
+    ).returncode == 0
+    stamp_name = f"{pbrun.STAMP_PREFIX}unborn-test.json"
+    (checkout / stamp_name).write_text("{}")
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(SystemExit, match="cannot identify checkout"):
+        pbrun.build_git_checkout_snapshot(
+            checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        )
+
+
 def test_portable_checkout_refuses_a_submitter_local_path_in_argv(tmp_path) -> None:
     """Relocation must not leave an argv escape back into the live checkout."""
 

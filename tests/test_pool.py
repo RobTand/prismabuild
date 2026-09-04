@@ -511,6 +511,62 @@ def test_execution_checkout_records_cleanup_failure_without_hiding_success(
     real_rmtree(temporary)
 
 
+def test_execution_checkout_still_materializes_a_v1_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Items already in ``ready/`` must survive the ancestry rollout.
+
+    A v1 record carries no ``parent`` and no ``refs``, and its bundle
+    advertises one ref.  The materializer must keep reading it exactly as it
+    did, or a runtime roll strands every queued action mid-flight.
+    """
+
+    item = _materialization_item(tmp_path)
+    snapshot = item["checkout_snapshot"]
+    assert isinstance(snapshot, dict)
+    assert snapshot["schema"] == pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1
+    assert "parent" not in snapshot and "refs" not in snapshot
+    local_root = tmp_path / "materialized"
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", local_root, raising=False)
+
+    with pool._execution_checkout(item) as checkout:
+        head = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        assert head == snapshot["commit"]
+        assert (checkout / "payload.txt").read_text() == (
+            "sealed lifecycle bytes\n"
+        )
+
+
+def test_execution_checkout_refuses_a_ref_the_bundle_contradicts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recorded branch id the bundle does not advertise is not a checkout.
+
+    The record and the bundle are separately addressed: the record travels in
+    the queue item, the bundle through the CAS.  A worker that trusted the
+    record would create ``refs/heads/master`` at an id nothing in the bundle
+    reaches, and every ``master...HEAD`` inside the action would then be a
+    silent lie rather than a refusal.
+    """
+
+    item = _materialization_item(tmp_path)
+    snapshot = dict(item["checkout_snapshot"])   # type: ignore[arg-type]
+    snapshot["schema"] = pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2
+    snapshot["parent"] = None
+    snapshot["refs"] = {"mainline": "b" * 40}
+    item["checkout_snapshot"] = snapshot
+    monkeypatch.setattr(
+        pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized", raising=False,
+    )
+
+    with pytest.raises(pool.PoolContractError, match="mainline"):
+        with pool._execution_checkout(item):
+            pass
+
+
 def test_snapshot_execution_is_isolated_from_midrun_submitter_mutation(
     queue: pool.PoolQueue, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

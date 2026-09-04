@@ -3589,6 +3589,179 @@ def test_cli_ingests_and_verifies_input_contract(
     assert Path(verified["payload_path"]).read_bytes() == payload
 
 
+def _two_commit_checkout(tmp_path: Path) -> tuple[Path, str, str, str]:
+    checkout = tmp_path / "ancestry"
+    checkout.mkdir()
+    for argv in (
+        ["init", "-q"],
+        ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "PrismaBuild test"],
+    ):
+        subprocess.run(["git", "-C", str(checkout), *argv], check=True)
+    ids = []
+    for index in range(2):
+        (checkout / f"f{index}.txt").write_text(f"{index}\n")
+        subprocess.run(["git", "-C", str(checkout), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(checkout), "commit", "-qm", f"commit {index}"],
+            check=True,
+        )
+        ids.append(
+            subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+        )
+    branch = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "--abbrev-ref", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    return checkout, ids[0], ids[1], branch
+
+
+def test_pbrun_preflight_proves_the_sealed_parent_and_refs(
+    tmp_path: Path,
+) -> None:
+    """Ancestry is attested where it will be used, not assumed from a record.
+
+    A bundle that omitted the parent still checks out clean at the sealed
+    commit, so the head/dirty proof cannot see the difference -- the action
+    finds out inside its own gate, on a worker, after the queue said yes.
+    """
+
+    checkout, first, second, branch = _two_commit_checkout(tmp_path)
+    snapshot = {
+        "commit": second, "parent": first, "refs": {branch: second},
+    }
+    pb._verify_pbrun_checkout_ancestry(snapshot, checkout)
+
+    with pytest.raises(pb.ActionContractError, match="sealed parent"):
+        pb._verify_pbrun_checkout_ancestry(
+            {"commit": second, "parent": None, "refs": {}}, checkout
+        )
+    with pytest.raises(pb.ActionContractError, match="sealed parent"):
+        pb._verify_pbrun_checkout_ancestry(
+            {"commit": second, "parent": second, "refs": {}}, checkout
+        )
+    with pytest.raises(pb.ActionContractError, match=f"ref '{branch}'"):
+        pb._verify_pbrun_checkout_ancestry(
+            {"commit": second, "parent": first, "refs": {branch: first}},
+            checkout,
+        )
+
+
+def _snapshot_input(tmp_path: Path) -> dict[str, object]:
+    bundle = tmp_path / "checkout.bundle"
+    bundle.write_bytes(b"not a real bundle, only a CAS input\n")
+    cas = pb.PrismaBuildCAS(tmp_path / "snapshot-cas")
+    entry, _ = cas.ingest_input(
+        bundle, input_id=pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID
+    )
+    return entry
+
+
+def test_pbrun_snapshot_v2_carries_parent_and_named_refs(tmp_path: Path) -> None:
+    """Ancestry is part of the contract, so it is part of what is validated."""
+
+    validated = pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+            "commit": "a" * 40,
+            "parent": "b" * 40,
+            "subdirectory": ".",
+            "input": _snapshot_input(tmp_path),
+            "refs": {"release": "c" * 40, "main": "d" * 40},
+        }
+    )
+    assert validated["parent"] == "b" * 40
+    assert list(validated["refs"]) == ["main", "release"]      # sorted
+
+
+def test_pbrun_snapshot_v2_accepts_an_unborn_parent(tmp_path: Path) -> None:
+    """``null`` is the only other honest answer, and it is spelled once."""
+
+    validated = pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+            "commit": "a" * 40,
+            "parent": None,
+            "subdirectory": ".",
+            "input": _snapshot_input(tmp_path),
+            "refs": {},
+        }
+    )
+    assert validated["parent"] is None
+    assert validated["refs"] == {}
+
+
+def test_pbrun_snapshot_v1_keeps_its_exact_shape(tmp_path: Path) -> None:
+    """A queued v1 item predates ancestry and must not grow keys."""
+
+    validated = pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+            "commit": "a" * 40,
+            "subdirectory": ".",
+            "input": _snapshot_input(tmp_path),
+        }
+    )
+    assert set(validated) == {"schema", "commit", "subdirectory", "input"}
+
+
+def test_pbrun_snapshot_v1_refuses_ancestry_keys(tmp_path: Path) -> None:
+    """Each schema owns one exact key set; a hybrid record is neither."""
+
+    with pytest.raises(pb.ActionContractError):
+        pb.validate_pbrun_checkout_snapshot(
+            {
+                "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+                "commit": "a" * 40,
+                "parent": "b" * 40,
+                "subdirectory": ".",
+                "input": _snapshot_input(tmp_path),
+                "refs": {},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "master:evil",
+        "--upload-pack=touch",
+        "../escape",
+        "refs/heads/main",
+        "HEAD",
+        "prismabuild-snapshot",
+        "main^{}",
+        "with space",
+        "",
+    ],
+)
+def test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name(
+    tmp_path: Path, name: str,
+) -> None:
+    """These names become ``git fetch`` refspecs inside a claiming worker.
+
+    The record arrives over the queue, so its ref names are input, not a
+    constant. A colon splits a refspec, a leading dash becomes an option, and
+    ``HEAD`` or the snapshot's own ref name makes the materialized checkout's
+    later revision lookups ambiguous.
+    """
+
+    with pytest.raises(pb.ActionContractError):
+        pb.validate_pbrun_checkout_snapshot(
+            {
+                "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+                "commit": "a" * 40,
+                "parent": "b" * 40,
+                "subdirectory": ".",
+                "input": _snapshot_input(tmp_path),
+                "refs": {name: "c" * 40},
+            }
+        )
+
+
 def test_action_key_has_expected_plain_sha256_shape(tmp_path: Path):
     action = _action(tmp_path)
     assert len(action["action_key"]) == 64
