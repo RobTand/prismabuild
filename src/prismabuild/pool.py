@@ -61,6 +61,7 @@ from collections.abc import Iterable, Mapping, Sequence
 import json
 import os
 from pathlib import Path
+import resource
 import socket
 import subprocess
 import sys
@@ -68,6 +69,7 @@ import time
 import uuid
 
 from . import core as pb
+from . import cpu_topology
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -263,6 +265,37 @@ def cap_unit_name(action_key: str, owner: str = "") -> str:
     return f"{CAP_UNIT_PREFIX}{safe_key}-{nonce}"
 
 
+def rlimit_word(value: int) -> str:
+    """Render one rlimit the way systemd spells it.
+
+    ``resource.RLIM_INFINITY`` is ``-1``, and ``LimitNOFILE=-1`` is a parse
+    error systemd reports by *ignoring the property* -- which would restore
+    the very silence this carries the limit across to end.
+    """
+
+    return "infinity" if int(value) == resource.RLIM_INFINITY else str(int(value))
+
+
+def launcher_exec_context() -> dict[str, object]:
+    """The launcher's own affinity and fd ceiling, for the wrapper to carry.
+
+    Separated from ``capped_launch_argv`` so that function stays a pure argv
+    builder a test can drive with values it chose, rather than one that reads
+    the process it happens to run in.
+    """
+
+    context: dict[str, object] = {}
+    try:
+        context["cpus"] = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
+    try:
+        context["nofile"] = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError):
+        pass
+    return context
+
+
 def capped_launch_argv(
     argv: Sequence[str],
     *,
@@ -270,18 +303,46 @@ def capped_launch_argv(
     unit: str,
     cwd: str | Path | None = None,
     env: Mapping[str, str] | None = None,
+    cpus: Iterable[int] | None = None,
+    nofile: tuple[int, int] | None = None,
 ) -> list[str]:
     """Wrap a launch in a transient unit whose memory limit is ``cap_gb``.
 
-    The wrapper must not change *what* is executed, only what bounds it.  So
-    the working directory and the environment are carried across explicitly:
-    ``systemd-run --user`` starts a unit from the **user manager's** context,
-    not the caller's, and a child that quietly lost ``TRITON_CACHE_DIR`` or
-    gained a different ``PATH`` is a different execution wearing the same
-    action key.  That is not hypothetical either -- the first run of the CUDA
-    measurement forwarded ``CUDA_VISIBLE_DEVICES`` unconditionally, an unset
-    name became an empty value, and both GPU arms saw no device at all.  Only
-    names that are actually set are forwarded, for that reason.
+    The wrapper must not change *what* is executed, only what bounds it.  A
+    unit does not inherit the launcher's context: ``systemd-run --user`` asks
+    the **user manager** to fork the work, so everything the launcher was
+    carrying is replaced by the manager's defaults unless it is named here.
+    Four members of that context are carried, and the list is a measurement
+    rather than a guess -- ``tools/fleet/probes/exec_context_probe.py`` diffs
+    every rlimit, the affinity mask, the umask, nice, the credentials and the
+    environment across the wrapper, and these are what it found differing:
+
+    * **The working directory and the environment.**  A child that quietly
+      lost ``TRITON_CACHE_DIR`` or gained a different ``PATH`` is a different
+      execution wearing the same action key.  Not hypothetical: the first run
+      of the CUDA measurement forwarded ``CUDA_VISIBLE_DEVICES``
+      unconditionally, an unset name became an empty value, and both GPU arms
+      saw no device at all.  Only names actually set are forwarded, for that
+      reason.
+    * **The CPU affinity.**  ``cpu_topology.pin_to_preferred`` pins the worker
+      loop and relies on inheritance by fork; the unit is forked by the user
+      manager instead, so without ``CPUAffinity`` a loop pinned to GB10's fast
+      cores runs its actions on all twenty -- measured 5-9,15-19 in the loop
+      against 0-19 in the unit -- putting compute on the 2.8 GHz half and
+      making the loop's cpu-token offer describe a box it no longer holds.
+    * **The fd ceiling.**  The soft ``RLIMIT_NOFILE`` falls from the launcher's
+      500000 to systemd's ``DefaultLimitNOFILE`` soft of 1024, measured, with
+      the hard limit unchanged.  An NFS shard reader or ``pytest -n N`` that
+      crosses 1024 raises ``EMFILE``, which the queue retries
+      ``max_attempts`` times and attributes to the payload.
+
+    Two differences are deliberately *not* carried, because they are the
+    bound rather than the execution.  The cgroup path is the mechanism
+    itself.  And ``oom_score_adj`` goes from the loop's -1000 to the unit's
+    200 (measured), which is the right direction and not an accident to
+    repair: the incident this cap exists for is a *bystander* being chosen by
+    the kernel, and an action that has outgrown its own declaration should be
+    a likelier victim than the loop supervising it, not an exempt one.
 
     ``--pipe`` keeps stdout and stderr as pipes the caller can read, which is
     what the outcome record and the worker's error tail are made of; it
@@ -310,6 +371,16 @@ def capped_launch_argv(
         # happened, and it is not what the submitter needs to be told.
         "-p", "OOMPolicy=kill",
     ]
+    if cpus is not None:
+        mask = cpu_topology.as_range(cpus)
+        if mask:
+            # An exec-context setting, not a cgroup one: it needs no ``cpuset``
+            # delegation, which these boxes do not have (``cpu memory pids``).
+            launch += ["-p", f"CPUAffinity={mask}"]
+    if nofile is not None:
+        soft, hard = nofile
+        launch += ["-p",
+                   f"LimitNOFILE={rlimit_word(soft)}:{rlimit_word(hard)}"]
     if cwd is not None:
         launch += ["-p", f"WorkingDirectory={cwd}"]
     for name, value in sorted((env or {}).items()):
@@ -1408,6 +1479,11 @@ class PoolQueue:
                 launch = capped_launch_argv(
                     argv, cap_gb=cap_gb, unit=unit,
                     cwd=os.getcwd(), env=os.environ,
+                    # The wrapper bounds the action; it must not re-specify
+                    # it.  A unit is forked by the user manager, so the
+                    # launcher's pin and fd ceiling reach the work only by
+                    # being named.  See ``capped_launch_argv``.
+                    **launcher_exec_context(),
                 )
             else:
                 # Loud, not silent: an unenforced declaration is recorded as

@@ -125,6 +125,70 @@ def test_the_environment_and_directory_travel_with_it() -> None:
     assert "--setenv=TRITON_CACHE_DIR=/home/rob/.triton-cache" in argv
 
 
+def test_the_core_pin_travels_with_it() -> None:
+    """The loop pins itself and relies on children inheriting the mask.
+
+    ``systemd-run --user`` asks the *user manager* to fork the work, so
+    inheritance does not happen and a loop pinned to GB10's fast cores would
+    run its actions on all twenty -- half of them at 2.8 GHz -- while its
+    cpu-token offer still described ten.
+    """
+
+    argv = pool.capped_launch_argv(
+        ["/bin/true"], cap_gb=1, unit="u",
+        cpus=[5, 6, 7, 8, 9, 15, 16, 17, 18, 19],
+    )
+    assert "CPUAffinity=5-9,15-19" in argv
+
+
+def test_the_fd_ceiling_travels_with_it() -> None:
+    """Otherwise it falls to systemd's ``DefaultLimitNOFILE`` soft of 1024.
+
+    Measured 2026-09-04: a launcher at 500000/500000 produced a unit at
+    1024/500000.  An NFS shard reader or ``pytest -n N`` that crosses 1024
+    raises ``EMFILE``, and the queue retries that ``max_attempts`` times and
+    attributes it to the payload.
+    """
+
+    argv = pool.capped_launch_argv(["/bin/true"], cap_gb=1, unit="u",
+                                   nofile=(500000, 500000))
+    assert "LimitNOFILE=500000:500000" in argv
+
+
+def test_an_infinite_rlimit_is_spelled_the_way_systemd_spells_it() -> None:
+    """``LimitNOFILE=-1`` is a parse error systemd answers by ignoring it.
+
+    Which would restore exactly the silence this property exists to end.
+    """
+
+    import resource
+
+    argv = pool.capped_launch_argv(
+        ["/bin/true"], cap_gb=1, unit="u",
+        nofile=(1024, resource.RLIM_INFINITY),
+    )
+    assert "LimitNOFILE=1024:infinity" in argv
+
+
+def test_a_caller_that_names_neither_gets_neither() -> None:
+    """The builder stays pure: it bounds what it is given, not what it runs in."""
+
+    argv = pool.capped_launch_argv(["/bin/true"], cap_gb=1, unit="u")
+    assert not any(a.startswith("CPUAffinity") or a.startswith("LimitNOFILE")
+                   for a in argv)
+
+
+def test_the_launcher_context_is_read_from_the_launcher() -> None:
+    """And it is what the call site hands the builder."""
+
+    import os
+    import resource
+
+    context = pool.launcher_exec_context()
+    assert context["cpus"] == sorted(os.sched_getaffinity(0))
+    assert tuple(context["nofile"]) == resource.getrlimit(resource.RLIMIT_NOFILE)
+
+
 def test_an_unset_name_is_not_forwarded_as_an_empty_one() -> None:
     """Measured 2026-09-04, and it cost both GPU arms of the first probe run.
 
@@ -197,6 +261,30 @@ def test_the_cap_is_the_items_figure_not_the_boxs(queue, monkeypatch) -> None:
     queue.execute(queue.claim())
     assert "MemoryMax=12G" in seen[0]
     assert "MemoryMax=96G" not in seen[0]
+
+
+def test_the_launch_carries_the_launchers_own_pin_and_fd_ceiling(
+    queue, monkeypatch
+) -> None:
+    """The builder can carry them and the call site can still forget to.
+
+    So this asserts the *executed* argv, not the builder's: an execution
+    context member that only the unit tests know about is one the fleet does
+    not have.
+    """
+
+    import os
+    import resource
+
+    _capping(monkeypatch, True)
+    seen = _launched(monkeypatch)
+    _publish(queue, KEY_A, resources={"mem_gb": 4})
+    queue.execute(queue.claim())
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    assert f"CPUAffinity={pool.cpu_topology.as_range(os.sched_getaffinity(0))}" \
+        in seen[0]
+    assert (f"LimitNOFILE={pool.rlimit_word(soft)}:{pool.rlimit_word(hard)}"
+            in seen[0])
 
 
 def test_an_action_that_declares_nothing_runs_exactly_as_before(
