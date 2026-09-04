@@ -1364,12 +1364,20 @@ class PoolQueue:
         same launch SLURM would have made, so the executed contract does not
         depend on which transport delivered the action.
 
-        **The item's own ``mem_gb`` is the limit it runs under.**  The
-        reservation and the limit are one object, held in one place: the tokens
-        this action took out of the ledger in ``claim`` are the number its
-        cgroup refuses to let it exceed.  A declaration nothing enforces is an
-        honour system, and on a box whose GPU and host share one pool the
-        kernel's answer to a breach is to kill a bystander.
+        **The item's own ``mem_gb`` is the limit its host footprint runs
+        under.**  The reservation and the limit are one object, held in one
+        place: the tokens this action took out of the ledger in ``claim`` are
+        the number its cgroup refuses to let its *host* pages exceed.  A
+        declaration nothing enforces is an honour system, and on a box whose
+        GPU and host share one pool the kernel's answer to a breach is to kill
+        a bystander.
+
+        "Host footprint" is the whole of the claim and is measured, not
+        hedging: anonymous and pinned pages are charged and killed, memory
+        taken through the CUDA allocator is charged nothing at all, and file
+        pages are charged and then reclaimed rather than killed.  The outcome
+        record carries ``cap_scope`` so no reader has to remember that.  See
+        ``docs/memory_enforcement_2026-09-04.md``.
 
         Capping is by the *item's* declaration, not by whether this worker
         passed a ``capacity``: the demand is the action's own claim about

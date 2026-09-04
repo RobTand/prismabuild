@@ -1,4 +1,9 @@
-"""A declared ``mem_gb`` is the limit the action runs under, not a promise.
+"""A declared ``mem_gb`` is the limit an action's host footprint runs under.
+
+Not a promise, and not the whole footprint either: on a GB10 the cgroup charges
+anonymous and pinned host pages and charges a CUDA allocation nothing, so what
+is published is a *scope* and never a bare "enforced"
+(``docs/memory_enforcement_2026-09-04.md``).
 
 Before this, ``ResourceLedger`` admitted work against a declared demand and
 nothing held the work to it: an action that exceeded its declaration was

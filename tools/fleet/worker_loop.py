@@ -15,13 +15,18 @@ capacity below is measured, not guessed -- one exporter holds ~8 GB resident
 and four concurrent ones took a GB10 from 116 GB free to 55 GB, so 16 GB per
 action is the honest figure and 96 GB leaves the box its working headroom.
 
-And the declaration is now a limit, not an honour system: ``execute`` runs each
-action inside a transient user unit whose ``MemoryMax`` is that action's own
-``mem_gb``, so the process that exceeds the figure it published is the one the
-kernel kills.  Whether a box can do that is a property of the box -- it needs
-the memory controller delegated to the user manager -- so the loop probes once
-at start, says what it found, and publishes the answer on its offer.  A box
-that cannot cap behaves exactly as it did before and says so.
+And the declaration is now a limit on the *host* half, not an honour system:
+``execute`` runs each action inside a transient user unit whose ``MemoryMax``
+is that action's own ``mem_gb``, so the action that exceeds the figure it
+published is the one the kernel kills.  Which is the right unit for the figure
+above -- ~8 GB *resident* is a host measurement -- and is only half of a GPU
+action: measured 2026-09-04, memory taken through the CUDA allocator is not
+charged to that cgroup at all, though it comes out of the same 128 GB
+(``docs/memory_enforcement_2026-09-04.md``).  Whether a box can cap even that
+much is a property of the box -- it needs the memory controller delegated to
+the user manager -- so the loop probes once at start, says what it found, and
+publishes the scope on its offer as ``mem_cap_scope``.  A box that cannot cap
+behaves exactly as it did before and says so.
 
 ``serve_once`` returning ``None`` can now mean "denied admission" as well as
 "queue empty", including the deliberate case where a starved item is
@@ -173,8 +178,9 @@ def main():
     loaded_commit = published_commit()
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}", flush=True)
     # Probe capping once, here, and say what it found.  An action's declared
-    # ``mem_gb`` is enforced by its own cgroup where the memory controller is
-    # delegated to the user manager, and that is a property of the box: a box
+    # ``mem_gb`` bounds its host footprint through its own cgroup where the
+    # memory controller is delegated to the user manager, and that is a
+    # property of the box: a box
     # without it runs exactly as it did before, which is the right behaviour
     # and the wrong thing to be quiet about.  A ledger read as a limit it is
     # not enforcing is worse than one that never claimed to.

@@ -3,9 +3,10 @@
 ``tests/test_pool_memory_cap_binds.py`` proves the wrapper binds.  This proves
 the *loop* uses it: a worker started the way ``supervise.py`` starts one, an
 item published the way ``dispatch_tessera_shards.py`` publishes one, and a
-payload that takes more than it declared.  What is being tested is the join --
-that the declaration the ledger admitted is the figure the cgroup enforced, and
-that the record left behind says so.
+payload that takes more than it declared -- on the host, which is the half a
+cgroup charges.  What is being tested is the join: that the declaration the
+ledger admitted is the figure the cgroup held the action to, and that the
+record left behind says so, scope included.
 
 Skipped where the box cannot cap, which is the same condition the loop itself
 degrades on.

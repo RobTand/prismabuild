@@ -168,6 +168,8 @@ def test_a_cap_reclaims_page_cache_rather_than_killing_a_reader(
     rather than by a shard campaign.
     """
 
+    # 1.5 GiB against a 1 GiB cap, written under ``tmp_path`` -- which follows
+    # TMPDIR.  On a box where that lands on tmpfs this is RAM, not disk.
     payload = tmp_path / "cold.bin"
     with payload.open("wb") as fh:
         fh.write(b"\0" * (1536 * 1024 * 1024))

@@ -216,7 +216,8 @@ is a cgroup.
 
 ```
 # the three arms (needs a GPU token; submit, do not run out of pool)
-tools/fleet/pbrun.py --gpu --demand mem_gb=16 -- bash scratch/run_probe.sh
+tools/fleet/pbrun.py --gpu --demand mem_gb=16 -- \
+    bash tools/fleet/probes/run_cgroup_cuda_probe.sh
 
 # everything else, on any box that can cap
 python3 -m pytest tests/test_pool_memory_cap.py \
