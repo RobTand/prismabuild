@@ -330,6 +330,61 @@ def is_box_local(cwd: Path) -> bool:
     return pool.is_box_local_path(cwd.resolve())
 
 
+def require_checkout_owned_scripts(command: list[str], cwd: Path) -> None:
+    """Refuse script files whose bytes the checkout identity cannot bind.
+
+    The literal argv is part of an action, but a pathname is not the bytes at
+    that pathname.  ``pbrun``'s code closure binds the checkout HEAD and dirty
+    state, so a script below ``cwd`` is covered; a helper beside the checkout
+    is not.  That outside helper could change after the action was sealed and
+    the same action key would then execute different code.
+
+    This checks every *direct* argv token that resolves to a script, including
+    an interpreter's ``python /path/tool.py`` argument.  It does not pretend
+    to parse shell programs passed through ``sh -c``; callers using shell
+    indirection must keep executable helpers under the checkout.  Native
+    executables are toolchain members rather than scripts and are not covered
+    by this gate.
+    """
+
+    root = cwd.resolve()
+    offenders: list[Path] = []
+    script_suffixes = {".bash", ".py", ".rb", ".sh"}
+    for token in command:
+        if not token or token.startswith("-"):
+            continue
+        candidate = Path(token)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if not resolved.is_file():
+            continue
+        try:
+            with resolved.open("rb") as handle:
+                prefix = handle.read(2)
+        except OSError:
+            continue
+        if prefix != b"#!" and resolved.suffix.lower() not in script_suffixes:
+            continue
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            offenders.append(resolved)
+
+    if offenders:
+        rendered = "\n".join(f"  - {path}" for path in sorted(set(offenders)))
+        raise SystemExit(
+            "pbrun: executable script bytes are outside the stamped checkout:\n"
+            f"{rendered}\n"
+            "Move each helper under the checkout so its bytes are bound by "
+            "the action's code closure. Shell-indirected helpers must follow "
+            "the same rule."
+        )
+
+
 def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
     """How many boxes this action WOULD have had, with the host tag taken off.
 
@@ -704,6 +759,8 @@ def main() -> int:
             f"exists on another box, submit from there -- the queue is "
             f"shared, the filesystem is not."
         )
+
+    require_checkout_owned_scripts(command, cwd)
 
     demand = _parse_demand(args.demand)
     if args.gpu:

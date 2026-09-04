@@ -116,6 +116,38 @@ def test_the_result_and_stamp_names_move_with_the_commit(tmp_path, monkeypatch):
     assert names[0] == names[2], "the same commit must still dedup"
 
 
+def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> None:
+    """A path in argv is not part of the checkout closure by magic.
+
+    Tessera action ``6c90ba1b`` invoked a helper beside its checkout.  The
+    action bound the checkout commit and the literal helper path, but not the
+    helper's bytes, so editing it after submission changed what ran without
+    changing the action key.  Refuse that shape while the submitter is still
+    present to put the script under the checkout.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    helper = tmp_path / "run-campaign.sh"
+    helper.write_text("#!/bin/sh\nexit 0\n")
+
+    with pytest.raises(SystemExit) as caught:
+        pbrun.require_checkout_owned_scripts([str(helper)], checkout)
+
+    message = str(caught.value)
+    assert str(helper) in message
+    assert "outside the stamped checkout" in message
+
+
+def test_a_script_inside_the_checkout_is_bound_by_its_identity(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    helper = checkout / "run-campaign.sh"
+    helper.write_text("#!/bin/sh\nexit 0\n")
+
+    pbrun.require_checkout_owned_scripts([str(helper)], checkout)
+
+
 def test_exclusive_demands_what_a_box_actually_offers(tmp_path):
     """``--exclusive`` must not guess the size of a box.
 
