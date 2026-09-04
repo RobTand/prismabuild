@@ -1167,6 +1167,7 @@ def main() -> int:
         "checkout_origin": plan["origin"],
         "checkout_prefix": plan["prefix"],
         "checkout_stamp": stamp_name,
+        "checkout_name": plan["name"],
     }
     q.publish(
         action_key=key,

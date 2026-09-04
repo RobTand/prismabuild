@@ -48,12 +48,13 @@ and a receipt.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import time
@@ -104,6 +105,11 @@ DEFAULT_MAX_ADD_BYTES = 2 * 1024 ** 3
 LOCK_WAIT_S = 900.0
 LOCK_STALE_S = 1800.0
 
+#: How often a step with no local upper bound -- the first fetch, the worktree
+#: build -- refreshes the lease while it runs.  Well under ``pool``'s 300 s
+#: ``LEASE_TIMEOUT_S``, because the point is to never be silent for that long.
+HEARTBEAT_EVERY_S = 20.0
+
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -126,6 +132,86 @@ def stamp_bytes(tree_sha: str) -> bytes:
         raise CheckoutError(f"tree sha must be 40 hex characters, got {tree_sha!r}")
     return json.dumps({"checkout_tree": str(tree_sha)},
                       indent=1, sort_keys=True).encode("utf-8")
+
+
+def _run_while_beating(argv: Sequence[str], *, beat: Callable[[], None],
+                       timeout: float, every: float = HEARTBEAT_EVERY_S) -> None:
+    """Run one command that can take minutes, refreshing the lease while it runs.
+
+    ``_git`` blocks inside ``subprocess.run`` and can call nothing while the
+    child works.  Two steps here have no local upper bound -- the first fetch
+    of a whole history across the shared mount, and the ``worktree add`` that
+    writes it out -- and a lease that goes silent for ``LEASE_TIMEOUT_S`` is
+    reaped, which requeues an action that is *running*: the same tree then
+    materialises on a second box and the work runs twice.  Beating around the
+    call, as a first version did, bounds nothing; the beat has to happen
+    *during* it.
+
+    The step this guards has never actually been slow on the repositories in
+    hand -- tessera's whole history is 5.9 MB packed and clones in 0.46 s --
+    so this is not a fix for an observed hang.  It is here because "has not
+    been slow yet" is not a bound, and the failure it would buy is a double
+    run rather than a slow one.
+    """
+
+    # Its own session, so the timeout below can end the whole tree of
+    # processes: ``git fetch`` runs a transport child, and killing only the
+    # one we spawned leaves that child alive, holding the pipes.  Measured,
+    # because it is not obvious: ``kill()`` followed by ``communicate()`` on a
+    # ``sh -c 'sleep 30'`` returned after 29.8 s -- the parent was dead within
+    # microseconds and the read waited for the orphan.  A timeout that can
+    # hang is not a timeout, so the group is signalled and the pipes are never
+    # read again after it.
+    proc = subprocess.Popen(list(argv), stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    deadline = time.monotonic() + float(timeout)
+    out = err = ""
+    try:
+        while True:
+            try:
+                out, err = proc.communicate(timeout=max(0.01, float(every)))
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() > deadline:
+                    raise CheckoutError(
+                        f"{' '.join(argv)} did not finish within {timeout}s")
+                beat()
+    finally:
+        if proc.poll() is None:
+            _kill_group(proc)
+    if proc.returncode != 0:
+        raise CheckoutError(
+            f"{' '.join(argv)} exited {proc.returncode}: "
+            f"{(err or out).strip()[:600]}")
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """End a timed-out child and everything it started, without reading it."""
+
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):        # pragma: no cover
+        proc.kill()
+    for stream in (proc.stdout, proc.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:                              # pragma: no cover
+                pass
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:                    # pragma: no cover
+        pass
+
+
+def _git_while_beating(*args: str, cwd: str | Path | None = None,
+                       beat: Callable[[], None], timeout: float,
+                       every: float = HEARTBEAT_EVERY_S) -> None:
+    argv = ["git"]
+    if cwd is not None:
+        argv += ["-C", str(cwd)]
+    _run_while_beating(argv + list(args), beat=beat, timeout=timeout, every=every)
 
 
 def _git(*args: str, cwd: str | Path | None = None,
@@ -572,8 +658,9 @@ def materialise(
             # its administrative entry behind, and ``worktree add`` then
             # refuses the path as already registered.
             _git("worktree", "prune", cwd=mirror, timeout=300, check=False)
-            _git("worktree", "add", "--detach", "--quiet",
-                 str(worktree), commit, cwd=mirror, timeout=1800)
+            _git_while_beating("worktree", "add", "--detach", "--quiet",
+                               str(worktree), commit, cwd=mirror, beat=beat,
+                               timeout=1800)
             beat()
             actual = _tree_at(worktree)
             if actual != tree:
@@ -629,8 +716,9 @@ def _ensure_commit(mirror: Path, *, commit: str, origin: str,
         return
     beat()
     ref = ref_for(commit)
-    _git("fetch", "--quiet", "--no-tags", str(origin), f"+{ref}:{ref}",
-         cwd=mirror, timeout=3600)
+    # Beaten *during*, not around: this is the one step with no local bound.
+    _git_while_beating("fetch", "--quiet", "--no-tags", str(origin),
+                       f"+{ref}:{ref}", cwd=mirror, beat=beat, timeout=3600)
     have = subprocess.run(["git", "-C", str(mirror), "cat-file", "-e",
                            f"{commit}^{{commit}}"], capture_output=True,
                           text=True, timeout=120)

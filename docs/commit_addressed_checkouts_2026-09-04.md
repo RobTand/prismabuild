@@ -268,11 +268,27 @@ it does today, including the pin and the notice announcing it.
 falls when a box goes away, and only the path half says the migration is
 happening (`pool.PoolQueue.placement_census`, the width cap).
 
+**The lease under the fetch.** The first fetch into an empty mirror and the
+`worktree add` that follows are the two steps with no local upper bound, and
+`pool`'s lease is reaped after 300 s of silence -- which requeues an action
+that is *running*, so the same tree materialises on a second box and the work
+runs twice. Beating around those calls, which is what a first version did,
+bounds nothing: the process is inside `subprocess.run` and can call nothing.
+Both now run under `checkout._run_while_beating`, which polls the child and
+refreshes the lease every `HEARTBEAT_EVERY_S` while it works. Writing that
+loop turned up a second fault worth recording: killing a timed-out child and
+then reading its pipes waited **29.8 s** to abandon a 0.2 s timeout, because
+git's transport child outlives its parent and holds the pipes open, so the
+child gets its own session and the group is signalled
+(`checkout._kill_group`). Measured after: 0.20 s.
+
 **Not qualified, and therefore not claimed:** two-box concurrent submission
 against one shared bare repository; the first fetch of a large repository's
-history into an empty mirror on a box, which is bounded by lease heartbeats
-(`pool.PoolQueue.resolve_checkout`) but has not been timed against a real repository; and any
-behaviour at all on the live fleet, which has not run these bytes.
+history into an empty mirror on a box, which is now heartbeat-bounded but has
+not been timed against a real repository across the mount (the largest history
+in hand, tessera's, is 5.9 MB packed and clones locally in 0.46 s, so nothing
+here has been near the lease); and any behaviour at all on the live fleet,
+which has not run these bytes.
 
 ## Line references
 
@@ -300,7 +316,8 @@ when the design needs re-reading.
 | `pbrun`, stamp payload | `    payload = (ck.stamp_bytes(plan["tree"]).decode("utf-8") if plan is not None` |
 | `checkout.repo_identity` | `def repo_identity(cwd: str \| Path) -> dict[str, str] \| None:` |
 | `checkout.ensure_shared_bare` | `def ensure_shared_bare(repo: str, *, name: str = "",` |
-| `pool.PoolQueue.publish`, the tree fields | `        if checkout_commit and checkout_tree and checkout_repo and checkout_origin:` |
+| `pool.PoolQueue.publish`, the tree fields | `        if all(load_bearing):` |
+| `checkout._run_while_beating`, the lease under a slow step | `                out, err = proc.communicate(timeout=max(0.01, float(every)))` |
 | `pool`, token mint | `                    descriptor = os.open(token, os.O_WRONLY \| os.O_CREAT \| os.O_EXCL, 0o644)` |
 | `pbrun._git_identity` | `def _git_identity(cwd: Path) -> dict[str, str]:` |
 | `checkout.synthesise_tree_commit` | `def synthesise_tree_commit(toplevel: str \| Path, *, scratch: str \| Path,` |

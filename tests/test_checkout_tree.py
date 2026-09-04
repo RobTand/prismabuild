@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -339,3 +340,97 @@ def test_the_size_bound_measures_what_would_be_staged(repo, tmp_path) -> None:
 
     (repo / "real.txt").write_bytes(b"y" * 1_000)
     assert ck.pending_add_bytes(repo) == 1_000
+
+
+# -- the shape the issue actually has ------------------------------------
+
+
+def test_a_linked_worktree_travels_like_any_other_checkout(repo, tmp_path) -> None:
+    """The literal shape in the issue: ``/home/rob/tmp/ts101`` is a worktree.
+
+    Every other test here builds a plain ``git init`` repository, and a linked
+    worktree is not one: its ``.git`` is a *file* pointing into the parent's
+    ``worktrees/`` directory, its objects live in the parent's object store,
+    and ``rev-parse --show-toplevel`` answers the linked path rather than the
+    parent's.  The agents whose actions queued behind sparky were all
+    submitting from exactly this, so it is worth one test that the whole path
+    -- identity, synthesis, publish, materialise -- works on the case that
+    caused the issue, not only on the case that was convenient to write.
+    """
+
+    linked = tmp_path / "ts101"
+    git("worktree", "add", "-q", "--detach", str(linked), cwd=repo)
+    (linked / "a.txt").write_text("worktree edit\n")
+    (linked / "untracked.txt").write_text("came along\n")
+
+    identity = ck.repo_identity(linked)
+    assert identity is not None
+    # Same repository as the parent: one bare, one identity, one action key.
+    assert identity["repo"] == ck.repo_identity(repo)["repo"]
+
+    item = _plan(repo, tmp_path, cwd=linked)
+    built = _materialise(item, tmp_path)
+    assert Path(built) != linked
+    assert (Path(built) / "a.txt").read_text() == "worktree edit\n"
+    assert (Path(built) / "untracked.txt").read_text() == "came along\n"
+
+
+def test_the_marker_carries_the_readable_name_the_item_sent(repo, tmp_path) -> None:
+    """Decoration, but not a field that is always empty.
+
+    The marker's ``name`` was written from ``item["checkout_name"]`` while
+    ``publish`` accepted no such field, so it was the empty string on every
+    tree ever built.  A field that cannot hold anything is worse than no field:
+    it reads, to whoever opens the marker, as a repository with no name.
+    """
+
+    item = dict(_plan(repo, tmp_path), checkout_name="repo")
+    built = _materialise(item, tmp_path)
+    marker = json.loads(
+        (Path(built) / ck.TREE_MARKER).read_text())
+    assert marker["name"] == "repo"
+
+
+# -- the lease under a slow step -----------------------------------------
+
+
+def test_a_slow_step_beats_the_lease_while_it_runs(tmp_path) -> None:
+    """The bound the doc claims, tested on the mechanism that provides it.
+
+    A first fetch into an empty mirror is the one step with no local upper
+    bound, and ``pool`` reaps a lease that has been silent for 300 s -- which
+    requeues an action that is running, so the same tree materialises on a
+    second box and the work runs twice.  Beating around the call bounds
+    nothing; the beats have to land during it.
+    """
+
+    beats: list[float] = []
+    ck._run_while_beating(["sh", "-c", "sleep 0.5"],
+                          beat=lambda: beats.append(time.monotonic()),
+                          timeout=60.0, every=0.05)
+    assert len(beats) >= 4, beats
+
+
+def test_a_failing_slow_step_still_reports_what_failed(tmp_path) -> None:
+    beats: list[float] = []
+    with pytest.raises(ck.CheckoutError, match="exited 3"):
+        ck._run_while_beating(["sh", "-c", "echo boom >&2; exit 3"],
+                              beat=lambda: beats.append(time.monotonic()),
+                              timeout=60.0, every=0.05)
+
+
+def test_a_slow_step_that_never_ends_is_bounded(tmp_path) -> None:
+    """A timeout that can hang is not a timeout -- so this test is timed.
+
+    The first version asserted only the message and passed while taking 30.0 s
+    to raise a 0.2 s timeout: the child was killed within microseconds and the
+    cleanup then read the pipes, which stayed open because the transport
+    grandchild still held them.  The elapsed assertion is the test; the
+    message was the part that was already true.
+    """
+
+    started = time.monotonic()
+    with pytest.raises(ck.CheckoutError, match="did not finish within"):
+        ck._run_while_beating(["sh", "-c", "sleep 30"], beat=lambda: None,
+                              timeout=0.2, every=0.05)
+    assert time.monotonic() - started < 5.0

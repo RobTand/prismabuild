@@ -1256,3 +1256,44 @@ def test_the_first_denial_stamp_is_the_age_of_the_block_not_of_the_last_denial(
 
 def test_an_item_never_denied_has_no_withhold_age(queue: pool.PoolQueue) -> None:
     assert queue.withhold_age(KEY_A) == 0.0
+
+
+def test_a_tree_addressed_item_without_a_stamp_is_refused(queue: pool.PoolQueue) -> None:
+    """The stamp is load-bearing, not decoration on the addressing.
+
+    ``materialise`` writes no closure stamp when the item names none, and the
+    worker then refuses the action minutes later as a missing file -- an error
+    that names nothing about the real fault, which is that a tree was addressed
+    with no way to check the tree that got built.  That is the case worth
+    refusing loudest, because it is the one that would otherwise run.
+    """
+
+    addressed = {
+        "checkout_commit": "c" * 40, "checkout_tree": "d" * 40,
+        "checkout_repo": "e" * 40, "checkout_origin": "/mnt/shared/x.git",
+    }
+    with pytest.raises(pool.PoolContractError, match="checkout_stamp"):
+        _publish(queue, KEY_A, **addressed)
+    _publish(queue, KEY_A, **addressed, checkout_stamp=".pbrun-closure.json")
+    item = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    assert item["checkout_stamp"] == ".pbrun-closure.json"
+
+
+def test_a_withdrawn_action_does_not_pay_for_a_tree(queue: pool.PoolQueue) -> None:
+    """Resolution is where the fetch happens, so it is where cancellation counts.
+
+    ``execute`` checks withdrawal too, but only after building the argv that
+    the resolution feeds, so without the check here a cancelled action fetches
+    a history and writes a worktree before being told it was cancelled.
+    """
+
+    _publish(queue, KEY_A,
+             checkout_commit="c" * 40, checkout_tree="d" * 40,
+             checkout_repo="e" * 40, checkout_origin="/mnt/shared/x.git",
+             checkout_stamp=".pbrun-closure.json")
+    item = queue.claim()
+    assert item is not None
+    queue.withdraw(KEY_A, reason="changed my mind")
+    with mock.patch.object(pool.ck, "materialise",
+                           side_effect=AssertionError("materialised anyway")):
+        assert queue.resolve_checkout(item) == "/co"

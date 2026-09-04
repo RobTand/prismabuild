@@ -1121,17 +1121,27 @@ class PoolQueue:
         checkout_origin: str = "",
         checkout_prefix: str = "",
         checkout_stamp: str = "",
+        checkout_name: str = "",
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
-        The six ``checkout_*`` fields beyond ``checkout_root`` are the other
+        The ``checkout_*`` fields beyond ``checkout_root`` are the other
         addressing: they say *what tree* the action runs against instead of
         *what path*, so any box that fits the demand can claim it and build
         that tree for itself.  They travel together and are written only when
-        all four load-bearing ones are present -- a half-addressed item would
-        be an item a worker cannot resolve either way.  ``checkout_root``
-        stays the submitter's path in both cases; which readers may treat it
-        as a pin is settled once, in ``checkout.item_is_box_local``.
+        all five load-bearing ones are present -- a half-addressed item would
+        be an item a worker cannot resolve either way.  ``checkout_stamp`` is
+        one of the five and not decoration: an item addressed by a tree whose
+        stamp name is empty materialises with no closure stamp written, and
+        the worker then refuses it several minutes later as a missing-file
+        closure error that names nothing about the real fault.  A tree
+        addressed without a closure check is the case worth refusing loudest,
+        because it is the one that would run.  ``checkout_name`` is the
+        opposite: pure decoration, a human-readable repository name for the
+        materialised tree's marker, never read by any decision.
+        ``checkout_root`` stays the submitter's path in both cases; which
+        readers may treat it as a pin is settled once, in
+        ``checkout.item_is_box_local``.
 
         ``resources`` is what this action needs to run on one box -- e.g.
         ``{"gpu": 1, "mem_gb": 8}``.  It is a claim about the action, made by
@@ -1176,7 +1186,9 @@ class PoolQueue:
             "published_unix": _now(),
             "published_by": socket.gethostname(),
         }
-        if checkout_commit and checkout_tree and checkout_repo and checkout_origin:
+        load_bearing = (checkout_commit, checkout_tree, checkout_repo,
+                        checkout_origin, checkout_stamp)
+        if all(load_bearing):
             item.update({
                 "checkout_commit": str(checkout_commit),
                 "checkout_tree": str(checkout_tree),
@@ -1184,11 +1196,12 @@ class PoolQueue:
                 "checkout_origin": str(checkout_origin),
                 "checkout_prefix": str(checkout_prefix),
                 "checkout_stamp": str(checkout_stamp),
+                "checkout_name": str(checkout_name),
             })
-        elif any((checkout_commit, checkout_tree, checkout_repo, checkout_origin)):
+        elif any(load_bearing):
             raise PoolContractError(
                 "a tree-addressed item needs checkout_commit, checkout_tree, "
-                "checkout_repo and checkout_origin together")
+                "checkout_repo, checkout_origin and checkout_stamp together")
         if superseded is not None:
             item["supersedes_withdrawal"] = {
                 "withdrawn_unix": superseded.get("withdrawn_unix"),
@@ -2204,6 +2217,17 @@ class PoolQueue:
         """
 
         if not ck.item_checkout_commit(item):
+            return str(item["checkout_root"])
+        # Nothing is built for an action that has already been cancelled.
+        # ``execute`` checks withdrawal too, but it does so *after* building
+        # the argv this returns into, so without this line a withdrawn action
+        # pays for a fetch and a worktree before being told it is withdrawn.
+        # The check lives here rather than as a reordering in ``execute``
+        # because ``execute`` is where the queue's other open work conflicts,
+        # and the answer for a withdrawn item -- the submitter's path, which
+        # is never used, because the caller returns before launching -- is
+        # right whichever check fires first.
+        if self.withdrawal_covers(item) is not None:
             return str(item["checkout_root"])
         key = str(item.get("action_key") or "")
         owner = str(item.get("claimed_by") or "")
