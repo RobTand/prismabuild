@@ -11,6 +11,12 @@ because refusing it would only teach agents to route around the hook.  What is
 refused is the two things that actually contend for the GPU: the CUDA venv
 interpreter, and the box-local flock wrappers the pool replaces.
 
+Two carve-outs, and both are the same lesson.  A guard that can refuse its own
+repair, or refuse the alternative it names, is worse than no guard: it strands
+the person trying to comply.  So commands that never start GPU work are let
+through by name, and so is the pool's own machinery -- including starting a
+worker, whose ``--python`` argument is the CUDA venv path by design.
+
 Staged rather than flipped: enforcement requires the flag file to exist, so
 turning it on is one ``touch`` and does not edit config under running agents.
 """
@@ -50,6 +56,24 @@ CONTENDS = re.compile(
 NEVER_GPU = ("git", "gh", "echo", "cat", "grep", "sed", "awk", "less", "diff")
 
 
+#: The pool's own machinery, which must never be refused by the hook that
+#: exists to route work *into* it.  ``pbrun`` submits; ``worker_loop`` and
+#: ``worker`` are the things that consume the queue -- and a worker is
+#: configured with ``--python <the CUDA venv>``, so it names the refused
+#: pattern by construction.  Refusing that means the hook blocks the pool from
+#: being started at all, which is the same class of failure as refusing its own
+#: repair: the guard removing the alternative it is pointing at.
+POOL_ENTRYPOINTS = ("pbrun.py", "worker_loop.py", "worker.py")
+
+
+#: Shell operators that end one command and begin another.  A compound command
+#: is judged segment by segment, because judging it by its first token is a
+#: hole wide enough to drive the whole rule through: ``cat note.txt && <cuda
+#: python> -m pytest`` leads with ``cat``, which is exempt, and the pytest
+#: behind it ran unrefused.  Found by walking into it while fixing the hook.
+SEPARATORS = re.compile(r"&&|\|\||;|\||\n")
+
+
 def _first_token(command: str) -> str:
     """The command actually being run, past any leading env assignments."""
 
@@ -65,6 +89,25 @@ def _first_token(command: str) -> str:
     return stripped.split(" ", 1)[0].rsplit("/", 1)[-1]
 
 
+def contends(command: str) -> bool:
+    """True when any segment of this command starts GPU work off-pool.
+
+    Each segment carries its own exemption: a leading ``cat`` does not vouch
+    for what follows ``&&``, and a refused segment is not excused by a
+    permitted neighbour.
+    """
+
+    for segment in SEPARATORS.split(command):
+        if not CONTENDS.search(segment):
+            continue
+        if _first_token(segment) in NEVER_GPU:
+            continue
+        if any(entry in segment for entry in POOL_ENTRYPOINTS):
+            continue
+        return True
+    return False
+
+
 def main() -> int:
     if not FLAG.exists():
         return 0
@@ -73,12 +116,8 @@ def main() -> int:
     except Exception:                                        # noqa: BLE001
         return 0
     command = str((event.get("tool_input") or {}).get("command") or "")
-    if _first_token(command) in NEVER_GPU:
+    if not contends(command):
         return 0
-    if not CONTENDS.search(command):
-        return 0
-    if "pbrun.py" in command:
-        return 0                      # already going through the pool
     sys.stderr.write(
         "Refused: GPU work goes through the PrismaBuild pool, not a local "
         "lock.\n\n"
