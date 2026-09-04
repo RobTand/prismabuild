@@ -84,8 +84,11 @@ not move identity; a different admissible worker population does, so a
 Sparky-pinned query cannot reuse a gx10 receipt for the same argv.
 
 Git-backed `pbrun` submissions are checkout-portable: the exact dirty tree is
-sealed as a shallow Git bundle in the CAS, and the claiming worker executes a
-fresh local checkout of that commit. A box-local source worktree therefore no
+sealed as a Git bundle in the CAS — the commit, its ancestry, and any branch
+names `--snapshot-ref` asked for — and the claiming worker executes a
+fresh local checkout of that commit, where `HEAD~1`, `git merge-base` and
+`BASE...HEAD` resolve, so a diff-derived gate can run there.
+A box-local source worktree therefore no
 longer pins ordinary work to that box, and edits after submission cannot change
 what a retry executes. Source portability does not imply tool portability.
 `pbrun` resolves argv[0] exactly against the declared `PATH`: a submitter-local
