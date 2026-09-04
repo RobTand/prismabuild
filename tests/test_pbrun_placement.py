@@ -185,10 +185,10 @@ def _fleet(tmp_path: Path):
 
 
 def _notice(queue, *, cwd: str, tags: list[str], demand: dict, here=False,
-            explicit=(), needs_gpu=False) -> str:
+            needs_gpu=False) -> str:
     intent = {"tags": tags, "needs_gpu": needs_gpu, "resources": demand}
     return pbrun.pin_notice(queue, intent, cwd=Path(cwd), hostname=HOST,
-                            here=here, explicit=list(explicit))
+                            here=here)
 
 
 def test_a_box_local_checkout_says_it_pinned_the_action(tmp_path) -> None:
@@ -259,7 +259,7 @@ def test_an_explicit_tag_over_a_box_local_checkout_is_a_warning(tmp_path) -> Non
     """
 
     notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101", tags=["x86"],
-                     demand={"cpu": 1}, explicit=["x86"])
+                     demand={"cpu": 1})
 
     assert "WARNING" in notice
     assert "exists only on sparky" in notice
@@ -285,11 +285,10 @@ def test_naming_this_box_is_the_correct_submission_not_a_warning(tmp_path) -> No
     queue = _fleet(tmp_path)
 
     own = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
-                  demand={"cpu": 1}, explicit=[HOST])
+                  demand={"cpu": 1})
     alias = pbrun.pin_notice(
         queue, {"tags": ["sparklina"], "needs_gpu": False, "resources": {"cpu": 1}},
-        cwd=Path("/home/rob/tmp/ts91"), hostname="gx10-6b77", here=False,
-        explicit=["sparklina"])
+        cwd=Path("/home/rob/tmp/ts91"), hostname="gx10-6b77", here=False)
 
     assert "WARNING" not in own and "WARNING" not in alias
     assert notice_host(own) == "sparky"
@@ -313,7 +312,7 @@ def test_a_host_tag_another_box_also_offers_is_not_exclusive(tmp_path) -> None:
                    has_gpu=False, capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
 
     notice = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
-                     demand={"cpu": 1}, explicit=[HOST])
+                     demand={"cpu": 1})
 
     assert "WARNING" in notice and "dl380g10" in notice
     assert "not exclusive to this box" in notice
@@ -334,9 +333,9 @@ def test_with_nobody_announced_only_this_boxs_own_name_is_trusted(tmp_path) -> N
     empty = pool_module.PoolQueue(tmp_path / "q")
 
     own = _notice(empty, cwd="/home/rob/tmp/ts101", tags=[HOST],
-                  demand={"cpu": 1}, explicit=[HOST])
+                  demand={"cpu": 1})
     other = _notice(empty, cwd="/home/rob/tmp/ts101", tags=["x86"],
-                    demand={"cpu": 1}, explicit=["x86"])
+                    demand={"cpu": 1})
 
     assert "WARNING" not in own
     assert "WARNING" in other and "let another box claim" in other
@@ -406,7 +405,7 @@ def test_here_overridden_by_a_tag_does_not_announce_a_pin_that_never_happened(
     assert tags == ["x86"]                     # the host tag never landed
 
     notice = _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86", tags=tags,
-                     demand={"cpu": 1}, here=True, explicit=["x86"])
+                     demand={"cpu": 1}, here=True)
 
     assert "PINNED" not in notice
     assert "--here" in notice                  # and that the flag did nothing
@@ -417,7 +416,7 @@ def test_here_overridden_over_a_box_local_tree_says_both_things(tmp_path) -> Non
     """The override and the tree that cannot travel are two separate facts."""
 
     notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101", tags=["x86"],
-                     demand={"cpu": 1}, here=True, explicit=["x86"])
+                     demand={"cpu": 1}, here=True)
 
     assert "PINNED" not in notice
     assert "--here" in notice
@@ -440,7 +439,7 @@ def test_a_tag_no_other_box_offers_today_is_not_called_exclusive(tmp_path) -> No
                     capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
 
     notice = _notice(lonely, cwd="/home/rob/tmp/ts101", tags=["gb10"],
-                     demand={"cpu": 1}, explicit=["gb10"])
+                     demand={"cpu": 1})
 
     assert "match only this box" not in notice
     assert "gb10" in notice

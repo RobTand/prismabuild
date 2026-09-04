@@ -8,7 +8,7 @@ described here only where they bound the design.
 ## The problem, measured
 
 An action carries `checkout_root`, an absolute path (`pool.py:737-784`,
-written by `pbrun.py:722`). When that path is a box-local worktree —
+written by `pbrun.py:728`). When that path is a box-local worktree —
 `/home/rob/tmp/ts101`, which is what an agent naturally creates — the action
 must be tagged to the box that holds it or it will be claimed by a worker that
 cannot see it. `pbrun.placement_tags` derives that pin from the path, and
@@ -61,11 +61,11 @@ actions**. The submitter's absolute path is bound into the action key in three
 places, so the same work submitted from two boxes is today two different
 actions with two different keys:
 
-* `params.cwd` is `str(cwd)` (`pbrun.py:675`), and `params` is part of the
+* `params.cwd` is `str(cwd)` (`pbrun.py:681`), and `params` is part of the
   sealed body (`core.py:62-72`, `seal_action` at `core.py:1371-1375`);
 * the closure stamp's *name* embeds a fingerprint over `str(cwd)`
   (`pbrun.py:198-202`), so the closure member's path differs per box;
-* the stamp's *content* records `{"cwd": ...}` (`pbrun.py:616`).
+* the stamp's *content* records `{"cwd": ...}` (`pbrun.py:622`).
 
 So step zero of (2) is to rebind the key from *(path, tree delta)* to
 *(repository identity, tree commit)*. After that a cache hit across boxes is
@@ -145,7 +145,7 @@ logs — or every submit will produce a new tree commit for its own droppings.
 
 * **No worktrees on `/mnt/shared`.** Objects are shared; trees are not.
 * **`TRITON_CACHE_DIR` stays `/home/rob/.triton-cache`** — a local path per
-  box, same string, different disk (`pbrun.py:544-551`).
+  box, same string, different disk (`pbrun.py:550-557`).
 * **Results still travel through the CAS**, never through the tree. A
   materialised worktree is disposable by construction.
 * **It does not unpin `--here`**, which is a deliberate statement about one
@@ -159,7 +159,7 @@ logs — or every submit will produce a new tree commit for its own droppings.
   breaks absolute paths silently — the command runs, against the wrong file or
   none. This is the one failure mode of (2) that is not loud, so it is refused
   at the one moment the caller is watching, the way an unplaceable tag already
-  is (`pbrun.py:706-714`).
+  is (`pbrun.py:712-720`).
 * **A working tree bigger than a stated bound.** A synthesised tree commit of
   a checkout holding a 90 GB cache is not a submission, it is an accident.
 
@@ -194,11 +194,11 @@ first line.
 | `pbrun.py:100-118` | `    # `git diff HEAD` covers tracked edits.  It says nothing about an` |
 | `pbrun.py:198-202` | `    fingerprint = hashlib.sha256(` |
 | `pbrun.py:206-240` | `def placement_tags(` |
-| `pbrun.py:544-551` | `    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:` |
-| `pbrun.py:616` | `    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)` |
-| `pbrun.py:675` | `        "params": {"command": command, "cwd": str(cwd), "demand": demand},` |
-| `pbrun.py:706-714` | `    verdict = q.placeable(intent)` |
-| `pbrun.py:722` | `        checkout_root=str(cwd),` |
+| `pbrun.py:550-557` | `    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:` |
+| `pbrun.py:622` | `    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)` |
+| `pbrun.py:681` | `        "params": {"command": command, "cwd": str(cwd), "demand": demand},` |
+| `pbrun.py:712-720` | `    verdict = q.placeable(intent)` |
+| `pbrun.py:728` | `        checkout_root=str(cwd),` |
 | `pool.py:319` | `                    descriptor = os.open(token, os.O_WRONLY \| os.O_CREAT \| os.O_EXCL, 0o644)` |
 | `pool.py:737-784` | `    def publish(` |
 | `pool.py:1262-1268` | `        key = str(item["action_key"])` |

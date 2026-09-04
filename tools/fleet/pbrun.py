@@ -277,8 +277,7 @@ def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
             f"{', '.join(others)}.")
 
 
-def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool,
-               explicit) -> str:
+def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool) -> str:
     """What the submitter is not otherwise told: this action is one box wide.
 
     The pin is a silent consequence of a path.  ``pbrun`` printed
@@ -306,12 +305,19 @@ def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool,
     action whose tree it does not have.  So that case is reported as the
     contingency it is rather than as "match only this box".
 
+    The explicit ``--tag`` list is deliberately NOT a parameter here.  The
+    only thing it decides is what ``placement_tags`` returned, and that is
+    already in ``intent``; taking it as well would leave a second way to ask
+    the flags what the tags already answer, which is the bug this function
+    was rewritten to close.  ``here`` stays, because ``--here`` on a shared
+    checkout is indistinguishable from ``--tag <this host>`` by tags alone,
+    and the override needs to know it was asked for.
+
     Returns "" when there is nothing to say -- a shared checkout that was
     already free to run anywhere.
     """
 
     tags = [str(t) for t in (intent.get("tags") or [])]
-    explicit = [str(t) for t in (explicit or [])]
     local = is_box_local(cwd)
     pinned = hostname in tags               # the pin as it landed, not as asked
     claimants = queue.placeable_hosts(intent)
@@ -700,7 +706,7 @@ def main() -> int:
     # consequence of the checkout path, and nothing used to report it, so a
     # submitter narrowed the fleet to one box without being told.
     notice = pin_notice(q, intent, cwd=cwd, hostname=socket.gethostname(),
-                        here=args.here, explicit=list(args.tag))
+                        here=args.here)
     if notice:
         print(notice, file=sys.stderr, flush=True)
     verdict = q.placeable(intent)
