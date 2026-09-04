@@ -69,6 +69,8 @@ def main() -> int:
     ap.add_argument("--tag", action="append", default=[],
                     help="placement tag; defaults to x86")
     ap.add_argument("--shards", type=int, default=20)
+    ap.add_argument("--threads-per-shard", type=int, default=2,
+                    help="BLAS/OMP threads each shard may use; 0 leaves it alone")
     ap.add_argument("--mem-gb", type=int, default=3,
                     help="memory each shard demands of its box")
     ap.add_argument("--timeout-s", type=float, default=3600.0)
@@ -97,6 +99,18 @@ def main() -> int:
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}",
           flush=True)
 
+    # torch sizes its thread pool from the affinity mask, so an unconstrained
+    # shard on an 80-core box asks for 40 threads -- forty shards then ask for
+    # 1,600 and the box spends its time context-switching.  Measured: 22 shards
+    # at the default put dl380g10 at load 183 with 266 runnable processes and
+    # 97% user, CPU-saturated while still holding 105 GB free.  Not an OOM, but
+    # not work either.
+    threads = []
+    if args.threads_per_shard > 0:
+        n = str(args.threads_per_shard)
+        threads = [f"OMP_NUM_THREADS={n}", f"MKL_NUM_THREADS={n}",
+                   f"OPENBLAS_NUM_THREADS={n}", f"TORCH_NUM_THREADS={n}"]
+
     procs = []
     for index, bucket in enumerate(buckets):
         command = [
@@ -107,12 +121,16 @@ def main() -> int:
             "--timeout-s", str(args.timeout_s),
             "--wait-s", str(args.wait_s),
             "--", "env", "TMPDIR=/home/rob/tmp",
+            *threads,
             f"PYTHONPATH={checkout}/src:{checkout}/experiments",
             args.python, "-m", "pytest", "-q", "--no-header",
             "-p", "no:cacheprovider", *bucket,
         ]
+        # Insert after "--anywhere" (index 4), never inside a flag/value pair:
+        # index 6 sat between "--demand" and its argument and every shard died
+        # on "expected one argument".
         for tag in tags:
-            command[6:6] = ["--tag", tag]
+            command[5:5] = ["--tag", tag]
         procs.append((index, bucket, subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))
 

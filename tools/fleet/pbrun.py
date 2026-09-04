@@ -38,6 +38,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 SH = Path("/mnt/shared/prismabuild-fleet")
@@ -82,11 +83,37 @@ def _git_identity(cwd: Path) -> dict[str, str]:
         line for line in _git("status", "--porcelain").splitlines()
         if STAMP not in line and RESULT_PREFIX not in line
     )
-    dirty = porcelain + _git("diff", "HEAD")
+    # `git diff HEAD` covers tracked edits.  It says nothing about an
+    # UNTRACKED file, whose name appears in porcelain as "?? path" while its
+    # bytes appear nowhere -- so editing an untracked script left the action
+    # key unmoved and the CAS replayed the previous run's stdout.  That failure
+    # is invisible from the outside: a stale result is indistinguishable from a
+    # fresh one unless you notice the traceback points at a line the file no
+    # longer has, which is exactly how it was caught.
+    untracked = []
+    for line in porcelain.splitlines():
+        if not line.startswith("?? "):
+            continue
+        member = cwd / line[3:].strip().strip('"')
+        if member.is_dir() or not member.exists():
+            continue                 # a directory entry is expanded by git itself
+        try:
+            untracked.append(f"{line[3:]}:{_sha256_file(member)}")
+        except OSError:
+            untracked.append(f"{line[3:]}:unreadable")
+    dirty = porcelain + _git("diff", "HEAD") + "\n".join(sorted(untracked))
     return {
         "head": head,
         "dirty_sha256": hashlib.sha256(dirty.encode()).hexdigest(),
     }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _parse_demand(text: str) -> dict[str, int]:
@@ -161,9 +188,21 @@ def main() -> int:
     # The closure member must be under checkout_root: that is where the
     # worker re-verifies it, on whichever box claimed the action.
     identity = _git_identity(cwd)
-    (cwd / STAMP).write_text(
-        json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True),
-        encoding="utf-8")
+    # Written through a private temp file and renamed, because rename is the
+    # one primitive this fleet trusts on NFS and a plain write is not atomic.
+    # Concurrent submits from one checkout -- forty test shards, say -- all
+    # write this same file, and a reader that catches a partial one gets
+    # "cannot open code closure file as a regular file" or "live code closure
+    # differs from the action-pinned closure".  The content is identical across
+    # those submits, so atomicity is the whole fix; ordering does not matter.
+    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)
+    scratch = cwd / f"{STAMP}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    try:
+        scratch.write_text(payload, encoding="utf-8")
+        os.replace(scratch, cwd / STAMP)
+    finally:
+        if scratch.exists():
+            scratch.unlink()
     exclude = cwd / ".git" / "info" / "exclude"
     try:
         if exclude.parent.is_dir():
