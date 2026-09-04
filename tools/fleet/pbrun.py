@@ -323,7 +323,11 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
         return 0
     rc = detail.get("returncode")
     if isinstance(rc, int):
-        return rc
+        # A signalled child is reported the way Python reports it, negative.
+        # A shell cannot say that: ``exit -9`` becomes 247.  Translate to the
+        # convention every other tool on the box uses, so a cgroup kill exits
+        # 137 and reads as SIGKILL rather than as an arbitrary number.
+        return rc if rc >= 0 else 128 + abs(rc)
     if status == "executed":
         return 0
     # A failure the worker itself raised carries no returncode -- the argv's

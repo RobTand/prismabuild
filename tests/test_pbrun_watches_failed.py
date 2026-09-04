@@ -85,3 +85,27 @@ def test_nothing_filed_still_times_out(monkeypatch, capsys, tmp_path):
     q = _Queue(tmp_path)
     assert _wait(monkeypatch, capsys, q, "abc", wait_s=0.01) == 75
     assert "gave up waiting" in capsys.readouterr().err
+
+
+def test_a_cgroup_kill_is_named_and_exits_like_a_kill(monkeypatch, capsys, tmp_path):
+    """An OOM kill is the one failure whose cause is already known.
+
+    Two halves.  The submitter is told which figure was exceeded, because
+    "my job died" and "my job asked for four gigabytes and took more" call for
+    different actions.  And the status is the shell's convention for a signal:
+    Python reports a signalled child as ``-9``, but ``exit -9`` from a shell is
+    247, which reads as an arbitrary number rather than as SIGKILL.
+    """
+
+    q = _Queue(tmp_path)
+    _file(q, "failed", "abc", {
+        "status": "failed", "attempts": 3, "finished_host": "sparky",
+        "detail": {"returncode": -9, "elapsed_s": 12.0, "oom_killed": True,
+                   "declared_mem_gb": 4, "memory_peak_bytes": 4294967296,
+                   "stdout": "", "stderr": ""},
+    })
+    rc = _wait(monkeypatch, capsys, q, "abc")
+    err = capsys.readouterr().err
+    assert rc == 137, "128 + SIGKILL, the way every other tool on the box says it"
+    assert "declared mem_gb=4" in err
+    assert "--demand mem_gb=N" in err

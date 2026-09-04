@@ -160,6 +160,28 @@ _UNIT_MANAGED_ENV = frozenset({
 _CAP_SUPPORT: tuple[bool, str] | None = None
 
 
+def _bus_ready_env() -> dict[str, str] | None:
+    """``os.environ`` with the user bus repaired, or ``None`` to inherit it.
+
+    ``systemd-run --user`` talks to the user manager over the bus named by
+    ``XDG_RUNTIME_DIR``; a process spawned outside a login session may not have
+    it even though the bus is there.  Without this the probe would answer "this
+    box cannot cap" for a box that can, and the whole fleet would publish
+    ``enforces_mem_gb: false`` truthfully about the loop and falsely about the
+    hardware.  Repaired only when the socket actually exists, so a box with no
+    user manager still degrades loudly instead of failing on a bad address.
+    """
+
+    if os.environ.get("XDG_RUNTIME_DIR"):
+        return None
+    runtime = Path(f"/run/user/{os.getuid()}")
+    if not (runtime / "bus").exists():
+        return None
+    env = dict(os.environ)
+    env["XDG_RUNTIME_DIR"] = str(runtime)
+    return env
+
+
 def memory_capping_supported(*, timeout_s: float = 60.0) -> tuple[bool, str]:
     """Can this box start a capped transient user unit?  Probed once.
 
@@ -183,6 +205,14 @@ def memory_capping_supported(*, timeout_s: float = 60.0) -> tuple[bool, str]:
                  "-p", "MemoryMax=64M", "-p", "MemoryAccounting=yes",
                  "--", "/bin/true"],
                 capture_output=True, text=True, timeout=timeout_s,
+                # ``--pipe`` forwards stdin, and a launcher whose fd 0 is
+                # closed makes systemd-run fail on the bus message rather than
+                # on the work ("Failed to create bus message: Bad file
+                # descriptor", measured 2026-09-04).  A worker reads no stdin,
+                # so giving it /dev/null costs nothing and removes the whole
+                # failure mode.
+                stdin=subprocess.DEVNULL,
+                env=_bus_ready_env(),
             )
             if probe.returncode == 0:
                 _CAP_SUPPORT = (True, "")
@@ -271,6 +301,7 @@ def _systemctl(*args: str, timeout_s: float = 15.0) -> subprocess.CompletedProce
         return subprocess.run(
             ["systemctl", "--user", *args],
             capture_output=True, text=True, timeout=timeout_s,
+            stdin=subprocess.DEVNULL, env=_bus_ready_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -1352,7 +1383,10 @@ class PoolQueue:
         }
         started = _now()
         process = subprocess.Popen(
-            launch, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            launch, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            # See ``memory_capping_supported``: closed stdin breaks ``--pipe``.
+            stdin=subprocess.DEVNULL,
+            env=_bus_ready_env() if unit is not None else None,
         )
         try:
             # Refresh the lease while the child runs; a long action must not be

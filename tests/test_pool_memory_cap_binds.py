@@ -6,10 +6,12 @@ limit actually bind?  It needs a real transient user unit, so it skips whole
 where the box cannot start one -- which is the same capability the worker
 probes, exercised through the same function.
 
-Scope, and it is the point of the whole issue: this binds the **host**
-footprint.  On a GB10 the CUDA allocator's memory is not charged to the
-cgroup, which is measured in ``docs/design/work_queue.md`` rather than assumed
-here; a GPU action's host half is still bounded and its device half is not.
+Scope: what these tests establish is that the cap binds a **host** allocation
+-- ``bytearray`` faulted in page by page -- on the box running the suite.
+Whether a GB10's cgroup also charges memory taken through the CUDA allocator
+is a separate question with a separate measurement; see
+``docs/memory_enforcement_2026-09-04.md``.  Nothing here answers it, and
+nothing here should be read as answering it.
 """
 from __future__ import annotations
 

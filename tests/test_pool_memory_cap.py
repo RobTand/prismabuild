@@ -339,3 +339,73 @@ def test_an_offer_that_does_not_say_stays_unknown(queue) -> None:
 
     queue.announce(host="sparky", tags=["gb10"], has_gpu=True)
     assert queue.offers()[0]["enforces_mem_gb"] is None
+
+
+# -- the launcher's own preconditions -----------------------------------------
+
+
+def test_a_capped_launch_never_inherits_a_closed_stdin(queue, monkeypatch) -> None:
+    """``--pipe`` forwards stdin, and a closed fd 0 breaks it before the work.
+
+    Measured 2026-09-04: ``systemd-run --user --pipe`` with fd 0 closed exits 1
+    with "Failed to create bus message: Bad file descriptor" -- the work never
+    starts, and the failure looks like the action's rather than the launcher's.
+    A worker reads no stdin, so /dev/null costs nothing.
+    """
+
+    _capping(monkeypatch, True)
+    seen: list[object] = []
+
+    class _Done:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("", "")
+
+    def _popen(_argv, *_a, **kw):
+        seen.append(kw.get("stdin"))
+        return _Done()
+
+    monkeypatch.setattr(pool.subprocess, "Popen", _popen)
+    monkeypatch.setattr(pool, "_systemctl", lambda *_a, **_kw: None)
+    monkeypatch.setattr(pool, "unit_outcome", lambda _u: {})
+    _publish(queue, KEY_A, resources={"mem_gb": 8})
+    queue.execute(queue.claim())
+    assert seen == [subprocess.DEVNULL]
+
+
+def test_a_missing_user_bus_address_is_repaired_when_the_bus_is_there(
+    monkeypatch, tmp_path
+) -> None:
+    """A loop spawned outside a login session has the bus but not its name.
+
+    Answering "this box cannot cap" there would publish
+    ``enforces_mem_gb: false`` -- truthfully about the loop, falsely about the
+    hardware -- and quietly stand every declaration back down to an honour
+    system.
+    """
+
+    runtime = tmp_path / "run" / "user" / "4242"
+    runtime.mkdir(parents=True)
+    (runtime / "bus").write_text("")
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(pool.os, "getuid", lambda: 4242)
+    monkeypatch.setattr(pool, "Path", lambda p: tmp_path / str(p).lstrip("/"))
+    env = pool._bus_ready_env()
+    assert env is not None and env["XDG_RUNTIME_DIR"] == str(runtime)
+
+
+def test_a_box_with_no_user_manager_is_left_to_degrade_loudly(
+    monkeypatch, tmp_path
+) -> None:
+    """No socket, no repair: a bad bus address fails later and less clearly."""
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(pool.os, "getuid", lambda: 4242)
+    monkeypatch.setattr(pool, "Path", lambda p: tmp_path / str(p).lstrip("/"))
+    assert pool._bus_ready_env() is None
+
+
+def test_an_environment_that_already_names_the_bus_is_inherited(monkeypatch) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+    assert pool._bus_ready_env() is None
