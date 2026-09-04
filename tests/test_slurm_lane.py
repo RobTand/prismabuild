@@ -816,6 +816,30 @@ def test_a_job_that_exits_zero_without_a_receipt_is_not_reported_as_success(
     assert "published no receipt" in capsys.readouterr().err
 
 
+def test_a_job_slurm_killed_at_the_time_limit_is_reported_as_a_timeout(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """SLURM reports a job it killed at the time limit as ``ExitCode=0:15``.
+    Reading the exit code alone made that indistinguishable from a job that
+    ran to completion and published nothing, so the operator was pointed at a
+    log that says nothing instead of at the state that explains it."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "TIMEOUT")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "over-time")
+    request = cas.publish_action_request(action)
+    code = pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[], demand={},
+        exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
+        max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
+    )
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "failed (TIMEOUT)" in err
+    assert "published no receipt" not in err
+
+
 def test_a_cancelled_job_exits_the_way_a_withdrawal_does(
     tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
