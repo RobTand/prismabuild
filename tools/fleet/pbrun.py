@@ -27,6 +27,11 @@ fleet, so it has to be the way work comes back off it.  Without it, stopping a
 running action meant hand-editing ``max_attempts`` into a live claimed record
 and racing the retry -- see ``PoolQueue.withdraw``.
 
+*Retry safety is not numerical determinism.*  A deterministic action may write
+external state and then fail, so arbitrary commands get one attempt.  A larger
+``--max-attempts`` is accepted only with ``--retry-safe``, which declares the
+whole command idempotent, and that policy is sealed into the action identity.
+
 The stamp carrying that identity has to live *inside* the checkout, because
 the worker verifies the closure against ``checkout_root`` on the box that
 runs it.  So it is excluded from the identity it records -- otherwise each
@@ -40,6 +45,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import hashlib
+import inspect
 import json
 import os
 import posixpath
@@ -69,6 +75,10 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import core as pb, pool  # noqa: E402
 
 POLL_S = 5.0
+# An arbitrary command can write state outside its declared CAS result before
+# a later check fails.  Retrying that command is never implied by numerical
+# determinism; the producer must opt the whole action into a larger bound.
+DEFAULT_MAX_ATTEMPTS = 1
 #: Submission asks what the recorded fleet can *ever* fit, not which worker
 #: happened to refresh inside the claim TTL.  ``PoolQueue`` retains one latest
 #: offer per host, so an unbounded age reads that capability ledger without
@@ -1150,9 +1160,56 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
 
     outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
     detail = outcome.get("detail") or {}
-    sys.stdout.write(str(detail.get("stdout") or ""))
-    sys.stderr.write(str(detail.get("stderr") or ""))
-    status = str(outcome.get("status"))
+    adopted_summary = None
+    if (
+        "attempt_history" in outcome
+        or "attempt_history_missing_before" in outcome
+    ):
+        # The terminal summary is mutable state-machine output.  Read the
+        # first-writer-published attempt records it links so a later stale-
+        # output refusal cannot replace the causal failure on the submitter's
+        # screen.  ``attempt_outcomes`` verifies every canonical path, digest,
+        # byte count and generation before returning text.
+        attempts = q.attempt_outcomes(outcome)
+        adopted_summary = q.adopted_attempt_summary(outcome)
+        disposition = adopted_summary["disposition"]
+        if disposition != outcome_path.parent.name:
+            raise pool.PoolContractError(
+                "terminal queue directory disagrees with the adopted immutable "
+                f"attempt: {outcome_path.parent.name!r} != {disposition!r}"
+            )
+        for field in ("status", "finished_unix", "finished_host", "detail"):
+            if outcome.get(field) != adopted_summary[field]:
+                raise pool.PoolContractError(
+                    "terminal queue summary disagrees with the adopted "
+                    f"immutable attempt field {field!r}"
+                )
+        missing = outcome.get("attempt_history_missing_before", 0)
+        if isinstance(missing, int) and not isinstance(missing, bool) and missing:
+            noun = "attempt" if missing == 1 else "attempts"
+            print(
+                f"pbrun: {missing} earlier {noun} "
+                "predates immutable history",
+                file=sys.stderr,
+            )
+        total_attempts = int(outcome.get("attempts", len(attempts)))
+        for attempt in attempts:
+            print(
+                f"pbrun: attempt {attempt['attempt']}/{total_attempts} "
+                f"{attempt.get('status')} ({attempt.get('disposition')})",
+                file=sys.stderr,
+            )
+            sys.stdout.write(str(attempt.get("stdout") or ""))
+            sys.stderr.write(str(attempt.get("stderr") or ""))
+    else:
+        # Backward compatibility for outcomes filed by a pre-history runtime.
+        sys.stdout.write(str(detail.get("stdout") or ""))
+        sys.stderr.write(str(detail.get("stderr") or ""))
+    if adopted_summary is not None:
+        detail = adopted_summary["detail"]
+        status = str(adopted_summary["status"])
+    else:
+        status = str(outcome.get("status"))
     if status == "withdrawn":
         who = outcome.get("withdrawn_by") or "an operator"
         why = str(outcome.get("reason") or "").strip()
@@ -1292,6 +1349,19 @@ def main() -> int:
     ap.add_argument("--cwd", default=os.getcwd())
     ap.add_argument("--deterministic", action="store_true",
                     help="declare byte-identical output; enables CAS reuse")
+    ap.add_argument(
+        "--retry-safe",
+        action="store_true",
+        help=("declare the whole command idempotent across failed attempts, "
+              "including every external side effect"),
+    )
+    ap.add_argument(
+        "--max-attempts",
+        type=int,
+        default=DEFAULT_MAX_ATTEMPTS,
+        help=("bounded attempts for a --retry-safe action; arbitrary commands "
+              "default to one"),
+    )
     ap.add_argument("--timeout-s", type=float, default=7200.0)
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
@@ -1328,6 +1398,17 @@ def main() -> int:
         command = command[1:]
     if not command:
         raise SystemExit("nothing to run: pbrun [options] -- <command>")
+    if args.max_attempts < 1:
+        raise SystemExit("pbrun: --max-attempts must be at least 1")
+    if args.max_attempts > 1 and not args.retry_safe:
+        raise SystemExit(
+            "pbrun: --max-attempts greater than 1 requires --retry-safe; "
+            "--deterministic covers result bytes, not external side effects"
+        )
+    retry_policy = {
+        "max_attempts": args.max_attempts,
+        "retry_safe": args.retry_safe,
+    }
 
     cwd = Path(args.cwd).resolve()
     if not cwd.is_dir():
@@ -1582,6 +1663,7 @@ def main() -> int:
             "demand": demand,
             "placement": placement,
             "checkout_snapshot": checkout_snapshot,
+            "retry_policy": retry_policy,
         },
         "environment": {"variables": variables, "toolchain": {}},
         "execution_scope": {
@@ -1668,9 +1750,17 @@ def main() -> int:
         "needs_gpu": bool(demand.get("gpu")),
         "priority": args.priority,
         "resources": demand,
+        "max_attempts": args.max_attempts,
         "container_owner": owner,
     }
     publication["checkout_snapshot"] = checkout_snapshot
+    # The repo checkout can advance just before the atomic runtime generation
+    # rolls.  The previous PoolQueue already accepts the safety-critical bound,
+    # so keep that mixed window usable; add the explanatory annotation once the
+    # loaded runtime exposes it.  The sealed action params carry the full
+    # contract in both cases.
+    if "retry_safe" in inspect.signature(q.publish).parameters:
+        publication["retry_safe"] = args.retry_safe
     q.publish(**publication)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now

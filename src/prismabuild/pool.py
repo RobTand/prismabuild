@@ -53,6 +53,18 @@ claim boundary both refuse a ready/claimed copy carrying the terminal record's
 ``published_unix``.  The generation check matters: the same action key may be
 submitted again deliberately, and that later request is still work.
 
+**A retry is a producer contract, and an attempt is immutable evidence.**
+The pool preserves the explicit ``max_attempts`` supplied by each transport;
+``fleet/pbrun`` gives arbitrary commands one attempt unless their producer
+declares the whole action retry-safe.  Numerical determinism is deliberately
+separate: an action can deterministically write external state before failing.
+Every success, failure, or lease loss concluded from its live queue record is
+first-writer-published below ``attempts/<action-key>/<generation>/`` with
+separate immutable stdout and stderr, and the mutable ready/terminal summary
+links that ordered history.  A later refusal can therefore never replace the
+causal attempt that did the work.  An operator withdrawal remains the decision
+record rather than inventing a worker result for work it cancelled.
+
 **Withdrawal is an operator's decision, and it is filed as one.**  ``finish``,
 ``reap_stale`` and ``quarantine_orphans`` each describe a *worker's* health; none
 of them says "I have changed my mind", so cancelling meant rewriting
@@ -93,7 +105,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -111,6 +125,7 @@ POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
 POOL_LEASE_SCHEMA_V1 = "prismaquant.prismabuild.pool_lease.v1"
 POOL_OUTCOME_SCHEMA_V1 = "prismaquant.prismabuild.pool_outcome.v1"
+POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
 
 # The `prismaquant.` prefix is kept on purpose.  It is the namespace grammar of
@@ -131,6 +146,7 @@ _STATES = (READY, CLAIMED, DONE, FAILED, INTENT, WITHDRAWN)
 CONTAINER_OWNERS = "container-owners"
 CONTAINER_OWNER_LABEL = "prismabuild.action"
 DOCKER = "/usr/bin/docker"
+ATTEMPTS = "attempts"
 
 # Ported verbatim from pqwork: 30 s refresh, 300 s expiry.  The 10x margin is
 # what absorbs an NFS stall or a long GC pause without a spurious requeue.
@@ -147,8 +163,10 @@ LEASE_TIMEOUT_S = 300.0
 # margin for the launcher's own exit once the relay has returned.
 TIMEOUT_GRACE_S = 2.0 * pb._PROCESS_GROUP_GRACE_SECONDS + 5.0
 
-# Retries exist because the CAS makes them free: re-running a completed action
-# is a receipt lookup, so the only cost of one more attempt is the attempt.
+# The pool is also a lower-level transport for specialized producers whose
+# existing contract explicitly chooses its bound.  ``fleet/pbrun`` supplies a
+# separate safe default of one for arbitrary commands; changing this legacy
+# pool API default would silently rewrite those producers' policy.
 DEFAULT_MAX_ATTEMPTS = 3
 
 # How many admission denials before a ready item stops being overtaken.  The
@@ -279,6 +297,21 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
         tmp.unlink(missing_ok=True)
         raise
     os.replace(tmp, path)
+
+
+def _publish_immutable(path: Path, raw: bytes, *, where: str) -> None:
+    """First-writer-publish one attempt artifact; refuse conflicting bytes."""
+
+    won = pb._atomic_publish(path, raw)
+    if won:
+        return
+    observed = pb._read_regular_file_nofollow(
+        path, where=where, require_readonly=True
+    )
+    if observed != raw:
+        raise PoolContractError(
+            f"{where} conflicts with the immutable record already filed: {path}"
+        )
 
 
 def _read_json(path: Path) -> dict[str, object] | None:
@@ -999,10 +1032,61 @@ class PoolQueue:
     def lease_path(self, action_key: str) -> Path:
         return self.dir(CLAIMED) / f"{action_key}.lease"
 
+    def attempt_generation(self, record: Mapping[str, object]) -> str:
+        """Stable directory name for one submission of a content-addressed key."""
+
+        key = str(record.get("action_key") or "")
+        published = record.get("published_unix")
+        if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+            raise PoolContractError("attempt history requires a full action key")
+        if (
+            type(published) not in (int, float)
+            or not math.isfinite(float(published))
+        ):
+            raise PoolContractError("attempt history requires published_unix")
+        return pb.canonical_sha256(
+            {"action_key": key, "published_unix": float(published)}
+        )
+
+    def attempt_path(self, record: Mapping[str, object], attempt: int) -> Path:
+        """Immutable outcome path for one numbered attempt of one generation."""
+
+        if type(attempt) is not int or attempt < 1:
+            raise PoolContractError("attempt number must be a positive integer")
+        key = str(record.get("action_key") or "")
+        return (
+            self.root
+            / ATTEMPTS
+            / key
+            / self.attempt_generation(record)
+            / f"{attempt:08d}.json"
+        )
+
+    def attempt_log_path(
+        self,
+        record: Mapping[str, object],
+        attempt: int,
+        stream: str,
+        sha256: str,
+    ) -> Path:
+        """Immutable stdout/stderr path beside an attempt outcome."""
+
+        if stream not in {"stdout", "stderr"}:
+            raise PoolContractError(f"unknown attempt log stream: {stream!r}")
+        if (
+            not isinstance(sha256, str)
+            or len(sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in sha256)
+        ):
+            raise PoolContractError("attempt log requires a full SHA-256 digest")
+        outcome = self.attempt_path(record, attempt)
+        return outcome.parent / f"{attempt:08d}.{stream}.{sha256}.log"
+
     def ensure_layout(self) -> None:
         for state in _STATES:
             self.dir(state).mkdir(parents=True, exist_ok=True)
         (self.root / WORKERS).mkdir(parents=True, exist_ok=True)
+        (self.root / ATTEMPTS).mkdir(parents=True, exist_ok=True)
 
     # -- what the fleet can actually run ---------------------------------
 
@@ -1316,6 +1400,7 @@ class PoolQueue:
         priority: int = 0,
         resources: Mapping[str, int] | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        retry_safe: bool | None = None,
         container_owner: str | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
@@ -1332,8 +1417,14 @@ class PoolQueue:
         demand = {str(k): int(v) for k, v in dict(resources or {}).items()}
         if any(v < 0 for v in demand.values()):
             raise PoolContractError("resource demand must not be negative")
-        if int(max_attempts) < 1:
-            raise PoolContractError("max_attempts must be at least 1")
+        if type(max_attempts) is not int or max_attempts < 1:
+            raise PoolContractError("max_attempts must be a positive integer")
+        if retry_safe is not None and type(retry_safe) is not bool:
+            raise PoolContractError("retry_safe must be boolean or null")
+        if retry_safe is False and max_attempts > 1:
+            raise PoolContractError(
+                "max_attempts greater than 1 contradicts retry_safe=false"
+            )
         if container_owner is not None:
             self.container_marker(str(container_owner))  # validates the digest
         if checkout_snapshot is None:
@@ -1378,11 +1469,13 @@ class PoolQueue:
             "priority": int(priority),
             "resources": demand,
             "attempts": 0,
-            "max_attempts": int(max_attempts),
+            "max_attempts": max_attempts,
             "published_unix": _now(),
             "published_by": socket.gethostname(),
             **addressing,
         }
+        if retry_safe is not None:
+            item["retry_safe"] = retry_safe
         if container_owner is not None:
             item["container_owner"] = str(container_owner)
         if superseded is not None:
@@ -1885,24 +1978,58 @@ class PoolQueue:
             # has lost it, must not be written back to a queue directory where
             # every consumer addresses items by key.
             record["action_key"] = key
-            attempts = int(record.get("attempts", 0)) + 1
+            prior_attempts = int(record.get("attempts", 0))
+            attempts = prior_attempts + 1
             limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
-            if attempts >= limit:
-                # Exhausted: a claim whose lease keeps dying is not made healthy
-                # by a fourth box trying it.  Record it terminally instead.
-                record.update(
-                    {
-                        "schema": POOL_OUTCOME_SCHEMA_V1,
-                        "status": "lease_lost_max_attempts",
-                        "attempts": attempts,
-                        "finished_unix": _now(),
-                        "finished_host": socket.gethostname(),
-                    }
-                )
-                _write_json_atomic(self.item_path(FAILED, key), record)
+            if (
+                prior_attempts
+                and "attempt_history" not in record
+                and "attempt_history_missing_before" not in record
+            ):
+                # Runtime rollout can meet a record already requeued by older
+                # bytes.  State the irrecoverable prefix honestly and archive
+                # from this attempt onward; inventing links would be worse,
+                # while refusing the record would strand live work.
+                record["attempt_history_missing_before"] = prior_attempts
+            terminal = attempts >= limit
+            finished_unix = _now()
+            finished_host = socket.gethostname()
+            attempt_record = dict(record)
+            attempt_record.update(
+                {
+                    "finished_unix": finished_unix,
+                    "finished_host": finished_host,
+                }
+            )
+            record["attempt_history"] = self.archive_attempt(
+                attempt_record,
+                attempt=attempts,
+                status="lease_lost_max_attempts" if terminal else "lease_lost",
+                disposition=FAILED if terminal else "requeued",
+                detail={
+                    "reason": "claim lease expired before an outcome was filed",
+                    "lease_age_s": age,
+                },
+            )
+            record["attempts"] = attempts
+            adopted = self.adopted_attempt_summary(record)
+            record.update(
+                {
+                    "status": adopted["status"],
+                    "finished_unix": adopted["finished_unix"],
+                    "finished_host": adopted["finished_host"],
+                    "detail": adopted["detail"],
+                }
+            )
+            disposition = adopted["disposition"]
+            if disposition in {DONE, FAILED}:
+                # The immutable winner may be the finisher, not this reaper.
+                # File the exact transition it proved rather than the local
+                # lease observation that lost the first-writer race.
+                record["schema"] = POOL_OUTCOME_SCHEMA_V1
+                _write_json_atomic(self.item_path(str(disposition), key), record)
                 path.unlink(missing_ok=True)
             else:
-                record["attempts"] = attempts
                 record["requeued_unix"] = _now()
                 for transient in ("claimed_by", "claimed_unix", "claimed_host"):
                     record.pop(transient, None)
@@ -2033,7 +2160,310 @@ class PoolQueue:
             filed.append(path.stem)
         return filed
 
-    # -- terminal states ------------------------------------------------
+    # -- attempt evidence and terminal states ----------------------------
+
+    def archive_attempt(
+        self,
+        record: Mapping[str, object],
+        *,
+        attempt: int,
+        status: str,
+        disposition: str,
+        detail: Mapping[str, object] | None,
+    ) -> list[dict[str, object]]:
+        """Publish one immutable outcome plus stdout/stderr, then link it.
+
+        The mutable queue item is the state machine's current pointer.  It is
+        necessarily rewritten on retry and therefore cannot also be the audit
+        history.  Each attempt is published first-writer-wins under the action
+        generation and 1-based attempt number; the ready/terminal record then
+        carries the ordered relative links returned here.
+        """
+
+        path = self.attempt_path(record, attempt)
+        link: dict[str, object] = {
+            "attempt": attempt,
+            "outcome": str(path.relative_to(self.root)),
+        }
+        raw_history = (
+            record["attempt_history"] if "attempt_history" in record else []
+        )
+        if not isinstance(raw_history, list) or any(
+            not isinstance(entry, Mapping) for entry in raw_history
+        ):
+            raise PoolContractError("attempt_history must be a list of links")
+        history = [dict(entry) for entry in raw_history]
+        missing = record.get("attempt_history_missing_before", 0)
+        if type(missing) is not int or missing < 0:
+            raise PoolContractError(
+                "attempt_history_missing_before must be a non-negative integer"
+            )
+        if history:
+            # Refuse a corrupt prefix before extending it.  This also verifies
+            # every immutable log rather than trusting links copied through a
+            # mutable ready record.  ``finish`` has already advanced the mutable
+            # attempt count, so validate the prefix at its own exact length.
+            self.attempt_outcomes(
+                {
+                    **dict(record),
+                    "attempts": missing + len(history),
+                }
+            )
+        expected_attempt = missing + len(history) + 1
+        if attempt < expected_attempt:
+            index = attempt - missing - 1
+            if index < 0 or history[index] != link:
+                raise PoolContractError(
+                    f"attempt {attempt} has conflicting history links")
+            return history
+        if attempt != expected_attempt:
+            raise PoolContractError(
+                f"attempt {attempt} does not follow {missing} unrecorded and "
+                f"{len(history)} archived attempts"
+            )
+
+        if not isinstance(status, str) or not status:
+            raise PoolContractError("pool attempt status must be nonempty text")
+        if not isinstance(disposition, str) or not disposition:
+            raise PoolContractError(
+                "pool attempt disposition must be nonempty text"
+            )
+        retry_safe = record.get("retry_safe")
+        if retry_safe is not None and type(retry_safe) is not bool:
+            raise PoolContractError("retry_safe must be boolean or null")
+        max_attempts = record.get("max_attempts", DEFAULT_MAX_ATTEMPTS)
+        if type(max_attempts) is not int or max_attempts < 1:
+            raise PoolContractError("max_attempts must be a positive integer")
+
+        details = dict(detail or {})
+        logs: dict[str, dict[str, object]] = {}
+        for stream in ("stdout", "stderr"):
+            value = details.pop(stream, "")
+            if value is None:
+                value = ""
+            if not isinstance(value, str):
+                raise PoolContractError(
+                    f"pool attempt {stream} must be text or null")
+            raw = value.encode("utf-8")
+            digest = hashlib.sha256(raw).hexdigest()
+            log_path = self.attempt_log_path(
+                record, attempt, stream, digest)
+            _publish_immutable(
+                log_path, raw, where=f"pool attempt {stream}")
+            logs[stream] = {
+                "path": str(log_path.relative_to(self.root)),
+                "bytes": len(raw),
+                "sha256": digest,
+            }
+
+        outcome = {
+            "schema": POOL_ATTEMPT_SCHEMA_V1,
+            "action_key": str(record.get("action_key") or ""),
+            "published_unix": record.get("published_unix"),
+            "published_by": record.get("published_by"),
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            # ``None`` is honest legacy evidence: lower-level pool producers
+            # predate the explicit pbrun retry contract.  Never infer safety
+            # merely from a bound greater than one.
+            "retry_safe": retry_safe,
+            "status": str(status),
+            "disposition": str(disposition),
+            "claimed_by": record.get("claimed_by"),
+            "claimed_unix": record.get("claimed_unix"),
+            "claimed_host": record.get("claimed_host"),
+            "finished_unix": record.get("finished_unix"),
+            "finished_host": record.get("finished_host"),
+            "detail": details,
+            "logs": logs,
+        }
+        # Outcome publication is first-writer-wins.  A finisher and a stale
+        # reaper can legitimately race on the same numbered attempt; their
+        # logs have content-addressed names, and whichever complete outcome
+        # links first is the causal record the mutable queue must adopt.  This
+        # also repairs a crash after immutable publication but before the
+        # ready/terminal summary kept its link.
+        pb._atomic_publish(path, pb._canonical_bytes(outcome))
+        history.append(link)
+        self.attempt_outcomes(
+            {
+                **dict(record),
+                "attempts": attempt,
+                "attempt_history": history,
+            }
+        )
+        return history
+
+    def attempt_outcomes(
+        self, record: Mapping[str, object]
+    ) -> list[dict[str, object]]:
+        """Read and verify the immutable attempts linked by a queue outcome."""
+
+        raw_history = (
+            record["attempt_history"] if "attempt_history" in record else []
+        )
+        if not isinstance(raw_history, list):
+            raise PoolContractError("attempt_history must be a list")
+        outcomes: list[dict[str, object]] = []
+        missing = record.get("attempt_history_missing_before", 0)
+        if type(missing) is not int or missing < 0:
+            raise PoolContractError(
+                "attempt_history_missing_before must be a non-negative integer"
+            )
+        recorded_attempts = record.get("attempts")
+        if type(recorded_attempts) is not int or recorded_attempts < 0:
+            raise PoolContractError(
+                "pool attempt count must be a non-negative integer"
+            )
+        if recorded_attempts != missing + len(raw_history):
+            raise PoolContractError(
+                "pool attempt count does not match its missing prefix and "
+                "history links"
+            )
+        for expected_attempt, raw_link in enumerate(
+            raw_history, start=missing + 1
+        ):
+            if not isinstance(raw_link, Mapping):
+                raise PoolContractError("attempt_history link must be an object")
+            attempt = raw_link.get("attempt")
+            if type(attempt) is not int or attempt != expected_attempt:
+                raise PoolContractError(
+                    "attempt_history numbers must be contiguous and ordered"
+                )
+            expected = self.attempt_path(record, attempt)
+            if raw_link.get("outcome") != str(expected.relative_to(self.root)):
+                raise PoolContractError(
+                    f"attempt {attempt} outcome link is not its canonical path"
+                )
+            raw = pb._read_regular_file_nofollow(
+                expected,
+                where="pool attempt outcome",
+                require_readonly=True,
+            )
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise PoolContractError(
+                    f"pool attempt outcome is not valid JSON: {expected}"
+                ) from exc
+            if not isinstance(value, dict):
+                raise PoolContractError(
+                    f"pool attempt outcome is not an object: {expected}"
+                )
+            if (
+                value.get("schema") != POOL_ATTEMPT_SCHEMA_V1
+                or value.get("action_key") != record.get("action_key")
+                or value.get("published_unix") != record.get("published_unix")
+                or value.get("attempt") != attempt
+                or value.get("max_attempts")
+                != record.get("max_attempts", DEFAULT_MAX_ATTEMPTS)
+                or value.get("retry_safe") != record.get("retry_safe")
+            ):
+                raise PoolContractError(
+                    f"pool attempt outcome differs from its history link: {expected}"
+                )
+            raw_logs = value.get("logs")
+            if not isinstance(raw_logs, Mapping):
+                raise PoolContractError(f"pool attempt logs are missing: {expected}")
+            expanded = dict(value)
+            for stream in ("stdout", "stderr"):
+                metadata = raw_logs.get(stream)
+                if not isinstance(metadata, Mapping):
+                    raise PoolContractError(
+                        f"pool attempt {stream} metadata is missing: {expected}"
+                    )
+                digest = metadata.get("sha256")
+                byte_count = metadata.get("bytes")
+                if type(byte_count) is not int or byte_count < 0:
+                    raise PoolContractError(
+                        f"pool attempt {stream} byte count is invalid: {expected}"
+                    )
+                log_path = self.attempt_log_path(
+                    record, attempt, stream, str(digest))
+                if metadata.get("path") != str(log_path.relative_to(self.root)):
+                    raise PoolContractError(
+                        f"pool attempt {stream} link is not its canonical path"
+                    )
+                log = pb._read_regular_file_nofollow(
+                    log_path,
+                    where=f"pool attempt {stream}",
+                    require_readonly=True,
+                )
+                if (
+                    byte_count != len(log)
+                    or metadata.get("sha256") != hashlib.sha256(log).hexdigest()
+                ):
+                    raise PoolContractError(
+                        f"pool attempt {stream} differs from its recorded address"
+                    )
+                expanded[stream] = log.decode("utf-8")
+            outcomes.append(expanded)
+        return outcomes
+
+    def adopted_attempt_summary(
+        self, record: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Return the one mutable transition the immutable winner permits.
+
+        A finisher and a stale reaper can both observe the same claim and race
+        to publish one attempt number.  ``archive_attempt`` makes that evidence
+        first-writer-wins; this method makes its status, disposition, detail,
+        and provenance first-writer-wins too.  Both queue writers and readers
+        use this rule so a mutable summary cannot route one cause while
+        reporting or returning another.
+        """
+
+        attempts = self.attempt_outcomes(record)
+        if not attempts:
+            raise PoolContractError(
+                "an attempt-backed queue record has no immutable outcome"
+            )
+        adopted = attempts[-1]
+        status = adopted.get("status")
+        disposition = adopted.get("disposition")
+        if not isinstance(status, str) or not status:
+            raise PoolContractError("pool attempt status must be nonempty text")
+        if not isinstance(disposition, str) or not disposition:
+            raise PoolContractError(
+                "pool attempt disposition must be nonempty text"
+            )
+        attempt = adopted.get("attempt")
+        max_attempts = adopted.get("max_attempts")
+        if type(attempt) is not int or type(max_attempts) is not int:
+            raise PoolContractError("pool attempt transition has invalid bounds")
+        succeeded = status in {"executed", "cache_hit"}
+        expected = (
+            DONE if succeeded else FAILED if attempt >= max_attempts else "requeued"
+        )
+        if disposition != expected:
+            raise PoolContractError(
+                f"pool attempt {attempt} status {status!r} requires "
+                f"disposition {expected!r}, not {disposition!r}"
+            )
+        raw_detail = adopted.get("detail")
+        if not isinstance(raw_detail, Mapping):
+            raise PoolContractError("pool attempt detail must be an object")
+        finished_unix = adopted.get("finished_unix")
+        if (
+            isinstance(finished_unix, bool)
+            or not isinstance(finished_unix, (int, float))
+            or not math.isfinite(float(finished_unix))
+        ):
+            raise PoolContractError("pool attempt finished_unix must be finite")
+        finished_host = adopted.get("finished_host")
+        if not isinstance(finished_host, str) or not finished_host:
+            raise PoolContractError("pool attempt finished_host must be nonempty text")
+        detail = dict(raw_detail)
+        detail["stdout"] = str(adopted.get("stdout") or "")
+        detail["stderr"] = str(adopted.get("stderr") or "")
+        return {
+            "attempt": attempt,
+            "status": status,
+            "disposition": disposition,
+            "finished_unix": finished_unix,
+            "finished_host": finished_host,
+            "detail": detail,
+        }
 
     def finish(
         self,
@@ -2135,8 +2565,15 @@ class PoolQueue:
             self.lease_path(action_key).unlink(missing_ok=True)
             return lost
         host = record.get("claimed_host")
-        attempts = int(record.get("attempts", 0)) + 1
+        prior_attempts = int(record.get("attempts", 0))
+        attempts = prior_attempts + 1
         limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
+        if (
+            prior_attempts
+            and "attempt_history" not in record
+            and "attempt_history_missing_before" not in record
+        ):
+            record["attempt_history_missing_before"] = prior_attempts
         record.update(
             {
                 "schema": POOL_OUTCOME_SCHEMA_V1,
@@ -2147,15 +2584,41 @@ class PoolQueue:
                 "detail": dict(detail or {}),
             }
         )
+        terminal = succeeded or attempts >= limit
+        disposition = (
+            DONE if succeeded else FAILED if terminal else "requeued"
+        )
+        # Publish the evidence before the mutable queue pointer moves.  A
+        # retry rewrites ``detail`` with its own result, so the history link is
+        # the only place the causal attempt can survive that transition.
+        record["attempt_history"] = self.archive_attempt(
+            record,
+            attempt=attempts,
+            status=status,
+            disposition=disposition,
+            detail=detail,
+        )
+        adopted = self.adopted_attempt_summary(record)
+        record.update(
+            {
+                "status": adopted["status"],
+                "finished_unix": adopted["finished_unix"],
+                "finished_host": adopted["finished_host"],
+                "detail": adopted["detail"],
+            }
+        )
+        disposition = adopted["disposition"]
         # Capacity is released before the item is filed, so the next worker to
         # look sees the tokens free rather than racing this rename.
         self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
-        if succeeded or attempts >= limit:
-            dst = self.item_path(DONE if succeeded else FAILED, action_key)
+        if disposition in {DONE, FAILED}:
+            dst = self.item_path(str(disposition), action_key)
         else:
-            # Retry is cheap by construction: a re-run of work that did land is
-            # a CAS receipt lookup, so the only thing another attempt can cost
-            # is the attempt.  Failing once is not evidence the action is bad.
+            # Reaching this branch is the producer's explicit retry contract,
+            # not an inference from deterministic bytes: an argv may mutate
+            # external state before failing even when its CAS result would be
+            # reproducible.  ``fleet/pbrun`` reaches it only with
+            # ``--retry-safe`` and a bound above one.
             record["requeued_unix"] = _now()
             for transient in ("claimed_by", "claimed_unix", "claimed_host"):
                 record.pop(transient, None)
