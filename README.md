@@ -51,6 +51,15 @@ used only to say which boxes are live enough to claim now. A capable box between
 announcements therefore leaves the action to its declared `--wait-s`; it no
 longer turns a bounded wait into an immediate refusal.
 
+Container work is part of that reservation even after Docker reparents it away
+from the action's process group. `pbrun` seals a derived owner id and places a
+Docker shim first on `PATH`; the shim labels created containers and marks that
+the Docker lifecycle was entered. Finish, withdrawal and stale reaping remove
+and re-query those labels on the claiming host before returning tokens. A
+remote check, a still-running create transaction, or a Docker error leaves the
+claim and its capacity held rather than admitting work on top of an unverified
+GPU payload.
+
 ## Provenance
 
 Split out of `prismaquant` on 2026-08-31 from

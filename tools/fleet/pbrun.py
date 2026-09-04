@@ -103,6 +103,9 @@ STAMP_PREFIX = ".pbrun-closure."
 #: files while a resubmit of the same command still lands on the same
 #: name and stays a CAS hit.
 RESULT_PREFIX = "pbrun_result."
+CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
+CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
+CONTAINER_WRAPPER_DIR = SH / "repo" / "tools"
 
 
 def _git_identity(cwd: Path) -> dict[str, str]:
@@ -234,6 +237,25 @@ def result_and_stamp_names(command, cwd, demand, variables):
     ).hexdigest()[:16]
     return (f"{RESULT_PREFIX}{fingerprint}.txt",
             f"{STAMP_PREFIX}{fingerprint}.json")
+
+
+def container_owner(command, cwd, demand, variables) -> str:
+    """Stable ownership id sealed before the action key exists.
+
+    The action key includes the environment, and the environment needs this id,
+    so using the final key would be recursive.  Hash the complete pre-lifecycle
+    submission identity instead; adding these derived variables afterwards is
+    deterministic and leaves no caller-chosen ownership namespace.
+    """
+
+    identity = _git_identity(Path(cwd))
+    return hashlib.sha256(
+        json.dumps(
+            ["prismabuild.container-owner.v1", command, str(cwd), demand,
+             variables, identity],
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
 
 
 def keep_droppings_out_of_git(cwd: Path) -> Path | None:
@@ -637,6 +659,13 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
             continue
         where = result.get("state") or "nowhere"
         note = [f"released {result.get('released', 0)} token(s)"]
+        container_cleanup = result.get("container_cleanup") or {}
+        if not container_cleanup.get("complete", True):
+            note.append("container cleanup unverified; claim and tokens retained")
+            error = str(container_cleanup.get("error") or "").strip()
+            if error:
+                note.append(error)
+            rc = 2
         signalled = result.get("signalled") or {}
         if signalled.get("signals"):
             note.append("signalled " + ", ".join(signalled["signals"]))
@@ -831,7 +860,24 @@ def main() -> int:
         if "=" not in entry:
             raise SystemExit(f"--env expects K=V, got {entry!r}")
         key, value = entry.split("=", 1)
+        if key in {CONTAINER_OWNER_ENV, CONTAINER_MARKER_ENV}:
+            raise SystemExit(
+                f"pbrun: {key} is derived by the container lifecycle; "
+                "callers may not set it")
         variables[key] = value
+
+    # Docker's payload is reparented to containerd-shim and therefore survives
+    # a kill of every process group below the action launcher.  Put the fleet's
+    # Docker shim first even under --no-default-env; it records a durable marker
+    # and adds the derived ownership label which withdrawal/finish query before
+    # returning capacity.  This is control-plane state, not an optional action
+    # convenience, so a caller cannot override either identity variable.
+    owner = container_owner(command, cwd, demand, variables)
+    marker = SH / "pb-queue" / pool.CONTAINER_OWNERS / f"{owner}.used"
+    prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+    variables["PATH"] = f"{CONTAINER_WRAPPER_DIR}:{prior_path}"
+    variables[CONTAINER_OWNER_ENV] = owner
+    variables[CONTAINER_MARKER_ENV] = str(marker)
 
     # A CPU slot must not be able to run GPU work.  The pool's whole claim is
     # that the ledger knows what is on each accelerator, and that claim was
@@ -917,6 +963,7 @@ def main() -> int:
             "artifact_family": "generic",
             "artifact_kind": "generic",
             "argv": ["/bin/bash", "-lc",
+                     f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
                      f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
                      f"exit ${{PIPESTATUS[0]}}"],
             "working_directory": ".",
@@ -1006,6 +1053,7 @@ def main() -> int:
         needs_gpu=bool(demand.get("gpu")),
         priority=args.priority,
         resources=demand,
+        container_owner=owner,
     )
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now

@@ -1,0 +1,96 @@
+#!/usr/bin/python3
+"""Docker CLI shim that binds created containers to one pbrun action."""
+
+from __future__ import annotations
+
+import fcntl
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
+MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
+LABEL = "prismabuild.action"
+
+
+def _real_docker() -> str:
+    if os.environ.get("PRISMABUILD_DOCKER_TESTING") == "1":
+        return os.environ.get("PRISMABUILD_DOCKER_REAL", "/usr/bin/docker")
+    return "/usr/bin/docker"
+
+
+def _creation_index(argv: list[str]) -> int | None:
+    if argv and argv[0] in {"run", "create"}:
+        return 1
+    if len(argv) >= 2 and argv[0] == "container" and argv[1] in {"run", "create"}:
+        return 2
+    return None
+
+
+def _starts_unowned_container(argv: list[str]) -> bool:
+    if argv and argv[0] == "start":
+        return True
+    if len(argv) >= 2 and argv[0] == "container" and argv[1] == "start":
+        return True
+    return len(argv) >= 2 and argv[0] == "compose" and argv[1] == "up"
+
+
+def _has_owner_label(argv: list[str]) -> bool:
+    for index, token in enumerate(argv):
+        if token.startswith(f"--label={LABEL}=") or token.startswith(f"-l={LABEL}="):
+            return True
+        if token in {"--label", "-l"} and index + 1 < len(argv):
+            if argv[index + 1].startswith(f"{LABEL}="):
+                return True
+    return False
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    owner = os.environ.get(OWNER_ENV, "")
+    marker_raw = os.environ.get(MARKER_ENV, "")
+    real = _real_docker()
+    if not owner and not marker_raw:
+        os.execv(real, [real, *argv])
+    if len(owner) != 64 or any(ch not in "0123456789abcdef" for ch in owner):
+        sys.stderr.write(f"docker shim: {OWNER_ENV} is not a 64-hex digest\n")
+        return 125
+    if not marker_raw:
+        sys.stderr.write(f"docker shim: {MARKER_ENV} is missing\n")
+        return 125
+    if _starts_unowned_container(argv):
+        sys.stderr.write(
+            "docker shim: start/compose-up cannot attach PrismaBuild's owner "
+            "label; use docker run/create inside this action\n")
+        return 125
+
+    insertion = _creation_index(argv)
+    if insertion is None:
+        os.execv(real, [real, *argv])
+    if _has_owner_label(argv):
+        sys.stderr.write(
+            f"docker shim: callers may not set the reserved {LABEL} label\n")
+        return 125
+
+    marker = Path(marker_raw)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(marker, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        # Held until the Docker CLI returns or this action is killed.  Cleanup
+        # acquires the same lock before querying the daemon, so it cannot race
+        # a container creation request still in flight.
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, owner.encode() + b"\n")
+        os.fsync(descriptor)
+        labelled = [*argv[:insertion], "--label", f"{LABEL}={owner}",
+                    *argv[insertion:]]
+        return subprocess.run([real, *labelled], check=False).returncode
+    finally:
+        os.close(descriptor)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

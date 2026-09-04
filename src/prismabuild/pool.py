@@ -74,6 +74,14 @@ forward), one predicate reads it at every guard site (``withdrawal_covers``),
 and a later ``publish`` retires it into ``withdrawn/superseded/``.  Nothing is
 ever removed silently: a record the queue drops is filed there first.
 
+**A detached container is still the action.**  ``pbrun`` seals a derived
+container-owner id and puts its Docker shim first on ``PATH``.  The shim labels
+every container it creates and leaves a durable marker; ``finish``, withdrawal
+and stale reaping query that label, force-remove its containers and verify the
+answer is empty before releasing capacity.  A remote host, a busy creation
+transaction or a Docker error keeps the claim and tokens: uncertainty is not
+permission to schedule a second action onto the same GPU.
+
 Clock skew between claimant and reaper is real but immaterial here: both Sparks
 are NTP-synchronised and measured 1.2-2.5 ms apart against a 300 s lease.
 """
@@ -81,6 +89,7 @@ are NTP-synchronised and measured 1.2-2.5 ms apart against a 300 s lease.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -114,6 +123,9 @@ INTENT = "intent"
 #: the live ``failed/`` for exactly that reason.
 WITHDRAWN = "withdrawn"
 _STATES = (READY, CLAIMED, DONE, FAILED, INTENT, WITHDRAWN)
+CONTAINER_OWNERS = "container-owners"
+CONTAINER_OWNER_LABEL = "prismabuild.action"
+DOCKER = "/usr/bin/docker"
 
 # Ported verbatim from pqwork: 30 s refresh, 300 s expiry.  The 10x margin is
 # what absorbs an NFS stall or a long GC pause without a spurious requeue.
@@ -465,6 +477,48 @@ def find_launcher_pids(action_key: str) -> list[int]:
         if needle in raw and b"run-local" in raw:
             found.append(int(entry.name))
     return found
+
+
+def _docker_owned_container_ids(owner: str) -> list[str]:
+    """Container ids carrying this action's ownership label.
+
+    Docker payloads are children of ``containerd-shim``, not of the action
+    group, so the daemon's label index is the authoritative join back to the
+    action.  A failed query is an unknown answer and therefore an exception;
+    callers retain capacity on it.
+    """
+
+    result = subprocess.run(
+        [DOCKER, "ps", "-aq", "--filter", f"label={CONTAINER_OWNER_LABEL}={owner}"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise PoolContractError(
+            f"docker ownership query failed ({result.returncode}): {detail}")
+    return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
+
+
+def _docker_remove_containers(container_ids: list[str]) -> list[str]:
+    """Force-remove exactly the container ids the ownership query returned."""
+
+    if not container_ids:
+        return []
+    result = subprocess.run(
+        [DOCKER, "rm", "-f", *container_ids],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise PoolContractError(
+            f"docker cleanup failed ({result.returncode}): {detail}")
+    return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
 
 
 def terminate_action(
@@ -1089,6 +1143,7 @@ class PoolQueue:
         priority: int = 0,
         resources: Mapping[str, int] | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        container_owner: str | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -1106,6 +1161,8 @@ class PoolQueue:
             raise PoolContractError("resource demand must not be negative")
         if int(max_attempts) < 1:
             raise PoolContractError("max_attempts must be at least 1")
+        if container_owner is not None:
+            self.container_marker(str(container_owner))  # validates the digest
         self.ensure_layout()
         # A submission is what retires a withdrawal.  The key is a content
         # hash -- ``result_and_stamp_names`` says so: *"the same command at the
@@ -1135,6 +1192,8 @@ class PoolQueue:
             "published_unix": _now(),
             "published_by": socket.gethostname(),
         }
+        if container_owner is not None:
+            item["container_owner"] = str(container_owner)
         if superseded is not None:
             item["supersedes_withdrawal"] = {
                 "withdrawn_unix": superseded.get("withdrawn_unix"),
@@ -1243,7 +1302,12 @@ class PoolQueue:
         )
 
     def write_lease(
-        self, action_key: str, *, owner: str, child_pid: int | None = None
+        self,
+        action_key: str,
+        *,
+        owner: str,
+        child_pid: int | None = None,
+        container_owner: str | None = None,
     ) -> None:
         """Refresh the claim's heartbeat, and say what is running under it.
 
@@ -1256,9 +1320,7 @@ class PoolQueue:
         writes, because at that moment nothing is running yet.
         """
 
-        _write_json_atomic(
-            self.lease_path(action_key),
-            {
+        lease = {
                 "schema": POOL_LEASE_SCHEMA_V1,
                 "action_key": action_key,
                 "owner": owner,
@@ -1266,11 +1328,100 @@ class PoolQueue:
                 "pid": os.getpid(),
                 "child_pid": int(child_pid) if child_pid is not None else None,
                 "heartbeat_unix": _now(),
-            },
-        )
+            }
+        if container_owner is not None:
+            lease["container_owner"] = str(container_owner)
+        _write_json_atomic(self.lease_path(action_key), lease)
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
         return ResourceLedger(self.root / RESERVATIONS, host=host)
+
+    def container_marker(self, owner: str) -> Path:
+        """The durable signal that this action invoked the Docker shim."""
+
+        if (len(owner) != 64
+                or any(character not in "0123456789abcdef" for character in owner)):
+            raise PoolContractError(
+                "container_owner must be a 64-character hex digest")
+        return self.root / CONTAINER_OWNERS / f"{owner}.used"
+
+    def cleanup_action_containers(
+        self, record: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Remove and verify this action's detached Docker payloads.
+
+        No marker means the Docker shim was never entered.  Once it exists,
+        uncertainty is fail-closed: only the claiming host may consult its
+        local daemon, an in-flight shim lock is not raced, and every query or
+        removal error leaves the claim and reservation in place.
+        """
+
+        raw_owner = record.get("container_owner")
+        if raw_owner is None:
+            return {"complete": True, "used": False, "removed": [], "remaining": []}
+        try:
+            marker = self.container_marker(str(raw_owner))
+        except PoolContractError as exc:
+            return {
+                "complete": False,
+                "used": True,
+                "removed": [],
+                "remaining": [],
+                "error": str(exc),
+            }
+        if not marker.exists():
+            return {"complete": True, "used": False, "removed": [], "remaining": []}
+
+        holder = record.get("claimed_host") or record.get("host")
+        local = socket.gethostname()
+        if isinstance(holder, str) and holder and holder != local:
+            return {
+                "complete": False,
+                "used": True,
+                "removed": [],
+                "remaining": [],
+                "error": f"container belongs to {holder}; cleanup must run there",
+            }
+
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                marker,
+                os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {
+                    "complete": False,
+                    "used": True,
+                    "removed": [],
+                    "remaining": [],
+                    "error": "Docker ownership transaction is still running",
+                }
+            before = _docker_owned_container_ids(str(raw_owner))
+            removed = _docker_remove_containers(before)
+            remaining = _docker_owned_container_ids(str(raw_owner))
+            complete = not remaining
+            if complete:
+                marker.unlink(missing_ok=True)
+            return {
+                "complete": complete,
+                "used": True,
+                "removed": removed,
+                "remaining": remaining,
+            }
+        except (OSError, subprocess.SubprocessError, PoolContractError) as exc:
+            return {
+                "complete": False,
+                "used": True,
+                "removed": [],
+                "remaining": [],
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     @staticmethod
     def demand_of(item: Mapping[str, object]) -> dict[str, int]:
@@ -1399,7 +1550,12 @@ class PoolQueue:
             claimed["claimed_host"] = socket.gethostname()
             claimed["reserved_on"] = socket.gethostname() if demand else None
             _write_json_atomic(dst, claimed)
-            self.write_lease(key, owner=owner)
+            self.write_lease(
+                key,
+                owner=owner,
+                container_owner=(str(claimed["container_owner"])
+                                 if claimed.get("container_owner") else None),
+            )
             self.passes_path(key).unlink(missing_ok=True)
             return claimed
         return None
@@ -1465,6 +1621,13 @@ class PoolQueue:
                 # every worker that polls past it.  There is nothing to reap --
                 # the winner filed the item and released its capacity -- so the
                 # loser's only correct move is to leave it alone.
+                continue
+            container_cleanup = self.cleanup_action_containers(record)
+            if not container_cleanup["complete"]:
+                pending = dict(record)
+                pending["container_cleanup_pending"] = container_cleanup
+                pending["container_cleanup_checked_unix"] = _now()
+                _write_json_atomic(path, pending)
                 continue
             if self.withdrawal_covers(record, action_key=key) is not None:
                 # A withdrawal that could not finish its own cleanup -- the
@@ -1566,6 +1729,9 @@ class PoolQueue:
             if age <= timeout_s:
                 continue
             host = record.get("host")
+            container_cleanup = self.cleanup_action_containers(record)
+            if not container_cleanup["complete"]:
+                continue
             self.ledger(str(host) if isinstance(host, str) else None).release(key)
             lease.unlink(missing_ok=True)
             swept.append(key)
@@ -1648,6 +1814,19 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
         record = _read_json(src)
+        effective_record = record or claim_snapshot or {}
+        container_cleanup = self.cleanup_action_containers(effective_record)
+        if not container_cleanup["complete"]:
+            # A detached container is still the action even after its launcher
+            # has returned.  Keep the claim as the durable owner of both the
+            # work and its tokens; a local reaper retries cleanup, while a
+            # remote one sees the claimed host and leaves it alone.
+            pending = dict(effective_record)
+            pending["action_key"] = action_key
+            pending["container_cleanup_pending"] = container_cleanup
+            pending["container_cleanup_checked_unix"] = _now()
+            _write_json_atomic(src, pending)
+            return src
         if self.withdrawal_covers(record, action_key=action_key) is not None:
             # An operator cancelled this while it was running.  Filing it under
             # ``done`` or ``failed`` would put the pool's opinion of the work on
@@ -1796,7 +1975,8 @@ class PoolQueue:
             raise PoolContractError(
                 f"refusing to reclaim {key}: successful outcome was filed on "
                 f"{finished_host!r}, reservation is held on {hosts[0]!r}")
-        if terminal.get("container_owner"):
+        terminal_owner = terminal.get("container_owner")
+        if terminal_owner and self.container_marker(str(terminal_owner)).exists():
             raise PoolContractError(
                 f"refusing to reclaim {key}: container lifecycle verification "
                 "is required")
@@ -2021,11 +2201,12 @@ class PoolQueue:
         *faster* from the one running the work.
 
         Tokens go back through the same ``ledger(host).release(key)`` path
-        ``finish`` uses.  They go back even while a remote action is still
-        being stopped: a reservation that outlives its holder is the starvation
-        bug's exact shape, and a worker one heartbeat from stopping is the
-        smaller risk.  Releasing twice is free, because tokens are filed under
-        the action key and the second release finds nothing to return.
+        ``finish`` uses, but only after the action-owned container census is
+        empty.  A cross-box withdrawal cannot inspect the holder's Docker
+        daemon, so it keeps the claim and reservation until that worker sees
+        the marker, stops the action and performs the local verification.
+        Releasing twice is free, because tokens are filed under the action key
+        and the second release finds nothing to return.
 
         Idempotent.  Run it twice and the second run re-signals, re-releases
         and re-cleans -- all no-ops once they have happened -- and leaves the
@@ -2154,10 +2335,22 @@ class PoolQueue:
                 "still_alive": any(one["still_alive"] for one in stopped),
             }
 
-        released = self.ledger(host).release(key)
-        claimed_path.unlink(missing_ok=True)
-        self.lease_path(key).unlink(missing_ok=True)
-        self.passes_path(key).unlink(missing_ok=True)
+        container_cleanup = self.cleanup_action_containers(record or lease)
+        if container_cleanup["complete"]:
+            released = self.ledger(host).release(key)
+            claimed_path.unlink(missing_ok=True)
+            self.lease_path(key).unlink(missing_ok=True)
+            self.passes_path(key).unlink(missing_ok=True)
+        else:
+            # The decision is already durable in withdrawn/, but the run is
+            # not gone yet.  Preserve the claim, lease and reservation as its
+            # ownership record; the holder's worker/reaper retries cleanup.
+            released = 0
+            if origin == CLAIMED and isinstance(record, Mapping):
+                pending = dict(record)
+                pending["container_cleanup_pending"] = container_cleanup
+                pending["container_cleanup_checked_unix"] = _now()
+                _write_json_atomic(claimed_path, pending)
         return {
             "action_key": key,
             "status": "already_withdrawn" if existing is not None else "withdrawn",
@@ -2170,6 +2363,7 @@ class PoolQueue:
             "holder_runtime": self.runtime_of(host),
             "released": released,
             "signalled": signalled,
+            "container_cleanup": container_cleanup,
             "path": str(withdrawn_path),
             "reason": str(filed.get("reason") or ""),
         }
@@ -2239,7 +2433,13 @@ class PoolQueue:
         # its own session with nothing left to reap it.  Everything after the
         # Popen belongs under the same guard.
         try:
-            self.write_lease(key, owner=owner, child_pid=process.pid)
+            self.write_lease(
+                key,
+                owner=owner,
+                child_pid=process.pid,
+                container_owner=(str(item["container_owner"])
+                                 if item.get("container_owner") else None),
+            )
             # Refresh the lease while the child runs; a long action must not be
             # reaped out from under itself.
             while True:
@@ -2261,7 +2461,13 @@ class PoolQueue:
                             "elapsed_s": _now() - started,
                             "argv": argv,
                         }
-                    self.write_lease(key, owner=owner, child_pid=process.pid)
+                    self.write_lease(
+                        key,
+                        owner=owner,
+                        child_pid=process.pid,
+                        container_owner=(str(item["container_owner"])
+                                         if item.get("container_owner") else None),
+                    )
                     if timeout_s is not None and _now() - started > timeout_s:
                         # Worst case this branch spends three grace budgets
                         # -- TERM wait, KILL wait, drain (~45 s) -- without

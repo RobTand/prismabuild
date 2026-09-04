@@ -570,6 +570,134 @@ def test_the_signal_reaches_the_action_group_not_only_the_launcher(
         "a decision must not be logged as a defect")
 
 
+def test_withdrawal_reaps_an_owned_container_before_releasing_capacity(
+    queue: pool.PoolQueue, tmp_path: Path, pidfile: Path, monkeypatch
+) -> None:
+    """A Docker payload is no longer in the action's process tree.
+
+    ``containerd-shim`` reparents the container process, so killing every
+    process group below the PrismaBuild launcher can succeed while the GPU
+    payload remains alive.  This test gives the detached process the same
+    ownership identity the pbrun Docker shim records, then makes the container
+    runtime calls deterministic: the pid is the container id and ``rm -f`` is
+    SIGKILL.  Capacity may return only after that independently-owned process
+    is gone.
+    """
+
+    container_pidfile = tmp_path / "container.pid"
+    stub = tmp_path / "launcher_with_reparented_container.py"
+    stub.write_text(
+        "import os, pathlib, subprocess, sys\n"
+        "first = os.fork()\n"
+        "if first == 0:\n"
+        "    os.setsid()\n"
+        "    second = os.fork()\n"
+        "    if second != 0: os._exit(0)\n"
+        f"    pathlib.Path({str(container_pidfile)!r}).write_text(str(os.getpid()))\n"
+        "    os.execl('/usr/bin/sleep', 'sleep', '600')\n"
+        "os.waitpid(first, 0)\n"
+        "action = subprocess.Popen(['/usr/bin/sleep', '600'], start_new_session=True)\n"
+        f"pathlib.Path({str(pidfile)!r}).write_text(str(action.pid))\n"
+        "sys.exit(action.wait())\n"
+    )
+
+    owner = "c" * 64
+    _publish(queue, KEY_A, worker_script=str(stub),
+             resources={"gpu": 1, "mem_gb": 8})
+    queued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    queued["container_owner"] = owner
+    queue.item_path(pool.READY, KEY_A).write_text(json.dumps(queued))
+    item = queue.claim(capacity={"gpu": 1, "mem_gb": 8})
+    marker = queue.root / "container-owners" / f"{owner}.used"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(owner)
+
+    thread, outcome = _run_in_background(queue, item, heartbeat_s=30.0)
+    assert _await(lambda: pidfile.exists() and container_pidfile.exists())
+    action_pid = int(pidfile.read_text())
+    container_pid = int(container_pidfile.read_text())
+
+    def owned_ids(actual_owner: str) -> list[str]:
+        assert actual_owner == owner
+        return [str(container_pid)] if pool._process_alive(container_pid) else []
+
+    def remove(ids: list[str]) -> list[str]:
+        for raw in ids:
+            os.kill(int(raw), signal.SIGKILL)
+        assert _await(lambda: not pool._process_alive(container_pid))
+        return list(ids)
+
+    monkeypatch.setattr(pool, "_docker_owned_container_ids", owned_ids,
+                        raising=False)
+    monkeypatch.setattr(pool, "_docker_remove_containers", remove, raising=False)
+    try:
+        result = queue.withdraw(KEY_A, reason="stop the serve")
+        assert _await(lambda: not pool._process_alive(action_pid))
+        assert _await(lambda: not pool._process_alive(container_pid)), (
+            "the reparented container survived after its GPU token was released")
+        assert result["container_cleanup"]["complete"] is True
+        assert queue.ledger().available() == {"gpu": 1, "mem_gb": 8}
+    finally:
+        if pool._process_alive(container_pid):
+            os.kill(container_pid, signal.SIGKILL)
+        thread.join(timeout=30.0)
+    assert outcome["status"] == "withdrawn"
+
+
+def test_withdrawal_keeps_the_claim_and_tokens_when_container_cleanup_fails(
+    queue: pool.PoolQueue, monkeypatch
+) -> None:
+    owner = "e" * 64
+    _publish(queue, KEY_A, resources={"gpu": 1, "mem_gb": 8})
+    queued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    queued["container_owner"] = owner
+    queue.item_path(pool.READY, KEY_A).write_text(json.dumps(queued))
+    queue.claim(capacity={"gpu": 1, "mem_gb": 8})
+    marker = queue.root / "container-owners" / f"{owner}.used"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(owner)
+
+    monkeypatch.setattr(pool, "_docker_owned_container_ids",
+                        lambda actual_owner: ["stuck-container"], raising=False)
+    monkeypatch.setattr(pool, "_docker_remove_containers",
+                        lambda ids: list(ids), raising=False)
+
+    result = queue.withdraw(KEY_A, signal_child=False)
+
+    assert result["released"] == 0
+    assert result["container_cleanup"]["complete"] is False
+    assert result["container_cleanup"]["remaining"] == ["stuck-container"]
+    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert queue.ledger().held_keys() == [KEY_A]
+
+
+def test_finish_keeps_capacity_while_an_owned_container_survives(
+    queue: pool.PoolQueue, monkeypatch
+) -> None:
+    owner = "f" * 64
+    _publish(queue, KEY_A, resources={"gpu": 1})
+    queued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    queued["container_owner"] = owner
+    queue.item_path(pool.READY, KEY_A).write_text(json.dumps(queued))
+    claimed = queue.claim(capacity={"gpu": 1})
+    marker = queue.root / "container-owners" / f"{owner}.used"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(owner)
+    monkeypatch.setattr(pool, "_docker_owned_container_ids",
+                        lambda actual_owner: ["stuck-container"], raising=False)
+    monkeypatch.setattr(pool, "_docker_remove_containers",
+                        lambda ids: list(ids), raising=False)
+
+    destination = queue.finish(
+        KEY_A, status="executed", claim_snapshot=claimed)
+
+    assert destination == queue.item_path(pool.CLAIMED, KEY_A)
+    pending = json.loads(destination.read_text())
+    assert pending["container_cleanup_pending"]["remaining"] == ["stuck-container"]
+    assert queue.ledger().held_keys() == [KEY_A]
+    assert not queue.item_path(pool.DONE, KEY_A).exists()
+
+
 def test_a_withdrawal_from_another_box_still_stops_the_action(
     queue: pool.PoolQueue, tmp_path: Path, pidfile: Path
 ) -> None:

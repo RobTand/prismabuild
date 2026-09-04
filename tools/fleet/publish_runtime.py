@@ -40,7 +40,7 @@ CHECKOUT = Path(__file__).resolve().parents[2]
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
 FLEET_SCRIPTS = (
-    "pbrun.py", "pbtest.py", "require_pool.py", "worker_loop.py", "worker.py",
+    "docker", "pbrun.py", "pbtest.py", "require_pool.py", "worker_loop.py", "worker.py",
     "render_identity.py", "seal_and_publish.py", "tessera_status.py",
     "dispatch_tessera_shards.py", "dispatch_tessera_ladder.py",
     "publish_runtime.py", "pool_reset.py", "supervise.py",
