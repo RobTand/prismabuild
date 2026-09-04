@@ -2598,6 +2598,86 @@ def test_sigint_worker_reaps_action_group_before_releasing_output_lock(
                 pass
 
 
+def test_sigterm_worker_reaps_action_group_before_exiting(tmp_path: Path):
+    """A SIGTERM at the worker must not orphan the action it launched.
+
+    The action runs in its own session on purpose, so a signal aimed at the
+    worker never reaches it.  Under the default disposition the worker dies
+    where it stands, the reap never runs, and the action keeps the GPU with
+    nothing watching it -- which is how ``pool``'s timeout failed to bound a
+    wedged run.  Handling the signal turns termination into the unwind that
+    already reaps the group.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    task = (
+        "import os,pathlib,time; "
+        "f=open('action.pid','w'); f.write(str(os.getpid())); f.close(); "
+        "time.sleep(60); "
+        "pathlib.Path('result.bin').write_bytes(b'result')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", task])
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    cas_root = tmp_path / "cas"
+    repository_root = Path(__file__).resolve().parents[1]
+    worker = repository_root / "tools" / "prismabuild_worker.py"
+    terminated = subprocess.Popen(
+        [
+            sys.executable,
+            str(worker),
+            "run-local",
+            "--action",
+            str(action_path),
+            "--cas-root",
+            str(cas_root),
+            "--checkout-root",
+            str(checkout),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    pidfile = checkout / "action.pid"
+    action_pid: int | None = None
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if pidfile.exists():
+                text = pidfile.read_text(encoding="utf-8").strip()
+                if text:
+                    action_pid = int(text)
+                    break
+            time.sleep(0.02)
+        else:
+            pytest.fail("action process did not start")
+
+        terminated.send_signal(signal.SIGTERM)
+        # 143, not -15: the worker handled the signal and unwound, which is
+        # what gave the reap below a chance to run at all.
+        assert terminated.wait(timeout=20.0) == 128 + signal.SIGTERM
+        assert action_pid is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(action_pid, 0)
+        assert pb.PrismaBuildCAS(cas_root).lookup(action) is None
+    finally:
+        if terminated.poll() is None:
+            terminated.kill()
+            terminated.wait(timeout=2.0)
+        # Reap the action before draining: it inherited the worker's pipes, so
+        # an unbounded read here would wait out the whole ``time.sleep`` of an
+        # action this test just proved should not have survived.
+        if action_pid is not None:
+            try:
+                os.killpg(action_pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        try:
+            terminated.communicate(timeout=10.0)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def test_local_result_repair_requires_exact_claim_and_refuses_symlink(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

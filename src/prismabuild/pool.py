@@ -91,6 +91,16 @@ _STATES = (READY, CLAIMED, DONE, FAILED, INTENT)
 HEARTBEAT_S = 30.0
 LEASE_TIMEOUT_S = 300.0
 
+# How long the timeout path gives the launcher's process group to go down.
+# The launcher does not just exit when signalled: it relays the signal into the
+# action's own session -- ``run_local_action`` gives the action
+# ``start_new_session=True`` -- and that relay is itself TERM, grace, KILL,
+# grace, i.e. two of core's windows.  SIGKILLing the launcher before it
+# finishes would orphan the very action this timeout exists to stop, so the
+# budget is core's two windows and not a number of its own; the 5 s on top is
+# margin for the launcher's own exit once the relay has returned.
+TIMEOUT_GRACE_S = 2.0 * pb._PROCESS_GROUP_GRACE_SECONDS + 5.0
+
 # Retries exist because the CAS makes them free: re-running a completed action
 # is a receipt lookup, so the only cost of one more attempt is the attempt.
 DEFAULT_MAX_ATTEMPTS = 3
@@ -194,6 +204,41 @@ def worker_argv(
         "--checkout-root",
         str(checkout_root),
     ]
+
+
+def _drain(
+    process: subprocess.Popen[str], *, timeout_s: float
+) -> tuple[str, str, bool]:
+    """Collect what the pipes hold without waiting on whoever still holds them.
+
+    The action inherits the launcher's stdout and stderr, so the read side sees
+    EOF only when the *action* exits -- not when the launcher does.  An
+    unbounded ``communicate()`` after a kill therefore blocks for exactly as
+    long as the runaway it was called to stop.  Take the partial output the
+    timeout carries instead, close the pipes, and say so.
+
+    Returns ``(stdout, stderr, survived)``, where ``survived`` is True when EOF
+    never arrived.
+    """
+
+    try:
+        out, err = process.communicate(timeout=timeout_s)
+        return out or "", err or "", False
+    except subprocess.TimeoutExpired as exc:
+        # ``communicate`` attaches what it had read to the timeout, undecoded
+        # even under ``text=True``.  A truncated log beats no log.
+        partial = []
+        for chunk in (exc.output, exc.stderr):
+            if chunk is None:
+                partial.append("")
+            elif isinstance(chunk, bytes):
+                partial.append(chunk.decode("utf-8", errors="replace"))
+            else:
+                partial.append(str(chunk))
+        for pipe in (process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
+        return partial[0], partial[1], True
 
 
 def _scan(directory: Path):
@@ -1072,12 +1117,19 @@ class PoolQueue:
         python: str | Path = sys.executable,
         timeout_s: float | None = None,
         heartbeat_s: float = HEARTBEAT_S,
+        timeout_grace_s: float = TIMEOUT_GRACE_S,
     ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
 
         Executes as a subprocess rather than in-process on purpose: it is the
         same launch SLURM would have made, so the executed contract does not
         depend on which transport delivered the action.
+
+        ``timeout_s`` bounds the *action*, not just this launcher.  What is
+        launched here is a worker that runs the action as a further child, so
+        the timeout signals the launcher's whole process group and the launcher
+        relays that into the action's own session; the timeout path itself is
+        bounded end to end, because a timeout that can hang is not a timeout.
         """
 
         key = str(item["action_key"])
@@ -1090,27 +1142,69 @@ class PoolQueue:
         owner = str(item.get("claimed_by") or "")
         started = _now()
         process = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            # The launcher leads its own group so the timeout can signal the
+            # group rather than the single pid.  ``kill()`` on the pid reaches
+            # the launcher only, and leaves the action holding the GPU.
+            start_new_session=True,
         )
         # Refresh the lease while the child runs; a long action must not be
         # reaped out from under itself.
-        while True:
-            try:
-                out, err = process.communicate(timeout=heartbeat_s)
-                break
-            except subprocess.TimeoutExpired:
-                self.write_lease(key, owner=owner)
-                if timeout_s is not None and _now() - started > timeout_s:
-                    process.kill()
-                    out, err = process.communicate()
-                    return {
-                        "status": "timeout",
-                        "returncode": None,
-                        "stdout": out,
-                        "stderr": err,
-                        "elapsed_s": _now() - started,
-                        "argv": argv,
-                    }
+        try:
+            while True:
+                try:
+                    out, err = process.communicate(timeout=heartbeat_s)
+                    break
+                except subprocess.TimeoutExpired:
+                    self.write_lease(key, owner=owner)
+                    if timeout_s is not None and _now() - started > timeout_s:
+                        # Worst case this branch spends three grace budgets
+                        # -- TERM wait, KILL wait, drain (~45 s) -- without
+                        # refreshing the lease, against a 300 s expiry.
+                        pb._terminate_process_group(
+                            process, grace_s=timeout_grace_s
+                        )
+                        out, err, survived = _drain(
+                            process, timeout_s=timeout_grace_s
+                        )
+                        return {
+                            "status": "timeout",
+                            # Stays None: ``pbrun`` returns any integer
+                            # ``returncode`` as its own exit status, and an
+                            # action that finished inside the tick that
+                            # crossed the deadline would hand it a 0 for a
+                            # record filed as a timeout.  ``status`` is the
+                            # authority here; the launcher's exit goes in a
+                            # field of its own below.
+                            "returncode": None,
+                            # Which path the launcher took: 143 is its own
+                            # unwind on the relayed TERM, -15/-9 mean it never
+                            # handled the signal at all.
+                            "launcher_returncode": process.returncode,
+                            "stdout": out,
+                            "stderr": err,
+                            # True when the pipes never reached EOF, so
+                            # something in the action's tree outlived SIGKILL
+                            # (a D-state GPU wedge does).  This branch still
+                            # returns and the ledger token is still released,
+                            # so the flag is the only notice that it was
+                            # released for a GPU somebody still holds.
+                            "action_survived_kill": survived,
+                            "elapsed_s": _now() - started,
+                            "argv": argv,
+                        }
+        except BaseException:
+            # The launcher leads its own session now, so a Ctrl-C or any other
+            # signal reaching this loop no longer reaches it -- before the new
+            # session it did, and the launcher's own unwind reaped the action.
+            # Unwinding from here without reaping would leave exactly the
+            # orphan that session was introduced to bound.
+            pb._terminate_process_group(process, grace_s=timeout_grace_s)
+            _drain(process, timeout_s=timeout_grace_s)
+            raise
         return {
             "status": "executed" if process.returncode == 0 else "failed",
             "returncode": process.returncode,

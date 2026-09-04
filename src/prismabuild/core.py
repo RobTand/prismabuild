@@ -3872,7 +3872,20 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
         os.close(directory_fd)
 
 
-def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+def _terminate_process_group(
+    process: subprocess.Popen[bytes] | subprocess.Popen[str],
+    *,
+    grace_s: float = _PROCESS_GROUP_GRACE_SECONDS,
+) -> None:
+    """Signal a whole process group down: TERM, ``grace_s``, KILL, ``grace_s``.
+
+    ``grace_s`` is a parameter because the leader of the group is not always
+    the last thing that has to die.  A worker launcher relays the TERM into an
+    action of its own before exiting, and a caller reaping *that* group has to
+    outlast the relay or it SIGKILLs the launcher mid-reap and orphans the
+    action -- see ``pool.PoolQueue.execute``.
+    """
+
     if process.poll() is not None:
         return
     try:
@@ -3880,7 +3893,7 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     except ProcessLookupError:
         return
     try:
-        process.wait(timeout=_PROCESS_GROUP_GRACE_SECONDS)
+        process.wait(timeout=grace_s)
         return
     except subprocess.TimeoutExpired:
         pass
@@ -3889,9 +3902,44 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     except ProcessLookupError:
         return
     try:
-        process.wait(timeout=_PROCESS_GROUP_GRACE_SECONDS)
+        process.wait(timeout=grace_s)
     except subprocess.TimeoutExpired:
         pass
+
+
+@contextmanager
+def _sigterm_unwinds_this_process():
+    """Make SIGTERM unwind this worker so its running action is reaped with it.
+
+    The action below runs in its own session on purpose, which is exactly what
+    keeps it alive through a signal aimed at this worker -- and exactly what
+    makes the default SIGTERM disposition wrong here.  Terminating where we
+    stand skips the ``except BaseException`` reap, and the action keeps the
+    GPU, the memory and the caller's ledger token with nothing left watching
+    it.  Handling the signal turns termination into the unwind that already
+    knows how to reap the action group.
+
+    The handler disarms itself before raising: a second SIGTERM landing while
+    ``_terminate_process_group`` waits out its grace would raise straight
+    through the reap and abandon it half-finished.
+    """
+
+    def _unwind(signum, frame):                       # noqa: ARG001
+        signal.signal(signum, signal.SIG_IGN)
+        raise SystemExit(128 + signum)
+
+    try:
+        previous = signal.signal(signal.SIGTERM, _unwind)
+    except ValueError:
+        # Not the main thread.  A library caller's signal disposition is not
+        # this function's to set, and an in-process run has a live parent that
+        # owns it; leave it alone rather than fail the action over it.
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def run_local_action(
@@ -3989,37 +4037,43 @@ def run_local_action(
             )
         _refuse_existing_result_symlink_prefix(output, cwd)
         process: subprocess.Popen[bytes] | None = None
-        try:
-            process = subprocess.Popen(
-                list(task["argv"]),
-                cwd=cwd,
-                env={str(key): str(value) for key, value in variables.items()},
-                shell=False,
-                stdin=subprocess.DEVNULL,
-                start_new_session=True,
-                # The action keeps exclusion alive if this worker is killed.
-                # ``pass_fds`` clears close-on-exec in the child while the
-                # parent's descriptor remains CLOEXEC for unrelated execs.
-                pass_fds=(output_lock_descriptor,),
-            )
-            returncode = process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            if process is not None:
-                _terminate_process_group(process)
-            raise LocalActionError(f"action execution timed out: {exc}") from exc
-        except OSError as exc:
-            if process is not None:
-                _terminate_process_group(process)
-            raise LocalActionError(f"action execution failed: {exc}") from exc
-        except BaseException:
-            # A handled signal (notably SIGINT/KeyboardInterrupt) unwinds this
-            # process while its new-session child keeps running.  Reap the
-            # entire action group before the context manager closes its copy
-            # of the descriptor shared with that child.  If the child cannot
-            # be reaped, its duplicate continues to hold the lock.
-            if process is not None:
-                _terminate_process_group(process)
-            raise
+        with _sigterm_unwinds_this_process():
+            try:
+                process = subprocess.Popen(
+                    list(task["argv"]),
+                    cwd=cwd,
+                    env={
+                        str(key): str(value) for key, value in variables.items()
+                    },
+                    shell=False,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                    # The action keeps exclusion alive if this worker is killed.
+                    # ``pass_fds`` clears close-on-exec in the child while the
+                    # parent's descriptor remains CLOEXEC for unrelated execs.
+                    pass_fds=(output_lock_descriptor,),
+                )
+                returncode = process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired as exc:
+                if process is not None:
+                    _terminate_process_group(process)
+                raise LocalActionError(
+                    f"action execution timed out: {exc}"
+                ) from exc
+            except OSError as exc:
+                if process is not None:
+                    _terminate_process_group(process)
+                raise LocalActionError(f"action execution failed: {exc}") from exc
+            except BaseException:
+                # A handled signal (SIGINT/KeyboardInterrupt, and SIGTERM by
+                # the context manager above) unwinds this process while its
+                # new-session child keeps running.  Reap the entire action
+                # group before the context manager closes its copy of the
+                # descriptor shared with that child.  If the child cannot be
+                # reaped, its duplicate continues to hold the lock.
+                if process is not None:
+                    _terminate_process_group(process)
+                raise
         if returncode != 0:
             raise LocalActionError(
                 f"action argv exited with status {returncode}"
