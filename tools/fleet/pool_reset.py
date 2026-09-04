@@ -138,8 +138,13 @@ def main() -> int:
     # terminal rather than a retry), and any worker can lose the claim to a
     # reaper and take ``finish``'s lost-race branch.  Both records carry the
     # ``withdrawn_by`` stamp the verb put on the claimed record; the live
-    # marker is the second reading, and it is generation-scoped, so a key that
-    # was withdrawn and then deliberately re-submitted is NOT skipped here.
+    # marker is the second reading, and it is read through
+    # ``withdrawal_covers`` so that it is generation-scoped, which is what
+    # keeps a key that was withdrawn and then deliberately re-submitted from
+    # being skipped here.  This comment used to claim that scoping while the
+    # code below tested ``path.stem in withdrawn`` -- the bare key -- so a
+    # failed record of a LATER run was skipped as "a decision, not a defect"
+    # on the strength of somebody's cancellation of an earlier one.
     withdrawn = queue.withdrawn_keys()
 
     plans: dict[tuple[str, str], dict] = {}
@@ -152,7 +157,9 @@ def main() -> int:
             continue
         if record.get("status") == "reset" and not args.include_reset:
             continue
-        if path.stem in withdrawn or record.get("withdrawn_unix"):
+        covering = queue.withdrawal_covers(
+            record, action_key=path.stem, withdrawn=withdrawn)
+        if covering is not None or record.get("withdrawn_unix"):
             who = record.get("withdrawn_by") or "an operator"
             skipped.append((path.stem[:12],
                             f"withdrawn by {who}; a decision, not a defect"))

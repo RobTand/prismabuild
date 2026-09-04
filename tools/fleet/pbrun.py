@@ -463,13 +463,28 @@ def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool) -> str:
     return "pbrun: " + "  ".join(notes)
 
 
-def await_outcome(q, key: str, *, wait_s: float) -> int:
+def await_outcome(q, key: str, *, wait_s: float, mine=None) -> int:
     """Block until this action reaches a terminal directory, then report it.
 
     Split out of ``main`` so the outcome half can be tested without a
     submission: the bug this exists to prevent lived entirely in which
     directories the loop watched, which is exactly the part a live-queue
     test would have been least likely to reach.
+
+    ``mine`` is the item ``publish`` returned -- the *generation* this caller
+    submitted.  An action key is a content hash, so two agents running the
+    same command against the same tree submit the same key, and a withdrawal
+    filed against the run that is already claimed does not cancel the one
+    published behind it.  ``PoolQueue.withdrawal_covers`` is what settles
+    that, and every guard inside the pool consults it; this loop used to
+    break on ``withdrawn/<key>.json`` merely *existing*, so a caller whose
+    submission the pool had deliberately left in ``ready`` was told it had
+    been withdrawn by a stranger, at exit 143, while the work it was waiting
+    for went on to run and be filed under ``done`` with nobody reading it.
+
+    ``mine=None`` means "cannot name a generation", and ``withdrawal_covers``
+    answers a bare marker for it -- the pre-existing behaviour, kept for
+    callers that are waiting on somebody else's submission.
     """
 
     # Watch BOTH terminal directories.  An action whose argv exits non-zero is
@@ -498,6 +513,7 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
         except OSError:
             return False
 
+    said_not_mine = False
     while True:
         if _landed(done):
             outcome_path = done
@@ -506,8 +522,19 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
             outcome_path = failed
             break
         if _landed(withdrawn):
-            outcome_path = withdrawn
-            break
+            if q.withdrawal_covers(mine, action_key=key) is not None:
+                outcome_path = withdrawn
+                break
+            # A cancellation of an earlier run of this key.  Keep waiting --
+            # and say so once, because a submitter who can see a withdrawal
+            # sitting there under their own key and is told nothing has no way
+            # to tell "still queued" from "quietly dropped", which is the
+            # silence this whole verb exists to remove.
+            if not said_not_mine:
+                said_not_mine = True
+                print(f"pbrun: a withdrawal under {key[:12]} names an earlier "
+                      f"run of it, not this one; still waiting",
+                      file=sys.stderr, flush=True)
         if time.monotonic() > deadline:
             print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
             return 75
@@ -902,7 +929,11 @@ def main() -> int:
     except (OSError, ValueError):
         superseding = None
 
-    q.publish(
+    # Keep the item, not just the fact of publishing it: it carries the
+    # generation this submission created, and that is what tells a withdrawal
+    # filed against somebody else's run of the same content key from one
+    # filed against this one.  See ``await_outcome``.
+    mine = q.publish(
         action_key=key,
         cas_root=str(SH / "cas"),
         checkout_root=str(cwd),
@@ -925,7 +956,7 @@ def main() -> int:
     print(f"pbrun: queued {key[:12]} tags={tags} demand={demand}{masked}",
           file=sys.stderr, flush=True)
 
-    return await_outcome(q, key, wait_s=args.wait_s)
+    return await_outcome(q, key, wait_s=args.wait_s, mine=mine)
 
 
 if __name__ == "__main__":

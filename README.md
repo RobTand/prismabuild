@@ -35,7 +35,11 @@ cheap by construction: re-running work that landed is a receipt lookup. A
 withdrawal cancels the *run* and not the name — the marker is scoped to the
 generation it was filed against and a later submission retires it into
 `withdrawn/superseded/` — because the action key is a content hash, so
-re-submitting one is how anybody asks for the same work again. What
+re-submitting one is how anybody asks for the same work again. That scoping is
+read through one predicate, `withdrawal_covers`, by everything that acts on a
+marker, `pbrun`'s wait loop and `pool_reset`'s skip included: a submitter has
+to be able to tell its own cancellation from somebody else's, which is why
+`publish` hands back the item it stamped. What
 pqwork lacks, and PrismaBuild has, is action-key determinism and CAS receipts —
 which is what quantization work needs, since an artifact you cannot reproduce is
 quarantined.

@@ -31,7 +31,13 @@ KEY_A = uuid.uuid4().hex + uuid.uuid4().hex
 
 
 class _Queue:
-    """Just enough PoolQueue for the wait loop: the terminal directories."""
+    """Just enough PoolQueue for the wait loop: the terminal directories.
+
+    Plus the withdrawal predicate, which the loop grew a use for when it
+    stopped breaking on a marker's mere existence -- borrowed from the real
+    class rather than re-implemented, so the stub cannot answer this question
+    differently from the pool the loop runs against.
+    """
 
     def __init__(self, root: Path):
         self.root = root
@@ -40,6 +46,12 @@ class _Queue:
 
     def item_path(self, state: str, key: str) -> Path:
         return self.root / state / f"{key}.json"
+
+    def dir(self, state: str) -> Path:
+        return self.root / state
+
+    withdrawn_keys = pool.PoolQueue.withdrawn_keys
+    withdrawal_covers = pool.PoolQueue.withdrawal_covers
 
 
 def _wait(monkeypatch, queue, key: str, wait_s: float = 5.0):

@@ -1089,7 +1089,7 @@ class PoolQueue:
         priority: int = 0,
         resources: Mapping[str, int] | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
-    ) -> Path:
+    ) -> dict[str, object]:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
         ``resources`` is what this action needs to run on one box -- e.g.
@@ -1097,6 +1097,14 @@ class PoolQueue:
         the producer that knows it; a worker's ``capacity`` is the matching
         claim about the box.  Omitting it means the action is admitted on
         placement alone, which is the pre-ledger behaviour.
+
+        **Returns the item, not its path.**  The path is ``item_path(READY,
+        action_key)`` and no caller ever wanted it; the ``published_unix`` the
+        item carries is the generation this submission created, and a
+        submitter that cannot name its own generation cannot tell its own
+        withdrawal from somebody else's -- which is exactly what ``pbrun``
+        could not do, and why it reported a stranger's cancellation as the
+        answer to a run it had just submitted.  See ``withdrawal_covers``.
         """
 
         if not isinstance(action_key, str) or len(action_key) != 64:
@@ -1142,9 +1150,8 @@ class PoolQueue:
                 "withdrawn_host": superseded.get("withdrawn_host"),
                 "reason": superseded.get("reason"),
             }
-        path = self.item_path(READY, action_key)
-        _write_json_atomic(path, item)
-        return path
+        _write_json_atomic(self.item_path(READY, action_key), item)
+        return item
 
     # -- consumer -------------------------------------------------------
 
@@ -1807,10 +1814,22 @@ class PoolQueue:
     ) -> dict[str, object] | None:
         """The withdrawal that cancelled THIS record, or ``None``.
 
-        One predicate for all seven guard sites, because the alternative was
-        the rule half-applied: ``claim`` scoping the check while ``finish``
-        and ``execute`` still matched on the bare key would discard a
-        legitimate later run's outcome and kill the run outright.
+        One predicate for every guard site, because the alternative was the
+        rule half-applied: ``claim`` scoping the check while ``finish`` and
+        ``execute`` still matched on the bare key would discard a legitimate
+        later run's outcome and kill the run outright.
+
+        **Including the guards outside this module.**  The first cut of that
+        argument stopped at the module boundary, and the rule was half-applied
+        again one layer out: ``pbrun``'s wait loop broke on
+        ``withdrawn/<key>.json`` landing, and ``pool_reset`` skipped a failed
+        item on ``stem in withdrawn_keys()`` -- both on the bare key, and the
+        second under a comment that *said* it was generation-scoped.  A
+        submitter therefore still heard "withdrawn by <a stranger>" at exit
+        143 for a run this predicate had just decided to let through, which is
+        the last sentence of the objection this scoping was written to answer.
+        Both now call in here, which is why ``publish`` returns the item: a
+        caller has to be able to name the generation it created.
 
         **The generation, not the key.**  An action key is a content hash, so
         a withdrawal has to name the *run* it cancelled, not the name of the
