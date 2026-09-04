@@ -66,21 +66,33 @@ def _queue_item(action: dict[str, object], *, cas_root: Path) -> dict[str, objec
     """The three fields ``materialize`` reads, taken from the sealed action.
 
     Shaped like a pool item on purpose: the materializer's input contract is
-    the same for both transports, so neither gets its own dialect of it.
+    the same for both transports, so neither gets its own dialect of it.  An
+    action is addressed one of two ways, and both reach here as the pool
+    would carry them: a sealed snapshot, materialized on whichever node won
+    the allocation, or a box-local checkout root -- a path, which exists on
+    exactly one machine and reaches this launcher only because the submitter
+    pinned the job there (``--here`` and a non-portable checkout both become
+    a host constraint).  Refusing the second shape made ``--here`` a
+    pool-only flag for no reason the scheduler imposes.
     """
 
-    params = action.get("params")
+    raw_params = action.get("params")
+    params = raw_params if isinstance(raw_params, dict) else {}
     item: dict[str, object] = {
         "action_key": str(action["action_key"]),
         "cas_root": str(cas_root),
     }
-    snapshot = params.get("checkout_snapshot") if isinstance(params, dict) else None
+    snapshot = params.get("checkout_snapshot")
     if snapshot is not None:
         item["checkout_snapshot"] = snapshot
         return item
+    root = params.get("checkout_root")
+    if root:
+        item["checkout_root"] = str(root)
+        return item
     raise SystemExit(
-        "slurm_job: this action carries no checkout snapshot, so there is "
-        "nothing to materialize; only snapshot-addressed actions run here"
+        "slurm_job: this action carries neither a checkout snapshot nor a "
+        "checkout root, so there is no tree to execute it in"
     )
 
 
