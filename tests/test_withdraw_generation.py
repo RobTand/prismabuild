@@ -265,3 +265,38 @@ def test_withdrawing_again_cancels_the_run_that_is_live_now(
     # who cancelled generation one and why.
     assert [one for one in _superseded(queue, KEY_A)
             if one.get("status") == "withdrawn"]
+
+
+def test_withdrawing_again_cancels_the_claimed_run_it_leaves_uncovered(
+    queue: pool.PoolQueue
+) -> None:
+    """The same second withdrawal, with the live run CLAIMED rather than queued.
+
+    Worth its own case because the failure is worse and the code path differs.
+    The cleanup at the end of the verb is not gated on which branch filed the
+    record: it unlinks the claim, drops the lease and hands the tokens back
+    whatever it decided.  So on the idempotent branch the box running
+    generation two loses its claim, its lease and its reservation while the
+    marker still names generation one -- nothing covers the running child, the
+    three withdrawal checkpoints in ``execute`` never fire, and ``finish``
+    arrives to a claim that is gone and files the result as a lost race.  The
+    operator is told ``already_withdrawn`` throughout.
+    """
+
+    _publish(queue, KEY_A)                       # generation one
+    assert queue.claim() is not None
+    _publish(queue, KEY_A)                       # generation two, queued behind
+    queue.withdraw(KEY_A, by="rob", signal_child=False)     # names generation one
+
+    running = queue.claim()                      # a worker picks up generation two
+    assert running is not None, "the marker does not cover a later generation"
+    again = queue.withdraw(KEY_A, by="rob", reason="the other one too",
+                           signal_child=False)
+
+    assert again["status"] == "withdrawn", "a stale marker is not this decision"
+    assert again["state"] == pool.CLAIMED
+    marker = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    assert marker["published_unix"] == running["published_unix"], (
+        "the claim was cleaned up, so the marker has to be what stops the child")
+    assert queue.withdrawal_covers(running, action_key=KEY_A) is not None
+    assert queue.execute(running, python=sys.executable)["status"] == "withdrawn"
