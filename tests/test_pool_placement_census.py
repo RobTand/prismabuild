@@ -123,6 +123,7 @@ def test_the_census_counts_items_placeable_on_exactly_one_box(
     assert census["pinned_to"] == {"gx10-6b77": 1, "sparky": 3}
     assert census["wide"] == 0
     assert census["unplaceable"] == 1        # 4 TB of memory, on no box
+    assert census["unreadable"] == 0
     line = pool.describe_placement_census(census)
     assert "4 on exactly one box (gx10-6b77 1, sparky 3)" in line
     assert "4 by a box-local checkout" in line
@@ -248,3 +249,44 @@ def test_a_shared_checkout_is_still_counted_as_wide(tmp_path: Path) -> None:
 
     assert census["wide"] == 1 and census["one_box"] == 0
     assert census["one_box_by_path"] == 0
+def test_one_malformed_ready_item_does_not_take_the_worker_with_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``3711b29``'s contract, re-opened by a diagnostic outside its try/except.
+
+    ``claim`` skips an item tagged for another box at ``_placement_matches``,
+    before ``demand_of`` is ever reached, so a ready record with a non-Mapping
+    ``resources`` was harmless.  The census reads EVERY ready item, and its
+    call sat outside the handler that wraps ``serve_once`` -- so one corrupted
+    or out-of-band write became a raw traceback and an immediate exit on a box
+    that was otherwise fine, once every supervisor cycle, against an item that
+    is still there.
+    """
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.announce(host="otherbox", tags=["otherbox"], has_gpu=False,
+                   capacity={"cpu": 8, "mem_gb": 16})
+    queue.ensure_layout()
+    (queue.dir("ready") / f"{'f' * 64}.json").write_text(json.dumps({
+        "schema": pool.POOL_ITEM_SCHEMA_V1, "action_key": "f" * 64,
+        "cas_root": str(queue.root / "cas"), "checkout_root": "/home/rob/tmp/ts101",
+        "worker_script": "/mnt/shared/prismabuild-fleet/repo/tools/x.py",
+        "tags": ["otherbox"], "needs_gpu": False, "priority": 0,
+        "resources": "all of it",              # not a Mapping: out-of-band write
+        "attempts": 0, "max_attempts": 3, "published_unix": 0.0,
+        "published_by": "otherbox",
+    }))
+
+    census = queue.placement_census()
+    assert census["unreadable"] == 1
+    assert "1 unreadable" in pool.describe_placement_census(census)
+
+    spec = importlib.util.spec_from_file_location("wl_bad_item", WORKER_LOOP)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with mock.patch.object(module, "SH", tmp_path), \
+         mock.patch.object(module.cpu_topology, "pin_to_preferred", return_value=None), \
+         mock.patch.object(module, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(sys, "argv", ["worker_loop.py", "--once", "--gpu-slots",
+                                         "0", "--class", "x86", "--all-cores"]):
+        assert module.main() == 0              # the item is bad; the box is not

@@ -653,7 +653,9 @@ class PoolQueue:
         ``known`` is false when no worker has announced.  The buckets are then
         zero and mean nothing -- the same unknown-stays-unknown rule
         ``placeable`` follows, kept as a field rather than as three ``None``s
-        so a printer can read one flag.
+        so a printer can read one flag.  ``unreadable`` counts ready records
+        this cannot price at all; see the handler below for why it is a count
+        and not an exception.
         """
 
         live = self.offers(max_age_s=max_age_s)
@@ -666,16 +668,29 @@ class PoolQueue:
             "one_box": 0,
             "one_box_by_path": 0,
             "wide": 0,
+            "unreadable": 0,
             "pinned_to": {},
         }
         if not live:
             return census
         pinned: dict[str, int] = {}
         for item in ready:
-            hosts = sorted({
-                str(offer.get("host") or "?")
-                for offer in self._matching_offers(item, live=live)
-            })
+            # A census is a diagnostic, and a diagnostic must never be the
+            # thing that fails.  ``claim`` skips an item tagged for another
+            # box at ``_placement_matches``, before ``demand_of`` is reached,
+            # so a record with a non-Mapping ``resources`` was harmless to
+            # every existing reader; counting it here made one out-of-band
+            # write able to raise on every box in the fleet.  Count it and
+            # move on -- and report the count, because an item nothing can
+            # read is a fact about the queue, not a rounding error.
+            try:
+                hosts = sorted({
+                    str(offer.get("host") or "?")
+                    for offer in self._matching_offers(item, live=live)
+                })
+            except (PoolContractError, ValueError, TypeError):
+                census["unreadable"] = int(census["unreadable"]) + 1
+                continue
             # Tags say which boxes are ALLOWED to claim it; the checkout says
             # which box can actually run it.  A box-local ``checkout_root``
             # exists on exactly one box, so it caps the width at one however
@@ -1343,4 +1358,9 @@ def describe_placement_census(census: Mapping[str, object]) -> str:
         parts.append(f"{by_path} by a box-local checkout")
     parts.append(f"{int(census.get('wide', 0))} on more than one")
     parts.append(f"{int(census.get('unplaceable', 0))} on none")
+    # Printed only when there are any: a zero here would teach readers to skip
+    # the clause, which is the one thing it must not be.
+    unreadable = int(census.get("unreadable", 0))
+    if unreadable:
+        parts.append(f"{unreadable} unreadable")
     return ", ".join(parts)

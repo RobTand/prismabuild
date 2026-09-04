@@ -70,6 +70,29 @@ def published_commit() -> str:
         return ""
 
 
+def census_line(queue) -> str:
+    """The fleet's width, or why it is missing -- and never an exception.
+
+    ``3711b29`` bought this loop the contract that one bad item must not take
+    the worker with it, and it bought it by wrapping ``serve_once``.  A
+    diagnostic added beside that handler is outside it: ``placement_census``
+    reads EVERY ready item, including the ones tagged for other boxes that
+    ``claim`` skips at ``_placement_matches`` before ``demand_of`` is ever
+    reached, so one corrupted or out-of-band write became a raw traceback and
+    an immediate exit on a box that was otherwise fine -- once per supervisor
+    cycle, against an item that is still there.
+
+    The census now counts an unreadable item instead of raising, which fixes
+    the case that was found.  This exists for the ones that are not: a line
+    of telemetry has no business deciding whether this box keeps working.
+    """
+
+    try:
+        return pool.describe_placement_census(queue.placement_census())
+    except Exception as exc:                                     # noqa: BLE001
+        return f"fleet width unavailable ({type(exc).__name__}: {exc})"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true")
@@ -214,9 +237,7 @@ def main():
             # on this fleet, so an exit-only line would appear about twice a
             # day per loop.
             if idle == 1:
-                print(f"[{host}] idle; "
-                      f"{pool.describe_placement_census(queue.placement_census())}",
-                      flush=True)
+                print(f"[{host}] idle; {census_line(queue)}", flush=True)
             # A loop imports ``prismabuild.pool`` once, at start, and holds
             # those bytes for its whole life.  So a fix published while loops
             # are running is loaded by none of them, and the supervisor counts
@@ -250,8 +271,7 @@ def main():
             if args.once or idle >= args.max_idle:
                 free = queue.ledger().available()
                 print(f"[{host}] nothing admissible ({idle} idle polls); "
-                      f"served {served}; free {free}; "
-                      f"{pool.describe_placement_census(queue.placement_census())}",
+                      f"served {served}; free {free}; {census_line(queue)}",
                       flush=True)
                 return 0
             time.sleep(args.poll_s)
