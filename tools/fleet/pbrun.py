@@ -1489,9 +1489,15 @@ def _file_slurm_withdrawal(
                 "job_id": job_id,
                 "state": "CANCELLED",
                 "partition": None,
+                # Derived, not spelled: the record is named by generation and
+                # attempt together, because one action key is submitted again
+                # every time somebody asks for the same work again.
                 "submission_record_path": str(
-                    directory / "submissions"
-                    / f"{int(submission.get('attempt') or 1):03d}.json"),
+                    slurm_lane.submission_record_path(
+                        directory,
+                        published_unix=published_unix,
+                        attempt=int(submission.get("attempt") or 1),
+                    )),
                 "stdout_path": str(submission.get("stdout") or ""),
                 "stderr_path": str(submission.get("stderr") or ""),
             },

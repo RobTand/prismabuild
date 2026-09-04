@@ -176,6 +176,35 @@ def job_state_directory(*, root: str | Path | None = None) -> Path:
     return lane_root(root) / JOB_STATE_DIRNAME
 
 
+def submission_record_path(
+    directory: str | Path, *, published_unix: float, attempt: int
+) -> Path:
+    """Where one submission's sealed record goes: generation, then attempt.
+
+    An action key is a content hash, so asking for the same work again is the
+    same key -- and the lane directory is per key.  Naming the record by the
+    attempt alone therefore collided across *runs*: the second submission of a
+    key wrote ``submissions/001.json`` on top of the first one's, the bytes
+    differed (a new job id, a new generation), and the first-writer publish
+    below refused.  ``pbrun`` reported that as ``slurm refused this action``,
+    which named neither the collision nor the fact that the refusal came from
+    this module rather than from ``sbatch``.  Measured in the container smoke:
+    every re-run of one action -- including the CAS hit that is the whole point
+    of a content-addressed build -- failed at submit, forever.
+
+    So the generation is part of the name.  ``published_unix`` is the run, and
+    ``_same_generation`` already treats it as the identity of one; the attempt
+    is the retry within it, which is what ``max_attempts`` bounds.  Together
+    they name exactly one submission, and the record stays immutable for the
+    thing it records.
+    """
+
+    return (
+        Path(directory) / "submissions"
+        / f"{float(published_unix):.6f}-{int(attempt):03d}.json"
+    )
+
+
 def format_time_limit(timeout_s: float) -> str:
     """Seconds to what ``--time`` accepts, rounded up, never rounded to zero.
 
@@ -550,6 +579,9 @@ def submit(
     if not job_id.isdigit():
         raise SlurmLaneError(f"sbatch returned no numeric job id: {output!r}")
 
+    generation = (
+        float(published_unix) if published_unix is not None else time.time()
+    )
     record = {
         "schema": SUBMISSION_SCHEMA_V1,
         "action_key": key,
@@ -572,9 +604,7 @@ def submit(
         # The generation, carried so that ``--withdraw`` can build a complete
         # terminal record from ``latest.json`` alone, on any box, without the
         # submitting process still being alive to tell it.
-        "published_unix": (
-            float(published_unix) if published_unix is not None else time.time()
-        ),
+        "published_unix": generation,
         "published_by": str(
             published_by if published_by is not None else socket.gethostname()
         ),
@@ -582,7 +612,9 @@ def submit(
         "max_attempts": int(max_attempts),
         "resources": resources.demand(),
     }
-    record_path = directory / "submissions" / f"{int(attempt):03d}.json"
+    record_path = submission_record_path(
+        directory, published_unix=generation, attempt=attempt
+    )
     _publish_record(record_path, record)
     _write_latest(directory / "latest.json", record)
     return SubmittedJob(
