@@ -688,11 +688,29 @@ class PoolQueue:
                 if isinstance(claimed_unix, (int, float)):
                     if _now() - float(claimed_unix) <= grace_s:
                         continue          # claimed moments ago; lease imminent
-            record = _read_json(path) or {}
+            record = _read_json(path)
+            if record is None:
+                # The claim concluded under us.  Both ``finish()`` and this
+                # loop write the item's next home and only then unlink the
+                # claimed file, so a reaper that globbed before that unlink
+                # reads nothing back here -- and two reapers on two boxes race
+                # each other for exactly this window.  Treating the absence as
+                # an empty record and requeueing it writes a stub with no
+                # ``action_key`` over whatever the winner just filed, and
+                # ``claim()`` skips a keyless item forever: the item never
+                # runs, never fails, and sits at the head of ``ready`` denying
+                # every worker that polls past it.  There is nothing to reap --
+                # the winner filed the item and released its capacity -- so the
+                # loser's only correct move is to leave it alone.
+                continue
             # Read the holder's identity BEFORE the requeue branch strips it.
             # The reaper is frequently NOT the dead claimant's box, and its
             # tokens live under the claimant's ledger, not the reaper's.
             holder = record.get("claimed_host")
+            # The filename is the identity; a record that disagrees with it, or
+            # has lost it, must not be written back to a queue directory where
+            # every consumer addresses items by key.
+            record["action_key"] = key
             attempts = int(record.get("attempts", 0)) + 1
             limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
             if attempts >= limit:
@@ -724,7 +742,48 @@ class PoolQueue:
             self.ledger(holder if isinstance(holder, str) else None).release(key)
             self.lease_path(key).unlink(missing_ok=True)
             requeued.append(key)
+        self.quarantine_orphans()
         return requeued
+
+    def quarantine_orphans(self) -> list[str]:
+        """File ready records that no consumer can address.
+
+        ``claim()`` addresses an item by ``action_key`` and skips a record that
+        has none, so such a record never runs, never fails, and never leaves
+        ``ready``: the queue reports work it will not do, and the work it
+        stands for is lost in silence.  The reaper race above is one way to
+        make one, and a worker still running the pre-fix code is another, so
+        the sweep stays whether or not that race can still fire.  Filing them
+        is the point -- a countable ``orphaned_stub`` in ``failed`` is a
+        defect someone can see; a permanent resident of ``ready`` is not.
+        """
+
+        filed: list[str] = []
+        ready = self.dir(READY)
+        if not ready.is_dir():
+            return filed
+        for path in sorted(ready.glob("*.json")):
+            record = _read_json(path)
+            if record is None or record.get("action_key") == path.stem:
+                continue
+            record.update(
+                {
+                    "schema": POOL_OUTCOME_SCHEMA_V1,
+                    "action_key": path.stem,
+                    "status": "orphaned_stub",
+                    "finished_unix": _now(),
+                    "finished_host": socket.gethostname(),
+                    "detail": {
+                        "reason": "ready record carries no usable action_key; "
+                        "see reap_stale's requeue race",
+                    },
+                }
+            )
+            _write_json_atomic(self.item_path(FAILED, path.stem), record)
+            path.unlink(missing_ok=True)
+            self.ledger(None).release(path.stem)
+            filed.append(path.stem)
+        return filed
 
     # -- terminal states ------------------------------------------------
 

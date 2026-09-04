@@ -656,3 +656,63 @@ def test_every_ledger_scan_survives_the_held_tree_vanishing(tmp_path, monkeypatc
     assert ledger.available() == {"mem_gb": 4}
     ledger.ensure_capacity({"mem_gb": 4})
     ledger.retire_free_capacity({"mem_gb": 2})
+
+
+def test_a_reaper_that_loses_the_race_writes_no_keyless_stub(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two reapers, one claim: the loser must leave the winner's work alone.
+
+    ``reap_stale`` globs ``claimed`` and then reads each file, and both
+    ``finish()`` and the reap itself write the item's next home *before*
+    unlinking the claim.  So a second reaper -- on the other box, a second
+    apart -- can glob a claim that no longer exists by the time it reads.
+    Treating that absence as an empty record and requeueing it publishes a
+    record with no ``action_key``, and ``claim()`` skips a keyless item
+    forever: the item never runs, never fails, and never leaves ``ready``.
+    Four real jobs were lost this way before the read was allowed to mean
+    "gone".
+    """
+
+    _publish(queue, KEY_A)
+    assert queue.claim() is not None
+    claimed_path = queue.item_path(pool.CLAIMED, KEY_A)
+    real_read = pool._read_json
+
+    def vanishing_read(path: object) -> object:
+        if pathlib.Path(str(path)) == claimed_path:
+            claimed_path.unlink(missing_ok=True)      # the winner concluded it
+            return None
+        return real_read(path)
+
+    monkeypatch.setattr(pool, "_read_json", vanishing_read)
+
+    assert queue.reap_stale(timeout_s=-1.0) == []
+    assert list(queue.dir(pool.READY).glob("*.json")) == []
+
+
+def test_a_keyless_ready_record_is_filed_rather_than_left_to_starve(
+    queue: pool.PoolQueue,
+) -> None:
+    """An unaddressable item belongs in ``failed``, where it can be counted.
+
+    ``claim()`` addresses an item by ``action_key`` and skips a record without
+    one, so such a record is invisible work: it occupies ``ready``, reports as
+    pending, and no worker will ever take it.  The reaper race above is one way
+    to make one and a worker still running the old code is another, so the
+    sweep stands on its own.  Filing it as ``orphaned_stub`` turns a silent
+    permanent resident into a defect somebody can see.
+    """
+
+    _publish(queue, KEY_A)
+    stub = queue.item_path(pool.READY, KEY_B)
+    stub.write_text(json.dumps({"claimed_host": "sparky", "attempts": 1}))
+
+    assert queue.claim() is not None                      # KEY_A still runnable
+    assert queue.quarantine_orphans() == [KEY_B]
+    assert not stub.exists()
+
+    filed = json.loads(queue.item_path(pool.FAILED, KEY_B).read_text())
+    assert filed["status"] == "orphaned_stub"
+    assert filed["action_key"] == KEY_B
+    assert "reap_stale" in filed["detail"]["reason"]
