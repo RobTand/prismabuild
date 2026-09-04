@@ -3,7 +3,8 @@
 Deterministic action keys, immutable CAS, and remote dispatch for quantization
 campaigns. **Stdlib-only by construction** — a worker node must be able to
 verify and dispatch an action without the numeric stack installed; the action's
-own absolute argv selects its pinned per-architecture venv.
+own absolute argv selects its per-architecture venv. A box-local executable
+retains a host pin unless the caller explicitly names its worker class.
 
 ## Status, honestly
 
@@ -54,6 +55,29 @@ to refuse a tag or demand no recorded box can ever fit, while the offer TTL is
 used only to say which boxes are live enough to claim now. A capable box between
 announcements therefore leaves the action to its declared `--wait-s`; it no
 longer turns a bounded wait into an immediate refusal.
+
+Git-backed `pbrun` submissions are checkout-portable: the exact dirty tree is
+sealed as a shallow Git bundle in the CAS, and the claiming worker executes a
+fresh local checkout of that commit. A box-local source worktree therefore no
+longer pins ordinary work to that box, and edits after submission cannot change
+what a retry executes. Source portability does not imply tool portability.
+`pbrun` resolves argv[0] exactly against the declared `PATH`: a submitter-local
+executable retains that host's tag, while an absent one refuses unless `--tag`
+names the worker class that owns it. Direct path-shaped argv and
+caller-environment values receive a conservative placement screen; it is not a
+parser or proof for indirect application inputs. `--tag` owns those
+dependencies for a worker class, and `--anywhere` is the caller's explicit
+assertion that they are identical on every eligible worker. Commands that
+embed the submitter checkout path refuse; new submissions from a non-Git
+directory refuse instead of falling back to a mutable path. Legacy
+path-addressed queue records remain readable while they drain, but `pbrun` does
+not create new ones. The 512 MiB hard fleet ceiling bounds both the logical
+materialized tree and its compressed bundle; the CLI may lower but never raise
+it. Gitlinks, escaping symlinks, and active Git clean/smudge transforms refuse
+because their working bytes are not carried unchanged by the parent bundle.
+Worker checkout cleanup failure emits a warning and a durable record below the
+local materialization root without changing an already-computed task result
+into retryable work.
 
 Container work is part of that reservation even after Docker reparents it away
 from the action's process group. `pbrun` seals a derived owner id and places a

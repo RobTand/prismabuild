@@ -375,6 +375,272 @@ def test_serve_once_records_a_failing_worker_as_failed(
     assert queue.item_path(pool.FAILED, KEY_A).exists()
 
 
+def _test_checkout_snapshot(
+    tmp_path: Path,
+    source: Path,
+    stamp_name: str,
+    cas: pb.PrismaBuildCAS,
+) -> dict[str, object]:
+    """Build the on-wire bundle independently of the production submitter."""
+
+    snapshot = tmp_path / "snapshot-source"
+    subprocess.run(
+        ["git", "clone", "-q", str(source), str(snapshot)], check=True
+    )
+    (snapshot / stamp_name).write_bytes((source / stamp_name).read_bytes())
+    subprocess.run(
+        ["git", "-C", str(snapshot), "add", "-f", stamp_name], check=True
+    )
+    subprocess.run(
+        [
+            "git", "-C", str(snapshot),
+            "-c", "user.name=PrismaBuild test",
+            "-c", "user.email=test@example.invalid",
+            "commit", "-qm", "sealed snapshot",
+        ],
+        check=True,
+    )
+    commit = subprocess.run(
+        ["git", "-C", str(snapshot), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    bundle = tmp_path / "snapshot.bundle"
+    subprocess.run(
+        ["git", "-C", str(snapshot), "bundle", "create", str(bundle), "HEAD"],
+        check=True,
+    )
+    entry, _ = cas.ingest_input(bundle, input_id="pbrun.checkout-snapshot")
+    return {
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v1",
+        "commit": commit,
+        "subdirectory": ".",
+        "input": entry,
+    }
+
+
+def _materialization_item(tmp_path: Path) -> dict[str, object]:
+    """Build one minimal immutable-checkout queue item for lifecycle tests."""
+
+    source = tmp_path / "materialization-source"
+    source.mkdir()
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.name", "PrismaBuild test"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git", "-C", str(source), "config", "user.email",
+            "test@example.invalid",
+        ],
+        check=True,
+    )
+    (source / "payload.txt").write_text("sealed lifecycle bytes\n")
+    subprocess.run(
+        ["git", "-C", str(source), "add", "payload.txt"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "-qm", "sealed lifecycle source"],
+        check=True,
+    )
+    identity = pb.git_checkout_identity(source)
+    stamp_name = f"{pb.PBRUN_STAMP_PREFIX}lifecycle.json"
+    (source / stamp_name).write_text(
+        json.dumps({"cwd": ".", **identity}, indent=1, sort_keys=True)
+    )
+    cas_root = tmp_path / "materialization-cas"
+    snapshot = _test_checkout_snapshot(
+        tmp_path, source, stamp_name, pb.PrismaBuildCAS(cas_root)
+    )
+    return {
+        "action_key": KEY_A,
+        "cas_root": str(cas_root),
+        "checkout_snapshot": snapshot,
+    }
+
+
+def test_execution_checkout_removes_ordinary_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completed action does not retain its per-action checkout."""
+
+    item = _materialization_item(tmp_path)
+    local_root = tmp_path / "materialized"
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", local_root, raising=False)
+
+    with pool._execution_checkout(item) as checkout:
+        temporary = checkout.parent
+        assert (checkout / "payload.txt").read_text() == "sealed lifecycle bytes\n"
+        assert temporary.is_dir()
+
+    assert not temporary.exists()
+
+
+def test_execution_checkout_records_cleanup_failure_without_hiding_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A leaked checkout is durable/visible but cannot retry completed work."""
+
+    item = _materialization_item(tmp_path)
+    local_root = tmp_path / "materialized"
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", local_root, raising=False)
+    real_rmtree = pool.shutil.rmtree
+
+    def leave_materialization(path, *args, **kwargs):
+        if Path(path).parent == local_root:
+            return None
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(pool.shutil, "rmtree", leave_materialization)
+    with pool._execution_checkout(item) as checkout:
+        temporary = checkout.parent
+        action_result = "already published success"
+
+    assert action_result == "already published success"
+    records = list((local_root / "cleanup-failures").glob("*.json"))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text())
+    assert record["action_key"] == KEY_A
+    assert record["path"] == str(temporary)
+    assert "still exists" in record["error"]
+    assert "checkout cleanup failed" in capsys.readouterr().err
+    real_rmtree(temporary)
+
+
+def test_snapshot_execution_is_isolated_from_midrun_submitter_mutation(
+    queue: pool.PoolQueue, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live checkout must not remain the code source after submission.
+
+    The mutator waits for argv itself to announce that worker preflight has
+    completed. The old transport then lets the action read changed bytes and
+    publishes them under the sealed key; a private materialisation has no path
+    from that edit to the executing action.
+    """
+
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.name", "PrismaBuild test"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git", "-C", str(source), "config", "user.email",
+            "test@example.invalid",
+        ],
+        check=True,
+    )
+    marker = tmp_path / "argv-started"
+    (source / "task.py").write_text(
+        "import os, pathlib, time\n"
+        "pathlib.Path(os.environ['MARKER']).write_text('started')\n"
+        "time.sleep(0.4)\n"
+        "pathlib.Path('result.txt').write_text("
+        "pathlib.Path('payload.txt').read_text())\n"
+    )
+    payload = source / "payload.txt"
+    payload.write_text("sealed\n")
+    subprocess.run(
+        ["git", "-C", str(source), "add", "task.py", "payload.txt"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "-qm", "sealed source"], check=True
+    )
+    identity = pb.git_checkout_identity(source)
+    stamp_name = f"{pb.PBRUN_STAMP_PREFIX}test.json"
+    (source / stamp_name).write_text(
+        json.dumps({"cwd": ".", **identity}, indent=1, sort_keys=True)
+    )
+
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    snapshot = _test_checkout_snapshot(tmp_path, source, stamp_name, cas)
+    action = pb.seal_action(
+        {
+            "schema": pb.ACTION_SCHEMA_V2,
+            "task": {
+                "definition_id": "fleet/pbrun",
+                "definition_version": "v1",
+                "task_class": "generation",
+                "determinism": "stochastic",
+                "artifact_family": "generic",
+                "artifact_kind": "generic",
+                "argv": [sys.executable, "task.py"],
+                "working_directory": ".",
+                "result_path": "result.txt",
+            },
+            "inputs": [snapshot["input"]],
+            "code_closure": pb.build_code_closure(source, [stamp_name]),
+            "params": {
+                "command": [sys.executable, "task.py"],
+                "cwd": ".",
+                "demand": {},
+                "checkout_snapshot": snapshot,
+            },
+            "environment": {
+                "variables": {"MARKER": str(marker)},
+                "toolchain": {},
+            },
+            "execution_scope": {
+                "portability": "portable",
+                "platform_key": None,
+                "host_class": None,
+            },
+        }
+    )
+    cas.publish_action_request(action)
+    worker = Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py"
+    item = {
+        "action_key": action["action_key"],
+        "cas_root": str(cas_root),
+        # Kept deliberately: the unfixed transport ignores checkout_snapshot
+        # and executes this mutable path, making the regression behavioral.
+        "checkout_root": str(source),
+        "checkout_snapshot": snapshot,
+        "worker_script": str(worker),
+        "claimed_by": "test-worker",
+    }
+    mutated: list[bool] = []
+
+    def mutate_after_preflight() -> None:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not marker.exists():
+            time.sleep(0.01)
+        if marker.exists():
+            payload.write_text("changed after preflight\n")
+            mutated.append(True)
+
+    mutator = threading.Thread(target=mutate_after_preflight)
+    mutator.start()
+    monkeypatch.setattr(
+        pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized", raising=False
+    )
+    outcome = queue.execute(item, heartbeat_s=0.05)
+    mutator.join(timeout=5.0)
+
+    assert outcome["status"] == "executed"
+    assert mutated == [True]
+    receipt = cas.lookup(action)
+    assert receipt is not None
+    assert cas.result_path(receipt, action).read_text() == "sealed\n"
+
+    queued = queue.publish(
+        action_key=KEY_B,
+        cas_root=cas_root,
+        checkout_snapshot=snapshot,
+        worker_script=worker,
+    )
+    record = json.loads(queued.read_text())
+    assert record["checkout_snapshot"] == snapshot
+    assert "checkout_root" not in record
+
+
 def test_execute_refreshes_the_lease_across_a_slow_action(
     queue: pool.PoolQueue, tmp_path: Path
 ) -> None:

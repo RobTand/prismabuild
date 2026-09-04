@@ -194,9 +194,35 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   payload, and an untracked payload that cannot be read refuses rather than
   collapsing to a reusable `unreadable` sentinel. A stamp whose bytes are
   intact but whose claim no longer matches therefore refuses before execution.
-  This closes queued/retry drift; it does not make a live worktree immutable
-  after preflight. Commit-addressed per-action materialisation is the remaining
-  boundary, tracked in #5.
+  Git checkouts are made immutable across the remaining interval by default:
+  the submitter synthesizes a deterministic root commit from the exact tracked
+  and untracked working tree, including the closure stamp, publishes its
+  shallow bundle as a verified CAS input, and puts the commit rather than the
+  submitter path in the queue. The claimant fetches that bundle into a fresh
+  worker-local checkout, runs from the original relative subdirectory, and
+  removes the private tree afterward. A failed removal is warned and recorded
+  under the worker's local materialization root; it never changes completed
+  task work into a retry. The worker preflight requires the private tree to be
+  clean at the sealed commit. Absolute submitter-repository paths in argv or
+  environment are refused because they would escape the snapshot. New
+  submissions from non-Git directories refuse: there is no mutable-path
+  override. The command executable is resolved exactly from argv[0] and the
+  declared `PATH`. An executable outside the repository and shared storage
+  retains the submitting host's tag; an absent executable refuses unless an
+  explicit tag names the worker class that owns it. Other direct argv and
+  caller-environment paths receive a conservative lexical screen, not a claim
+  that PrismaBuild can parse shell/application indirection. `--tag` explicitly
+  assigns those dependencies to a worker class; `--anywhere` explicitly
+  asserts that they are portable. Workers continue to understand
+  already-published `checkout_root` queue records only so that the
+  pre-migration queue can drain. Relative argv paths may reach repository
+  siblings from a requested subdirectory because the whole repository is
+  snapshotted. Active Git content transforms, gitlinks, and symlinks whose
+  lexical target escapes the sealed tree (including `.git`) refuse: none
+  guarantees that a parent bundle recreates the submitter's exact working
+  bytes. The hard 512 MiB fleet ceiling applies independently to logical
+  materialized bytes (summed per path) and compressed bundle bytes; a caller
+  may lower but never raise it.
 
 The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
 dependency-free `ingest-input` CLI. It takes a stable regular-file snapshot,

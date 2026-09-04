@@ -7,10 +7,10 @@ suite goes there in shards and the sparks keep their cores.
 
 Three constraints shape this, and none of them are negotiable:
 
-* **The checkout must be on shared storage.**  ``pbrun`` pins an action to the
-  submitting box unless ``--anywhere``, because an agent worktree exists on one
-  box only.  A cross-box shard is correct exactly when its tree is visible from
-  both ends, which is what ``--checkout`` is checked for.
+* **The checkout is transported by pbrun.** ``pbrun`` seals a Git snapshot in
+  the CAS and each worker materializes it on local disk. The payload therefore
+  uses only repository-relative paths; embedding the submitter's checkout path
+  would escape that snapshot and is refused before publication.
 * **The interpreter is named, not inherited.**  An action runs in a closed
   environment, so its interpreter is sealed into its command and hence its
   action key.  A shard therefore names an interpreter that exists on its target
@@ -67,7 +67,7 @@ def shard(files: list[str], count: int) -> list[list[str]]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkout", required=True,
-                    help="tree to test; must be on /mnt/shared to run off-box")
+                    help="Git tree to snapshot and test on the pool")
     ap.add_argument("--python", required=True,
                     help="interpreter on the TARGET box, not this one")
     ap.add_argument("--tag", action="append", default=[],
@@ -84,14 +84,6 @@ def main() -> int:
     args = ap.parse_args()
 
     checkout = Path(args.checkout).resolve()
-    if SHARED not in checkout.parents:
-        sys.stderr.write(
-            f"refusing: {checkout} is not under {SHARED}, so a worker on "
-            "another box cannot see it.  Clone the tree to shared storage "
-            "first -- a shard against a box-local path would run nowhere, or "
-            "worse, run against a different tree of the same name.\n")
-        return 2
-
     files = discover(checkout, args.paths or ["tests"])
     if not files:
         sys.stderr.write(f"no test files under {args.paths} in {checkout}\n")
@@ -126,7 +118,7 @@ def main() -> int:
             "--wait-s", str(args.wait_s),
             "--", "env", "TMPDIR=/home/rob/tmp",
             *threads,
-            f"PYTHONPATH={checkout}/src:{checkout}/experiments",
+            "PYTHONPATH=src:experiments",
             args.python, "-m", "pytest", "-q", "--no-header",
             "-p", "no:cacheprovider", *bucket,
         ]

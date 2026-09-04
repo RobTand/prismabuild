@@ -90,15 +90,18 @@ are NTP-synchronised and measured 1.2-2.5 ms apart against a 300 s lease.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 import fcntl
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -199,6 +202,15 @@ DEFAULT_POOL_ROOT = Path(
 #: Every box mounts this at the same path.  A checkout underneath it is
 #: visible to all of them; a checkout outside it exists on exactly one box.
 SHARED_ROOT = Path("/mnt/shared")
+
+# The snapshot bundle travels through the shared CAS, but execution trees stay
+# on each worker's local disk. Same spelling on every box, different storage.
+LOCAL_CHECKOUT_ROOT = Path(
+    os.environ.get(
+        "PRISMABUILD_LOCAL_CHECKOUT_ROOT",
+        "/home/rob/tmp/prismabuild-checkouts",
+    )
+)
 
 
 def is_box_local_path(path: object) -> bool:
@@ -303,6 +315,153 @@ def worker_argv(
         "--checkout-root",
         str(checkout_root),
     ]
+
+
+def _run_materializer_git(
+    argv: Sequence[str],
+    *,
+    where: str,
+    environment: Mapping[str, str] | None = None,
+) -> str:
+    try:
+        completed = subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=None if environment is None else dict(environment),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PoolError(f"{where} failed: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise PoolError(f"{where} failed: {detail or completed.returncode}")
+    return completed.stdout
+
+
+def _cleanup_execution_checkout(
+    base: Path, temporary: Path, item: Mapping[str, object]
+) -> None:
+    """Remove one private tree, recording a leak without changing task status."""
+
+    error = ""
+    try:
+        shutil.rmtree(temporary)
+    except Exception as exc:  # cleanup must not turn completed work into retry
+        error = str(exc)
+    try:
+        remains = temporary.exists() or temporary.is_symlink()
+    except OSError as exc:
+        remains = True
+        error = error or f"cannot verify removal: {exc}"
+    if remains and not error:
+        error = "materialized checkout still exists after recursive cleanup"
+    if not error:
+        return
+
+    action_key = str(item.get("action_key") or "unknown-action")
+    record = {
+        "schema": "prismaquant.prismabuild.checkout_cleanup_failure.v1",
+        "action_key": action_key,
+        "path": str(temporary),
+        "error": error,
+        "recorded_unix": _now(),
+        "host": socket.gethostname(),
+    }
+    record_path = (
+        base / "cleanup-failures" /
+        f"{action_key}.{temporary.name}.json"
+    )
+    record_error = ""
+    try:
+        _write_json_atomic(record_path, record)
+    except Exception as exc:  # stderr remains the observable fallback
+        record_error = f"; could not publish {record_path}: {exc}"
+    print(
+        "prismabuild: checkout cleanup failed after action "
+        f"{action_key}: {temporary}: {error}{record_error}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+@contextmanager
+def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:
+    """Yield the live path or a private checkout of the sealed snapshot."""
+
+    raw_snapshot = item.get("checkout_snapshot")
+    if raw_snapshot is None:
+        raw_root = item.get("checkout_root")
+        if not raw_root:
+            raise PoolContractError(
+                "pool item has neither checkout_root nor checkout_snapshot"
+            )
+        yield Path(str(raw_root))
+        return
+
+    snapshot = pb.validate_pbrun_checkout_snapshot(raw_snapshot)
+    cas = pb.PrismaBuildCAS(str(item["cas_root"]))
+    bundle = cas.input_path(snapshot["input"])
+    base = Path(LOCAL_CHECKOUT_ROOT)
+    if not base.is_absolute() or base == Path("/") or ".." in base.parts:
+        raise PoolContractError(
+            "PRISMABUILD_LOCAL_CHECKOUT_ROOT must be an absolute non-root path"
+        )
+    base.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(
+            prefix=f"{str(item['action_key'])[:12]}.", dir=str(base)
+        )
+    )
+    repository = temporary / "checkout"
+    try:
+        _run_materializer_git(
+            ["git", "init", "-q", str(repository)],
+            where="initialize materialized checkout",
+        )
+        heads = _run_materializer_git(
+            ["git", "bundle", "list-heads", str(bundle)],
+            where="read checkout snapshot bundle",
+        )
+        commit = str(snapshot["commit"])
+        refs = [
+            fields[1]
+            for line in heads.splitlines()
+            if len(fields := line.split(maxsplit=1)) == 2 and fields[0] == commit
+        ]
+        if not refs:
+            raise PoolContractError(
+                "checkout snapshot bundle does not advertise its sealed commit"
+            )
+        _run_materializer_git(
+            [
+                "git", "-C", str(repository), "fetch", "-q", "--no-tags",
+                str(bundle), refs[0],
+            ],
+            where="fetch checkout snapshot bundle",
+        )
+        _run_materializer_git(
+            [
+                "git",
+                "-c", "core.autocrlf=false",
+                "-c", "core.attributesFile=/dev/null",
+                "-C", str(repository), "checkout", "-q", "--detach", commit,
+            ],
+            where="check out sealed commit",
+            environment={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
+        )
+        subdirectory = repository / str(snapshot["subdirectory"])
+        if not subdirectory.is_dir():
+            raise PoolContractError(
+                "checkout snapshot subdirectory is absent after materialization"
+            )
+        yield subdirectory
+    finally:
+        # The path was created by mkdtemp below a validated local-only root;
+        # never widen this cleanup to the root itself. A root-owned container
+        # dropping can leave residue inside this bounded root, but cleanup
+        # failure must not change an already-published action into a failure.
+        _cleanup_execution_checkout(base, temporary, item)
 
 
 def _drain(
@@ -1138,8 +1297,9 @@ class PoolQueue:
         *,
         action_key: str,
         cas_root: str | Path,
-        checkout_root: str | Path,
         worker_script: str | Path,
+        checkout_root: str | Path | None = None,
+        checkout_snapshot: object | None = None,
         tags: Sequence[str] = (),
         needs_gpu: bool = False,
         priority: int = 0,
@@ -1165,6 +1325,24 @@ class PoolQueue:
             raise PoolContractError("max_attempts must be at least 1")
         if container_owner is not None:
             self.container_marker(str(container_owner))  # validates the digest
+        if checkout_snapshot is None:
+            if checkout_root is None:
+                raise PoolContractError(
+                    "publish requires checkout_root or checkout_snapshot"
+                )
+            addressing: dict[str, object] = {
+                "checkout_root": str(checkout_root)
+            }
+        else:
+            if checkout_root is not None:
+                raise PoolContractError(
+                    "checkout_root and checkout_snapshot are mutually exclusive"
+                )
+            addressing = {
+                "checkout_snapshot": pb.validate_pbrun_checkout_snapshot(
+                    checkout_snapshot
+                )
+            }
         self.ensure_layout()
         # A submission is what retires a withdrawal.  The key is a content
         # hash -- ``result_and_stamp_names`` says so: *"the same command at the
@@ -1183,7 +1361,6 @@ class PoolQueue:
             "schema": POOL_ITEM_SCHEMA_V1,
             "action_key": action_key,
             "cas_root": str(cas_root),
-            "checkout_root": str(checkout_root),
             "worker_script": str(worker_script),
             "tags": sorted(str(t) for t in tags),
             "needs_gpu": bool(needs_gpu),
@@ -1193,6 +1370,7 @@ class PoolQueue:
             "max_attempts": int(max_attempts),
             "published_unix": _now(),
             "published_by": socket.gethostname(),
+            **addressing,
         }
         if container_owner is not None:
             item["container_owner"] = str(container_owner)
@@ -1809,13 +1987,18 @@ class PoolQueue:
             # with the wrong (or no) ``action_key`` is skipped by ``claim()``
             # and never runs.  A record that *has* the key but lacks the
             # fields a worker executes with -- ``worker_script``, ``cas_root``,
-            # ``checkout_root`` -- is worse: it is claimed, it kills the
-            # worker process on ``KeyError``, and it does that three times
-            # before it is finally filed.  Seven such items are in the live
-            # queue's ``failed`` directory, each having taken a worker down.
-            usable = (record.get("action_key") == path.stem
-                      and all(record.get(field) for field in
-                              ("worker_script", "cas_root", "checkout_root")))
+            # checkout addressing -- is worse: it is claimed, it kills the
+            # worker process before execution, and retries before it is filed.
+            addressable = bool(record.get("checkout_root")) or bool(
+                record.get("checkout_snapshot")
+            )
+            usable = (
+                record.get("action_key") == path.stem
+                and all(
+                    record.get(field) for field in ("worker_script", "cas_root")
+                )
+                and addressable
+            )
             if usable:
                 continue
             record.update(
@@ -1828,8 +2011,8 @@ class PoolQueue:
                     "detail": {
                         "reason": "ready record is not executable: it lacks a "
                         "matching action_key or the worker_script/cas_root/"
-                        "checkout_root a worker runs from; see the reap_stale "
-                        "and finish() requeue races",
+                        "checkout addressing a worker runs from; see the "
+                        "reap_stale and finish() requeue races",
                     },
                 }
             )
@@ -2481,6 +2664,28 @@ class PoolQueue:
         heartbeat_s: float = HEARTBEAT_S,
         timeout_grace_s: float = TIMEOUT_GRACE_S,
     ) -> dict[str, object]:
+        """Materialize a sealed checkout when present, then execute it."""
+
+        with _execution_checkout(item) as checkout_root:
+            return self._execute_in_checkout(
+                item,
+                checkout_root=checkout_root,
+                python=python,
+                timeout_s=timeout_s,
+                heartbeat_s=heartbeat_s,
+                timeout_grace_s=timeout_grace_s,
+            )
+
+    def _execute_in_checkout(
+        self,
+        item: Mapping[str, object],
+        *,
+        checkout_root: str | Path,
+        python: str | Path = sys.executable,
+        timeout_s: float | None = None,
+        heartbeat_s: float = HEARTBEAT_S,
+        timeout_grace_s: float = TIMEOUT_GRACE_S,
+    ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
 
         Executes as a subprocess rather than in-process on purpose: it is the
@@ -2499,7 +2704,7 @@ class PoolQueue:
             worker_script=item["worker_script"],
             action_key=key,
             cas_root=item["cas_root"],
-            checkout_root=item["checkout_root"],
+            checkout_root=checkout_root,
         )
         owner = str(item.get("claimed_by") or "")
         started = _now()
