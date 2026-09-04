@@ -50,6 +50,11 @@ FLEET_SCRIPTS = (
     "render_identity.py", "seal_and_publish.py", "tessera_status.py",
     "dispatch_tessera_shards.py", "dispatch_tessera_ladder.py",
     "publish_runtime.py", "pool_reset.py", "runtime_paths.py", "supervise.py",
+    # The SLURM lane's two halves: the shared submit every producer routes
+    # through, and the job entry it names.  A runtime published without them
+    # has producers importing a module that is not there and a batch script
+    # execing a path that does not exist.
+    "fleet_submit.py", "slurm_job.py",
 )
 #: Not code, but read by published code: the supervisor on each box reads the
 #: fleet's declared shape from here, so a runtime published without it starts
