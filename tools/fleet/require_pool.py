@@ -66,7 +66,15 @@ CONTENDS = re.compile(
 #: of it -- and this hook refused its own commit, then refused the edit that
 #: would have fixed that, before this existed.  A guard that can lock out its
 #: own repair is a worse failure than the one it guards against.
-NEVER_GPU = ("git", "gh", "echo", "cat", "grep", "sed", "awk", "less", "diff")
+NEVER_GPU = (
+    "git", "gh", "echo", "cat", "grep", "sed", "awk", "less", "diff",
+    # Asking where a program is, what it is, or what it says about itself.
+    # ``which sbatch`` and ``man sbatch`` are the first two commands anyone
+    # runs at a scheduler they have never used, and refusing them teaches the
+    # reader to route around the hook before they have read the rule.
+    "which", "whereis", "type", "command", "man", "ls", "stat", "file",
+    "head", "tail", "wc", "dpkg", "apt", "apt-get", "apt-cache",
+)
 
 
 #: A segment that switches the GPU off for its own child cannot be GPU work,
@@ -103,6 +111,29 @@ POOL_ENTRYPOINTS = ("pbrun.py", "worker_loop.py", "worker.py", "slurm_job.py")
 #: ``squeue`` and ``sinfo`` never match: reading the queue and cancelling a job
 #: start no work.
 SCHEDULER = re.compile(r"(?<![\w.-])(?:sbatch|srun|salloc)(?![\w.-])")
+
+
+#: The verbs' own help and version switches.  ``sbatch --help`` submits
+#: nothing, and it is how a reader of the runbook finds out whether the
+#: scheduler is installed at all.  Only a segment that is the verb and these
+#: switches and nothing else is let through: ``sbatch --help job.sh`` also
+#: submits nothing in practice, but the hook does not parse the verbs' grammar
+#: and does not guess.  A bare ``sbatch`` with no switch reads a script from
+#: standard input, which is a submission.
+DESCRIBES_ITSELF = frozenset({"-h", "--help", "--usage", "-V", "--version"})
+
+
+def _describes_itself(segment: str) -> bool:
+    """True when this segment only asks a scheduler verb about itself."""
+
+    tokens = segment.split()
+    while tokens and "=" in tokens[0] and not tokens[0].startswith("/"):
+        tokens.pop(0)
+    if len(tokens) < 2:
+        return False
+    if tokens[0].rsplit("/", 1)[-1] not in ("sbatch", "srun", "salloc"):
+        return False
+    return set(tokens[1:]) <= DESCRIBES_ITSELF
 
 
 #: Shell operators that end one command and begin another.  A compound command
@@ -240,10 +271,11 @@ def contends(command: str) -> bool:
 def submits(command: str) -> bool:
     """True when any segment submits to SLURM outside the fleet's lane.
 
-    The exemptions are the two that cannot be anything else: a segment led by
-    a command that never starts work (a commit message, a grep for the word),
-    and a segment naming the lane's own entrypoints, which are what run
-    ``sbatch`` on this fleet's behalf.
+    The exemptions are the three that cannot be anything else: a segment led
+    by a command that never starts work (a commit message, a grep for the
+    word, ``which sbatch``), a verb asked only about itself (``sbatch
+    --help``), and a segment naming the lane's own entrypoints, which are
+    what run ``sbatch`` on this fleet's behalf.
 
     ``CUDA_VISIBLE_DEVICES=`` is NOT an exemption here, deliberately.  It works
     for a local command because the kernel then denies the child a device; it
@@ -255,6 +287,8 @@ def submits(command: str) -> bool:
         if not SCHEDULER.search(segment):
             continue
         if _first_token(segment) in NEVER_GPU:
+            continue
+        if _describes_itself(segment):
             continue
         if any(entry in segment for entry in POOL_ENTRYPOINTS):
             continue

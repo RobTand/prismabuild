@@ -126,3 +126,35 @@ def test_the_cuda_interpreter_is_still_refused(hook) -> None:
     """The rule the hook was written for is unchanged."""
 
     assert _verdict(hook, f"{CUDA} -m pytest tests") == 2
+
+
+@pytest.mark.parametrize("command", [
+    "sbatch --help",
+    "srun --version",
+    "salloc -V",
+    "/usr/bin/sbatch -h",
+    "SLURM_CONF=/etc/slurm/slurm.conf sbatch --usage",
+    "which sbatch",
+    "type srun",
+    "command -v sbatch",
+    "man sbatch",
+    "ls -l /usr/bin/sbatch",
+    "dpkg -L slurm-client | grep sbatch",
+])
+def test_asking_about_a_verb_is_not_a_submission(hook, command: str) -> None:
+    """The first two commands anyone runs at a new scheduler are ``which``
+    and ``--help``; refusing them teaches the reader to route around the hook
+    before they have read the rule."""
+
+    assert _verdict(hook, command) == 0
+
+
+def test_a_help_switch_does_not_excuse_the_rest_of_the_line(hook) -> None:
+    """Only the verb and its own switches qualify.  A script after the
+    switch, a bare verb reading its script from stdin, and a submission
+    behind a permitted segment are all still submissions."""
+
+    assert _verdict(hook, "sbatch --help job.sh") == 2
+    assert _verdict(hook, "sbatch") == 2
+    assert _verdict(hook, "sbatch --version && sbatch job.sh") == 2
+    assert _verdict(hook, "srun -h --gres=gpu:1 nvidia-smi") == 2
