@@ -31,7 +31,11 @@ to form. Denials age an item to the front of the
 ready order, and past `STARVATION_FLOOR` a denied item withholds the host
 instead of being overtaken, because "an eviction counter that only counts is a
 starvation detector wired to nothing". Retries are bounded by `max_attempts` and
-cheap by construction: re-running work that landed is a receipt lookup. What
+cheap by construction: re-running work that landed is a receipt lookup. A
+withdrawal cancels the *run* and not the name — the marker is scoped to the
+generation it was filed against and a later submission retires it into
+`withdrawn/superseded/` — because the action key is a content hash, so
+re-submitting one is how anybody asks for the same work again. What
 pqwork lacks, and PrismaBuild has, is action-key determinism and CAS receipts —
 which is what quantization work needs, since an artifact you cannot reproduce is
 quarantined.
