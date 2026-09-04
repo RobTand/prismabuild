@@ -129,12 +129,12 @@ not a dependency: this package imports nothing from prismaquant.
 
 ## Layout
 
-    src/prismabuild/core.py      4277 L  action keys, CAS, local execution
-    src/prismabuild/slurm.py     3023 L  SLURM transport (inert here: no sbatch)
-    src/prismabuild/dagster.py    915 L  Dagster transport (inert here)
-    src/prismabuild/pool.py       449 L  shared-FS pull queue (the one that runs here)
-    tools/prismabuild_worker.py          stdlib-only worker entry point
-    tests/                               CPU qualification (dated result above)
+    src/prismabuild/core.py       action keys, CAS, local execution
+    src/prismabuild/slurm.py      SLURM transport (inert here: no sbatch)
+    src/prismabuild/dagster.py    Dagster transport (inert here)
+    src/prismabuild/pool.py       shared-FS pull queue (the one that runs here)
+    tools/prismabuild_worker.py   stdlib-only worker entry point
+    tests/                        CPU qualification (dated result above)
 
 ## Test
 
