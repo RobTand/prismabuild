@@ -143,6 +143,33 @@ def _parse_demand(text: str) -> dict[str, int]:
     return demand
 
 
+def exclusive_gpu_demand(queue, tags) -> int:
+    """The GPU slots "the whole box" means, from what the boxes announce.
+
+    The largest capacity among live workers that carry every required tag: a
+    demand smaller than that would leave a box able to run something else
+    alongside, which is what ``--exclusive`` is asking not to happen, and a
+    demand larger than that is unclaimable on every box in the fleet.
+    """
+
+    wanted = {str(x) for x in (tags or [])}
+    best = 0
+    for offer in queue.offers():
+        if not offer.get("has_gpu"):
+            continue
+        if not wanted.issubset({str(x) for x in (offer.get("tags") or [])}):
+            continue
+        capacity = offer.get("capacity") or {}
+        best = max(best, int(capacity.get("gpu", 0)))
+    if best <= 0:
+        raise SystemExit(
+            "pbrun: --exclusive needs to know how many GPU slots one box has, "
+            "and no live worker matching "
+            f"{sorted(wanted) or '(any tag)'} has announced one. Start a "
+            "worker, or say it explicitly with --gpu-capacity N.")
+    return best
+
+
 def result_and_stamp_names(command, cwd, demand, variables):
     """The result file and the closure stamp this submission writes.
 
@@ -226,8 +253,9 @@ def main() -> int:
                     help="shorthand for gpu=1,mem_gb=16")
     ap.add_argument("--exclusive", action="store_true",
                     help="demand the whole GPU capacity of one box")
-    ap.add_argument("--gpu-capacity", type=int, default=4,
-                    help="slots one box declares; --exclusive demands all of them")
+    ap.add_argument("--gpu-capacity", type=int, default=0,
+                    help="slots to demand for --exclusive; 0 reads the largest "
+                         "a matching box actually offers")
     ap.add_argument("--tag", action="append", default=[],
                     help="require a box offering this tag (e.g. a hardware class)")
     ap.add_argument("--anywhere", action="store_true",
@@ -263,19 +291,26 @@ def main() -> int:
     if args.gpu:
         demand.setdefault("gpu", 1)
         demand.setdefault("mem_gb", 16)
-    if args.exclusive:
-        demand["gpu"] = args.gpu_capacity
-        demand.setdefault("mem_gb", 16)
     demand.setdefault("mem_gb", 4)
 
+    if args.anywhere and args.here:
+        raise SystemExit("--anywhere and --here contradict each other")
     tags = placement_tags(
         cwd,
         explicit=list(args.tag),
         here=args.here,
         hostname=socket.gethostname(),
     )
-    if args.anywhere and args.here:
-        raise SystemExit("--anywhere and --here contradict each other")
+    if args.exclusive:
+        # "All of one box" is a fact about the boxes, and guessing it does not
+        # fail loudly -- it fails as an action nobody can ever claim.  The
+        # default was 4 while sparky declares 2 and sparklina 1, so every
+        # --exclusive submission asked for twice the slots that exist and sat
+        # in ``ready`` forever.  Read it from what the fleet announces, which
+        # needs the placement tags, so it happens after them.
+        demand["gpu"] = args.gpu_capacity or exclusive_gpu_demand(
+            pool.PoolQueue(SH / "pb-queue"), tags)
+        demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
 
     # `run_local_action` builds the child's environment from *these* and
     # nothing else, so an empty dict is not "inherit the caller" -- it is an

@@ -105,3 +105,39 @@ def test_the_result_and_stamp_names_move_with_the_commit(tmp_path, monkeypatch):
             ["pytest", "-q"], tmp_path, {"cpu": 1}, {"LANG": "C.UTF-8"}))
     assert names[0] != names[1], "two commits shared one result path"
     assert names[0] == names[2], "the same commit must still dedup"
+
+
+def test_exclusive_demands_what_a_box_actually_offers(tmp_path):
+    """``--exclusive`` must not guess the size of a box.
+
+    It used to demand ``--gpu-capacity``'s default of 4 while sparky declares
+    2 and sparklina 1, so every exclusive submission asked for twice the slots
+    that exist on any box in the fleet.  That does not fail loudly: it
+    publishes an action no worker can ever claim, and the caller sees a queued
+    item rather than a refusal.
+    """
+    from prismabuild import pool as pool_module
+
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
+                   capacity={"gpu": 2, "mem_gb": 48})
+    queue.announce(host="gx10-6b77", tags=["gb10", "sparklina"], has_gpu=True,
+                   capacity={"gpu": 1, "mem_gb": 40})
+    queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
+                   capacity={"gpu": 0, "mem_gb": 60})
+
+    assert pbrun.exclusive_gpu_demand(queue, []) == 2
+    assert pbrun.exclusive_gpu_demand(queue, ["sparky"]) == 2
+    assert pbrun.exclusive_gpu_demand(queue, ["sparklina"]) == 1
+
+
+def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
+    """A CPU-only fleet has no answer to "the whole GPU", and says so."""
+    from prismabuild import pool as pool_module
+
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
+                   capacity={"gpu": 0, "mem_gb": 60})
+    with pytest.raises(SystemExit) as caught:
+        pbrun.exclusive_gpu_demand(queue, [])
+    assert "--gpu-capacity" in str(caught.value)
