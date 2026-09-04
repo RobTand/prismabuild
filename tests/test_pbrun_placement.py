@@ -386,6 +386,32 @@ def test_pbrun_identity_refuses_an_unreadable_untracked_file(
         pbrun._git_identity(checkout)
 
 
+@pytest.mark.parametrize("failed_git_verb", ["ls-files", "diff"])
+def test_pbrun_identity_fails_closed_after_git_repository_detection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_git_verb: str,
+) -> None:
+    """A later Git error cannot collapse a repository delta to empty text."""
+
+    checkout = _git_checkout(tmp_path)
+    real_run = core_module.subprocess.run
+
+    def fail_one_git_read(argv, *args, **kwargs):
+        if (
+            argv[:3] == ["git", "-C", str(checkout)]
+            and failed_git_verb in argv[3:]
+        ):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="simulated Git read failure"
+            )
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(core_module.subprocess, "run", fail_one_git_read)
+    with pytest.raises(SystemExit, match="cannot compute pbrun checkout identity"):
+        pbrun._git_identity(checkout)
+
+
 def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> None:
     """A path in argv is not part of the checkout closure by magic.
 

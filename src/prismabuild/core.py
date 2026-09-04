@@ -1192,8 +1192,13 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
     """
 
     checkout = Path(root)
+    repository_detected = False
 
-    def _git(*args: str, input_text: str | None = None) -> str:
+    def _git(
+        *args: str,
+        input_text: str | None = None,
+        accepted_returncodes: tuple[int, ...] = (0,),
+    ) -> str:
         try:
             completed = subprocess.run(
                 ["git", "-C", str(checkout), *args],
@@ -1203,9 +1208,23 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
                 input=input_text,
                 timeout=30,
             )
-            return completed.stdout if completed.returncode == 0 else ""
-        except Exception:  # noqa: BLE001 - identity is total for legacy no-git mode
+        except (OSError, subprocess.SubprocessError) as exc:
+            if repository_detected:
+                raise ActionContractError(
+                    "cannot compute pbrun checkout identity: Git "
+                    f"{' '.join(args)} failed: {exc}"
+                ) from exc
             return ""
+        if completed.returncode not in accepted_returncodes:
+            if repository_detected:
+                detail = (completed.stderr or completed.stdout).strip()
+                raise ActionContractError(
+                    "cannot compute pbrun checkout identity: Git "
+                    f"{' '.join(args)} failed: "
+                    f"{detail or completed.returncode}"
+                )
+            return ""
+        return completed.stdout
 
     top_level = _git("rev-parse", "--show-toplevel").rstrip("\n")
     if top_level:
@@ -1213,6 +1232,7 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
         # a package below it. Git reports the tracked delta for that closure;
         # the filesystem special-inode scan must cover the same closure.
         checkout = Path(top_level)
+        repository_detected = True
     head = _git("rev-parse", "HEAD").strip() or "no-git"
 
     # Let Git delimit untracked pathnames. Line-oriented porcelain C-quotes
@@ -1289,6 +1309,7 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
                 "-z",
                 "--stdin",
                 input_text="\0".join(special_paths) + "\0",
+                accepted_returncodes=(0, 1),
             ).split("\0")
             if value
         )

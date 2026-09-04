@@ -234,16 +234,23 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
     is also the right scope -- these generated basename grammars are pbrun's
     everywhere in the repo, not per worktree.
 
-    Returns the file it wrote, or ``None``.  Never raises: a checkout that is
-    not a git repository at all is a supported way to submit.
+    Returns the file it wrote, or ``None`` when Git says this is not a
+    repository. Once Git identifies a checkout, inspection or publication
+    failure refuses: proceeding could leave a broad legacy glob hiding input
+    bytes from the action identity.
     """
 
     try:
         out = subprocess.run(["git", "-C", str(cwd), "rev-parse",
                               "--git-common-dir"],
                              capture_output=True, text=True, timeout=30)
-        if out.returncode != 0:
-            return None                       # not a git checkout; nothing to tell
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SystemExit(
+            f"pbrun: cannot inspect local Git excludes: {exc}"
+        ) from exc
+    if out.returncode != 0:
+        return None                           # not a git checkout; nothing to tell
+    try:
         common = Path(out.stdout.strip())
         if not common.is_absolute():
             common = cwd / common             # older git answers ".git"
@@ -274,8 +281,10 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
                 if scratch.exists():
                     scratch.unlink()
         return exclude
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except OSError as exc:
+        raise SystemExit(
+            f"pbrun: cannot update pbrun Git excludes: {exc}"
+        ) from exc
 
 
 def placement_tags(

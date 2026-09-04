@@ -20,6 +20,8 @@ import importlib.util
 from pathlib import Path
 import subprocess
 
+import pytest
+
 _SPEC = importlib.util.spec_from_file_location(
     "pbrun_exclude", Path(__file__).resolve().parents[1] / "tools" / "fleet" / "pbrun.py"
 )
@@ -113,6 +115,27 @@ def test_only_the_exact_generated_basename_grammar_is_ignored(tmp_path: Path) ->
     assert _ignored(root, f"{pbrun.RESULT_PREFIX}{'f' * 16}.txt")
     assert not _ignored(root, f"{pbrun.STAMP_PREFIX}notes.json")
     assert not _ignored(root, f"{pbrun.RESULT_PREFIX}notes.py")
+
+
+def test_legacy_exclude_migration_fails_closed_when_it_cannot_publish(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A broad legacy glob must not survive behind a reported success."""
+
+    root = _repo(tmp_path)
+    exclude = root / ".git" / "info" / "exclude"
+    with exclude.open("a", encoding="utf-8") as handle:
+        handle.write(f"{pbrun.RESULT_PREFIX}*\n")
+    real_replace = pbrun.os.replace
+
+    def refuse_replace(source, destination):
+        if Path(destination) == exclude:
+            raise PermissionError("simulated unwritable common exclude")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(pbrun.os, "replace", refuse_replace)
+    with pytest.raises(SystemExit, match="cannot update pbrun Git excludes"):
+        pbrun.keep_droppings_out_of_git(root)
 
 
 def test_a_checkout_that_is_not_a_git_repository_is_not_an_error(tmp_path: Path) -> None:

@@ -181,8 +181,10 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   remain literal path bytes and a requested subdirectory cannot hide a
   repository sibling. Only basenames matching pbrun's exact generated
   16-hex-fingerprint stamp/result grammar are excluded; submission migrates
-  the former broad local Git globs before taking identity. Symlinks are never
-  dereferenced into bytes
+  the former broad local Git globs before taking identity and refuses if that
+  migration cannot be published. Once Git identifies a repository, every
+  subsequent Git roster/diff error also refuses rather than collapsing a
+  missing read to an empty delta. Symlinks are never dereferenced into bytes
   outside the checkout; an untracked FIFO, socket, or other special inode
   anywhere in that repository refuses rather than being opened as an unstable
   payload, and an untracked payload that cannot be read refuses rather than
