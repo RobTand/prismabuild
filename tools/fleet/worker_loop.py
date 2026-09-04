@@ -19,6 +19,25 @@ action is the honest figure and 96 GB leaves the box its working headroom.
 "queue empty", including the deliberate case where a starved item is
 withholding this host.  Both are back-pressure, so the loop polls rather than
 exiting on the first miss; ``--max-idle`` still bounds the wait.
+
+Three things are the *worker's* to declare, not the action's, because they
+are properties of the box rather than of the work:
+
+* **The interpreter running the pool worker.**  ``--python`` names what
+  launches ``worker.py run-local`` on this box, which is not the same thing as
+  the interpreter an *action* runs under: ``run_local_action`` executes each
+  action in a **closed** environment built from the variables the action itself
+  declares, so an action's interpreter is sealed into its command and therefore
+  into its action key.  Making that portable would mean changing the executed
+  contract ``slurm.py`` pins, so it is deliberately not done here.  A cross-arch
+  action instead names an interpreter that exists on its target and carries the
+  matching class tag; the two must agree, and the submitter owns both.
+* **The tags.**  ``--class`` replaces a hardcoded ``gb10``: a box that offers
+  a class it is not will be sent work it cannot run.
+* **The cores.**  Both box shapes punish the obvious affinity (GB10
+  interleaves fast and slow cores; the Xeon is 2-way SMT), so the loop pins
+  itself to the preferred set and every action inherits it.  See
+  ``prismabuild.cpu_topology``.
 """
 import argparse
 import json
@@ -29,7 +48,7 @@ from pathlib import Path
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(SH / "repo" / "src"))
-from prismabuild import pool  # noqa: E402
+from prismabuild import cpu_topology, pool  # noqa: E402
 
 
 def main():
@@ -40,7 +59,13 @@ def main():
     ap.add_argument("--max-idle", type=int, default=6,
                     help="consecutive empty polls before exiting")
     ap.add_argument("--gpu-slots", type=int, default=4,
-                    help="concurrent GPU actions this box admits")
+                    help="concurrent GPU actions this box admits; 0 = no GPU")
+    ap.add_argument("--class", dest="klass", default="gb10",
+                    help="hardware class this box offers, e.g. gb10 or x86")
+    ap.add_argument("--python", default="/usr/bin/python3",
+                    help="interpreter that launches the pool worker on this box")
+    ap.add_argument("--all-cores", action="store_true",
+                    help="do not pin to the preferred cores (debug)")
     ap.add_argument("--mem-gb", type=int, default=96,
                     help="memory this box offers the queue, of ~121 GB total")
     ap.add_argument("--tag", action="append", default=[],
@@ -49,6 +74,7 @@ def main():
                     help="clamp the memory offer to what the box actually has free")
     args = ap.parse_args()
     capacity = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb}
+    pinned = None if args.all_cores else cpu_topology.pin_to_preferred()
     if args.honest_memory:
         # The declared figure is what this box offers when the pool is the only
         # thing on it.  While work the pool did not schedule is running, the
@@ -74,12 +100,21 @@ def main():
     # subset of the worker's, so without this an action pinned to one box --
     # which is every action whose checkout is a box-local worktree rather than
     # shared storage -- matches no worker and never runs.
-    offered = ["gb10", host, *args.tag]
+    offered = [args.klass, host, *args.tag]
+    if args.gpu_slots <= 0:
+        # A box with no GPU must say so, or an action demanding gpu=1 matches
+        # it on tags and then fails at run time instead of waiting for a box
+        # that can serve it.
+        offered.append("cpu")
+    if pinned is not None:
+        print(f"[{host}] pinned to {cpu_topology.as_range(pinned)} "
+              f"({len(pinned)} of {len(cpu_topology.classify()[0]) + len(cpu_topology.classify()[1])} cpus)",
+              flush=True)
     idle = 0
     served = 0
     while True:
         outcome = queue.serve_once(
-            tags=offered, has_gpu=True, python="/usr/bin/python3",
+            tags=offered, has_gpu=args.gpu_slots > 0, python=args.python,
             timeout_s=args.timeout_s, capacity=capacity,
         )
         if outcome is None:
