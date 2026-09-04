@@ -38,12 +38,22 @@ explicit verifier that refuses live claims, leases, non-success outcomes,
 multiple holders and host disagreement. Denials age an item to the front of the
 ready order, and past `STARVATION_FLOOR` a denied item withholds the host
 instead of being overtaken, because "an eviction counter that only counts is a
-starvation detector wired to nothing". Retries are bounded by `max_attempts`
-and cheap by construction: re-running work that landed is a receipt lookup.
-They are nevertheless refused once `done` or `failed` carries the same
-generation: both stale reaping and the claim boundary treat that outcome as
-terminal, while a later `published_unix` for the same content-addressed key
-remains claimable. A withdrawal likewise cancels the *run* and not the name —
+starvation detector wired to nothing". Retries are bounded by `max_attempts`,
+but never inferred from a deterministic action key: an argv can reproducibly
+write external state before a later gate fails. Arbitrary `pbrun` commands
+therefore default to one attempt; only an explicit `--retry-safe` contract plus
+a larger `--max-attempts` opts in. Every success, failure, or lease loss
+concluded from its live queue record is first-writer-published under
+`attempts/<action-key>/<published-generation>/`, with immutable stdout/stderr
+and an outcome record; the mutable ready/terminal record links the ordered
+history, so a quick retry refusal cannot erase the causal failure. When a
+finisher and stale reaper race, that same immutable first writer also decides
+the ready/terminal destination, summary, and caller exit status; disagreement
+is refused rather than combining two causes. Retries are
+refused once `done` or `failed` carries the same generation: both stale reaping
+and the claim boundary treat that outcome as terminal, while a later
+`published_unix` for the same content-addressed key remains claimable. A
+withdrawal likewise cancels the *run* and not the name —
 the marker is scoped to the generation it was filed against and a later
 submission retires it into `withdrawn/superseded/` — because the action key is
 a content hash, so re-submitting one is how anybody asks for the same work

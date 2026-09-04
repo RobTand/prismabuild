@@ -127,6 +127,14 @@ matters). Rules:
 - **Deterministic vs stochastic** task classes: deterministic entries may be
   verified by recompute; stochastic (probe backward is recorded
   non-bit-reproducible) get run-once / first-result-wins.
+- **Pool retry safety is a separate contract** — numerical determinism says the
+  declared result bytes repeat; it does not make external effects idempotent.
+  An arbitrary `pbrun` command gets one attempt. Only `--retry-safe` plus a
+  larger `--max-attempts` opts into bounded retry; the exact policy is sealed
+  in action params and carried in the queue record. Each attempt is immutable
+  first-writer evidence: its adopted status and disposition determine the
+  mutable queue destination, summary, and `pbrun` exit status even when a
+  finisher and stale reaper race; any disagreement fails closed.
 - **Effective pool placement is a parameter** — `pbrun` seals the sorted,
   deduplicated conjunction of tags that its placement rule actually returned,
   including a derived hostname pin. The normalized constraint moves the action
