@@ -241,7 +241,7 @@ def test_an_abort_stops_the_unit_instead_of_orphaning_it(
     finally:
         # A red run is exactly the run that leaves a 300 s sleep behind, which
         # is the defect wearing a test's clothes.
-        pool.stop_cap_unit(unit)
+        pool._systemctl("stop", unit, timeout_s=30.0)
         pool._systemctl("reset-failed", unit)
 
 
@@ -258,3 +258,32 @@ def test_the_timeout_path_says_whether_the_unit_actually_stopped(
     assert outcome["status"] == "timeout"
     assert outcome["unit_stopped"] is True, outcome
     assert outcome["action_survived_kill"] is False, outcome
+
+
+def test_the_abort_cleanup_does_not_replace_the_exception_that_caused_it(
+    queue, tmp_path, monkeypatch
+) -> None:
+    """A failure *after* the pipes drained still unwinds as itself.
+
+    The abort path drains the pipes, and draining a second time raises on the
+    closed fds -- so without a guard the record would name the tidy-up and the
+    real cause would only survive as a chained ``__context__``.
+    """
+
+    stub = tmp_path / "quick_worker.py"
+    stub.write_text("print('done')\n")
+    _publish(queue, stub, mem_gb=1)
+    item = queue.claim()
+    unit = pool.cap_unit_name(str(item["action_key"]),
+                              str(item.get("claimed_by") or ""))
+
+    def exploding(_unit):
+        raise RuntimeError("the cause")
+
+    monkeypatch.setattr(pool, "unit_outcome", exploding)
+    try:
+        with pytest.raises(RuntimeError, match="the cause"):
+            queue.execute(item)
+    finally:
+        pool._systemctl("stop", unit, timeout_s=30.0)
+        pool._systemctl("reset-failed", unit)

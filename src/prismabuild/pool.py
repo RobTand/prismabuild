@@ -1772,9 +1772,19 @@ class PoolQueue:
             # release.  Same order as the timeout path, and bounded the same
             # way, because a Ctrl-C that hangs is not an abort.
             if unit is not None:
-                stop_cap_unit(unit, grace_s=stop_grace_s)
-                process.kill()
-                _drain(process, timeout_s=stop_grace_s)
+                try:
+                    stop_cap_unit(unit, grace_s=stop_grace_s)
+                    process.kill()
+                    _drain(process, timeout_s=stop_grace_s)
+                except Exception:                        # noqa: BLE001
+                    # Reaching here after the pipes were already drained --
+                    # anything raised below ``communicate`` returning -- would
+                    # otherwise have this cleanup raise a second time and
+                    # replace the exception that brought us here, so the
+                    # outcome record would name the tidy-up instead of the
+                    # cause.  The stop is the part that matters and it has
+                    # already happened.
+                    pass
             raise
         finally:
             # A failed transient unit lingers until somebody resets it, and the
