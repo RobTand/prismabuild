@@ -440,6 +440,7 @@ class PoolQueue:
         tags: Sequence[str],
         has_gpu: bool,
         capacity: Mapping[str, int] | None = None,
+        runtime_commit: str = "",
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -464,6 +465,11 @@ class PoolQueue:
             "tags": sorted({str(t) for t in tags}),
             "has_gpu": bool(has_gpu),
             "capacity": {str(k): int(v) for k, v in (capacity or {}).items()},
+            # Which published bytes are answering for this box.  A loop holds
+            # the module it imported at start for its whole life, so without
+            # this a fleet running four generations of the code at once looks
+            # uniform from the queue.
+            "runtime_commit": str(runtime_commit),
             "announced_unix": _now(),
         }
         directory = self.root / WORKERS

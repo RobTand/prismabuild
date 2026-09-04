@@ -41,6 +41,7 @@ are properties of the box rather than of the work:
 """
 import argparse
 import json
+import pathlib
 import socket
 import sys
 import time
@@ -53,6 +54,19 @@ from prismabuild import cpu_topology, pool  # noqa: E402
 #: Consecutive ``serve_once`` failures before the loop gives up and lets the
 #: supervisor replace it.  Survive the items; do not survive a broken box.
 MAX_CONSECUTIVE_ERRORS = 5
+
+#: The receipt ``publish_runtime`` writes beside the bytes it published.
+RUNTIME_VERSION = pathlib.Path(
+    "/mnt/shared/prismabuild-fleet/repo/RUNTIME_VERSION.json")
+
+
+def published_commit() -> str:
+    """The commit whose bytes are currently published, or "" if unknown."""
+
+    try:
+        return str(json.loads(RUNTIME_VERSION.read_text()).get("commit") or "")
+    except (OSError, ValueError):
+        return ""
 
 
 def main():
@@ -117,12 +131,15 @@ def main():
     idle = 0
     served = 0
     errors = 0
+    loaded_commit = published_commit()
+    print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}", flush=True)
     while True:
         # Say what this box offers before asking what it may run.  The queue
         # otherwise knows only what has been *asked for*, which makes an item
         # no box can run look exactly like an item whose box is busy.
         queue.announce(
             host=host, tags=offered, has_gpu=args.gpu_slots > 0, capacity=capacity,
+            runtime_commit=loaded_commit,
         )
         # One bad item must not take the worker with it.  ``serve_once``
         # re-raises whatever ``execute`` raised, and this loop had no handler,
@@ -153,6 +170,24 @@ def main():
         errors = 0
         if outcome is None:
             idle += 1
+            # A loop imports ``prismabuild.pool`` once, at start, and holds
+            # those bytes for its whole life.  So a fix published while loops
+            # are running is loaded by none of them, and the supervisor counts
+            # a stale-byte loop as a healthy one -- the target is met and the
+            # fix never reaches the fleet.  Eighteen of twenty-four loops were
+            # executing pre-fix ``reap_stale`` bytes against the same queue
+            # hours after the fix landed, with the race it repaired still
+            # armed on the majority of the fleet.
+            #
+            # Checked here, between actions and never inside one: exiting is
+            # safe precisely because nothing is claimed at this point, and the
+            # supervisor's respawn picks up the current bytes.
+            current = published_commit()
+            if current and loaded_commit and current != loaded_commit:
+                print(f"[{host}] runtime moved {loaded_commit[:12]} -> "
+                      f"{current[:12]}; exiting so the supervisor reloads it",
+                      flush=True)
+                return 0
             if args.once or idle >= args.max_idle:
                 free = queue.ledger().available()
                 print(f"[{host}] nothing admissible ({idle} idle polls); "
