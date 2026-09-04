@@ -64,6 +64,39 @@ def test_an_unversioned_loop_reloads_when_a_commit_appears(tmp_path, capsys) -> 
     assert "nothing admissible" not in out         # it left by the reload path
 
 
+def test_a_stale_loop_reloads_before_touching_the_queue(
+    tmp_path, capsys,
+) -> None:
+    """An old reaper must not classify records emitted by the new runtime."""
+
+    wl = _worker_loop()
+
+    class UntouchableQueue:
+        def __getattr__(self, name: str):
+            raise AssertionError(
+                f"stale worker touched queue before reloading: {name}"
+            )
+
+    with mock.patch.object(wl, "SH", tmp_path), \
+         mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
+         mock.patch.object(wl, "loaded_runtime_commit", return_value="old-runtime"), \
+         mock.patch.object(wl, "published_commit", return_value="new-runtime"), \
+         mock.patch.object(wl.pool, "PoolQueue", return_value=UntouchableQueue()), \
+         mock.patch.object(
+             sys,
+             "argv",
+             [
+                 "worker_loop.py", "--once", "--gpu-slots", "0",
+                 "--mem-gb", "8", "--class", "x86", "--all-cores",
+                 "--assume-idle", "--poll-s", "0",
+             ],
+         ):
+        assert wl.main() == 0
+
+    out = capsys.readouterr().out
+    assert "runtime moved old-runtime -> new-runtime" in out
+
+
 def test_a_versioned_loop_still_only_reloads_on_a_change(tmp_path, capsys) -> None:
     """The published commit standing still is not an event."""
 

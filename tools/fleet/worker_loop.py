@@ -174,8 +174,11 @@ def main():
     # re-minting, for the length of its window, every token the other loops on
     # this box retired.  A loop exits on ``--max-idle`` and the supervisor
     # replaces it, so that window would come round every half hour.
-    observer = None if args.assume_idle else box_capacity.CapacityObserver(
-        samples=args.observe_samples, ledger_total=queue.ledger().capacity())
+    # Constructing the queue is inert, but even seeding the observer reads its
+    # ledger.  Defer that read until after this generation has fenced itself
+    # against the currently published one below.
+    observer = None
+    observer_initialized = False
     host = socket.gethostname()
     # A box offers its own hostname as well as its class.  Item tags must be a
     # subset of the worker's, so without this an action pinned to one box --
@@ -198,6 +201,31 @@ def main():
     loaded_commit = loaded_runtime_commit()
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}", flush=True)
     while True:
+        # Fence stale imported bytes before the first queue read or mutation,
+        # and again at the top of every later poll.  In particular, an old
+        # orphan reaper must never classify a record emitted by a successor's
+        # pbrun schema merely because the successor was activated while this
+        # loop was between actions.
+        #
+        # This is defense in depth, not a rollout handshake: publication can
+        # still move after this read and before serve_once.  Cross-generation
+        # queue-schema rollout therefore remains an expand/converge/contract
+        # operation; this local fence only closes the much larger window in
+        # which a loop that already observes the successor keeps touching the
+        # queue before exiting.
+        current = published_commit()
+        if current and current != loaded_commit:
+            print(f"[{host}] runtime moved "
+                  f"{loaded_commit[:12] or '(unversioned)'} -> "
+                  f"{current[:12]}; exiting so the supervisor reloads it",
+                  flush=True)
+            return 0
+        if not observer_initialized:
+            observer = None if args.assume_idle else box_capacity.CapacityObserver(
+                samples=args.observe_samples,
+                ledger_total=queue.ledger().capacity(),
+            )
+            observer_initialized = True
         # Every kind, every poll -- not just memory, and not just under a flag.
         #
         # Two things make the ledger disagree with the box, and one call
@@ -312,36 +340,6 @@ def main():
             # day per loop.
             if idle == 1:
                 print(f"[{host}] idle; {census_line(queue)}", flush=True)
-            # A loop imports ``prismabuild.pool`` once, at start, and holds
-            # those bytes for its whole life.  So a fix published while loops
-            # are running is loaded by none of them, and the supervisor counts
-            # a stale-byte loop as a healthy one -- the target is met and the
-            # fix never reaches the fleet.  Eighteen of twenty-four loops were
-            # executing pre-fix ``reap_stale`` bytes against the same queue
-            # hours after the fix landed, with the race it repaired still
-            # armed on the majority of the fleet.
-            #
-            # Checked here, between actions and never inside one: exiting is
-            # safe precisely because nothing is claimed at this point, and the
-            # supervisor's respawn picks up the current bytes.
-            #
-            # An UNVERSIONED loop -- one that started before
-            # ``RUNTIME_VERSION.json`` existed, or over a read of it that
-            # failed -- is the one this must catch, not the one to exempt.
-            # It can never match a published commit, so a ``loaded_commit and``
-            # guard made it immortal: 32 of 60 offer samples from sparky on
-            # 2026-09-04 announced ``runtime_commit: ""``, from loops that had
-            # survived every publish since.  They also announced an older
-            # capacity shape, which is how the flicker in ``_matching_offers``
-            # was reaching placement.  Comparing against "" reloads them once,
-            # and a startup read that failed transiently costs one respawn.
-            current = published_commit()
-            if current and current != loaded_commit:
-                print(f"[{host}] runtime moved "
-                      f"{loaded_commit[:12] or '(unversioned)'} -> "
-                      f"{current[:12]}; exiting so the supervisor reloads it",
-                      flush=True)
-                return 0
             if args.once or idle >= args.max_idle:
                 free = queue.ledger().available()
                 print(f"[{host}] nothing admissible ({idle} idle polls); "
