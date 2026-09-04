@@ -163,7 +163,7 @@ probe, at the two commits:
 | `oom_score_adj` | −1000 | 200 | 200 |
 | pgid / sid / ppid | the launcher's | the manager's | the manager's |
 
-(sparky, `735a315` → this commit. The probe's own verdict field moves with it:
+(sparky, `735a315` → `3fc0d9d`. The probe's own verdict field moves with it:
 `clean: false` with thirteen `unclassified` entries, against `clean: true` with
 none. The earlier *uncarried* arm was also seen on gx10-6b77 and dl380g10 with
 the two-axis probe — affinity `0-1` → `0-79` and soft `RLIMIT_NOFILE`
@@ -456,7 +456,8 @@ The raw three-arm output is the `detail.stdout` of pool action
 
 The probe's own verdict is the short form of §4: `clean: true` with an empty
 `unclassified` means every axis it perturbed survived the wrapper and the only
-differences left are the three classified as bound or mechanism.
+differences left are the five it classifies as bound or mechanism -- the cgroup
+path, `oom_score_adj`, and the process group / session / parent triple.
 
 ---
 

@@ -243,30 +243,35 @@ def test_the_child_of_a_capped_launch_keeps_every_limit_systemd_can_carry(
             f"{name}: launcher {expected}, child {observed['rlimits'][name]}")
 
 
-def test_the_child_of_a_capped_launch_keeps_the_launchers_nice_level() -> None:
+def test_the_child_of_a_capped_launch_keeps_the_launchers_nice_level(
+    tmp_path,
+) -> None:
     """The CPU half of the same escape ``CPUAffinity`` closes.
 
     Run from a launcher of its own because ``os.nice`` only goes up without
     privilege: perturbing the suite's process would slow every test after this
-    one and could not be undone.
+    one and could not be undone.  Compared against what that launcher actually
+    reached rather than against 5, because a suite that is itself niced -- a
+    capped pbrun action, a ``nice pytest`` -- starts higher and would fail this
+    for a reason that is not the wrapper's.  Both scripts live under
+    ``tmp_path``: this checkout is shared, and two suite runs writing one
+    fixed name into ``tests/`` would clobber each other.
     """
 
     root = Path(__file__).resolve().parents[1]
-    launcher = root / "tests" / "_nice_launcher_tmp.py"
-    child = root / "tests" / "_nice_child_tmp.py"
+    launcher = tmp_path / "nice_launcher.py"
+    child = tmp_path / "nice_child.py"
     launcher.write_text(NICE_LAUNCHER)
     child.write_text(CHILD)
-    try:
-        done = subprocess.run(
-            [sys.executable, str(launcher), str(root / "src"), str(child), "5"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=root)
-        assert done.returncode == 0, done.stderr[-400:]
-        arm = json.loads(done.stdout)
-        assert arm["rc"] == 0, arm
-        assert arm["launcher_nice"] == 5, arm
-        assert json.loads(arm["out"])["nice"] == 5, (
-            "the unit ran at the user manager's nice level, not the "
-            f"launcher's: {arm}")
-    finally:
-        launcher.unlink(missing_ok=True)
-        child.unlink(missing_ok=True)
+    done = subprocess.run(
+        [sys.executable, str(launcher), str(root / "src"), str(child), "5"],
+        capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=root)
+    assert done.returncode == 0, done.stderr[-400:]
+    arm = json.loads(done.stdout)
+    assert arm["rc"] == 0, arm
+    # The manager's own level is 0, so anything from 5 up still tells the two
+    # apart; what it must not be is "whatever the manager was".
+    assert arm["launcher_nice"] >= 5, arm
+    assert json.loads(arm["out"])["nice"] == arm["launcher_nice"], (
+        "the unit ran at the user manager's nice level, not the "
+        f"launcher's: {arm}")
