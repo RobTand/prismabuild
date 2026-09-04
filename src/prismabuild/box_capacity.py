@@ -70,6 +70,66 @@ declaration, and neither invents a constant.  The alternative -- attribute
 apps by walking the process tree -- is measured not to work on this fleet, for
 the reason below.
 
+**The two readings are one bracket, not one instant.**  The offer is a
+difference between what the ledger holds and what the instrument sees, and
+those are two separate reads.  Whichever order they are taken in, an action
+that crosses between them is counted wrong, and one of the two directions is
+the failure this module exists to prevent:
+
+* Ledger first: an action that finishes inside the reading leaves its token in
+  the first read and its CUDA context out of the second, so the token is spent
+  forgiving somebody else's compute app and the box offers a slot the foreign
+  work is sitting on.
+* Instrument first: an action that starts inside the reading is in neither, and
+  is charged as foreign.  That direction only under-offers.
+
+So ``held`` is a *verb* here and not a value: pass the ledger's ``held``
+method, it is read on both sides of the instruments, and what a token may
+forgive is the elementwise **minimum** of the two.  A token that was not held
+for the whole of the reading forgives nothing.  The bracket is the width of
+the instruments inside it, and the release it races is ``finish``'s.  Timed on
+sparky against ``/mnt/shared`` 2026-09-04: ``nvidia-smi --query-compute-apps``
+10 ms, ``held()`` on the live ledger 1.0 ms; against 0.25 ms for the
+``withdrawn_keys`` listing, 0.02 ms for the claim record, and 4.1 ms for 16
+renames on the same share -- that last timed in a scratch directory rather
+than in the live ledger.  Two intervals of the same size, which is what makes
+the overlap ordinary rather than exotic.  Not timed: ``execute``'s own tail
+between the child exiting and ``finish`` being entered.  Nor is the child's
+exit the moment its memory comes back, since on this fleet the action is
+often a container's process reparented away -- and that error is in the
+conservative direction, the box charging itself for bytes it has released.  A
+caller with only a snapshot may still pass a mapping; it cannot be bracketed,
+and it is read as the whole of the truth.
+
+**What the bracket does not close: a claim is not yet a use.**  Between
+``acquire`` and the action allocating anything there is a real interval -- an
+interpreter starting, a checkpoint loading -- and through all of it the tokens
+are held while the box still shows the memory free and the card without a
+context.  The mem_gb arithmetic below adds held tokens back to
+``MemAvailable``, so at the moment the pool admits an action *the box's offer
+rises by the size of that action's claim*, and on a box already short of
+memory that rise is handed straight back out as free tokens.  Quantified in
+``test_a_claim_that_has_not_allocated_yet_forgives_memory_still_free``: 48
+declared, 20 GB of foreign work, an action holding 16 it has not touched, and
+the offer is 36 against 4 GB the box can honour.
+
+That one is not a bug to fix but a degree of freedom with no instrument on it.
+Write the offer as a total and it cancels: ``total = held + (available -
+margin)`` is the same statement as ``free = available - margin``, so the only
+choice being made is how much of ``held`` to credit against a reading that may
+or may not already exclude it.  Credit all of it and an unspent claim is
+offered twice, which is the paragraph above.  Credit none of it and you have
+the ``--honest-memory`` flag this module replaced: an action's bytes are
+subtracted once by ``MemAvailable`` and once again as tokens, and a box doing
+exactly what the pool told it to do offers ``held`` GB less than it has.  Read
+live 2026-09-04, two of dl380g10's sixteen loops held 24 of that box's 60
+declared GB; five of the sixteen would hold all of it, and the box would offer
+nothing while running the pool's own work.  Nothing between the two
+extremes is measurable from ``MemAvailable``, a count of compute apps and a
+token, because none of them attributes a byte to a reservation.  The bracket
+closes the part that is a *reading* error; this part is an accounting choice,
+and the optimistic one is taken deliberately.
+
 **Attribution is by ledger, not by process tree.**  The obvious implementation
 -- walk the GPU compute apps and forgive the ones descended from a pool worker
 -- does not work on this fleet and cannot be made to.  Measured on sparky
@@ -155,7 +215,7 @@ the evidence for why an offer fell.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
@@ -262,9 +322,13 @@ class Observation:
     detail: dict[str, object] = field(default_factory=dict)
 
 
+def _counts(held: Mapping[str, int] | None) -> dict[str, int]:
+    return {str(kind): int(value) for kind, value in (held or {}).items()}
+
+
 def observe(
     declared: Mapping[str, int],
-    held: Mapping[str, int] | None = None,
+    held: Mapping[str, int] | Callable[[], Mapping[str, int]] | None = None,
     *,
     margin_gb: int = MEMORY_MARGIN_GB,
     gpu_apps: object = _READ,
@@ -279,12 +343,20 @@ def observe(
     from the ledger -- see the module docstring for why that, and not a process
     tree, is the attribution.
 
+    Pass ``held`` as the ledger's ``held`` **method** wherever the ledger is at
+    hand.  It is then read on both sides of the instruments and a token may
+    forgive only what it held throughout, so an action finishing inside the
+    reading cannot spend its token on somebody else's compute app.  A plain
+    mapping is a snapshot of one instant that the instruments are not from, and
+    is trusted as given; it is for callers who have no ledger to ask.
+
     A kind nothing here knows how to read passes through untouched: an
     unobservable resource is not a busy one.
     """
 
     wanted = {str(kind): int(value) for kind, value in declared.items()}
-    ours = {str(kind): int(value) for kind, value in (held or {}).items()}
+    read_held = held if callable(held) else None
+    before = _counts(read_held() if read_held is not None else held)  # type: ignore[arg-type]
     capacity = dict(wanted)
     foreign: dict[str, int] = {}
     detail: dict[str, object] = {}
@@ -297,41 +369,61 @@ def observe(
         foreign[kind] = foreign_units
         capacity[kind] = max(0, wanted[kind] - foreign_units)
 
+    # Every instrument first, then the ledger again: what a token may forgive
+    # is what it held on BOTH sides of these readings.  See the module
+    # docstring -- ledger-then-instrument spends a finished action's token on a
+    # foreign process, which is the failure this module exists to prevent.
+    apps = None
     if wanted.get("gpu", 0) > 0:
         if gpu_apps is _READ:
             gpu_apps = gpu_compute_apps()
         if gpu_apps is not None:
             apps = list(gpu_apps)                     # type: ignore[arg-type]
-            detail["gpu_compute_apps"] = len(apps)
-            detail["gpu_used_mib"] = sum(int(used) for _, used in apps)
-            # One slot per process the pool did not claim.  The pool prices its
-            # own GPU work at one token per action whatever it spawns, so an
-            # action running several processes reads as foreign above the first
-            # and the box under-offers itself for the length of that action.
-            # That is the conservative direction, it recovers when the action
-            # finishes, and it is the only mapping from a device to a slot
-            # count that does not invent a constant.
-            clamp("gpu", len(apps) - max(0, ours.get("gpu", 0)))
-
     if "mem_gb" in wanted:
         if mem_gb is _READ:
             mem_gb = mem_available_gb()
+    if wanted.get("cpu", 0) > 0:
+        if load1 is _READ:
+            load1 = run_queue()
+
+    after = _counts(read_held() if read_held is not None else None)
+    # A kind that was not in both readings held nothing across them.  A
+    # snapshot caller has one reading and it stands as given.
+    ours = (before if read_held is None else
+            {kind: min(value, after.get(kind, 0)) for kind, value in before.items()})
+
+    if apps is not None:
+        detail["gpu_compute_apps"] = len(apps)
+        detail["gpu_used_mib"] = sum(int(used) for _, used in apps)
+        # One slot per process the pool did not claim.  The pool prices its
+        # own GPU work at one token per action whatever it spawns, so an
+        # action running several processes reads as foreign above the first
+        # and the box under-offers itself for the length of that action.
+        # That is the conservative direction, it recovers when the action
+        # finishes, and it is the only mapping from a device to a slot
+        # count that does not invent a constant.
+        clamp("gpu", len(apps) - max(0, ours.get("gpu", 0)))
+
+    if "mem_gb" in wanted:
         if mem_gb is not None:
             available = int(mem_gb)                   # type: ignore[arg-type]
             detail["mem_available_gb"] = available
             # The honest total is what the pool already holds here plus what is
             # physically free, capped by the declaration.  Adding the held part
-            # back is not generosity: an action's resident bytes are already
-            # missing from ``MemAvailable`` *and* already reserved as tokens, so
-            # a clamp that ignored them would charge the box twice for its own
-            # work -- which is what ``--honest-memory`` did.
+            # back is not generosity: once an action has allocated its bytes
+            # they are missing from ``MemAvailable`` *and* reserved as tokens,
+            # so a clamp that ignored them would charge the box twice for its
+            # own work -- which is what ``--honest-memory`` did.
+            #
+            # BEFORE it allocates them the add-back is wrong the other way, and
+            # nothing here can tell the two apart: see "a claim is not yet a
+            # use" in the module docstring for the arithmetic and for why no
+            # instrument on this fleet decides it.
             honest = min(wanted["mem_gb"],
                          max(0, ours.get("mem_gb", 0)) + max(0, available - margin_gb))
             clamp("mem_gb", wanted["mem_gb"] - honest)
 
     if wanted.get("cpu", 0) > 0:
-        if load1 is _READ:
-            load1 = run_queue()
         if load1 is not None:
             # Recorded, never clamped.  A ``cpu`` token is a SLOT and the run
             # queue counts THREADS, so the two are not in the same units and
@@ -423,9 +515,16 @@ class CapacityObserver:
                      if ledger_total else None)
 
     def offer(
-        self, declared: Mapping[str, int], held: Mapping[str, int] | None = None,
+        self, declared: Mapping[str, int],
+        held: Mapping[str, int] | Callable[[], Mapping[str, int]] | None = None,
         **overrides: object,
     ) -> dict[str, int]:
+        """One reading, held down by the window.  ``held`` is ``observe``'s.
+
+        Which means: pass the ledger's ``held`` method, not its result, so the
+        pool's own consumption is read on both sides of the instruments.
+        """
+
         wanted = {str(kind): int(value) for kind, value in declared.items()}
         if not self._seeded:
             # Seed the window once, so a worker's first reading is never

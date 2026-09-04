@@ -22,7 +22,10 @@ hours into an out-of-pool encode campaign reported every token free
 Every poll now subtracts what else is running -- the GPU's compute apps and
 ``MemAvailable``, each minus what the pool's own held tokens account for -- and
 retires free tokens to the remainder, so a busy box looks busy whoever made it
-busy.  Cores are read and recorded but deliberately not charged: a ``cpu``
+busy.  The ledger is read on both sides of those instruments and a token
+forgives only what it held throughout, because an action that finishes inside
+the reading would otherwise leave its token behind to excuse a foreign
+process.  Cores are read and recorded but deliberately not charged: a ``cpu``
 token is a slot and the run queue counts threads, so clamping on it charges the
 box for its own multithreaded actions.  ``prismabuild.box_capacity`` holds the
 arithmetic and the reasons for both.
@@ -205,8 +208,14 @@ def main():
         # executing under, and the total falls the rest of the way as holders
         # finish.  Nothing here is a ratchet: ``ensure_capacity`` re-mints
         # inside ``claim`` on the next poll once the foreign work is gone.
+        # ``held``, the method -- not ``held()``, the value.  The offer is the
+        # difference between what the pool holds and what the box is doing, and
+        # those are two reads: passing the verb lets ``observe`` take the
+        # ledger on both sides of the instruments, so an action that finishes
+        # inside the reading cannot leave its token behind to forgive a foreign
+        # process.  ``box_capacity`` measures both intervals.
         capacity = dict(declared) if observer is None else observer.offer(
-            declared, queue.ledger().held())
+            declared, queue.ledger().held)
         queue.ledger().retire_free_capacity(capacity)
         if capacity != announced:
             seen = observer.last if observer is not None else None

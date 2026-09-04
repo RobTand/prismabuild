@@ -18,6 +18,8 @@ from prismabuild import box_capacity as bc  # noqa: E402
 #: sparklina at 01:06 -- six hours into an out-of-pool encode campaign.
 SPARKLINA_APPS = [(794915, 1145), (805673, 1543), (831002, 1477), (1242245, 1321)]
 SPARKLINA_DECLARED = {"cpu": 10, "gpu": 1, "mem_gb": 40}
+#: sparky, the only box on the fleet with more than one gpu slot.
+SPARKY_DECLARED = {"cpu": 10, "gpu": 2, "mem_gb": 48}
 
 
 def test_the_box_that_went_down_looks_busy() -> None:
@@ -125,10 +127,13 @@ def test_memory_is_bounded_by_what_is_physically_free() -> None:
 def test_memory_the_pool_already_holds_is_not_charged_twice() -> None:
     """The bug in the ``--honest-memory`` flag this replaces.
 
-    An action's bytes are missing from ``MemAvailable`` *and* already reserved
-    as tokens.  Clamping to ``MemAvailable - margin`` alone charges the box for
-    its own work, so a box doing exactly what the pool told it to do retires
-    the capacity it is using.
+    Once an action has allocated its bytes they are missing from
+    ``MemAvailable`` *and* reserved as tokens.  Clamping to ``MemAvailable -
+    margin`` alone charges the box for its own work, so a box doing exactly
+    what the pool told it to do retires the capacity it is using.
+
+    Before it allocates them the same add-back is wrong the other way -- the
+    limit pinned below.
     """
 
     seen = bc.observe({"mem_gb": 48}, {"mem_gb": 32}, mem_gb=20, load1=0.0)
@@ -137,6 +142,146 @@ def test_memory_the_pool_already_holds_is_not_charged_twice() -> None:
     assert seen.capacity["mem_gb"] == 44
     # The old arithmetic: min(48, 20 - 8) = 12, below what is already held.
     assert seen.capacity["mem_gb"] > 12
+
+
+def test_a_claim_that_has_not_allocated_yet_forgives_memory_still_free() -> None:
+    """The limit on the other side of the add-back, quantified.
+
+    Between ``acquire`` and the action touching anything -- an interpreter
+    starting, a checkpoint loading -- the tokens are held while the box still
+    shows the memory free.  Adding them back then counts the same gigabytes
+    twice, and the offer *rises by the size of the claim at the moment the pool
+    admits it*.  sparky's shape, with 20 GB of somebody else's encode on it:
+
+    The box has 28 GB free and keeps 8, so 20 GB is the truth.  The pool holds
+    a 16 GB claim it has not spent, and the offer comes out 36 -- twenty free
+    tokens against the 4 GB that will be left once the claim lands.
+
+    This is a degree of freedom, not a bug with a fix: ``total = held +
+    (available - margin)`` is the same statement as ``free = available -
+    margin``, and the only choice is how much of ``held`` to credit.  Crediting
+    none of it is ``--honest-memory``, which charges an allocated action twice
+    and starves the box that is running the pool's own work.  No instrument
+    here attributes a byte to a reservation, so neither reading can be
+    confirmed.  Delete this test when one exists; do not "fix" it by picking a
+    ramp-up duration.
+    """
+
+    ramping = bc.observe({"cpu": 10, "gpu": 2, "mem_gb": 48},
+                         {"gpu": 1, "mem_gb": 16},
+                         gpu_apps=[(794915, 20000)], mem_gb=28, load1=1.0)
+
+    assert ramping.capacity["mem_gb"] == 36        # 16 held + (28 free - 8)
+    # Free tokens are the total less what is held, and they are what admission
+    # spends.  Twenty of them, against the four gigabytes left once the claim
+    # lands: 28 free now, less the 8 kept back, less the 16 not yet taken.
+    assert ramping.capacity["mem_gb"] - 16 == 20
+
+    # And the rise is what admission itself did: the same box, same reading,
+    # one moment before the claim.
+    idle = bc.observe({"cpu": 10, "gpu": 2, "mem_gb": 48}, {},
+                      gpu_apps=[(794915, 20000)], mem_gb=28, load1=1.0)
+
+    assert idle.capacity["mem_gb"] == 20
+
+
+# -- the ledger is read on both sides of the instruments -----------------
+#
+# The offer is a difference between two readings taken one after the other, so
+# an action that crosses between them is counted wrong.  Passing the ledger's
+# ``held`` method rather than its result is what makes the bracket possible.
+
+
+def test_a_token_released_inside_the_reading_forgives_nothing() -> None:
+    """Ledger first, instrument second, and the action ends in between.
+
+    Its token is still in the first reading and its CUDA context is already
+    gone from the second, so on a single-value ``held`` the token is spent
+    forgiving a foreign compute app and the box offers the slot that process is
+    sitting on.  Bracketed, a token that was not held throughout forgives
+    nothing.
+    """
+
+    readings = [{"cpu": 1, "gpu": 1, "mem_gb": 16}, {}]
+
+    bracketed = bc.observe(SPARKY_DECLARED, lambda: readings.pop(0),
+                           gpu_apps=[(794915, 1145)], mem_gb=100, load1=1.0)
+
+    assert bracketed.foreign["gpu"] == 1
+    assert bracketed.capacity["gpu"] == 1
+
+    # The same instant pair, read as one snapshot: the shape being fixed.
+    snapshot = bc.observe(SPARKY_DECLARED, {"cpu": 1, "gpu": 1, "mem_gb": 16},
+                          gpu_apps=[(794915, 1145)], mem_gb=100, load1=1.0)
+
+    assert snapshot.foreign == {}
+    assert snapshot.capacity["gpu"] == 2
+
+
+def test_a_token_taken_inside_the_reading_forgives_nothing_either() -> None:
+    """The other order, and the same rule.
+
+    An action admitted between the two ledger reads has nothing in the
+    instruments either, so charging it as foreign is the answer that
+    under-offers rather than the one that places work on top of somebody.  The
+    minimum gives that without a second rule.
+    """
+
+    readings = [{}, {"gpu": 1, "mem_gb": 16}]
+
+    seen = bc.observe(SPARKY_DECLARED, lambda: readings.pop(0),
+                      gpu_apps=[(1, 100)], mem_gb=100, load1=1.0)
+
+    assert seen.foreign["gpu"] == 1
+
+
+def test_the_box_is_read_between_the_two_ledger_readings(monkeypatch) -> None:
+    """Bracket, not two adjacent reads: the instruments go inside.
+
+    Two ledger reads taken back to back would agree with each other and with
+    neither instrument -- the bug wearing the fix's clothes.  So this asserts
+    the order of the real calls, with nothing supplied: a reading passed in as
+    an argument is evaluated by the caller and proves nothing about when
+    ``observe`` would have taken it.
+    """
+
+    order: list[str] = []
+
+    def held() -> dict[str, int]:
+        order.append("ledger")
+        return {"gpu": 1, "mem_gb": 16}
+
+    monkeypatch.setattr(bc, "gpu_compute_apps",
+                        lambda: order.append("nvidia-smi") or [(1, 100)])
+    monkeypatch.setattr(bc, "mem_available_gb",
+                        lambda: order.append("meminfo") or 100)
+    monkeypatch.setattr(bc, "run_queue",
+                        lambda: order.append("loadavg") or 1.0)
+
+    bc.observe(SPARKY_DECLARED, held)
+
+    assert order == ["ledger", "nvidia-smi", "meminfo", "loadavg", "ledger"]
+
+
+def test_a_snapshot_is_still_accepted_from_a_caller_with_no_ledger() -> None:
+    """``held`` as a mapping keeps working, and is read once as given."""
+
+    seen = bc.observe(SPARKY_DECLARED, {"gpu": 1, "mem_gb": 16},
+                      gpu_apps=[(1, 100)], mem_gb=100, load1=1.0)
+
+    assert seen.foreign == {}
+
+
+def test_the_observer_passes_the_verb_through_to_the_reading() -> None:
+    """The window is over bracketed readings, so the verb must survive it."""
+
+    readings = [{"gpu": 1}, {}]
+    observer = bc.CapacityObserver(samples=1)
+
+    offer = observer.offer(SPARKY_DECLARED, lambda: readings.pop(0),
+                           gpu_apps=[(794915, 1145)], mem_gb=100, load1=1.0)
+
+    assert offer["gpu"] == 1
 
 
 def test_the_offer_never_rises_above_the_declaration() -> None:
@@ -285,7 +430,6 @@ def test_a_window_of_no_samples_is_refused() -> None:
 
 # -- coming back from an action -----------------------------------------
 
-SPARKY_DECLARED = {"cpu": 10, "gpu": 2, "mem_gb": 48}
 TWO_FOREIGN = [(1, 1000), (2, 1000)]
 
 

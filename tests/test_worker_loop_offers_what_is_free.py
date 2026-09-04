@@ -361,3 +361,53 @@ def test_an_action_that_left_the_box_as_it_found_it_costs_no_capacity(
     assert queue.item_path(pool.DONE, "c" * 64).exists()
     assert queue.ledger(host).capacity()["gpu"] == 2
     assert _offer(queue, host)["foreign"] == {}
+
+
+def test_a_release_landing_inside_the_reading_forgives_no_foreign_process(
+    tmp_path: Path,
+) -> None:
+    """The two readings the offer is a difference of are not one instant.
+
+    ``observe`` subtracts what the pool holds from what the box is doing, and
+    the loop reads those two things one after the other: the ledger first, then
+    ``nvidia-smi``.  An action that finishes in between is counted twice -- its
+    token is still in the first reading and its CUDA context is already gone
+    from the second -- so its token is spent forgiving somebody else's compute
+    app, and the box offers a slot the foreign work is sitting on.  That is the
+    issue's own failure mode, at the end of an action instead of at six hours
+    into a campaign.
+
+    The window is no defence: a maximum falls only when every sample agrees and
+    rises on the first that disagrees, so one such reading raises the offer at
+    once and ``ensure_capacity`` mints against it inside the same poll.
+
+    The gap is small and it is not nil: the reading and the release are the
+    same size on this share, timed in ``box_capacity``'s own docstring.
+    """
+
+    host = socket.gethostname()
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    ledger = queue.ledger(host)
+    ledger.ensure_capacity({"gpu": 2, "mem_gb": 48, "cpu": 10})
+    # One pool action running, and a sibling loop that has already retired the
+    # box's other slot against the foreign encode.
+    assert ledger.acquire("d" * 64, {"gpu": 1, "mem_gb": 16}) is True
+    ledger.retire_free_capacity({"gpu": 1, "mem_gb": 48, "cpu": 10})
+    assert ledger.capacity()["gpu"] == 1
+
+    def reading() -> list[tuple[int, int]]:
+        # The action finishes while the box is being read: ``finish`` releases
+        # its tokens, and its CUDA context is already gone from what
+        # ``nvidia-smi`` answers.  One compute app is left, and it is foreign.
+        queue.ledger(host).release("d" * 64)
+        return [FOREIGN[0]]
+
+    queue = _run(tmp_path, [*SPARKY, "--tag", host, "--max-idle", "1"],
+                 apps=reading, mem_gb=100)
+
+    # The foreign encode holds one of the two slots and nothing else may be
+    # placed on it: one slot offered, one free, the other retired.
+    assert _offer(queue, host)["foreign"] == {"gpu": 1}
+    assert queue.ledger(host).capacity()["gpu"] == 1
+    assert queue.ledger(host).available()["gpu"] == 1
