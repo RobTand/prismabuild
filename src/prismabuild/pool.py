@@ -1634,7 +1634,17 @@ class PoolQueue:
         *,
         status: str,
         detail: Mapping[str, object] | None = None,
+        claim_snapshot: Mapping[str, object] | None = None,
     ) -> Path:
+        """File an outcome and return the claim's capacity.
+
+        ``claim_snapshot`` is the record this worker actually executed.  The
+        live claimed path can disappear under a finishing worker when a reaper
+        wins the terminal-file race; the snapshot keeps the reservation's host
+        available even then.  It is not used to reconstruct the queue item --
+        the lost-race outcome remains deliberately terminal.
+        """
+
         succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
         record = _read_json(src)
@@ -1658,7 +1668,7 @@ class PoolQueue:
             # all.  ``record is None`` is the one case with no generation to
             # compare, and is treated as covered -- the claim was concluded by
             # somebody else, so there is nothing here to file either way.
-            host = (record or {}).get("claimed_host")
+            host = (record or claim_snapshot or {}).get("claimed_host")
             self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
             src.unlink(missing_ok=True)
             self.lease_path(action_key).unlink(missing_ok=True)
@@ -1680,6 +1690,10 @@ class PoolQueue:
             # of the same window; that fix's own comment names ``finish()``
             # and only the loop was repaired.  File the outcome terminally so
             # it is countable, and never route it back to ``ready``.
+            snapshot_host = (claim_snapshot or {}).get("claimed_host")
+            self.ledger(
+                str(snapshot_host) if isinstance(snapshot_host, str) else None
+            ).release(action_key)
             lost = self.item_path(
                 FAILED, action_key) if not succeeded else self.item_path(
                 DONE, action_key)
@@ -1730,6 +1744,65 @@ class PoolQueue:
         src.unlink(missing_ok=True)
         self.lease_path(action_key).unlink(missing_ok=True)
         return dst
+
+    def reclaim_terminal_reservation(self, action_key: str) -> dict[str, object]:
+        """Return an orphaned reservation only when terminal state proves it.
+
+        This is the bounded repair for a worker that finished on bytes which
+        predate ``claim_snapshot``.  It refuses a live or queued action, a
+        missing/failed terminal result, a surviving lease, multiple holders,
+        and a holder that differs from the host which filed the successful
+        outcome.  Those are ambiguous generations, not cleanup opportunities.
+        """
+
+        key = str(action_key)
+        if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+            raise PoolContractError("action_key must be a 64-character hex digest")
+        for state in (READY, CLAIMED):
+            if self.item_path(state, key).exists():
+                raise PoolContractError(
+                    f"refusing to reclaim {key}: action is still {state}")
+        if self.lease_path(key).exists():
+            raise PoolContractError(
+                f"refusing to reclaim {key}: action still has a lease")
+
+        terminals = [
+            (state, record)
+            for state in (DONE, FAILED, WITHDRAWN)
+            if (record := _read_json(self.item_path(state, key))) is not None
+        ]
+        if len(terminals) != 1:
+            raise PoolContractError(
+                f"refusing to reclaim {key}: expected exactly one terminal "
+                f"record, found {len(terminals)}")
+        state, terminal = terminals[0]
+        if state != DONE or terminal.get("status") not in {"executed", "cache_hit"}:
+            raise PoolContractError(
+                f"refusing to reclaim {key}: terminal status is "
+                f"{state}/{terminal.get('status')}")
+
+        hosts = [
+            directory.name
+            for directory in _scan(self.root / RESERVATIONS)
+            if (directory / "held" / key).is_dir()
+        ]
+        if not hosts:
+            return {"action_key": key, "released": 0, "hosts": []}
+        if len(hosts) != 1:
+            raise PoolContractError(
+                f"refusing to reclaim {key}: reservation is held on {hosts}")
+        finished_host = terminal.get("finished_host")
+        if finished_host != hosts[0]:
+            raise PoolContractError(
+                f"refusing to reclaim {key}: successful outcome was filed on "
+                f"{finished_host!r}, reservation is held on {hosts[0]!r}")
+        if terminal.get("container_owner"):
+            raise PoolContractError(
+                f"refusing to reclaim {key}: container lifecycle verification "
+                "is required")
+
+        released = self.ledger(hosts[0]).release(key)
+        return {"action_key": key, "released": released, "hosts": hosts}
 
     # -- operator decisions ---------------------------------------------
 
@@ -2297,9 +2370,19 @@ class PoolQueue:
         except BaseException as exc:                      # noqa: BLE001
             # Never leave a claim dangling: an unexpected failure is recorded as
             # a terminal state, not left for the reaper 300 s later.
-            self.finish(key, status="failed", detail={"exception": repr(exc)})
+            self.finish(
+                key,
+                status="failed",
+                detail={"exception": repr(exc)},
+                claim_snapshot=item,
+            )
             raise
-        self.finish(key, status=str(outcome["status"]), detail=outcome)
+        self.finish(
+            key,
+            status=str(outcome["status"]),
+            detail=outcome,
+            claim_snapshot=item,
+        )
         return outcome
 
 

@@ -27,7 +27,11 @@ capacity is held as rename-acquired tokens, acquired inside `claim` and released
 in `finish` — and in `withdraw`, which is the same release path reached by an
 operator changing their mind rather than by the work ending — so a holder is
 always *running* and never waiting; the hold-while-gated circularity has nowhere
-to form. Denials age an item to the front of the
+to form. A finishing worker carries its claimed-record snapshot into `finish`,
+so a reaper winning the claimed-file race cannot erase the host needed to
+return that reservation; old terminal orphans are reclaimed only by an
+explicit verifier that refuses live claims, leases, non-success outcomes,
+multiple holders and host disagreement. Denials age an item to the front of the
 ready order, and past `STARVATION_FLOOR` a denied item withholds the host
 instead of being overtaken, because "an eviction counter that only counts is a
 starvation detector wired to nothing". Retries are bounded by `max_attempts` and
