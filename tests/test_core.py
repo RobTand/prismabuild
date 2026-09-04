@@ -1234,12 +1234,20 @@ def test_paths_and_nested_params_reject_ambiguous_json(tmp_path: Path):
     for params in (
         {"nested": {1: "coerced"}},
         {"nested": {"nul\x00key": 1}},
-        {"nested": ["bad\nvalue"]},
+        {"nested": {"bad\nkey": 1}},
+        {"nested": ["nul\x00value"]},
     ):
         body = _body(tmp_path)
         body["params"] = params
         with pytest.raises(pb.ActionContractError):
             pb.seal_action(body)
+
+    # A string *value* is payload, not a name: canonical JSON escapes it
+    # unambiguously, and a multiline command recorded in params is ordinary
+    # (issue #21).  Only keys keep the control-character rule.
+    body = _body(tmp_path)
+    body["params"] = {"nested": ["multi\nline"]}
+    assert pb.seal_action(body)["params"] == {"nested": ["multi\nline"]}
 
 
 def test_local_worker_uses_exact_argv_and_closed_environment(
@@ -3592,3 +3600,58 @@ def test_action_key_has_expected_plain_sha256_shape(tmp_path: Path):
         ).encode("utf-8")
     ).hexdigest()
     assert action["action_key"] == expected
+
+
+def test_payload_text_may_carry_newlines_and_tabs(tmp_path: Path) -> None:
+    """``execve`` and JSON carry any character but NUL (issue #21).
+
+    A ``bash -lc`` script with a newline is an ordinary argument, and so are
+    an environment value and the params string ``pbrun`` records the command
+    in: refusing them turned a legal program into a contract error, and
+    ``pbrun`` surfaced that as a raw traceback before any action existed.
+    Keys and identifiers keep the strict rule
+    (``test_paths_and_nested_params_reject_ambiguous_json``).
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    script = "set -e\nprintf 'line1\\nline2\\n'\n\techo tabbed\n"
+    body = _body(checkout, argv=["/bin/bash", "-lc", script])
+    body["environment"]["variables"]["MULTI"] = "a\tb\nc"
+    body["params"]["command"] = ["/bin/bash", "-lc", script]
+
+    action = pb.seal_action(body)
+
+    assert action["task"]["argv"][2] == script
+    assert action["environment"]["variables"]["MULTI"] == "a\tb\nc"
+    assert action["params"]["command"][2] == script
+    assert pb.validate_action(action) == action
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda body: body["task"]["argv"].append("a\x00b"),
+        lambda body: body["environment"]["variables"].__setitem__("E", "a\x00b"),
+        lambda body: body["params"].__setitem__("p", "a\x00b"),
+    ],
+    ids=["argv", "environment", "params"],
+)
+def test_nul_is_still_refused_in_payload_text(tmp_path: Path, mutate) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    body = _body(checkout)
+    mutate(body)
+    with pytest.raises(pb.ActionContractError, match="NUL"):
+        pb.seal_action(body)
+
+
+def test_identifiers_still_refuse_control_characters(tmp_path: Path) -> None:
+    """Only payload text was relaxed; a name with a newline is still refused."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    body = _body(checkout)
+    body["environment"]["variables"]["BAD\nKEY"] = "x"
+    with pytest.raises(pb.ActionContractError, match="control character"):
+        pb.seal_action(body)
