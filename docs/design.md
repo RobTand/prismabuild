@@ -217,15 +217,20 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   collapsing to a reusable `unreadable` sentinel. A stamp whose bytes are
   intact but whose claim no longer matches therefore refuses before execution.
   Git checkouts are made immutable across the remaining interval by default:
-  the submitter synthesizes a deterministic root commit from the exact tracked
-  and untracked working tree, including the closure stamp, publishes its
-  shallow bundle as a verified CAS input, and puts the commit rather than the
-  submitter path in the queue. The claimant fetches that bundle into a fresh
+  the submitter synthesizes a deterministic commit from the exact tracked
+  and untracked working tree, including the closure stamp, parented on the
+  source's own `HEAD`, publishes its
+  bundle as a verified CAS input, and puts the commit rather than the
+  submitter path in the queue. `--snapshot-ref NAME` adds a source branch to
+  that bundle by name. The claimant fetches that bundle into a fresh
   worker-local checkout, runs from the original relative subdirectory, and
   removes the private tree afterward. A failed removal is warned and recorded
   under the worker's local materialization root; it never changes completed
   task work into a retry. The worker preflight requires the private tree to be
-  clean at the sealed commit. Absolute submitter-repository paths in argv or
+  clean at the sealed commit, to carry the recorded parent, and to resolve
+  every recorded branch to its recorded id -- so `HEAD~1` and `BASE...HEAD`
+  are facts a diff-derived gate can rely on rather than a
+  `fatal: ambiguous argument`. Absolute submitter-repository paths in argv or
   environment are refused because they would escape the snapshot. New
   submissions from non-Git directories refuse: there is no mutable-path
   override. The command executable is resolved exactly from argv[0] and the

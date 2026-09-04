@@ -58,6 +58,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -377,6 +378,91 @@ def require_supported_snapshot_tree(
     return logical_bytes
 
 
+def require_complete_history(root: Path) -> None:
+    """Refuse a source whose own history it cannot hand a worker.
+
+    The bundle now walks from the snapshot commit through its parents, so a
+    shallow or partial clone has nothing to walk into: ``bundle create``
+    fails deep inside pack-objects with ``Failed to traverse parents``, which
+    tells the submitter nothing about what to do.  Say the actual thing --
+    the ancestry a diff-derived gate needs is not in this checkout -- and say
+    it before any bytes are hashed.
+    """
+
+    if _snapshot_git(root, ["rev-parse", "--is-shallow-repository"]) == "true":
+        raise SystemExit(
+            "pbrun: this checkout is a shallow clone, so its snapshot cannot "
+            "carry the ancestry a worker needs; unshallow it "
+            "(git fetch --unshallow) before submitting"
+        )
+    partial = _snapshot_git(
+        root,
+        ["config", "--get", "extensions.partialclone"],
+        accepted_returncodes=(0, 1),
+    )
+    if partial:
+        raise SystemExit(
+            "pbrun: this checkout is a partial clone, so its snapshot cannot "
+            "carry the ancestry a worker needs; fetch the missing objects "
+            "(git repack -a -d) before submitting"
+        )
+
+
+def resolve_snapshot_refs(
+    root: Path, names: Sequence[str]
+) -> dict[str, str]:
+    """Bind each requested branch name to the id it has in the source now.
+
+    Refused here rather than on a worker: a name that does not resolve is a
+    typo, and the honest place to say so is the terminal of the person who
+    typed it, before an action key exists.  Every name is resolved fully
+    qualified -- a bare ``master`` could otherwise pick up a tag or a remote
+    branch of the same name and seal a different object than the submitter
+    meant.
+    """
+
+    resolved: dict[str, str] = {}
+    for name in names:
+        if name in resolved:
+            raise SystemExit(
+                f"pbrun: --snapshot-ref {name} was requested twice"
+            )
+        try:
+            # The same rule a worker will apply to the queued record, applied
+            # where the person who typed it is still watching.
+            pb.validate_pbrun_snapshot_ref_name(
+                name, where=f"--snapshot-ref {name}"
+            )
+        except pb.ActionContractError as exc:
+            raise SystemExit(f"pbrun: {exc}") from exc
+        checked = _snapshot_git(
+            root,
+            ["check-ref-format", "--branch", name],
+            accepted_returncodes=(0, 1, 128),
+        )
+        # ``check-ref-format --branch`` also expands ``@{-1}``, so a name it
+        # rewrites is a name that means something else on a worker.
+        if checked != name:
+            raise SystemExit(
+                f"pbrun: --snapshot-ref {name} is not a plain branch name"
+            )
+        oid = _snapshot_git(
+            root,
+            [
+                "rev-parse", "--verify", "--quiet",
+                f"refs/heads/{name}^{{commit}}",
+            ],
+            accepted_returncodes=(0, 1),
+        )
+        if not oid:
+            raise SystemExit(
+                f"pbrun: --snapshot-ref {name} names no branch in this "
+                "checkout; the snapshot can only advertise refs the source has"
+            )
+        resolved[name] = oid
+    return resolved
+
+
 def build_git_checkout_snapshot(
     cwd: Path,
     *,
@@ -384,8 +470,9 @@ def build_git_checkout_snapshot(
     cas: pb.PrismaBuildCAS,
     max_bytes: int = CHECKOUT_SNAPSHOT_MAX_BYTES,
     expected_identity: dict[str, str] | None = None,
+    snapshot_refs: Sequence[str] = (),
 ) -> dict[str, object]:
-    """Publish the exact dirty tree as an immutable, shallow Git bundle."""
+    """Publish the exact dirty tree as an immutable Git bundle with ancestry."""
 
     root = git_repository_root(cwd)
     if root is None:
@@ -415,6 +502,9 @@ def build_git_checkout_snapshot(
     identity = expected_identity or _git_identity(cwd)
     if _git_identity(cwd) != identity:
         raise SystemExit("pbrun: checkout changed before it could be snapshotted")
+    parent = identity["head"]
+    require_complete_history(root)
+    resolved_refs = resolve_snapshot_refs(root, snapshot_refs)
 
     with tempfile.TemporaryDirectory(prefix="pbrun-snapshot.") as temporary_raw:
         temporary = Path(temporary_raw)
@@ -460,24 +550,48 @@ def build_git_checkout_snapshot(
             environment=object_environment,
             max_bytes=max_bytes,
         )
+        # The snapshot's parent is the source HEAD, so the sealed commit is
+        # the source history with one more commit on it.  A worker's
+        # ``HEAD~1``, ``merge-base`` and ``BASE...HEAD`` then resolve, which
+        # is what a diff-derived gate is made of; the parentless shape this
+        # replaces made every one of those a ``fatal: ambiguous argument``.
+        # Identity, timestamps and message stay fixed, so the commit remains
+        # a deterministic function of (tree, parent) rather than of who ran
+        # the submit.
         commit = _snapshot_git(
             root,
-            ["commit-tree", tree],
+            ["commit-tree", tree, "-p", parent],
             environment=object_environment,
-            input_text="PrismaBuild pbrun checkout snapshot v1\n",
+            input_text="PrismaBuild pbrun checkout snapshot v2\n",
         )
         bare = temporary / "bundle.git"
         _snapshot_git(root, ["init", "-q", "--bare", str(bare)])
-        ref = "refs/heads/prismabuild-snapshot"
+        ref = f"refs/heads/{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}"
         _snapshot_git(
             root,
             [f"--git-dir={bare}", "update-ref", ref, commit],
             environment=object_environment,
         )
+        for name, sealed_id in sorted(resolved_refs.items()):
+            _snapshot_git(
+                root,
+                [
+                    f"--git-dir={bare}", "update-ref",
+                    f"refs/heads/{name}", sealed_id,
+                ],
+                environment=object_environment,
+            )
         bundle = temporary / "checkout.bundle"
+        # ``bundle create`` walks every named ref, so the ancestry travels by
+        # construction: no explicit history depth to choose, and a requested
+        # branch that has diverged simply adds its own side.  The byte ceiling
+        # below is what keeps that bounded.
         _snapshot_git(
             root,
-            [f"--git-dir={bare}", "bundle", "create", str(bundle), ref],
+            [
+                f"--git-dir={bare}", "bundle", "create", str(bundle), ref,
+                *(f"refs/heads/{name}" for name in sorted(resolved_refs)),
+            ],
             environment=object_environment,
         )
         size = bundle.stat().st_size
@@ -494,10 +608,12 @@ def build_git_checkout_snapshot(
         )
     return pb.validate_pbrun_checkout_snapshot(
         {
-            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
             "commit": commit,
+            "parent": parent,
             "subdirectory": subdirectory,
             "input": snapshot_input,
+            "refs": resolved_refs,
         }
     )
 
@@ -1360,6 +1476,15 @@ def main() -> int:
         help="lower the hard fleet ceiling for both the logical materialized "
              "Git tree and compressed bundle (cannot raise it)",
     )
+    ap.add_argument(
+        "--snapshot-ref",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="also advertise this source branch in the snapshot bundle, so "
+             "the action can spell it (e.g. --snapshot-ref master for a "
+             "master...HEAD gate); repeatable",
+    )
     ap.add_argument("--cwd", default=os.getcwd())
     ap.add_argument("--deterministic", action="store_true",
                     help="declare byte-identical output; enables CAS reuse")
@@ -1452,6 +1577,11 @@ def main() -> int:
             "path-addressed submission is not supported"
         )
     require_checkout_snapshot_limit(args.checkout_snapshot_max_bytes)
+    # Before the stamp is written, before Git hashes a byte, and before
+    # anything reaches the CAS or the queue: an unresolvable ref name is a
+    # typo, and the only cheap moment to say so is now.
+    require_complete_history(repository_root)
+    resolve_snapshot_refs(repository_root, list(args.snapshot_ref))
     early_paths = snapshot_path_roster(repository_root)
     require_working_tree_size(
         repository_root,
@@ -1658,6 +1788,7 @@ def main() -> int:
         cas=cas,
         max_bytes=args.checkout_snapshot_max_bytes,
         expected_identity=identity,
+        snapshot_refs=list(args.snapshot_ref),
     )
     body = {
         "schema": pb.ACTION_SCHEMA_V2,

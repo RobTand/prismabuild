@@ -1152,6 +1152,40 @@ def test_a_malformed_snapshot_ref_refuses_by_name(
         pbrun.main()
 
 
+def test_git_snapshot_refuses_a_shallow_source_by_name(tmp_path: Path) -> None:
+    """Ancestry a source does not have cannot be sealed into a bundle.
+
+    ``bundle create`` walks parents now, so a shallow clone dies inside
+    pack-objects with ``Failed to traverse parents of commit`` -- a message
+    about Git's internals, arriving after the tree has been hashed.  Refuse
+    it up front, in a sentence that names the fix.
+    """
+
+    origin = _git_checkout(tmp_path)
+    (origin / "second.txt").write_text("later history\n")
+    assert _git(origin, "add", "second.txt").returncode == 0
+    assert _git(origin, "commit", "-qm", "second").returncode == 0
+    shallow = tmp_path / "shallow"
+    assert subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{origin}", str(shallow)],
+        capture_output=True, text=True,
+    ).returncode == 0
+    assert _git(
+        shallow, "config", "user.email", "test@example.invalid"
+    ).returncode == 0
+    assert _git(
+        shallow, "config", "user.name", "PrismaBuild test"
+    ).returncode == 0
+    stamp_name = f"{pbrun.STAMP_PREFIX}shallow-test.json"
+    _stamped(shallow, stamp_name)
+    cas = core_module.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(SystemExit, match="shallow clone"):
+        pbrun.build_git_checkout_snapshot(
+            shallow, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
+        )
+
+
 def test_git_snapshot_refuses_a_repository_with_no_commits(
     tmp_path: Path,
 ) -> None:

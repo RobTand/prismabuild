@@ -468,19 +468,51 @@ def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:
             where="read checkout snapshot bundle",
         )
         commit = str(snapshot["commit"])
-        refs = [
-            fields[1]
+        advertised = {
+            fields[1]: fields[0]
             for line in heads.splitlines()
-            if len(fields := line.split(maxsplit=1)) == 2 and fields[0] == commit
-        ]
-        if not refs:
+            if len(fields := line.split(maxsplit=1)) == 2
+        }
+        sealed = [name for name, oid in advertised.items() if oid == commit]
+        if not sealed:
             raise PoolContractError(
                 "checkout snapshot bundle does not advertise its sealed commit"
+            )
+        refspecs = [sealed[0]]
+        # A v2 record names branches the action will spell -- ``master...HEAD``
+        # in a diff-derived gate.  The record and the bundle travel separately,
+        # so the record alone cannot be the authority for where a branch
+        # points: creating ``refs/heads/master`` at an id nothing in the bundle
+        # reaches would make every later comparison a silent lie rather than a
+        # refusal.  Both must say the same thing before either is used.
+        for name, sealed_id in sorted(dict(snapshot.get("refs") or {}).items()):
+            qualified = f"refs/heads/{name}"
+            if advertised.get(qualified) != sealed_id:
+                raise PoolContractError(
+                    f"checkout snapshot bundle contradicts sealed ref {name!r}"
+                )
+            refspecs.append(f"{qualified}:{qualified}")
+        # ``git init`` leaves HEAD a symref to the unborn default branch, and
+        # ``git fetch`` refuses to update the branch HEAD points at -- which is
+        # exactly ``master`` on the checkout whose gate this exists for.  Point
+        # HEAD at the snapshot's own reserved name, which no record may claim,
+        # before fetching anything.  Only a record that names branches needs
+        # this: the sealed ref is fetched as a bare refspec into FETCH_HEAD and
+        # updates no local branch, so a v1 record runs the same Git commands it
+        # always did.
+        if len(refspecs) > 1:
+            _run_materializer_git(
+                [
+                    "git", "-C", str(repository), "symbolic-ref", "HEAD",
+                    f"refs/heads/"
+                    f"{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}.materializing",
+                ],
+                where="detach materialized HEAD from a fetched branch",
             )
         _run_materializer_git(
             [
                 "git", "-C", str(repository), "fetch", "-q", "--no-tags",
-                str(bundle), refs[0],
+                str(bundle), *refspecs,
             ],
             where="fetch checkout snapshot bundle",
         )

@@ -47,7 +47,11 @@ PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
 PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1 = (
     "prismaquant.prismabuild.pbrun_checkout_snapshot.v1"
 )
+PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2 = (
+    "prismaquant.prismabuild.pbrun_checkout_snapshot.v2"
+)
 PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID = "pbrun.checkout-snapshot"
+PBRUN_CHECKOUT_SNAPSHOT_REF_NAME = "prismabuild-snapshot"
 LOCAL_RESULT_CLAIM_SCHEMA_V1 = "prismaquant.prismabuild.local_result_claim.v1"
 INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1 = (
     "prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1"
@@ -221,6 +225,10 @@ _INITIAL_MISS_RENDEZVOUS_RECEIPT_KEYS = (
 
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,255}\Z")
 _GIT_OBJECT_ID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+#: A snapshot ref name is an allow-list, not Git's full branch grammar: it is
+#: spelled into a worker's ``git fetch`` refspec, so everything the revision
+#: grammar and the option parser can reach stays out of the character class.
+_SNAPSHOT_REF_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}\Z")
 _VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}\Z")
 _SCOPE_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:/-]{0,255}\Z")
 _ENV_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -1380,27 +1388,65 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
     }
 
 
+def validate_pbrun_snapshot_ref_name(value: object, *, where: str) -> str:
+    """One branch name a materializing worker may create from a queue record.
+
+    These names are not constants: they arrive on the queue item and become
+    ``refs/heads/<name>`` and a ``git fetch`` refspec inside the claiming
+    worker.  A colon splits a refspec, a leading dash becomes an option, and
+    the Git revision grammar (``~ ^ @{ ..``) turns a name into a different
+    object than the one the record priced.  ``HEAD`` and the snapshot's own
+    ref name are refused for a second reason: both would make every later
+    revision lookup in the materialized checkout ambiguous, which is the
+    failure this whole contract exists to remove.
+    """
+
+    name = _text(value, where=where, pattern=_SNAPSHOT_REF_NAME_RE)
+    if (
+        name == "HEAD"
+        or name.startswith(
+            ("-", "/", ".", "refs/", PBRUN_CHECKOUT_SNAPSHOT_REF_NAME)
+        )
+        or name.endswith((".", "/", ".lock"))
+        or ".." in name
+        or "//" in name
+        or "@{" in name
+    ):
+        _fail(f"{where} is not a usable branch name")
+    return name
+
+
 def validate_pbrun_checkout_snapshot(value: object) -> dict[str, object]:
     """Validate the immutable Git bundle a pbrun action executes from."""
 
-    raw = _exact_mapping(
-        value,
-        keys=frozenset({"schema", "commit", "subdirectory", "input"}),
-        where="pbrun checkout snapshot",
-    )
-    if raw["schema"] != PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1:
+    if not isinstance(value, Mapping):
+        _fail("pbrun checkout snapshot must be an object")
+    schema = value.get("schema")
+    if schema not in {
+        PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1, PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2
+    }:
         _fail(
             "pbrun checkout snapshot.schema must be "
-            f"{PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1!r}"
+            f"{PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1!r} or "
+            f"{PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2!r}"
         )
+    ancestral = schema == PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2
+    keys = {"schema", "commit", "subdirectory", "input"}
+    raw = _exact_mapping(
+        value,
+        # Each schema owns one exact key set, so a v1 record cannot smuggle
+        # ancestry a v1 materializer would silently ignore.
+        keys=frozenset(keys | {"parent", "refs"} if ancestral else keys),
+        where="pbrun checkout snapshot",
+    )
     snapshot_input = validate_input_contract(raw["input"])
     if snapshot_input["id"] != PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID:
         _fail(
             "pbrun checkout snapshot input.id must be "
             f"{PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID!r}"
         )
-    return {
-        "schema": PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+    validated: dict[str, object] = {
+        "schema": schema,
         "commit": _text(
             raw["commit"],
             where="pbrun checkout snapshot.commit",
@@ -1413,6 +1459,88 @@ def validate_pbrun_checkout_snapshot(value: object) -> dict[str, object]:
         ),
         "input": snapshot_input,
     }
+    if not ancestral:
+        return validated
+    parent = raw["parent"]
+    validated["parent"] = None if parent is None else _text(
+        parent,
+        where="pbrun checkout snapshot.parent",
+        pattern=_GIT_OBJECT_ID_RE,
+    )
+    raw_refs = raw["refs"]
+    if not isinstance(raw_refs, Mapping):
+        _fail("pbrun checkout snapshot.refs must be an object")
+    refs: dict[str, str] = {}
+    for raw_name in raw_refs:
+        name = validate_pbrun_snapshot_ref_name(
+            raw_name, where="pbrun checkout snapshot.refs name"
+        )
+        refs[name] = _text(
+            raw_refs[raw_name],
+            where=f"pbrun checkout snapshot.refs[{name}]",
+            pattern=_GIT_OBJECT_ID_RE,
+        )
+    validated["refs"] = {name: refs[name] for name in sorted(refs)}
+    return validated
+
+
+def _materialized_git(root: Path, *args: str) -> str:
+    """One read of the materialized checkout, refused rather than guessed."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ActionContractError(
+            f"cannot read materialized pbrun checkout: Git "
+            f"{' '.join(args)} failed: {exc}"
+        ) from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise ActionContractError(
+            f"cannot read materialized pbrun checkout: Git "
+            f"{' '.join(args)} failed: {detail or completed.returncode}"
+        )
+    return completed.stdout.strip()
+
+
+def _verify_pbrun_checkout_ancestry(
+    snapshot: Mapping[str, object], root: Path
+) -> None:
+    """Prove the ancestry the v2 contract sells, in the tree that will run.
+
+    A snapshot whose bundle omitted a parent still checks out clean at the
+    sealed commit, so the identity proof above cannot see the difference --
+    and the action then fails inside its own diff-derived gate with
+    ``fatal: ambiguous argument``, on a worker, after the queue said yes.
+    Ancestry is part of what the record promises, so it is part of what the
+    preflight proves.
+    """
+
+    parent = snapshot["parent"]
+    lineage = _materialized_git(
+        root, "rev-list", "--max-count=1", "--parents", "HEAD"
+    ).split()
+    expected = [str(snapshot["commit"])] + ([str(parent)] if parent else [])
+    if lineage != expected:
+        raise ActionContractError(
+            "materialized pbrun checkout does not carry its sealed parent"
+        )
+    refs = snapshot["refs"]
+    assert isinstance(refs, Mapping)
+    for name in sorted(refs):
+        resolved = _materialized_git(
+            root, "rev-parse", "--verify", f"refs/heads/{name}^{{commit}}"
+        )
+        if resolved != str(refs[name]):
+            raise ActionContractError(
+                f"materialized pbrun checkout ref {name!r} differs from the "
+                "sealed snapshot"
+            )
 
 
 def _verify_pbrun_checkout_identity(
@@ -1482,6 +1610,8 @@ def _verify_pbrun_checkout_identity(
             raise ActionContractError(
                 "materialized pbrun checkout differs from its sealed commit"
             )
+        if snapshot["schema"] == PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2:
+            _verify_pbrun_checkout_ancestry(snapshot, root)
         return
     if git_checkout_identity(root) != recorded:
         raise ActionContractError(
@@ -4688,7 +4818,9 @@ __all__ = [
     "LOCAL_RESULT_CLAIM_SCHEMA_V1",
     "PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH",
     "PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID",
+    "PBRUN_CHECKOUT_SNAPSHOT_REF_NAME",
     "PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1",
+    "PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2",
     "PBRUN_RESULT_PREFIX",
     "PBRUN_STAMP_PREFIX",
     "WORKER_ATTESTATION_SCHEMA_V2",
@@ -4717,6 +4849,7 @@ __all__ = [
     "validate_code_closure",
     "validate_input_contract",
     "validate_pbrun_checkout_snapshot",
+    "validate_pbrun_snapshot_ref_name",
     "validate_worker_scope",
     "validate_worker_attestation",
     "verify_code_closure",
