@@ -265,6 +265,55 @@ def test_an_explicit_tag_over_a_box_local_checkout_is_a_warning(tmp_path) -> Non
     assert "--tag sparky" in notice
 
 
+def test_naming_this_box_is_the_correct_submission_not_a_warning(tmp_path) -> None:
+    """The issue's own remedy must not be scolded for being applied.
+
+    ``--tag sparky`` from a sparky worktree is exactly what the issue says
+    submitters do, and it is right: the action cannot land where its tree is
+    absent.  A first draft warned on the presence of any ``--tag`` and so told
+    this submitter to add the tag they had just passed.  The question is not
+    what the tag says, it is whether any OTHER box could claim it -- so ask the
+    placer, which also gets a one-box alias (``--tag sparklina``) right.
+    """
+
+    queue = _fleet(tmp_path)
+
+    own = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                  demand={"cpu": 1}, explicit=[HOST])
+    alias = pbrun.pin_notice(
+        queue, {"tags": ["sparklina"], "needs_gpu": False, "resources": {"cpu": 1}},
+        cwd=Path("/home/rob/tmp/ts91"), hostname="gx10-6b77", here=False,
+        explicit=["sparklina"])
+
+    for notice in (own, alias):
+        assert "WARNING" not in notice
+        assert "match only this box" in notice
+    assert notice_host(own) == "sparky" and notice_host(alias) == "gx10-6b77"
+
+
+def notice_host(notice: str) -> str:
+    return notice.split("PINNED to ", 1)[1].split(" ", 1)[0]
+
+
+def test_with_nobody_announced_only_this_boxs_own_name_is_trusted(tmp_path) -> None:
+    """The placer cannot answer, so fall back to the one tag that is provable.
+
+    A tag naming this host cannot be claimed elsewhere whatever the fleet turns
+    out to be; any other tag might be, and an unanswerable question is not a
+    reason to go quiet about a tree that exists on one box.
+    """
+
+    empty = pool_module.PoolQueue(tmp_path / "q")
+
+    own = _notice(empty, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                  demand={"cpu": 1}, explicit=[HOST])
+    other = _notice(empty, cwd="/home/rob/tmp/ts101", tags=["x86"],
+                    demand={"cpu": 1}, explicit=["x86"])
+
+    assert "WARNING" not in own
+    assert "WARNING" in other and "let another box claim" in other
+
+
 def test_an_unannounced_fleet_reports_unknown_rather_than_zero(tmp_path) -> None:
     """A missing diagnostic must not be printed as a measurement."""
 

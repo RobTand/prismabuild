@@ -263,9 +263,10 @@ def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool,
     ``tags=['sparky']`` and nothing else, so the submitter -- usually an agent
     that just made itself a worktree under ``/home/rob/tmp`` -- had no way to
     know it had narrowed the fleet to one box.  Measured on the live queue,
-    2026-09-04: 129 of 394 items carried a hostname tag, 114 of them pinned to
-    ``sparky`` by a ``/home/rob/tmp/ts*`` worktree, while sparky's queue backed
-    up and the other two boxes idled.
+    2026-09-04: 131 of 391 items carried a hostname tag, and 129 of those were
+    a consequence of a path -- 114 pinned to ``sparky`` by a
+    ``/home/rob/tmp/ts*`` worktree -- while sparky's queue backed up and the
+    other two boxes idled.
 
     The width is quoted from the same matcher the queue places by, and it is
     the width the action WOULD have had: the host tag is removed before
@@ -280,18 +281,33 @@ def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool,
     tags = [str(t) for t in (intent.get("tags") or [])]
     local = is_box_local(cwd)
     if local and explicit:
-        # The path pins; an explicit tag replaces the pin rather than adding to
+        # The path pins; an explicit tag REPLACES the pin rather than adding to
         # it, so this action may be claimed by a box that cannot see its tree.
         # That fails loudly rather than silently -- the worker refuses on
         # "checkout root is unavailable", or on the closure check
         # (``core.verify_code_closure``) when a same-named tree exists there
         # with other bytes -- but it fails after a claim and two retries.  Say
         # so here, where it costs nothing.
-        return (f"pbrun: WARNING -- the checkout {cwd} exists only on {hostname}, "
-                f"but tags {tags} let another box claim this action.  It will "
-                f"fail there rather than run on the wrong tree; add "
-                f"--tag {hostname} if you meant this box, or move the checkout "
-                f"under {SHARED_ROOT}.")
+        #
+        # Ask the placer, not the tag text.  ``--tag sparky`` from a sparky
+        # worktree is the submission the issue describes people making, and
+        # it is correct; so is a tag only one box offers (``--tag sparklina``).
+        # Warn only when a box that is NOT this one could actually claim it.
+        hosts = queue.placeable_hosts(intent)
+        if hosts is None:
+            # Nobody has announced, so the placer cannot answer.  Naming this
+            # box is the one tag form that provably cannot land elsewhere.
+            others = [] if hostname in [str(t) for t in explicit] else ["another box"]
+        else:
+            others = [h for h in hosts if h != hostname]
+        if others:
+            return (f"pbrun: WARNING -- the checkout {cwd} exists only on "
+                    f"{hostname}, but tags {tags} let {', '.join(others)} claim "
+                    f"this action.  It will fail there rather than run on the "
+                    f"wrong tree; add --tag {hostname} if you meant this box, "
+                    f"or move the checkout under {SHARED_ROOT}.")
+        return (f"pbrun: PINNED to {hostname} -- the checkout {cwd} is box-local "
+                f"and tags {tags} match only this box.")
     if not (local or here):
         return ""
     unpinned = dict(intent)
