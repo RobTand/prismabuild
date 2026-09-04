@@ -337,6 +337,64 @@ def test_portable_submission_identity_ignores_the_source_checkout_path() -> None
     )
 
 
+def test_effective_placement_is_normalized_into_action_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Different admissible worker populations cannot share a CAS result."""
+
+    checkout = _git_checkout(tmp_path)
+    fleet = tmp_path / "fleet"
+    sealed: list[dict[str, object]] = []
+    real_seal = core_module.seal_action
+
+    class StopAfterSeal(Exception):
+        pass
+
+    def capture(body):
+        sealed.append(real_seal(body))
+        raise StopAfterSeal
+
+    monkeypatch.setattr(pbrun.pb, "seal_action", capture)
+    monkeypatch.setattr(pbrun, "SH", fleet)
+    monkeypatch.setattr(
+        pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
+    )
+
+    populations = [
+        ["x86", "dl380g10", "x86"],
+        ["dl380g10", "x86"],
+        ["sparky"],
+    ]
+    for tags in populations:
+        argv = ["pbrun.py", "--cwd", str(checkout), "--wait-s", "0"]
+        for tag in tags:
+            argv.extend(["--tag", tag])
+        argv.extend(["--", "true"])
+        monkeypatch.setattr(sys, "argv", argv)
+        with pytest.raises(StopAfterSeal):
+            pbrun.main()
+
+    assert sealed[0]["action_key"] != sealed[2]["action_key"], (
+        "different effective placement populations shared one action key"
+    )
+    assert sealed[0]["action_key"] == sealed[1]["action_key"]
+    placements = [action["params"]["placement"] for action in sealed]
+    assert placements == [
+        {"required_tags": ["dl380g10", "x86"]},
+        {"required_tags": ["dl380g10", "x86"]},
+        {"required_tags": ["sparky"]},
+    ]
+    owners = [
+        action["environment"]["variables"]["PRISMABUILD_CONTAINER_OWNER"]
+        for action in sealed
+    ]
+    assert owners[0] == owners[1]
+    assert owners[0] != owners[2]
+    results = [action["task"]["result_path"] for action in sealed]
+    assert results[0] == results[1]
+    assert results[0] != results[2]
+
+
 def test_pbrun_preflight_refuses_checkout_drift_after_sealing(tmp_path) -> None:
     """The worker must verify what the stamp says, not only the stamp bytes.
 

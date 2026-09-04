@@ -572,6 +572,7 @@ def result_and_stamp_names(
     *,
     identity=None,
     logical_cwd=None,
+    placement=None,
 ):
     """The result file and the closure stamp this submission writes.
 
@@ -591,15 +592,17 @@ def result_and_stamp_names(
       without its declared result file".  Not hypothetical: that ate a green
       1268-test suite on 2026-09-04.
 
-    The same command at the same commit still fingerprints identically, so a
-    repeat submission can still be answered from the CAS -- which is the one
-    case where sharing the path was safe all along.
+    The same command, commit, and normalized effective placement still
+    fingerprint identically, so reordered/duplicate tags do not disturb a CAS
+    hit. A different admissible worker population gets different paths just as
+    it gets a different action key.
     """
 
     identity = _git_identity(cwd) if identity is None else identity
     cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
     fingerprint = hashlib.sha256(
-        json.dumps([command, cwd_identity, demand, variables, identity],
+        json.dumps([command, cwd_identity, demand, variables, identity,
+                    placement or {"required_tags": []}],
                    sort_keys=True).encode()
     ).hexdigest()[:16]
     return (f"{RESULT_PREFIX}{fingerprint}.txt",
@@ -614,21 +617,23 @@ def container_owner(
     *,
     identity=None,
     logical_cwd=None,
+    placement=None,
 ) -> str:
     """Stable ownership id sealed before the action key exists.
 
     The action key includes the environment, and the environment needs this id,
     so using the final key would be recursive.  Hash the complete pre-lifecycle
-    submission identity instead; adding these derived variables afterwards is
-    deterministic and leaves no caller-chosen ownership namespace.
+    submission identity, including normalized effective placement, instead;
+    adding these derived variables afterwards is deterministic and leaves no
+    caller-chosen ownership namespace.
     """
 
     identity = _git_identity(Path(cwd)) if identity is None else identity
     cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
     return hashlib.sha256(
         json.dumps(
-            ["prismabuild.container-owner.v1", command, cwd_identity, demand,
-             variables, identity],
+            ["prismabuild.container-owner.v2", command, cwd_identity, demand,
+             variables, identity, placement or {"required_tags": []}],
             sort_keys=True,
         ).encode()
     ).hexdigest()
@@ -1409,18 +1414,21 @@ def main() -> int:
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")
-    tags = placement_tags(
-        cwd,
-        explicit=list(args.tag),
-        here=args.here,
-        hostname=socket.gethostname(),
-        portable_checkout=portable_checkout,
-        command=command,
-        repository_root=repository_root,
-        environment=variables,
-        caller_environment=caller_variables,
-        anywhere=args.anywhere,
+    tags = pool.normalize_placement_tags(
+        placement_tags(
+            cwd,
+            explicit=list(args.tag),
+            here=args.here,
+            hostname=socket.gethostname(),
+            portable_checkout=portable_checkout,
+            command=command,
+            repository_root=repository_root,
+            environment=variables,
+            caller_environment=caller_variables,
+            anywhere=args.anywhere,
+        )
     )
+    placement = {"required_tags": tags}
     if args.exclusive:
         # "All of one box" is a fact about the boxes, and guessing it does not
         # fail loudly -- it fails as an action nobody can ever claim.  The
@@ -1451,6 +1459,7 @@ def main() -> int:
         variables,
         identity=identity,
         logical_cwd=logical_cwd,
+        placement=placement,
     )
     marker = SH / "pb-queue" / pool.CONTAINER_OWNERS / f"{owner}.used"
     prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
@@ -1497,6 +1506,7 @@ def main() -> int:
         variables,
         identity=identity,
         logical_cwd=logical_cwd,
+        placement=placement,
     )
     # The closure member must be under checkout_root: that is where the
     # worker re-verifies it, on whichever box claimed the action.
@@ -1570,6 +1580,7 @@ def main() -> int:
             "command": command,
             "cwd": logical_cwd,
             "demand": demand,
+            "placement": placement,
             "checkout_snapshot": checkout_snapshot,
         },
         "environment": {"variables": variables, "toolchain": {}},

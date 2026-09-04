@@ -127,6 +127,11 @@ matters). Rules:
 - **Deterministic vs stochastic** task classes: deterministic entries may be
   verified by recompute; stochastic (probe backward is recorded
   non-bit-reproducible) get run-once / first-result-wins.
+- **Effective pool placement is a parameter** — `pbrun` seals the sorted,
+  deduplicated conjunction of tags that its placement rule actually returned,
+  including a derived hostname pin. The normalized constraint moves the action
+  key, result/stamp fingerprint, and container owner. CLI spelling, order, and
+  duplicate tags do not; changing the admissible worker population does.
 - Re-enqueue of an existing verified key is a tested cache-hit no-op. A future
   speculative policy could build on that property, but no such enqueueing or
   superseded-key scheduler exists yet.
@@ -215,7 +220,10 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   caller-environment paths receive a conservative lexical screen, not a claim
   that PrismaBuild can parse shell/application indirection. `--tag` explicitly
   assigns those dependencies to a worker class; `--anywhere` explicitly
-  asserts that they are portable. Workers continue to understand
+  asserts that they are portable. The normalized effective tags are sealed in
+  action params, so a receipt produced for one placement conjunction cannot
+  answer an otherwise identical submission constrained to another. Workers
+  continue to understand
   already-published `checkout_root` queue records only so that the
   pre-migration queue can drain. Relative argv paths may reach repository
   siblings from a requested subdirectory because the whole repository is

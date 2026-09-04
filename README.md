@@ -59,6 +59,13 @@ used only to say which boxes are live enough to claim now. A capable box between
 announcements therefore leaves the action to its declared `--wait-s`; it no
 longer turns a bounded wait into an immediate refusal.
 
+The effective placement conjunction is semantic identity, not queue-only
+metadata. `pbrun` normalizes and sorts the tags that actually landed (including
+derived host pins) and seals them in action params before computing the action
+key, result/stamp names, and container owner. Flag order and duplicate tags do
+not move identity; a different admissible worker population does, so a
+Sparky-pinned query cannot reuse a gx10 receipt for the same argv.
+
 Git-backed `pbrun` submissions are checkout-portable: the exact dirty tree is
 sealed as a shallow Git bundle in the CAS, and the claiming worker executes a
 fresh local checkout of that commit. A box-local source worktree therefore no
