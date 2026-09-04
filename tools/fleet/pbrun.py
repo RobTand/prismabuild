@@ -46,7 +46,15 @@ sys.path.insert(0, str(SH / "repo" / "src"))
 from prismabuild import core as pb, pool  # noqa: E402
 
 POLL_S = 5.0
-STAMP = ".pbrun-closure.json"
+#: One stamp per ACTION, not per checkout.  A single shared name looked
+#: harmless because concurrent submits from one tree write the same bytes --
+#: but the worker re-verifies the live stamp against the closure its action
+#: pinned, and by then a later submit has replaced it with a *different*
+#: identity, because the tree moved in between (pytest bytecode, result logs,
+#: whatever a neighbouring shard did).  Hence "live code closure differs from
+#: the action-pinned closure", ten of them in one fan-out.  Atomic writing
+#: fixes torn reads and does nothing for this; separate files fix both.
+STAMP_PREFIX = ".pbrun-closure."
 #: Every action tees its output to a file inside the checkout, and the
 #: worker refuses to start when that file already exists.  A fixed name
 #: therefore lets the first submit from a tree poison every later one:
@@ -81,7 +89,7 @@ def _git_identity(cwd: Path) -> dict[str, str]:
     # after the first -- a cache miss dressed up as a different action.
     porcelain = "\n".join(
         line for line in _git("status", "--porcelain").splitlines()
-        if STAMP not in line and RESULT_PREFIX not in line
+        if STAMP_PREFIX not in line and RESULT_PREFIX not in line
     )
     # `git diff HEAD` covers tracked edits.  It says nothing about an
     # UNTRACKED file, whose name appears in porcelain as "?? path" while its
@@ -185,36 +193,6 @@ def main() -> int:
         # correct when the checkout is on shared storage.
         tags = [socket.gethostname()]
 
-    # The closure member must be under checkout_root: that is where the
-    # worker re-verifies it, on whichever box claimed the action.
-    identity = _git_identity(cwd)
-    # Written through a private temp file and renamed, because rename is the
-    # one primitive this fleet trusts on NFS and a plain write is not atomic.
-    # Concurrent submits from one checkout -- forty test shards, say -- all
-    # write this same file, and a reader that catches a partial one gets
-    # "cannot open code closure file as a regular file" or "live code closure
-    # differs from the action-pinned closure".  The content is identical across
-    # those submits, so atomicity is the whole fix; ordering does not matter.
-    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)
-    scratch = cwd / f"{STAMP}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
-    try:
-        scratch.write_text(payload, encoding="utf-8")
-        os.replace(scratch, cwd / STAMP)
-    finally:
-        if scratch.exists():
-            scratch.unlink()
-    exclude = cwd / ".git" / "info" / "exclude"
-    try:
-        if exclude.parent.is_dir():
-            current = exclude.read_text()
-            with exclude.open("a", encoding="utf-8") as handle:
-                if STAMP not in current:
-                    handle.write(f"{STAMP}\n")
-                if RESULT_PREFIX not in current:
-                    handle.write(f"{RESULT_PREFIX}*\n")
-    except OSError:
-        pass                       # a worktree without .git/info is not an error
-
     # `run_local_action` builds the child's environment from *these* and
     # nothing else, so an empty dict is not "inherit the caller" -- it is an
     # empty environment, rescued only by `bash -lc` sourcing a profile.  That
@@ -244,6 +222,56 @@ def main() -> int:
         json.dumps([command, str(cwd), demand, variables], sort_keys=True).encode()
     ).hexdigest()[:16]
     log_name = f"{RESULT_PREFIX}{fingerprint}.txt"
+    # The closure member must be under checkout_root: that is where the
+    # worker re-verifies it, on whichever box claimed the action.
+    identity = _git_identity(cwd)
+    # Written through a private temp file and renamed, because rename is the
+    # one primitive this fleet trusts on NFS and a plain write is not atomic.
+    # Concurrent submits from one checkout -- forty test shards, say -- all
+    # write this same file, and a reader that catches a partial one gets
+    # "cannot open code closure file as a regular file" or "live code closure
+    # differs from the action-pinned closure".  The content is identical across
+    # those submits, so atomicity is the whole fix; ordering does not matter.
+    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)
+    stamp_name = f"{STAMP_PREFIX}{fingerprint}.json"
+    scratch = cwd / f"{stamp_name}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    try:
+        # fsync both the file and its directory before publishing.  The submit
+        # side is usually an NFS client and the worker may be the box holding
+        # the export, so a write that has only reached the client's page cache
+        # is invisible to the reader that is about to verify it -- the action
+        # gets published, a worker claims it within milliseconds, and it fails
+        # with "cannot open code closure file as a regular file" for a file
+        # that plainly exists a second later.  Durability before publication is
+        # the ordering the queue already assumes everywhere else.
+        with scratch.open("w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(scratch, cwd / stamp_name)
+        directory = os.open(cwd, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        except OSError:
+            pass                     # some filesystems refuse directory fsync
+        finally:
+            os.close(directory)
+    finally:
+        if scratch.exists():
+            scratch.unlink()
+    exclude = cwd / ".git" / "info" / "exclude"
+    try:
+        if exclude.parent.is_dir():
+            current = exclude.read_text()
+            with exclude.open("a", encoding="utf-8") as handle:
+                if STAMP_PREFIX not in current:
+                    handle.write(f"{STAMP_PREFIX}*\n")
+                if RESULT_PREFIX not in current:
+                    handle.write(f"{RESULT_PREFIX}*\n")
+    except OSError:
+        pass                       # a worktree without .git/info is not an error
+
+
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
@@ -263,7 +291,7 @@ def main() -> int:
             "result_path": log_name,
         },
         "inputs": [],
-        "code_closure": pb.build_code_closure(cwd, [STAMP]),
+        "code_closure": pb.build_code_closure(cwd, [stamp_name]),
         "params": {"command": command, "cwd": str(cwd), "demand": demand},
         "environment": {"variables": variables, "toolchain": {}},
         "execution_scope": {
