@@ -56,6 +56,20 @@ CONTENDS = re.compile(
 NEVER_GPU = ("git", "gh", "echo", "cat", "grep", "sed", "awk", "less", "diff")
 
 
+#: A segment that switches the GPU off for its own child cannot be GPU work,
+#: whatever interpreter it names.  Two agents in one day were refused for
+#: ``kl_tool.py --help`` and ``kl_tool.py compare --help`` -- argparse text
+#: that starts nothing -- because the rule's proxy is the interpreter path and
+#: nothing asked what the command does.  The interpreter stays the proxy: it
+#: is the deliberate one, and asking "does this touch CUDA" of an arbitrary
+#: command line is exactly the guess this hook refuses to make.  What this
+#: adds is a way to *say so*, and the saying is enforced by the kernel rather
+#: than believed: with ``CUDA_VISIBLE_DEVICES`` empty the child sees no
+#: device, so this cannot become a way around the pool -- work smuggled
+#: through it would simply fail.  ``--help`` under that prefix is the use.
+NO_DEVICE = re.compile(r"""(?:^|\s)CUDA_VISIBLE_DEVICES=(?:''|""|)(?=\s)""")
+
+
 #: The pool's own machinery, which must never be refused by the hook that
 #: exists to route work *into* it.  ``pbrun`` submits; ``worker_loop`` and
 #: ``worker`` are the things that consume the queue -- and a worker is
@@ -184,6 +198,8 @@ def contends(command: str) -> bool:
         if not CONTENDS.search(segment):
             continue
         if _first_token(segment) in NEVER_GPU:
+            continue
+        if NO_DEVICE.search(segment):
             continue
         if any(entry in segment for entry in POOL_ENTRYPOINTS):
             continue
