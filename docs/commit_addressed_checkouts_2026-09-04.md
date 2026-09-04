@@ -7,8 +7,8 @@ described here only where they bound the design.
 
 ## The problem, measured
 
-An action carries `checkout_root`, an absolute path (`pool.py:657-705`,
-written by `pbrun.py:650`). When that path is a box-local worktree —
+An action carries `checkout_root`, an absolute path (`pool.py:658-705`,
+written by `pbrun.py:666`). When that path is a box-local worktree —
 `/home/rob/tmp/ts101`, which is what an agent naturally creates — the action
 must be tagged to the box that holds it or it will be claimed by a worker that
 cannot see it. `pbrun.placement_tags` derives that pin from the path, and
@@ -57,11 +57,11 @@ actions**. The submitter's absolute path is bound into the action key in three
 places, so the same work submitted from two boxes is today two different
 actions with two different keys:
 
-* `params.cwd` is `str(cwd)` (`pbrun.py:603`), and `params` is part of the
+* `params.cwd` is `str(cwd)` (`pbrun.py:619`), and `params` is part of the
   sealed body (`core.py:62-72`, `seal_action` at `core.py:1371-1375`);
 * the closure stamp's *name* embeds a fingerprint over `str(cwd)`
   (`pbrun.py:198-202`), so the closure member's path differs per box;
-* the stamp's *content* records `{"cwd": ...}` (`pbrun.py:544`).
+* the stamp's *content* records `{"cwd": ...}` (`pbrun.py:560`).
 
 So step zero of (2) is to rebind the key from *(path, tree delta)* to
 *(repository identity, tree commit)*. After that a cache hit across boxes is
@@ -85,7 +85,7 @@ NFS load from a working tree.
   it carries no `checkout_root`.
 
 Git's ref update takes its lock with `O_CREAT|O_EXCL`, which is the primitive
-this fleet already relies on for token minting (`pool.py:284-291`). That it
+this fleet already relies on for token minting (`pool.py:286-291`). That it
 holds on this mount for `refs/` **must be verified, not assumed** — the mount
 is `local_lock=none`, and every concurrent submitter writes a *different* ref
 name here, so the contended case is the packed-refs rewrite rather than the
@@ -124,7 +124,7 @@ logs — or every submit will produce a new tree commit for its own droppings.
    materialisation. Reuse when it is already there — a second action at the
    same commit costs a lock and a stat.
 3. Run exactly as today: `worker_argv` gets `--checkout-root <that path>`
-   (`pool.py:1181-1191`), and everything downstream is unchanged.
+   (`pool.py:1184-1189`), and everything downstream is unchanged.
 4. The closure check keeps its teeth. The materialiser writes the stamp by
    recomputing `_git_identity` **from the tree it has just built**, exactly as
    `pbrun` does at submit; `core.verify_code_closure` (`core.py:1136-1149`)
@@ -141,7 +141,7 @@ logs — or every submit will produce a new tree commit for its own droppings.
 
 * **No worktrees on `/mnt/shared`.** Objects are shared; trees are not.
 * **`TRITON_CACHE_DIR` stays `/home/rob/.triton-cache`** — a local path per
-  box, same string, different disk (`pbrun.py:472-479`).
+  box, same string, different disk (`pbrun.py:488-495`).
 * **Results still travel through the CAS**, never through the tree. A
   materialised worktree is disposable by construction.
 * **It does not unpin `--here`**, which is a deliberate statement about one
@@ -155,7 +155,7 @@ logs — or every submit will produce a new tree commit for its own droppings.
   breaks absolute paths silently — the command runs, against the wrong file or
   none. This is the one failure mode of (2) that is not loud, so it is refused
   at the one moment the caller is watching, the way an unplaceable tag already
-  is (`pbrun.py:626-642`).
+  is (`pbrun.py:650-658`).
 * **A working tree bigger than a stated bound.** A synthesised tree commit of
   a checkout holding a 90 GB cache is not a submission, it is an accident.
 
