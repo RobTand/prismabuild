@@ -82,6 +82,29 @@ def published_commit() -> str:
         return ""
 
 
+def census_line(queue) -> str:
+    """The fleet's width, or why it is missing -- and never an exception.
+
+    ``3711b29`` bought this loop the contract that one bad item must not take
+    the worker with it, and it bought it by wrapping ``serve_once``.  A
+    diagnostic added beside that handler is outside it: ``placement_census``
+    reads EVERY ready item, including the ones tagged for other boxes that
+    ``claim`` skips at ``_placement_matches`` before ``demand_of`` is ever
+    reached, so one corrupted or out-of-band write became a raw traceback and
+    an immediate exit on a box that was otherwise fine -- once per supervisor
+    cycle, against an item that is still there.
+
+    The census now counts an unreadable item instead of raising, which fixes
+    the case that was found.  This exists for the ones that are not: a line
+    of telemetry has no business deciding whether this box keeps working.
+    """
+
+    try:
+        return pool.describe_placement_census(queue.placement_census())
+    except Exception as exc:                                     # noqa: BLE001
+        return f"fleet width unavailable ({type(exc).__name__}: {exc})"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true")
@@ -260,6 +283,20 @@ def main():
             observer.rejoin(queue.ledger().capacity())
         if outcome is None:
             idle += 1
+            # Entering an idle streak is the moment this box starts paying for
+            # the fleet's WIDTH, so say how much of the waiting queue no other
+            # box could take.  Box-local worktrees pin an action to one box,
+            # and the pin is invisible from the queue's own counts: ten items
+            # in ``ready`` look identical whether they are queued behind one
+            # busy box or spread across three.  Live on 2026-09-04, with two
+            # boxes idle: "ready 10, 10 on exactly one box (sparky 10)".
+            #
+            # Printed at the START of the streak, not on every poll: the
+            # interesting event is the transition, and ``--max-idle`` is 500
+            # on this fleet, so an exit-only line would appear about twice a
+            # day per loop.
+            if idle == 1:
+                print(f"[{host}] idle; {census_line(queue)}", flush=True)
             # A loop imports ``prismabuild.pool`` once, at start, and holds
             # those bytes for its whole life.  So a fix published while loops
             # are running is loaded by none of them, and the supervisor counts
@@ -272,16 +309,29 @@ def main():
             # Checked here, between actions and never inside one: exiting is
             # safe precisely because nothing is claimed at this point, and the
             # supervisor's respawn picks up the current bytes.
+            #
+            # An UNVERSIONED loop -- one that started before
+            # ``RUNTIME_VERSION.json`` existed, or over a read of it that
+            # failed -- is the one this must catch, not the one to exempt.
+            # It can never match a published commit, so a ``loaded_commit and``
+            # guard made it immortal: 32 of 60 offer samples from sparky on
+            # 2026-09-04 announced ``runtime_commit: ""``, from loops that had
+            # survived every publish since.  They also announced an older
+            # capacity shape, which is how the flicker in ``_matching_offers``
+            # was reaching placement.  Comparing against "" reloads them once,
+            # and a startup read that failed transiently costs one respawn.
             current = published_commit()
-            if current and loaded_commit and current != loaded_commit:
-                print(f"[{host}] runtime moved {loaded_commit[:12]} -> "
+            if current and current != loaded_commit:
+                print(f"[{host}] runtime moved "
+                      f"{loaded_commit[:12] or '(unversioned)'} -> "
                       f"{current[:12]}; exiting so the supervisor reloads it",
                       flush=True)
                 return 0
             if args.once or idle >= args.max_idle:
                 free = queue.ledger().available()
                 print(f"[{host}] nothing admissible ({idle} idle polls); "
-                      f"served {served}; free {free}", flush=True)
+                      f"served {served}; free {free}; {census_line(queue)}",
+                      flush=True)
                 return 0
             time.sleep(args.poll_s)
             continue

@@ -10,6 +10,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# Imported BEFORE ``pbrun`` is exec'd, on purpose.  ``pbrun`` puts the
+# published mirror (``/mnt/shared/prismabuild-fleet/repo/src``) at the front of
+# ``sys.path`` so a submitter runs the fleet's bytes, which means a bare
+# ``pytest tests/test_pbrun_placement.py`` would otherwise test THIS checkout's
+# pbrun against the MIRROR's pool -- and report a missing method as a failure
+# of code that is right here.  Binding the package first makes the file
+# self-contained however it is invoked.
+from prismabuild import pool as pool_module  # noqa: E402
+
 _SPEC = importlib.util.spec_from_file_location(
     "pbrun", Path(__file__).resolve().parents[1] / "tools" / "fleet" / "pbrun.py"
 )
@@ -116,8 +125,6 @@ def test_exclusive_demands_what_a_box_actually_offers(tmp_path):
     publishes an action no worker can ever claim, and the caller sees a queued
     item rather than a refusal.
     """
-    from prismabuild import pool as pool_module
-
     queue = pool_module.PoolQueue(tmp_path / "q")
     queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
                    capacity={"gpu": 2, "mem_gb": 48})
@@ -133,8 +140,6 @@ def test_exclusive_demands_what_a_box_actually_offers(tmp_path):
 
 def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
     """A CPU-only fleet has no answer to "the whole GPU", and says so."""
-    from prismabuild import pool as pool_module
-
     queue = pool_module.PoolQueue(tmp_path / "q")
     queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
                    capacity={"gpu": 0, "mem_gb": 60})
@@ -164,3 +169,278 @@ def test_the_default_environment_bounds_the_thread_pools():
         assert f'"{name}": "4"' in source, name
     # And it must stay overridable: --env is applied after the defaults.
     assert source.index('"OMP_NUM_THREADS"') < source.index("for entry in args.env")
+
+
+def _fleet(tmp_path: Path):
+    """The live fleet's shape, from ``tools/fleet/fleet_boxes.json``."""
+
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
+                   capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
+    queue.announce(host="gx10-6b77", tags=["gb10", "gx10-6b77", "sparklina"],
+                   has_gpu=True, capacity={"gpu": 1, "mem_gb": 40, "cpu": 10})
+    queue.announce(host="dl380g10", tags=["cpu", "dl380g10", "x86"],
+                   has_gpu=False, capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
+    return queue
+
+
+def _notice(queue, *, cwd: str, tags: list[str], demand: dict, here=False,
+            needs_gpu=False) -> str:
+    intent = {"tags": tags, "needs_gpu": needs_gpu, "resources": demand}
+    return pbrun.pin_notice(queue, intent, cwd=Path(cwd), hostname=HOST,
+                            here=here)
+
+
+def test_a_box_local_checkout_says_it_pinned_the_action(tmp_path) -> None:
+    """The pin was a silent consequence of a path.
+
+    ``pbrun`` printed ``tags=['sparky']`` and stopped there, so an agent that
+    had just made itself a worktree under ``/home/rob/tmp`` had no way to know
+    it had narrowed the fleet to one box.  131 of 391 items in the live queue
+    on 2026-09-04 carried a hostname tag, 129 of them as a consequence of a
+    path -- 114 pinned to sparky by a ``/home/rob/tmp/ts*`` worktree -- while
+    the other two boxes idled.
+    """
+
+    notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101",
+                     tags=[HOST], demand={"cpu": 1, "mem_gb": 4})
+
+    assert "PINNED to sparky" in notice
+    assert "/home/rob/tmp/ts101 is box-local" in notice
+    assert "2 other live boxes fit this demand: dl380g10, gx10-6b77" in notice
+    assert "/mnt/shared" in notice                     # and what to do about it
+
+
+def test_the_width_quoted_is_the_width_the_pin_cost(tmp_path) -> None:
+    """Not "how many boxes match the pinned tags" -- that is always one.
+
+    The question worth answering is how many boxes would have been eligible
+    without it, so the host tag comes off before the fleet is asked.  A demand
+    only this box can meet costs nothing to pin, and saying so keeps the
+    warning from crying wolf on every GPU-heavy submission.
+    """
+
+    queue = _fleet(tmp_path)
+
+    one_slot = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                       needs_gpu=True, demand={"gpu": 1, "mem_gb": 16})
+    both_slots = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                         needs_gpu=True, demand={"gpu": 2, "mem_gb": 16})
+
+    assert "1 other live box fits this demand: gx10-6b77" in one_slot
+    assert "No other live box fits this demand" in both_slots
+
+
+def test_a_shared_checkout_has_nothing_to_report(tmp_path) -> None:
+    """Silence is the correct output for an action that is already free."""
+
+    assert _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86", tags=[],
+                   demand={"cpu": 1}) == ""
+
+
+def test_here_is_still_reported_as_the_pin_it_is(tmp_path) -> None:
+    """Asked for on purpose, and still worth pricing."""
+
+    notice = _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86",
+                     tags=[HOST], demand={"cpu": 1}, here=True)
+
+    assert notice.startswith("pbrun: PINNED to sparky by --here")
+    assert "2 other live boxes fit this demand" in notice
+
+
+def test_an_explicit_tag_over_a_box_local_checkout_is_a_warning(tmp_path) -> None:
+    """``--tag`` REPLACES the pin, so the tree can be invisible where it lands.
+
+    That failure is loud rather than silent -- the worker refuses on an
+    unavailable checkout root, or on ``core.verify_code_closure`` when a
+    same-named tree exists there with other bytes -- but it is loud after a
+    claim and two retries, on another box, in a log nobody is watching.  The
+    submitter is here now.
+    """
+
+    notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101", tags=["x86"],
+                     demand={"cpu": 1})
+
+    assert "WARNING" in notice
+    assert "exists only on sparky" in notice
+    assert "--tag sparky" in notice
+
+
+def test_naming_this_box_is_the_correct_submission_not_a_warning(tmp_path) -> None:
+    """The issue's own remedy must not be scolded for being applied.
+
+    ``--tag sparky`` from a sparky worktree is exactly what the issue says
+    submitters do, and it is right: the action cannot land where its tree is
+    absent.  A first draft warned on the presence of any ``--tag`` and so told
+    this submitter to add the tag they had just passed.
+
+    A one-box alias (``--tag sparklina``) is right too, and is a weaker
+    statement: it is exclusive because of who is announcing, not because of
+    what the tag means.  So it is reported without a WARNING and without the
+    word PINNED -- naming the contingency instead, which is the difference
+    ``test_a_tag_no_other_box_offers_today_is_not_called_exclusive`` exists
+    to hold.
+    """
+
+    queue = _fleet(tmp_path)
+
+    own = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                  demand={"cpu": 1})
+    alias = pbrun.pin_notice(
+        queue, {"tags": ["sparklina"], "needs_gpu": False, "resources": {"cpu": 1}},
+        cwd=Path("/home/rob/tmp/ts91"), hostname="gx10-6b77", here=False)
+
+    assert "WARNING" not in own and "WARNING" not in alias
+    assert notice_host(own) == "sparky"
+    assert "PINNED" not in alias
+    assert "exists only on gx10-6b77" in alias
+    assert "no other live box offers tags ['sparklina']" in alias
+    assert "--tag gx10-6b77" in alias
+
+
+def test_a_host_tag_another_box_also_offers_is_not_exclusive(tmp_path) -> None:
+    """The one thing a host tag is trusted for, checked rather than assumed.
+
+    ``sparky`` is this box's alone by construction of ``worker_loop``'s
+    offered tags -- until a loop is started elsewhere with ``--tag sparky``,
+    which is a thing a person can do.  The notice asks the placer instead of
+    reasoning from the construction, so the day that happens it says so.
+    """
+
+    queue = _fleet(tmp_path)
+    queue.announce(host="dl380g10", tags=["cpu", "dl380g10", "x86", HOST],
+                   has_gpu=False, capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
+
+    notice = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                     demand={"cpu": 1})
+
+    assert "WARNING" in notice and "dl380g10" in notice
+    assert "not exclusive to this box" in notice
+
+
+def notice_host(notice: str) -> str:
+    return notice.split("PINNED to ", 1)[1].split(" ", 1)[0]
+
+
+def test_with_nobody_announced_only_this_boxs_own_name_is_trusted(tmp_path) -> None:
+    """The placer cannot answer, so fall back to the one tag that is provable.
+
+    A tag naming this host cannot be claimed elsewhere whatever the fleet turns
+    out to be; any other tag might be, and an unanswerable question is not a
+    reason to go quiet about a tree that exists on one box.
+    """
+
+    empty = pool_module.PoolQueue(tmp_path / "q")
+
+    own = _notice(empty, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                  demand={"cpu": 1})
+    other = _notice(empty, cwd="/home/rob/tmp/ts101", tags=["x86"],
+                    demand={"cpu": 1})
+
+    assert "WARNING" not in own
+    assert "WARNING" in other and "let another box claim" in other
+
+
+def test_an_unannounced_fleet_reports_unknown_rather_than_zero(tmp_path) -> None:
+    """A missing diagnostic must not be printed as a measurement."""
+
+    empty = pool_module.PoolQueue(tmp_path / "q")
+
+    notice = _notice(empty, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                     demand={"cpu": 1})
+
+    assert "PINNED to sparky" in notice
+    assert "Fleet width unknown" in notice
+
+
+def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> None:
+    """A pin the submitter learns about after the fact is a receipt, not a warning.
+
+    Driven through ``main()`` against a private pool root rather than asserted
+    on the source, because what matters is that the sentence reaches the
+    person's terminal on a real submit -- past the placement, the demand
+    defaults and the CAS publication that come between.
+    """
+
+    import socket
+    from unittest import mock
+
+    work = tmp_path / "tree"
+    work.mkdir()
+    (work / "hello.txt").write_text("hi\n")
+    queue = pool_module.PoolQueue(tmp_path / "pb-queue")
+    queue.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
+                   capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
+    queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
+                   capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
+
+    with mock.patch.object(pbrun, "SH", tmp_path), \
+         mock.patch.object(pbrun, "POLL_S", 0.001), \
+         mock.patch.object(socket, "gethostname", return_value=HOST), \
+         mock.patch.object(sys, "argv",
+                           ["pbrun.py", "--cwd", str(work), "--wait-s", "0.01",
+                            "--", "echo", "hi"]):
+        assert pbrun.main() == 75          # nothing is running to claim it
+
+    err = capsys.readouterr().err
+    assert err.index("PINNED to sparky") < err.index("pbrun: queued")
+    assert "1 other live box fits this demand: dl380g10" in err
+
+
+def test_here_overridden_by_a_tag_does_not_announce_a_pin_that_never_happened(
+    tmp_path,
+) -> None:
+    """``placement_tags`` returns ``list(explicit)``, so ``--tag`` REPLACES ``--here``.
+
+    The notice read the ``here`` FLAG rather than the tags that actually
+    landed, so from a shared checkout on sparky ``pbrun --here --tag x86``
+    printed, verbatim: "pbrun: PINNED to sparky by --here, so no other box can
+    claim this action.  1 other live box fits this demand: dl380g10." --
+    asserting an exclusivity that does not exist and then naming, as the
+    "other" box, the only box that can actually run the action.
+    """
+
+    tags = pbrun.placement_tags(Path("/mnt/shared/tessera-x86"),
+                                explicit=["x86"], here=True, hostname=HOST)
+    assert tags == ["x86"]                     # the host tag never landed
+
+    notice = _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86", tags=tags,
+                     demand={"cpu": 1}, here=True)
+
+    assert "PINNED" not in notice
+    assert "--here" in notice                  # and that the flag did nothing
+    assert "dl380g10" in notice                # the box that will really run it
+
+
+def test_here_overridden_over_a_box_local_tree_says_both_things(tmp_path) -> None:
+    """The override and the tree that cannot travel are two separate facts."""
+
+    notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101", tags=["x86"],
+                     demand={"cpu": 1}, here=True)
+
+    assert "PINNED" not in notice
+    assert "--here" in notice
+    assert "WARNING" in notice and "exists only on sparky" in notice
+
+
+def test_a_tag_no_other_box_offers_today_is_not_called_exclusive(tmp_path) -> None:
+    """"match only this box" was true of the fleet as ANNOUNCED, not of the fleet.
+
+    With only sparky's offer live, a box-local checkout submitted ``--tag
+    gb10`` printed "PINNED to sparky -- the checkout /home/rob/tmp/ts101 is
+    box-local and tags ['gb10'] match only this box."  gx10-6b77 offers
+    ``gb10`` too; the moment its offer refreshes it can claim an action whose
+    tree it does not have, which is exactly the case the WARNING branch
+    exists to catch.  Only a tag naming this host is provably exclusive.
+    """
+
+    lonely = pool_module.PoolQueue(tmp_path / "q")
+    lonely.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
+                    capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
+
+    notice = _notice(lonely, cwd="/home/rob/tmp/ts101", tags=["gb10"],
+                     demand={"cpu": 1})
+
+    assert "match only this box" not in notice
+    assert "gb10" in notice
+    assert f"--tag {HOST}" in notice           # the submission that IS exclusive

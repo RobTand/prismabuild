@@ -203,6 +203,50 @@ def result_and_stamp_names(command, cwd, demand, variables):
             f"{STAMP_PREFIX}{fingerprint}.json")
 
 
+def keep_droppings_out_of_git(cwd: Path) -> Path | None:
+    """Teach git to ignore the stamp and the result logs, locally.
+
+    Ask git where its exclude file is; do not compute it.  ``cwd/.git`` is a
+    DIRECTORY only for a repository root that is not a linked worktree -- in
+    a ``git worktree`` checkout it is a file, and in a subdirectory of the
+    repo it is nothing -- so the old path silently did nothing in exactly the
+    checkouts agents make.  The stamp then showed as untracked, and in a tree
+    several agents stage broadly in, an untracked file is a file that gets
+    committed: one landed on this branch.
+
+    ``--git-common-dir``, not ``--git-dir``.  Measured, because the two differ
+    in a worktree and only one is read: a pattern in
+    ``.git/worktrees/<name>/info/exclude`` does not match (``git check-ignore``
+    exits 1), the same pattern in the common ``.git/info/exclude`` does.  That
+    is also the right scope -- these prefixes are pbrun's everywhere in the
+    repo, not per worktree.
+
+    Returns the file it wrote, or ``None``.  Never raises: a checkout that is
+    not a git repository at all is a supported way to submit.
+    """
+
+    try:
+        out = subprocess.run(["git", "-C", str(cwd), "rev-parse",
+                              "--git-common-dir"],
+                             capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            return None                       # not a git checkout; nothing to tell
+        common = Path(out.stdout.strip())
+        if not common.is_absolute():
+            common = cwd / common             # older git answers ".git"
+        exclude = common / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        current = exclude.read_text() if exclude.exists() else ""
+        with exclude.open("a", encoding="utf-8") as handle:
+            if STAMP_PREFIX not in current:
+                handle.write(f"{STAMP_PREFIX}*\n")
+            if RESULT_PREFIX not in current:
+                handle.write(f"{RESULT_PREFIX}*\n")
+        return exclude
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def placement_tags(
     cwd: Path,
     *,
@@ -236,11 +280,160 @@ def placement_tags(
         return list(explicit)
     if here:
         return [hostname]
-    try:
-        cwd.resolve().relative_to(SHARED_ROOT)
-    except ValueError:
-        return [hostname]
-    return []
+    return [hostname] if is_box_local(cwd) else []
+
+
+def is_box_local(cwd: Path) -> bool:
+    """Does this path exist on exactly one box?
+
+    Resolution happens here and only here.  The rule itself lives in
+    ``pool.is_box_local_path`` because the queue applies it too, to paths
+    other boxes recorded -- and it must not resolve those, since the reading
+    box's symlinks say nothing about a tree it does not have.  At submit the
+    path is local and real, so a symlink into shared storage is followed and
+    the checkout is correctly called shared.
+    """
+
+    return pool.is_box_local_path(cwd.resolve())
+
+
+def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
+    """How many boxes this action WOULD have had, with the host tag taken off.
+
+    Not "how many boxes match the pinned tags" -- that is one, by
+    construction, and saying it would be a tautology dressed as a
+    measurement.  A demand only this box can meet costs nothing to pin, and
+    saying so keeps the notice from crying wolf on every GPU-heavy
+    submission.  ``None`` from ``placeable_hosts`` means no worker has
+    announced, and that stays unknown rather than being printed as zero.
+    """
+
+    unpinned = dict(intent)
+    unpinned["tags"] = [t for t in tags if t != hostname]
+    hosts = queue.placeable_hosts(unpinned)
+    if hosts is None:
+        return "Fleet width unknown: no worker has announced."
+    others = [h for h in hosts if h != hostname]
+    if not others:
+        return "No other live box fits this demand, so the pin costs nothing now."
+    return (f"{len(others)} other live box{'es' if len(others) > 1 else ''} "
+            f"fit{'' if len(others) > 1 else 's'} this demand: "
+            f"{', '.join(others)}.")
+
+
+def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool) -> str:
+    """What the submitter is not otherwise told: this action is one box wide.
+
+    The pin is a silent consequence of a path.  ``pbrun`` printed
+    ``tags=['sparky']`` and nothing else, so the submitter -- usually an agent
+    that just made itself a worktree under ``/home/rob/tmp`` -- had no way to
+    know it had narrowed the fleet to one box.  Measured on the live queue,
+    2026-09-04: 131 of 391 items carried a hostname tag, and 129 of those were
+    a consequence of a path -- 114 pinned to ``sparky`` by a
+    ``/home/rob/tmp/ts*`` worktree -- while sparky's queue backed up and the
+    other two boxes idled.
+
+    **Everything below is read off the tags that LANDED, never off the flags
+    that asked for them.**  ``placement_tags`` returns ``list(explicit)`` the
+    moment any ``--tag`` is given, so ``--here`` and a box-local checkout are
+    both silently overridden by it.  A first version asked the ``here`` flag
+    instead, and so announced "PINNED to sparky by --here, so no other box can
+    claim this action" for a submission whose tags were ``['x86']`` -- naming,
+    as the *other* box, the only box that could actually run it.  A notice
+    about a pin has one job and that was it.
+
+    Exclusivity is claimed only where it is provable.  A tag naming this host
+    cannot be claimed elsewhere; a tag that merely happens to match one live
+    box today -- ``gb10``, ``sparklina`` -- is a fact about the fleet as
+    announced at this instant, and the second box offering it can claim an
+    action whose tree it does not have.  So that case is reported as the
+    contingency it is rather than as "match only this box".
+
+    The explicit ``--tag`` list is deliberately NOT a parameter here.  The
+    only thing it decides is what ``placement_tags`` returned, and that is
+    already in ``intent``; taking it as well would leave a second way to ask
+    the flags what the tags already answer, which is the bug this function
+    was rewritten to close.  ``here`` stays, because ``--here`` on a shared
+    checkout is indistinguishable from ``--tag <this host>`` by tags alone,
+    and the override needs to know it was asked for.
+
+    Returns "" when there is nothing to say -- a shared checkout that was
+    already free to run anywhere.
+    """
+
+    tags = [str(t) for t in (intent.get("tags") or [])]
+    local = is_box_local(cwd)
+    pinned = hostname in tags               # the pin as it landed, not as asked
+    claimants = queue.placeable_hosts(intent)
+    others = None if claimants is None else sorted(
+        h for h in claimants if h != hostname)
+
+    if pinned:
+        if others:
+            # A host tag should be this box's alone; a worker started
+            # elsewhere with ``--tag sparky`` makes it not.  Ask the placer
+            # rather than assert the construction.
+            return (f"pbrun: WARNING -- tags {tags} name {hostname}, but "
+                    f"{', '.join(others)} offer that tag too, so this action "
+                    f"is not exclusive to this box.  Check what those workers "
+                    f"were started with.")
+        if here and not local:
+            head = (f"pbrun: PINNED to {hostname} by --here, so no other box "
+                    f"can claim this action.")
+        elif local:
+            head = (f"pbrun: PINNED to {hostname} -- the checkout {cwd} is "
+                    f"box-local, so no other box can claim this action.")
+        else:
+            head = (f"pbrun: PINNED to {hostname} by --tag {hostname}, so no "
+                    f"other box can claim this action.")
+        tail = ("" if not local else
+                f"  Move the checkout under {SHARED_ROOT} to let any box claim "
+                f"it, or accept the pin knowingly.")
+        return f"{head}  {_width_of_the_pin(queue, intent, tags, hostname)}{tail}"
+
+    # No host tag landed.  Say what did, and what it costs.
+    notes: list[str] = []
+    if here:
+        notes.append(f"--here did NOT pin this action: an explicit --tag "
+                     f"REPLACES the host tag rather than adding to it, so "
+                     f"tags {tags} alone place it.")
+    if local:
+        if others is None:
+            notes.append(f"WARNING -- the checkout {cwd} exists only on "
+                         f"{hostname}, and no worker has announced, so tags "
+                         f"{tags} may let another box claim this action and "
+                         f"fail on the missing tree.")
+        elif others:
+            notes.append(f"WARNING -- the checkout {cwd} exists only on "
+                         f"{hostname}, but tags {tags} let {', '.join(others)} "
+                         f"claim this action.  It will fail there rather than "
+                         f"run on the wrong tree.")
+        else:
+            # True of the fleet as announced, and only of that.  Nothing
+            # reserves ``gb10`` or ``sparklina`` for one box, so the second
+            # box offering it can claim a tree it does not have -- which is
+            # the case the WARNING above exists to catch, arriving later.
+            notes.append(f"the checkout {cwd} exists only on {hostname}, and "
+                         f"no other live box offers tags {tags} -- but nothing "
+                         f"reserves those tags for this box, so a box that "
+                         f"starts offering them can claim this action and fail "
+                         f"on the missing tree.")
+        notes.append(f"Add --tag {hostname} if you meant this box, or move the "
+                     f"checkout under {SHARED_ROOT}.")
+    elif here:
+        if claimants is None:
+            notes.append("No worker has announced, so which box claims it is "
+                         "unknown.")
+        elif claimants:
+            notes.append(f"{len(claimants)} live "
+                         f"box{'es' if len(claimants) > 1 else ''} can claim "
+                         f"it: {', '.join(claimants)}.")
+        else:
+            notes.append("No live box offers these tags.")
+        notes.append(f"Add --tag {hostname} if you meant this box.")
+    if not notes:
+        return ""
+    return "pbrun: " + "  ".join(notes)
 
 
 def await_outcome(q, key: str, *, wait_s: float) -> int:
@@ -496,17 +689,7 @@ def main() -> int:
     finally:
         if scratch.exists():
             scratch.unlink()
-    exclude = cwd / ".git" / "info" / "exclude"
-    try:
-        if exclude.parent.is_dir():
-            current = exclude.read_text()
-            with exclude.open("a", encoding="utf-8") as handle:
-                if STAMP_PREFIX not in current:
-                    handle.write(f"{STAMP_PREFIX}*\n")
-                if RESULT_PREFIX not in current:
-                    handle.write(f"{RESULT_PREFIX}*\n")
-    except OSError:
-        pass                       # a worktree without .git/info is not an error
+    keep_droppings_out_of_git(cwd)
 
 
     body = {
@@ -553,6 +736,13 @@ def main() -> int:
     # and that stays a warning: a fleet whose loops predate the offer
     # registry must still be able to submit.
     intent = {"tags": tags, "needs_gpu": bool(demand.get("gpu")), "resources": demand}
+    # Say how wide this action is before saying it was queued.  A pin is a
+    # consequence of the checkout path, and nothing used to report it, so a
+    # submitter narrowed the fleet to one box without being told.
+    notice = pin_notice(q, intent, cwd=cwd, hostname=socket.gethostname(),
+                        here=args.here)
+    if notice:
+        print(notice, file=sys.stderr, flush=True)
     verdict = q.placeable(intent)
     if verdict is False:
         raise SystemExit(

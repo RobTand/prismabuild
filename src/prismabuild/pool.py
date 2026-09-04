@@ -148,6 +148,37 @@ DEFAULT_POOL_ROOT = Path(
     os.environ.get("PRISMABUILD_POOL_ROOT", "/mnt/shared/pb-queue")
 )
 
+#: Every box mounts this at the same path.  A checkout underneath it is
+#: visible to all of them; a checkout outside it exists on exactly one box.
+SHARED_ROOT = Path("/mnt/shared")
+
+
+def is_box_local_path(path: object) -> bool:
+    """Does this absolute path exist on exactly one box?
+
+    The rule that decides an action's placement lives here rather than in
+    ``pbrun`` because two readers need it and they must not disagree: the
+    submitter turns it into a pin (``pbrun.placement_tags``), and the queue
+    turns it into a width (``placement_census``).  A second copy is how the
+    pin and the measurement of the pin end up describing different fleets.
+
+    A pure string test, deliberately.  The census reads paths recorded by
+    OTHER boxes, and ``resolve()`` would follow the reading box's symlinks
+    through a tree it does not have -- so resolution belongs at submit time,
+    where the path is local and real, and ``pbrun`` does it before this is
+    ever asked (``pbrun.py`` resolves ``--cwd`` and publishes the resolved
+    string).
+
+    An absent path answers ``False``: an item with no ``checkout_root``
+    recorded is a thing we know nothing about, and inventing a pin for it
+    would put a number in the census that no path put there.
+    """
+
+    text = str(path or "")
+    if not text:
+        return False
+    return not Path(text).is_relative_to(SHARED_ROOT)
+
 
 class PoolError(pb.PrismaBuildError):
     """A queue-level failure, distinct from an action-level one."""
@@ -626,6 +657,51 @@ class PoolQueue:
                 live.append(record)
         return live
 
+    def _matching_offers(
+        self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]]
+    ) -> list[Mapping[str, object]]:
+        """The offers among ``live`` that could run ``item``.
+
+        One matcher, several readers: "can this run at all", "on how many
+        boxes", and "which boxes" are the same question asked three ways, and
+        a second copy of the rule would be a way for the answers to disagree.
+        """
+
+        required = item.get("tags") or []
+        if not isinstance(required, list):
+            raise PoolContractError("pool item tags must be a list")
+        wanted = {str(t) for t in required}
+        demand = self.demand_of(item)
+        needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
+        matches: list[Mapping[str, object]] = []
+        for offer in live:
+            tags = {str(t) for t in (offer.get("tags") or [])}
+            if not wanted.issubset(tags):
+                continue
+            if needs_gpu and not offer.get("has_gpu"):
+                continue
+            capacity = offer.get("capacity") or {}
+            # A kind the offer does not MENTION is unknown, not zero.  The
+            # difference is what a publish looks like from the queue: capacity
+            # gains a kind (``cpu``, on 2026-09-04), the offer file is one
+            # last-writer-wins record per host, and loops of both generations
+            # write it -- so sparky's offer alternated between
+            # ``{"gpu": 2, "mem_gb": 48}`` and ``{"cpu": 10, "gpu": 2,
+            # "mem_gb": 48}``, 32 and 28 samples of 60 taken one second apart.
+            # Read as zero, the older record makes every action carrying the
+            # new ``cpu=1`` default unplaceable on a box that plainly runs it:
+            # 17 of 60 identical queries answered "no live worker can run this
+            # action" for a box whose offer was one to eight seconds old.
+            # Refuse on what a box says it cannot fit; never on what it did
+            # not say.
+            if isinstance(capacity, Mapping) and any(
+                int(capacity[kind]) < need
+                for kind, need in demand.items() if kind in capacity
+            ):
+                continue          # this box can never fit it, however idle
+            matches.append(offer)
+        return matches
+
     def placeable(
         self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
     ) -> bool | None:
@@ -649,25 +725,128 @@ class PoolQueue:
         live = self.offers(max_age_s=max_age_s)
         if not live:
             return None
-        required = item.get("tags") or []
-        if not isinstance(required, list):
-            raise PoolContractError("pool item tags must be a list")
-        wanted = {str(t) for t in required}
-        demand = self.demand_of(item)
-        needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
-        for offer in live:
-            tags = {str(t) for t in (offer.get("tags") or [])}
-            if not wanted.issubset(tags):
+        return bool(self._matching_offers(item, live=live))
+
+    def placeable_hosts(
+        self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
+    ) -> list[str] | None:
+        """Which live boxes could run this item.  ``None`` means nobody has said.
+
+        The width of an item -- how many boxes it can land on -- is the number
+        this fleet had no way to ask for.  A queue that reports only "pending"
+        makes an item pinned to one busy box look exactly like an item waiting
+        its turn among three, and on 2026-09-03/04 that difference was the
+        whole problem: 131 of 391 items carried a hostname tag -- 129 of
+        those a consequence of a box-local path, 114 of them pinning
+        ``sparky`` from a ``/home/rob/tmp/ts*`` worktree -- while other boxes
+        idled.
+
+        A nameless offer is reported as ``"?"`` rather than dropped: it still
+        matched, so dropping it would make ``placeable_hosts`` disagree with
+        ``placeable`` about whether anything can run the item at all.
+        """
+
+        live = self.offers(max_age_s=max_age_s)
+        if not live:
+            return None
+        return sorted({
+            str(offer.get("host") or "?")
+            for offer in self._matching_offers(item, live=live)
+        })
+
+    def placement_census(
+        self, *, max_age_s: float = OFFER_TIMEOUT_S
+    ) -> dict[str, object]:
+        """How wide the waiting queue is, bucketed by how many boxes fit each item.
+
+        "Placeable on exactly one box" is the number worth watching: it is the
+        fleet's depth-vs-width, and it was previously obtainable only by
+        reading the queue by hand.  ``pinned_to`` names the boxes those items
+        are waiting on, because *which* box is queueing is what tells a
+        person whether the pin is the reason the fleet looks busy.
+
+        Width is the number of boxes that can RUN an item, which is not the
+        number whose tags match it.  A ``checkout_root`` outside
+        ``/mnt/shared`` exists on exactly one box, so it caps the width at one
+        however many boxes the tags allow -- and ``one_box_by_path`` counts
+        the items where the path is what did the capping, because that is the
+        number commit-addressed checkouts are meant to drive down and the
+        only one that says the migration is working rather than that a box
+        went away.
+
+        ``known`` is false when no worker has announced.  The buckets are then
+        zero and mean nothing -- the same unknown-stays-unknown rule
+        ``placeable`` follows, kept as a field rather than as three ``None``s
+        so a printer can read one flag.  ``unreadable`` counts ready records
+        this cannot price at all; see the handler below for why it is a count
+        and not an exception.
+        """
+
+        live = self.offers(max_age_s=max_age_s)
+        ready = self.ready_items()
+        census: dict[str, object] = {
+            "ready": len(ready),
+            "offers": len(live),
+            "known": bool(live),
+            "unplaceable": 0,
+            "one_box": 0,
+            "one_box_by_path": 0,
+            "wide": 0,
+            "unreadable": 0,
+            "pinned_to": {},
+        }
+        if not live:
+            return census
+        pinned: dict[str, int] = {}
+        for item in ready:
+            # A census is a diagnostic, and a diagnostic must never be the
+            # thing that fails.  ``claim`` skips an item tagged for another
+            # box at ``_placement_matches``, before ``demand_of`` is reached,
+            # so a record with a non-Mapping ``resources`` was harmless to
+            # every existing reader; counting it here made one out-of-band
+            # write able to raise on every box in the fleet.  Count it and
+            # move on -- and report the count, because an item nothing can
+            # read is a fact about the queue, not a rounding error.
+            try:
+                hosts = sorted({
+                    str(offer.get("host") or "?")
+                    for offer in self._matching_offers(item, live=live)
+                })
+            except (PoolContractError, ValueError, TypeError):
+                census["unreadable"] = int(census["unreadable"]) + 1
                 continue
-            if needs_gpu and not offer.get("has_gpu"):
+            # Tags say which boxes are ALLOWED to claim it; the checkout says
+            # which box can actually run it.  A box-local ``checkout_root``
+            # exists on exactly one box, so it caps the width at one however
+            # many boxes the tags match -- and without this cap the metric
+            # under-reported the very pin it exists to report: an action
+            # tagged ``gb10`` over a ``/home/rob/tmp/ts101`` worktree matches
+            # two boxes and can run on one, and counted as ``wide``.
+            by_path = is_box_local_path(item.get("checkout_root"))
+            if not hosts:
+                census["unplaceable"] = int(census["unplaceable"]) + 1
                 continue
-            capacity = offer.get("capacity") or {}
-            if isinstance(capacity, Mapping) and any(
-                int(capacity.get(kind, 0)) < need for kind, need in demand.items()
-            ):
-                continue          # this box can never fit it, however idle
-            return True
-        return False
+            if not (by_path or len(hosts) == 1):
+                census["wide"] = int(census["wide"]) + 1
+                continue
+            census["one_box"] = int(census["one_box"]) + 1
+            if by_path:
+                census["one_box_by_path"] = int(census["one_box_by_path"]) + 1
+            # Which box: the tags when they answer alone, otherwise the box
+            # that published it, which is the box whose tree it is.  When
+            # neither answers -- a box-local item whose publisher is not
+            # among the boxes its tags match -- the item is still one box
+            # wide and simply goes unattributed, so ``pinned_to`` may sum to
+            # less than ``one_box``.  A name we cannot prove is worse than a
+            # missing one.
+            holder = hosts[0] if len(hosts) == 1 else None
+            if holder is None:
+                published_by = str(item.get("published_by") or "")
+                holder = published_by if published_by in hosts else None
+            if holder is not None:
+                pinned[holder] = pinned.get(holder, 0) + 1
+        census["pinned_to"] = dict(sorted(pinned.items()))
+        return census
 
     def offered_tags(self, *, max_age_s: float = OFFER_TIMEOUT_S) -> list[str]:
         """Every tag some live worker offers -- what to print when nothing fits."""
@@ -1358,3 +1537,37 @@ class PoolQueue:
             raise
         self.finish(key, status=str(outcome["status"]), detail=outcome)
         return outcome
+
+
+def describe_placement_census(census: Mapping[str, object]) -> str:
+    """One line of the census, in the words every reader should use for it.
+
+    Kept beside the measurement rather than at each call site so the metric
+    has one name wherever it is printed.  A number two tools describe
+    differently is a number nobody can grep for.
+    """
+
+    if not census.get("known"):
+        return f"ready {int(census.get('ready', 0))} (fleet width unknown: no worker has announced)"
+    parts = [f"ready {int(census.get('ready', 0))}"]
+    one_box = int(census.get("one_box", 0))
+    pinned = census.get("pinned_to") or {}
+    where = ""
+    if isinstance(pinned, Mapping) and pinned:
+        where = " (" + ", ".join(f"{host} {n}" for host, n in pinned.items()) + ")"
+    parts.append(f"{one_box} on exactly one box{where}")
+    # The migration number.  ``one_box`` falls for two very different reasons
+    # -- submitters moving to a checkout every box can see, or a box simply
+    # going away -- and only the first is the fix working, so the half that
+    # a path caused is named separately.
+    by_path = int(census.get("one_box_by_path", 0))
+    if by_path:
+        parts.append(f"{by_path} by a box-local checkout")
+    parts.append(f"{int(census.get('wide', 0))} on more than one")
+    parts.append(f"{int(census.get('unplaceable', 0))} on none")
+    # Printed only when there are any: a zero here would teach readers to skip
+    # the clause, which is the one thing it must not be.
+    unreadable = int(census.get("unreadable", 0))
+    if unreadable:
+        parts.append(f"{unreadable} unreadable")
+    return ", ".join(parts)
