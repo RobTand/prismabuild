@@ -41,6 +41,7 @@ are properties of the box rather than of the work:
 """
 import argparse
 import json
+import os
 import pathlib
 import socket
 import sys
@@ -90,9 +91,25 @@ def main():
                     help="extra placement tag this box offers")
     ap.add_argument("--honest-memory", action="store_true",
                     help="clamp the memory offer to what the box actually has free")
+    ap.add_argument("--cpu-slots", type=int, default=0,
+                    help="cores this box offers the queue; 0 = the cores this "
+                         "loop is actually pinned to")
     args = ap.parse_args()
-    capacity = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb}
     pinned = None if args.all_cores else cpu_topology.pin_to_preferred()
+    # Cores are a resource, and until now they were the only one the ledger
+    # could not see.  A ``pytest -n 24`` action declaring ``mem_gb=4`` was
+    # admitted five times over on one 80-core box on 2026-09-04: load average
+    # 371, four concurrent full suites, every one of them slower for it.
+    # Memory was never the binding constraint and memory was all the ledger
+    # knew about.
+    #
+    # The offer is what this loop is *pinned to*, not what the box has: on a
+    # GB10 that is ten of twenty cores, and offering twenty would be the same
+    # promise-the-box-cannot-keep the capacity drift was.
+    cores = args.cpu_slots
+    if cores <= 0:
+        cores = len(pinned) if pinned else (os.cpu_count() or 1)
+    capacity = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb, "cpu": cores}
     if args.honest_memory:
         # The declared figure is what this box offers when the pool is the only
         # thing on it.  While work the pool did not schedule is running, the

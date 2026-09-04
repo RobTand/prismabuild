@@ -318,6 +318,9 @@ def main() -> int:
                     help="resource demand, e.g. gpu=1,mem_gb=16")
     ap.add_argument("--gpu", action="store_true",
                     help="shorthand for gpu=1,mem_gb=16")
+    ap.add_argument("--cpus", type=int, default=1,
+                    help="cores this action will actually use; a parallel test "
+                         "run wants its -n, not 1")
     ap.add_argument("--exclusive", action="store_true",
                     help="demand the whole GPU capacity of one box")
     ap.add_argument("--gpu-capacity", type=int, default=0,
@@ -359,6 +362,15 @@ def main() -> int:
         demand.setdefault("gpu", 1)
         demand.setdefault("mem_gb", 16)
     demand.setdefault("mem_gb", 4)
+    # Cores are a demand like any other, and the default of one is what makes
+    # this safe to add to a live fleet: every action already in flight keeps
+    # the admission it had.  What it buys is a way for an action that will
+    # take twenty-four cores to SAY twenty-four, which nothing could express
+    # before -- and on 2026-09-04 four `pytest -n 24` runs each declaring
+    # `mem_gb=4` were admitted to one 80-core box together, load average 371.
+    if args.cpus < 1:
+        raise SystemExit("--cpus must be at least 1")
+    demand.setdefault("cpu", args.cpus)
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")

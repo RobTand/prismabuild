@@ -69,7 +69,8 @@ def test_a_shrunken_gpu_offer_shrinks_the_tokens(tmp_path: Path) -> None:
     queue = _run(tmp_path, ["--once", "--gpu-slots", "1", "--mem-gb", "40",
                             "--class", "gb10", "--all-cores"])
 
-    assert queue.ledger(host).capacity() == {"gpu": 1, "mem_gb": 40}
+    total = queue.ledger(host).capacity()
+    assert (total["gpu"], total["mem_gb"]) == (1, 40)
 
 
 def test_a_shrunken_memory_offer_shrinks_without_the_flag(tmp_path: Path) -> None:
@@ -125,7 +126,8 @@ def test_a_grown_offer_still_mints_the_new_tokens(tmp_path: Path) -> None:
     queue = _run(tmp_path, ["--once", "--gpu-slots", "2", "--mem-gb", "48",
                             "--class", "gb10", "--all-cores"])
 
-    assert queue.ledger(host).capacity() == {"gpu": 2, "mem_gb": 48}
+    total = queue.ledger(host).capacity()
+    assert (total["gpu"], total["mem_gb"]) == (2, 48)
 
 
 def test_the_retire_is_not_hidden_behind_the_honest_memory_flag() -> None:
