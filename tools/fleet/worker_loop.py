@@ -229,9 +229,21 @@ def main():
             # Checked here, between actions and never inside one: exiting is
             # safe precisely because nothing is claimed at this point, and the
             # supervisor's respawn picks up the current bytes.
+            #
+            # An UNVERSIONED loop -- one that started before
+            # ``RUNTIME_VERSION.json`` existed, or over a read of it that
+            # failed -- is the one this must catch, not the one to exempt.
+            # It can never match a published commit, so a ``loaded_commit and``
+            # guard made it immortal: 32 of 60 offer samples from sparky on
+            # 2026-09-04 announced ``runtime_commit: ""``, from loops that had
+            # survived every publish since.  They also announced an older
+            # capacity shape, which is how the flicker in ``_matching_offers``
+            # was reaching placement.  Comparing against "" reloads them once,
+            # and a startup read that failed transiently costs one respawn.
             current = published_commit()
-            if current and loaded_commit and current != loaded_commit:
-                print(f"[{host}] runtime moved {loaded_commit[:12]} -> "
+            if current and current != loaded_commit:
+                print(f"[{host}] runtime moved "
+                      f"{loaded_commit[:12] or '(unversioned)'} -> "
                       f"{current[:12]}; exiting so the supervisor reloads it",
                       flush=True)
                 return 0
