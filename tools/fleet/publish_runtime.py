@@ -30,6 +30,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -59,11 +60,42 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _git(*argv: str) -> str:
+def _git_result(*argv: str):
     return subprocess.run(
         ["git", "-C", str(CHECKOUT), *argv],
         capture_output=True, text=True, check=False,
-    ).stdout.strip()
+    )
+
+
+def _commit_identity() -> str:
+    """The exact Git commit the published bytes claim, or refuse.
+
+    A linked worktree under the shared mount can still point its ``.git`` file
+    at a box-local control directory.  On another box ``git rev-parse`` then
+    exits 128; treating its empty stdout as a commit published real bytes under
+    ``commit: ""``.  A receipt with no identity is not an approximate receipt.
+    """
+
+    result = _git_result("rev-parse", "--verify", "HEAD")
+    commit = result.stdout.strip()
+    if result.returncode != 0 or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        detail = (result.stderr or result.stdout or "no output").strip()
+        raise SystemExit(
+            "cannot prove a 40-hex Git commit for runtime publication: "
+            f"git rev-parse --verify HEAD exited {result.returncode}: {detail}"
+        )
+    return commit
+
+
+def _working_tree_dirty() -> bool:
+    result = _git_result("status", "--porcelain", "--untracked-files=no")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no output").strip()
+        raise SystemExit(
+            "cannot prove whether the runtime checkout is clean: "
+            f"git status exited {result.returncode}: {detail}"
+        )
+    return bool(result.stdout.strip())
 
 
 def main() -> int:
@@ -73,8 +105,10 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    dirty = bool(_git("status", "--porcelain", "--untracked-files=no"))
-    commit = _git("rev-parse", "HEAD")
+    # Identity is established before MIRROR is even enumerated, much less
+    # touched.  Failure here is a refusal, never an empty field in a receipt.
+    commit = _commit_identity()
+    dirty = _working_tree_dirty()
     if dirty and not args.allow_dirty:
         raise SystemExit(
             "refusing to publish a dirty tree: the receipt would name a commit "
