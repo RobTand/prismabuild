@@ -15,6 +15,14 @@ capacity below is measured, not guessed -- one exporter holds ~8 GB resident
 and four concurrent ones took a GB10 from 116 GB free to 55 GB, so 16 GB per
 action is the honest figure and 96 GB leaves the box its working headroom.
 
+And the declaration is now a limit, not an honour system: ``execute`` runs each
+action inside a transient user unit whose ``MemoryMax`` is that action's own
+``mem_gb``, so the process that exceeds the figure it published is the one the
+kernel kills.  Whether a box can do that is a property of the box -- it needs
+the memory controller delegated to the user manager -- so the loop probes once
+at start, says what it found, and publishes the answer on its offer.  A box
+that cannot cap behaves exactly as it did before and says so.
+
 ``serve_once`` returning ``None`` can now mean "denied admission" as well as
 "queue empty", including the deliberate case where a starved item is
 withholding this host.  Both are back-pressure, so the loop polls rather than
@@ -164,13 +172,26 @@ def main():
     errors = 0
     loaded_commit = published_commit()
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}", flush=True)
+    # Probe capping once, here, and say what it found.  An action's declared
+    # ``mem_gb`` is enforced by its own cgroup where the memory controller is
+    # delegated to the user manager, and that is a property of the box: a box
+    # without it runs exactly as it did before, which is the right behaviour
+    # and the wrong thing to be quiet about.  A ledger read as a limit it is
+    # not enforcing is worse than one that never claimed to.
+    enforces, why_not = pool.memory_capping_supported()
+    if enforces:
+        print(f"[{host}] declared mem_gb is ENFORCED: each action runs under "
+              f"MemoryMax = its own declaration", flush=True)
+    else:
+        print(f"[{host}] declared mem_gb is NOT enforced on this box -- it is "
+              f"a reservation only: {why_not}", flush=True)
     while True:
         # Say what this box offers before asking what it may run.  The queue
         # otherwise knows only what has been *asked for*, which makes an item
         # no box can run look exactly like an item whose box is busy.
         queue.announce(
             host=host, tags=offered, has_gpu=args.gpu_slots > 0, capacity=capacity,
-            runtime_commit=loaded_commit,
+            runtime_commit=loaded_commit, enforces_mem_gb=enforces,
         )
         # One bad item must not take the worker with it.  ``serve_once``
         # re-raises whatever ``execute`` raised, and this loop had no handler,
@@ -230,6 +251,11 @@ def main():
         served += 1
         record = {k: outcome.get(k) for k in
                   ("action_key", "status", "returncode", "elapsed_s")}
+        if outcome.get("oom_killed"):
+            # The one failure whose cause is already known, so it is named
+            # rather than left to be read out of a stderr tail.
+            record["oom_killed"] = True
+            record["declared_mem_gb"] = outcome.get("declared_mem_gb")
         print(f"[{host}] {json.dumps(record)}", flush=True)
         tail = str(outcome.get("stderr") or "").strip().splitlines()[-6:]
         if outcome.get("status") != "executed" and tail:

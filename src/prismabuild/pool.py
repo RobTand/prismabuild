@@ -119,6 +119,213 @@ DEFAULT_POOL_ROOT = Path(
 )
 
 
+# -- holding an action to its own declaration ---------------------------------
+#
+# ``mem_gb`` was a reservation and nothing more: the ledger admitted work
+# against a declared demand, and an action that exceeded its declaration ran to
+# completion anyway.  On a box where the GPU and the host share one 128 GB pool
+# an over-declaration is contained nowhere, and the kernel's own OOM killer
+# picks a victim from the whole box rather than from the offender -- on sparky
+# at 2026-09-01 09:58:41 it took ``pqwork.service``, 20.6 MB peak, which was
+# consuming nothing.
+#
+# ``MemoryMax`` inverts that.  The action runs inside a transient user unit
+# whose cgroup limit IS its own declaration, so the process that exceeds the
+# figure it published is the one the kernel kills and nothing else on the box
+# is a candidate.  A userspace watchdog is the wrong shape for the same job:
+# it is reactive, it can only kill what it started, and on unified memory it
+# is the recorded Ray failure mode of a monitor killing healthy ranks.
+#
+# **Scope is measured, not assumed** -- see
+# ``docs/memory_enforcement_2026-09-04.md``.  A cap that silently does not bind
+# is worse than no cap, because the ledger would then read as enforced, so what
+# the cgroup charges was measured on this hardware before the mechanism was
+# ported.  The outcome record says whether an action was capped and at what
+# figure; nothing here claims more than that.
+
+#: Systemd properties every capped launch carries.  ``MemorySwapMax=0`` is not
+#: decoration: with swap available an over-budget action slides into swap and
+#: thrashes instead of failing, which converts a loud kill into a slow box.
+CAP_UNIT_PREFIX = "pbcap-"
+
+#: Environment names systemd sets *for* a unit.  Forwarding the launcher's
+#: copies would hand the child another process's identity.
+_UNIT_MANAGED_ENV = frozenset({
+    "INVOCATION_ID", "JOURNAL_STREAM", "LISTEN_FDS", "LISTEN_FDNAMES",
+    "LISTEN_PID", "MAINPID", "MANAGERPID", "NOTIFY_SOCKET", "SERVICE_RESULT",
+    "SYSTEMD_EXEC_PID", "WATCHDOG_PID", "WATCHDOG_USEC", "EXIT_CODE",
+    "EXIT_STATUS", "REMOTE_ADDR", "REMOTE_PORT",
+})
+
+_CAP_SUPPORT: tuple[bool, str] | None = None
+
+
+def memory_capping_supported(*, timeout_s: float = 60.0) -> tuple[bool, str]:
+    """Can this box start a capped transient user unit?  Probed once.
+
+    Capping needs the ``memory`` controller delegated to the user manager,
+    which is a property of the box, not of the code.  Without a probe a box
+    lacking delegation would fail every capped action the instant it started
+    and the queue would faithfully requeue each one forever -- a capability
+    gap wearing the costume of a flaky job.
+
+    Returns ``(supported, detail)``; ``detail`` is the reason when it is not,
+    so a degraded box says why rather than merely behaving differently.
+    Measured 2026-09-04: sparky, gx10-6b77 and dl380g10 all delegate
+    ``cpu memory pids`` and all linger, so all three enforce.
+    """
+
+    global _CAP_SUPPORT
+    if _CAP_SUPPORT is None:
+        try:
+            probe = subprocess.run(
+                ["systemd-run", "--user", "--quiet", "--wait",
+                 "-p", "MemoryMax=64M", "-p", "MemoryAccounting=yes",
+                 "--", "/bin/true"],
+                capture_output=True, text=True, timeout=timeout_s,
+            )
+            if probe.returncode == 0:
+                _CAP_SUPPORT = (True, "")
+            else:
+                detail = (probe.stderr or probe.stdout or "").strip()
+                _CAP_SUPPORT = (
+                    False,
+                    f"systemd-run --user refused a capped unit "
+                    f"(rc={probe.returncode}): {detail[:300]}",
+                )
+        except (OSError, subprocess.SubprocessError) as exc:
+            _CAP_SUPPORT = (False, f"{type(exc).__name__}: {exc}")
+    return _CAP_SUPPORT
+
+
+def cap_unit_name(action_key: str, owner: str = "") -> str:
+    """A transient unit name unique to this *attempt*, not to the action.
+
+    The action key alone is not enough.  A lease that expires while its child
+    is still running is returned to ``ready`` by the reaper and claimed again,
+    possibly by another loop on the same box, so two attempts at one action can
+    overlap -- and two units of one name cannot.  The claim owner already
+    carries a per-claim uuid, which is exactly the nonce this needs.
+    """
+
+    safe_key = "".join(c for c in str(action_key) if c.isalnum())[:32]
+    nonce = "".join(c for c in str(owner) if c.isalnum())[-12:]
+    if not nonce:
+        nonce = uuid.uuid4().hex[:12]
+    return f"{CAP_UNIT_PREFIX}{safe_key}-{nonce}"
+
+
+def capped_launch_argv(
+    argv: Sequence[str],
+    *,
+    cap_gb: int,
+    unit: str,
+    cwd: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Wrap a launch in a transient unit whose memory limit is ``cap_gb``.
+
+    The wrapper must not change *what* is executed, only what bounds it.  So
+    the working directory and the environment are carried across explicitly:
+    ``systemd-run --user`` starts a unit from the **user manager's** context,
+    not the caller's, and a child that quietly lost ``TRITON_CACHE_DIR`` or
+    gained a different ``PATH`` is a different execution wearing the same
+    action key.  That is not hypothetical either -- the first run of the CUDA
+    measurement forwarded ``CUDA_VISIBLE_DEVICES`` unconditionally, an unset
+    name became an empty value, and both GPU arms saw no device at all.  Only
+    names that are actually set are forwarded, for that reason.
+
+    ``--pipe`` keeps stdout and stderr as pipes the caller can read, which is
+    what the outcome record and the worker's error tail are made of; it
+    implies ``--wait`` and propagates an ordinary exit code.  A *killed* unit
+    is the one case it cannot express -- it returns 1 -- so the caller reads
+    the unit's own ``Result``/``ExecMainStatus`` back afterwards.
+    """
+
+    if int(cap_gb) <= 0:
+        raise PoolContractError("a memory cap must be a positive number of GB")
+    launch = [
+        "systemd-run", "--user", "--quiet", "--pipe", "--wait",
+        f"--unit={unit}",
+        "-p", f"MemoryMax={int(cap_gb)}G",
+        # Without this an over-budget action slides into swap instead of
+        # failing, and a loud kill becomes a slow box.
+        "-p", "MemorySwapMax=0",
+        "-p", "MemoryAccounting=yes",
+    ]
+    if cwd is not None:
+        launch += ["-p", f"WorkingDirectory={cwd}"]
+    for name, value in sorted((env or {}).items()):
+        if name in _UNIT_MANAGED_ENV:
+            continue
+        if "\0" in name or "\n" in name or "=" in name:
+            continue
+        if "\0" in str(value) or "\n" in str(value):
+            continue
+        launch += [f"--setenv={name}={value}"]
+    return launch + ["--"] + [str(a) for a in argv]
+
+
+def _systemctl(*args: str, timeout_s: float = 15.0) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(
+            ["systemctl", "--user", *args],
+            capture_output=True, text=True, timeout=timeout_s,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def unit_outcome(unit: str) -> dict[str, object]:
+    """What the transient unit says happened, after ``systemd-run`` returned.
+
+    ``systemd-run --wait`` reports how *it* ended, which is not how the service
+    ended: a unit killed by its own cgroup returns 1, while the unit records
+    ``Result=oom-kill`` and ``ExecMainStatus=9``.  The status the caller wants
+    is the child's, so it is read back rather than inferred -- and the OOM flag
+    is used for one narrow purpose, to say *why* an action died.
+    """
+
+    shown = _systemctl(
+        "show", unit, "-p", "Result", "-p", "ExecMainCode", "-p",
+        "ExecMainStatus", "-p", "MemoryPeak",
+    )
+    fields: dict[str, str] = {}
+    if shown is not None and shown.returncode == 0:
+        for line in (shown.stdout or "").splitlines():
+            if "=" in line:
+                name, _, value = line.partition("=")
+                fields[name.strip()] = value.strip()
+
+    def _int(name: str) -> int | None:
+        raw = fields.get(name, "")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        # systemd prints an unset 64-bit property as [UINT64_MAX].
+        return None if value >= (1 << 63) else value
+
+    code = _int("ExecMainCode")
+    status = _int("ExecMainStatus")
+    returncode: int | None = None
+    if code == 1 and status is not None:
+        returncode = status
+    elif code in (2, 3) and status:
+        # CLD_KILLED / CLD_DUMPED.  Python's own convention for a signalled
+        # child is a negative return code, so the translation is exact.
+        returncode = -status
+    return {
+        "result": fields.get("Result", ""),
+        "exec_main_code": code,
+        "exec_main_status": status,
+        "memory_peak": _int("MemoryPeak"),
+        "returncode": returncode,
+        "oom_killed": fields.get("Result", "") == "oom-kill",
+    }
+
+
+
 class PoolError(pb.PrismaBuildError):
     """A queue-level failure, distinct from an action-level one."""
 
@@ -455,6 +662,7 @@ class PoolQueue:
         has_gpu: bool,
         capacity: Mapping[str, int] | None = None,
         runtime_commit: str = "",
+        enforces_mem_gb: bool | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -484,6 +692,21 @@ class PoolQueue:
             # this a fleet running four generations of the code at once looks
             # uniform from the queue.
             "runtime_commit": str(runtime_commit),
+            # Whether a declared ``mem_gb`` is a limit here or only a
+            # reservation.  Capping needs the memory controller delegated to
+            # the user manager, which is a property of the box, so three boxes
+            # can differ and the offer is the only place that difference shows
+            # up as a fleet fact rather than as one worker's log line.
+            #
+            # Three-valued, like ``placeable``: ``None`` means this caller did
+            # not say.  The alternative -- probing here -- would start a
+            # transient unit from inside every announce, including the ones a
+            # test makes, and would let a submitter's guess be published as a
+            # box's answer.  The worker that runs the actions is the only
+            # thing that knows, so it is the only thing that states it.
+            "enforces_mem_gb": (
+                None if enforces_mem_gb is None else bool(enforces_mem_gb)
+            ),
             "announced_unix": _now(),
         }
         directory = self.root / WORKERS
@@ -1078,6 +1301,19 @@ class PoolQueue:
         Executes as a subprocess rather than in-process on purpose: it is the
         same launch SLURM would have made, so the executed contract does not
         depend on which transport delivered the action.
+
+        **The item's own ``mem_gb`` is the limit it runs under.**  The
+        reservation and the limit are one object, held in one place: the tokens
+        this action took out of the ledger in ``claim`` are the number its
+        cgroup refuses to let it exceed.  A declaration nothing enforces is an
+        honour system, and on a box whose GPU and host share one pool the
+        kernel's answer to a breach is to kill a bystander.
+
+        Capping is by the *item's* declaration, not by whether this worker
+        passed a ``capacity``: the demand is the action's own claim about
+        itself, and a smoke worker running a declared item should hold it to
+        the same figure a fleet loop would.  An item that declares nothing runs
+        exactly as it did before.
         """
 
         key = str(item["action_key"])
@@ -1088,9 +1324,35 @@ class PoolQueue:
             checkout_root=item["checkout_root"],
         )
         owner = str(item.get("claimed_by") or "")
+        cap_gb = int(self.demand_of(item).get("mem_gb", 0))
+        unit: str | None = None
+        cap_detail = ""
+        launch = argv
+        if cap_gb > 0:
+            supported, why = memory_capping_supported()
+            if supported:
+                unit = cap_unit_name(key, owner)
+                # A previous attempt's failed unit of the same name would make
+                # this launch fail on the name rather than on the work.
+                _systemctl("reset-failed", unit)
+                launch = capped_launch_argv(
+                    argv, cap_gb=cap_gb, unit=unit,
+                    cwd=os.getcwd(), env=os.environ,
+                )
+            else:
+                # Loud, not silent: an unenforced declaration is recorded as
+                # unenforced, so a ledger is never read as a limit it is not.
+                cap_detail = why
+        # What the caller gets back either way, so the two paths cannot drift.
+        cap_fields: dict[str, object] = {
+            "declared_mem_gb": cap_gb,
+            "capped": unit is not None,
+            "cap_unit": unit or "",
+            "cap_unavailable": cap_detail,
+        }
         started = _now()
         process = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            launch, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         # Refresh the lease while the child runs; a long action must not be
         # reaped out from under itself.
@@ -1101,8 +1363,18 @@ class PoolQueue:
             except subprocess.TimeoutExpired:
                 self.write_lease(key, owner=owner)
                 if timeout_s is not None and _now() - started > timeout_s:
+                    if unit is not None:
+                        # Killing ``systemd-run`` does not stop the service it
+                        # started, and under ``--pipe`` the service holds the
+                        # pipe this call is about to read -- so a plain kill
+                        # here would leave the timeout bounding nothing and
+                        # block on ``communicate`` until the work ended by
+                        # itself.  Stop the unit; the launcher then exits.
+                        _systemctl("stop", unit, timeout_s=30.0)
                     process.kill()
                     out, err = process.communicate()
+                    if unit is not None:
+                        _systemctl("reset-failed", unit)
                     return {
                         "status": "timeout",
                         "returncode": None,
@@ -1110,14 +1382,30 @@ class PoolQueue:
                         "stderr": err,
                         "elapsed_s": _now() - started,
                         "argv": argv,
+                        **cap_fields,
                     }
+        returncode = process.returncode
+        if unit is not None:
+            reported = unit_outcome(unit)
+            _systemctl("reset-failed", unit)
+            if reported.get("returncode") is not None:
+                returncode = int(reported["returncode"])   # type: ignore[arg-type]
+            cap_fields["unit_result"] = reported.get("result", "")
+            cap_fields["oom_killed"] = bool(reported.get("oom_killed"))
+            cap_fields["memory_peak_bytes"] = reported.get("memory_peak")
+            if reported.get("oom_killed"):
+                err = (err or "") + (
+                    f"\n[prismabuild] killed by its own cgroup: this action "
+                    f"declared {cap_gb} GB and exceeded it.\n"
+                )
         return {
-            "status": "executed" if process.returncode == 0 else "failed",
-            "returncode": process.returncode,
+            "status": "executed" if returncode == 0 else "failed",
+            "returncode": returncode,
             "stdout": out,
             "stderr": err,
             "elapsed_s": _now() - started,
             "argv": argv,
+            **cap_fields,
         }
 
     def serve_once(
