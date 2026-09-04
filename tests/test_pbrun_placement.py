@@ -341,7 +341,8 @@ def test_pbrun_identity_does_not_hide_legitimate_prefix_paths(tmp_path: Path) ->
     """Only generated basenames reserve pbrun's stamp/result namespaces."""
 
     checkout = _git_checkout(tmp_path)
-    note = checkout / "notes" / "my-pbrun_result.foo.py"
+    pbrun.keep_droppings_out_of_git(checkout)
+    note = checkout / "notes" / "pbrun_result.notes.py"
     note.parent.mkdir()
     note.write_text("first bytes\n")
     before = pbrun._git_identity(checkout)

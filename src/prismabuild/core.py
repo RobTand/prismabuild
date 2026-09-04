@@ -43,6 +43,7 @@ WORKER_ATTESTATION_SCHEMA_V2 = "prismaquant.prismabuild.worker_attestation.v2"
 WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
+PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
 LOCAL_RESULT_CLAIM_SCHEMA_V1 = "prismaquant.prismabuild.local_result_claim.v1"
 INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1 = (
     "prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1"
@@ -1149,6 +1150,34 @@ def verify_code_closure(value: object, root: str | Path) -> dict[str, object]:
     return expected
 
 
+def is_pbrun_generated_path(path: str | Path) -> bool:
+    """Return whether a basename belongs to pbrun's generated-file grammar."""
+
+    name = Path(path).name
+    for prefix, suffix in (
+        (PBRUN_STAMP_PREFIX, ".json"),
+        (PBRUN_RESULT_PREFIX, ".txt"),
+    ):
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+        token = name[len(prefix):-len(suffix)]
+        if len(token) == PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH and all(
+            character in "0123456789abcdef" for character in token
+        ):
+            return True
+    return False
+
+
+def pbrun_git_exclude_patterns() -> tuple[str, str]:
+    """Return Git patterns for exactly pbrun's generated basenames."""
+
+    fingerprint = "[0-9a-f]" * PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH
+    return (
+        f"{PBRUN_STAMP_PREFIX}{fingerprint}.json",
+        f"{PBRUN_RESULT_PREFIX}{fingerprint}.txt",
+    )
+
+
 def git_checkout_identity(root: str | Path) -> dict[str, str]:
     """Return pbrun's canonical commit-plus-working-tree identity.
 
@@ -1186,23 +1215,6 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
         checkout = Path(top_level)
     head = _git("rev-parse", "HEAD").strip() or "no-git"
 
-    def _is_generated_pbrun_path(path: str) -> bool:
-        """Recognize only pbrun's reserved generated basename grammar."""
-
-        name = Path(path).name
-        for prefix, suffix in (
-            (PBRUN_STAMP_PREFIX, ".json"),
-            (PBRUN_RESULT_PREFIX, ".txt"),
-        ):
-            if not (name.startswith(prefix) and name.endswith(suffix)):
-                continue
-            token = name[len(prefix):-len(suffix)]
-            if len(token) == 16 and all(
-                character in "0123456789abcdef" for character in token
-            ):
-                return True
-        return False
-
     # Let Git delimit untracked pathnames. Line-oriented porcelain C-quotes
     # newlines, quotes, and backslashes, and hand-unquoting that display form
     # can bind ``:unreadable`` instead of the actual file bytes. ``ls-files
@@ -1212,7 +1224,7 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
         for path in _git(
             "ls-files", "--others", "--exclude-standard", "-z"
         ).split("\0")
-        if path and not _is_generated_pbrun_path(path)
+        if path and not is_pbrun_generated_path(path)
     ]
     # Git deliberately omits FIFOs, sockets, and device nodes from its
     # untracked roster. Find those without opening them: opening a FIFO can
@@ -4566,6 +4578,7 @@ __all__ = [
     "INITIAL_MISS_RENDEZVOUS_READY_SCHEMA_V1",
     "INITIAL_MISS_RENDEZVOUS_RECEIPT_SCHEMA_V1",
     "LOCAL_RESULT_CLAIM_SCHEMA_V1",
+    "PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH",
     "PBRUN_RESULT_PREFIX",
     "PBRUN_STAMP_PREFIX",
     "WORKER_ATTESTATION_SCHEMA_V2",
@@ -4582,8 +4595,10 @@ __all__ = [
     "executable_toolchain_contract",
     "git_checkout_identity",
     "identify_executable",
+    "is_pbrun_generated_path",
     "main",
     "preflight_action",
+    "pbrun_git_exclude_patterns",
     "repair_local_result",
     "run_local_action",
     "seal_action",
