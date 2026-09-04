@@ -415,6 +415,24 @@ class ResourceLedger:
             pass
         return released
 
+    def held(self) -> dict[str, int]:
+        """Tokens of each kind a running action currently holds on this host.
+
+        This is the pool's own statement of what it is consuming here, and it
+        is what ``box_capacity`` subtracts from the box's live load: the set of
+        pids under a claimed action is not knowable from a process tree once
+        docker or ``setsid`` is involved, but the reservation always is.
+        """
+
+        counts: dict[str, int] = {}
+        for holder in _scan(self.held_dir):
+            if not holder.is_dir():
+                continue
+            for path in _glob(holder, "*-*"):
+                kind = path.name.rsplit("-", 1)[0]
+                counts[kind] = counts.get(kind, 0) + 1
+        return counts
+
     def held_keys(self) -> list[str]:
         return sorted(path.name for path in _scan(self.held_dir) if path.is_dir())
 
@@ -455,6 +473,9 @@ class PoolQueue:
         has_gpu: bool,
         capacity: Mapping[str, int] | None = None,
         runtime_commit: str = "",
+        observed_capacity: Mapping[str, int] | None = None,
+        foreign: Mapping[str, int] | None = None,
+        observed_detail: Mapping[str, object] | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -471,6 +492,19 @@ class PoolQueue:
         scheduling -- placement is still decided by the matching in
         ``claim()`` -- so a wrong or missing offer costs a diagnostic, never a
         misplacement.
+
+        ``capacity`` is what this box is *configured* to offer and is the field
+        ``placeable`` reads, because the question a submitter asks is "can any
+        box ever run this", not "is a box free this second".
+        ``observed_capacity`` is what the box could honestly take right now,
+        with work the pool did not schedule subtracted (see
+        ``prismabuild.box_capacity``), and ``foreign`` and ``observed_detail``
+        say by how much and on what evidence.  The live figure is what the
+        ledger is retired to; it is deliberately *not* what ``placeable``
+        reads, because a box busy with someone else's work is a slow
+        submission, and answering ``False`` there would turn it into a refused
+        one.  Older workers announce none of the three, and a reader must treat
+        their absence as "not measured" rather than as zero.
         """
 
         record = {
@@ -479,6 +513,15 @@ class PoolQueue:
             "tags": sorted({str(t) for t in tags}),
             "has_gpu": bool(has_gpu),
             "capacity": {str(k): int(v) for k, v in (capacity or {}).items()},
+            # What the box can honestly take right now, and the readings
+            # behind it.  Additive, optional fields on the same schema: no
+            # reader validates the offer record against a field list, and a
+            # bump would only invalidate every offer a running loop had
+            # already written.
+            "observed_capacity": {
+                str(k): int(v) for k, v in (observed_capacity or {}).items()},
+            "foreign": {str(k): int(v) for k, v in (foreign or {}).items()},
+            "observed_detail": dict(observed_detail or {}),
             # Which published bytes are answering for this box.  A loop holds
             # the module it imported at start for its whole life, so without
             # this a fleet running four generations of the code at once looks
@@ -513,6 +556,13 @@ class PoolQueue:
         self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
     ) -> bool | None:
         """Can any live worker run this item?  ``None`` means nobody has said.
+
+        Answered from the *declared* capacity, never the observed one.  The
+        question is capability -- "this box can never fit it, however idle" --
+        and a box temporarily occupied by work the pool did not schedule is
+        idle-in-the-future, not incapable.  Reading the live figure here would
+        make a busy fleet refuse the submission outright (``pbrun`` raises on
+        ``False``) instead of queueing it.
 
         The three-valued answer is deliberate.  ``False`` is a fact worth
         refusing a submission over; but an empty registry means only that no
@@ -727,6 +777,16 @@ class PoolQueue:
         eventually fit withholds the host rather than being overtaken; one it
         could never fit is skipped, because withholding a box for work that
         will never run there is the deadlock, not the fix.
+
+        ``capacity`` is the box's offer *now*, not its configuration -- a
+        worker clamps it to what work the pool did not schedule has left free
+        (``prismabuild.box_capacity``).  So an item this host could normally
+        fit but cannot this minute is skipped here rather than denied: it
+        records no ``passes`` on this box, and ages on the denials of boxes
+        that could actually have run it.  That is the same trade the skip
+        already makes -- withholding a host for work it cannot presently run
+        is the deadlock -- and it unwinds by itself, because the offer
+        recovers as soon as the foreign work exits.
         """
 
         owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"

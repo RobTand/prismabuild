@@ -40,13 +40,20 @@ def _worker_loop():
 
 
 def _run(tmp_path: Path, argv: list[str]):
-    """One worker start against a private pool root, exiting on the first miss."""
+    """One worker start against a private pool root, exiting on the first miss.
+
+    ``--assume-idle`` because these are about the ledger's high-water mark and
+    nothing else: what the box happens to be running while the suite runs must
+    not be able to change the answer.  The live clamp has its own file,
+    ``test_worker_loop_offers_what_is_free.py``.
+    """
 
     wl = _worker_loop()
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
-         mock.patch.object(sys, "argv", ["worker_loop.py", *argv]):
+         mock.patch.object(sys, "argv",
+                           ["worker_loop.py", "--assume-idle", *argv]):
         assert wl.main() == 0
     return pool.PoolQueue(tmp_path / "pb-queue")
 
