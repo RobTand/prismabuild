@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -17,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pathlib
 
+from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
 KEY_A = "a" * 64
@@ -295,6 +297,267 @@ def test_execute_times_out_and_kills_the_child(
     item = queue.claim()
     outcome = queue.execute(item, heartbeat_s=0.1, timeout_s=0.3)
     assert outcome["status"] == "timeout"
+
+
+def _wait_until_gone(pid: int, *, timeout_s: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _reap(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _relaying_worker(stub: Path, pidfile: Path) -> Path:
+    """A stand-in for the real worker: own-session action, TERM relayed to it.
+
+    This is the shape ``prismabuild_worker.py`` has -- ``run_local_action``
+    launches the action with ``start_new_session=True`` and reaps that group
+    when a handled signal unwinds it -- and it is the shape that makes the
+    difference between reaching a wedged action and merely reaching its
+    launcher observable from here.
+    """
+
+    stub.write_text(
+        "import os, signal, subprocess, sys, time\n"
+        f"PIDFILE = {str(pidfile)!r}\n"
+        "action = subprocess.Popen(\n"
+        "    [sys.executable, '-c',\n"
+        "     \"import os,sys,time; \"\n"
+        "     \"open(sys.argv[1],'w').write(str(os.getpid())); \"\n"
+        "     \"time.sleep(120)\",\n"
+        "     PIDFILE],\n"
+        "    start_new_session=True,\n"
+        ")\n"
+        "def relay(signum, frame):\n"
+        "    os.killpg(action.pid, signal.SIGKILL)\n"
+        "    raise SystemExit(128 + signum)\n"
+        "signal.signal(signal.SIGTERM, relay)\n"
+        "time.sleep(120)\n"
+    )
+    return stub
+
+
+def _orphaning_worker(stub: Path, pidfile: Path) -> Path:
+    """The same, minus the relay: nothing this side sends can reach the action."""
+
+    stub.write_text(
+        "import subprocess, sys, time\n"
+        f"PIDFILE = {str(pidfile)!r}\n"
+        "subprocess.Popen(\n"
+        "    [sys.executable, '-c',\n"
+        "     \"import os,sys,time; \"\n"
+        "     \"open(sys.argv[1],'w').write(str(os.getpid())); \"\n"
+        "     \"time.sleep(120)\",\n"
+        "     PIDFILE],\n"
+        "    start_new_session=True,\n"
+        ")\n"
+        "time.sleep(120)\n"
+    )
+    return stub
+
+
+def test_execute_timeout_reaps_the_action_the_worker_launched(
+    queue: pool.PoolQueue, tmp_path: Path
+) -> None:
+    """The timeout must bound the action, not merely its launcher.
+
+    What ``execute`` starts is a worker; what holds the GPU is the action that
+    worker starts in turn.  Killing the one pid left the other running, so the
+    only bound on a wedged run did not bind.  Signalling the launcher's group
+    lets the launcher relay into the action's own session.
+    """
+
+    pidfile = tmp_path / "action.pid"
+    stub = _relaying_worker(tmp_path / "relaying_worker.py", pidfile)
+    _publish(queue, KEY_A, worker_script=str(stub))
+    item = queue.claim()
+    assert item is not None
+    started = time.monotonic()
+    outcome = queue.execute(
+        item, heartbeat_s=0.1, timeout_s=1.0, timeout_grace_s=5.0
+    )
+    elapsed = time.monotonic() - started
+
+    assert outcome["status"] == "timeout"
+    # EOF arrived, which is only possible once the action let go of the pipes.
+    assert outcome["action_survived_kill"] is False
+    # ``pbrun`` exits with any integer ``returncode`` it finds on the record,
+    # so a timeout keeps handing it None and reports the launcher's exit --
+    # 143, its unwind on the relayed TERM -- beside it.
+    assert outcome["returncode"] is None
+    assert outcome["launcher_returncode"] == 128 + signal.SIGTERM
+    assert elapsed < 5.0
+    action_pid = int(pidfile.read_text())
+    try:
+        assert _wait_until_gone(action_pid), "the action outlived the timeout"
+    finally:
+        _reap(action_pid)
+
+
+def test_execute_timeout_returns_even_when_the_action_outlives_the_kill(
+    queue: pool.PoolQueue, tmp_path: Path
+) -> None:
+    """A timeout that can hang is not a timeout.
+
+    The action inherits the launcher's pipes, so an unbounded ``communicate``
+    after the kill waits on the runaway itself.  Here nothing relays the
+    signal and the action is unkillable from this side: the branch must still
+    return, and must say that it left something behind.
+    """
+
+    pidfile = tmp_path / "action.pid"
+    stub = _orphaning_worker(tmp_path / "orphaning_worker.py", pidfile)
+    _publish(queue, KEY_A, worker_script=str(stub))
+    item = queue.claim()
+    assert item is not None
+    started = time.monotonic()
+    outcome = queue.execute(
+        item, heartbeat_s=0.1, timeout_s=1.0, timeout_grace_s=0.5
+    )
+    elapsed = time.monotonic() - started
+    action_pid = int(pidfile.read_text())
+    try:
+        assert outcome["status"] == "timeout"
+        assert outcome["action_survived_kill"] is True
+        # Bounded by the grace budget, not by the 120 s the action would run.
+        assert elapsed < 5.0
+    finally:
+        _reap(action_pid)
+
+
+def test_execute_reaps_the_action_when_the_worker_itself_is_interrupted(
+    queue: pool.PoolQueue, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new session must not buy the bound at the price of a new orphan.
+
+    While the launcher shared this process's group, a Ctrl-C here reached the
+    launcher too and its own unwind reaped the action.  Leading its own
+    session ends that, so ``execute`` has to signal the group on its way out
+    or it introduces the orphan it was changed to prevent.
+    """
+
+    pidfile = tmp_path / "action.pid"
+    stub = _relaying_worker(tmp_path / "relaying_worker.py", pidfile)
+    _publish(queue, KEY_A, worker_script=str(stub))
+    item = queue.claim()
+    assert item is not None
+
+    def interrupt(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    # The heartbeat is where an interrupt lands in practice; raising from it
+    # is that same unwind without the signal-timing race.
+    monkeypatch.setattr(queue, "write_lease", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        queue.execute(item, heartbeat_s=0.5, timeout_grace_s=5.0)
+
+    action_pid = int(pidfile.read_text())
+    try:
+        assert _wait_until_gone(action_pid), "the action outlived the unwind"
+    finally:
+        _reap(action_pid)
+
+
+def test_timeout_bounds_a_real_worker_running_a_real_action(
+    queue: pool.PoolQueue, tmp_path: Path
+) -> None:
+    """The two halves, stitched: the real worker, the real action, one timeout.
+
+    Everything above stands in for one side or the other -- a stub launcher
+    with a hand-written relay, or the worker driven without the queue.  This is
+    the only place where ``pool``'s grace budget meets ``core``'s actual relay,
+    and it is the test the original defect would have failed.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "task_code.py").write_text("# closure member\n", encoding="utf-8")
+    pidfile = tmp_path / "action.pid"
+    action = pb.seal_action(
+        {
+            "schema": pb.ACTION_SCHEMA_V2,
+            "task": {
+                "definition_id": "tests/wedged-action",
+                "definition_version": "v1",
+                "task_class": "generation",
+                "determinism": "deterministic",
+                "artifact_family": "generic",
+                "artifact_kind": "generic",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import os,sys,time; "
+                    "open(sys.argv[1],'w').write(str(os.getpid())); "
+                    "time.sleep(120)",
+                    str(pidfile),
+                ],
+                "working_directory": ".",
+                "result_path": "result.bin",
+            },
+            "inputs": [],
+            "code_closure": pb.build_code_closure(checkout, ["task_code.py"]),
+            "params": {},
+            "environment": {"variables": {}, "toolchain": {}},
+            "execution_scope": {
+                "portability": "portable",
+                "platform_key": None,
+                "host_class": None,
+            },
+        }
+    )
+    key = str(action["action_key"])
+    cas_root = tmp_path / "cas"
+    request = cas_root / "requests" / key[:2] / f"{key}.json"
+    request.parent.mkdir(parents=True, exist_ok=True)
+    request.write_text(json.dumps(action), encoding="utf-8")
+    worker = pathlib.Path(__file__).resolve().parents[1] / "tools"
+    queue.publish(
+        action_key=key,
+        cas_root=str(cas_root),
+        checkout_root=str(checkout),
+        worker_script=str(worker / "prismabuild_worker.py"),
+        max_attempts=1,
+    )
+
+    item = queue.claim()
+    assert item is not None
+    started = time.monotonic()
+    # ``serve_once`` runs exactly this, but leaves ``heartbeat_s`` at 30 s, so
+    # the deadline is only noticed on the next beat.  That granularity is
+    # nothing against the fleet's 7200 s and a third of a minute of waiting
+    # here; the branch under test is the same one either way.
+    outcome = queue.execute(item, heartbeat_s=0.5, timeout_s=2.0)
+    elapsed = time.monotonic() - started
+    assert outcome["status"] == "timeout"
+    assert outcome["action_survived_kill"] is False
+    # The worker unwound on the relayed TERM rather than dying under it, which
+    # is what let it reap the action's own session.
+    assert outcome["launcher_returncode"] == 128 + signal.SIGTERM
+    assert elapsed < 20.0
+    # The whole outcome is filed as the record's detail, so a field the JSON
+    # writer cannot take is a field that loses the action, not just the note.
+    queue.finish(key, status="timeout", detail=outcome)
+    filed = json.loads(
+        queue.item_path(pool.FAILED, key).read_text(encoding="utf-8")
+    )
+    assert filed["detail"]["launcher_returncode"] == 128 + signal.SIGTERM
+    assert filed["detail"]["action_survived_kill"] is False
+
+    action_pid = int(pidfile.read_text())
+    try:
+        assert _wait_until_gone(action_pid), "the action outlived the timeout"
+    finally:
+        _reap(action_pid)
 
 
 def test_a_crashing_execute_never_leaves_a_dangling_claim(
