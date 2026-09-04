@@ -62,6 +62,18 @@ claimed, cannot be requeued and cannot be filed as a defect -- whatever a
 concurrent worker is doing at the time.  The withdrawal wins the race by
 construction rather than by the operator being quick.
 
+**It cancels a run, not a name.**  An action key is a content hash, so the same
+command against the same tree fingerprints identically and re-submitting it is
+how anybody asks for the same work again.  A marker that blacklisted the key
+would therefore make the queue eat that request -- ``claim`` deleting the fresh
+record, ``pbrun`` answering the new run with the old run's reason -- with the
+only remedy a hand edit of the live queue, which is the thing this verb exists
+to abolish.  So the marker is scoped to the generation it was filed against
+(``published_unix``, which ``publish`` stamps fresh and every requeue carries
+forward), one predicate reads it at every guard site (``withdrawal_covers``),
+and a later ``publish`` retires it into ``withdrawn/superseded/``.  Nothing is
+ever removed silently: a record the queue drops is filed there first.
+
 Clock skew between claimant and reaper is real but immaterial here: both Sparks
 are NTP-synchronised and measured 1.2-2.5 ms apart against a 300 s lease.
 """
@@ -792,6 +804,19 @@ class PoolQueue:
         if int(max_attempts) < 1:
             raise PoolContractError("max_attempts must be at least 1")
         self.ensure_layout()
+        # A submission is what retires a withdrawal.  The key is a content
+        # hash -- ``result_and_stamp_names`` says so: *"the same command at the
+        # same commit still fingerprints identically"* -- so re-submitting one
+        # is the normal way to ask for the same work again, not an attempt to
+        # defeat somebody's cancellation.  Treating the marker as a permanent
+        # blacklist on the key meant the re-submitted record was deleted by
+        # ``claim``'s guard and ``pbrun`` answered the new run with the old
+        # run's ``withdrawn_by``, at exit 143, with nothing filed anywhere; the
+        # only remedy was ``rm withdrawn/<key>.json`` on the live queue, which
+        # is the hand edit this whole verb exists to remove.  The decision is
+        # kept -- moved to ``superseded/``, not deleted -- and the new item
+        # carries what it revived.
+        superseded = self._supersede_withdrawal(action_key)
         item = {
             "schema": POOL_ITEM_SCHEMA_V1,
             "action_key": action_key,
@@ -807,6 +832,13 @@ class PoolQueue:
             "published_unix": _now(),
             "published_by": socket.gethostname(),
         }
+        if superseded is not None:
+            item["supersedes_withdrawal"] = {
+                "withdrawn_unix": superseded.get("withdrawn_unix"),
+                "withdrawn_by": superseded.get("withdrawn_by"),
+                "withdrawn_host": superseded.get("withdrawn_host"),
+                "reason": superseded.get("reason"),
+            }
         path = self.item_path(READY, action_key)
         _write_json_atomic(path, item)
         return path
@@ -969,10 +1001,25 @@ class PoolQueue:
             key = str(item.get("action_key", ""))
             if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
                 continue
-            if key in withdrawn:
-                # Already filed under ``withdrawn``; this record is the losing
-                # half of a race, not work.  Drop it rather than leave it at
-                # the head of ``ready`` for every future poll to step over.
+            if key in withdrawn and self.withdrawal_covers(
+                    item, action_key=key, withdrawn=withdrawn) is not None:
+                # Already filed under ``withdrawn``, and of the generation that
+                # was withdrawn: this record is the losing half of a race, not
+                # work.  Drop it rather than leave it at the head of ``ready``
+                # for every future poll to step over -- but FILE it first.  A
+                # queue that removes a record it will not run and says nothing
+                # anywhere is the shape ``quarantine_orphans`` names in its own
+                # docstring, and the reason this guard was a blocker.
+                #
+                # A record of a LATER generation falls through and is claimed:
+                # somebody asked for this work again after the cancellation,
+                # which a content-addressed key makes the ordinary way to ask.
+                self._file_superseded(
+                    item, key=key, kind="dropped", status="dropped",
+                    dropped_unix=_now(), dropped_host=socket.gethostname(),
+                    reason="requeued into ready after the withdrawal that "
+                           "cancelled this generation",
+                )
                 self.item_path(READY, key).unlink(missing_ok=True)
                 continue
             demand = self.demand_of(item)
@@ -995,13 +1042,18 @@ class PoolQueue:
                 if ledger is not None:
                     ledger.release(key)   # lost the race: hold nothing
                 continue
-            if key in self.withdrawn_keys():
+            if self.withdrawal_covers(item, action_key=key) is not None:
                 # Withdrawn between the scan above and this rename.  The window
                 # is microseconds wide and closing it here costs one listing on
                 # a path taken once per claim; leaving it open costs a cancelled
                 # action a full run before ``execute`` notices.
                 if ledger is not None:
                     ledger.release(key)
+                self._file_superseded(
+                    item, key=key, kind="dropped", status="dropped",
+                    dropped_unix=_now(), dropped_host=socket.gethostname(),
+                    reason="withdrawn between the ready scan and the claim",
+                )
                 dst.unlink(missing_ok=True)
                 continue
             claimed = dict(item)
@@ -1077,7 +1129,7 @@ class PoolQueue:
                 # the winner filed the item and released its capacity -- so the
                 # loser's only correct move is to leave it alone.
                 continue
-            if key in self.withdrawn_keys():
+            if self.withdrawal_covers(record, action_key=key) is not None:
                 # A withdrawal that could not finish its own cleanup -- the
                 # operator's box died mid-verb, say -- leaves a claimed record
                 # whose lease nobody refreshes.  Requeueing that is the one
@@ -1249,7 +1301,7 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
         record = _read_json(src)
-        if action_key in self.withdrawn_keys():
+        if self.withdrawal_covers(record, action_key=action_key) is not None:
             # An operator cancelled this while it was running.  Filing it under
             # ``done`` or ``failed`` would put the pool's opinion of the work on
             # top of a decision about it, and routing it back to ``ready`` --
@@ -1262,6 +1314,13 @@ class PoolQueue:
             # Read AFTER the record, not before it: a withdrawal that lands
             # between the read and the write must still be seen, and this is
             # the last moment at which it can be.
+            #
+            # Generation-scoped like every other guard: a marker left over from
+            # a cancellation the operator has since re-submitted past must not
+            # swallow the NEW run's outcome, which would file it nowhere at
+            # all.  ``record is None`` is the one case with no generation to
+            # compare, and is treated as covered -- the claim was concluded by
+            # somebody else, so there is nothing here to file either way.
             host = (record or {}).get("claimed_host")
             self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
             src.unlink(missing_ok=True)
@@ -1355,6 +1414,106 @@ class PoolQueue:
             name[: -len(".json")] for name in names if name.endswith(".json")
         )
 
+    def superseded_dir(self) -> Path:
+        """Where a withdrawal goes once it is no longer the live decision.
+
+        A subdirectory rather than a timestamped sibling, because every reader
+        of ``withdrawn/`` addresses it by ``<key>.json``: ``withdrawn_keys``
+        lists it, ``find_key`` globs it, ``item_path`` builds the name,
+        ``pbrun``'s wait loop lists it and ``tessera_status`` counts ``*.json``
+        in it.  A sibling named ``<key>.<unix>.json`` would look to all five
+        like an action whose key is nonsense; a subdirectory is invisible to
+        every one of them, and still there for the operator asking what was
+        cancelled, by whom, and when.
+        """
+
+        return self.dir(WITHDRAWN) / "superseded"
+
+    def _file_superseded(
+        self,
+        record: Mapping[str, object] | None,
+        *,
+        key: str,
+        kind: str,
+        **stamps: object,
+    ) -> Path:
+        """Keep a record that is no longer live, under a name of its own."""
+
+        when = _now()
+        payload = dict(record or {})
+        payload["action_key"] = key
+        payload.update(stamps)
+        path = self.superseded_dir() / f"{key}.{when:.6f}.{kind}.json"
+        _write_json_atomic(path, payload)
+        return path
+
+    def _supersede_withdrawal(self, action_key: str) -> dict[str, object] | None:
+        """Retire the live withdrawal for ``action_key``; return what it said."""
+
+        live = self.item_path(WITHDRAWN, action_key)
+        record = _read_json(live)
+        if record is None:
+            return None
+        self._file_superseded(
+            record, key=action_key, kind="withdrawal",
+            superseded_unix=_now(), superseded_host=socket.gethostname(),
+        )
+        live.unlink(missing_ok=True)
+        return record
+
+    def withdrawal_covers(
+        self,
+        record: Mapping[str, object] | None,
+        *,
+        action_key: str | None = None,
+        withdrawn: frozenset[str] | None = None,
+    ) -> dict[str, object] | None:
+        """The withdrawal that cancelled THIS record, or ``None``.
+
+        One predicate for all seven guard sites, because the alternative was
+        the rule half-applied: ``claim`` scoping the check while ``finish``
+        and ``execute`` still matched on the bare key would discard a
+        legitimate later run's outcome and kill the run outright.
+
+        **The generation, not the key.**  An action key is a content hash, so
+        a withdrawal has to name the *run* it cancelled, not the name of the
+        work for all time.  ``published_unix`` is that name: ``publish``
+        stamps a fresh one and every requeue -- ``finish``'s retry branch and
+        ``reap_stale``'s -- carries the original forward, so the losing half
+        of a withdrawal race and a fresh submission are distinguishable
+        without asking either of them to declare which it is.  A record
+        stamped LATER than the withdrawal is a later request and is not
+        covered.
+
+        A record with no generation to compare is treated as covered, which is
+        the safe direction: the cancelled work does not run.  Every caller
+        that then removes such a record files it first, so "covered" never
+        means "vanished".
+
+        The marker is read only for keys the listing just reported, so NFS's
+        negative cache -- the reason ``withdrawn_keys`` lists rather than
+        stats -- is not in this path.  A marker that is gone by the time it is
+        read was retired by a re-submission, and the record is not covered.
+        """
+
+        key = str(action_key or (record or {}).get("action_key") or "")
+        if not key:
+            return None
+        known = self.withdrawn_keys() if withdrawn is None else withdrawn
+        if key not in known:
+            return None
+        marker = _read_json(self.item_path(WITHDRAWN, key))
+        if marker is None:
+            return None
+        if record is None:
+            return marker
+        mine = record.get("published_unix")
+        theirs = marker.get("published_unix")
+        if isinstance(mine, (int, float)) and isinstance(theirs, (int, float)):
+            if float(mine) > float(theirs):
+                return None
+        return marker
+
     def find_key(self, prefix: str) -> str:
         """Resolve a key prefix to the one action it names.
 
@@ -1440,6 +1599,15 @@ class PoolQueue:
         Idempotent.  Run it twice and the second run re-signals, re-releases
         and re-cleans -- all no-ops once they have happened -- and leaves the
         first decision's record, timestamp and reason untouched.
+
+        **It cancels a run, not a name.**  The marker is scoped to the
+        generation it was filed against -- see ``withdrawal_covers`` -- and a
+        later ``publish`` of the same key retires it into
+        ``withdrawn/superseded/``.  An action key is a content hash, so
+        re-submitting one is how anybody asks for the same work again; a
+        withdrawal that blacklisted the key would make the queue silently eat
+        that request, and the only remedy would be a hand edit of the live
+        queue.
         """
 
         key = str(action_key)
@@ -1569,7 +1737,7 @@ class PoolQueue:
         # Withdrawal checkpoint one of three: before the launch.  A cancellation
         # that landed in the microseconds between ``claim``'s rename and this
         # call would otherwise start the work anyway, and then have to stop it.
-        if key in self.withdrawn_keys():
+        if self.withdrawal_covers(item) is not None:
             return {
                 "status": "withdrawn",
                 "returncode": None,
@@ -1597,7 +1765,7 @@ class PoolQueue:
                 # box cannot signal anything on this one, so this poll is what
                 # makes the verb correct from anywhere -- at a cost of at most
                 # one heartbeat, and none at all when the operator is here.
-                if key in self.withdrawn_keys():
+                if self.withdrawal_covers(item) is not None:
                     out, err = self._stop_action(process)
                     return {
                         "status": "withdrawn",
@@ -1625,7 +1793,7 @@ class PoolQueue:
         # stopped it and this worker would otherwise log a defect for a
         # decision.  ``finish`` files the outcome correctly either way; this is
         # about the line the worker prints and the record's ``status``.
-        if status == "failed" and key in self.withdrawn_keys():
+        if status == "failed" and self.withdrawal_covers(item) is not None:
             status = "withdrawn"
         return {
             "status": status,

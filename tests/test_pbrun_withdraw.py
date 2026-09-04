@@ -147,6 +147,32 @@ def test_a_claimed_action_on_another_box_says_the_signal_did_not_land(
     assert "stops within a heartbeat" in err
 
 
+def test_the_wait_loop_does_not_answer_a_new_run_with_an_old_withdrawal(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The half of the blocker the caller actually sees.
+
+    ``await_outcome`` polls ``withdrawn/<key>.json`` by name, so while the
+    marker was a permanent blacklist a brand new submission was answered on its
+    first poll with a stranger's ``withdrawn_by`` and reason, at exit 143.
+    ``publish`` retiring the marker is what makes the loop tell the truth.
+    """
+
+    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q.ensure_layout()
+    _publish(q, KEY_A)
+    q.withdraw(KEY_A, reason="four suites, one box", by="rob@sparky")
+
+    _publish(q, KEY_A)                      # the same command, the same tree
+    q.claim()
+    q.finish(KEY_A, status="executed", detail={"returncode": 0})
+
+    monkeypatch.setattr(pbrun, "POLL_S", 0.001, raising=False)
+    assert pbrun.await_outcome(q, KEY_A, wait_s=5.0) == 0
+    err = capsys.readouterr().err
+    assert "withdrawn by" not in err and "four suites" not in err
+
+
 def test_an_already_finished_action_is_reported_not_refiled(
     queue: pool.PoolQueue, capsys
 ) -> None:

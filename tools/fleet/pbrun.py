@@ -663,6 +663,18 @@ def main() -> int:
         print("pbrun: no worker offers on record; submitting unchecked",
               file=sys.stderr, flush=True)
 
+    # Read the decision this submission is about to supersede, so the caller is
+    # told rather than surprised.  ``publish`` retires the marker -- a key is a
+    # content hash, so re-submitting one is how anybody asks for the same work
+    # again -- and a submission that silently revived somebody's cancellation
+    # would be as bad as the blacklist it replaced.
+    superseding = None
+    try:
+        superseding = json.loads(
+            q.item_path("withdrawn", key).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        superseding = None
+
     q.publish(
         action_key=key,
         cas_root=str(SH / "cas"),
@@ -676,6 +688,12 @@ def main() -> int:
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
+    if superseding is not None:
+        who = superseding.get("withdrawn_by") or "an operator"
+        why = str(superseding.get("reason") or "").strip()
+        print(f"pbrun: {key[:12]} had been withdrawn by {who}"
+              f"{' -- ' + why if why else ''}; this submission supersedes that "
+              f"decision", file=sys.stderr, flush=True)
     masked = "" if demand.get("gpu") else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
     print(f"pbrun: queued {key[:12]} tags={tags} demand={demand}{masked}",
           file=sys.stderr, flush=True)

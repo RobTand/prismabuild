@@ -83,6 +83,52 @@ def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
     )
 
 
+def _old_bytes(q: pool.PoolQueue, monkeypatch) -> pool.PoolQueue:
+    """The same queue as a worker running pre-withdraw bytes sees it.
+
+    A worker loop holds the module it imported at start until the runtime
+    rolls, so part of the fleet is running ``main``'s ``pool.py`` during the
+    transition.  The ONLY behavioural difference between that ``finish`` and
+    this branch's is that it does not consult the withdrawal marker -- the
+    lost-race branch, the retry branch, the release and the unlinks are
+    identical text -- so blinding the marker lookup is a faithful model of it
+    rather than a fake of the thing under test.
+    """
+
+    old = pool.PoolQueue(q.root)
+    monkeypatch.setattr(old, "withdrawn_keys", lambda: frozenset())
+    return old
+
+
+def _strand_a_requeue(q: pool.PoolQueue, key: str, monkeypatch) -> dict:
+    """Produce the losing half of the race, through the real retry branch.
+
+    A fresh ``publish`` is NOT this state and must not stand in for it: a
+    re-submission is a new generation and a new request, which is the whole
+    distinction this file's guards turn on.  What the race actually leaves is a
+    worker that read its claimed record before the withdrawal reached it and
+    requeued afterwards -- so the record is put back exactly as that worker
+    still had it, and ``finish``'s own retry branch writes it to ``ready`` with
+    the withdrawn generation's ``published_unix`` on it.
+    """
+
+    held = json.loads(q.item_path(pool.CLAIMED, key).read_text())
+    q.withdraw(key, signal_child=False)
+    q.item_path(pool.CLAIMED, key).write_text(json.dumps(held))
+    _old_bytes(q, monkeypatch).finish(key, status="failed", detail={})
+    stranded = q.item_path(pool.READY, key)
+    assert stranded.exists(), "the retry branch really did write one back"
+    return json.loads(stranded.read_text())
+
+
+def _superseded(q: pool.PoolQueue, key: str) -> list[dict]:
+    directory = q.dir(pool.WITHDRAWN) / "superseded"
+    if not directory.is_dir():
+        return []
+    return [json.loads(path.read_text())
+            for path in sorted(directory.glob(f"{key}.*.json"))]
+
+
 def _await(predicate, *, timeout_s: float = 20.0) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -140,28 +186,32 @@ def test_a_withdrawn_action_is_not_a_failed_one(queue: pool.PoolQueue) -> None:
     assert filed["worker_script"] == "/w.py" and filed["cas_root"] == "/cas"
 
 
-def test_a_withdrawn_action_is_never_claimed_again(queue: pool.PoolQueue) -> None:
+def test_a_withdrawn_action_is_never_claimed_again(
+    queue: pool.PoolQueue, monkeypatch
+) -> None:
     """The guard that closes the race a hand-edit had to win.
 
     A ``finish`` that read its claimed record just before the withdrawal can
     still write the retry back to ``ready``.  Nothing stops that write; what
-    stops the *action* is that no worker will take the record afterwards.
+    stops the *action* is that no worker will take the record afterwards --
+    and that the record is FILED rather than made to disappear.
     """
 
-    _publish(queue, KEY_A)
-    queue.claim()
-    queue.withdraw(KEY_A)
-    # The losing half of the race, reproduced exactly: a requeued ready record
-    # published after the withdrawal.
-    _publish(queue, KEY_A)
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    _publish(queue, KEY_A, max_attempts=3)
+    generation = queue.claim()["published_unix"]
+    stranded = _strand_a_requeue(queue, KEY_A, monkeypatch)
+    assert stranded["published_unix"] == generation
+
     assert queue.claim() is None
     assert not queue.item_path(pool.READY, KEY_A).exists(), (
         "the stranded record is dropped, not left at the head of ready")
+    dropped = [r for r in _superseded(queue, KEY_A) if r.get("status") == "dropped"]
+    assert dropped and dropped[0]["published_unix"] == generation, (
+        "a record the queue removes and does not run has to be filed somewhere")
 
 
 def test_a_withdrawn_item_is_dropped_before_a_claim_is_even_attempted(
-    queue: pool.PoolQueue
+    queue: pool.PoolQueue, monkeypatch
 ) -> None:
     """The scan guard, isolated from the one behind it.
 
@@ -172,9 +222,13 @@ def test_a_withdrawn_item_is_dropped_before_a_claim_is_even_attempted(
     queue should not be making on every poll.
     """
 
-    _publish(queue, KEY_A, resources={"cpu": 1})
-    queue.withdraw(KEY_A)
-    _publish(queue, KEY_A, resources={"cpu": 1})
+    _publish(queue, KEY_A, resources={"cpu": 1}, max_attempts=3)
+    queue.claim(capacity={"cpu": 2})
+    _strand_a_requeue(queue, KEY_A, monkeypatch)
+    # The first claim -- the one that got as far as running -- left its own
+    # intent behind, and intent is not cleared on success.  Clear it so what is
+    # asserted below is this claim's behaviour and not that one's dropping.
+    queue.item_path(pool.INTENT, KEY_A).unlink(missing_ok=True)
     assert queue.claim(capacity={"cpu": 2}) is None
     assert not queue.item_path(pool.INTENT, KEY_A).exists(), (
         "the item reached the claim path instead of being dropped by the scan")
