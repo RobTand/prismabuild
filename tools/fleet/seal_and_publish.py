@@ -2,7 +2,10 @@
 import sys, socket, json
 from pathlib import Path
 SH = Path("/mnt/shared/prismabuild-fleet")
-sys.path.insert(0, str(SH / "repo" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root
+RUNTIME_ROOT = generation_root(__file__)
+sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import core as pb, pool
 
 checkout = SH / "checkout"
@@ -51,7 +54,7 @@ q.publish(
     action_key=key,
     cas_root=str(SH / "cas"),
     checkout_root=str(checkout),
-    worker_script=str(SH / "repo" / "tools" / "prismabuild_worker.py"),
+    worker_script=str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
     tags=["gb10"],
 )
 print(json.dumps({

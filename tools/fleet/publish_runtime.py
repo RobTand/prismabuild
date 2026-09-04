@@ -10,11 +10,14 @@ which commit the mirror is.  Thirty-two resubmissions died instantly on
 ``AttributeError: 'PoolQueue' object has no attribute 'placeable'`` -- a
 method committed twenty minutes earlier, in a file the mirror did not have.
 
-So the copy becomes a step with a receipt.  ``RUNTIME_VERSION.json`` records
-the commit, whether the tree was dirty, and a sha256 per published file, next
-to the bytes themselves; a worker attestation already records the sha256 of
-what it loaded, so the two can be compared after the fact and a mismatch is
-a fact rather than a suspicion.
+So publication becomes a complete immutable generation with a receipt.
+``RUNTIME_VERSION.json`` records the commit, whether the tree was dirty, and
+a sha256 per published file next to the bytes themselves; the generation is
+copied, revalidated and import-probed off-line, then ``repo`` moves to it in
+one namespace operation.  A caller therefore sees one complete generation,
+never the member-by-member interval a receipt could not attest.  Worker
+attestation already records the sha256 of what it loaded, so the two can be
+compared after the fact and a mismatch is a fact rather than a suspicion.
 
 The mirror keeps its scripts at the top of ``tools/`` while the checkout has
 them under ``tools/fleet/``, because the hook and older command lines address
@@ -29,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -36,6 +40,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 
 CHECKOUT = Path(__file__).resolve().parents[2]
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
@@ -44,7 +49,7 @@ FLEET_SCRIPTS = (
     "docker", "pbrun.py", "pbtest.py", "require_pool.py", "worker_loop.py", "worker.py",
     "render_identity.py", "seal_and_publish.py", "tessera_status.py",
     "dispatch_tessera_shards.py", "dispatch_tessera_ladder.py",
-    "publish_runtime.py", "pool_reset.py", "supervise.py",
+    "publish_runtime.py", "pool_reset.py", "runtime_paths.py", "supervise.py",
 )
 #: Not code, but read by published code: the supervisor on each box reads the
 #: fleet's declared shape from here, so a runtime published without it starts
@@ -102,24 +107,21 @@ def _working_tree_dirty() -> bool:
     return bool(result.stdout.strip())
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--allow-dirty", action="store_true",
-                    help="publish a tree with uncommitted changes")
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
+def _source_for(name: str) -> Path:
+    if name.startswith("tools/fleet/"):
+        base = name.rsplit("/", 1)[1]
+        source = CHECKOUT / "tools" / "fleet" / base
+        return source if source.is_file() else CHECKOUT / "tools" / base
+    if name == "tools/prismabuild_worker.py":
+        return CHECKOUT / "tools" / "prismabuild_worker.py"
+    if name.startswith("tools/"):
+        base = name.rsplit("/", 1)[1]
+        source = CHECKOUT / "tools" / "fleet" / base
+        return source if source.is_file() else CHECKOUT / "tools" / base
+    return CHECKOUT / name
 
-    # Identity is established before MIRROR is even enumerated, much less
-    # touched.  Failure here is a refusal, never an empty field in a receipt.
-    commit = _commit_identity()
-    dirty = _working_tree_dirty()
-    if dirty and not args.allow_dirty:
-        raise SystemExit(
-            "refusing to publish a dirty tree: the receipt would name a commit "
-            "whose bytes are not the bytes published.  Commit, or pass "
-            "--allow-dirty and accept that the version is only approximate."
-        )
 
+def _publication_manifest() -> dict[str, str]:
     published: dict[str, str] = {}
     for source in sorted((CHECKOUT / "src" / "prismabuild").glob("*.py")):
         published[f"src/prismabuild/{source.name}"] = _sha256(source)
@@ -141,6 +143,138 @@ def main() -> int:
         published["tools/prismabuild_worker.py"] = _sha256(worker)
     for source in sorted((CHECKOUT / "tests").glob("*.py")):
         published[f"tests/{source.name}"] = _sha256(source)
+    return published
+
+
+def _fsync_file(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            # Some NFS servers decline directory fsync.  Every regular member
+            # is still flushed before the namespace operation below.
+            pass
+    finally:
+        os.close(descriptor)
+
+
+def _write_receipt(path: Path, receipt: dict[str, object]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(receipt, handle, indent=1)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _probe(root: Path) -> None:
+    probe = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, r'%s'); "
+         "from prismabuild import pool, core; "
+         "assert hasattr(pool.PoolQueue, 'claim'); print('import ok')"
+         % (root / "src")],
+        capture_output=True, text=True, check=False,
+    )
+    print((probe.stdout or probe.stderr).strip())
+    if probe.returncode != 0:
+        raise SystemExit(
+            f"refusing to activate a runtime that failed its import probe "
+            f"with status {probe.returncode}"
+        )
+
+
+def _seal_generation(root: Path) -> None:
+    """Make accidental mutation fail; generations are append-only history."""
+
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_symlink():
+            continue
+        path.chmod(path.stat().st_mode & ~0o222)
+    root.chmod(root.stat().st_mode & ~0o222)
+
+
+def _activate(generation: Path, *, migrate_directory: bool) -> Path | None:
+    """Expose ``generation`` at MIRROR in one namespace operation.
+
+    Once MIRROR is a symlink, replacing a prepared sibling symlink is one
+    atomic operation.  Linux ``RENAME_EXCHANGE`` would make the one-time move
+    from the historical non-empty directory atomic too, but the fleet's NFS
+    mount rejects that operation with ``EINVAL``.  That migration therefore
+    requires an explicit maintenance flag: first retain the old directory,
+    then install the complete symlink, rolling the old name back if install
+    fails.  A caller can be refused in that narrow interval; it can never read
+    a mixed generation.  Publication never deletes a prior generation.
+    """
+
+    MIRROR.parent.mkdir(parents=True, exist_ok=True)
+    candidate = MIRROR.parent / f".{MIRROR.name}.activate-{uuid.uuid4().hex}"
+    target = os.path.relpath(generation, MIRROR.parent)
+    os.symlink(target, candidate)
+    _fsync_directory(MIRROR.parent)
+    legacy: Path | None = None
+    try:
+        if MIRROR.is_symlink() or not MIRROR.exists():
+            os.replace(candidate, MIRROR)
+        elif MIRROR.is_dir():
+            if not migrate_directory:
+                raise SystemExit(
+                    f"{MIRROR} is the legacy directory runtime; refusing its "
+                    "one-time maintenance handoff without --migrate-directory"
+                )
+            legacy = generation.parent / (
+                f"legacy-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+            )
+            os.replace(MIRROR, legacy)
+            try:
+                os.replace(candidate, MIRROR)
+            except BaseException:
+                if not MIRROR.exists() and not MIRROR.is_symlink():
+                    os.replace(legacy, MIRROR)
+                raise
+        else:
+            raise SystemExit(
+                f"refusing to replace live runtime {MIRROR}: expected a "
+                "directory or symlink"
+            )
+        _fsync_directory(MIRROR.parent)
+    finally:
+        if candidate.is_symlink():
+            candidate.unlink()
+    return legacy
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="publish a tree with uncommitted changes")
+    ap.add_argument(
+        "--migrate-directory", action="store_true",
+        help="perform the one-time fail-closed handoff from the legacy live directory",
+    )
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    # Identity is established before MIRROR is even enumerated, much less
+    # touched.  Failure here is a refusal, never an empty field in a receipt.
+    commit = _commit_identity()
+    dirty = _working_tree_dirty()
+    if dirty and not args.allow_dirty:
+        raise SystemExit(
+            "refusing to publish a dirty tree: the receipt would name a commit "
+            "whose bytes are not the bytes published.  Commit, or pass "
+            "--allow-dirty and accept that the version is only approximate."
+        )
+
+    published = _publication_manifest()
 
     print(f"publishing {len(published)} files from {commit[:12]}"
           f"{' (dirty)' if dirty else ''} to {MIRROR}")
@@ -149,49 +283,66 @@ def main() -> int:
             print(f"  {name}")
         return 0
 
-    for name in sorted(published):
-        if name.startswith("tools/fleet/"):
-            base = name.rsplit("/", 1)[1]
-            source = CHECKOUT / "tools" / "fleet" / base
-            if not source.is_file():
-                source = CHECKOUT / "tools" / base
-        elif name == "tools/prismabuild_worker.py":
-            source = CHECKOUT / "tools" / "prismabuild_worker.py"
-        elif name.startswith("tools/"):
-            base = name.rsplit("/", 1)[1]
-            source = CHECKOUT / "tools" / "fleet" / base
-            if not source.is_file():
-                source = CHECKOUT / "tools" / base
-        else:
-            source = CHECKOUT / name
-        target = MIRROR / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+    store = MIRROR.parent / "runtime-generations"
+    store.mkdir(parents=True, exist_ok=True)
+    nonce = uuid.uuid4().hex[:12]
+    generation_name = f"{commit[:12]}-{int(time.time())}-{nonce}"
+    stage = store / f".{generation_name}.staging"
+    generation = store / generation_name
+    stage.mkdir()
+    activated = False
+    try:
+        for name, expected in sorted(published.items()):
+            source = _source_for(name)
+            target = stage / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            _fsync_file(target)
+            actual = _sha256(target)
+            if actual != expected:
+                raise SystemExit(
+                    f"copied runtime member changed at {name}: expected "
+                    f"{expected}, staged {actual}"
+                )
 
-    receipt = {
-        "schema": "prismaquant.prismabuild.runtime_version.v1",
-        "commit": commit,
-        "dirty": dirty,
-        "published_unix": time.time(),
-        "published_by": socket.gethostname(),
-        "files": published,
-    }
-    (MIRROR / "RUNTIME_VERSION.json").write_text(json.dumps(receipt, indent=1))
-    print(f"wrote {MIRROR / 'RUNTIME_VERSION.json'}")
+        # A checkout can advance while a slow NFS copy is in progress.  Hash
+        # the complete source set again and re-prove both Git facts before a
+        # receipt names the staged bytes.
+        if _commit_identity() != commit or _working_tree_dirty() != dirty:
+            raise SystemExit(
+                "runtime checkout identity moved while publication was staged"
+            )
+        if _publication_manifest() != published:
+            raise SystemExit(
+                "runtime source bytes moved while publication was staged"
+            )
 
-    # A published runtime nobody can import is worse than a stale one: the
-    # error surfaces on a worker, minutes later, as a failed action.  Import
-    # it here, from the mirror, before anything is asked to run it.
-    probe = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; sys.path.insert(0, r'%s'); "
-         "from prismabuild import pool, core; "
-         "assert hasattr(pool.PoolQueue, 'claim'); print('import ok')"
-         % (MIRROR / "src")],
-        capture_output=True, text=True, check=False,
-    )
-    print((probe.stdout or probe.stderr).strip())
-    return 0 if probe.returncode == 0 else 1
+        receipt: dict[str, object] = {
+            "schema": "prismaquant.prismabuild.runtime_version.v1",
+            "commit": commit,
+            "dirty": dirty,
+            "generation": generation_name,
+            "published_unix": time.time(),
+            "published_by": socket.gethostname(),
+            "files": published,
+        }
+        _write_receipt(stage / "RUNTIME_VERSION.json", receipt)
+        _probe(stage)
+        _seal_generation(stage)
+        _fsync_directory(stage)
+        os.replace(stage, generation)
+        _fsync_directory(store)
+        legacy = _activate(
+            generation, migrate_directory=args.migrate_directory
+        )
+        activated = True
+        print(f"activated {MIRROR} -> {generation}")
+        if legacy is not None:
+            print(f"retained previous directory runtime at {legacy}")
+        return 0
+    finally:
+        if not activated and stage.exists():
+            shutil.rmtree(stage)
 
 
 if __name__ == "__main__":

@@ -52,6 +52,7 @@ def _run(tmp_path: Path, argv: list[str]):
     wl = _worker_loop()
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
+         mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
          mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
          mock.patch.object(sys, "argv",
                            ["worker_loop.py", "--assume-idle", *argv]):
@@ -148,6 +149,7 @@ def test_the_retire_is_not_conditional_on_anything(tmp_path: Path) -> None:
     wl = _worker_loop()
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
+         mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
          mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
          mock.patch.object(box_capacity, "gpu_compute_apps", return_value=[]), \
          mock.patch.object(box_capacity, "mem_available_gb", return_value=512), \

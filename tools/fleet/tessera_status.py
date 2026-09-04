@@ -2,6 +2,9 @@
 import json, sys
 from pathlib import Path
 SH = Path("/mnt/shared/prismabuild-fleet")
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root
+RUNTIME_ROOT = generation_root(__file__)
 Q = SH / "pb-queue"
 RES = SH / "checkout" / "results" / "glm53-tessera"
 PARTS = Path("/mnt/shared/models/GLM-5.3-Flash-Tessera-E2M1K2-20260901-parts")
@@ -23,7 +26,7 @@ def width() -> str:
     """
 
     try:
-        sys.path.insert(0, str(SH / "repo" / "src"))
+        sys.path.insert(0, str(RUNTIME_ROOT / "src"))
         from prismabuild import pool
         return pool.describe_placement_census(pool.PoolQueue(Q).placement_census())
     except Exception as exc:                       # noqa: BLE001 - diagnostic only

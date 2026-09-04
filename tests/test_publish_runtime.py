@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import shutil
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +27,19 @@ def _checkout(path: Path, generation: str) -> Path:
     (package / "core.py").write_text(f"GENERATION = {generation!r}\n")
     (package / "pool.py").write_text(f"GENERATION = {generation!r}\n")
     return path
+
+
+def _fake_git_and_probe(commit: str):
+    def run(argv, **_kwargs):
+        words = [str(part) for part in argv]
+        if words and words[0] == "git":
+            if "rev-parse" in words:
+                return SimpleNamespace(returncode=0, stdout=commit + "\n", stderr="")
+            if "status" in words:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="import ok\n", stderr="")
+
+    return run
 
 
 def test_publish_refuses_an_unproved_commit_before_touching_the_mirror(
@@ -63,3 +78,56 @@ def test_untracked_published_files_make_the_runtime_tree_dirty(monkeypatch) -> N
     monkeypatch.setattr(publish_runtime, "_git_result", git_result)
 
     assert publish_runtime._working_tree_dirty() is True
+
+
+def test_publish_never_exposes_a_mixed_generation(tmp_path, monkeypatch) -> None:
+    commit = "a" * 40
+    checkout = _checkout(tmp_path / "checkout", "new")
+    mirror = _checkout(tmp_path / "mirror", "old")
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
+    monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
+    monkeypatch.setattr(
+        publish_runtime.subprocess, "run", _fake_git_and_probe(commit)
+    )
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--migrate-directory"])
+
+    copied_core = threading.Event()
+    release_copy = threading.Event()
+    real_copy = shutil.copy2
+
+    def paused_copy(source, target, *args, **kwargs):
+        result = real_copy(source, target, *args, **kwargs)
+        if Path(target).name == "core.py" and not copied_core.is_set():
+            copied_core.set()
+            assert release_copy.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(publish_runtime.shutil, "copy2", paused_copy)
+    outcome: list[int] = []
+    errors: list[BaseException] = []
+
+    def publish() -> None:
+        try:
+            outcome.append(publish_runtime.main())
+        except BaseException as exc:  # make a publisher crash visible to the test
+            errors.append(exc)
+
+    thread = threading.Thread(target=publish)
+    thread.start()
+    assert copied_core.wait(timeout=5)
+    observed = (
+        (mirror / "src" / "prismabuild" / "core.py").read_text(),
+        (mirror / "src" / "prismabuild" / "pool.py").read_text(),
+    )
+    release_copy.set()
+    thread.join(timeout=5)
+
+    if errors:
+        raise errors[0]
+    assert outcome == [0]
+    assert observed in {
+        ("GENERATION = 'old'\n", "GENERATION = 'old'\n"),
+        ("GENERATION = 'new'\n", "GENERATION = 'new'\n"),
+    }

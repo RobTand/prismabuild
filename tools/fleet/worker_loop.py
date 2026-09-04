@@ -54,32 +54,47 @@ are properties of the box rather than of the work:
 import argparse
 import json
 import os
-import pathlib
 import socket
 import sys
 import time
 from pathlib import Path
 
 SH = Path("/mnt/shared/prismabuild-fleet")
-sys.path.insert(0, str(SH / "repo" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root  # noqa: E402
+
+RUNTIME_ROOT = generation_root(__file__)
+sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import box_capacity, cpu_topology, pool  # noqa: E402
 
 #: Consecutive ``serve_once`` failures before the loop gives up and lets the
 #: supervisor replace it.  Survive the items; do not survive a broken box.
 MAX_CONSECUTIVE_ERRORS = 5
 
-#: The receipt ``publish_runtime`` writes beside the bytes it published.
-RUNTIME_VERSION = pathlib.Path(
-    "/mnt/shared/prismabuild-fleet/repo/RUNTIME_VERSION.json")
+#: The receipt beside these imported bytes proves what this process loaded.
+GENERATION_VERSION = RUNTIME_ROOT / "RUNTIME_VERSION.json"
+#: The stable name crosses the generation boundary on every idle poll, which
+#: is how a loop notices that the publisher activated a successor.
+RUNTIME_VERSION = SH / "repo" / "RUNTIME_VERSION.json"
+
+
+def _commit_at(path: Path) -> str:
+    try:
+        return str(json.loads(path.read_text()).get("commit") or "")
+    except (OSError, ValueError):
+        return ""
 
 
 def published_commit() -> str:
-    """The commit whose bytes are currently published, or "" if unknown."""
+    """The commit at the live generation boundary, or "" if unknown."""
 
-    try:
-        return str(json.loads(RUNTIME_VERSION.read_text()).get("commit") or "")
-    except (OSError, ValueError):
-        return ""
+    return _commit_at(RUNTIME_VERSION)
+
+
+def loaded_runtime_commit() -> str:
+    """The commit beside the immutable source tree this loop imported."""
+
+    return _commit_at(GENERATION_VERSION)
 
 
 def census_line(queue) -> str:
@@ -180,7 +195,7 @@ def main():
     served = 0
     errors = 0
     announced: dict[str, int] | None = None
-    loaded_commit = published_commit()
+    loaded_commit = loaded_runtime_commit()
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}", flush=True)
     while True:
         # Every kind, every poll -- not just memory, and not just under a flag.

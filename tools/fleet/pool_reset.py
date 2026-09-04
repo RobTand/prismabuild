@@ -38,11 +38,14 @@ import sys
 import time
 
 SH = Path("/mnt/shared/prismabuild-fleet")
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root  # noqa: E402
+RUNTIME_ROOT = generation_root(__file__)
+sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Mapping  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
 
-PBRUN = Path(__file__).resolve().parent / "pbrun.py"
+PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
 #: A stale declared result is cleared through ``core.repair_local_result`` and
 #: never by globbing.  The prefix is the pool's own dropping, but the file name
 #: is per *action fingerprint*, and pbrun tees a live run into the very same

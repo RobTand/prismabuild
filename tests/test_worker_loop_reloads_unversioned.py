@@ -46,7 +46,8 @@ def _run(tmp_path: Path, commits: list[str], capsys) -> str:
     wl = _worker_loop()
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(wl, "published_commit", side_effect=commits), \
+         mock.patch.object(wl, "loaded_runtime_commit", return_value=commits[0]), \
+         mock.patch.object(wl, "published_commit", side_effect=commits[1:]), \
          mock.patch.object(sys, "argv",
                            ["worker_loop.py", "--once", "--gpu-slots", "0",
                             "--mem-gb", "8", "--class", "x86", "--all-cores"]):

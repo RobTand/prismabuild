@@ -62,6 +62,7 @@ def _run(tmp_path: Path, argv: list[str], *, apps=(), mem_gb=100, load1=0.0):
     wl = _worker_loop()
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
+         mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
          mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
          mock.patch.object(box_capacity, "gpu_compute_apps", **reader), \
          mock.patch.object(box_capacity, "mem_available_gb", return_value=mem_gb), \
@@ -190,6 +191,7 @@ def test_assume_idle_offers_the_declaration_unobserved(tmp_path: Path) -> None:
     wl = _worker_loop()
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
+         mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
          mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
          mock.patch.object(box_capacity, "gpu_compute_apps", side_effect=refuse), \
          mock.patch.object(box_capacity, "mem_available_gb", side_effect=refuse), \

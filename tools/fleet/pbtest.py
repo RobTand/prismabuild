@@ -33,7 +33,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-PBRUN = Path("/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py")
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root  # noqa: E402
+
+RUNTIME_ROOT = generation_root(__file__)
+PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
 SHARED = Path("/mnt/shared")
 
 

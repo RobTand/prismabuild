@@ -107,6 +107,7 @@ def test_an_operator_stops_a_running_action_and_the_worker_carries_on(
     def run_worker() -> None:
         with mock.patch.object(wl, "SH", tmp_path), \
              mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
+             mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
              mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
              mock.patch.object(sys, "argv", [
                  "worker_loop.py", "--once", "--all-cores", "--class", "x86",

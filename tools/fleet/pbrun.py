@@ -48,6 +48,9 @@ import time
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root
+
 SH = Path("/mnt/shared/prismabuild-fleet")
 #: Every box mounts this at the same path, so a checkout underneath it is
 #: visible to all of them and an action that runs there can run anywhere.
@@ -55,7 +58,8 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 #: the path*, which is why placement below is derived from it rather than
 #: asked of the submitter.
 SHARED_ROOT = Path("/mnt/shared")
-sys.path.insert(0, str(SH / "repo" / "src"))
+RUNTIME_ROOT = generation_root(__file__)
+sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import core as pb, pool  # noqa: E402
 
 POLL_S = 5.0
@@ -75,7 +79,7 @@ WITHDRAWN_EXIT = 143
 #: The receipt ``publish_runtime`` leaves for which bytes the fleet is serving.
 #: A worker loop holds the module it imported at start, so this is the only
 #: thing that says whether a given box's loop can see a withdrawal at all.
-RUNTIME_VERSION = SH / "repo" / "RUNTIME_VERSION.json"
+RUNTIME_VERSION = RUNTIME_ROOT / "RUNTIME_VERSION.json"
 
 
 def published_commit() -> str:
@@ -105,7 +109,7 @@ STAMP_PREFIX = ".pbrun-closure."
 RESULT_PREFIX = "pbrun_result."
 CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
-CONTAINER_WRAPPER_DIR = SH / "repo" / "tools"
+CONTAINER_WRAPPER_DIR = RUNTIME_ROOT / "tools"
 
 
 def _git_identity(cwd: Path) -> dict[str, str]:
@@ -1048,7 +1052,7 @@ def main() -> int:
         action_key=key,
         cas_root=str(SH / "cas"),
         checkout_root=str(cwd),
-        worker_script=str(SH / "repo" / "tools" / "prismabuild_worker.py"),
+        worker_script=str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
         tags=tags,
         needs_gpu=bool(demand.get("gpu")),
         priority=args.priority,

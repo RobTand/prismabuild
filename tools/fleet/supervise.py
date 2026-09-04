@@ -43,16 +43,21 @@ import sys
 import time
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
-LOOP = MIRROR / "repo" / "tools" / "worker_loop.py"
 CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
 CLAIM = Path("/home/rob/tmp/prismabuild-supervisor.claim")
 LOG_DIR = Path("/home/rob/tmp")
 
 
+def _current_root() -> Path:
+    return MIRROR / "repo"
+
+
 def _config(host: str) -> dict:
     """Read this box's declared shape, from the checkout or the published copy."""
 
-    for path in (CONFIG, MIRROR / "repo" / "tools" / "fleet_boxes.json"):
+    # A supervisor intentionally outlives a generation.  Prefer the current
+    # live generation; CONFIG is only the checkout/bootstrapping fallback.
+    for path in (_current_root() / "tools" / "fleet_boxes.json", CONFIG):
         try:
             boxes = json.loads(path.read_text())["boxes"]
         except (OSError, ValueError, KeyError):
@@ -80,12 +85,12 @@ def declared_shape(host: str, override_loops: int,
     up, where nothing was watching.  It cost a box two of three GPU slots for
     as long as nobody noticed.
 
-    A bad read keeps the previous shape instead of raising.  ``publish`` is
-    not atomic per file, so a tick that lands mid-publish sees a truncated
-    JSON, and a supervisor that exits on that takes the box's loops with it
-    the next time one goes idle.  The first read has no previous to fall back
-    on and still refuses, because guessing what a box offers is the one thing
-    this must never do.
+    A bad read keeps the previous shape instead of raising.  Runtime
+    publication is atomic now, but a transient NFS read failure or damaged
+    generation must still not take the box's loops with it the next time one
+    goes idle.  The first read has no previous to fall back on and still
+    refuses, because guessing what a box offers is the one thing this must
+    never do.
     """
 
     try:
@@ -218,8 +223,12 @@ def _spawn(args: list[str], index: int) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     handle = (LOG_DIR / f"pb-worker-{index}.log").open("a", buffering=1)
     handle.write(f"\n=== spawned {time.strftime('%F %T')} ===\n")
+    # Resolve the live generation once before spawning.  The child then loads
+    # its script and every sibling import through one immutable absolute root,
+    # even if a later publish moves the live ``repo`` symlink.
+    loop = (_current_root() / "tools" / "worker_loop.py").resolve(strict=True)
     proc = subprocess.Popen(
-        [sys.executable, str(LOOP), *args],
+        [sys.executable, str(loop), *args],
         cwd=str(MIRROR), stdout=handle, stderr=subprocess.STDOUT,
         start_new_session=True,
     )
@@ -251,7 +260,7 @@ def main() -> int:
         published = ""
         try:
             published = str(json.loads(
-                (MIRROR / "repo" / "RUNTIME_VERSION.json").read_text()
+                (_current_root() / "RUNTIME_VERSION.json").read_text()
             ).get("commit") or "")
         except (OSError, ValueError):
             pass
@@ -277,7 +286,7 @@ def main() -> int:
         published = ""
         try:
             published = str(json.loads(
-                (MIRROR / "repo" / "RUNTIME_VERSION.json").read_text()
+                (_current_root() / "RUNTIME_VERSION.json").read_text()
             ).get("commit") or "")
         except (OSError, ValueError):
             pass

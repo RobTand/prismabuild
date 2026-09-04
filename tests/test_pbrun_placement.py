@@ -10,13 +10,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-# Imported BEFORE ``pbrun`` is exec'd, on purpose.  ``pbrun`` puts the
-# published mirror (``/mnt/shared/prismabuild-fleet/repo/src``) at the front of
-# ``sys.path`` so a submitter runs the fleet's bytes, which means a bare
-# ``pytest tests/test_pbrun_placement.py`` would otherwise test THIS checkout's
-# pbrun against the MIRROR's pool -- and report a missing method as a failure
-# of code that is right here.  Binding the package first makes the file
-# self-contained however it is invoked.
+# Imported BEFORE ``pbrun`` is exec'd, on purpose.  ``pbrun`` puts the source
+# beside its own entry point at the front of ``sys.path`` so a live submitter
+# binds one published generation.  Binding the checkout's package first keeps
+# this direct module-load test self-contained too.
 from prismabuild import pool as pool_module  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location(

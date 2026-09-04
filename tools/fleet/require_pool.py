@@ -28,7 +28,10 @@ import sys
 from pathlib import Path
 
 FLAG = Path("/home/rob/tmp/arb/require_pool.on")
-PBRUN = "/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py"
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root  # noqa: E402
+
+PBRUN = str(generation_root(__file__) / "tools" / "pbrun.py")
 
 # The CUDA interpreter, the flock wrappers, and a bare flock on the GPU lock.
 # That last one is not hypothetical: the wrappers were only ever a convenience,

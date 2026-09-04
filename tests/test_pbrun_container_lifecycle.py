@@ -43,7 +43,7 @@ def test_every_submission_gets_a_sealed_container_owner(
     marker = variables["PRISMABUILD_CONTAINER_MARKER"]
     assert len(owner) == 64 and set(owner) <= set("0123456789abcdef")
     assert marker.endswith(f"/container-owners/{owner}.used")
-    assert variables["PATH"].split(":")[0] == str(pbrun.SH / "repo" / "tools")
+    assert variables["PATH"].split(":")[0] == str(pbrun.RUNTIME_ROOT / "tools")
 
 
 def test_pool_item_carries_the_same_container_owner(tmp_path: Path) -> None:
