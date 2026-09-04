@@ -277,8 +277,35 @@ def test_an_unannounced_fleet_reports_unknown_rather_than_zero(tmp_path) -> None
     assert "Fleet width unknown" in notice
 
 
-def test_the_notice_is_printed_before_the_queue_is_told(tmp_path) -> None:
-    """A pin the submitter learns about after the fact is a receipt, not a warning."""
+def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> None:
+    """A pin the submitter learns about after the fact is a receipt, not a warning.
 
-    source = Path(pbrun.__file__).read_text()
-    assert source.index("pin_notice(q, intent") < source.index("q.publish(")
+    Driven through ``main()`` against a private pool root rather than asserted
+    on the source, because what matters is that the sentence reaches the
+    person's terminal on a real submit -- past the placement, the demand
+    defaults and the CAS publication that come between.
+    """
+
+    import socket
+    from unittest import mock
+
+    work = tmp_path / "tree"
+    work.mkdir()
+    (work / "hello.txt").write_text("hi\n")
+    queue = pool_module.PoolQueue(tmp_path / "pb-queue")
+    queue.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
+                   capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
+    queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
+                   capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
+
+    with mock.patch.object(pbrun, "SH", tmp_path), \
+         mock.patch.object(pbrun, "POLL_S", 0.001), \
+         mock.patch.object(socket, "gethostname", return_value=HOST), \
+         mock.patch.object(sys, "argv",
+                           ["pbrun.py", "--cwd", str(work), "--wait-s", "0.01",
+                            "--", "echo", "hi"]):
+        assert pbrun.main() == 75          # nothing is running to claim it
+
+    err = capsys.readouterr().err
+    assert err.index("PINNED to sparky") < err.index("pbrun: queued")
+    assert "1 other live box fits this demand: dl380g10" in err
