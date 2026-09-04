@@ -62,7 +62,7 @@ from pathlib import Path
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(SH / "repo" / "src"))
-from prismabuild import box_capacity, cpu_topology, pool  # noqa: E402
+from prismabuild import box_capacity, checkout, cpu_topology, pool  # noqa: E402
 
 #: Consecutive ``serve_once`` failures before the loop gives up and lets the
 #: supervisor replace it.  Survive the items; do not survive a broken box.
@@ -103,6 +103,33 @@ def census_line(queue) -> str:
         return pool.describe_placement_census(queue.placement_census())
     except Exception as exc:                                     # noqa: BLE001
         return f"fleet width unavailable ({type(exc).__name__}: {exc})"
+
+
+def sweep_line(queue) -> str:
+    """Bound the materialised trees, and never let the tidying be the failure.
+
+    Run at the start of an idle streak, for the same reason the census is: it
+    is the moment this box is provably not executing anything of its own, and
+    the sweep's one destructive act is guarded by asking the queue which trees
+    have a live claim on this box rather than by looking at the clock.
+
+    Wrapped for the same reason ``census_line`` is wrapped: a housekeeping
+    call has no business deciding whether the worker keeps working.
+    """
+
+    try:
+        result = checkout.sweep(live_commits=queue.live_commits())
+    except Exception as exc:                                     # noqa: BLE001
+        return f"tree sweep unavailable ({type(exc).__name__}: {exc})"
+    removed = result.get("removed") or []
+    skipped = result.get("skipped") or []
+    parts = [f"trees kept {result.get('kept', 0)}, removed {len(removed)}"]
+    if skipped:
+        # A directory under the trees root that this module did not create is
+        # never removed and is always reported: silence about it would be the
+        # start of the sweep growing a heuristic.
+        parts.append(f"{len(skipped)} not ours, left alone")
+    return "; ".join(parts)
 
 
 def main():
@@ -234,6 +261,14 @@ def main():
             observed_detail=(observer.last.detail if observer is not None
                              and observer.last is not None else None),
             runtime_commit=loaded_commit,
+            # What these bytes can do, said by the box that runs them.  This
+            # is the whole migration mechanism for tree-addressed checkouts:
+            # ``pbrun`` addresses an action by its tree only when EVERY live
+            # offer carries this, so a box still running older bytes keeps the
+            # fleet path-addressed by saying nothing, and the conversion
+            # happens as the loops reload rather than on a date somebody has
+            # to pick.
+            capabilities=pool.WORKER_CAPABILITIES,
         )
         # One bad item must not take the worker with it.  ``serve_once``
         # re-raises whatever ``execute`` raised, and this loop had no handler,
@@ -297,6 +332,7 @@ def main():
             # day per loop.
             if idle == 1:
                 print(f"[{host}] idle; {census_line(queue)}", flush=True)
+                print(f"[{host}] {sweep_line(queue)}", flush=True)
             # A loop imports ``prismabuild.pool`` once, at start, and holds
             # those bytes for its whole life.  So a fix published while loops
             # are running is loaded by none of them, and the supervisor counts

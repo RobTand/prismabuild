@@ -40,6 +40,7 @@ import getpass
 import hashlib
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -57,6 +58,18 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 sys.path.insert(0, str(SH / "repo" / "src"))
 from prismabuild import core as pb, pool  # noqa: E402
+try:
+    # Optional on purpose.  ``pbrun`` puts the PUBLISHED mirror at the front of
+    # ``sys.path`` so a submitter runs the fleet's bytes, and a checkout's
+    # ``pbrun.py`` therefore imports whatever ``prismabuild`` the fleet is
+    # serving -- which, until the coordinator publishes this, has no
+    # ``checkout`` module at all.  A hard import turns that ordinary window
+    # into ``pbrun --help`` exiting 1 for everybody.  Absent means the fleet
+    # cannot materialise a tree, which is the same "no" an older box's silent
+    # offer already means.
+    from prismabuild import checkout as ck  # noqa: E402
+except ImportError:                                          # pragma: no cover
+    ck = None                                                # type: ignore[assignment]
 
 POLL_S = 5.0
 #: What ``pbrun`` exits with when the action it was waiting for was withdrawn.
@@ -197,7 +210,7 @@ def exclusive_gpu_demand(queue, tags) -> int:
     return best
 
 
-def result_and_stamp_names(command, cwd, demand, variables):
+def result_and_stamp_names(command, cwd, demand, variables, *, tree=None):
     """The result file and the closure stamp this submission writes.
 
     Returned together because they share one fingerprint and one reason for
@@ -221,10 +234,21 @@ def result_and_stamp_names(command, cwd, demand, variables):
     case where sharing the path was safe all along.
     """
 
-    identity = _git_identity(cwd)
+    if tree is None:
+        binding = [command, str(cwd), demand, variables, _git_identity(cwd)]
+    else:
+        # The tree-addressed binding, and note what is NOT in it: the
+        # submitter's path.  That absence is the point.  ``str(cwd)`` in the
+        # fingerprint made the same work submitted from two boxes two
+        # different actions with two different keys, so a cache hit across
+        # boxes was luck rather than a property -- and this addressing exists
+        # exactly so that the same request can be answered anywhere.  What
+        # replaces it is the repository, the subdirectory within it, and the
+        # content of the tree.
+        binding = [command, tree["repo"], tree["prefix"], tree["tree"],
+                   demand, variables]
     fingerprint = hashlib.sha256(
-        json.dumps([command, str(cwd), demand, variables, identity],
-                   sort_keys=True).encode()
+        json.dumps(binding, sort_keys=True).encode()
     ).hexdigest()[:16]
     return (f"{RESULT_PREFIX}{fingerprint}.txt",
             f"{STAMP_PREFIX}{fingerprint}.json")
@@ -280,6 +304,7 @@ def placement_tags(
     explicit: list[str],
     here: bool,
     hostname: str,
+    portable: bool = False,
 ) -> list[str]:
     """Return the placement tags for an action whose working directory is ``cwd``.
 
@@ -307,6 +332,14 @@ def placement_tags(
         return list(explicit)
     if here:
         return [hostname]
+    # ``portable`` says the action does not run against ``cwd`` at all: it
+    # names a tree, and the claiming box materialises that tree under its own
+    # scratch.  So the path stops being a fact about where the work can run,
+    # which is the entire pin.  It is not a preference and not a flag a
+    # submitter sets -- ``main`` derives it from whether the tree was
+    # published and whether every live box announced it can build one.
+    if portable:
+        return []
     return [hostname] if is_box_local(cwd) else []
 
 
@@ -322,6 +355,156 @@ def is_box_local(cwd: Path) -> bool:
     """
 
     return pool.is_box_local_path(cwd.resolve())
+
+
+#: The bound on what one submit may add to the shared object store, in GiB.
+#: Duplicated from ``checkout`` rather than read from it because the argument
+#: parser is built before anything has established that ``checkout`` is even
+#: importable here; the two are asserted equal by a test.
+MAX_ADD_GB_DEFAULT = 2.0
+
+
+def fleet_materialises(queue) -> tuple[bool | None, str]:
+    """Can every live box build a tree for itself?  And if not, which cannot.
+
+    Attested, not asserted (principle 14).  The answer is derived from what
+    each box publishes about itself in its own offer record -- a
+    ``capabilities`` list it writes -- and never from a runtime commit this
+    side would have to map onto a feature.  A box running older bytes
+    announces no capabilities at all, and that silence is a "no" that cannot
+    be got wrong.
+
+    ``None`` means no worker has announced, and stays unknown rather than
+    becoming a yes: the same rule ``placeable`` follows.  Unknown is a "no"
+    for this decision, because addressing an action by a tree that nothing can
+    materialise would make it unrunnable everywhere instead of runnable in one
+    place.
+    """
+
+    if ck is None or not hasattr(pool, "WORKER_CAPABILITIES"):
+        # The submitter's ``pool`` comes from the published mirror.  Bytes
+        # that predate this feature have no ``publish(checkout_commit=...)``
+        # either, so asking would be a TypeError two screens later.
+        return False, "the published pool has no tree-addressed checkout"
+    live = queue.offers()
+    if not live:
+        return None, "no worker has announced"
+    lacking = sorted(
+        str(offer.get("host") or "?") for offer in live
+        if ck.CHECKOUT_COMMIT_CAPABILITY not in
+        {str(c) for c in (offer.get("capabilities") or ())})
+    if lacking:
+        return False, (f"{', '.join(lacking)} "
+                       f"{'announces' if len(lacking) == 1 else 'announce'} no "
+                       f"{ck.CHECKOUT_COMMIT_CAPABILITY} capability")
+    return True, ""
+
+
+def refuse_paths_into_the_checkout(command, variables, toplevel: str) -> None:
+    """Refuse a submission whose argv names the submitter's own tree.
+
+    A relocated tree breaks an absolute path *silently*: the command runs,
+    against the wrong file or none, and reports whatever that produced.  It is
+    the one failure mode of tree addressing that is not loud, so it is refused
+    at the one moment the caller is watching -- the same place an unplaceable
+    tag is already refused.
+
+    Matched on the repository toplevel rather than on ``cwd``, because a
+    submit from a subdirectory names its files under the toplevel too, and
+    matched only where the path ENDS or continues with a separator, so a
+    sibling directory that merely shares a prefix
+    (``/home/rob/tessera-results`` beside ``/home/rob/tessera``) is not
+    dragged in.  The environment is scanned as well as the argv: a
+    ``--env PYTHONPATH=<checkout>/src`` is the same hole wearing a different
+    hat, and it is the more likely one.
+    """
+
+    pattern = re.compile(re.escape(str(toplevel).rstrip("/")) + r"(?=/|$|[\s:,'\"])")
+    offenders = [tok for tok in command if pattern.search(str(tok))]
+    offenders += [f"{k}={v}" for k, v in variables.items()
+                  if pattern.search(str(v))]
+    if not offenders:
+        return
+    raise SystemExit(
+        f"pbrun: this action would be addressed by its tree, so it may run on "
+        f"any box -- but it names the submitter's own checkout:\n"
+        + "".join(f"  {tok}\n" for tok in offenders[:6])
+        + f"That path exists on this box only.  Elsewhere the command would "
+        f"run against the wrong file or none, and say nothing about it.\n"
+        f"Make the path relative to the checkout, or submit with "
+        f"--path-addressed to keep the pin this box needs.")
+
+
+def plan_tree_addressing(
+    cwd: Path,
+    *,
+    command,
+    variables,
+    queue,
+    mode: str,
+    max_add_bytes: int,
+    scratch: Path,
+) -> tuple[dict[str, str] | None, str]:
+    """Publish this checkout as a tree, or say why the action stays pinned.
+
+    Returns ``(plan, reason)``.  A ``None`` plan is never a refusal to
+    submit -- it is the action staying exactly as path-addressed as it is
+    today, with ``reason`` saying which step declined.  That asymmetry is
+    deliberate: this is a *widening*, and a widening that can fail a
+    submission is worse than the pin it removes.  The two places that DO
+    refuse are the caller's own mistakes -- an argv naming this box's paths,
+    and a working tree too big to be a submission -- and both are refused
+    before anything is published.
+    """
+
+    if mode == "path":
+        return None, "asked for with --path-addressed"
+    capable, why = fleet_materialises(queue)
+    if ck is None:
+        # Asked for explicitly or not, there is nothing here to publish a tree
+        # with.  Refusing on ``--commit-addressed`` rather than falling back,
+        # because a flag that silently does nothing is worse than one that
+        # says it cannot.
+        if mode == "commit":
+            raise SystemExit(f"pbrun: --commit-addressed asked for, and {why}")
+        return None, why
+    identity = ck.repo_identity(cwd)
+    if identity is None:
+        return None, f"{cwd} is not a git checkout with a commit"
+    if mode != "commit" and capable is not True:
+        return None, why
+    refuse_paths_into_the_checkout(command, variables, identity["toplevel"])
+    pending = ck.pending_add_bytes(identity["toplevel"])
+    if pending > max_add_bytes:
+        raise SystemExit(
+            f"pbrun: this checkout would add {pending / 1024 ** 3:.1f} GiB to "
+            f"the fleet's shared object store, over the {max_add_bytes / 1024 ** 3:.1f} "
+            f"GiB bound.\nA tree that size is not a submission, it is an "
+            f"accident -- check what is untracked in {identity['toplevel']}.\n"
+            f"Raise --max-add-gb if it is genuinely the code, or submit with "
+            f"--path-addressed.")
+    try:
+        tree, commit = ck.synthesise_tree_commit(
+            identity["toplevel"], scratch=scratch)
+        origin = ck.ensure_shared_bare(identity["repo"], name=identity["name"])
+        ck.publish_tree_commit(identity["toplevel"], commit, origin)
+    except ck.CheckoutError as exc:
+        if mode == "commit":
+            raise SystemExit(f"pbrun: --commit-addressed asked for, and {exc}")
+        # Publishing objects is the step that touches NFS, so it is the step
+        # that can fail for reasons that have nothing to do with this
+        # submission.  Falling back to the pin keeps the work moving and says
+        # what it cost; refusing here would make a widening into an outage.
+        return None, f"could not publish the tree ({exc})"
+    return {
+        "repo": identity["repo"],
+        "name": identity["name"],
+        "prefix": identity["prefix"],
+        "toplevel": identity["toplevel"],
+        "tree": tree,
+        "commit": commit,
+        "origin": str(origin),
+    }, ""
 
 
 def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
@@ -348,7 +531,8 @@ def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
             f"{', '.join(others)}.")
 
 
-def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool) -> str:
+def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool,
+               stayed_pinned: str = "", portable: bool = False) -> str:
     """What the submitter is not otherwise told: this action is one box wide.
 
     The pin is a silent consequence of a path.  ``pbrun`` printed
@@ -389,7 +573,12 @@ def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool) -> str:
     """
 
     tags = [str(t) for t in (intent.get("tags") or [])]
-    local = is_box_local(cwd)
+    # ``portable`` means the action names a tree, not this path, so the box
+    # that claims it builds the tree for itself.  Every warning below about a
+    # box "failing on the missing tree" is then precisely wrong -- it is the
+    # case that has been fixed -- and a locality that no longer decides
+    # anything must not go on being narrated as though it did.
+    local = is_box_local(cwd) and not portable
     pinned = hostname in tags               # the pin as it landed, not as asked
     claimants = queue.placeable_hosts(intent)
     others = None if claimants is None else sorted(
@@ -413,9 +602,14 @@ def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool) -> str:
         else:
             head = (f"pbrun: PINNED to {hostname} by --tag {hostname}, so no "
                     f"other box can claim this action.")
+        # ``stayed_pinned`` is the step that declined to address this action
+        # by its tree, and it is the useful half of the notice now: "move the
+        # checkout" was the only remedy when a path was the only addressing,
+        # and it is no longer the first one to reach for.
         tail = ("" if not local else
-                f"  Move the checkout under {SHARED_ROOT} to let any box claim "
-                f"it, or accept the pin knowingly.")
+                (f"  It stayed pinned because {stayed_pinned}." if stayed_pinned
+                 else f"  Move the checkout under {SHARED_ROOT} to let any box "
+                      f"claim it, or accept the pin knowingly."))
         return f"{head}  {_width_of_the_pin(queue, intent, tags, hostname)}{tail}"
 
     # No host tag landed.  Say what did, and what it costs.
@@ -640,6 +834,16 @@ def main() -> int:
                          "to run anywhere")
     ap.add_argument("--here", action="store_true",
                     help="pin to this box even though the checkout is shared")
+    ap.add_argument("--commit-addressed", action="store_true",
+                    help="address this action by its tree even if some live box "
+                         "has not announced it can materialise one")
+    ap.add_argument("--path-addressed", action="store_true",
+                    help="submit the old way: name this checkout's path, and "
+                         "accept the pin that comes with it")
+    ap.add_argument("--max-add-gb", type=float,
+                    default=MAX_ADD_GB_DEFAULT,
+                    help="refuse to publish a tree that would add more than "
+                         "this to the fleet's shared object store")
     ap.add_argument("--cwd", default=os.getcwd())
     ap.add_argument("--deterministic", action="store_true",
                     help="declare byte-identical output; enables CAS reuse")
@@ -701,22 +905,9 @@ def main() -> int:
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")
-    tags = placement_tags(
-        cwd,
-        explicit=list(args.tag),
-        here=args.here,
-        hostname=socket.gethostname(),
-    )
-    if args.exclusive:
-        # "All of one box" is a fact about the boxes, and guessing it does not
-        # fail loudly -- it fails as an action nobody can ever claim.  The
-        # default was 4 while sparky declares 2 and sparklina 1, so every
-        # --exclusive submission asked for twice the slots that exist and sat
-        # in ``ready`` forever.  Read it from what the fleet announces, which
-        # needs the placement tags, so it happens after them.
-        demand["gpu"] = args.gpu_capacity or exclusive_gpu_demand(
-            pool.PoolQueue(SH / "pb-queue"), tags)
-        demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
+    if args.commit_addressed and args.path_addressed:
+        raise SystemExit(
+            "--commit-addressed and --path-addressed contradict each other")
 
     # `run_local_action` builds the child's environment from *these* and
     # nothing else, so an empty dict is not "inherit the caller" -- it is an
@@ -783,8 +974,47 @@ def main() -> int:
                 "slot), or drop the variable.")
         variables["CUDA_VISIBLE_DEVICES"] = ""
 
+    q = pool.PoolQueue(SH / "pb-queue")
+
+    # Teach git to ignore the droppings BEFORE anything reads the tree.  The
+    # synthesised tree is written by ``git add -A``, which honours
+    # ``.git/info/exclude``, so this is what keeps the stamp and the result
+    # logs out of it -- and a submit that staged its own droppings would
+    # produce a new tree every time and never hit the CAS again.
+    keep_droppings_out_of_git(cwd)
+
+    # Address this action by its TREE rather than by this box's path, when the
+    # fleet says it can build one.  ``None`` is not a failure: it is the
+    # action staying exactly as it is today, and ``why_pinned`` is the step
+    # that declined, printed with the pin so the submitter is told rather than
+    # left to infer it.
+    plan, why_pinned = plan_tree_addressing(
+        cwd, command=command, variables=variables, queue=q,
+        mode=("commit" if args.commit_addressed else
+              "path" if args.path_addressed else "auto"),
+        max_add_bytes=int(args.max_add_gb * 1024 ** 3),
+        scratch=Path(os.environ.get("TMPDIR") or "/home/rob/tmp"),
+    )
+
+    tags = placement_tags(
+        cwd,
+        explicit=list(args.tag),
+        here=args.here,
+        hostname=socket.gethostname(),
+        portable=plan is not None,
+    )
+    if args.exclusive:
+        # "All of one box" is a fact about the boxes, and guessing it does not
+        # fail loudly -- it fails as an action nobody can ever claim.  The
+        # default was 4 while sparky declares 2 and sparklina 1, so every
+        # --exclusive submission asked for twice the slots that exist and sat
+        # in ``ready`` forever.  Read it from what the fleet announces, which
+        # needs the placement tags, so it happens after them.
+        demand["gpu"] = args.gpu_capacity or exclusive_gpu_demand(q, tags)
+        demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
+
     log_name, stamp_name = result_and_stamp_names(
-        command, cwd, demand, variables)
+        command, cwd, demand, variables, tree=plan)
     # The closure member must be under checkout_root: that is where the
     # worker re-verifies it, on whichever box claimed the action.
     identity = _git_identity(cwd)
@@ -797,7 +1027,17 @@ def main() -> int:
     # those submits *because the commit is in the name*, so atomicity is the
     # whole fix and ordering does not matter.  It was not identical before
     # that: the name held the command and the content held the commit.
-    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)
+    #
+    # A tree-addressed action's stamp holds the TREE and nothing else, and it
+    # holds it through ``ck.stamp_bytes`` -- the one serialiser the claiming
+    # box's materialiser also calls.  The check is a byte-for-byte comparison,
+    # so a second copy of the encoding would be a way for the two sides to
+    # disagree about a tree they agree on.  ``cwd`` is deliberately gone from
+    # it: it is the field that made the same work two different actions on two
+    # different boxes.
+    payload = (ck.stamp_bytes(plan["tree"]).decode("utf-8") if plan is not None
+               else json.dumps({"cwd": str(cwd), **identity},
+                               indent=1, sort_keys=True))
     scratch = cwd / f"{stamp_name}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
     try:
         # fsync both the file and its directory before publishing.  The submit
@@ -823,9 +1063,6 @@ def main() -> int:
     finally:
         if scratch.exists():
             scratch.unlink()
-    keep_droppings_out_of_git(cwd)
-
-
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
@@ -846,7 +1083,15 @@ def main() -> int:
         },
         "inputs": [],
         "code_closure": pb.build_code_closure(cwd, [stamp_name]),
-        "params": {"command": command, "cwd": str(cwd), "demand": demand},
+        # ``cwd`` was in the sealed body, so the same command submitted from
+        # two boxes was two actions with two keys and a cross-box cache hit
+        # was impossible by construction.  A tree-addressed action names the
+        # repository, the subdirectory and the content instead, all three of
+        # which are the same string on every box.
+        "params": ({"command": command, "repo": plan["repo"],
+                    "prefix": plan["prefix"], "tree": plan["tree"],
+                    "demand": demand} if plan is not None else
+                   {"command": command, "cwd": str(cwd), "demand": demand}),
         "environment": {"variables": variables, "toolchain": {}},
         "execution_scope": {
             "portability": "portable", "platform_key": None, "host_class": None,
@@ -857,8 +1102,6 @@ def main() -> int:
 
     cas = pb.PrismaBuildCAS(SH / "cas")
     cas.publish_action_request(action)
-
-    q = pool.PoolQueue(SH / "pb-queue")
 
     # Refuse work the fleet cannot run, at the one moment the caller is still
     # watching.  A required tag no box offers is not a slow submission: the
@@ -874,9 +1117,18 @@ def main() -> int:
     # consequence of the checkout path, and nothing used to report it, so a
     # submitter narrowed the fleet to one box without being told.
     notice = pin_notice(q, intent, cwd=cwd, hostname=socket.gethostname(),
-                        here=args.here)
+                        here=args.here, stayed_pinned=why_pinned,
+                        portable=plan is not None)
     if notice:
         print(notice, file=sys.stderr, flush=True)
+    if plan is not None:
+        # Say the widening out loud too.  The pin was invisible until it was
+        # announced; an action that is no longer pinned is just as invisible,
+        # and a submitter who cannot see which of the two happened cannot tell
+        # whether the fleet is three boxes deep or one.
+        print(f"pbrun: addressed by tree {plan['tree'][:12]} in "
+              f"{plan['repo']}; any box that fits the demand may claim it and "
+              f"will materialise the tree itself", file=sys.stderr, flush=True)
     verdict = q.placeable(intent)
     if verdict is False:
         raise SystemExit(
@@ -902,6 +1154,20 @@ def main() -> int:
     except (OSError, ValueError):
         superseding = None
 
+    # ``checkout_root`` stays the submitter's path even for a tree-addressed
+    # item.  It is not what the worker runs against -- ``resolve_checkout``
+    # prefers the tree -- but it is the honest record of where the work came
+    # from, and ``quarantine_orphans`` files any ready record whose
+    # ``checkout_root`` is empty as an unexecutable stub.  Which reader may
+    # treat it as a pin is settled in one place, ``checkout.item_is_box_local``.
+    addressing = {} if plan is None else {
+        "checkout_commit": plan["commit"],
+        "checkout_tree": plan["tree"],
+        "checkout_repo": plan["repo"],
+        "checkout_origin": plan["origin"],
+        "checkout_prefix": plan["prefix"],
+        "checkout_stamp": stamp_name,
+    }
     q.publish(
         action_key=key,
         cas_root=str(SH / "cas"),
@@ -911,6 +1177,7 @@ def main() -> int:
         needs_gpu=bool(demand.get("gpu")),
         priority=args.priority,
         resources=demand,
+        **addressing,
     )
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now

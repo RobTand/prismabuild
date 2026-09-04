@@ -91,6 +91,7 @@ import sys
 import time
 import uuid
 
+from . import checkout as ck
 from . import core as pb
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
@@ -170,6 +171,15 @@ WORKERS = "workers"
 #: Matched to ``core._PROCESS_GROUP_GRACE_SECONDS``, which is the grace the
 #: launcher itself gives the action group it reaps on the way out.
 WITHDRAW_GRACE_S = 5.0
+
+#: What this box's bytes can do that older bytes cannot, announced so a
+#: submitter can read it rather than infer it from a version.  ``pbrun`` only
+#: addresses an action by a tree when EVERY live offer carries the capability
+#: to materialise one, so the fleet converts itself as the loops reload and no
+#: one has to sequence the rollout by hand.  A box running older bytes
+#: announces no capabilities at all, and that absence is the gate staying shut
+#: -- which is the whole point of asking the box instead of asserting for it.
+WORKER_CAPABILITIES: tuple[str, ...] = (ck.CHECKOUT_COMMIT_CAPABILITY,)
 
 #: How long a worker's offer stays believable.  A loop re-announces on every
 #: poll, and the default poll is 10 s, so two minutes is a dozen missed polls:
@@ -791,6 +801,7 @@ class PoolQueue:
         observed_capacity: Mapping[str, int] | None = None,
         foreign: Mapping[str, int] | None = None,
         observed_detail: Mapping[str, object] | None = None,
+        capabilities: Sequence[str] | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -851,6 +862,14 @@ class PoolQueue:
             # this a fleet running four generations of the code at once looks
             # uniform from the queue.
             "runtime_commit": str(runtime_commit),
+            # What these bytes can DO, as opposed to which bytes they are.  A
+            # submitter deciding whether the fleet can materialise a tree must
+            # not have to map a commit sha onto a feature; it reads the
+            # capability the box states about itself, and an older box's
+            # silence is a "no" it cannot get wrong.  Additive and optional on
+            # the same schema, like ``observed_capacity`` before it -- absence
+            # is "not stated", never "none".
+            "capabilities": sorted({str(c) for c in (capabilities or ())}),
             "announced_unix": _now(),
         }
         directory = self.root / WORKERS
@@ -1041,7 +1060,14 @@ class PoolQueue:
             # under-reported the very pin it exists to report: an action
             # tagged ``gb10`` over a ``/home/rob/tmp/ts101`` worktree matches
             # two boxes and can run on one, and counted as ``wide``.
-            by_path = is_box_local_path(item.get("checkout_root"))
+            #
+            # ``ck.item_is_box_local`` and not the path test directly: a
+            # commit-addressed item carries the submitter's path for diagnosis
+            # and does not run against it, so reading the field would go on
+            # counting a pin the fix has already removed -- and
+            # ``one_box_by_path`` is precisely the number that says whether
+            # the migration is happening.
+            by_path = ck.item_is_box_local(item)
             if not hosts:
                 census["unplaceable"] = int(census["unplaceable"]) + 1
                 continue
@@ -1089,8 +1115,23 @@ class PoolQueue:
         priority: int = 0,
         resources: Mapping[str, int] | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        checkout_commit: str = "",
+        checkout_tree: str = "",
+        checkout_repo: str = "",
+        checkout_origin: str = "",
+        checkout_prefix: str = "",
+        checkout_stamp: str = "",
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
+
+        The six ``checkout_*`` fields beyond ``checkout_root`` are the other
+        addressing: they say *what tree* the action runs against instead of
+        *what path*, so any box that fits the demand can claim it and build
+        that tree for itself.  They travel together and are written only when
+        all four load-bearing ones are present -- a half-addressed item would
+        be an item a worker cannot resolve either way.  ``checkout_root``
+        stays the submitter's path in both cases; which readers may treat it
+        as a pin is settled once, in ``checkout.item_is_box_local``.
 
         ``resources`` is what this action needs to run on one box -- e.g.
         ``{"gpu": 1, "mem_gb": 8}``.  It is a claim about the action, made by
@@ -1135,6 +1176,19 @@ class PoolQueue:
             "published_unix": _now(),
             "published_by": socket.gethostname(),
         }
+        if checkout_commit and checkout_tree and checkout_repo and checkout_origin:
+            item.update({
+                "checkout_commit": str(checkout_commit),
+                "checkout_tree": str(checkout_tree),
+                "checkout_repo": str(checkout_repo),
+                "checkout_origin": str(checkout_origin),
+                "checkout_prefix": str(checkout_prefix),
+                "checkout_stamp": str(checkout_stamp),
+            })
+        elif any((checkout_commit, checkout_tree, checkout_repo, checkout_origin)):
+            raise PoolContractError(
+                "a tree-addressed item needs checkout_commit, checkout_tree, "
+                "checkout_repo and checkout_origin together")
         if superseded is not None:
             item["supersedes_withdrawal"] = {
                 "withdrawn_unix": superseded.get("withdrawn_unix"),
@@ -2103,6 +2157,66 @@ class PoolQueue:
 
     # -- execution ------------------------------------------------------
 
+    def live_commits(self, *, host: str | None = None,
+                     except_key: str = "") -> set[str]:
+        """Which materialised trees have an action running in them on this box.
+
+        Read from ``claimed/`` rather than from the filesystem, because the
+        queue is the only thing that knows.  Two callers need it and both are
+        destructive: the sweep, which must not delete a tree out from under a
+        running action, and the rebuild branch in ``checkout.materialise``,
+        which must not replace one.  ``except_key`` is the action asking --
+        its own claim is always there, and counting it would make every
+        rebuild refuse itself.
+        """
+
+        where = socket.gethostname() if host is None else host
+        found: set[str] = set()
+        claimed = self.dir(CLAIMED)
+        if not claimed.is_dir():
+            return found
+        for path in sorted(claimed.glob("*.json")):
+            record = _read_json(path)
+            if record is None:
+                continue
+            if except_key and str(record.get("action_key") or "") == except_key:
+                continue
+            if str(record.get("claimed_host") or "") not in ("", where):
+                continue
+            commit = ck.item_checkout_commit(record)
+            if commit:
+                found.add(commit)
+        return found
+
+    def resolve_checkout(self, item: Mapping[str, object]) -> str:
+        """The directory this box will run the action in.
+
+        Path-addressed items answer with the field they always carried, so
+        nothing about the existing fleet changes.  A tree-addressed item is
+        materialised here, under this box's own scratch, which is what makes
+        the same action claimable by any box instead of only by the one whose
+        worktree it was submitted from.
+
+        The lease is refreshed around every slow step.  It has to be: the
+        first fetch into an empty mirror pulls a whole history across NFS, the
+        lease expires after 300 s, and an expiry under a fetch is a requeue --
+        which is the same work running twice on two boxes.
+        """
+
+        if not ck.item_checkout_commit(item):
+            return str(item["checkout_root"])
+        key = str(item.get("action_key") or "")
+        owner = str(item.get("claimed_by") or "")
+
+        def beat() -> None:
+            if key:
+                self.write_lease(key, owner=owner)
+
+        return ck.materialise(
+            item, heartbeat=beat,
+            live_commits=lambda: self.live_commits(except_key=key),
+        )
+
     def execute(
         self,
         item: Mapping[str, object],
@@ -2130,7 +2244,11 @@ class PoolQueue:
             worker_script=item["worker_script"],
             action_key=key,
             cas_root=item["cas_root"],
-            checkout_root=item["checkout_root"],
+            # Not ``item["checkout_root"]``: an item addressed by a tree names
+            # no path, and this box materialises the tree it names under its
+            # own local scratch.  A path-addressed item resolves to exactly the
+            # field it always did.
+            checkout_root=self.resolve_checkout(item),
         )
         owner = str(item.get("claimed_by") or "")
         started = _now()
