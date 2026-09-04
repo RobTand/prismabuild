@@ -1794,7 +1794,11 @@ class PoolQueue:
                 else:
                     intent_age = self.claim_intent_age(key)
                     if intent_age is not None and intent_age <= grace_s:
-                        continue          # renamed moments ago; record imminent
+                        # Renamed moments ago; the claimant's rewrite, lease and
+                        # its own terminal/withdrawal checks are imminent.  Nothing
+                        # below may touch this record: a conclusion here would
+                        # release tokens the claimant is about to hold.
+                        continue
             record = _read_json(path)
             if record is None:
                 # The claim concluded under us.  Both ``finish()`` and this
