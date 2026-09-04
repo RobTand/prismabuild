@@ -2585,7 +2585,11 @@ def test_sigint_worker_reaps_action_group_before_releasing_output_lock(
             pytest.fail("interrupted action process did not start")
 
         interrupted.send_signal(signal.SIGINT)
-        assert interrupted.wait(timeout=4.0) != 0
+        # The bound is the production contract, not a round number: a handled
+        # interrupt TERMs the action group and waits at most one grace period
+        # before KILL; a child that honours TERM (this one) is gone well
+        # inside it (issue #25).
+        assert interrupted.wait(timeout=pb._PROCESS_GROUP_GRACE_SECONDS) != 0
         assert action_pid is not None
         with pytest.raises(ProcessLookupError):
             os.kill(action_pid, 0)
