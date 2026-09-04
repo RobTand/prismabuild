@@ -45,11 +45,13 @@ The deadlock the floor could otherwise cause is handled explicitly: an item
 whose demand exceeds this host's *total* capacity can never run here, so it is
 skipped rather than allowed to withhold a box it would never use.
 
-**Idempotence is free and is not reimplemented.**  ``run_local_action`` looks the
-action key up in the CAS first and returns ``cache_hit`` without executing, so a
-double dispatch after a stale-lease requeue costs a lookup, not a recomputation.
-The transport therefore never needs to reason about "did this already run" --
-the CAS is the single answer, which is the whole point of the action key.
+**A terminal generation stays terminal.**  ``run_local_action`` looks the
+action key up in the CAS first and normally makes a retry a cheap
+``cache_hit``, but that is not permission to resurrect a generation which the
+queue has already filed under ``done`` or ``failed``.  Stale reaping and the
+claim boundary both refuse a ready/claimed copy carrying the terminal record's
+``published_unix``.  The generation check matters: the same action key may be
+submitted again deliberately, and that later request is still work.
 
 **Withdrawal is an operator's decision, and it is filed as one.**  ``finish``,
 ``reap_stale`` and ``quarantine_orphans`` each describe a *worker's* health; none
@@ -1530,6 +1532,26 @@ class PoolQueue:
                 if ledger is not None:
                     ledger.release(key)   # lost the race: hold nothing
                 continue
+            moved = _read_json(dst) or item
+            terminal = self.terminal_outcome_covers(moved, action_key=key)
+            if terminal is not None:
+                # A stale reaper can put a generation back in ``ready`` after
+                # its outcome was filed, or the outcome can land between the
+                # ready scan and this rename.  The rename is the last boundary
+                # at which the payload is definitely not executing.
+                if ledger is not None:
+                    ledger.release(key)
+                state, outcome = terminal
+                self._file_superseded(
+                    moved, key=key, kind="terminal-claim", status="dropped",
+                    dropped_unix=_now(), dropped_host=socket.gethostname(),
+                    reason="claim lost to an outcome for the same generation "
+                           f"filed under {state}",
+                    terminal_status=outcome.get("status"),
+                )
+                dst.unlink(missing_ok=True)
+                self.passes_path(key).unlink(missing_ok=True)
+                continue
             if self.withdrawal_covers(item, action_key=key) is not None:
                 # Withdrawn between the scan above and this rename.  The window
                 # is microseconds wide and closing it here costs one listing on
@@ -1575,9 +1597,11 @@ class PoolQueue:
         """Return claims whose lease has expired to ``ready``.
 
         A missing lease file also counts as stale: it means the claimant died
-        between the rename and the first heartbeat.  Requeueing is safe at any
-        time because re-execution hits the CAS, so the worst case of reaping a
-        live-but-stalled worker is duplicated work, never a corrupted result.
+        between the rename and the first heartbeat.  A stale claim is returned
+        only while its generation has no filed outcome.  Once ``done`` or
+        ``failed`` carries the same ``published_unix``, that terminal record is
+        authoritative and the stranded claim is concluded instead; a CAS hit
+        does not license putting already-terminal work back in the queue.
 
         **The claim is not atomic with its lease.**  ``claim()`` renames the
         item, then writes the lease; a reaper running inside that window sees a
@@ -1596,6 +1620,7 @@ class PoolQueue:
         claimed = self.dir(CLAIMED)
         if not claimed.is_dir():
             return requeued
+        terminal_keys = self.terminal_keys()
         for path in sorted(claimed.glob("*.json")):
             key = path.stem
             age = self.lease_age(key)
@@ -1628,6 +1653,28 @@ class PoolQueue:
                 pending["container_cleanup_pending"] = container_cleanup
                 pending["container_cleanup_checked_unix"] = _now()
                 _write_json_atomic(path, pending)
+                continue
+            terminal = self.terminal_outcome_covers(
+                record, action_key=key, terminal=terminal_keys
+            )
+            if terminal is not None:
+                # The worker already filed this exact generation.  A stale
+                # directory view or a cycle racing the final unlink may still
+                # expose its old claim, but that copy is cleanup, not a retry.
+                state, outcome = terminal
+                holder = record.get("claimed_host")
+                self._file_superseded(
+                    record, key=key, kind="terminal-claim", status="dropped",
+                    dropped_unix=_now(), dropped_host=socket.gethostname(),
+                    reason="stale claim belongs to a generation already filed "
+                           f"under {state}",
+                    terminal_status=outcome.get("status"),
+                )
+                self.ledger(
+                    holder if isinstance(holder, str) else None
+                ).release(key)
+                path.unlink(missing_ok=True)
+                self.lease_path(key).unlink(missing_ok=True)
                 continue
             if self.withdrawal_covers(record, action_key=key) is not None:
                 # A withdrawal that could not finish its own cleanup -- the
@@ -1986,6 +2033,60 @@ class PoolQueue:
 
     # -- operator decisions ---------------------------------------------
 
+    def terminal_keys(self) -> frozenset[str]:
+        """Every action key with a worker-filed outcome.
+
+        List rather than ``stat`` for the same NFS reason as
+        :meth:`withdrawn_keys`: a negatively cached absence must not make a
+        worker execute a ready copy after another box has filed its outcome.
+        The record's generation is checked separately, so an old outcome does
+        not blacklist this content-addressed name.
+        """
+
+        keys: set[str] = set()
+        for state in (DONE, FAILED):
+            try:
+                names = os.listdir(self.dir(state))
+            except OSError:
+                continue
+            keys.update(
+                name[: -len(".json")] for name in names if name.endswith(".json")
+            )
+        return frozenset(keys)
+
+    def terminal_outcome_covers(
+        self,
+        record: Mapping[str, object] | None,
+        *,
+        action_key: str | None = None,
+        terminal: frozenset[str] | None = None,
+    ) -> tuple[str, dict[str, object]] | None:
+        """The filed outcome for this record's generation, or ``None``.
+
+        An action key identifies work, not one request to perform it.  The
+        equality of ``published_unix`` is already the queue's generation rule
+        for withdrawal and is deliberately independent of clock ordering.
+        Missing generation evidence cannot suppress a later submission.
+        """
+
+        key = str(action_key or (record or {}).get("action_key") or "")
+        if not key or record is None:
+            return None
+        known = self.terminal_keys() if terminal is None else terminal
+        if key not in known:
+            return None
+        mine = record.get("published_unix")
+        if not isinstance(mine, (int, float)):
+            return None
+        for state in (DONE, FAILED):
+            outcome = _read_json(self.item_path(state, key))
+            if outcome is None:
+                continue
+            theirs = outcome.get("published_unix")
+            if isinstance(theirs, (int, float)) and float(mine) == float(theirs):
+                return state, outcome
+        return None
+
     def withdrawn_keys(self) -> frozenset[str]:
         """Every action an operator has withdrawn.
 
@@ -2005,7 +2106,7 @@ class PoolQueue:
         )
 
     def superseded_dir(self) -> Path:
-        """Where a withdrawal goes once it is no longer the live decision.
+        """Where records go once a generation decision makes them non-live.
 
         A subdirectory rather than a timestamped sibling, because every reader
         of ``withdrawn/`` addresses it by ``<key>.json``: ``withdrawn_keys``
@@ -2013,8 +2114,9 @@ class PoolQueue:
         ``pbrun``'s wait loop lists it and ``tessera_status`` counts ``*.json``
         in it.  A sibling named ``<key>.<unix>.json`` would look to all five
         like an action whose key is nonsense; a subdirectory is invisible to
-        every one of them, and still there for the operator asking what was
-        cancelled, by whom, and when.
+        every one of them.  It keeps both retired withdrawals and ready/claimed
+        copies dropped because a terminal record already owns their generation,
+        so no queue record disappears without evidence.
         """
 
         return self.dir(WITHDRAWN) / "superseded"

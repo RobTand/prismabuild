@@ -132,6 +132,108 @@ def test_stale_lease_is_requeued(queue: pool.PoolQueue) -> None:
     assert not queue.lease_path(KEY_A).exists()
 
 
+def test_a_terminal_generation_is_not_resurrected_by_stale_reaping(
+    queue: pool.PoolQueue,
+) -> None:
+    """The live #14 state: a filed success with its old claim still visible.
+
+    A worker filed ``done`` and the old claimed record remained visible long
+    enough for a later stale-cycle sweep to read it.  Requeueing that record
+    resurrects completed work under a fully executable payload; the next
+    worker then runs it again and can overwrite non-CAS side effects.
+
+    main: ``ready/<key>.json`` exists and ``reap_stale`` reports the key.
+    branch: the matching terminal generation concludes the stranded claim.
+    """
+
+    _publish(queue, KEY_A, resources={"cpu": 1})
+    claimed = queue.claim(capacity={"cpu": 1})
+    assert claimed is not None
+    terminal = dict(claimed)
+    terminal.update(
+        {
+            "schema": pool.POOL_OUTCOME_SCHEMA_V1,
+            "status": "executed",
+            "attempts": 1,
+            "finished_unix": float(claimed["published_unix"]) + 1.0,
+        }
+    )
+    # Deliberately leave claimed + lease + reservation behind: this is the
+    # observed NFS/supervisor aftermath, not a normal sequential ``finish``.
+    queue.item_path(pool.DONE, KEY_A).write_text(json.dumps(terminal))
+
+    assert queue.reap_stale(timeout_s=-1.0) == []
+    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert not queue.lease_path(KEY_A).exists()
+    assert queue.ledger().held_keys() == []
+    assert json.loads(queue.item_path(pool.DONE, KEY_A).read_text()) == terminal
+    dropped = list(
+        queue.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
+    )
+    assert len(dropped) == 1
+    assert json.loads(dropped[0].read_text())["terminal_status"] == "executed"
+
+
+def test_a_late_copy_of_a_terminal_generation_cannot_be_claimed(
+    queue: pool.PoolQueue,
+) -> None:
+    """The claim boundary is the backstop for a reaper already mid-write.
+
+    The terminal may land after the reaper's read but before its ready write.
+    A same-generation terminal therefore also has to make that ready copy
+    unclaimable; checking only at the start of stale reaping leaves the race.
+
+    main: ``claim`` returns the resurrected item.  Branch: it files the losing
+    ready copy and returns no work.
+    """
+
+    _publish(queue, KEY_A)
+    claimed = queue.claim()
+    assert claimed is not None
+    assert queue.reap_stale(timeout_s=-1.0) == [KEY_A]
+    terminal = dict(claimed)
+    terminal.update(
+        {
+            "schema": pool.POOL_OUTCOME_SCHEMA_V1,
+            "status": "executed",
+            "attempts": 1,
+            "finished_unix": float(claimed["published_unix"]) + 1.0,
+        }
+    )
+    queue.item_path(pool.DONE, KEY_A).write_text(json.dumps(terminal))
+
+    assert queue.claim() is None
+    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert json.loads(queue.item_path(pool.DONE, KEY_A).read_text()) == terminal
+    dropped = list(
+        queue.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
+    )
+    assert len(dropped) == 1
+    assert json.loads(dropped[0].read_text())["status"] == "dropped"
+
+
+def test_an_older_terminal_generation_does_not_block_a_fresh_submission(
+    queue: pool.PoolQueue,
+) -> None:
+    """The key names work; only ``published_unix`` names this request."""
+
+    _publish(queue, KEY_A)
+    first = queue.claim()
+    assert first is not None
+    queue.finish(KEY_A, status="executed")
+
+    _publish(queue, KEY_A)
+    fresh_path = queue.item_path(pool.READY, KEY_A)
+    fresh = json.loads(fresh_path.read_text())
+    fresh["published_unix"] = float(first["published_unix"]) + 1.0
+    fresh_path.write_text(json.dumps(fresh))
+
+    claimed = queue.claim()
+    assert claimed is not None
+    assert claimed["published_unix"] == fresh["published_unix"]
+
+
 def test_a_claim_with_no_lease_at_all_is_stale(queue: pool.PoolQueue) -> None:
     """The claimant died between the rename and its first heartbeat.
 
