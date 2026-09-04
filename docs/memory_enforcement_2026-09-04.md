@@ -27,7 +27,7 @@ Everything below is a measurement, taken before the mechanism was trusted.
 Capping needs the `memory` controller delegated to the *user* manager. That is
 a boot-time property of each host, not a property of this code, so it is probed
 rather than assumed — and a box that cannot cap says so in its offer
-(`enforces_mem_gb`) instead of failing every capped action forever and looking
+(`mem_cap_scope`) instead of failing every capped action forever and looking
 like a flaky queue.
 
 Measured 2026-09-04 on all three fleet boxes:
@@ -111,7 +111,74 @@ repair is for the spawn that does not.)
 
 ---
 
-## 4. Scope: what the cap does **not** reach
+## 4. The wrapper bounds the execution and must not move it
+
+A transient unit is forked by the **user manager**, not by the caller, so
+nothing of the launcher's context reaches the work except by being named. Two
+members were not named, and the first pass shipped them silently. Neither could
+have been caught by an argv assertion, because argv was not where they went
+missing.
+
+Measured with `tools/fleet/probes/exec_context_probe.py` — one identical child
+run twice under one launcher, only the wrapper differing — on gx10-6b77 (GB10)
+at the two commits, and reproduced on dl380g10:
+
+| what the child sees | launcher | unit, before | unit, after |
+|---|---|---|---|
+| CPU affinity | `5-6` | `0-19` (all) | `5-6` |
+| soft `RLIMIT_NOFILE` | 314159 | 1024 | 314159 |
+| the other 14 rlimits | — | identical | identical |
+| cgroup path | `session-56.scope` | `pbcap-….service` | `pbcap-….service` |
+| `oom_score_adj` | 0 | 200 | 200 |
+
+**Affinity.** `cpu_topology.pin_to_preferred`'s stated mechanism is inheritance
+by fork — "Pin this process *and so every child it forks*" — which a unit is
+not. Every capped action escaped the loop's pin: on a GB10 that puts compute on
+the 2.8 GHz A725 half of an interleaved machine, and it makes the loop's
+cpu-token offer describe ten cores while its actions use twenty. The fix is
+`CPUAffinity=`, which is an exec-context setting and so needs no `cpuset`
+delegation — these boxes delegate `cpu memory pids` and not `cpuset`.
+
+**The fd ceiling.** Soft `RLIMIT_NOFILE` fell to systemd's
+`DefaultLimitNOFILE` soft of 1024, hard untouched. It is the only one of
+sixteen rlimits that moved. Since `pbrun` defaults `mem_gb` to 4, essentially
+every action is capped, so essentially every action would have run at a 500×
+lower fd ceiling; an NFS shard reader, a torch `DataLoader` or `pytest -n N`
+crossing 1024 raises `EMFILE`, which the queue retries `max_attempts` times and
+files against the payload.
+
+**Two differences are left alone on purpose, because they are the bound rather
+than the execution.** The cgroup path *is* the mechanism. And `oom_score_adj`
+rises to 200, which points the right way: the incident this cap exists for is a
+*bystander* being chosen by the kernel, and an action that has outgrown its own
+declaration should be a likelier victim than the loop supervising it — carrying
+the loop's own −1000 across would make the offender the last thing the kernel
+would pick.
+
+**A third difference is recorded rather than fixed.** The unit's environment is
+a strict *superset* of the launcher's — nothing is lost, and 13 names are added
+(`DBUS_SESSION_BUS_ADDRESS`, `INVOCATION_ID`, `LOGNAME`, `MANAGERPID`,
+`MEMORY_PRESSURE_WATCH`/`_WRITE`, `SHELL`, `SSH_AUTH_SOCK`, `SYSTEMD_EXEC_PID`,
+`USER`, and four desktop-session names), because the user manager passes its
+own environment to every unit it starts. They reach the pool *worker*, not the
+action: `run_local_action` builds the payload's environment from the variables
+the action declared and nothing else (`core.py`, `env={...variables...}`), so
+the closed environment sealed into the action key is unchanged. `systemd-run`
+can add names but cannot clear the manager's, and the set is box-dependent, so
+naming it in `UnsetEnvironment=` would be a roster where a rule is wanted. It
+is measured, bounded to the worker, and left.
+
+The test that holds this is `tests/test_pool_cap_keeps_the_exec_context.py`,
+and it compares the *child's own view* against the launcher's rather than the
+argv — which is what catches a property systemd ignores, or `setrlimit_closest`
+clamping one the user manager will not grant. It restricts the launcher first
+(a two-CPU mask, a soft `RLIMIT_NOFILE` of 314159): a suite already running
+inside a capped unit has soft 1024 and the full mask, so without that the test
+would pass against a wrapper that carries nothing.
+
+---
+
+## 5. Scope: what the cap does **not** reach
 
 A cap is only worth what it charges. Four boundaries, each read off the live
 box rather than reasoned about, because the ledger reads as enforced either
@@ -137,9 +204,9 @@ way and a silent gap is the failure mode the issue named:
   becomes a slow box" arriving through the other door. A `mem_gb` declaration
   bounds an action's *anonymous* footprint and only throttles its I/O.
 * **The device half of a GPU action escapes entirely** — the largest of the
-  four, and the subject of §5.
+  four, and the subject of §6.
 
-## 5. The measurement the issue asked for first: CUDA on GB10 unified memory
+## 6. The measurement the issue asked for first: CUDA on GB10 unified memory
 
 Three arms, one 4 GiB cap, each asking for 8192 MiB in 512 MiB steps, each
 touching every page it takes. Only the allocator differs. Run on sparky
@@ -189,7 +256,7 @@ next question — not this issue's — is what bounds the device half: a
 limits, or a per-action device budget the payload itself honours. None of those
 is a cgroup.
 
-## 6. What is still not measured, and what cannot yet be measured
+## 7. What is still not measured, and what cannot yet be measured
 
 * **`memory_peak_bytes` is `null` for every action that succeeds.** A transient
   unit is freed the moment it goes inactive, so `MemoryPeak` is readable only
@@ -204,7 +271,12 @@ is a cgroup.
   about, because until now nothing checked. On the first publish they become
   hard limits, and an under-declared action will exit 137 where it used to
   finish. That is the mechanism working; it is also a fleet-behaviour change
-  that belongs to whoever publishes, not to the branch.
+  that belongs to whoever publishes, not to the branch. **The memory ceiling is
+  the whole of that change**, which is worth stating because for one revision of
+  this branch it was not: the fd ceiling and the core placement changed too
+  (§4), and an EMFILE or an action on the slow cores would have been read as a
+  payload problem. They are carried now, and
+  `tests/test_pool_cap_keeps_the_exec_context.py` is what keeps them carried.
 * **Three boxes, one date.** Section 1 is a fact about sparky, gx10-6b77 and
   dl380g10 on 2026-09-04. The probe stays because the next box is not covered
   by it.
@@ -212,16 +284,21 @@ is a cgroup.
   sm_121, driver 595.84, torch 2.11.0+cu130. It is not a claim about discrete
   NVIDIA hardware, where device memory is not the host's pool at all.
 
-## 7. Reproducing this
+## 8. Reproducing this
 
 ```
 # the three arms (needs a GPU token; submit, do not run out of pool)
 tools/fleet/pbrun.py --gpu --demand mem_gb=16 -- \
     bash tools/fleet/probes/run_cgroup_cuda_probe.sh
 
+# what the wrapper changes besides bounding (§4); run it at two commits
+tools/fleet/pbrun.py --cpus 1 --demand mem_gb=2 -- \
+    python3 tools/fleet/probes/exec_context_probe.py
+
 # everything else, on any box that can cap
 python3 -m pytest tests/test_pool_memory_cap.py \
                   tests/test_pool_memory_cap_binds.py \
+                  tests/test_pool_cap_keeps_the_exec_context.py \
                   tests/test_worker_loop_caps_a_declared_action.py
 ```
 
