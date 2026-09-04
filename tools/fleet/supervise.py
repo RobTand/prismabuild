@@ -131,6 +131,27 @@ def _live_loops() -> list[int]:
     return confirmed
 
 
+def loop_args_of(pid: int) -> list[str] | None:
+    """The arguments this loop is actually running with, or None if unreadable.
+
+    Comparing the file against the previous *read* of the file is not enough:
+    a supervisor restarted after a publish reads the new shape first thing,
+    sees no change on any later tick, and leaves loops running the old one
+    forever -- which is exactly how three loops kept announcing two GPU slots
+    while their supervisor's own banner said three.  The authority is the
+    file and the question is what the processes carry, so ask the processes.
+    """
+
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    args = [part.decode("utf-8", "replace") for part in raw if part]
+    if len(args) < 2:
+        return None
+    return args[2:]                       # past the interpreter and the script
+
+
 def _is_idle(pid: int) -> bool:
     """True when this loop holds no action: no child process of its own.
 
@@ -173,7 +194,7 @@ def cycle_stale(published: str) -> list[int]:
     return _stop_idle_loops()
 
 
-def _stop_idle_loops() -> list[int]:
+def _stop_idle_loops(pids: list[int] | None = None) -> list[int]:
     """SIGTERM every loop holding no action, and report which.
 
     The one rule both reasons to cycle a loop share -- stale bytes and a
@@ -182,7 +203,7 @@ def _stop_idle_loops() -> list[int]:
     """
 
     stopped: list[int] = []
-    for pid in _live_loops():
+    for pid in (_live_loops() if pids is None else pids):
         if not _is_idle(pid):
             continue
         try:
@@ -264,25 +285,23 @@ def main() -> int:
         print(f"[{host}] cycled {len(stopped)} idle loop(s) onto "
               f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
     while True:
-        fresh_target, fresh_args = declared_shape(
+        target, loop_args = declared_shape(
             host, args.loops, (target, loop_args))
-        if fresh_args != loop_args:
-            # The file is the authority, so a loop running other arguments is
-            # stale in the same sense a loop running other bytes is.  Stop the
-            # idle ones and let the top-up below respawn them on the new shape;
-            # a loop mid-action keeps its claim and cycles when it next goes
-            # idle, which is why this never kills work.
-            print(f"[{host}] declared shape moved: {' '.join(loop_args)} -> "
-                  f"{' '.join(fresh_args)}", flush=True)
-            stopped = _stop_idle_loops()
-            print(f"[{host}] stopped {len(stopped)} idle loop(s) to take it: "
-                  f"{stopped}", flush=True)
-        elif fresh_target != target:
-            print(f"[{host}] declared loop count moved: {target} -> "
-                  f"{fresh_target}", flush=True)
-        target, loop_args = fresh_target, fresh_args
 
         live = _live_loops()
+        # The file is the authority, so a loop running other arguments is
+        # stale in the same sense a loop running other bytes is.  Stop the
+        # idle ones and let the top-up below respawn them on the declared
+        # shape; a loop mid-action keeps its claim and cycles when it next
+        # goes idle, which is why this never kills work.
+        wrong = [pid for pid in live
+                 if loop_args_of(pid) not in (None, loop_args)]
+        if wrong:
+            stopped = _stop_idle_loops(wrong)
+            live = [pid for pid in live if pid not in stopped]
+            print(f"[{host}] {len(wrong)} loop(s) carry a shape the file no "
+                  f"longer declares; stopped the {len(stopped)} idle one(s) "
+                  f"{stopped} onto: {' '.join(loop_args)}", flush=True)
         missing = max(0, target - len(live))
         for offset in range(missing):
             index = len(live) + offset

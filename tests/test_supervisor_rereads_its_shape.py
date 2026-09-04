@@ -75,3 +75,42 @@ def test_only_idle_loops_are_stopped(monkeypatch):
     monkeypatch.setattr(supervise.os, "kill", lambda pid, sig: killed.append(pid))
     assert supervise._stop_idle_loops() == [11, 33]
     assert 22 not in killed
+
+
+def test_a_loops_own_argv_is_what_gets_compared(tmp_path):
+    """The authority is the file; the question is what the process carries.
+
+    Comparing the file to the previous read of the file looks equivalent and
+    is not: a supervisor restarted after a publish reads the new shape before
+    its first tick, so no later tick ever sees a change, and loops spawned by
+    the previous supervisor keep the old arguments for as long as they live.
+    That is the live failure -- three loops announcing two GPU slots under a
+    supervisor whose own banner said three.
+    """
+    assert supervise.loop_args_of(0) is None          # unreadable, not "empty"
+    argv = ["/usr/bin/python3", "/mnt/x/worker_loop.py",
+            "--tag", "boxa", "--gpu-slots", "2"]
+    src = tmp_path / "cmdline"
+    src.write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+    # loop_args_of reads /proc/<pid>/cmdline; the parse is what is pinned here.
+    parsed = [p.decode() for p in src.read_bytes().split(b"\0") if p][2:]
+    assert parsed == ["--tag", "boxa", "--gpu-slots", "2"]
+    assert parsed != ["--tag", "boxa", "--gpu-slots", "3"], (
+        "a loop carrying the old slot count must not compare equal to the new")
+
+
+def test_only_the_mismatched_loops_are_candidates(monkeypatch):
+    """A loop already on the declared shape is never stopped for it."""
+    shape = ["--gpu-slots", "3"]
+    carried = {11: ["--gpu-slots", "2"], 22: shape, 33: None}
+    monkeypatch.setattr(supervise, "_live_loops", lambda: [11, 22, 33])
+    monkeypatch.setattr(supervise, "loop_args_of", lambda pid: carried[pid])
+    monkeypatch.setattr(supervise, "_is_idle", lambda pid: True)
+    killed = []
+    monkeypatch.setattr(supervise.os, "kill", lambda pid, sig: killed.append(pid))
+
+    wrong = [p for p in supervise._live_loops()
+             if supervise.loop_args_of(p) not in (None, shape)]
+    assert wrong == [11], "22 matches the shape; 33 is unreadable, not wrong"
+    assert supervise._stop_idle_loops(wrong) == [11]
+    assert killed == [11]
