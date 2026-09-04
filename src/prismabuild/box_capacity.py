@@ -22,18 +22,53 @@ person at a prompt.
 
 So the box observes itself, and what it offers is the remainder.
 
-**Two kinds are clamped, one is only recorded.**  A kind can be clamped only
-when the instrument reads it in the token's own units.  A GPU compute app is
-countable against a ``gpu`` token, and ``MemAvailable`` is in the same
-gigabytes a ``mem_gb`` token is; those two are clamped.  A ``cpu`` token is a
-SLOT and the run queue counts THREADS, so subtracting one from the other has
-nothing to subtract -- an action holding one slot legitimately runs twenty
-threads.  Measured on sparky 2026-09-04: load1 22.47 against 5 held cpu
-tokens, every runnable task a pool-scheduled action, which the subtraction
-scored as 17 foreign cpu and would have taken the box from ten slots to zero
-for being busy with the pool's own work.  So the load travels in ``detail``
-for a human to read and clamps nothing, until an instrument exists that can
-attribute a thread to a reservation.
+**Two kinds are clamped, one is only recorded.**  The pool prices its own work
+at one token per action, and those tokens are the whole of what there is to
+subtract with, so a kind is clamped when one action shows up as about one unit
+on the instrument.  ``MemAvailable`` is exact: a ``mem_gb`` token is a
+gigabyte and the reading is in gigabytes.  A GPU compute app is an
+approximation: one context per action is what the pool *prices*, and the one
+action measured here opened one (sparky 01:33, below).  Whether that holds for
+a pytest suite or a container that spawns its own children is not measured,
+which is what the next section is for.  The run queue is not an
+approximation at all: a ``cpu`` token is a SLOT, load counts THREADS, and one
+action legitimately runs twenty of them, so the error is unbounded and it is
+made on every action rather than on some.  Measured on sparky 2026-09-04:
+load1 22.47 against 5 held cpu tokens, every runnable task a pool-scheduled
+action, which the subtraction scored as 17 foreign cpu and would have taken
+the box from ten slots to zero for being busy with the pool's own work.  So
+the load travels in ``detail`` for a human to read and clamps nothing, until
+an instrument exists that can attribute a thread to a reservation.
+
+**What the gpu clamp gets wrong, and by how much.**  ``len(apps) -
+held_gpu`` is the whole of the arithmetic, and it is wrong in both directions
+by an amount the ledger cannot know, because the ledger records how many
+tokens an action holds and never how many CUDA contexts it opens.
+
+* An action that opens *k* contexts reads as *k*-1 foreign, so the box
+  under-offers itself for that action's length.  Pool GPU actions on this
+  fleet are pytest suites and bash wrappers that spawn their own children, so
+  *k* >= 2 is realistic.  On sparky -- 2 gpu slots, the only box on the fleet
+  with more than one -- *k* = 2 costs the second slot until the action ends
+  and *k* >= 3 takes the offer to zero.
+* A held gpu token whose action has no live context -- before the context is
+  created, after it is torn down, or a reservation standing in for something
+  else -- forgives one foreign app.  ``out-of-pool-ts60-encode-sparklina``,
+  the hand reservation the issue describes, is exactly that shape: while it
+  stands, one real foreign encode is invisible to this reading.  So is an
+  exclusive campaign between two of its phases -- read live on sparky
+  2026-09-04, ``held {'cpu': 1, 'gpu': 2, 'mem_gb': 48}`` against zero compute
+  apps.  On sparklina the masking costs nothing, because that box offers one
+  gpu slot and the reservation holds it, so the offer is zero either way.  On
+  sparky it would cost a slot:
+  one context-less reservation beside one foreign process reads ``foreign``
+  0, offers both slots and holds one, and a GPU action is placed on top of
+  the foreign process.
+
+Both errors end when the holder does, neither can raise the offer above the
+declaration, and neither invents a constant.  The alternative -- attribute
+apps by walking the process tree -- is measured not to work on this fleet, for
+the reason below.
 
 **Attribution is by ledger, not by process tree.**  The obvious implementation
 -- walk the GPU compute apps and forgive the ones descended from a pool worker
@@ -87,6 +122,12 @@ why the ledger total is a cap and not a seed.  The price is one poll of
 possible under-offer, paid at the end of each action; a retire deletes free
 tokens only, and the three to sixteen other loops on a box re-mint them from
 their own next claim.
+
+What the cap does not do is make the first poll back *safer* than an ordinary
+one.  The ledger total it caps at still counts the token this loop released,
+so a reading that lands between two foreign processes can still take that
+token -- it just cannot mint a new one.  After ``rejoin`` the first poll back
+is exactly as trustworthy as any other single poll, and no more.
 
 Restarting is the same situation with one difference, and it is why the seed
 survives beside the cap: a starting loop has never read the box, so there is
@@ -248,11 +289,13 @@ def observe(
     foreign: dict[str, int] = {}
     detail: dict[str, object] = {}
 
-    def clamp(kind: str, occupied: int) -> None:
-        if occupied <= 0:
+    def clamp(kind: str, foreign_units: int) -> None:
+        # One name for one quantity: ``foreign`` is what the announce record
+        # publishes and what the worker loop prints.
+        if foreign_units <= 0:
             return
-        foreign[kind] = occupied
-        capacity[kind] = max(0, wanted[kind] - occupied)
+        foreign[kind] = foreign_units
+        capacity[kind] = max(0, wanted[kind] - foreign_units)
 
     if wanted.get("gpu", 0) > 0:
         if gpu_apps is _READ:

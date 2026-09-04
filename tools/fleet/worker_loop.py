@@ -187,8 +187,11 @@ def main():
         queue.ledger().retire_free_capacity(capacity)
         if capacity != announced:
             seen = observer.last if observer is not None else None
+            # ``foreign`` and ``detail``, named as the announce record names
+            # them, so a line in a log and a field in ``workers/<host>.json``
+            # can be read against each other.
             print(f"[{host}] offer {capacity}"
-                  + (f" (declared {declared}; occupied {seen.foreign}; "
+                  + (f" (declared {declared}; foreign {seen.foreign}; "
                      f"{seen.detail})" if seen is not None and seen.foreign
                      else ""), flush=True)
             announced = dict(capacity)
@@ -227,6 +230,10 @@ def main():
         except Exception as exc:                                 # noqa: BLE001
             # The raise may have come two hours into an action, so this loop
             # has been away from the box for as long as a returning one has.
+            # It may equally have come from ``reap_stale`` before anything was
+            # claimed, and the two are not distinguishable from here without
+            # threading state out of ``serve_once``.  Emptying the window on
+            # both is the conservative reading of the pair.
             if observer is not None:
                 observer.rejoin(queue.ledger().capacity())
             errors += 1

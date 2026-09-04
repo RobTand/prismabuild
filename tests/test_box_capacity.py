@@ -63,6 +63,59 @@ def test_a_second_gpu_process_the_pool_did_not_claim_costs_a_slot() -> None:
     assert seen.foreign["gpu"] == 1
 
 
+# -- the two limits of counting processes against slots -----------------
+#
+# These pin known wrong answers.  Delete them when an instrument arrives that
+# attributes a CUDA context to a reservation; do not "fix" them by inventing a
+# constant for contexts per action.
+
+
+def test_a_pool_action_that_opens_two_contexts_costs_sparky_its_second_slot() -> None:
+    """The over-count, quantified on the only box with more than one slot.
+
+    The pool prices a GPU action at one token whatever it spawns, so an action
+    with k CUDA contexts reads as k-1 foreign.  Pool GPU actions on this fleet
+    are pytest suites and bash wrappers that spawn their own children, so k >= 2
+    is realistic.  The box under-offers itself for that action's length only,
+    and never offers more than it declared.
+    """
+
+    sparky = {"cpu": 10, "gpu": 2, "mem_gb": 48}
+    ours = {"cpu": 1, "gpu": 1, "mem_gb": 16}
+
+    two = bc.observe(sparky, ours, gpu_apps=[(1, 100), (2, 100)], mem_gb=100)
+    three = bc.observe(sparky, ours, gpu_apps=[(1, 100), (2, 100), (3, 100)],
+                       mem_gb=100)
+
+    assert two.capacity["gpu"] == 1        # the second slot, for the action
+    assert three.capacity["gpu"] == 0      # and the first as well
+
+
+def test_a_held_token_with_no_context_hides_one_foreign_process() -> None:
+    """The under-count: ``out-of-pool-ts60-encode-sparklina``'s own shape.
+
+    A gpu token whose action has no live CUDA context -- before the context is
+    created, after it is torn down, or a reservation standing in for work the
+    pool did not schedule -- forgives one compute app.  On sparklina the
+    reservation holds the box's only slot, so the offer is 0 either way and the
+    masking costs nothing.  On sparky it costs a slot: the box offers two, holds
+    one, and a GPU action is placed on top of the foreign process.
+    """
+
+    reserved = bc.observe({"cpu": 10, "gpu": 2, "mem_gb": 48},
+                          {"gpu": 1, "mem_gb": 18},
+                          gpu_apps=[(794915, 1145)], mem_gb=100)
+
+    assert reserved.foreign.get("gpu", 0) == 0
+    assert reserved.capacity["gpu"] == 2
+
+    # The same reservation on the box it was actually taken out on.
+    sparklina = bc.observe(SPARKLINA_DECLARED, {"gpu": 1, "mem_gb": 18},
+                           gpu_apps=[(794915, 1145)], mem_gb=100)
+
+    assert sparklina.capacity["gpu"] == 1     # offered, but the token is held
+
+
 def test_memory_is_bounded_by_what_is_physically_free() -> None:
     seen = bc.observe({"mem_gb": 40}, {}, mem_gb=12, load1=0.0)
 
