@@ -120,16 +120,24 @@ have been caught by an argv assertion, because argv was not where they went
 missing.
 
 Measured with `tools/fleet/probes/exec_context_probe.py` — one identical child
-run twice under one launcher, only the wrapper differing — on gx10-6b77 (GB10)
-at the two commits, and reproduced on dl380g10:
+run twice under one launcher, only the wrapper differing — at the two commits
+on **sparky**, the box the regression was attested on, and again on
+**gx10-6b77**, both GB10:
 
 | what the child sees | launcher | unit, before | unit, after |
 |---|---|---|---|
-| CPU affinity | `5-6` | `0-19` (all) | `5-6` |
+| CPU affinity | `0-1` | `0-19` (all) | `0-1` |
 | soft `RLIMIT_NOFILE` | 314159 | 1024 | 314159 |
 | the other 14 rlimits | — | identical | identical |
-| cgroup path | `session-56.scope` | `pbcap-….service` | `pbcap-….service` |
-| `oom_score_adj` | 0 | 200 | 200 |
+| cgroup path | `session-15.scope` | `pbexecctx-….service` | `pbexecctx-….service` |
+| `oom_score_adj` | −1000 | 200 | 200 |
+
+(sparky, commits `79e58bd` → `8074298`: `rlimits_identical` 14 of 16 → 16 of
+16, `differs` down to `cgroup` and `oom_score_adj`. gx10-6b77 returns the same
+two arms with the launcher pinned to `5-6`. The dl380g10 row in section 1 is a
+delegation fact only; the *before* arm was also seen there — affinity `0-1` →
+`0-79`, soft `RLIMIT_NOFILE` 314159 → 1024 — with an earlier draft of this
+probe, and no after arm was run on it.)
 
 **Affinity.** `cpu_topology.pin_to_preferred`'s stated mechanism is inheritance
 by fork — "Pin this process *and so every child it forks*" — which a unit is
@@ -156,11 +164,12 @@ the loop's own −1000 across would make the offender the last thing the kernel
 would pick.
 
 **A third difference is recorded rather than fixed.** The unit's environment is
-a strict *superset* of the launcher's — nothing is lost, and 13 names are added
-(`DBUS_SESSION_BUS_ADDRESS`, `INVOCATION_ID`, `LOGNAME`, `MANAGERPID`,
-`MEMORY_PRESSURE_WATCH`/`_WRITE`, `SHELL`, `SSH_AUTH_SOCK`, `SYSTEMD_EXEC_PID`,
-`USER`, and four desktop-session names), because the user manager passes its
-own environment to every unit it starts. They reach the pool *worker*, not the
+a strict *superset* of the launcher's — `env_only_in_launcher` is empty on both
+boxes, so nothing is lost — and names are added (`INVOCATION_ID`, `MANAGERPID`,
+`MEMORY_PRESSURE_WATCH`/`_WRITE`, `SSH_AUTH_SOCK`, `SYSTEMD_EXEC_PID` and the
+desktop-session names; 9 on sparky, 13 on gx10-6b77, the difference being only
+what each launcher's own environment already carried), because the user manager
+passes its own environment to every unit it starts. They reach the pool *worker*, not the
 action: `run_local_action` builds the payload's environment from the variables
 the action declared and nothing else (`core.py`, `env={...variables...}`), so
 the closed environment sealed into the action key is unchanged. `systemd-run`

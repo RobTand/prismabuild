@@ -69,6 +69,11 @@ def restricted_launcher(tmp_path):
     if hard != resource.RLIM_INFINITY and hard <= 1024:
         pytest.skip(f"hard RLIMIT_NOFILE is {hard}; no soft value above the "
                     f"systemd default is reachable to tell the two apart")
+    # A soft above the hard raises rather than skipping, and an ERROR on a box
+    # whose hard limit merely sits between the two is a broken test, not a
+    # finding.  Any value above 1024 distinguishes carried from defaulted.
+    soft = (PROBE_SOFT if hard == resource.RLIM_INFINITY or PROBE_SOFT <= hard
+            else hard)
     if len(was_affinity) < 2:
         pytest.skip("launcher is already pinned to one CPU; a narrower mask "
                     "would not distinguish carried from inherited")
@@ -77,9 +82,9 @@ def restricted_launcher(tmp_path):
     want = set(sorted(was_affinity)[:2])
     try:
         os.sched_setaffinity(0, want)
-        resource.setrlimit(resource.RLIMIT_NOFILE, (PROBE_SOFT, hard))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
         yield {"script": child, "affinity": sorted(want),
-               "nofile": [PROBE_SOFT, hard]}
+               "nofile": [soft, hard]}
     finally:
         resource.setrlimit(resource.RLIMIT_NOFILE, was_nofile)
         os.sched_setaffinity(0, was_affinity)
