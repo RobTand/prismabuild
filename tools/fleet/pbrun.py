@@ -203,6 +203,50 @@ def result_and_stamp_names(command, cwd, demand, variables):
             f"{STAMP_PREFIX}{fingerprint}.json")
 
 
+def keep_droppings_out_of_git(cwd: Path) -> Path | None:
+    """Teach git to ignore the stamp and the result logs, locally.
+
+    Ask git where its exclude file is; do not compute it.  ``cwd/.git`` is a
+    DIRECTORY only for a repository root that is not a linked worktree -- in
+    a ``git worktree`` checkout it is a file, and in a subdirectory of the
+    repo it is nothing -- so the old path silently did nothing in exactly the
+    checkouts agents make.  The stamp then showed as untracked, and in a tree
+    several agents stage broadly in, an untracked file is a file that gets
+    committed: one landed on this branch.
+
+    ``--git-common-dir``, not ``--git-dir``.  Measured, because the two differ
+    in a worktree and only one is read: a pattern in
+    ``.git/worktrees/<name>/info/exclude`` does not match (``git check-ignore``
+    exits 1), the same pattern in the common ``.git/info/exclude`` does.  That
+    is also the right scope -- these prefixes are pbrun's everywhere in the
+    repo, not per worktree.
+
+    Returns the file it wrote, or ``None``.  Never raises: a checkout that is
+    not a git repository at all is a supported way to submit.
+    """
+
+    try:
+        out = subprocess.run(["git", "-C", str(cwd), "rev-parse",
+                              "--git-common-dir"],
+                             capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            return None                       # not a git checkout; nothing to tell
+        common = Path(out.stdout.strip())
+        if not common.is_absolute():
+            common = cwd / common             # older git answers ".git"
+        exclude = common / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        current = exclude.read_text() if exclude.exists() else ""
+        with exclude.open("a", encoding="utf-8") as handle:
+            if STAMP_PREFIX not in current:
+                handle.write(f"{STAMP_PREFIX}*\n")
+            if RESULT_PREFIX not in current:
+                handle.write(f"{RESULT_PREFIX}*\n")
+        return exclude
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def placement_tags(
     cwd: Path,
     *,
@@ -645,17 +689,7 @@ def main() -> int:
     finally:
         if scratch.exists():
             scratch.unlink()
-    exclude = cwd / ".git" / "info" / "exclude"
-    try:
-        if exclude.parent.is_dir():
-            current = exclude.read_text()
-            with exclude.open("a", encoding="utf-8") as handle:
-                if STAMP_PREFIX not in current:
-                    handle.write(f"{STAMP_PREFIX}*\n")
-                if RESULT_PREFIX not in current:
-                    handle.write(f"{RESULT_PREFIX}*\n")
-    except OSError:
-        pass                       # a worktree without .git/info is not an error
+    keep_droppings_out_of_git(cwd)
 
 
     body = {
