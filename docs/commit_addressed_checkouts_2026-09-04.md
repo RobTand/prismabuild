@@ -7,12 +7,12 @@ described here only where they bound the design.
 
 ## The problem, measured
 
-An action carries `checkout_root`, an absolute path (`pool.py:737-784`,
-written by `pbrun.py:762`). When that path is a box-local worktree —
+An action carries `checkout_root`, an absolute path (`pool.PoolQueue.publish`,
+written from `pbrun`'s `checkout_root=str(cwd)`). When that path is a box-local worktree —
 `/home/rob/tmp/ts101`, which is what an agent naturally creates — the action
 must be tagged to the box that holds it or it will be claimed by a worker that
 cannot see it. `pbrun.placement_tags` derives that pin from the path, and
-correctly (`pbrun.py:250-284`).
+correctly (`pbrun.placement_tags`).
 
 Read off the live queue on 2026-09-04, over the 391 items in `ready`,
 `claimed`, `done` and `failed`:
@@ -61,19 +61,19 @@ actions**. The submitter's absolute path is bound into the action key in three
 places, so the same work submitted from two boxes is today two different
 actions with two different keys:
 
-* `params.cwd` is `str(cwd)` (`pbrun.py:715`), and `params` is part of the
-  sealed body (`core.py:62-72`, `seal_action` at `core.py:1371-1375`);
+* `params.cwd` is `str(cwd)` (`pbrun`'s action body: `"params": {"command": ..., "cwd": str(cwd), ...}`), and `params` is part of the
+  sealed body (`core._ACTION_BODY_KEYS`, `core.seal_action`);
 * the closure stamp's *name* embeds a fingerprint over `str(cwd)`
-  (`pbrun.py:198-202`), so the closure member's path differs per box;
-* the stamp's *content* records `{"cwd": ...}` (`pbrun.py:666`).
+  (`pbrun._closure_names`' sha256 over `str(cwd)`), so the closure member's path differs per box;
+* the stamp's *content* records `{"cwd": ...}` (`pbrun`'s stamp payload: `json.dumps({"cwd": str(cwd), **identity}, ...)`).
 
 So step zero of (2) is to rebind the key from *(path, tree delta)* to
 *(repository identity, tree commit)*. After that a cache hit across boxes is
 correct rather than lucky, and it is the same property the design already
 claims for concurrent workers: "Workers in distinct validated checkouts may
 execute task argv concurrently and converge through ordinary CAS publication"
-(`docs/design.md:44-46`). The output-lock claim binds the resolved checkout
-(`core.py:3596-3611`), which is what allows two boxes to hold two claims
+(`docs/design.md`). The output-lock claim binds the resolved checkout
+(`core._local_result_claim_body`), which is what allows two boxes to hold two claims
 without contending.
 
 ## Publishing the commit without publishing the tree
@@ -89,7 +89,7 @@ NFS load from a working tree.
   it carries no `checkout_root`.
 
 Git's ref update takes its lock with `O_CREAT|O_EXCL`, which is the primitive
-this fleet already relies on for token minting (`pool.py:319`). That it
+this fleet already relies on for token minting (`pool.ResourceLedger`'s token mint). That it
 holds on this mount for `refs/` **must be verified, not assumed** — the mount
 is `local_lock=none`, and every concurrent submitter writes a *different* ref
 name here, so the contended case is the packed-refs rewrite rather than the
@@ -99,8 +99,8 @@ qualified the rendezvous: two boxes, real concurrency, an explicit predicate.
 ## Dirty trees are the norm, so the commit is synthesised
 
 Agents submit from dirty trees constantly; `pbrun` has a whole delta digest
-for it (`pbrun.py:75-121`), and 12 of 50 live failures were closure drift
-between sealing and running (`tools/fleet/pool_reset.py:12-14`). Requiring a
+for it (`pbrun._git_identity`), and 12 of 50 live failures were closure drift
+between sealing and running (`tools/fleet/pool_reset.py`). Requiring a
 clean tree would make the feature unusable.
 
 Synthesise a commit from the working tree instead, without touching any
@@ -115,7 +115,7 @@ git push <bare> $commit:refs/pbrun/$commit
 
 `git stash create` is the tempting shortcut and is the wrong one: it does not
 carry untracked files, and `pbrun` learned the hard way that an untracked file
-edit must move the action key (`pbrun.py:100-118`). Include the same
+edit must move the action key (`pbrun._git_identity`'s untracked digest). Include the same
 exclusions the delta digest already applies — the closure stamp and the result
 logs — or every submit will produce a new tree commit for its own droppings.
 
@@ -128,10 +128,10 @@ logs — or every submit will produce a new tree commit for its own droppings.
    materialisation. Reuse when it is already there — a second action at the
    same commit costs a lock and a stat.
 3. Run exactly as today: `worker_argv` gets `--checkout-root <that path>`
-   (`pool.py:1262-1268`), and everything downstream is unchanged.
+   (`pool.PoolQueue.worker_argv`), and everything downstream is unchanged.
 4. The closure check keeps its teeth. The materialiser writes the stamp by
    recomputing `_git_identity` **from the tree it has just built**, exactly as
-   `pbrun` does at submit; `core.verify_code_closure` (`core.py:1136-1149`)
+   `pbrun` does at submit; `core.verify_code_closure`
    then compares that against the action-pinned bytes. A worktree that landed
    on the wrong commit, or that is dirty, produces different bytes and the
    action refuses. This is a real check because the stamp is derived from the
@@ -145,7 +145,7 @@ logs — or every submit will produce a new tree commit for its own droppings.
 
 * **No worktrees on `/mnt/shared`.** Objects are shared; trees are not.
 * **`TRITON_CACHE_DIR` stays `/home/rob/.triton-cache`** — a local path per
-  box, same string, different disk (`pbrun.py:594-601`).
+  box, same string, different disk (`pbrun`'s default environment).
 * **Results still travel through the CAS**, never through the tree. A
   materialised worktree is disposable by construction.
 * **It does not unpin `--here`**, which is a deliberate statement about one
@@ -159,7 +159,7 @@ logs — or every submit will produce a new tree commit for its own droppings.
   breaks absolute paths silently — the command runs, against the wrong file or
   none. This is the one failure mode of (2) that is not loud, so it is refused
   at the one moment the caller is watching, the way an unplaceable tag already
-  is (`pbrun.py:746-754`).
+  is (`pbrun`'s `no live worker can run this action`).
 * **A working tree bigger than a stated bound.** A synthesised tree commit of
   a checkout holding a 90 GB cache is not a submission, it is an accident.
 
@@ -179,32 +179,35 @@ width by the tree rather than by the tags:
 
 ## Line references
 
-Every `file:line` above is repeated here with the line it points at, and
-`tests/test_design_doc_line_references.py` checks the two still agree. This
-table exists because they twice did not: the design was written against one
-arrangement of `pbrun.py`, the branch it describes moved those lines, and two
-separate commits went to re-pointing them by hand. A citation nothing checks
-is a citation that decays into a confident wrong number, which is worse than
-no number at all — so the check is mechanical, and a range is anchored by its
-first line.
+The design depends on particular lines of particular files, so each is quoted
+here beside the file it lives in and `tests/test_design_doc_line_references.py`
+checks the quotation still occurs there, exactly once.
 
-| citation | the line it names |
+Quotations rather than line numbers, learned the hard way twice on this
+branch: the first two versions cited `file:line`, and both went stale inside
+an hour because the work the design describes moves those very lines. A
+line-number check would then fail this suite on every unrelated edit to
+`pbrun.py` — five branches edit it at once — which makes the check something
+to delete rather than something to keep. A quotation only fails when the code
+it names actually changes, which is exactly when the design needs re-reading.
+
+| where | the line it names |
 |---|---|
-| `pbrun.py:75-121` | `def _git_identity(cwd: Path) -> dict[str, str]:` |
-| `pbrun.py:100-118` | `    # `git diff HEAD` covers tracked edits.  It says nothing about an` |
-| `pbrun.py:198-202` | `    fingerprint = hashlib.sha256(` |
-| `pbrun.py:250-284` | `def placement_tags(` |
-| `pbrun.py:594-601` | `    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:` |
-| `pbrun.py:666` | `    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)` |
-| `pbrun.py:715` | `        "params": {"command": command, "cwd": str(cwd), "demand": demand},` |
-| `pbrun.py:746-754` | `    verdict = q.placeable(intent)` |
-| `pbrun.py:762` | `        checkout_root=str(cwd),` |
-| `pool.py:319` | `                    descriptor = os.open(token, os.O_WRONLY \| os.O_CREAT \| os.O_EXCL, 0o644)` |
-| `pool.py:737-784` | `    def publish(` |
-| `pool.py:1262-1268` | `        key = str(item["action_key"])` |
-| `core.py:62-72` | `_ACTION_BODY_KEYS = frozenset(` |
-| `core.py:1136-1149` | `def verify_code_closure(value: object, root: str \| Path) -> dict[str, object]:` |
-| `core.py:1371-1375` | `def seal_action(value: object) -> dict[str, object]:` |
-| `core.py:3596-3611` | `def _local_result_claim_body(` |
-| `docs/design.md:44-46` | `only workers sharing the same live checkout/output-lock identity. Workers in` |
-| `tools/fleet/pool_reset.py:12-14` | `* twelve died on ``live code closure differs from the action-pinned` |
+| `pbrun._git_identity` | `def _git_identity(cwd: Path) -> dict[str, str]:` |
+| `pbrun._git_identity`, untracked digest | `    # `git diff HEAD` covers tracked edits.  It says nothing about an` |
+| `pbrun`, stamp name fingerprint | `    fingerprint = hashlib.sha256(` |
+| `pbrun.placement_tags` | `def placement_tags(` |
+| `pbrun`, default environment | `    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:` |
+| `pbrun`, stamp payload | `    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)` |
+| `pbrun`, action body params | `        "params": {"command": command, "cwd": str(cwd), "demand": demand},` |
+| `pbrun`, unplaceable refusal | `    verdict = q.placeable(intent)` |
+| `pbrun`, published checkout_root | `        checkout_root=str(cwd),` |
+| `pool`, token mint | `                    descriptor = os.open(token, os.O_WRONLY \| os.O_CREAT \| os.O_EXCL, 0o644)` |
+| `pool.PoolQueue.publish` | `    def publish(` |
+| `pool`, worker_argv | `            checkout_root=item["checkout_root"],` |
+| `core._ACTION_BODY_KEYS` | `_ACTION_BODY_KEYS = frozenset(` |
+| `core.verify_code_closure` | `def verify_code_closure(value: object, root: str \| Path) -> dict[str, object]:` |
+| `core.seal_action` | `def seal_action(value: object) -> dict[str, object]:` |
+| `core._local_result_claim_body` | `def _local_result_claim_body(` |
+| `docs/design.md`, concurrent checkouts | `only workers sharing the same live checkout/output-lock identity. Workers in` |
+| `tools/fleet/pool_reset.py` | `* twelve died on ``live code closure differs from the action-pinned` |
