@@ -533,8 +533,22 @@ class PoolQueue:
             if needs_gpu and not offer.get("has_gpu"):
                 continue
             capacity = offer.get("capacity") or {}
+            # A kind the offer does not MENTION is unknown, not zero.  The
+            # difference is what a publish looks like from the queue: capacity
+            # gains a kind (``cpu``, on 2026-09-04), the offer file is one
+            # last-writer-wins record per host, and loops of both generations
+            # write it -- so sparky's offer alternated between
+            # ``{"gpu": 2, "mem_gb": 48}`` and ``{"cpu": 10, "gpu": 2,
+            # "mem_gb": 48}``, 32 and 28 samples of 60 taken one second apart.
+            # Read as zero, the older record makes every action carrying the
+            # new ``cpu=1`` default unplaceable on a box that plainly runs it:
+            # 17 of 60 identical queries answered "no live worker can run this
+            # action" for a box whose offer was one to eight seconds old.
+            # Refuse on what a box says it cannot fit; never on what it did
+            # not say.
             if isinstance(capacity, Mapping) and any(
-                int(capacity.get(kind, 0)) < need for kind, need in demand.items()
+                int(capacity[kind]) < need
+                for kind, need in demand.items() if kind in capacity
             ):
                 continue          # this box can never fit it, however idle
             matches.append(offer)

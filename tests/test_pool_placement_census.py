@@ -117,6 +117,45 @@ def test_the_census_counts_items_placeable_on_exactly_one_box(
     assert "1 on more than one" in line and "1 on none" in line
 
 
+def test_a_capacity_kind_the_offer_omits_is_not_a_refusal(tmp_path: Path) -> None:
+    """A publish makes two generations of offer coexist, and one omits a kind.
+
+    ``capacity`` gained ``cpu`` on 2026-09-04.  The offer file is one
+    last-writer-wins record per host, and loops of both generations write it,
+    so sparky's live offer alternated between ``{"gpu": 2, "mem_gb": 48}`` and
+    ``{"cpu": 10, "gpu": 2, "mem_gb": 48}`` -- 32 and 28 of 60 samples taken a
+    second apart.  Read as zero, the older record made every action carrying
+    the new ``cpu=1`` default unplaceable on a box that plainly runs it: 17 of
+    60 identical queries answered "no live worker can run this action", which
+    ``pbrun`` turns into a refused submission.
+    """
+
+    queue = pool.PoolQueue(tmp_path / "q")
+    queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
+                   capacity={"gpu": 2, "mem_gb": 48})     # the older generation
+
+    item = {"tags": ["sparky"], "needs_gpu": False,
+            "resources": {"cpu": 1, "mem_gb": 4}}
+
+    assert queue.placeable_hosts(item) == ["sparky"]
+    assert queue.placeable(item) is True
+
+
+def test_a_capacity_kind_the_offer_states_too_small_still_refuses(
+    tmp_path: Path,
+) -> None:
+    """Silence is unknown; a stated number is a fact, and it still binds."""
+
+    queue = pool.PoolQueue(tmp_path / "q")
+    queue.announce(host="sparky", tags=["sparky"], has_gpu=True,
+                   capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
+
+    assert queue.placeable_hosts(
+        {"tags": [], "needs_gpu": False, "resources": {"cpu": 24}}) == []
+    assert queue.placeable_hosts(
+        {"tags": [], "needs_gpu": False, "resources": {"cpu": 10}}) == ["sparky"]
+
+
 def test_a_nameless_offer_is_reported_rather_than_dropped(tmp_path: Path) -> None:
     """Dropping it would make the width disagree with the verdict."""
 
