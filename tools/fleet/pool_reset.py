@@ -25,12 +25,22 @@ declares a fresh per-action result path.  The failed record is filed as
 Duplicates are collapsed by (working directory, argv): thirteen attempts at
 one suite are one piece of work, and re-running it thirteen times would be a
 way of looking busy.
+
+**Which dispatcher a reset rides is a property of the record.**  Since the
+SLURM lane files its endings in these same two directories, ``failed/`` holds
+records from both transports at once, and re-submitting a lane-filed failure
+into the pull queue puts it in a queue no worker drains once the fleet has cut
+over.  So each record's own ``transport`` field decides, ``--transport slurm``
+forces the whole reset onto the lane, and the child ``pbrun`` is always told
+explicitly -- an ambient ``PRISMABUILD_TRANSPORT`` must not silently re-route
+work whose ending the other transport filed.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -61,21 +71,43 @@ PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
 RESULT_PREFIX = "pbrun_result."
 
 
-def _request(action_key: str) -> dict | None:
-    path = SH / "cas" / "requests" / action_key[:2] / f"{action_key}.json"
+#: Which dispatcher carries a re-submission.  ``pbrun`` owns the vocabulary;
+#: this tool only decides which word to hand it, per record.
+TRANSPORTS = ("pool", "slurm")
+DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
+
+
+def _request(action_key: str, *, cas_root: Path) -> dict | None:
+    path = Path(cas_root) / "requests" / action_key[:2] / f"{action_key}.json"
     try:
         return json.loads(path.read_text())
     except (OSError, ValueError):
         return None
 
 
-def _recover(record: dict) -> tuple[dict | None, str]:
+def record_transport(record: Mapping, *, requested: str = "pool") -> str:
+    """Which transport this ending's work goes back out on.
+
+    The record wins when it names one: the lane stamps ``transport: "slurm"``
+    on every ending it files, and that stamp is the only evidence available
+    afterwards about which dispatcher ran the action.  ``--transport slurm``
+    carries everything else with it, which is what an operator wants on the
+    day of the cutover, and nothing here can move a lane-filed failure back
+    onto a queue that has no workers.
+    """
+
+    if str(record.get("transport") or "") == "slurm":
+        return "slurm"
+    return "slurm" if requested == "slurm" else "pool"
+
+
+def _recover(record: dict, *, cas_root: Path) -> tuple[dict | None, str]:
     """Rebuild what a submission needs, or say what is missing."""
 
     key = str(record.get("action_key") or "")
     if len(key) != 64:
         return None, "record carries no action key"
-    request = _request(key)
+    request = _request(key, cas_root=cas_root)
     if request is None:
         return None, "action request is not in the CAS"
     argv = ((request.get("params") or {}).get("command")
@@ -102,12 +134,14 @@ def _recover(record: dict) -> tuple[dict | None, str]:
     }, ""
 
 
-def _clear_stale_result(action: object, cwd: str) -> tuple[list[str], str]:
+def _clear_stale_result(
+    action: object, cwd: str, *, cas_root: Path = SH / "cas"
+) -> tuple[list[str], str]:
     """Clear only this action's own leftover declared result, under its claim."""
 
     try:
         outcome = pb.repair_local_result(
-            action, cas_root=SH / "cas", checkout_root=cwd)
+            action, cas_root=cas_root, checkout_root=cwd)
     except Exception as exc:                                     # noqa: BLE001
         # A refusal here is information, not a failure: "already has a CAS
         # receipt" means the work landed and there is nothing to reset.
@@ -118,7 +152,106 @@ def _clear_stale_result(action: object, cwd: str) -> tuple[list[str], str]:
     return ([str(removed)] if removed else []), ""
 
 
-def main() -> int:
+def plan_resets(
+    queue: pool.PoolQueue,
+    *,
+    cas_root: Path = SH / "cas",
+    transport: str = "pool",
+    include_reset: bool = False,
+) -> tuple[list[dict], list[tuple[str, str]]]:
+    """The distinct pieces of work in ``failed/``, and what could not be read.
+
+    Every ending in that directory is a candidate, whichever transport filed
+    it: a SLURM ``TIMEOUT`` is a failure the same way an exit code is, and the
+    lane files it here with ``detail.slurm.state`` saying which it was.  Each
+    plan carries the transport its own record names, so a mixed queue during
+    the cutover resets each half onto the dispatcher that ran it.
+    """
+
+    failed = sorted(queue.dir(pool.FAILED).glob("*.json"))
+    # A withdrawal is a decision, and re-submitting it would undo it.  Two ways
+    # a cancelled action still reaches ``failed/``: a worker running bytes that
+    # predate ``withdraw`` files its own outcome there (the verb writes
+    # ``max_attempts: 1`` into the claimed record precisely so that outcome is
+    # terminal rather than a retry), and any worker can lose the claim to a
+    # reaper and take ``finish``'s lost-race branch.  The SLURM lane reaches it
+    # a third way, filing both the marker and a ``withdrawn`` ending.
+    #
+    # The guard is generation-scoped -- ``withdrawal_covers`` compares the
+    # marker's ``published_unix`` to the record's -- because an action key is a
+    # content hash and re-submitting one is the normal way to ask for the same
+    # work again.  Matching on the bare key instead turns one cancellation into
+    # a permanent ban on the work it named.
+    withdrawn = queue.withdrawn_keys()
+
+    plans: dict[tuple[str, str], dict] = {}
+    skipped: list[tuple[str, str]] = []
+    for path in failed:
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            skipped.append((path.stem[:12], f"unreadable: {exc}"))
+            continue
+        if record.get("status") == "reset" and not include_reset:
+            continue
+        marker = queue.withdrawal_covers(record, withdrawn=withdrawn)
+        if marker is not None or record.get("withdrawn_unix"):
+            who = (record.get("withdrawn_by")
+                   or (marker or {}).get("withdrawn_by") or "an operator")
+            skipped.append((path.stem[:12],
+                            f"withdrawn by {who}; a decision, not a defect"))
+            continue
+        plan, why = _recover(record, cas_root=cas_root)
+        if plan is None:
+            skipped.append((path.stem[:12], why))
+            continue
+        plan["transport"] = record_transport(record, requested=transport)
+        signature = (plan["cwd"], json.dumps(plan["argv"]))
+        previous = plans.get(signature, {})
+        plan["paths"] = previous.get("paths", []) + [path]
+        # One piece of work, several endings: if any of them was carried by the
+        # lane, the work rides the lane.  A pull-queue record cannot vouch for
+        # a queue that has no workers left.
+        if previous.get("transport") == "slurm":
+            plan["transport"] = "slurm"
+        plans[signature] = plan
+    return list(plans.values()), skipped
+
+
+def submit_command(
+    plan: Mapping,
+    *,
+    transport: str,
+    priority: int = -10,
+    timeout_s: float = 5400.0,
+    python: str = sys.executable,
+    pbrun: Path = PBRUN,
+) -> list[str]:
+    """The ``pbrun`` invocation that re-submits one plan.
+
+    ``--transport`` is always stated rather than left to ``pbrun``'s default:
+    that default reads ``PRISMABUILD_TRANSPORT`` out of whatever shell the
+    operator happens to be in, and a bulk reset that re-routes half the queue
+    because of an exported variable is exactly the surprise this tool exists
+    to remove.
+    """
+
+    command = [
+        python, str(pbrun),
+        "--transport", str(transport),
+        "--cwd", plan["cwd"],
+        "--priority", str(priority),
+        "--timeout-s", str(timeout_s),
+    ]
+    for tag in plan["tags"]:
+        command += ["--tag", tag]
+    if plan["demand"]:
+        command += ["--demand", ",".join(
+            f"{k}={v}" for k, v in sorted(plan["demand"].items()))]
+    return command + ["--"] + list(plan["argv"])
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--apply", action="store_true",
                     help="actually submit; the default only reports")
@@ -130,69 +263,41 @@ def main() -> int:
     ap.add_argument("--include-reset", action="store_true",
                     help="re-include items a previous run already marked reset "
                          "(use when that run's submissions did not survive)")
-    args = ap.parse_args()
+    ap.add_argument(
+        "--transport", choices=TRANSPORTS,
+        default=os.environ.get(DEFAULT_TRANSPORT_ENV) or "pool",
+        help="dispatcher for records that do not name one (env "
+             "PRISMABUILD_TRANSPORT); a record filed by the SLURM lane always "
+             "goes back out on the lane whatever this says")
+    ap.add_argument("--queue-root", default=str(SH / "pb-queue"),
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--cas-root", default=str(SH / "cas"),
+                    help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
 
-    queue = pool.PoolQueue(SH / "pb-queue")
-    failed = sorted(queue.dir(pool.FAILED).glob("*.json"))
-    # A withdrawal is a decision, and re-submitting it would undo it.  Two ways
-    # a cancelled action still reaches ``failed/``: a worker running bytes that
-    # predate ``withdraw`` files its own outcome there (the verb writes
-    # ``max_attempts: 1`` into the claimed record precisely so that outcome is
-    # terminal rather than a retry), and any worker can lose the claim to a
-    # reaper and take ``finish``'s lost-race branch.  Both records carry the
-    # ``withdrawn_by`` stamp the verb put on the claimed record; the live
-    # marker is the second reading, and it is generation-scoped, so a key that
-    # was withdrawn and then deliberately re-submitted is NOT skipped here.
-    withdrawn = queue.withdrawn_keys()
+    queue = pool.PoolQueue(Path(args.queue_root))
+    cas_root = Path(args.cas_root)
+    ordered, skipped = plan_resets(
+        queue, cas_root=cas_root, transport=args.transport,
+        include_reset=args.include_reset)
 
-    plans: dict[tuple[str, str], dict] = {}
-    skipped: list[tuple[str, str]] = []
-    for path in failed:
-        try:
-            record = json.loads(path.read_text())
-        except (OSError, ValueError) as exc:
-            skipped.append((path.stem[:12], f"unreadable: {exc}"))
-            continue
-        if record.get("status") == "reset" and not args.include_reset:
-            continue
-        if path.stem in withdrawn or record.get("withdrawn_unix"):
-            who = record.get("withdrawn_by") or "an operator"
-            skipped.append((path.stem[:12],
-                            f"withdrawn by {who}; a decision, not a defect"))
-            continue
-        plan, why = _recover(record)
-        if plan is None:
-            skipped.append((path.stem[:12], why))
-            continue
-        signature = (plan["cwd"], json.dumps(plan["argv"]))
-        plan["paths"] = plans.get(signature, {}).get("paths", []) + [path]
-        plans[signature] = plan
-
-    print(f"{len(failed)} failed items -> {len(plans)} distinct pieces of work, "
+    print(f"{len(ordered)} distinct pieces of work, "
           f"{len(skipped)} unrecoverable")
     for key, why in skipped:
         print(f"  skip {key}  {why}")
 
-    ordered = list(plans.values())
     if args.limit:
         ordered = ordered[: args.limit]
     for plan in ordered:
         cleared, note = ([], "")
         if args.apply:
-            cleared, note = _clear_stale_result(plan["action"], plan["cwd"])
-        command = [
-            sys.executable, str(PBRUN),
-            "--cwd", plan["cwd"],
-            "--priority", str(args.priority),
-            "--timeout-s", str(args.timeout_s),
-        ]
-        for tag in plan["tags"]:
-            command += ["--tag", tag]
-        if plan["demand"]:
-            command += ["--demand", ",".join(
-                f"{k}={v}" for k, v in sorted(plan["demand"].items()))]
-        command += ["--"] + plan["argv"]
-        label = f"{plan['key'][:12]} x{len(plan['paths'])} {plan['cwd']}"
+            cleared, note = _clear_stale_result(
+                plan["action"], plan["cwd"], cas_root=cas_root)
+        command = submit_command(
+            plan, transport=plan["transport"], priority=args.priority,
+            timeout_s=args.timeout_s)
+        label = (f"{plan['key'][:12]} x{len(plan['paths'])} "
+                 f"{plan['transport']} {plan['cwd']}")
         if not args.apply:
             print(f"  would submit {label}\n    {' '.join(command[3:])}")
             continue
