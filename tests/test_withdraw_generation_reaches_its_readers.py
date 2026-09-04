@@ -113,10 +113,10 @@ def test_a_caller_is_not_told_a_stranger_withdrew_its_run(
     exit_code = pbrun.await_outcome(queue, KEY_A, wait_s=0.05, mine=mine)
 
     assert exit_code != pbrun.WITHDRAWN_EXIT, (
-        "the withdrawal names an earlier run of this key, not this submission")
+        "the withdrawal names a different run of this key, not this submission")
     assert exit_code == 75, "nothing terminal has landed yet, so it waits"
     said = capsys.readouterr().err
-    assert "names an earlier run" in said, (
+    assert "names a different run" in said, (
         "and it says why it is still waiting, rather than waiting in silence")
     assert "rob@sparky" not in said
 
@@ -144,6 +144,30 @@ def test_a_withdrawal_of_this_caller_s_own_run_still_reports_it(
     assert pbrun.await_outcome(
         queue, KEY_A, wait_s=0.05, mine=mine) == pbrun.WITHDRAWN_EXIT
     assert "wrong branch" in capsys.readouterr().err
+
+
+def test_a_withdrawal_of_the_last_live_run_is_reported_even_when_it_is_not_mine(
+    queue: pool.PoolQueue
+) -> None:
+    """Scoping must not turn a wrong answer into a day of waiting.
+
+    ``publish`` writes ``ready/<key>.json``, so a second agent submitting the
+    same content key OVERWRITES this caller's record rather than queueing
+    beside it.  Withdraw then cancels the survivor and there is nothing left
+    of this key that can ever land.  Comparing generations and waiting would
+    make the caller sit out ``--wait-s`` -- a day, by default -- and exit 75,
+    where the unscoped reading at least said what had happened at once.
+    """
+
+    mine = _publish(queue, KEY_A)
+    _publish(queue, KEY_A)                       # overwrites it, same key
+    queue.withdraw(KEY_A, reason="stale tree", by="rob@sparky",
+                   signal_child=False)
+    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
+
+    assert pbrun.await_outcome(
+        queue, KEY_A, wait_s=0.05, mine=mine) == pbrun.WITHDRAWN_EXIT
 
 
 def test_a_caller_that_cannot_name_a_generation_reads_the_marker(

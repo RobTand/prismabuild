@@ -502,6 +502,10 @@ def await_outcome(q, key: str, *, wait_s: float, mine=None) -> int:
     done = q.item_path("done", key)
     failed = q.item_path("failed", key)
     withdrawn = q.item_path("withdrawn", key)
+    # Not terminal, and not watched for an outcome: watched to answer "is there
+    # still a run of this key to wait for".  See the withdrawal branch below.
+    ready = q.item_path("ready", key)
+    claimed = q.item_path("claimed", key)
     deadline = time.monotonic() + wait_s
     # Poll by readdir, not by stat.  The queue lives on NFS, where a stat of a
     # path that did not exist yet is negatively cached: the outcome landed and
@@ -525,14 +529,34 @@ def await_outcome(q, key: str, *, wait_s: float, mine=None) -> int:
             if q.withdrawal_covers(mine, action_key=key) is not None:
                 outcome_path = withdrawn
                 break
-            # A cancellation of an earlier run of this key.  Keep waiting --
-            # and say so once, because a submitter who can see a withdrawal
-            # sitting there under their own key and is told nothing has no way
-            # to tell "still queued" from "quietly dropped", which is the
-            # silence this whole verb exists to remove.
+            # A cancellation of a different run of this key.  Wait for this
+            # caller's own outcome -- but only while there is a run of the key
+            # left to produce one.  ``publish`` writes ``ready/<key>.json``, so
+            # a second agent submitting the same content key OVERWRITES this
+            # caller's record; withdraw then cancels the survivor and there is
+            # nothing left that will ever land.  Scoping without this test
+            # turns the old wrong answer (a stranger's cancellation, at once)
+            # into a worse one: a day of waiting and exit 75.
+            if not (_landed(ready) or _landed(claimed)):
+                # Read the terminal pair once more before concluding that:
+                # ``finish`` writes ``done``/``failed`` and only then unlinks
+                # the claim, so a run concluding between the top of this loop
+                # and here is momentarily in neither place this branch looked.
+                if _landed(done):
+                    outcome_path = done
+                    break
+                if _landed(failed):
+                    outcome_path = failed
+                    break
+                outcome_path = withdrawn
+                break
+            # Say it once.  A submitter who can see a withdrawal under their
+            # own key and is told nothing has no way to tell "still queued"
+            # from "quietly dropped", which is the silence this whole verb
+            # exists to remove.
             if not said_not_mine:
                 said_not_mine = True
-                print(f"pbrun: a withdrawal under {key[:12]} names an earlier "
+                print(f"pbrun: a withdrawal under {key[:12]} names a different "
                       f"run of it, not this one; still waiting",
                       file=sys.stderr, flush=True)
         if time.monotonic() > deadline:
