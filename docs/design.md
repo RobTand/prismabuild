@@ -1,11 +1,11 @@
 # PrismaBuild — distributed campaign execution
 
-**Status: DETERMINISTIC CORE + DURABLE SLURM ADOPTION + OPTIONAL DAGSTER LAYER
-BUILT / NOT LIVE-DEPLOYED.** The
+**Status: DETERMINISTIC CORE + SHARED CAS + PULL QUEUE LIVE; SLURM, DAGSTER,
+AND OBSERVABILITY LAYERS NOT DEPLOYED.** The
 dependency-free action-key, immutable-CAS, and local-worker core lives in
-`prismaquant/prismabuild.py`; the fail-closed SLURM resource transport lives in
-`prismaquant/prismabuild_slurm.py`; and the optional asset/DAG adapter lives in
-`prismaquant/prismabuild_dagster.py`. Before `sbatch`, the SLURM adapter
+`src/prismabuild/core.py`; the fail-closed SLURM resource transport lives in
+`src/prismabuild/slurm.py`; and the optional asset/DAG adapter lives in
+`src/prismabuild/dagster.py`. Before `sbatch`, the SLURM adapter
 first-writer-publishes a sealed submission identity, bounded retry policy, and
 self-hashed runtime identity for the loaded adapter module plus configured
 worker-launcher bytes;
@@ -20,9 +20,11 @@ action.
 `tools/prismabuild_worker.py` is the direct batch-script entry point. The
 Dagster adapter constructs deterministic assets from sealed action keys, binds
 each edge to an expected CAS output digest, and materializes only after
-re-reading that receipt and payload from the CAS. The SLURM daemons, Dagster
-service, and observability stack in the chosen design below are not deployed,
-and nothing in the live quantization pipeline depends on PrismaBuild yet.
+re-reading that receipt and payload from the CAS. The shared CAS, NFS pull
+queue, and worker loops on Sparky, Sparklina, and dl380g10 are deployed and are
+the live initiative's sole execution plane. The fleet has dispatched Tessera
+and PrismaQuant test, quantization, and measurement campaigns. SLURM daemons,
+Dagster, and the proposed observability stack remain uninstalled.
 
 Local task output is now crash-recoverable without accepting unowned bytes.
 Before argv, the worker publishes an immutable claim for the exact action,
@@ -53,35 +55,34 @@ Utilization is bursty; dispatch is manual (ssh + systemd-run). We want
 independent work to run the moment its inputs exist, across a heterogeneous
 fleet, without hand dispatch — and with strong observability.
 
-## Target fleet inventory (design only; not deployed, 2026-08)
+## Live and proposed fleet inventory (2026-09-04)
 
-This table is a proposed PrismaBuild placement inventory, not discovered or
-enforced cluster state. In particular, PrismaBuild has not installed a SLURM
-controller or node daemon, created the named partitions/reservations, or
-attested these machines through a live allocation.
+The pull queue discovers and enforces the live offers from Sparky, Sparklina,
+and dl380g10. Other rows remain proposed expansion. PrismaBuild has not
+installed a SLURM controller or node daemon, created the named
+partitions/reservations, or attested any machine through a SLURM allocation.
 
 | host class | machines | role |
 |---|---|---|
-| `gb10` | sparky, sparklina (GB10, 128 GB unified, sm_121) | proposed gold path: probes, validated KL, ship gates, big renders. The design reserves sparky for interactive/campaign use; no PrismaBuild reservation is live. |
+| `gb10` | sparky, sparklina (GB10, 128 GB unified, sm_121) | live pull-queue workers for probes, validated KL, ship gates, and big renders; no SLURM reservation is installed |
 | `rocm-16g` | Rob's + son's 9800X3D/9070 XT desktops | 0.6B screen tier; brute-force search/encode (trellis Viterbi, permutation/gauge searches, CB training) |
 | `strix-32g` | son's AI Max laptop (32 GB unified, opportunistic) | 4B screen tier (the size 16 GB cards can't hold) |
-| `cpu-x86-large` | dl380g10 (80 cores, 300 GB, NFS server) | page-cache pre-warm (vmtouch), data-gravity work (hashing, repacking, shard merges), fp64 references, bootstraps, CPU encode farms. Batch niced/cgroup-capped: storage QoS outranks batch. |
+| `cpu-x86-large` | dl380g10 (80 cores, 300 GB, NFS server) | live pull-queue CPU worker and shared CAS/NFS host; page-cache, hashing, repacking, shard merges, references, bootstraps, and CPU encode work |
 | — | M5 Mac mini | below the value line; not a tier |
 
-The intended data plane is `/mnt/shared` (NFS, dl380, 38 T, ~1 GB/s); it is not
-a PrismaBuild-deployed shared CAS today. The intended code plane is a git-SHA
-checkout per job plus per-architecture venvs (envs cannot be shared across
-aarch64-CUDA / x86-ROCm / Strix). The proposed trust plane is
-munge-authenticated SLURM: joining a machine would put it inside that trusted
-cluster boundary.
+The live data plane is `/mnt/shared` (NFS from dl380), including the deployed
+PrismaBuild CAS and pull queue under `/mnt/shared/prismabuild-fleet`. Workers
+load immutable published runtime generations and use per-architecture venvs
+(envs cannot be shared across aarch64-CUDA / x86). A future
+munge-authenticated SLURM installation remains the proposed trust plane for a
+larger cluster.
 
-## Target stack (design only; no services installed)
+## Deployed execution plane and optional target services
 
-The components below are the selected deployment design. The repository
-implements and tests the PrismaBuild core, SLURM command adapter, and optional
-Dagster definitions, but it does not install or operate SLURM, `slurmdbd`, a
-Dagster daemon/webserver, a shared PrismaBuild CAS, or the listed telemetry
-services.
+The repository implements and tests the PrismaBuild core, live pull-queue
+transport, SLURM command adapter, and optional Dagster definitions. The shared
+CAS/pull queue and three worker hosts are live. SLURM, `slurmdbd`, Dagster, and
+the listed telemetry services are not installed.
 
 1. **SLURM** — resource layer. The deployment would use partitions as host
    classes, GRES as GPU slots, QOS/priority for the gold path, a standing
@@ -93,8 +94,9 @@ services.
    (b) best-in-class live observability (run timelines, per-step logs, asset
    lineage/staleness UI). Known seam we own: Dagster→sbatch run-launcher
    glue is community-grade (~100 LoC).
-3. **CAS on /mnt/shared** — intended content-addressed store; payload path =
-   key hash. A naming convention + hashing helper, not a deployed service.
+3. **CAS + pull queue on /mnt/shared** — deployed content-addressed store and
+   NFS-safe dispatch plane; payload paths derive from content hashes and worker
+   claims are rename-owned leases.
 4. **Prometheus + Grafana + Loki + Alertmanager** on dl380 — the proposed
    stack would use node_exporter, dcgm-exporter (GB10), AMD SMI exporter, and
    slurm-exporter, with job logs via promtail. Receipts would be pushed as
@@ -828,14 +830,14 @@ keep streaming regardless.
 
 ## Target boundaries that do not move
 
-- **Certification stays PrismaQuant's.** When deployed, shipcards, fail-closed
-  gates, receipts, and provenance stamps would run inside jobs. The
+- **Certification stays PrismaQuant's.** Shipcards, fail-closed gates, receipts,
+  and provenance stamps run inside dispatched jobs. The
   orchestrator would schedule and remember; it would never certify.
-- `run-pipeline.sh` remains the intended per-run executor when PrismaBuild is
-  deployed (v0: one task = one pipeline run; later versions may shard heavy
-  stages: per-point KL, per-tensor encodes, per-expert measurements, parallel
-  coord-descent). No live pipeline run currently executes inside a PrismaBuild
-  SLURM or Dagster job.
+- `run-pipeline.sh` remains the intended per-run executor (v0: one task = one
+  pipeline run; later versions may shard heavy stages: per-point KL,
+  per-tensor encodes, per-expert measurements, parallel coord-descent). Live
+  stages execute through the pull queue; no live run currently uses a
+  PrismaBuild SLURM or Dagster job.
 
 ## Rejected alternatives (with reasons)
 

@@ -8,9 +8,12 @@ retains a host pin unless the caller explicitly names its worker class.
 
 ## Status, honestly
 
-The core is built and CPU-qualified, and `pool.py` gives it a transport that
-runs on this fleet (277 tests). **It has not yet dispatched a real quantization
-stage** — that is the next step, not a done one.
+The core, shared CAS, pull queue, and three-worker fleet are deployed, and
+`pool.py` is the sole execution plane for the current Tessera/PrismaQuant
+campaigns. It has dispatched real quantization, test, and measurement stages.
+On 2026-09-04, current `main` (`afdd938`) recorded 532 passed / 1 skipped in its
+CPU suite; that dated population is evidence, not a permanent suite-count
+claim.
 
 Both originally-shipped transports are inert here: `slurm.py` shells out to
 `sbatch`/`scontrol` and SLURM is installed on neither Spark; `dagster.py` needs
@@ -109,7 +112,7 @@ not a dependency: this package imports nothing from prismaquant.
     src/prismabuild/dagster.py    915 L  Dagster transport (inert here)
     src/prismabuild/pool.py       449 L  shared-FS pull queue (the one that runs here)
     tools/prismabuild_worker.py          stdlib-only worker entry point
-    tests/                               277 passing, CPU-only
+    tests/                               CPU qualification (dated result above)
 
 ## Test
 
