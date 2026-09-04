@@ -104,17 +104,35 @@ def _git_identity(cwd: Path) -> dict[str, str]:
     # is invisible from the outside: a stale result is indistinguishable from a
     # fresh one unless you notice the traceback points at a line the file no
     # longer has, which is exactly how it was caught.
+    #
+    # The enumeration needs ``-uall``.  Plain ``--porcelain`` collapses a
+    # wholly-untracked DIRECTORY to one ``?? scratch/`` line and never names
+    # the files inside it, and this loop then skipped that line as a
+    # directory -- so every file under a new directory contributed nothing,
+    # which is the same stale-replay bug the paragraph above describes,
+    # reached from the other side.  Measured 2026-09-04: two edited scripts
+    # under an untracked ``scratch/`` produced action key ``579c3dc891ff``
+    # twice, and the second run replayed the first run's stdout verbatim,
+    # traceback included.
+    #
+    # ``porcelain`` itself keeps the collapsed form: it is the human-readable
+    # half of the digest, and the per-file hashes below are what make the
+    # identity honest.  ``-uall`` lists exactly what git considers untracked,
+    # so an ignored directory -- a venv, a cache -- is still not walked.
     untracked = []
-    for line in porcelain.splitlines():
+    for line in _git("status", "--porcelain", "-uall").splitlines():
         if not line.startswith("?? "):
             continue
-        member = cwd / line[3:].strip().strip('"')
+        name = line[3:].strip().strip('"')
+        if STAMP_PREFIX in name or RESULT_PREFIX in name:
+            continue
+        member = cwd / name
         if member.is_dir() or not member.exists():
-            continue                 # a directory entry is expanded by git itself
+            continue                 # a symlink to nowhere, or raced away
         try:
-            untracked.append(f"{line[3:]}:{_sha256_file(member)}")
+            untracked.append(f"{name}:{_sha256_file(member)}")
         except OSError:
-            untracked.append(f"{line[3:]}:unreadable")
+            untracked.append(f"{name}:unreadable")
     dirty = porcelain + _git("diff", "HEAD") + "\n".join(sorted(untracked))
     return {
         "head": head,
