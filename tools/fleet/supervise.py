@@ -65,6 +65,39 @@ def _config(host: str) -> dict:
     )
 
 
+def declared_shape(host: str, override_loops: int,
+                   previous: tuple[int, list[str]] | None = None
+                   ) -> tuple[int, list[str]]:
+    """This box's target count and loop arguments, re-read every tick.
+
+    The docstring above promises that the shape of the fleet is a versioned
+    file rather than three command lines nobody wrote down, and reading it
+    once at startup quietly broke that promise: a supervisor started before a
+    publish kept its old arguments for its whole life, so an offer widened in
+    the file reached the queue only if somebody remembered to restart the
+    supervisor too.  That is the same failure as a worker holding stale
+    modules -- ``cycle_stale`` exists for exactly that -- arriving one level
+    up, where nothing was watching.  It cost a box two of three GPU slots for
+    as long as nobody noticed.
+
+    A bad read keeps the previous shape instead of raising.  ``publish`` is
+    not atomic per file, so a tick that lands mid-publish sees a truncated
+    JSON, and a supervisor that exits on that takes the box's loops with it
+    the next time one goes idle.  The first read has no previous to fall back
+    on and still refuses, because guessing what a box offers is the one thing
+    this must never do.
+    """
+
+    try:
+        config = _config(host)
+    except (SystemExit, OSError, ValueError):
+        if previous is None:
+            raise
+        return previous
+    return (override_loops or int(config.get("loops", 1)),
+            [str(a) for a in config.get("args", [])])
+
+
 def _live_loops() -> list[int]:
     """The worker loops actually running, not the processes that mention one.
 
@@ -135,15 +168,21 @@ def cycle_stale(published: str) -> list[int]:
     work.
     """
 
-    stopped: list[int] = []
     if not published:
-        return stopped
+        return []
+    return _stop_idle_loops()
+
+
+def _stop_idle_loops() -> list[int]:
+    """SIGTERM every loop holding no action, and report which.
+
+    The one rule both reasons to cycle a loop share -- stale bytes and a
+    stale declared shape.  Only idle loops, only SIGTERM: a loop mid-action
+    keeps its claim and cycles when it next goes idle.
+    """
+
+    stopped: list[int] = []
     for pid in _live_loops():
-        try:
-            started = Path(f"/proc/{pid}/cmdline").stat().st_mtime
-        except OSError:
-            continue
-        del started                       # kept for readability of the intent
         if not _is_idle(pid):
             continue
         try:
@@ -181,9 +220,7 @@ def main() -> int:
     args = ap.parse_args()
 
     host = socket.gethostname()
-    config = _config(host)
-    target = args.loops or int(config.get("loops", 1))
-    loop_args = [str(a) for a in config.get("args", [])]
+    target, loop_args = declared_shape(host, args.loops)
 
     if args.cycle_stale and args.once:
         # A one-shot cycle does not need to own the box: it stops only idle
@@ -227,6 +264,24 @@ def main() -> int:
         print(f"[{host}] cycled {len(stopped)} idle loop(s) onto "
               f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
     while True:
+        fresh_target, fresh_args = declared_shape(
+            host, args.loops, (target, loop_args))
+        if fresh_args != loop_args:
+            # The file is the authority, so a loop running other arguments is
+            # stale in the same sense a loop running other bytes is.  Stop the
+            # idle ones and let the top-up below respawn them on the new shape;
+            # a loop mid-action keeps its claim and cycles when it next goes
+            # idle, which is why this never kills work.
+            print(f"[{host}] declared shape moved: {' '.join(loop_args)} -> "
+                  f"{' '.join(fresh_args)}", flush=True)
+            stopped = _stop_idle_loops()
+            print(f"[{host}] stopped {len(stopped)} idle loop(s) to take it: "
+                  f"{stopped}", flush=True)
+        elif fresh_target != target:
+            print(f"[{host}] declared loop count moved: {target} -> "
+                  f"{fresh_target}", flush=True)
+        target, loop_args = fresh_target, fresh_args
+
         live = _live_loops()
         missing = max(0, target - len(live))
         for offset in range(missing):
