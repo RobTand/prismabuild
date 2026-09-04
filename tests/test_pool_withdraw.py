@@ -287,6 +287,30 @@ def test_finish_cannot_retry_what_was_withdrawn(queue: pool.PoolQueue) -> None:
     assert queue.claim() is None
 
 
+def test_a_completed_action_that_lost_its_claim_is_filed_under_done(
+    queue: pool.PoolQueue
+) -> None:
+    """What ``finish``'s lost-race branch actually does with a completed run.
+
+    Pinned because the first pass's own remainder mis-stated it: it said a
+    pre-publish worker that runs the action to completion has its outcome filed
+    ``failed/<key>.json`` with status ``finish_lost_race``.  It does not.
+    ``finish_lost_race`` is the FAILURE spelling; a run that executed keeps its
+    own status and lands in ``done``.  The safety conclusion is unchanged --
+    ``pool_reset`` scans ``failed/`` only -- but the mechanism is the other
+    branch, and a remainder that names the wrong one cannot be checked.
+    """
+
+    executed = queue.finish(KEY_A, status="executed", detail={"returncode": 0})
+    assert executed == queue.item_path(pool.DONE, KEY_A)
+    assert json.loads(executed.read_text())["status"] == "executed"
+
+    other = KEY_B
+    failed = queue.finish(other, status="failed", detail={"returncode": 1})
+    assert failed == queue.item_path(pool.FAILED, other)
+    assert json.loads(failed.read_text())["status"] == "finish_lost_race"
+
+
 def test_a_withdrawn_claim_is_not_requeued_by_the_reaper(
     queue: pool.PoolQueue
 ) -> None:
