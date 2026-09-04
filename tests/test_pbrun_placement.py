@@ -387,6 +387,47 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
     assert "1 other live box fits this demand: dl380g10" in err
 
 
+def test_a_matching_stale_offer_outvotes_a_fresh_nonmatch_at_submit(
+    tmp_path, capsys, monkeypatch,
+) -> None:
+    """Capability is not whichever boxes happened to announce this instant.
+
+    dl380g10 is the fleet's only ``x86`` box.  Its real worker can spend longer
+    than the offer TTL inside an action, while another box keeps announcing;
+    that made the old precheck answer ``False`` and refuse a two-hour wait even
+    though dl380g10 had explicitly advertised enough capacity.  The latest
+    record per host is the fleet's capability evidence.  Freshness decides who
+    may claim now, not whether the submission may wait.
+    """
+
+    import socket
+    from unittest import mock
+
+    work = tmp_path / "tree"
+    work.mkdir()
+    (work / "hello.txt").write_text("hi\n")
+    now = [1_000.0]
+    monkeypatch.setattr(pool_module, "_now", lambda: now[0])
+    queue = pool_module.PoolQueue(tmp_path / "pb-queue")
+    queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
+                   capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
+    now[0] += pool_module.OFFER_TIMEOUT_S + 1
+    queue.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
+                   capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
+
+    with mock.patch.object(pbrun, "SH", tmp_path), \
+         mock.patch.object(pbrun, "POLL_S", 0.001), \
+         mock.patch.object(socket, "gethostname", return_value=HOST), \
+         mock.patch.object(sys, "argv",
+                           ["pbrun.py", "--cwd", str(work), "--tag", "x86",
+                            "--wait-s", "0.01", "--", "echo", "hi"]):
+        assert pbrun.main() == 75          # accepted; no worker is polling here
+
+    err = capsys.readouterr().err
+    assert "recorded capable worker is between announcements" in err
+    assert "pbrun: queued" in err
+
+
 def test_here_overridden_by_a_tag_does_not_announce_a_pin_that_never_happened(
     tmp_path,
 ) -> None:

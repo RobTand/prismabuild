@@ -59,6 +59,12 @@ sys.path.insert(0, str(SH / "repo" / "src"))
 from prismabuild import core as pb, pool  # noqa: E402
 
 POLL_S = 5.0
+#: Submission asks what the recorded fleet can *ever* fit, not which worker
+#: happened to refresh inside the claim TTL.  ``PoolQueue`` retains one latest
+#: offer per host, so an unbounded age reads that capability ledger without
+#: inventing a second placement rule; workers still use the ordinary live
+#: window when deciding what may claim now.
+RECORDED_OFFER_MAX_AGE_S = float("inf")
 #: What ``pbrun`` exits with when the action it was waiting for was withdrawn.
 #: 128+SIGTERM, which is the shell's own word for "this was stopped on purpose",
 #: and it is literally the signal a withdrawal sends to the action's process
@@ -875,15 +881,22 @@ def main() -> int:
 
     q = pool.PoolQueue(SH / "pb-queue")
 
-    # Refuse work the fleet cannot run, at the one moment the caller is still
-    # watching.  A required tag no box offers is not a slow submission: the
-    # item matches no worker's placement filter, so it sits in `ready` --
-    # counted, reported as pending -- while every idle worker polls past it
-    # until `--wait-s` expires a day later.  A suite submitted with
-    # `--tag dl380` did exactly that in front of fifteen idle boxes offering
-    # `x86`.  `placeable` answers None when no worker has announced at all,
-    # and that stays a warning: a fleet whose loops predate the offer
-    # registry must still be able to submit.
+    # Refuse work the RECORDED fleet cannot run, at the one moment the caller
+    # is still watching.  A required tag no box has offered is not a slow
+    # submission: the item matches no worker's placement filter, so it sits in
+    # `ready` -- counted, reported as pending -- while every idle worker polls
+    # past it until `--wait-s` expires a day later.
+    #
+    # Capability and liveness are deliberately different reads of the SAME
+    # matcher.  Worker offers expire for claiming and fleet-width diagnostics,
+    # but the latest record from each host remains evidence of what that box
+    # can fit.  dl380g10 and gx10-6b77 have both spent longer than the 120 s TTL
+    # inside work; while they were between announcements a fresh nonmatching
+    # offer made ``placeable`` answer False and pbrun rejected a caller willing
+    # to wait two hours.  An unbounded age reads retained capability and lets
+    # ``--wait-s`` own an offline/busy box.  ``None`` still means no worker has
+    # ever announced and stays a warning, so a fleet whose loops predate the
+    # registry can submit unchecked.
     intent = {"tags": tags, "needs_gpu": bool(demand.get("gpu")), "resources": demand}
     # Say how wide this action is before saying it was queued.  A pin is a
     # consequence of the checkout path, and nothing used to report it, so a
@@ -892,18 +905,28 @@ def main() -> int:
                         here=args.here)
     if notice:
         print(notice, file=sys.stderr, flush=True)
-    verdict = q.placeable(intent)
-    if verdict is False:
+    live_verdict = q.placeable(intent)
+    capability_verdict = q.placeable(
+        intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    if capability_verdict is False:
         raise SystemExit(
-            f"pbrun: no live worker can run this action.\n"
+            f"pbrun: no recorded worker can run this action.\n"
             f"  required tags: {tags or '(any box)'}\n"
             f"  demand:        {demand}\n"
-            f"  offered now:   {q.offered_tags() or '(no worker has announced)'}\n"
+            f"  offered on record: "
+            f"{q.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
             f"Fix the --tag, or start a worker on a box that offers it."
         )
-    if verdict is None:
+    if capability_verdict is None:
         print("pbrun: no worker offers on record; submitting unchecked",
               file=sys.stderr, flush=True)
+    elif live_verdict is not True:
+        print(
+            "pbrun: no matching worker is live now; a recorded capable worker "
+            "is between announcements or offline.  Submitting so --wait-s "
+            f"{args.wait_s:g} owns how long to wait.",
+            file=sys.stderr, flush=True,
+        )
 
     # Read the decision this submission is about to supersede, so the caller is
     # told rather than surprised.  ``publish`` retires the marker -- a key is a

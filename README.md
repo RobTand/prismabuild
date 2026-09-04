@@ -40,6 +40,13 @@ pqwork lacks, and PrismaBuild has, is action-key determinism and CAS receipts â€
 which is what quantization work needs, since an artifact you cannot reproduce is
 quarantined.
 
+Submission placement distinguishes capability from liveness. The queue keeps
+one latest declared-capacity offer per host: `pbrun` uses those retained records
+to refuse a tag or demand no recorded box can ever fit, while the offer TTL is
+used only to say which boxes are live enough to claim now. A capable box between
+announcements therefore leaves the action to its declared `--wait-s`; it no
+longer turns a bounded wait into an immediate refusal.
+
 ## Provenance
 
 Split out of `prismaquant` on 2026-08-31 from
