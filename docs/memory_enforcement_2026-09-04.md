@@ -134,10 +134,17 @@ on **sparky**, the box the regression was attested on, and again on
 
 (sparky, commits `79e58bd` → `8074298`: `rlimits_identical` 14 of 16 → 16 of
 16, `differs` down to `cgroup` and `oom_score_adj`. gx10-6b77 returns the same
-two arms with the launcher pinned to `5-6`. The dl380g10 row in section 1 is a
-delegation fact only; the *before* arm was also seen there — affinity `0-1` →
-`0-79`, soft `RLIMIT_NOFILE` 314159 → 1024 — with an earlier draft of this
-probe, and no after arm was run on it.)
+two arms through the pool, with the launcher pinned to `5-6`. The dl380g10 row
+in section 1 is a delegation fact only; the *before* arm was also seen there —
+affinity `0-1` → `0-79`, soft `RLIMIT_NOFILE` 314159 → 1024 — with an earlier
+draft of this probe, and no after arm was run on it.)
+
+Both sparky arms were run **direct, not through the pool**: sparky's ledger had
+no `mem_gb` to offer at the time — its whole 48 GB and both GPU tokens are held
+by an exclusive campaign — and the probe is a sub-second `systemd-run`, not
+compute. The launcher in the sparky column is therefore the probe's own shell.
+Its `oom_score_adj` of −1000 is what a *loop* carries too, read separately:
+all four `worker_loop.py` processes on sparky report −1000 in `/proc`.
 
 **Affinity.** `cpu_topology.pin_to_preferred`'s stated mechanism is inheritance
 by fork — "Pin this process *and so every child it forks*" — which a unit is
@@ -280,12 +287,20 @@ is a cgroup.
   about, because until now nothing checked. On the first publish they become
   hard limits, and an under-declared action will exit 137 where it used to
   finish. That is the mechanism working; it is also a fleet-behaviour change
-  that belongs to whoever publishes, not to the branch. **The memory ceiling is
-  the whole of that change**, which is worth stating because for one revision of
-  this branch it was not: the fd ceiling and the core placement changed too
-  (§4), and an EMFILE or an action on the slow cores would have been read as a
-  payload problem. They are carried now, and
+  that belongs to whoever publishes, not to the branch. It is worth being exact
+  about *what else* moves, because for one revision of this branch the answer
+  was wrong: the fd ceiling and the core placement changed too (§4), and an
+  EMFILE or an action on the slow cores would have been read as a payload
+  problem. Those are carried now, and
   `tests/test_pool_cap_keeps_the_exec_context.py` is what keeps them carried.
+* **Two things do still change besides the ceiling, by design.** A capped
+  action's `oom_score_adj` becomes 200 where it was 0 or the loop's −1000, so
+  under *box-wide* pressure — the case §5's device half puts back on the table —
+  a capped action is now a preferred victim where it was not. That is the
+  direction this cap wants (§4), and it is still a live change to who dies
+  first. And the unit adds 9–13 environment names, which reach the pool worker
+  and not the payload (§4). Neither is a bound; both are named here rather than
+  discovered on publish day.
 * **Three boxes, one date.** Section 1 is a fact about sparky, gx10-6b77 and
   dl380g10 on 2026-09-04. The probe stays because the next box is not covered
   by it.
