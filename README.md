@@ -24,8 +24,10 @@ because they were argued out against real NFS behaviour. Its **reservation
 ledger is not ported but rebuilt**, from the one documented live defect on this
 fleet (`/mnt/shared/pq-ops/starvation/REPRO-2026-08-30`) rather than around it:
 capacity is held as rename-acquired tokens, acquired inside `claim` and released
-in `finish`, so a holder is always *running* and never waiting — the hold-while-
-gated circularity has nowhere to form. Denials age an item to the front of the
+in `finish` — and in `withdraw`, which is the same release path reached by an
+operator changing their mind rather than by the work ending — so a holder is
+always *running* and never waiting; the hold-while-gated circularity has nowhere
+to form. Denials age an item to the front of the
 ready order, and past `STARVATION_FLOOR` a denied item withholds the host
 instead of being overtaken, because "an eviction counter that only counts is a
 starvation detector wired to nothing". Retries are bounded by `max_attempts` and

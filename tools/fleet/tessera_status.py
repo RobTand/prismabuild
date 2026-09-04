@@ -7,7 +7,7 @@ RES = SH / "checkout" / "results" / "glm53-tessera"
 PARTS = Path("/mnt/shared/models/GLM-5.3-Flash-Tessera-E2M1K2-20260901-parts")
 
 counts = {d: len(list((Q / d).glob("*.json"))) for d in
-          ("ready", "claimed", "done", "failed") if (Q / d).is_dir()}
+          ("ready", "claimed", "done", "failed", "withdrawn") if (Q / d).is_dir()}
 manifests = sorted(RES.glob("shard-*.json")) if RES.is_dir() else []
 done_shards, total_bytes, qbytes, qparams = [], 0, 0, 0
 for m in manifests:

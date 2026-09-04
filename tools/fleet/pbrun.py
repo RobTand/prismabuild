@@ -19,6 +19,12 @@ one real file, and the honest identity of "this command against this tree" is
 the commit plus whatever is dirty on top of it.  Binding that makes a cache
 hit correct rather than lucky: change the code and the action key moves.
 
+*Cancelling is a first-class verb, not an edit.*  ``--withdraw`` is the other
+half of the submit path: this is the only way an agent may put work on the
+fleet, so it has to be the way work comes back off it.  Without it, stopping a
+running action meant hand-editing ``max_attempts`` into a live claimed record
+and racing the retry -- see ``PoolQueue.withdraw``.
+
 The stamp carrying that identity has to live *inside* the checkout, because
 the worker verifies the closure against ``checkout_root`` on the box that
 runs it.  So it is excluded from the identity it records -- otherwise each
@@ -30,6 +36,7 @@ dirty to anything else.
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import json
 import os
@@ -52,6 +59,13 @@ sys.path.insert(0, str(SH / "repo" / "src"))
 from prismabuild import core as pb, pool  # noqa: E402
 
 POLL_S = 5.0
+#: What ``pbrun`` exits with when the action it was waiting for was withdrawn.
+#: 128+SIGTERM, which is the shell's own word for "this was stopped on purpose",
+#: and it is literally the signal a withdrawal sends to the action's process
+#: group -- ``core.run_local_action`` reports the same event as status ``-15``.
+#: Non-zero because the command did not run; distinct from a real failure
+#: because nothing about it was a defect.
+WITHDRAWN_EXIT = 143
 #: One stamp per ACTION, not per checkout.  A single shared name looked
 #: harmless because concurrent submits from one tree write the same bytes --
 #: but the worker re-verifies the live stamp against the closure its action
@@ -260,8 +274,13 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
     # times, and said why each time; none of it reached the person waiting.
     # Sixty-six items sat in ``failed`` when this was found, and the agents who
     # submitted them reported the pool as having never scheduled their work.
+    # ``withdrawn`` is the third terminal directory and is watched for exactly
+    # the same reason -- and it is the one whose whole point is that a person
+    # decided it, so it would be the worst of the three to make someone wait a
+    # day to hear about.
     done = q.item_path("done", key)
     failed = q.item_path("failed", key)
+    withdrawn = q.item_path("withdrawn", key)
     deadline = time.monotonic() + wait_s
     # Poll by readdir, not by stat.  The queue lives on NFS, where a stat of a
     # path that did not exist yet is negatively cached: the outcome landed and
@@ -280,6 +299,9 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
         if _landed(failed):
             outcome_path = failed
             break
+        if _landed(withdrawn):
+            outcome_path = withdrawn
+            break
         if time.monotonic() > deadline:
             print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
             return 75
@@ -290,6 +312,12 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
     sys.stdout.write(str(detail.get("stdout") or ""))
     sys.stderr.write(str(detail.get("stderr") or ""))
     status = str(outcome.get("status"))
+    if status == "withdrawn":
+        who = outcome.get("withdrawn_by") or "an operator"
+        why = str(outcome.get("reason") or "").strip()
+        print(f"pbrun: withdrawn by {who}"
+              f"{' -- ' + why if why else ''}", file=sys.stderr)
+        return WITHDRAWN_EXIT
     print(f"pbrun: {status} on {outcome.get('finished_host')} "
           f"in {detail.get('elapsed_s', 0):.0f}s", file=sys.stderr)
     if status == "cache_hit":
@@ -308,6 +336,55 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
     print(f"pbrun: outcome filed under {outcome_path.parent.name} after "
           f"{outcome.get('attempts', '?')} attempt(s)", file=sys.stderr)
     return 1
+
+
+def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
+    """Withdraw each named action and say what happened to it.
+
+    Takes the queue rather than building one, for the same reason
+    ``await_outcome`` does: the part worth testing is the reporting and the
+    prefix resolution, and neither should need a live fleet to exercise.
+
+    Keys are accepted as prefixes because a prefix is what an operator has --
+    ``pbrun`` prints ``queued 8fc86da0e13f`` and the worker loop logs the same
+    twelve characters.  One bad name does not stop the rest: withdrawing four
+    suites at once is the case this exists for, and three of four is a better
+    outcome than none of four.
+    """
+
+    rc = 0
+    for prefix in prefixes:
+        try:
+            key = q.find_key(str(prefix))
+            result = q.withdraw(key, reason=reason, by=by)
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"pbrun: {exc}", file=sys.stderr)
+            rc = 2
+            continue
+        status = str(result.get("status"))
+        if status == "already_finished":
+            print(f"pbrun: {key[:12]} had already finished "
+                  f"({result.get('state')}); nothing to withdraw",
+                  file=sys.stderr)
+            continue
+        where = result.get("state") or "nowhere"
+        note = [f"released {result.get('released', 0)} token(s)"]
+        signalled = result.get("signalled") or {}
+        if signalled.get("signals"):
+            note.append("signalled " + ", ".join(signalled["signals"]))
+        elif where == "claimed":
+            # Say so rather than imply the work stopped.  Cross-box that is the
+            # normal case and the remote worker stops within a heartbeat, but a
+            # caller who reads "withdrawn" and assumes "already dead" would be
+            # wrong for those seconds.
+            note.append(f"no local child to signal on "
+                        f"{result.get('host') or 'an unknown host'}; its worker "
+                        f"stops within a heartbeat")
+        if status == "already_withdrawn":
+            note.insert(0, "already withdrawn")
+        print(f"pbrun: withdrew {key[:12]} from {where}; " + "; ".join(note),
+              file=sys.stderr)
+    return rc
 
 
 def main() -> int:
@@ -344,8 +421,28 @@ def main() -> int:
                     help="K=V added to the action's environment (repeatable)")
     ap.add_argument("--no-default-env", action="store_true",
                     help="declare only --env, without the fleet defaults")
+    ap.add_argument("--withdraw", action="append", default=[], metavar="KEY",
+                    help="cancel this queued or running action (a key prefix is "
+                         "enough) instead of submitting; repeatable")
+    ap.add_argument("--reason", default="",
+                    help="why, recorded on the withdrawal record")
     ap.add_argument("command", nargs=argparse.REMAINDER)
     args = ap.parse_args()
+
+    if args.withdraw:
+        # Withdrawing is not a submission and must not need one: the operator
+        # cancelling four suites has no command to give and no checkout to
+        # stamp, so this returns before any of the submit machinery runs.
+        if [c for c in args.command if c != "--"]:
+            raise SystemExit("pbrun: --withdraw takes no command")
+        try:
+            who = getpass.getuser()
+        except Exception:                                        # noqa: BLE001
+            who = "unknown"      # no passwd entry is not a reason to refuse
+        return withdraw_main(
+            pool.PoolQueue(SH / "pb-queue"), args.withdraw,
+            reason=args.reason, by=f"{who}@{socket.gethostname()}",
+        )
 
     command = args.command
     if command and command[0] == "--":
