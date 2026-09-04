@@ -176,11 +176,15 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   canonical computation is one core function shared by submitter and worker:
   `HEAD`, the tracked delta, and the content digest of every untracked regular
   file or the literal link text of every untracked symlink (including members
-  below a newly-added directory). Symlinks are never dereferenced into bytes
+  below a newly-added directory). Git's NUL-delimited, repository-root-relative
+  untracked roster owns pathname decoding, so quotes, backslashes, and newlines
+  remain literal path bytes and a requested subdirectory cannot hide a
+  repository sibling. Only basenames matching pbrun's exact generated
+  stamp/result grammar are excluded. Symlinks are never dereferenced into bytes
   outside the checkout; an untracked FIFO, socket, or other special inode
-  refuses rather than being opened as an unstable payload. A stamp whose bytes
-  are intact but whose claim no longer matches therefore refuses before
-  execution.
+  anywhere in that repository refuses rather than being opened as an unstable
+  payload. A stamp whose bytes are intact but whose claim no longer matches
+  therefore refuses before execution.
   This closes queued/retry drift; it does not make a live worktree immutable
   after preflight. Commit-addressed per-action materialisation is the remaining
   boundary, tracked in #5.

@@ -1170,6 +1170,7 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
                 ["git", "-C", str(checkout), *args],
                 capture_output=True,
                 text=True,
+                errors="surrogateescape",
                 input=input_text,
                 timeout=30,
             )
@@ -1177,18 +1178,42 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
         except Exception:  # noqa: BLE001 - identity is total for legacy no-git mode
             return ""
 
+    top_level = _git("rev-parse", "--show-toplevel").rstrip("\n")
+    if top_level:
+        # Identity covers the repository, even when pbrun's requested cwd is
+        # a package below it. Git reports the tracked delta for that closure;
+        # the filesystem special-inode scan must cover the same closure.
+        checkout = Path(top_level)
     head = _git("rev-parse", "HEAD").strip() or "no-git"
-    # ``--untracked-files=all`` is material: plain porcelain abbreviates a
-    # whole new tree as ``?? directory/``. The former implementation skipped
-    # directory entries, so editing ``directory/campaign.py`` did not move the
-    # action key at all.
-    porcelain = "\n".join(
-        line
-        for line in _git(
-            "status", "--porcelain", "--untracked-files=all"
-        ).splitlines()
-        if PBRUN_STAMP_PREFIX not in line and PBRUN_RESULT_PREFIX not in line
-    )
+
+    def _is_generated_pbrun_path(path: str) -> bool:
+        """Recognize only pbrun's reserved generated basename grammar."""
+
+        name = Path(path).name
+        for prefix, suffix in (
+            (PBRUN_STAMP_PREFIX, ".json"),
+            (PBRUN_RESULT_PREFIX, ".txt"),
+        ):
+            if not (name.startswith(prefix) and name.endswith(suffix)):
+                continue
+            token = name[len(prefix):-len(suffix)]
+            if len(token) == 16 and all(
+                character in "0123456789abcdef" for character in token
+            ):
+                return True
+        return False
+
+    # Let Git delimit untracked pathnames. Line-oriented porcelain C-quotes
+    # newlines, quotes, and backslashes, and hand-unquoting that display form
+    # can bind ``:unreadable`` instead of the actual file bytes. ``ls-files
+    # -z`` emits the repository-root-relative filesystem path verbatim.
+    untracked_paths = [
+        path
+        for path in _git(
+            "ls-files", "--others", "--exclude-standard", "-z"
+        ).split("\0")
+        if path and not _is_generated_pbrun_path(path)
+    ]
     # Git deliberately omits FIFOs, sockets, and device nodes from its
     # untracked roster. Find those without opening them: opening a FIFO can
     # block forever, and no special inode has stable bytes Git can transport.
@@ -1261,11 +1286,9 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
                 "pbrun checkout identity refuses untracked paths with an "
                 "unsupported file type: " + ", ".join(map(repr, unsupported))
             )
-    untracked: list[str] = []
-    for line in porcelain.splitlines():
-        if not line.startswith("?? "):
-            continue
-        member = checkout / line[3:].strip().strip('"')
+    untracked: list[tuple[str, str]] = []
+    for relative in untracked_paths:
+        member = checkout / relative
         try:
             digest = hashlib.sha256()
             member_stat = member.lstat()
@@ -1282,15 +1305,20 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
             else:
                 raise ActionContractError(
                     "pbrun checkout identity refuses an untracked path with "
-                    f"an unsupported file type: {line[3:]!r}"
+                    f"an unsupported file type: {relative!r}"
                 )
-            untracked.append(f"{line[3:]}:{digest.hexdigest()}")
+            untracked.append((relative, digest.hexdigest()))
         except OSError:
-            untracked.append(f"{line[3:]}:unreadable")
-    dirty = porcelain + _git("diff", "HEAD") + "\n".join(sorted(untracked))
+            untracked.append((relative, "unreadable"))
+    dirty = bytearray(os.fsencode(_git("diff", "--binary", "HEAD")))
+    for relative, digest in sorted(untracked, key=lambda item: os.fsencode(item[0])):
+        dirty.extend(b"\0untracked\0")
+        dirty.extend(os.fsencode(relative))
+        dirty.extend(b"\0")
+        dirty.extend(digest.encode("ascii"))
     return {
         "head": head,
-        "dirty_sha256": hashlib.sha256(dirty.encode()).hexdigest(),
+        "dirty_sha256": hashlib.sha256(dirty).hexdigest(),
     }
 
 

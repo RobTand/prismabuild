@@ -324,6 +324,47 @@ def test_pbrun_identity_prunes_git_ignored_directories(
     assert ignored not in visited
 
 
+def test_pbrun_identity_hashes_untracked_nul_delimited_paths(tmp_path: Path) -> None:
+    """Git owns pathname decoding; C-quoted porcelain is not a filesystem path."""
+
+    checkout = _git_checkout(tmp_path)
+    unusual = checkout / 'line\nbreak\\quote".txt'
+    unusual.write_text("first bytes\n")
+    before = pbrun._git_identity(checkout)
+
+    unusual.write_text("second bytes\n")
+
+    assert pbrun._git_identity(checkout) != before
+
+
+def test_pbrun_identity_does_not_hide_legitimate_prefix_paths(tmp_path: Path) -> None:
+    """Only generated basenames reserve pbrun's stamp/result namespaces."""
+
+    checkout = _git_checkout(tmp_path)
+    note = checkout / "notes" / "my-pbrun_result.foo.py"
+    note.parent.mkdir()
+    note.write_text("first bytes\n")
+    before = pbrun._git_identity(checkout)
+
+    note.write_text("second bytes\n")
+
+    assert pbrun._git_identity(checkout) != before
+
+
+def test_pbrun_identity_scans_the_repository_above_requested_cwd(
+    tmp_path: Path,
+) -> None:
+    """A repo-sibling special inode must not disappear from subdir identity."""
+
+    checkout = _git_checkout(tmp_path)
+    requested = checkout / "package"
+    requested.mkdir()
+    os.mkfifo(checkout / "outside-requested-cwd.pipe")
+
+    with pytest.raises(SystemExit, match="unsupported file type"):
+        pbrun._git_identity(requested)
+
+
 def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> None:
     """A path in argv is not part of the checkout closure by magic.
 
