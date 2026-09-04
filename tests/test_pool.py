@@ -850,3 +850,63 @@ def test_a_ready_record_a_worker_cannot_execute_is_quarantined(
     assert "worker_script" in filed["detail"]["reason"]
     # The healthy item is untouched.
     assert queue.item_path(pool.READY, KEY_A).exists()
+
+
+def test_a_lease_whose_record_is_gone_is_swept(tmp_path) -> None:
+    """The mirror of ``quarantine_orphans``, and it had a live instance.
+
+    ``finish`` and ``reap_stale`` each unlink the lease beside the record they
+    conclude, so this should not happen -- and ``daf08495c8bb`` sat in the
+    live queue for seven and a half hours anyway, pid dead, no ``.json``, read
+    by anything counting ``claimed/`` as a running action.
+    """
+
+    from prismabuild import pool
+
+    queue = pool.PoolQueue(tmp_path / "q")
+    queue.ensure_layout()
+    queue.ledger("box").ensure_capacity({"gpu": 1})
+    assert queue.ledger("box").acquire(KEY_A, {"gpu": 1}) is True
+    lease = queue.lease_path(KEY_A)
+    lease.parent.mkdir(parents=True, exist_ok=True)
+    lease.write_text(json.dumps({
+        "action_key": KEY_A, "host": "box", "pid": 1,
+        "heartbeat_unix": time.time() - 10_000.0,
+    }))
+
+    assert queue.sweep_widowed_leases(timeout_s=60.0) == [KEY_A]
+    assert not lease.exists()
+    # The tokens it was holding come back with it.
+    assert queue.ledger("box").available().get("gpu", 0) == 1
+
+
+def test_a_lease_written_moments_ago_is_left_alone(tmp_path) -> None:
+    """``claim()`` writes the lease after the rename, so young is not widowed."""
+
+    from prismabuild import pool
+
+    queue = pool.PoolQueue(tmp_path / "q")
+    queue.ensure_layout()
+    lease = queue.lease_path(KEY_B)
+    lease.parent.mkdir(parents=True, exist_ok=True)
+    lease.write_text(json.dumps({"action_key": KEY_B, "heartbeat_unix": time.time()}))
+
+    assert queue.sweep_widowed_leases(timeout_s=60.0) == []
+    assert lease.exists()
+
+
+def test_a_lease_beside_its_record_is_never_swept(tmp_path) -> None:
+    """Only the widowed shape; a live claim keeps its lease however old."""
+
+    from prismabuild import pool
+
+    queue = pool.PoolQueue(tmp_path / "q")
+    queue.ensure_layout()
+    _publish(queue, KEY_A)
+    assert queue.claim() is not None
+    old = json.loads(queue.lease_path(KEY_A).read_text())
+    old["heartbeat_unix"] = time.time() - 10_000.0
+    queue.lease_path(KEY_A).write_text(json.dumps(old))
+
+    assert queue.sweep_widowed_leases(timeout_s=60.0) == []
+    assert queue.lease_path(KEY_A).exists()

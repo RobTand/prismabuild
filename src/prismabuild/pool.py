@@ -874,8 +874,59 @@ class PoolQueue:
             self.ledger(holder if isinstance(holder, str) else None).release(key)
             self.lease_path(key).unlink(missing_ok=True)
             requeued.append(key)
+        self.sweep_widowed_leases(timeout_s=timeout_s)
         self.quarantine_orphans()
         return requeued
+
+    def sweep_widowed_leases(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
+        """Remove leases in ``claimed/`` whose item record is gone.
+
+        Both cleanup paths unlink the lease beside the record they conclude --
+        ``finish`` on every branch, ``reap_stale`` on every outcome -- so a
+        lease with no record should not exist.  One did: ``daf08495c8bb`` sat
+        in the live queue for seven and a half hours, its pid long dead, with
+        no ``.json`` beside it and no mechanism that would ever look at it
+        again.  How it was widowed is not established, and this sweep is not a
+        theory about that; it is the observation that nothing swept it.
+
+        It reads as live work to anything counting ``claimed/``, which is what
+        an operator reads when asking whether the fleet is busy, and it is the
+        one shape ``quarantine_orphans`` does not cover -- that sweep is over
+        ``ready``, this one is its mirror.
+
+        Aged past ``timeout_s`` before removal, for the same reason
+        ``reap_stale`` waits: ``claim()`` writes the lease *after* the rename,
+        so a lease that briefly has no record beside it may simply be a claim
+        mid-flight in the other direction.  Any tokens still held under the key
+        go back, because a reservation outliving its holder is the starvation
+        bug's shape.
+        """
+
+        swept: list[str] = []
+        claimed = self.dir(CLAIMED)
+        if not claimed.is_dir():
+            return swept
+        now = _now()
+        for lease in sorted(claimed.glob("*.lease")):
+            key = lease.name[: -len(".lease")]
+            if self.item_path(CLAIMED, key).exists():
+                continue
+            record = _read_json(lease) or {}
+            beat = record.get("heartbeat_unix")
+            try:
+                age = now - float(beat)
+            except (TypeError, ValueError):
+                try:
+                    age = now - lease.stat().st_mtime
+                except OSError:
+                    continue
+            if age <= timeout_s:
+                continue
+            host = record.get("host")
+            self.ledger(str(host) if isinstance(host, str) else None).release(key)
+            lease.unlink(missing_ok=True)
+            swept.append(key)
+        return swept
 
     def quarantine_orphans(self) -> list[str]:
         """File ready records that no consumer can address.
