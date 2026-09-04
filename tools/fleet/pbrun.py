@@ -682,7 +682,22 @@ def main() -> int:
 
     cwd = Path(args.cwd).resolve()
     if not cwd.is_dir():
-        raise SystemExit(f"--cwd is not a directory: {cwd}")
+        # Say which of the two things went wrong.  A closure is computed from
+        # the checkout and stamped inside it, so pbrun submits only for a
+        # checkout on the box it is running on -- the QUEUE is shared, the
+        # filesystem is not.  The old message named a missing directory, which
+        # is right for a typo and actively misleading for the other case: a
+        # cross-box submission ("run the suite on sparklina's checkout, from
+        # sparky") reads as "the path is wrong" when the path is correct and
+        # simply belongs to another box.  Submitting from that box is not a
+        # workaround; it is where the closure can honestly be taken.
+        raise SystemExit(
+            f"--cwd is not a directory on {socket.gethostname()}: {cwd}\n"
+            f"pbrun stamps the code closure inside the checkout, so it can "
+            f"only submit for a checkout on the box it runs on. If this path "
+            f"exists on another box, submit from there -- the queue is "
+            f"shared, the filesystem is not."
+        )
 
     demand = _parse_demand(args.demand)
     if args.gpu:
