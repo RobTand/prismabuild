@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -40,6 +41,14 @@ from prismabuild import pool  # noqa: E402
 # is not a private-root test however private its queue is.
 KEY_A = uuid.uuid4().hex + uuid.uuid4().hex
 KEY_B = uuid.uuid4().hex + uuid.uuid4().hex
+
+#: A box that is provably not this one.  Naming a real fleet member as "the
+#: other box" reads fine until the suite runs ON that member: the local ledger
+#: and the "foreign" one become the same directory and the test's own premise
+#: is gone.  The full suite runs on dl380g10 (`pbtest`'s whole reason for
+#: existing is that its 80 x86 cores are idle), so the name it used was exactly
+#: the one that could not be used.
+ELSEWHERE = f"not-{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 
 
 @pytest.fixture()
@@ -332,6 +341,43 @@ def test_a_pre_publish_worker_cannot_requeue_what_was_withdrawn(
     assert queue.claim() is None
 
 
+def test_a_pre_publish_reaper_cannot_requeue_a_withdrawn_claim(
+    queue: pool.PoolQueue, monkeypatch
+) -> None:
+    """The other self-healing path an old worker still runs.
+
+    ``reap_stale`` on pre-withdraw bytes consults no marker either, and a
+    withdrawal whose box died before its own cleanup leaves exactly what that
+    loop looks for: a claimed record with a lease nobody refreshes.  The same
+    ``max_attempts: 1`` closes it, because that loop counts attempts against
+    the same limit -- one write covers both readers.
+    """
+
+    _publish(queue, KEY_A, max_attempts=3)
+    queue.claim()
+    real_ledger = queue.ledger
+    captured: dict = {}
+
+    def capture(host=None):
+        if not captured:
+            captured.update(
+                json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text()))
+        return real_ledger(host)
+
+    monkeypatch.setattr(queue, "ledger", capture)
+    queue.withdraw(KEY_A, signal_child=False)
+    assert captured["max_attempts"] == 1, "the retry was not closed"
+
+    # What a box dying inside ``withdraw`` leaves behind, aged past the grace
+    # ``reap_stale`` gives a claim whose lease has not landed yet.
+    captured["claimed_unix"] = time.time() - 10 * pool.HEARTBEAT_S
+    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(captured))
+    _old_bytes(queue, monkeypatch).reap_stale(timeout_s=0.0)
+    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert json.loads(queue.item_path(pool.FAILED, KEY_A).read_text())[
+        "status"] == "lease_lost_max_attempts"
+
+
 def test_a_completed_action_that_lost_its_claim_is_filed_under_done(
     queue: pool.PoolQueue
 ) -> None:
@@ -367,7 +413,7 @@ def test_a_withdrawn_claim_is_not_requeued_by_the_reaper(
     # and its lease stale.  That is what a box dying inside ``withdraw`` leaves.
     queue.withdraw(KEY_A, signal_child=False)
     record = {"action_key": KEY_A, "worker_script": "/w.py", "cas_root": "/cas",
-              "checkout_root": "/co", "claimed_host": "dl380g10", "attempts": 0}
+              "checkout_root": "/co", "claimed_host": ELSEWHERE, "attempts": 0}
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
     assert queue.reap_stale(timeout_s=0.0) == []
     assert not queue.item_path(pool.READY, KEY_A).exists()
@@ -393,18 +439,18 @@ def test_capacity_goes_back_to_the_claiming_host_not_the_operators(
 ) -> None:
     """The operator withdrawing is usually not on the box holding the tokens."""
 
-    foreign = queue.ledger("dl380g10")
+    foreign = queue.ledger(ELSEWHERE)
     foreign.ensure_capacity({"gpu": 2})
     assert foreign.acquire(KEY_A, {"gpu": 2}) is True
     _publish(queue, KEY_A, resources={"gpu": 2})
     claimed = queue.item_path(pool.READY, KEY_A).read_text()
     record = json.loads(claimed)
-    record.update({"claimed_host": "dl380g10", "claimed_by": "dl380g10:1:x",
+    record.update({"claimed_host": ELSEWHERE, "claimed_by": f"{ELSEWHERE}:1:x",
                    "claimed_unix": time.time()})
     queue.item_path(pool.READY, KEY_A).unlink()
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
     result = queue.withdraw(KEY_A)
-    assert result["host"] == "dl380g10" and result["released"] == 2
+    assert result["host"] == ELSEWHERE and result["released"] == 2
     assert foreign.available() == {"gpu": 2}
     assert queue.ledger().available() == {}, "nothing was invented locally"
 
