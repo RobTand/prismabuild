@@ -230,3 +230,38 @@ def test_the_generation_test_does_not_lean_on_the_clock(
 
     assert queue.claim() is not None, (
         "an earlier stamp is still a different request, not the withdrawn one")
+
+
+def test_withdrawing_again_cancels_the_run_that_is_live_now(
+    queue: pool.PoolQueue
+) -> None:
+    """A second withdrawal is a fresh decision when the marker is stale.
+
+    ``withdraw`` is idempotent, and the idempotent branch keeps the first
+    decision's record verbatim.  That is right while the marker still names
+    the live record, and wrong the moment it does not: the operator who
+    withdraws the claimed run, sees the submission that was queued behind it
+    still queued, and runs the verb again was answered ``already_withdrawn``
+    with generation two left untouched -- told the action was cancelled while
+    it went on to run.  Claimed rather than queued it is worse: the cleanup at
+    the end of the verb unlinks the claim, drops the lease and returns the
+    tokens while no marker covers the box actually running the child.
+    """
+
+    _publish(queue, KEY_A)                       # generation one
+    assert queue.claim() is not None
+    _publish(queue, KEY_A)                       # generation two, queued behind
+    second = json.loads(
+        queue.item_path(pool.READY, KEY_A).read_text())["published_unix"]
+
+    queue.withdraw(KEY_A, by="rob", signal_child=False)     # names generation one
+    again = queue.withdraw(KEY_A, by="rob", signal_child=False)
+
+    assert again["status"] == "withdrawn", "a stale marker is not this decision"
+    assert not queue.item_path(pool.READY, KEY_A).exists()
+    marker = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    assert marker["published_unix"] == second
+    # The first decision is kept, not overwritten: it is still the record of
+    # who cancelled generation one and why.
+    assert [one for one in _superseded(queue, KEY_A)
+            if one.get("status") == "withdrawn"]
