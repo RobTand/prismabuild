@@ -131,3 +131,48 @@ def test_publish_never_exposes_a_mixed_generation(tmp_path, monkeypatch) -> None
         ("GENERATION = 'old'\n", "GENERATION = 'old'\n"),
         ("GENERATION = 'new'\n", "GENERATION = 'new'\n"),
     }
+
+
+def test_a_failure_after_sealing_still_removes_the_staging_tree(
+    tmp_path, monkeypatch
+) -> None:
+    """The seal precedes the rename; cleanup must be able to undo it (issue #34).
+
+    main: the rename succeeds and the sealed tree becomes the generation.
+    Branch: the rename fails; the sealed, read-only staging tree must not be
+    left under ``runtime-generations``, and the publication error must stay
+    the exception the caller sees.
+    """
+
+    commit = "a" * 40
+    checkout = _checkout(tmp_path / "checkout", "new")
+    mirror = _checkout(tmp_path / "mirror", "old")
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
+    monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
+    monkeypatch.setattr(
+        publish_runtime.subprocess, "run", _fake_git_and_probe(commit)
+    )
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--migrate-directory"])
+    real_replace = publish_runtime.os.replace
+    sealed_before_failure: list[bool] = []
+
+    def failing_replace(source, target, *args, **kwargs):
+        if Path(source).name.endswith(".staging"):
+            root = Path(source)
+            sealed_before_failure.append(not root.stat().st_mode & 0o200)
+            raise OSError("injected failure after the seal")
+        return real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(publish_runtime.os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="injected failure after the seal"):
+        publish_runtime.main()
+
+    assert sealed_before_failure == [True]
+    store = mirror.parent / "runtime-generations"
+    assert [p.name for p in store.iterdir()] == []
+    assert (mirror / "src" / "prismabuild" / "core.py").read_text() == (
+        "GENERATION = 'old'\n"
+    )

@@ -323,10 +323,24 @@ def _text(
     where: str,
     pattern: re.Pattern[str] | None = None,
     allow_empty: bool = False,
+    allow_control: bool = False,
 ) -> str:
+    """Validate one text field.
+
+    Identifiers, keys, digests, paths and tokens refuse every control
+    character: nothing that names a thing may carry bytes a log line or a
+    filename cannot show.  Payload text -- an argv element, an environment
+    value, a params string value -- is what ``execve`` and JSON carry
+    verbatim, and its only illegal byte is NUL.  A ``bash -lc`` script with a
+    newline in it is an ordinary argument, not a contract violation (issue
+    #21), so payload callers pass ``allow_control=True``.
+    """
+
     if type(value) is not str or (not value and not allow_empty):
         _fail(f"{where} must be a {'string' if allow_empty else 'non-empty string'}")
-    if "\x00" in value or any(ord(char) < 32 for char in value):
+    if "\x00" in value:
+        _fail(f"{where} contains a NUL character")
+    if not allow_control and any(ord(char) < 32 for char in value):
         _fail(f"{where} contains a NUL or control character")
     if pattern is not None and pattern.fullmatch(value) is None:
         _fail(f"{where} has an invalid value")
@@ -400,7 +414,7 @@ def _normalize_json_value(value: object, *, where: str) -> object:
             _fail(f"{where} contains a non-finite number")
         return value
     if type(value) is str:
-        return _text(value, where=where, allow_empty=True)
+        return _text(value, where=where, allow_empty=True, allow_control=True)
     if type(value) is list:
         return [
             _normalize_json_value(item, where=f"{where}[{index}]")
@@ -421,7 +435,12 @@ def _normalize_argv(value: object) -> list[str]:
     if type(value) is not list or not value:
         _fail("action.task.argv must be a non-empty array")
     argv = [
-        _text(item, where=f"action.task.argv[{index}]", allow_empty=True)
+        _text(
+            item,
+            where=f"action.task.argv[{index}]",
+            allow_empty=True,
+            allow_control=True,
+        )
         for index, item in enumerate(value)
     ]
     if not PurePosixPath(argv[0]).is_absolute():
@@ -441,7 +460,7 @@ def _normalize_string_mapping(
     for raw_key, raw_value in value.items():
         key = _text(raw_key, where=f"{where} key", pattern=key_pattern)
         normalized[key] = _text(
-            raw_value, where=f"{where}.{key}", allow_empty=True
+            raw_value, where=f"{where}.{key}", allow_empty=True, allow_control=True
         )
     return dict(sorted(normalized.items()))
 
@@ -4252,7 +4271,7 @@ def _terminate_process_group(
 
 @contextmanager
 def _sigterm_unwinds_this_process():
-    """Make SIGTERM unwind this worker so its running action is reaped with it.
+    """Make SIGTERM and SIGINT unwind this worker so its action is reaped too.
 
     The action below runs in its own session on purpose, which is exactly what
     keeps it alive through a signal aimed at this worker -- and exactly what
@@ -4262,7 +4281,17 @@ def _sigterm_unwinds_this_process():
     it.  Handling the signal turns termination into the unwind that already
     knows how to reap the action group.
 
-    The handler disarms itself before raising: a second SIGTERM landing while
+    SIGINT is owned here for the same reason, and explicitly: Python installs
+    its ``KeyboardInterrupt`` handler only when the interpreter starts with
+    SIGINT at its default disposition.  A worker launched by a non-interactive
+    shell's ``&``, by ``nohup``, or by any launcher that ignores SIGINT
+    inherits ``SIG_IGN`` and is then not interruptible at all -- the fleet's
+    dl380g10 loops ran that way, which is how the interruption gate could not
+    certify its own property there (issue #25).  Whether an interruption
+    reaps the action must be a fact about this worker, not about who exec'd
+    it.
+
+    The handler disarms itself before raising: a second signal landing while
     ``_terminate_process_group`` waits out its grace would raise straight
     through the reap and abandon it half-finished.
     """
@@ -4271,18 +4300,24 @@ def _sigterm_unwinds_this_process():
         signal.signal(signum, signal.SIG_IGN)
         raise SystemExit(128 + signum)
 
+    def _interrupt(signum, frame):                    # noqa: ARG001
+        signal.signal(signum, signal.SIG_IGN)
+        raise KeyboardInterrupt
+
     try:
-        previous = signal.signal(signal.SIGTERM, _unwind)
+        previous_term = signal.signal(signal.SIGTERM, _unwind)
     except ValueError:
         # Not the main thread.  A library caller's signal disposition is not
         # this function's to set, and an in-process run has a live parent that
         # owns it; leave it alone rather than fail the action over it.
         yield
         return
+    previous_int = signal.signal(signal.SIGINT, _interrupt)
     try:
         yield
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        signal.signal(signal.SIGINT, previous_int)
+        signal.signal(signal.SIGTERM, previous_term)
 
 
 def run_local_action(
