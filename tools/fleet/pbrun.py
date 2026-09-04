@@ -1693,7 +1693,13 @@ def main() -> int:
             "portability": "portable", "platform_key": None, "host_class": None,
         },
     }
-    action = pb.seal_action(body)
+    try:
+        action = pb.seal_action(body)
+    except pb.ActionContractError as exc:
+        # A refused contract is the caller's to fix; nothing has been queued
+        # or ingested, so say what was refused and stop.  A traceback here
+        # names core.py internals for what is a submission error (issue #21).
+        raise SystemExit(f"pbrun: refusing to seal the action: {exc}") from None
     key = str(action["action_key"])
 
     cas.publish_action_request(action)

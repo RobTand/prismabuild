@@ -202,6 +202,39 @@ def _seal_generation(root: Path) -> None:
     root.chmod(root.stat().st_mode & ~0o222)
 
 
+def _unseal_tree(root: Path) -> None:
+    """Undo ``_seal_generation`` on a tree that is still private to us."""
+
+    for path in [root, *root.rglob("*")]:
+        if path.is_symlink():
+            continue
+        path.chmod(path.stat().st_mode | 0o200)
+
+
+def _remove_staging_tree(stage: Path) -> None:
+    """Remove a private ``.staging`` tree even after it was sealed.
+
+    ``_seal_generation`` runs before the rename, so a failure between the two
+    leaves a read-only tree that plain ``rmtree`` cannot delete, and the leak
+    sits under ``runtime-generations`` forever (issue #34).  Only the private
+    staging target is ever unsealed here; a published generation is never
+    touched.  This runs from a ``finally``: a cleanup failure is reported and
+    swallowed so the publication error that caused it stays the exception the
+    caller sees.
+    """
+
+    if stage.suffix != ".staging":
+        raise ValueError(f"refusing to remove a non-staging tree: {stage}")
+    try:
+        _unseal_tree(stage)
+        shutil.rmtree(stage)
+    except OSError as exc:
+        print(
+            f"warning: staging tree survived failed publication: {stage}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def _activate(generation: Path, *, migrate_directory: bool) -> Path | None:
     """Expose ``generation`` at MIRROR in one namespace operation.
 
@@ -342,7 +375,7 @@ def main() -> int:
         return 0
     finally:
         if not activated and stage.exists():
-            shutil.rmtree(stage)
+            _remove_staging_tree(stage)
 
 
 if __name__ == "__main__":

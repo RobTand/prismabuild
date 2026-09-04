@@ -1875,6 +1875,21 @@ class PoolQueue:
             raise PoolContractError(f"lease has no heartbeat: {action_key}")
         return _now() - float(beat)
 
+    def claim_intent_age(self, action_key: str) -> float | None:
+        """Seconds since a claimant declared intent, or ``None`` without one.
+
+        The intent marker precedes the claim rename, so it is the only clock
+        that exists for a claimed record ``claim()`` has not yet rewritten.
+        """
+
+        record = _read_json(self.item_path(INTENT, action_key))
+        if record is None:
+            return None
+        declared = record.get("intent_unix")
+        if not isinstance(declared, (int, float)):
+            return None
+        return _now() - float(declared)
+
     def reap_stale(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
         """Return claims whose lease has expired to ``ready``.
 
@@ -1886,15 +1901,22 @@ class PoolQueue:
         does not license putting already-terminal work back in the queue.
 
         **The claim is not atomic with its lease.**  ``claim()`` renames the
-        item, then writes the lease; a reaper running inside that window sees a
-        claimed item with no lease and would requeue a worker that is alive and
-        about to start.  So a missing lease is only stale once the claim itself
-        has aged past ``grace_s`` -- and ``claimed_unix`` is written into the
-        claim record *before* the lease exists, which is what makes it a usable
-        clock here.  A genuinely dead claimant still gets reaped, one grace
-        period later.  The default grace is the heartbeat interval: longer than
-        the microseconds the window actually spans, far shorter than the lease
-        timeout that governs the normal case.
+        item, then rewrites the record with ``claimed_unix``, then writes the
+        lease; a reaper running inside that window sees a claimed item with no
+        lease and would requeue a worker that is alive and about to start.  So
+        a missing lease is only stale once the claim itself has aged past
+        ``grace_s``.  The clock for that is ``claimed_unix`` once the record
+        carries it -- and before it does, the claim-intent marker, which
+        ``claim()`` writes *before* the rename.  Between the rename and the
+        record rewrite the claimed file is still the ready record, with no
+        ``claimed_unix`` at all; on NFS that stretch spans two directory scans
+        and is hundreds of milliseconds wide, and reading it as "no clock, so
+        stale" requeued a live seven-second action within a second of its
+        claim and let a retry's refusal stand as its outcome (issue #36).  A
+        genuinely dead claimant still gets reaped, one grace period later.
+        The default grace is the heartbeat interval: longer than the window
+        actually spans, far shorter than the lease timeout that governs the
+        normal case.
         """
 
         grace_s = HEARTBEAT_S
@@ -1914,6 +1936,14 @@ class PoolQueue:
                 if isinstance(claimed_unix, (int, float)):
                     if _now() - float(claimed_unix) <= grace_s:
                         continue          # claimed moments ago; lease imminent
+                else:
+                    intent_age = self.claim_intent_age(key)
+                    if intent_age is not None and intent_age <= grace_s:
+                        # Renamed moments ago; the claimant's rewrite, lease and
+                        # its own terminal/withdrawal checks are imminent.  Nothing
+                        # below may touch this record: a conclusion here would
+                        # release tokens the claimant is about to hold.
+                        continue
             record = _read_json(path)
             if record is None:
                 # The claim concluded under us.  Both ``finish()`` and this
