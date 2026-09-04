@@ -12,6 +12,7 @@ receipt row 3 must not re-earn.
 """
 from __future__ import annotations
 
+import getpass
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,9 @@ import time
 REPO = Path(os.environ.get("PB_SMOKE_REPO", "/repo"))
 VOL = Path(os.environ.get("PB_SMOKE_VOL", "/mnt/shared"))
 NODE = os.environ.get("PB_SMOKE_NODE") or os.uname().nodename.split(".")[0]
+# The unprivileged user the jobs run as, which is what SLURM_JOB_USER is
+# inside the Epilog -- row 8 reads it back out of slurmd.log.
+USER = getpass.getuser()
 
 SH = VOL / "prismabuild-fleet"
 QUEUE = SH / "pb-queue"
@@ -256,18 +260,27 @@ def row_5_timeout() -> tuple[str, str]:
         limit = json.loads(latest.read_text()).get("time_limit", "")
     except (OSError, ValueError):
         pass
+    # "killed by SLURM, not by pbrun" is an assertion about what pbrun said,
+    # not only about the record: SLURM reports a job it killed at the limit as
+    # ExitCode=0:15, and reading the code alone made pbrun announce that the
+    # job "exited 0 but published no receipt".
+    said = "failed (TIMEOUT)" in (completed.stderr or "")
     ok = (
         path is not None
         and rec.get("status") == "failed"
         and slurm.get("state") == "TIMEOUT"
+        and detail.get("signal") == 15
         and limit == "00:01:00"
+        and said
         and elapsed < 300
     )
     record(
         "5 --timeout-s becomes --time and SLURM kills the job",
         ok,
         f"job={job_id} --time={limit} state={slurm.get('state')} "
-        f"after {elapsed:.0f}s status={rec.get('status')}",
+        f"rc={detail.get('returncode')} signal={detail.get('signal')} "
+        f"after {elapsed:.0f}s status={rec.get('status')} "
+        f"pbrun said failed(TIMEOUT)={said}",
     )
     return prefix, job_id
 
@@ -342,14 +355,29 @@ def row_7_gres_and_constraint() -> None:
         completed = sh([
             "sbatch", "--parsable", "--gres=shard:1", "--mem=1024",
             "--time=00:02:00", f"--chdir={WORK}",
-            f"--output={WORK}/shard-%j.out", "--wrap=sleep 25",
+            f"--output={WORK}/shard-%j.out", "--wrap=sleep 90",
         ])
         ids.append((completed.stdout or "").strip().split(";")[0])
-    time.sleep(8)
-    states = {}
-    for job in ids:
-        states[job] = (sh(["squeue", "-h", "-j", job, "-o", "%T"]).stdout or
-                       "").strip() or "GONE"
+
+    def snapshot() -> dict[str, str]:
+        return {
+            job: (sh(["squeue", "-h", "-j", job, "-o", "%T"]).stdout or
+                  "").strip() or "GONE"
+            for job in ids
+        }
+
+    # Waited for, not slept through.  Under 23.11.4 with accounting off, every
+    # job sits in `InvalidAccount` until the association refresh fills it in
+    # (~30 s) and backfill then starts it; a fixed sleep read three PENDING
+    # jobs and called the shard budget broken.  What the row is about is how
+    # many *can* run at once, so it waits for the answer to settle.
+    states: dict[str, str] = {}
+
+    def two_running() -> bool:
+        states.update(snapshot())
+        return sum(1 for value in states.values() if value == "RUNNING") == 2
+
+    wait_for(two_running, timeout_s=120, poll_s=2.0)
     running = sum(1 for value in states.values() if value == "RUNNING")
     pending = sum(1 for value in states.values() if value == "PENDING")
     reason = (sh(["squeue", "-h", "-j", ids[2], "-o", "%r"]).stdout or "").strip()
@@ -397,11 +425,18 @@ def row_8_epilog(job_id: str) -> None:
         ]
     except OSError:
         said = []
+    # And the state file went as the job's user, not as root.  Without this
+    # the row passes either way: `lane_delete` falls back to root's unlink,
+    # which works here because the lane root is a bind mount rather than an
+    # NFS export, so the squash-safe path would be untested and look tested.
+    as_user = [line for line in said
+               if "removed state file" in line and f"as {USER}" in line]
     record(
         "8 the Epilog ran and matched containers by the action's owner label",
-        bool(filtered) and bool(removed) and not state_files,
+        bool(filtered) and bool(removed) and bool(as_user) and not state_files,
         f"docker calls={len(lines)} label-filtered={len(filtered)} "
         f"rm -f={len(removed)} leftover state files={[p.name for p in state_files]} "
+        f"state file removed as {USER}={bool(as_user)} "
         f"epilog said {said[-2:]}",
     )
     del job_id

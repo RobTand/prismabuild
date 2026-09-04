@@ -121,6 +121,12 @@ fi
 lane_delete() {
     if [ -n "$JOB_USER" ] && command -v runuser >/dev/null 2>&1; then
         if runuser -u "$JOB_USER" -- rm -f -- "$1" 2>/dev/null; then
+            # Said out loud because the fallback below is silent and correct
+            # on a non-NFS lane root: without this line a run where
+            # SLURM_JOB_USER was never set looks exactly like a run where the
+            # squash-safe path worked, and the smoke could not tell them
+            # apart.
+            log "removed state file $1 as $JOB_USER"
             return 0
         fi
         log "could not remove $1 as $JOB_USER; trying as $(id -un)"

@@ -60,6 +60,17 @@ prepare_cgroups() {
         done <"$root/cgroup.procs"
     fi
     echo "+cpuset +cpu +memory +pids" >"$root/cgroup.subtree_control" 2>/dev/null || return 1
+    # 23.11's cgroup/v2 plugin creates its stepd scope under `system.slice` and
+    # fails to initialize when that directory is absent -- measured here:
+    #
+    #     error: Could not create scope directory
+    #            /sys/fs/cgroup/system.slice/<node>_slurmstepd.scope
+    #     error: Unable to initialize cgroup plugin
+    #
+    # On a real box systemd owns that directory.  25.11 does not need it, so
+    # this is created unconditionally rather than branched on the version.
+    mkdir -p "$root/system.slice" 2>/dev/null
+    echo "+cpuset +cpu +memory +pids" >"$root/system.slice/cgroup.subtree_control" 2>/dev/null
     say "cgroup        : v2, delegated [$(cat "$root/cgroup.subtree_control")]"
     return 0
 }

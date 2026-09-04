@@ -26,11 +26,11 @@ patched. The host's real `/mnt/shared` is never touched.
 | 2 | `pbrun --transport slurm` runs a git-snapshot action end to end, publishes a CAS receipt, and files `pb-queue/done/<key>.json` with `status=executed`, `detail.receipt_published`, the job id and the node |
 | 3 | the same action submitted again re-executes nothing |
 | 4 | a failing command files `failed/<key>.json` with a non-zero `detail.returncode` and a stderr tail |
-| 5 | `--timeout-s` becomes `--time`, and SLURM -- not `pbrun` -- kills the job, which arrives as `detail.slurm.state=TIMEOUT` |
+| 5 | `--timeout-s` becomes `--time`, and SLURM -- not `pbrun` -- kills the job, which arrives as `detail.slurm.state=TIMEOUT` with `signal=15`, and which `pbrun` reports as `failed (TIMEOUT)` |
 | 6 | `--withdraw` on a running job `scancel`s it, files the `withdrawn/` marker and a `failed/` record carrying `withdrawn_by` |
 | 7a | `--gres=shard:1` schedules two jobs on a two-shard node and holds the third |
 | 7b | `--constraint` for a Feature no node has is refused at submit and reported by `pbrun` |
-| 8 | the Epilog ran for a killed job and matched containers by the action's ownership label |
+| 8 | the Epilog ran for a killed job, matched containers by the action's ownership label, and removed its state file as the job's user rather than as root |
 | 9 | with no `slurmdbd`, `sacct` answers nothing and the lane's provenance comes from `scontrol` |
 
 ## What it does not establish
@@ -52,6 +52,23 @@ The container is not the fleet, and four things stay open for the install:
 - **Three boxes.** One node cannot show controller/slurmd RPC across a version
   skew, a node draining and returning, or an action landing on a box other
   than the submitter's.
+
+## The two SLURMs behave differently, and the differences are recorded
+
+Both pass all eleven rows. Two things had to be worked around for 23.11.4, and
+neither is a lane defect:
+
+- Its `cgroup/v2` plugin creates its stepd scope under `/sys/fs/cgroup/system.slice`
+  and refuses to initialize when that directory is absent (`Could not create
+  scope directory .../pbsmoke_slurmstepd.scope`). On a box systemd owns it;
+  `inside.sh` creates it. 25.11.2 does not need it.
+- With `AccountingStorageType=accounting_storage/none`, every job is scheduled
+  as `InvalidAccount` (`_refresh_assoc_mgr_qos_list: no new list given back`)
+  and starts about thirty seconds later, once the association refresh fills in
+  `Assoc=0` and backfill picks it up. 25.11.2 starts jobs immediately. Nothing
+  fails; everything is slower, and a row that read a fixed interval would read
+  a stalled fleet. That is an argument for putting the 25.11 packages on the
+  nodes beyond the RPC-version one.
 
 ## Deviations from `fleet/slurm/slurm.conf`, and why
 
