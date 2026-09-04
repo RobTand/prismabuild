@@ -88,7 +88,11 @@ def _commit_identity() -> str:
 
 
 def _working_tree_dirty() -> bool:
-    result = _git_result("status", "--porcelain", "--untracked-files=no")
+    # Every file under the published source/script/test roots is eligible for
+    # the generation below, including a newly-created one Git does not yet
+    # track.  Excluding untracked paths here could therefore put bytes absent
+    # from ``commit`` into a receipt that claimed ``dirty: false``.
+    result = _git_result("status", "--porcelain")
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "no output").strip()
         raise SystemExit(

@@ -51,3 +51,15 @@ def test_publish_refuses_an_unproved_commit_before_touching_the_mirror(
         publish_runtime.main()
 
     assert not mirror.exists(), "an unidentified generation reached the live path"
+
+
+def test_untracked_published_files_make_the_runtime_tree_dirty(monkeypatch) -> None:
+    """A commit cannot identify a source member Git does not track."""
+
+    def git_result(*argv: str):
+        output = "" if "--untracked-files=no" in argv else "?? src/prismabuild/new.py\n"
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr(publish_runtime, "_git_result", git_result)
+
+    assert publish_runtime._working_tree_dirty() is True
