@@ -153,3 +153,26 @@ def test_a_continuation_does_not_smuggle_gpu_work_past_the_hook(tmp_path):
     module = _armed(tmp_path, None)
     command = f"echo starting\n{CUDA} \\\n  -m pytest tests"
     assert _verdict(module, command) == 2
+
+
+def test_pool_payload_is_not_segmented_away_from_its_entrypoint(tmp_path, monkeypatch):
+    """A pbrun submission whose payload chains commands is still a submission.
+
+    Splitting on ``&&`` tore the payload's interpreter away from the ``pbrun.py``
+    that vouches for it, so the hook refused the exact command it tells callers
+    to run -- the third time it has locked out its own repair.
+    """
+    module = _armed(tmp_path, monkeypatch)
+    cuda = "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python"
+    submit = (
+        "/usr/bin/python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --gpu -- "
+        f"bash -lc 'cd /home/rob/tmp/ts50 && {cuda} -m pytest tests/ -q'"
+    )
+    assert _verdict(module, submit) == 0
+
+
+def test_a_chain_after_a_pool_command_with_no_payload_is_still_scanned(tmp_path, monkeypatch):
+    """The cut needs BOTH an entrypoint and a ``--``; without one, nothing is exempt."""
+    module = _armed(tmp_path, monkeypatch)
+    cuda = "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python"
+    assert _verdict(module, f"pbrun.py --help && {cuda} train.py") != 0

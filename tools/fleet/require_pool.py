@@ -89,6 +89,36 @@ def _first_token(command: str) -> str:
     return stripped.split(" ", 1)[0].rsplit("/", 1)[-1]
 
 
+def _drop_pool_payload(command: str) -> str:
+    """Cut a pool submission's payload off before the command is segmented.
+
+    ``pbrun.py --gpu -- <cmd>`` hands everything past ``--`` to the pool, which
+    execs it on a worker that already holds the reservation.  Segmenting that
+    payload tears the interpreter away from the entrypoint that vouches for it,
+    so a submission whose payload was ``bash -lc 'cd x && <cuda venv> -m
+    pytest'`` was refused *as off-pool GPU work* -- the hook locking out the
+    very submission it exists to require.
+
+    The cut is deliberately narrow: it needs a pool entrypoint AND a ``--``
+    after it, because that pair is what makes the rest argv for another
+    process.  A chain like ``pbrun.py --help && <cuda venv> train.py`` has no
+    ``--``, so its second segment is still scanned and still refused.
+    """
+
+    best = None
+    for entry in POOL_ENTRYPOINTS:
+        at = command.find(entry)
+        if at < 0:
+            continue
+        sep = re.search(r"\s--\s", command[at:])
+        if sep is None:
+            continue
+        cut = at + sep.start()
+        if best is None or cut < best:
+            best = cut
+    return command if best is None else command[:best]
+
+
 def contends(command: str) -> bool:
     """True when any segment of this command starts GPU work off-pool.
 
@@ -102,6 +132,7 @@ def contends(command: str) -> bool:
     # each piece of the context that exempts it -- which refused a worker
     # launch whose interpreter argument sat on its own continued line.
     joined = re.sub(r"\\\s*\n", " ", command)
+    joined = _drop_pool_payload(joined)
     for segment in SEPARATORS.split(joined):
         if not CONTENDS.search(segment):
             continue
