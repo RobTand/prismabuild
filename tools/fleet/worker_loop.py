@@ -50,6 +50,10 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(SH / "repo" / "src"))
 from prismabuild import cpu_topology, pool  # noqa: E402
 
+#: Consecutive ``serve_once`` failures before the loop gives up and lets the
+#: supervisor replace it.  Survive the items; do not survive a broken box.
+MAX_CONSECUTIVE_ERRORS = 5
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -112,6 +116,7 @@ def main():
               flush=True)
     idle = 0
     served = 0
+    errors = 0
     while True:
         # Say what this box offers before asking what it may run.  The queue
         # otherwise knows only what has been *asked for*, which makes an item
@@ -119,10 +124,33 @@ def main():
         queue.announce(
             host=host, tags=offered, has_gpu=args.gpu_slots > 0, capacity=capacity,
         )
-        outcome = queue.serve_once(
-            tags=offered, has_gpu=args.gpu_slots > 0, python=args.python,
-            timeout_s=args.timeout_s, capacity=capacity,
-        )
+        # One bad item must not take the worker with it.  ``serve_once``
+        # re-raises whatever ``execute`` raised, and this loop had no handler,
+        # so a single unexecutable queue record -- a payload-less stub raising
+        # KeyError, an OSError on spawn -- killed the process, and did it once
+        # per attempt.  A worker's job is to survive the items it is given.
+        #
+        # ``Exception``, not ``BaseException``: KeyboardInterrupt and
+        # SystemExit must still stop the loop.  And the count is consecutive,
+        # so a box whose every poll raises stops rather than spinning: that
+        # shape is the box being broken, not the items.
+        try:
+            outcome = queue.serve_once(
+                tags=offered, has_gpu=args.gpu_slots > 0, python=args.python,
+                timeout_s=args.timeout_s, capacity=capacity,
+            )
+        except Exception as exc:                                 # noqa: BLE001
+            errors += 1
+            print(f"[{host}] serve_once raised ({errors} in a row): "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            if errors >= MAX_CONSECUTIVE_ERRORS:
+                print(f"[{host}] {errors} consecutive failures; the box, not "
+                      f"the items -- exiting for the supervisor to replace",
+                      flush=True)
+                return 1
+            time.sleep(args.poll_s)
+            continue
+        errors = 0
         if outcome is None:
             idle += 1
             if args.once or idle >= args.max_idle:

@@ -784,3 +784,69 @@ def test_a_stale_offer_does_not_vouch_for_a_dead_box(queue: pool.PoolQueue) -> N
     assert queue.placeable({"tags": ["x86"]}, max_age_s=1e6) is True
     assert queue.placeable({"tags": ["x86"]}, max_age_s=-1.0) is None
     assert queue.offered_tags(max_age_s=-1.0) == []
+
+
+def test_finish_does_not_republish_a_payloadless_stub(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The twin of the reaper race, on the other side of the same window.
+
+    A reaper concludes a claim while the work is still running.  The worker
+    then calls ``finish()``, reads nothing, and -- before this fix -- built
+    ``{"action_key": key}`` and let the requeue branch write it into ``ready``
+    *over* the full record the reaper had just filed.  The action could then
+    never run again: every later claim died on ``KeyError('worker_script')``,
+    taking the worker process with it, and the only record of where the work
+    lived was gone.  Six actions in the live queue are unrecoverable this way.
+    """
+
+    _publish(queue, KEY_A)
+    assert queue.claim() is not None
+    queue.item_path(pool.CLAIMED, KEY_A).unlink()          # the reaper won
+
+    landed = queue.finish(KEY_A, status="failed", detail={"exception": "boom"})
+
+    assert landed == queue.item_path(pool.FAILED, KEY_A)
+    assert list(queue.dir(pool.READY).glob("*.json")) == []
+    filed = json.loads(landed.read_text())
+    assert filed["status"] == "finish_lost_race"
+    assert filed["detail"]["worker_detail"] == {"exception": "boom"}
+
+
+def test_finish_losing_the_race_does_not_overwrite_the_winners_record(
+    queue: pool.PoolQueue,
+) -> None:
+    """Whatever the winner filed stands; the loser must not clobber it."""
+
+    _publish(queue, KEY_A)
+    assert queue.claim() is not None
+    queue.item_path(pool.CLAIMED, KEY_A).unlink()
+    winner = queue.item_path(pool.FAILED, KEY_A)
+    winner.write_text(json.dumps({"action_key": KEY_A, "status": "the winner"}))
+
+    queue.finish(KEY_A, status="failed")
+
+    assert json.loads(winner.read_text())["status"] == "the winner"
+
+
+def test_a_ready_record_a_worker_cannot_execute_is_quarantined(
+    queue: pool.PoolQueue,
+) -> None:
+    """Having the key is not the same as being runnable.
+
+    A record with the right ``action_key`` but no ``worker_script`` is claimed,
+    kills the worker on ``KeyError``, and does it once per attempt before it is
+    finally filed.  Seven of those are in the live queue's ``failed``, each
+    having taken a worker process down with it.
+    """
+
+    _publish(queue, KEY_A)
+    stub = queue.item_path(pool.READY, KEY_B)
+    stub.write_text(json.dumps({"action_key": KEY_B, "attempts": 0}))
+
+    assert queue.quarantine_orphans() == [KEY_B]
+    filed = json.loads(queue.item_path(pool.FAILED, KEY_B).read_text())
+    assert filed["status"] == "orphaned_stub"
+    assert "worker_script" in filed["detail"]["reason"]
+    # The healthy item is untouched.
+    assert queue.item_path(pool.READY, KEY_A).exists()

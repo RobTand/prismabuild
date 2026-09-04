@@ -876,7 +876,20 @@ class PoolQueue:
             return filed
         for path in sorted(ready.glob("*.json")):
             record = _read_json(path)
-            if record is None or record.get("action_key") == path.stem:
+            if record is None:
+                continue
+            # Two ways to be unaddressable, and both belong here.  A record
+            # with the wrong (or no) ``action_key`` is skipped by ``claim()``
+            # and never runs.  A record that *has* the key but lacks the
+            # fields a worker executes with -- ``worker_script``, ``cas_root``,
+            # ``checkout_root`` -- is worse: it is claimed, it kills the
+            # worker process on ``KeyError``, and it does that three times
+            # before it is finally filed.  Seven such items are in the live
+            # queue's ``failed`` directory, each having taken a worker down.
+            usable = (record.get("action_key") == path.stem
+                      and all(record.get(field) for field in
+                              ("worker_script", "cas_root", "checkout_root")))
+            if usable:
                 continue
             record.update(
                 {
@@ -886,8 +899,10 @@ class PoolQueue:
                     "finished_unix": _now(),
                     "finished_host": socket.gethostname(),
                     "detail": {
-                        "reason": "ready record carries no usable action_key; "
-                        "see reap_stale's requeue race",
+                        "reason": "ready record is not executable: it lacks a "
+                        "matching action_key or the worker_script/cas_root/"
+                        "checkout_root a worker runs from; see the reap_stale "
+                        "and finish() requeue races",
                     },
                 }
             )
@@ -908,7 +923,44 @@ class PoolQueue:
     ) -> Path:
         succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
-        record = _read_json(src) or {"action_key": action_key}
+        record = _read_json(src)
+        if record is None:
+            # A reaper concluded this claim while the work was still running,
+            # so the claim file is gone and the item has already been filed
+            # somewhere by the winner.  Synthesising ``{"action_key": key}``
+            # here and letting the code below requeue it publishes a record
+            # that has the key and nothing else -- no ``worker_script``, no
+            # ``cas_root``, no ``checkout_root`` -- *over* the full record the
+            # reaper just wrote.  The action can then never run again: every
+            # subsequent claim dies on ``KeyError('worker_script')``, and the
+            # only copy of where the work lived is gone.  Six actions in the
+            # live queue are unrecoverable for exactly this reason.
+            #
+            # This is the twin of the ``reap_stale`` race fixed in 8b32569 --
+            # the same missing-read-treated-as-empty-record on the other side
+            # of the same window; that fix's own comment names ``finish()``
+            # and only the loop was repaired.  File the outcome terminally so
+            # it is countable, and never route it back to ``ready``.
+            lost = self.item_path(
+                FAILED, action_key) if not succeeded else self.item_path(
+                DONE, action_key)
+            if not lost.exists():
+                _write_json_atomic(lost, {
+                    "schema": POOL_OUTCOME_SCHEMA_V1,
+                    "action_key": action_key,
+                    "status": status if succeeded else "finish_lost_race",
+                    "finished_unix": _now(),
+                    "finished_host": socket.gethostname(),
+                    "detail": {
+                        "reason": "the claim was concluded by a reaper while "
+                                  "this worker was still running it; the "
+                                  "item's own record was not available to "
+                                  "carry forward",
+                        "worker_detail": dict(detail or {}),
+                    },
+                })
+            self.lease_path(action_key).unlink(missing_ok=True)
+            return lost
         host = record.get("claimed_host")
         attempts = int(record.get("attempts", 0)) + 1
         limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))

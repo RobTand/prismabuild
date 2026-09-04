@@ -39,12 +39,22 @@ import time
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from prismabuild import pool  # noqa: E402
+from collections.abc import Mapping  # noqa: E402
+from prismabuild import core as pb, pool  # noqa: E402
 
 PBRUN = Path(__file__).resolve().parent / "pbrun.py"
-#: Only ever removed inside the working directory the action itself declared,
-#: and only with this prefix: it is the pool's own dropping, not the user's
-#: data.  Anything else that blocks a rerun is reported, never deleted.
+#: A stale declared result is cleared through ``core.repair_local_result`` and
+#: never by globbing.  The prefix is the pool's own dropping, but the file name
+#: is per *action fingerprint*, and pbrun tees a live run into the very same
+#: path -- so a glob in a shared checkout unlinks the logs of every action
+#: currently running there, each of which then burns its full runtime and dies
+#: at "action succeeded without its declared result file".  On
+#: ``/mnt/shared/tessera-x86`` that is up to fourteen concurrent actions, and
+#: this tool did exactly that to them before the audit caught it.
+#: ``repair_local_result`` refuses an unclaimed path, a symlink, and an action
+#: that already has a CAS receipt, and it takes the same output lock a live
+#: producer holds -- which is the whole difference between removing *this*
+#: action's leftover and removing somebody else's live log.
 RESULT_PREFIX = "pbrun_result."
 
 
@@ -81,6 +91,7 @@ def _recover(record: dict) -> tuple[dict | None, str]:
         return None, f"working directory is gone: {cwd}"
     return {
         "key": key,
+        "action": request,
         "argv": [str(a) for a in argv],
         "cwd": str(cwd),
         "demand": dict(record.get("resources") or {}),
@@ -88,13 +99,20 @@ def _recover(record: dict) -> tuple[dict | None, str]:
     }, ""
 
 
-def _clear_stale_result(cwd: str) -> list[str]:
-    cleared = []
-    for path in sorted(Path(cwd).glob(f"{RESULT_PREFIX}*")):
-        if path.is_file():
-            path.unlink()
-            cleared.append(path.name)
-    return cleared
+def _clear_stale_result(action: object, cwd: str) -> tuple[list[str], str]:
+    """Clear only this action's own leftover declared result, under its claim."""
+
+    try:
+        outcome = pb.repair_local_result(
+            action, cas_root=SH / "cas", checkout_root=cwd)
+    except Exception as exc:                                     # noqa: BLE001
+        # A refusal here is information, not a failure: "already has a CAS
+        # receipt" means the work landed and there is nothing to reset.
+        return [], f"{type(exc).__name__}: {exc}"
+    removed = outcome.get("removed") if isinstance(outcome, Mapping) else None
+    if isinstance(removed, str):
+        return [removed], ""
+    return ([str(removed)] if removed else []), ""
 
 
 def main() -> int:
@@ -141,7 +159,9 @@ def main() -> int:
     if args.limit:
         ordered = ordered[: args.limit]
     for plan in ordered:
-        cleared = _clear_stale_result(plan["cwd"]) if args.apply else []
+        cleared, note = ([], "")
+        if args.apply:
+            cleared, note = _clear_stale_result(plan["action"], plan["cwd"])
         command = [
             sys.executable, str(PBRUN),
             "--cwd", plan["cwd"],
@@ -159,7 +179,9 @@ def main() -> int:
             print(f"  would submit {label}\n    {' '.join(command[3:])}")
             continue
         if cleared:
-            print(f"  cleared {len(cleared)} stale result file(s) in {plan['cwd']}")
+            print(f"  cleared this action's stale result: {cleared[0]}")
+        elif note:
+            print(f"  no result to clear ({note})")
         proc = subprocess.Popen(
             command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
