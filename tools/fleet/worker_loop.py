@@ -15,6 +15,18 @@ capacity below is measured, not guessed -- one exporter holds ~8 GB resident
 and four concurrent ones took a GB10 from 116 GB free to 55 GB, so 16 GB per
 action is the honest figure and 96 GB leaves the box its working headroom.
 
+**What the box offers is observed, not only declared.**  The ledger is exact
+about what the pool scheduled and was blind to everything else, so a box six
+hours into an out-of-pool encode campaign reported every token free
+(sparklina, 2026-09-04 01:06: four GPU processes, ``ledger free 51 held 0``).
+Every poll now subtracts what else is running -- the GPU's compute apps and
+``MemAvailable``, each minus what the pool's own held tokens account for -- and
+retires free tokens to the remainder, so a busy box looks busy whoever made it
+busy.  Cores are read and recorded but deliberately not charged: a ``cpu``
+token is a slot and the run queue counts threads, so clamping on it charges the
+box for its own multithreaded actions.  ``prismabuild.box_capacity`` holds the
+arithmetic and the reasons for both.
+
 ``serve_once`` returning ``None`` can now mean "denied admission" as well as
 "queue empty", including the deliberate case where a starved item is
 withholding this host.  Both are back-pressure, so the loop polls rather than
@@ -50,7 +62,7 @@ from pathlib import Path
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(SH / "repo" / "src"))
-from prismabuild import cpu_topology, pool  # noqa: E402
+from prismabuild import box_capacity, cpu_topology, pool  # noqa: E402
 
 #: Consecutive ``serve_once`` failures before the loop gives up and lets the
 #: supervisor replace it.  Survive the items; do not survive a broken box.
@@ -89,8 +101,13 @@ def main():
                     help="memory this box offers the queue, of ~121 GB total")
     ap.add_argument("--tag", action="append", default=[],
                     help="extra placement tag this box offers")
-    ap.add_argument("--honest-memory", action="store_true",
-                    help="clamp the memory offer to what the box actually has free")
+    ap.add_argument("--assume-idle", action="store_true",
+                    help="offer the declared numbers without looking at what "
+                         "else is running on this box (debug)")
+    ap.add_argument("--observe-samples", type=int,
+                    default=box_capacity.DEFAULT_SAMPLES,
+                    help="consecutive observations that must agree before the "
+                         "offer falls; 1 lets a single reading decide")
     ap.add_argument("--cpu-slots", type=int, default=0,
                     help="cores this box offers the queue; 0 = the cores this "
                          "loop is actually pinned to")
@@ -109,41 +126,18 @@ def main():
     cores = args.cpu_slots
     if cores <= 0:
         cores = len(pinned) if pinned else (os.cpu_count() or 1)
-    capacity = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb, "cpu": cores}
-    if args.honest_memory:
-        # The declared figure is what this box offers when the pool is the only
-        # thing on it.  While work the pool did not schedule is running, the
-        # honest offer is lower, and a ledger advertising the high-water mark
-        # is a promise the box cannot keep.
-        try:
-            with open("/proc/meminfo", encoding="utf-8") as handle:
-                fields = dict(
-                    (line.split(":", 1)[0], int(line.split()[1]))
-                    for line in handle if ":" in line
-                )
-            free_gb = fields.get("MemAvailable", 0) // (1024 * 1024)
-            # Leave the box a working margin rather than offering the last byte.
-            capacity["mem_gb"] = max(0, min(args.mem_gb, free_gb - 8))
-        except OSError:
-            pass
+    # What this box offers when the pool is the only thing on it.  What it can
+    # offer *now* is that minus whatever else is running, read at every poll.
+    declared = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb, "cpu": cores}
 
     queue = pool.PoolQueue(SH / "pb-queue")
-    # Every kind, every start -- not just memory, and not just under a flag.
-    #
-    # ``ensure_capacity`` is increase-only by design, and it runs on every
-    # claim attempt, so a ledger only ever remembers the LARGEST capacity any
-    # worker ever declared for this box.  The offer file is last-writer-wins
-    # and had fallen; the tokens had not.  Measured on the live fleet
-    # 2026-09-04: sparklina offered ``gpu: 1`` with FOUR free gpu tokens and
-    # three worker processes able to claim against them, and dl380g10 offered
-    # 60 GB with 180 tokens.  Admission is by token, placement is by offer, so
-    # the box was one busy night away from admitting three GPU actions to a
-    # one-slot box -- which is how sparklina went down on 2026-09-03.
-    #
-    # Retiring is safe to do bluntly: it deletes FREE tokens only, so a
-    # running action never loses the reservation it is executing under, and
-    # the total falls the rest of the way as holders finish.
-    queue.ledger().retire_free_capacity(capacity)
+    # Read once, not per poll: it seeds the observer's window so a loop that
+    # starts while the box is busy inherits the standing verdict instead of
+    # re-minting, for the length of its window, every token the other loops on
+    # this box retired.  A loop exits on ``--max-idle`` and the supervisor
+    # replaces it, so that window would come round every half hour.
+    observer = None if args.assume_idle else box_capacity.CapacityObserver(
+        samples=args.observe_samples, ledger_total=queue.ledger().capacity())
     host = socket.gethostname()
     # A box offers its own hostname as well as its class.  Item tags must be a
     # subset of the worker's, so without this an action pinned to one box --
@@ -162,14 +156,60 @@ def main():
     idle = 0
     served = 0
     errors = 0
+    announced: dict[str, int] | None = None
     loaded_commit = published_commit()
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}", flush=True)
     while True:
+        # Every kind, every poll -- not just memory, and not just under a flag.
+        #
+        # Two things make the ledger disagree with the box, and one call
+        # answers both.  ``ensure_capacity`` is increase-only by design and
+        # runs on every claim attempt, so a ledger remembers the LARGEST
+        # capacity any worker ever declared for this host while the offer file
+        # is last-writer-wins and falls: measured 2026-09-04, sparklina offered
+        # ``gpu: 1`` with FOUR free gpu tokens and three worker processes able
+        # to claim against them.  And the ledger is exact about what the pool
+        # scheduled and blind to everything else: at 01:06 the same box read
+        # every token free while four out-of-pool GPU processes held the card.
+        # Admission is by token, so either shape admits work the box cannot
+        # run, which is how sparklina went down on 2026-09-03.
+        #
+        # So the offer is the declaration minus what else is running, and the
+        # ledger is retired to it.  ``box_capacity`` explains the attribution
+        # (held tokens, not a process tree) and the asymmetry (falls slowly,
+        # recovers at once).  Retiring is safe to do bluntly: it deletes FREE
+        # tokens only, so a running action never loses the reservation it is
+        # executing under, and the total falls the rest of the way as holders
+        # finish.  Nothing here is a ratchet: ``ensure_capacity`` re-mints
+        # inside ``claim`` on the next poll once the foreign work is gone.
+        capacity = dict(declared) if observer is None else observer.offer(
+            declared, queue.ledger().held())
+        queue.ledger().retire_free_capacity(capacity)
+        if capacity != announced:
+            seen = observer.last if observer is not None else None
+            # ``foreign`` and ``detail``, named as the announce record names
+            # them, so a line in a log and a field in ``workers/<host>.json``
+            # can be read against each other.
+            print(f"[{host}] offer {capacity}"
+                  + (f" (declared {declared}; foreign {seen.foreign}; "
+                     f"{seen.detail})" if seen is not None and seen.foreign
+                     else ""), flush=True)
+            announced = dict(capacity)
         # Say what this box offers before asking what it may run.  The queue
         # otherwise knows only what has been *asked for*, which makes an item
         # no box can run look exactly like an item whose box is busy.
+        #
+        # ``capacity`` stays the declaration: it is what ``placeable`` reads,
+        # and the question there is whether any box could EVER run the item.
+        # A box occupied by someone else's encode is a slow submission, and
+        # publishing the live figure there would make ``pbrun`` refuse it.
         queue.announce(
-            host=host, tags=offered, has_gpu=args.gpu_slots > 0, capacity=capacity,
+            host=host, tags=offered, has_gpu=args.gpu_slots > 0,
+            capacity=declared, observed_capacity=capacity,
+            foreign=(observer.last.foreign if observer is not None
+                     and observer.last is not None else None),
+            observed_detail=(observer.last.detail if observer is not None
+                             and observer.last is not None else None),
             runtime_commit=loaded_commit,
         )
         # One bad item must not take the worker with it.  ``serve_once``
@@ -188,6 +228,14 @@ def main():
                 timeout_s=args.timeout_s, capacity=capacity,
             )
         except Exception as exc:                                 # noqa: BLE001
+            # The raise may have come two hours into an action, so this loop
+            # has been away from the box for as long as a returning one has.
+            # It may equally have come from ``reap_stale`` before anything was
+            # claimed, and the two are not distinguishable from here without
+            # threading state out of ``serve_once``.  Emptying the window on
+            # both is the conservative reading of the pair.
+            if observer is not None:
+                observer.rejoin(queue.ledger().capacity())
             errors += 1
             print(f"[{host}] serve_once raised ({errors} in a row): "
                   f"{type(exc).__name__}: {exc}", flush=True)
@@ -199,6 +247,17 @@ def main():
             time.sleep(args.poll_s)
             continue
         errors = 0
+        if outcome is not None and observer is not None:
+            # Back from an action, having taken no reading of the box for as
+            # long as it ran.  The window's samples are from before it and the
+            # offer is a maximum, so they would go on deciding it for
+            # ``--observe-samples`` - 1 polls -- the polls in which this loop
+            # claims again -- and ``ensure_capacity`` would re-mint against
+            # them every free token a sibling loop had retired meanwhile.  The
+            # ledger is read here, after the action's tokens are released, and
+            # caps the first reading back rather than seeding it: part of that
+            # total is the token this loop has just let go of.
+            observer.rejoin(queue.ledger().capacity())
         if outcome is None:
             idle += 1
             # A loop imports ``prismabuild.pool`` once, at start, and holds
