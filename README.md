@@ -11,9 +11,16 @@ retains a host pin unless the caller explicitly names its worker class.
 The core, shared CAS, pull queue, and three-worker fleet are deployed, and
 `pool.py` is the sole execution plane for the current Tessera/PrismaQuant
 campaigns. It has dispatched real quantization, test, and measurement stages.
-On 2026-09-04, current `main` (`afdd938`) recorded 532 passed / 1 skipped in its
-CPU suite; that dated population is evidence, not a permanent suite-count
-claim.
+On 2026-09-04, `claude/pb-fixes-2026-09-04` (on top of `44b9f8f`) recorded
+605 passed / 1 skipped in its CPU suite on sparky; that dated population is
+evidence, not a permanent suite-count claim.
+
+**The pull queue is slated for replacement by SLURM.** The 2026-09-04 review
+found the memoization core worth owning and the scheduler half to be the
+"roll-your-own queue dir" the spec had declined; see
+`docs/scheduler_decision_2026-09-04.md` for the evidence, the alternatives,
+the per-issue dispositions and the migration plan. Nothing changes on the
+fleet until Rob ratifies it and runs the install.
 
 Both originally-shipped transports are inert here: `slurm.py` shells out to
 `sbatch`/`scontrol` and SLURM is installed on neither Spark; `dagster.py` needs
