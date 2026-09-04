@@ -168,6 +168,34 @@ CAP_UNIT_PREFIX = "pbcap-"
 MEM_CAP_SCOPE_HOST = "host"
 MEM_CAP_SCOPE_NONE = "none"
 
+#: Every resource limit a systemd unit file can express, by the stem of its
+#: ``Limit<X>=`` property (systemd.exec(5)).  The roster is *systemd's*, and it
+#: is pinned here for the same reason the pinned runtime's contract table is
+#: read rather than restated: it is the set the mechanism supports, not a set
+#: this code chose.  The rule the wrapper follows is "carry every limit the
+#: unit can express", read off the launcher at launch time -- so a limit is
+#: never dropped because nobody happened to think of it.  Python's
+#: ``RLIMIT_OFILE`` (an alias of ``RLIMIT_NOFILE``) and ``RLIMIT_VMEM`` have no
+#: unit property and fall out by not being named here.
+SYSTEMD_RLIMIT_STEMS = (
+    "AS", "CORE", "CPU", "DATA", "FSIZE", "LOCKS", "MEMLOCK", "MSGQUEUE",
+    "NICE", "NOFILE", "NPROC", "RSS", "RTPRIO", "RTTIME", "SIGPENDING",
+    "STACK",
+)
+
+#: How long a capped unit is given to stop before the launcher stops waiting.
+#:
+#: A unit is not the launcher's child, so ``TERM``/``KILL`` to the launcher's
+#: process group -- the mechanism the timeout and abort paths use -- does not
+#: reach the work at all (measured on sparky 2026-09-04: launcher rc -15, unit
+#: still ``active`` with the same MainPID six seconds later).  Stopping the
+#: unit is what reaches it, and a stop is bounded twice over: ``TimeoutStopSec``
+#: on the unit bounds the kernel-side wait, and this bounds ours.  The window
+#: is core's TERM budget plus its KILL budget, the same shape ``core.
+#: _terminate_process_group`` spends on a process group, because it is the same
+#: two-signal escalation with systemd holding the signals.
+CAP_STOP_GRACE_S = 2.0 * pb._PROCESS_GROUP_GRACE_SECONDS
+
 #: Environment names systemd sets *for* a unit.  Forwarding the launcher's
 #: copies would hand the child another process's identity.
 _UNIT_MANAGED_ENV = frozenset({
@@ -276,12 +304,36 @@ def rlimit_word(value: int) -> str:
     return "infinity" if int(value) == resource.RLIM_INFINITY else str(int(value))
 
 
-def launcher_exec_context() -> dict[str, object]:
-    """The launcher's own affinity and fd ceiling, for the wrapper to carry.
+def _own_umask() -> int | None:
+    """This process's umask, read rather than written.
 
-    Separated from ``capped_launch_argv`` so that function stays a pure argv
-    builder a test can drive with values it chose, rather than one that reads
-    the process it happens to run in.
+    ``os.umask`` is a swap, so the usual "set it and set it back" is a window
+    in which another thread inherits the wrong mask.  Linux publishes the value
+    in ``/proc/self/status``, so it can simply be read.  ``None`` when it
+    cannot be -- an unreadable mask is left uncarried rather than guessed at.
+    """
+
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("Umask:"):
+                return int(line.split(":", 1)[1].strip(), 8)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def launcher_exec_context() -> dict[str, object]:
+    """Everything about the launcher's execution the wrapper has to restate.
+
+    A transient unit is forked by the user manager, so the launcher's context
+    reaches the work only by being named -- see ``capped_launch_argv`` for what
+    that costs when a member is missed.  This is the *reading* half, kept
+    separate so the argv builder stays pure and a test can drive it with values
+    it chose rather than with whatever process the suite happens to be.
+
+    Read by rule, not by roster: every limit systemd can express
+    (``SYSTEMD_RLIMIT_STEMS``) is read off this process, so a limit is carried
+    because the mechanism supports it and not because somebody remembered it.
     """
 
     context: dict[str, object] = {}
@@ -289,9 +341,24 @@ def launcher_exec_context() -> dict[str, object]:
         context["cpus"] = sorted(os.sched_getaffinity(0))
     except (AttributeError, OSError):
         pass
+    limits: dict[str, tuple[int, int]] = {}
+    for stem in SYSTEMD_RLIMIT_STEMS:
+        number = getattr(resource, f"RLIMIT_{stem}", None)
+        if number is None:
+            continue
+        try:
+            soft, hard = resource.getrlimit(number)
+        except (ValueError, OSError):
+            continue
+        limits[stem] = (int(soft), int(hard))
+    if limits:
+        context["rlimits"] = limits
+    mask = _own_umask()
+    if mask is not None:
+        context["umask"] = mask
     try:
-        context["nofile"] = resource.getrlimit(resource.RLIMIT_NOFILE)
-    except (ValueError, OSError):
+        context["nice"] = os.nice(0)
+    except OSError:
         pass
     return context
 
@@ -304,7 +371,10 @@ def capped_launch_argv(
     cwd: str | Path | None = None,
     env: Mapping[str, str] | None = None,
     cpus: Iterable[int] | None = None,
-    nofile: tuple[int, int] | None = None,
+    rlimits: Mapping[str, tuple[int, int]] | None = None,
+    umask: int | None = None,
+    nice: int | None = None,
+    stop_grace_s: float = CAP_STOP_GRACE_S,
 ) -> list[str]:
     """Wrap a launch in a transient unit whose memory limit is ``cap_gb``.
 
@@ -312,10 +382,14 @@ def capped_launch_argv(
     unit does not inherit the launcher's context: ``systemd-run --user`` asks
     the **user manager** to fork the work, so everything the launcher was
     carrying is replaced by the manager's defaults unless it is named here.
-    Four members of that context are carried, and the list is a measurement
-    rather than a guess -- ``tools/fleet/probes/exec_context_probe.py`` diffs
-    every rlimit, the affinity mask, the umask, nice, the credentials and the
-    environment across the wrapper, and these are what it found differing:
+    Nothing about the wrapper's argv can reveal a member that was missed --
+    argv is not where they go missing -- so the list is kept by measurement:
+    ``tools/fleet/probes/exec_context_probe.py`` perturbs every dimension it
+    can *before* diffing an identical child run with and without the wrapper,
+    because a dimension left at the box default matches on both sides whether
+    the wrapper carries it or not.
+
+    What is carried, and why each is execution rather than bound:
 
     * **The working directory and the environment.**  A child that quietly
       lost ``TRITON_CACHE_DIR`` or gained a different ``PATH`` is a different
@@ -330,19 +404,46 @@ def capped_launch_argv(
       cores runs its actions on all twenty -- measured 5-9,15-19 in the loop
       against 0-19 in the unit -- putting compute on the 2.8 GHz half and
       making the loop's cpu-token offer describe a box it no longer holds.
-    * **The fd ceiling.**  The soft ``RLIMIT_NOFILE`` falls from the launcher's
-      500000 to systemd's ``DefaultLimitNOFILE`` soft of 1024, measured, with
-      the hard limit unchanged.  An NFS shard reader or ``pytest -n N`` that
-      crosses 1024 raises ``EMFILE``, which the queue retries
-      ``max_attempts`` times and attributes to the payload.
+    * **Every resource limit systemd can express**, by rule rather than by
+      roster (``SYSTEMD_RLIMIT_STEMS``).  Soft ``RLIMIT_NOFILE`` is the one
+      that bites on today's fleet -- 500000 in the loop against systemd's
+      ``DefaultLimitNOFILE`` soft of 1024, and an NFS shard reader or
+      ``pytest -n N`` that crosses 1024 raises ``EMFILE``, which the queue
+      retries ``max_attempts`` times and files against the payload.  It is
+      *not* the only one that can: against a perturbed launcher, ``CORE``,
+      ``MSGQUEUE``, ``NPROC``, ``SIGPENDING`` and ``STACK`` moved too
+      (measured, sparky 2026-09-04).  They match today because the live loops
+      happen to sit at the manager's own values, which is a fact about this
+      week's roster and not about the mechanism.
+    * **The umask and the nice level.**  Both are exec context the manager
+      resets: a perturbed launcher's ``0o077`` became the manager's ``0o002``
+      and nice 5 became 0.  The mask decides the mode of every byte an action
+      writes into the shared CAS, and the nice level is the CPU half of the
+      same escape ``CPUAffinity`` closes.  A *negative* nice is not carried,
+      and the reason is measured rather than assumed: ``Nice=-5`` and
+      ``Nice=-1`` both start fine and both land the child at nice **0** (this
+      box, 2026-09-04), because raising priority needs a privilege the user
+      manager does not have.  Naming it would be the wrapper claiming to carry
+      something it demonstrably does not, which is the failure mode this whole
+      list exists to end.
 
-    Two differences are deliberately *not* carried, because they are the
-    bound rather than the execution.  The cgroup path is the mechanism
-    itself.  And ``oom_score_adj`` goes from the loop's -1000 to the unit's
-    200 (measured), which is the right direction and not an accident to
-    repair: the incident this cap exists for is a *bystander* being chosen by
-    the kernel, and an action that has outgrown its own declaration should be
-    a likelier victim than the loop supervising it, not an exempt one.
+    Three differences are deliberately **not** carried, because they are the
+    bound or the mechanism rather than the execution:
+
+    * The **cgroup path** is the mechanism itself.
+    * ``oom_score_adj`` goes from the loop's -1000 to the unit's 200
+      (measured), which is the right direction and not an accident to repair:
+      the incident this cap exists for is a *bystander* being chosen by the
+      kernel, and an action that has outgrown its own declaration should be a
+      likelier victim than the loop supervising it, not an exempt one.
+    * The **process group and session**.  The unit's work is forked by the
+      manager, so it is in neither the launcher's group nor its session, and
+      that cannot be restated as a property.  It has a consequence rather than
+      a value: signalling the launcher's process group -- the mechanism the
+      timeout and abort paths use -- does not reach the work (measured on
+      sparky 2026-09-04: launcher rc -15, the unit still ``active`` with the
+      same MainPID six seconds later).  The compensation is that both paths
+      stop the *unit*, and ``TimeoutStopSec`` bounds how long that can take.
 
     ``--pipe`` keeps stdout and stderr as pipes the caller can read, which is
     what the outcome record and the worker's error tail are made of; it
@@ -370,6 +471,10 @@ def capped_launch_argv(
         # ``kill``, for the same cgroup kill.  "Terminated" is not what
         # happened, and it is not what the submitter needs to be told.
         "-p", "OOMPolicy=kill",
+        # The launcher's own stop is bounded, so the unit's has to be too, or
+        # the bound is only on which of the two gives up first.  Default is 90
+        # s for a user unit -- six times the window the caller waits.
+        "-p", f"TimeoutStopSec={max(1, int(stop_grace_s))}",
     ]
     if cpus is not None:
         mask = cpu_topology.as_range(cpus)
@@ -377,10 +482,20 @@ def capped_launch_argv(
             # An exec-context setting, not a cgroup one: it needs no ``cpuset``
             # delegation, which these boxes do not have (``cpu memory pids``).
             launch += ["-p", f"CPUAffinity={mask}"]
-    if nofile is not None:
-        soft, hard = nofile
+    for stem, pair in sorted((rlimits or {}).items()):
+        if stem not in SYSTEMD_RLIMIT_STEMS:
+            # A name systemd has no property for would be accepted on the
+            # command line and ignored, which is the silence this exists to
+            # end.  Refuse it where it can still be read.
+            raise PoolContractError(
+                f"no systemd unit property carries RLIMIT_{stem}")
+        soft, hard = pair
         launch += ["-p",
-                   f"LimitNOFILE={rlimit_word(soft)}:{rlimit_word(hard)}"]
+                   f"Limit{stem}={rlimit_word(soft)}:{rlimit_word(hard)}"]
+    if umask is not None:
+        launch += ["-p", f"UMask={int(umask):04o}"]
+    if nice is not None and int(nice) >= 0:
+        launch += ["-p", f"Nice={int(nice)}"]
     if cwd is not None:
         launch += ["-p", f"WorkingDirectory={cwd}"]
     for name, value in sorted((env or {}).items()):
@@ -403,6 +518,37 @@ def _systemctl(*args: str, timeout_s: float = 15.0) -> subprocess.CompletedProce
         )
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def stop_cap_unit(unit: str, *, grace_s: float = CAP_STOP_GRACE_S) -> bool:
+    """Stop a capped unit, and say whether it is actually gone.
+
+    The unit is the only handle on the work.  It is not the launcher's child,
+    so the process-group signal every other timeout on this box uses reaches
+    ``systemd-run`` and nothing else -- measured on sparky 2026-09-04: TERM to
+    the launcher's group returned rc -15 from the launcher and left the service
+    ``active`` with the same MainPID six seconds later.
+
+    Bounded on both sides.  ``TimeoutStopSec`` on the unit bounds systemd's own
+    TERM-then-KILL escalation; ``grace_s`` plus a margin bounds this call, so a
+    manager that never answers cannot turn a timeout into a hang.
+
+    Returns True only when the unit is *read back* inactive.  An unreadable
+    state answers False: a stop that cannot be attested is reported as a
+    survivor, because the caller is about to release a ledger token and the
+    expensive mistake is claiming a GPU is free when it is not.
+    """
+
+    _systemctl("stop", unit, timeout_s=grace_s + 5.0)
+    shown = _systemctl("show", unit, "-p", "ActiveState", timeout_s=5.0)
+    if shown is None or shown.returncode != 0:
+        return False
+    for line in (shown.stdout or "").splitlines():
+        if line.startswith("ActiveState="):
+            # A unit that no longer exists shows ``inactive``, which is the
+            # answer wanted: gone is gone however it got there.
+            return line.split("=", 1)[1].strip() in ("inactive", "failed")
+    return False
 
 
 def unit_outcome(unit: str) -> dict[str, object]:
@@ -530,6 +676,41 @@ def worker_argv(
         "--checkout-root",
         str(checkout_root),
     ]
+
+
+def _drain(
+    process: subprocess.Popen[str], *, timeout_s: float
+) -> tuple[str, str, bool]:
+    """Collect what the pipes hold without waiting on whoever still holds them.
+
+    The action inherits the launcher's stdout and stderr, so the read side sees
+    EOF only when the *action* exits -- not when the launcher does.  An
+    unbounded ``communicate()`` after a kill therefore blocks for exactly as
+    long as the runaway it was called to stop.  Take the partial output the
+    timeout carries instead, close the pipes, and say so.
+
+    Returns ``(stdout, stderr, survived)``, where ``survived`` is True when EOF
+    never arrived.
+    """
+
+    try:
+        out, err = process.communicate(timeout=timeout_s)
+        return out or "", err or "", False
+    except subprocess.TimeoutExpired as exc:
+        # ``communicate`` attaches what it had read to the timeout, undecoded
+        # even under ``text=True``.  A truncated log beats no log.
+        partial = []
+        for chunk in (exc.output, exc.stderr):
+            if chunk is None:
+                partial.append("")
+            elif isinstance(chunk, bytes):
+                partial.append(chunk.decode("utf-8", errors="replace"))
+            else:
+                partial.append(str(chunk))
+        for pipe in (process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
+        return partial[0], partial[1], True
 
 
 def _scan(directory: Path):
@@ -1428,6 +1609,7 @@ class PoolQueue:
         python: str | Path = sys.executable,
         timeout_s: float | None = None,
         heartbeat_s: float = HEARTBEAT_S,
+        stop_grace_s: float = CAP_STOP_GRACE_S,
     ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
 
@@ -1446,8 +1628,10 @@ class PoolQueue:
         "Host footprint" is the whole of the claim and is measured, not
         hedging: anonymous and pinned pages are charged and killed, memory
         taken through the CUDA allocator is charged nothing at all, and file
-        pages are charged and then reclaimed rather than killed.  The outcome
-        record carries ``cap_scope`` so no reader has to remember that.  See
+        pages are charged and then reclaimed rather than killed.  On a GB10
+        the device half is the half that fills the box, and bounding it is
+        issue #8 -- open, and not touched here.  The outcome record carries
+        ``cap_scope`` so no reader has to remember either fact.  See
         ``docs/memory_enforcement_2026-09-04.md``.
 
         Capping is by the *item's* declaration, not by whether this worker
@@ -1479,10 +1663,12 @@ class PoolQueue:
                 launch = capped_launch_argv(
                     argv, cap_gb=cap_gb, unit=unit,
                     cwd=os.getcwd(), env=os.environ,
+                    stop_grace_s=stop_grace_s,
                     # The wrapper bounds the action; it must not re-specify
-                    # it.  A unit is forked by the user manager, so the
-                    # launcher's pin and fd ceiling reach the work only by
-                    # being named.  See ``capped_launch_argv``.
+                    # it.  A unit is forked by the user manager, so nothing of
+                    # the launcher's execution -- its pin, its limits, its
+                    # mask, its nice level -- reaches the work except by being
+                    # named.  See ``capped_launch_argv``.
                     **launcher_exec_context(),
                 )
             else:
@@ -1497,7 +1683,7 @@ class PoolQueue:
             # ``docs/memory_enforcement_2026-09-04.md``: the cgroup charges
             # anonymous and pinned host pages and does not charge a CUDA
             # allocation on GB10 unified memory, so a GPU action is bounded on
-            # one half of its footprint and unbounded on the other.
+            # one half of its footprint and unbounded on the other (issue #8).
             "cap_scope": MEM_CAP_SCOPE_HOST if unit is not None else "",
             "cap_unit": unit or "",
             "cap_unavailable": cap_detail,
@@ -1529,14 +1715,26 @@ class PoolQueue:
                             # suppressed: a one-second timeout was still
                             # running 100 s later with its unit active.  Stop
                             # the unit; the launcher then exits.
-                            _systemctl("stop", unit, timeout_s=30.0)
+                            cap_fields["unit_stopped"] = stop_cap_unit(
+                                unit, grace_s=stop_grace_s)
                         process.kill()
-                        out, err = process.communicate()
+                        # Bounded, because the pipes belong to the service and
+                        # not to the launcher: if the stop did not take, an
+                        # unbounded read here waits exactly as long as the
+                        # runaway it was called to stop.
+                        out, err, survived = _drain(
+                            process, timeout_s=stop_grace_s)
                         return {
                             "status": "timeout",
                             "returncode": None,
                             "stdout": out,
                             "stderr": err,
+                            # True when the pipes never reached EOF, so
+                            # something outlived the stop.  The ledger token is
+                            # released either way, so this flag is the only
+                            # notice that it was released for a GPU somebody
+                            # still holds.
+                            "action_survived_kill": survived,
                             "elapsed_s": _now() - started,
                             "argv": argv,
                             **cap_fields,
@@ -1563,6 +1761,21 @@ class PoolQueue:
                 "argv": argv,
                 **cap_fields,
             }
+        except BaseException:
+            # An abort has to reach the work, and under the wrapper it does not
+            # reach it by itself: the unit is forked by the user manager, so it
+            # is in neither this launcher's process group nor its session, and
+            # signalling either leaves it running (measured, sparky
+            # 2026-09-04).  Unwinding from here without stopping the unit
+            # leaves an action running against a claim this call is about to
+            # file as failed and a ledger token ``serve_once`` is about to
+            # release.  Same order as the timeout path, and bounded the same
+            # way, because a Ctrl-C that hangs is not an abort.
+            if unit is not None:
+                stop_cap_unit(unit, grace_s=stop_grace_s)
+                process.kill()
+                _drain(process, timeout_s=stop_grace_s)
+            raise
         finally:
             # A failed transient unit lingers until somebody resets it, and the
             # name carries a per-attempt nonce, so a leak is never cleaned up

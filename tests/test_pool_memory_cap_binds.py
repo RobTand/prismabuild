@@ -191,3 +191,70 @@ def test_a_cap_reclaims_page_cache_rather_than_killing_a_reader(
     assert outcome["status"] == "executed", outcome
     assert outcome["oom_killed"] is False
     assert "READ 1610612736" in outcome["stdout"]
+
+
+def _active_state(unit: str) -> str:
+    shown = pool._systemctl("show", unit, "-p", "ActiveState")
+    assert shown is not None
+    return (shown.stdout or "").strip().split("=", 1)[-1]
+
+
+def test_an_abort_stops_the_unit_instead_of_orphaning_it(
+    queue, tmp_path, monkeypatch
+) -> None:
+    """An abort has to reach the work, and under the wrapper it does not by itself.
+
+    Every other timeout on this box reaps a child by signalling the launcher's
+    process group.  A unit is forked by the **user manager**, so it is in
+    neither that group nor that session: measured on sparky 2026-09-04, TERM to
+    the launcher's group returned rc -15 from the launcher and left the service
+    ``active`` with the same MainPID six seconds later.  Unwinding out of
+    ``execute`` without stopping the unit therefore leaves the action running
+    against a claim ``serve_once`` is about to file as failed and a ledger token
+    it is about to release -- which is the one thing the ledger must never say.
+    """
+
+    stub = tmp_path / "hang_worker.py"
+    stub.write_text("import time; time.sleep(300)\n")
+    _publish(queue, stub, mem_gb=1)
+    item = queue.claim()
+    unit = pool.cap_unit_name(str(item["action_key"]),
+                              str(item.get("claimed_by") or ""))
+
+    real_write_lease = queue.write_lease
+
+    def interrupted(*args, **kwargs):
+        real_write_lease(*args, **kwargs)
+        assert _active_state(unit) == "active", "the action never started"
+        raise KeyboardInterrupt("operator")
+
+    monkeypatch.setattr(queue, "write_lease", interrupted)
+    started = pool._now()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            queue.execute(item, heartbeat_s=0.2)
+        elapsed = pool._now() - started
+        assert _active_state(unit) == "inactive", (
+            "the unit outlived the abort: the action is still running against "
+            "a claim that is about to be filed as failed")
+        assert elapsed < 60.0, "the abort path did not bound itself"
+    finally:
+        # A red run is exactly the run that leaves a 300 s sleep behind, which
+        # is the defect wearing a test's clothes.
+        pool.stop_cap_unit(unit)
+        pool._systemctl("reset-failed", unit)
+
+
+def test_the_timeout_path_says_whether_the_unit_actually_stopped(
+    queue, tmp_path
+) -> None:
+    """Reported, not assumed.  A stop that silently failed would release a
+    ledger token for a box somebody still holds, and the flag is the notice."""
+
+    stub = tmp_path / "hang_worker.py"
+    stub.write_text("import time; time.sleep(300)\n")
+    _publish(queue, stub, mem_gb=1)
+    outcome = queue.execute(queue.claim(), heartbeat_s=0.2, timeout_s=1.0)
+    assert outcome["status"] == "timeout"
+    assert outcome["unit_stopped"] is True, outcome
+    assert outcome["action_survived_kill"] is False, outcome

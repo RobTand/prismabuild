@@ -1,8 +1,15 @@
 # What a declared `mem_gb` now means, and exactly how far it reaches
 
-**Status:** measured on the fleet, 2026-09-04. Closes the enforcement half of
+**Status:** measured on the fleet, 2026-09-04. Closes the **host-page** half of
 prismabuild issue #1. Supersedes the "not live-validated" paragraph in
 `docs/design.md` for the cgroup half; see *Scope* for the half it does not.
+
+**Read the name before the result.** What ships here is *host-footprint*
+enforcement. §6 is the measurement the issue asked for first, and its answer is
+that a GB10's cgroup charges nothing at all for memory taken through the CUDA
+allocator — which on this hardware is the half that fills the box. That half is
+**issue #8**, it is open, and nothing below closes it. Wherever this file says
+"enforced", it means "enforced against host pages".
 
 `mem_gb` was a reservation and nothing else. `ResourceLedger` admitted work
 against a declared figure, and an action that exceeded its declaration was
@@ -114,91 +121,195 @@ repair is for the spawn that does not.)
 ## 4. The wrapper bounds the execution and must not move it
 
 A transient unit is forked by the **user manager**, not by the caller, so
-nothing of the launcher's context reaches the work except by being named. Two
-members were not named, and the first pass shipped them silently. Neither could
+nothing of the launcher's context reaches the work except by being named.
+Members were not named, and the first pass shipped them silently. None could
 have been caught by an argv assertion, because argv was not where they went
 missing.
 
-Measured with `tools/fleet/probes/exec_context_probe.py` — one identical child
-run twice under one launcher, only the wrapper differing — at the two commits
-on **sparky**, the box the regression was attested on, and again on
-**gx10-6b77**, both GB10:
+### The control, corrected
 
-| what the child sees | launcher | unit, before | unit, after |
+The first version of this section is **retracted on method**. It measured with
+`tools/fleet/probes/exec_context_probe.py`, one identical child run twice under
+one launcher — which is right — but the launcher restricted only two axes,
+its CPU affinity and its soft `RLIMIT_NOFILE`. Every other axis therefore sat
+at the box's default on *both* sides of the wrapper, where it matches whether
+the wrapper carries it or not. The row it produced —
+
+> | the other 14 rlimits | — | identical | identical |
+
+— was true, and evidence of nothing. So was the `rlimits_identical` 16 of 16
+that followed it. **Two treatments are not a control**, and a dimension nobody
+perturbed is a dimension nobody measured.
+
+The probe now perturbs every axis it compares — the affinity, the umask, the
+nice level, and twelve soft rlimits, each to a value that is neither the box's
+default nor systemd's — before either arm runs. Same box, same day, same
+probe, at the two commits:
+
+| what the child sees | launcher | unit, uncarried | unit, carried |
 |---|---|---|---|
 | CPU affinity | `0-1` | `0-19` (all) | `0-1` |
+| umask | `0o077` | `0o002` | `0o077` |
+| nice | 5 | 0 | 5 |
 | soft `RLIMIT_NOFILE` | 314159 | 1024 | 314159 |
-| the other 14 rlimits | — | identical | identical |
+| soft `RLIMIT_STACK` | 9437184 | 8388608 | 9437184 |
+| soft `RLIMIT_CORE` | 1 | 0 | 1 |
+| soft `RLIMIT_NPROC` | 100000 | 511827 (the hard) | 100000 |
+| soft `RLIMIT_SIGPENDING` | 100000 | 511827 (the hard) | 100000 |
+| soft `RLIMIT_MSGQUEUE` | 819100 | 819200 (the hard) | 819100 |
+| soft `RLIMIT_AS` / `DATA` / `FSIZE` / `CPU` / `MEMLOCK` / `RTTIME` | finite | `infinity` | finite |
+| `rlimits_identical` | — | **5 of 16** | **16 of 16** |
 | cgroup path | `session-15.scope` | `pbexecctx-….service` | `pbexecctx-….service` |
 | `oom_score_adj` | −1000 | 200 | 200 |
+| pgid / sid / ppid | the launcher's | the manager's | the manager's |
 
-(sparky, commits `79e58bd` → `8074298`: `rlimits_identical` 14 of 16 → 16 of
-16, `differs` down to `cgroup` and `oom_score_adj`. gx10-6b77 returns the same
-two arms through the pool, with the launcher pinned to `5-6`. The dl380g10 row
-in section 1 is a delegation fact only; the *before* arm was also seen there —
-affinity `0-1` → `0-79`, soft `RLIMIT_NOFILE` 314159 → 1024 — with an earlier
-draft of this probe, and no after arm was run on it.)
+(sparky, `735a315` → this commit. The probe's own verdict field moves with it:
+`clean: false` with thirteen `unclassified` entries, against `clean: true` with
+none. The earlier *uncarried* arm was also seen on gx10-6b77 and dl380g10 with
+the two-axis probe — affinity `0-1` → `0-79` and soft `RLIMIT_NOFILE`
+314159 → 1024 on the Xeon — and those two rows still stand; the eleven rows
+this table adds are sparky, systemd 255, and are a fact about the mechanism
+rather than about a roster, which is why the fix is a rule.)
 
 Both sparky arms were run **direct, not through the pool**: sparky's ledger had
 no `mem_gb` to offer at the time — its whole 48 GB and both GPU tokens are held
 by an exclusive campaign — and the probe is a sub-second `systemd-run`, not
 compute. The launcher in the sparky column is therefore the probe's own shell.
 Its `oom_score_adj` of −1000 is what a *loop* carries too, read separately:
-every `worker_loop.py` on sparky reports −1000 in `/proc` (five at the time of
-reading — four `--class gb10` loops and the exclusive campaign's). What a *pooled* launcher
-reads is not the same number: the dl380g10 arm, submitted through the pool and
-so forked by that box's loop, saw its launcher at 0. Whether that box's loop is
-also at −1000 was not read, so the two figures are recorded rather than
-resolved into a rule — which is why §7 says publish day moves a capped action
-from 0 or −1000 rather than picking one.
+every `worker_loop.py` on sparky reports −1000 in `/proc`. What a *pooled*
+launcher reads is not the same number: the dl380g10 arm, submitted through the
+pool and so forked by that box's loop, saw its launcher at 0. Whether that
+box's loop is also at −1000 was not read, so the two figures are recorded
+rather than resolved into a rule — which is why §7 says publish day moves a
+capped action from 0 or −1000 rather than picking one.
 
-**Affinity.** `cpu_topology.pin_to_preferred`'s stated mechanism is inheritance
-by fork — "Pin this process *and so every child it forks*" — which a unit is
-not. Every capped action escaped the loop's pin: on a GB10 that puts compute on
-the 2.8 GHz A725 half of an interleaved machine, and it makes the loop's
-cpu-token offer describe ten cores while its actions use twenty. The fix is
-`CPUAffinity=`, which is an exec-context setting and so needs no `cpuset`
+### What is carried, and on what rule
+
+**The affinity.** `cpu_topology.pin_to_preferred`'s stated mechanism is
+inheritance by fork — "Pin this process *and so every child it forks*" — which
+a unit is not. Every capped action escaped the loop's pin: on a GB10 that puts
+compute on the 2.8 GHz A725 half of an interleaved machine, and it makes the
+loop's cpu-token offer describe ten cores while its actions use twenty. The fix
+is `CPUAffinity=`, which is an exec-context setting and so needs no `cpuset`
 delegation — these boxes delegate `cpu memory pids` and not `cpuset`.
 
-**The fd ceiling.** Soft `RLIMIT_NOFILE` fell to systemd's
-`DefaultLimitNOFILE` soft of 1024, hard untouched. It is the only one of
-sixteen rlimits that moved. Since `pbrun` defaults `mem_gb` to 4, essentially
-every action is capped, so essentially every action would have run at a 500×
-lower fd ceiling; an NFS shard reader, a torch `DataLoader` or `pytest -n N`
-crossing 1024 raises `EMFILE`, which the queue retries `max_attempts` times and
-files against the payload.
+**Every resource limit systemd can express, by rule and not by roster.** Soft
+`RLIMIT_NOFILE` is the one that bites on today's fleet: the live loops sit at
+500000/500000 and a unit gets systemd's `DefaultLimitNOFILE` soft of 1024, hard
+untouched. Since `pbrun` defaults `mem_gb` to 4, essentially every action is
+capped, so essentially every action would have run at a 500× lower fd ceiling;
+an NFS shard reader, a torch `DataLoader` or `pytest -n N` crossing 1024 raises
+`EMFILE`, which the queue retries `max_attempts` times and files against the
+payload.
 
-**Two differences are left alone on purpose, because they are the bound rather
-than the execution.** The cgroup path *is* the mechanism. And `oom_score_adj`
-rises to 200, which points the right way: the incident this cap exists for is a
-*bystander* being chosen by the kernel, and an action that has outgrown its own
-declaration should be a likelier victim than the loop supervising it — carrying
-the loop's own −1000 across would make the offender the last thing the kernel
-would pick.
+It is *not* the only one that can move, and the reason it is the only one that
+does today is worth being exact about. Read off the live box: sparky's three
+`gb10` loops and the user manager itself hold the **same** values for `STACK`,
+`CORE`, `NPROC`, `SIGPENDING` and `MSGQUEUE`, so those five match across the
+wrapper by coincidence of this week's roster. Carrying only the limit the
+regression happened to expose would be green on this fleet and wrong about the
+mechanism. `SYSTEMD_RLIMIT_STEMS` is systemd's own list of sixteen
+`Limit<X>=` properties; `launcher_exec_context` reads whichever of them this
+process has and `capped_launch_argv` names all of them, so a limit is carried
+because a unit file can express it — not because somebody remembered it. A
+stem systemd has no property for is refused rather than accepted and ignored.
 
-**A third difference is recorded rather than fixed.** The unit's environment is
+**The umask and the nice level.** Both are exec context the manager resets: a
+launcher at `0o077` produced a child at the manager's `0o002`, and nice 5
+produced nice 0. The mask decides the mode of every byte an action writes into
+the shared CAS — `0o002` is group-writable where the launcher asked for
+owner-only — and the nice level is the CPU half of the same escape
+`CPUAffinity` closes. (On this fleet today both already match: the loops run at
+umask `0002` and nice 0, the same as the manager. Same reasoning as the
+rlimits: a roster, not a rule.) A **negative** nice is not carried, and that
+too is measured rather than assumed — `Nice=-5` and `Nice=-1` both start and
+both land the child at nice 0, because raising priority needs a privilege the
+user manager does not have. Naming it would be the wrapper claiming a carry it
+does not perform.
+
+### What publish day actually moves, read off the live loops
+
+The table above is a *perturbed* launcher, which is what measures the
+mechanism. What the fleet will see is a different question, and it is answered
+by reading a real loop rather than by inference. Sparky, 2026-09-04, a live
+`worker_loop.py` (`/proc/<pid>/limits`, `/proc/<pid>/status`) against what a
+unit gets by default:
+
+| | live loop | unit default | moves on publish |
+|---|---|---|---|
+| soft `RLIMIT_NOFILE` | 500000 | 1024 | **yes** |
+| `STACK`, `CORE`, `NPROC`, `SIGPENDING`, `MSGQUEUE` | 8388608 / 0 / 511827 / 511827 / 819200 | identical | no |
+| `CPU`, `FSIZE`, `DATA`, `RSS`, `MEMLOCK`, `LOCKS`, `AS`, `RTTIME` | unlimited | unlimited | no |
+| `NICE`, `RTPRIO` | 0 | 0 | no |
+| umask | `0002` | `0002` (the manager's) | no |
+| nice | 0 | 0 | no |
+
+So on this fleet, on this date, carrying everything changes exactly one thing
+more than carrying `NOFILE` alone would: nothing. That is the point rather than
+an argument against it — the five limits that match, match because the loops
+inherit them from the same user manager that starts the units, which is a fact
+about this week's loops. The hard limits of the manager (pid 2067) equal the
+loops', so nothing is clamped on the way in either.
+
+### What is deliberately not carried
+
+**The cgroup path** is the mechanism itself.
+
+**`oom_score_adj`** rises to 200, which points the right way: the incident this
+cap exists for is a *bystander* being chosen by the kernel, and an action that
+has outgrown its own declaration should be a likelier victim than the loop
+supervising it — carrying the loop's own −1000 across would make the offender
+the last thing the kernel would pick.
+
+**The process group and the session** cannot be restated as a unit property at
+all: the work is forked by the manager, so it is in neither the launcher's
+group nor its session. What that costs is not a value but a *bound*, and the
+bound is the one every timeout on this box is built from. Measured on sparky,
+2026-09-04, against a unit running `sleep 120`:
+
+```
+launcher_rc_after_TERM_to_its_process_group : -15
+unit_before_signal    : ActiveState=active   MainPID=2932625
+unit_after_TERM       : ActiveState=active   MainPID=2932625
+unit_6s_after_TERM    : ActiveState=active   MainPID=2932625
+```
+
+The launcher died; the work did not notice. So `pool.execute` stops the *unit*
+— on the timeout path, which it already did, and now on the abort path too,
+which it did not. Without it a Ctrl-C or any exception unwinding out of
+`execute` leaves the action running against a claim `serve_once` is about to
+file as failed and a ledger token it is about to release, which is the one
+thing a ledger must never say. Both paths run in the same order (stop the unit,
+kill the launcher, drain the pipes with a bound) and both are bounded twice:
+`TimeoutStopSec` on the unit bounds systemd's TERM-then-KILL escalation, and
+`CAP_STOP_GRACE_S` bounds the launcher's wait. The default `TimeoutStopSec` for
+a user unit is 90 s — six times the window the caller waits — so without naming
+it the bound would only decide which of the two gave up first. The timeout
+record carries `unit_stopped` and `action_survived_kill` rather than assuming:
+a stop that failed silently would release a ledger token for a box somebody
+still holds.
+
+**A difference that is recorded rather than fixed.** The unit's environment is
 a strict *superset* of the launcher's — `env_only_in_launcher` is empty on both
 boxes, so nothing is lost — and names are added (`INVOCATION_ID`, `MANAGERPID`,
 `MEMORY_PRESSURE_WATCH`/`_WRITE`, `SSH_AUTH_SOCK`, `SYSTEMD_EXEC_PID` and the
 desktop-session names; 9 on sparky, 13 on gx10-6b77, the difference being only
 what each launcher's own environment already carried), because the user manager
-passes its own environment to every unit it starts. They reach the pool *worker*, not the
-action: `run_local_action` builds the payload's environment from the variables
-the action declared and nothing else (`core.py`, `env={...variables...}`), so
-the closed environment sealed into the action key is unchanged. `systemd-run`
-can add names but cannot clear the manager's, and the set is box-dependent, so
-naming it in `UnsetEnvironment=` would be a roster where a rule is wanted. It
-is measured, bounded to the worker, and left.
+passes its own environment to every unit it starts. They reach the pool
+*worker*, not the action: `run_local_action` builds the payload's environment
+from the variables the action declared and nothing else (`core.py`,
+`env={...variables...}`), so the closed environment sealed into the action key
+is unchanged. `systemd-run` can add names but cannot clear the manager's, and
+the set is box-dependent, so naming it in `UnsetEnvironment=` would be a roster
+where a rule is wanted. It is measured, bounded to the worker, and left.
 
-The test that holds this is `tests/test_pool_cap_keeps_the_exec_context.py`,
-and it compares the *child's own view* against the launcher's rather than the
+The tests that hold this are `tests/test_pool_cap_keeps_the_exec_context.py`
+and the two abort/stop cases in `tests/test_pool_memory_cap_binds.py`. The
+first compares the *child's own view* against the launcher's rather than the
 argv — which is what catches a property systemd ignores, or `setrlimit_closest`
-clamping one the user manager will not grant. It restricts the launcher first
-(a two-CPU mask, a soft `RLIMIT_NOFILE` of 314159): a suite already running
-inside a capped unit has soft 1024 and the full mask, so without that the test
-would pass against a wrapper that carries nothing.
-
----
+clamping one the user manager will not grant — and it perturbs every axis it
+compares, for the reason this section was rewritten. The second interrupts a
+real capped launch and asserts the unit is inactive afterwards.
 
 ## 5. Scope: what the cap does **not** reach
 
@@ -294,11 +405,14 @@ is a cgroup.
   hard limits, and an under-declared action will exit 137 where it used to
   finish. That is the mechanism working; it is also a fleet-behaviour change
   that belongs to whoever publishes, not to the branch. It is worth being exact
-  about *what else* moves, because for one revision of this branch the answer
+  about *what else* moves, because for two revisions of this branch the answer
   was wrong: the fd ceiling and the core placement changed too (§4), and an
   EMFILE or an action on the slow cores would have been read as a payload
-  problem. Those are carried now, and
-  `tests/test_pool_cap_keeps_the_exec_context.py` is what keeps them carried.
+  problem. The second revision carried those two and reported the rest
+  identical against a control that could not have found otherwise. Everything
+  a unit file can express is carried now, and
+  `tests/test_pool_cap_keeps_the_exec_context.py` — perturbing every axis it
+  compares — is what keeps them carried.
 * **Two things do still change besides the ceiling, by design.** A capped
   action's `oom_score_adj` becomes 200 where it was 0 or the loop's −1000, so
   under *box-wide* pressure — the case §5's device half puts back on the table —
@@ -313,6 +427,11 @@ is a cgroup.
 * **The CUDA arm is one box, one allocator, one driver.** sparky, GB10,
   sm_121, driver 595.84, torch 2.11.0+cu130. It is not a claim about discrete
   NVIDIA hardware, where device memory is not the host's pool at all.
+* **The device half is open, and it is issue #8.** Nothing in this file bounds
+  it, and the fields exist so that no reader has to remember that: an offer
+  says `mem_cap_scope: "host"` and every capped outcome record says
+  `cap_scope: "host"`. A summary of this work that says "`mem_gb` is enforced"
+  without the word *host* is over-claiming by exactly the half §6 measured.
 
 ## 8. Reproducing this
 
@@ -334,6 +453,10 @@ python3 -m pytest tests/test_pool_memory_cap.py \
 
 The raw three-arm output is the `detail.stdout` of pool action
 `1244c3e5db319c4d2daa0f6da7bb9e71adc8578cc764b5ee6b961ba4216f3b37`.
+
+The probe's own verdict is the short form of §4: `clean: true` with an empty
+`unclassified` means every axis it perturbed survived the wrapper and the only
+differences left are the three classified as bound or mechanism.
 
 ---
 

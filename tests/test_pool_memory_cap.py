@@ -151,7 +151,7 @@ def test_the_fd_ceiling_travels_with_it() -> None:
     """
 
     argv = pool.capped_launch_argv(["/bin/true"], cap_gb=1, unit="u",
-                                   nofile=(500000, 500000))
+                                   rlimits={"NOFILE": (500000, 500000)})
     assert "LimitNOFILE=500000:500000" in argv
 
 
@@ -165,7 +165,7 @@ def test_an_infinite_rlimit_is_spelled_the_way_systemd_spells_it() -> None:
 
     argv = pool.capped_launch_argv(
         ["/bin/true"], cap_gb=1, unit="u",
-        nofile=(1024, resource.RLIM_INFINITY),
+        rlimits={"NOFILE": (1024, resource.RLIM_INFINITY)},
     )
     assert "LimitNOFILE=1024:infinity" in argv
 
@@ -174,8 +174,65 @@ def test_a_caller_that_names_neither_gets_neither() -> None:
     """The builder stays pure: it bounds what it is given, not what it runs in."""
 
     argv = pool.capped_launch_argv(["/bin/true"], cap_gb=1, unit="u")
-    assert not any(a.startswith("CPUAffinity") or a.startswith("LimitNOFILE")
+    assert not any(a.startswith(("CPUAffinity", "Limit", "UMask", "Nice="))
                    for a in argv)
+
+
+def test_every_limit_systemd_can_carry_is_carried() -> None:
+    """The rule, not the roster.
+
+    ``RLIMIT_NOFILE`` is the one that moves on today's fleet, which is a fact
+    about this week's loops and not about the mechanism: against a perturbed
+    launcher, ``CORE``, ``MSGQUEUE``, ``NPROC``, ``SIGPENDING`` and ``STACK``
+    moved too (sparky, 2026-09-04).  So the wrapper carries every limit a unit
+    file can express and the roster is systemd's.
+    """
+
+    context = pool.launcher_exec_context()
+    argv = pool.capped_launch_argv(["/bin/true"], cap_gb=1, unit="u", **context)
+    named = {a.split("=", 1)[0] for a in argv if a.startswith("Limit")}
+    assert named == {f"Limit{stem}" for stem in context["rlimits"]}
+    # Not a subset of one: the point is that nothing had to be remembered.
+    assert len(named) >= 12, named
+
+
+def test_a_limit_systemd_has_no_property_for_is_refused() -> None:
+    """Rather than accepted on the command line and silently ignored, which is
+    the failure mode the whole carry exists to end."""
+
+    with pytest.raises(pool.PoolContractError):
+        pool.capped_launch_argv(["/bin/true"], cap_gb=1, unit="u",
+                                rlimits={"OFILE": (1024, 1024)})
+
+
+def test_the_umask_travels_with_it() -> None:
+    """It decides the mode of every byte an action writes into the shared CAS."""
+
+    argv = pool.capped_launch_argv(["/bin/true"], cap_gb=1, unit="u",
+                                   umask=0o077)
+    assert "UMask=0077" in argv
+
+
+def test_a_nice_level_travels_only_where_it_can_be_honoured() -> None:
+    """Measured 2026-09-04: ``Nice=-5`` and ``Nice=-1`` both start and both
+    land the child at nice 0, because raising priority needs a privilege the
+    user manager does not have.  Naming it would be the wrapper claiming a
+    carry it does not perform."""
+
+    assert "Nice=7" in pool.capped_launch_argv(
+        ["/bin/true"], cap_gb=1, unit="u", nice=7)
+    assert not any(a.startswith("Nice=") for a in pool.capped_launch_argv(
+        ["/bin/true"], cap_gb=1, unit="u", nice=-5))
+
+
+def test_the_unit_stop_is_bounded_too() -> None:
+    """``TimeoutStopSec`` defaults to 90 s for a user unit -- six times the
+    window the launcher waits -- so without it the bound is only on which of
+    the two gives up first."""
+
+    argv = pool.capped_launch_argv(["/bin/true"], cap_gb=1, unit="u",
+                                   stop_grace_s=11.0)
+    assert "TimeoutStopSec=11" in argv
 
 
 def test_the_launcher_context_is_read_from_the_launcher() -> None:
@@ -186,7 +243,12 @@ def test_the_launcher_context_is_read_from_the_launcher() -> None:
 
     context = pool.launcher_exec_context()
     assert context["cpus"] == sorted(os.sched_getaffinity(0))
-    assert tuple(context["nofile"]) == resource.getrlimit(resource.RLIMIT_NOFILE)
+    assert (tuple(context["rlimits"]["NOFILE"])
+            == resource.getrlimit(resource.RLIMIT_NOFILE))
+    assert context["nice"] == os.nice(0)
+    was = os.umask(0o022)
+    os.umask(was)
+    assert context["umask"] == was
 
 
 def test_an_unset_name_is_not_forwarded_as_an_empty_one() -> None:
