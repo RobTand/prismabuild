@@ -3577,6 +3577,118 @@ def test_cli_ingests_and_verifies_input_contract(
     assert Path(verified["payload_path"]).read_bytes() == payload
 
 
+def _snapshot_input(tmp_path: Path) -> dict[str, object]:
+    bundle = tmp_path / "checkout.bundle"
+    bundle.write_bytes(b"not a real bundle, only a CAS input\n")
+    cas = pb.PrismaBuildCAS(tmp_path / "snapshot-cas")
+    entry, _ = cas.ingest_input(
+        bundle, input_id=pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID
+    )
+    return entry
+
+
+def test_pbrun_snapshot_v2_carries_parent_and_named_refs(tmp_path: Path) -> None:
+    """Ancestry is part of the contract, so it is part of what is validated."""
+
+    validated = pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+            "commit": "a" * 40,
+            "parent": "b" * 40,
+            "subdirectory": ".",
+            "input": _snapshot_input(tmp_path),
+            "refs": {"release": "c" * 40, "main": "d" * 40},
+        }
+    )
+    assert validated["parent"] == "b" * 40
+    assert list(validated["refs"]) == ["main", "release"]      # sorted
+
+
+def test_pbrun_snapshot_v2_accepts_an_unborn_parent(tmp_path: Path) -> None:
+    """``null`` is the only other honest answer, and it is spelled once."""
+
+    validated = pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+            "commit": "a" * 40,
+            "parent": None,
+            "subdirectory": ".",
+            "input": _snapshot_input(tmp_path),
+            "refs": {},
+        }
+    )
+    assert validated["parent"] is None
+    assert validated["refs"] == {}
+
+
+def test_pbrun_snapshot_v1_keeps_its_exact_shape(tmp_path: Path) -> None:
+    """A queued v1 item predates ancestry and must not grow keys."""
+
+    validated = pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+            "commit": "a" * 40,
+            "subdirectory": ".",
+            "input": _snapshot_input(tmp_path),
+        }
+    )
+    assert set(validated) == {"schema", "commit", "subdirectory", "input"}
+
+
+def test_pbrun_snapshot_v1_refuses_ancestry_keys(tmp_path: Path) -> None:
+    """Each schema owns one exact key set; a hybrid record is neither."""
+
+    with pytest.raises(pb.ActionContractError):
+        pb.validate_pbrun_checkout_snapshot(
+            {
+                "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+                "commit": "a" * 40,
+                "parent": "b" * 40,
+                "subdirectory": ".",
+                "input": _snapshot_input(tmp_path),
+                "refs": {},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "master:evil",
+        "--upload-pack=touch",
+        "../escape",
+        "refs/heads/main",
+        "HEAD",
+        "prismabuild-snapshot",
+        "main^{}",
+        "with space",
+        "",
+    ],
+)
+def test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name(
+    tmp_path: Path, name: str,
+) -> None:
+    """These names become ``git fetch`` refspecs inside a claiming worker.
+
+    The record arrives over the queue, so its ref names are input, not a
+    constant. A colon splits a refspec, a leading dash becomes an option, and
+    ``HEAD`` or the snapshot's own ref name makes the materialized checkout's
+    later revision lookups ambiguous.
+    """
+
+    with pytest.raises(pb.ActionContractError):
+        pb.validate_pbrun_checkout_snapshot(
+            {
+                "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+                "commit": "a" * 40,
+                "parent": "b" * 40,
+                "subdirectory": ".",
+                "input": _snapshot_input(tmp_path),
+                "refs": {name: "c" * 40},
+            }
+        )
+
+
 def test_action_key_has_expected_plain_sha256_shape(tmp_path: Path):
     action = _action(tmp_path)
     assert len(action["action_key"]) == 64
