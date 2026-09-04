@@ -143,6 +143,39 @@ def _parse_demand(text: str) -> dict[str, int]:
     return demand
 
 
+def result_and_stamp_names(command, cwd, demand, variables):
+    """The result file and the closure stamp this submission writes.
+
+    Returned together because they share one fingerprint and one reason for
+    its shape.  The commit is IN that fingerprint, so both names belong to the
+    commit they describe.  Without it, one command run from one checkout has
+    one stamp path and one result path forever while the *content* of both
+    moves with every commit:
+
+    * the stamp gets rewritten under a worker still verifying the previous
+      commit's action, which reads as "live code closure differs from the
+      action-pinned closure" -- a real refusal for a file that was correct
+      when the action was sealed; and
+    * a 31-minute suite at one commit and its re-run at the next write the
+      same ``pbrun_result.*.txt``, so whichever finishes second destroys the
+      other's **declared** result and the runner reports "action succeeded
+      without its declared result file".  Not hypothetical: that ate a green
+      1268-test suite on 2026-09-04.
+
+    The same command at the same commit still fingerprints identically, so a
+    repeat submission can still be answered from the CAS -- which is the one
+    case where sharing the path was safe all along.
+    """
+
+    identity = _git_identity(cwd)
+    fingerprint = hashlib.sha256(
+        json.dumps([command, str(cwd), demand, variables, identity],
+                   sort_keys=True).encode()
+    ).hexdigest()[:16]
+    return (f"{RESULT_PREFIX}{fingerprint}.txt",
+            f"{STAMP_PREFIX}{fingerprint}.json")
+
+
 def placement_tags(
     cwd: Path,
     *,
@@ -269,10 +302,8 @@ def main() -> int:
         key, value = entry.split("=", 1)
         variables[key] = value
 
-    fingerprint = hashlib.sha256(
-        json.dumps([command, str(cwd), demand, variables], sort_keys=True).encode()
-    ).hexdigest()[:16]
-    log_name = f"{RESULT_PREFIX}{fingerprint}.txt"
+    log_name, stamp_name = result_and_stamp_names(
+        command, cwd, demand, variables)
     # The closure member must be under checkout_root: that is where the
     # worker re-verifies it, on whichever box claimed the action.
     identity = _git_identity(cwd)
@@ -282,9 +313,10 @@ def main() -> int:
     # write this same file, and a reader that catches a partial one gets
     # "cannot open code closure file as a regular file" or "live code closure
     # differs from the action-pinned closure".  The content is identical across
-    # those submits, so atomicity is the whole fix; ordering does not matter.
+    # those submits *because the commit is in the name*, so atomicity is the
+    # whole fix and ordering does not matter.  It was not identical before
+    # that: the name held the command and the content held the commit.
     payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)
-    stamp_name = f"{STAMP_PREFIX}{fingerprint}.json"
     scratch = cwd / f"{stamp_name}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
     try:
         # fsync both the file and its directory before publishing.  The submit

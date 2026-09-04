@@ -77,3 +77,31 @@ def test_only_paths_under_the_shared_root_count(cwd: str) -> None:
     the reason to use it here rather than a string prefix."""
 
     assert _tags(cwd) == ([] if cwd == "/mnt/shared" else [HOST])
+
+
+def test_the_result_and_stamp_names_move_with_the_commit(tmp_path, monkeypatch):
+    """Two commits must not share one result file.
+
+    ``pbrun_result.*.txt`` is the action's *declared* output: the runner
+    refuses with "action succeeded without its declared result file" if it is
+    not there when the action finishes.  Naming it from the command alone gave
+    one checkout one result path forever, so a long run at one commit and its
+    re-run at the next wrote the same file and the second destroyed the
+    first's -- a green 1268-test suite, lost that way on 2026-09-04.  The
+    closure stamp has the same shape of problem from the other end: its
+    *content* is the commit, so a rewrite under a worker still verifying the
+    previous action reads as a closure mismatch.
+    """
+    seen = []
+
+    def identity(_cwd, _seen=seen):
+        return {"commit": _seen.pop(0)}
+
+    monkeypatch.setattr(pbrun, "_git_identity", identity)
+    names = []
+    for commit in ("aaaa", "bbbb", "aaaa"):
+        seen.append(commit)
+        names.append(pbrun.result_and_stamp_names(
+            ["pytest", "-q"], tmp_path, {"cpu": 1}, {"LANG": "C.UTF-8"}))
+    assert names[0] != names[1], "two commits shared one result path"
+    assert names[0] == names[2], "the same commit must still dedup"
