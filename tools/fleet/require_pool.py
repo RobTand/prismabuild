@@ -119,6 +119,52 @@ def _drop_pool_payload(command: str) -> str:
     return command if best is None else command[:best]
 
 
+#: A here-document body is data on its way to a file, not a command.  Scanning
+#: it is how this hook refused the very file that starts the fleet's workers:
+#: that config names the CUDA interpreter as a worker's ``--python`` argument,
+#: which is the pattern above by construction, and the writing command led with
+#: ``cd``.  Nothing inside a heredoc can start GPU work -- the shell is copying
+#: bytes to a file -- so the body is removed before anything is judged.  This
+#: was the fourth time the hook locked out its own repair; the rule it enforces
+#: is unchanged, only what counts as a command.
+HEREDOC = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1""")
+
+
+def _drop_heredoc_bodies(command: str) -> str:
+    """Remove every here-document body, keeping the commands around them."""
+
+    out: list[str] = []
+    rest = command
+    while True:
+        opener = HEREDOC.search(rest)
+        if opener is None:
+            out.append(rest)
+            break
+        tag = opener.group(2)
+        newline = rest.find("\n", opener.end())
+        if newline < 0:
+            # An opener with no body yet: nothing has been fed in, so there is
+            # nothing to strip and the text before it still stands as command.
+            out.append(rest)
+            break
+        out.append(rest[: opener.start()])
+        lines = rest[newline + 1:].split("\n")
+        for index, line in enumerate(lines):
+            if line.strip() == tag:
+                rest = "\n".join(lines[index + 1:])
+                break
+        else:
+            # Unterminated: the rest of the input is body all the way down.
+            rest = ""
+            break
+    # Rejoin with a boundary, not a space.  Gluing the command before a
+    # heredoc to the command after it makes one segment whose first token is
+    # the writer -- ``cat``, which is exempt -- and the work behind the
+    # heredoc inherits that exemption.  Same hole as judging a compound
+    # command by its first token, reached from a different direction.
+    return "\n".join(part for part in out if part)
+
+
 def contends(command: str) -> bool:
     """True when any segment of this command starts GPU work off-pool.
 
@@ -132,6 +178,7 @@ def contends(command: str) -> bool:
     # each piece of the context that exempts it -- which refused a worker
     # launch whose interpreter argument sat on its own continued line.
     joined = re.sub(r"\\\s*\n", " ", command)
+    joined = _drop_heredoc_bodies(joined)
     joined = _drop_pool_payload(joined)
     for segment in SEPARATORS.split(joined):
         if not CONTENDS.search(segment):
