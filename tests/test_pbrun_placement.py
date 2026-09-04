@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -215,6 +216,223 @@ def test_pbrun_identity_includes_bytes_below_an_untracked_directory(tmp_path) ->
     helper.write_text("print('second')\n")
 
     assert pbrun._git_identity(checkout) != before
+
+
+def test_pbrun_identity_hashes_untracked_symlink_to_directory_text(tmp_path) -> None:
+    """A directory-target symlink is a file whose payload is its link text.
+
+    ``Path.is_dir()`` follows the link, so the old identity silently omitted
+    this untracked member.  Retargeting it could therefore change which tree a
+    command reads without moving the action key.
+    """
+
+    checkout = _git_checkout(tmp_path)
+    (tmp_path / "outside-a").mkdir()
+    (tmp_path / "outside-b").mkdir()
+    link = checkout / "helper-tree"
+    link.symlink_to("../outside-a", target_is_directory=True)
+    before = pbrun._git_identity(checkout)
+
+    link.unlink()
+    link.symlink_to("../outside-b", target_is_directory=True)
+
+    assert pbrun._git_identity(checkout) != before
+
+
+def test_pbrun_identity_hashes_symlink_text_not_target_contents(tmp_path) -> None:
+    """Equal target bytes do not make two different symlinks equivalent."""
+
+    checkout = _git_checkout(tmp_path)
+    (tmp_path / "outside-a.py").write_text("print('same')\n")
+    (tmp_path / "outside-b.py").write_text("print('same')\n")
+    link = checkout / "helper.py"
+    link.symlink_to("../outside-a.py")
+    before = pbrun._git_identity(checkout)
+
+    link.unlink()
+    link.symlink_to("../outside-b.py")
+
+    assert pbrun._git_identity(checkout) != before
+
+
+def test_pbrun_identity_refuses_an_untracked_fifo_without_opening_it(
+    tmp_path: Path,
+) -> None:
+    """A special inode is neither stable payload bytes nor safe to open."""
+
+    checkout = _git_checkout(tmp_path)
+    os.mkfifo(checkout / "blocked.pipe")
+    repository_root = Path(__file__).resolve().parents[1]
+    program = """
+from prismabuild import core
+import sys
+try:
+    core.git_checkout_identity(sys.argv[1])
+except core.ActionContractError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(2)
+raise SystemExit('accepted an untracked FIFO')
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", program, str(checkout)],
+        capture_output=True,
+        text=True,
+        timeout=1,
+        env={**os.environ, "PYTHONPATH": str(repository_root / "src")},
+    )
+
+    assert completed.returncode == 2
+    assert "unsupported file type" in completed.stderr
+
+
+def test_pbrun_reports_an_unsupported_identity_without_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = _git_checkout(tmp_path)
+
+    def refuse(_root):
+        raise core_module.ActionContractError("unsupported file type: 'socket'")
+
+    monkeypatch.setattr(core_module, "git_checkout_identity", refuse)
+    with pytest.raises(SystemExit, match="unsupported file type"):
+        pbrun._git_identity(checkout)
+
+
+def test_pbrun_identity_prunes_git_ignored_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The special-file scan must not descend into excluded cache trees."""
+
+    checkout = _git_checkout(tmp_path)
+    (checkout / ".gitignore").write_text("ignored-cache/\n")
+    assert _git(checkout, "add", ".gitignore").returncode == 0
+    assert _git(checkout, "commit", "-qm", "ignore generated cache").returncode == 0
+    ignored = checkout / "ignored-cache"
+    ignored.mkdir()
+    os.mkfifo(ignored / "worker.pipe")
+    visited: list[Path] = []
+    real_scandir = os.scandir
+
+    def observed_scandir(path):
+        visited.append(Path(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(core_module.os, "scandir", observed_scandir)
+    pbrun._git_identity(checkout)
+
+    assert checkout in visited
+    assert ignored not in visited
+
+
+def test_pbrun_identity_hashes_untracked_nul_delimited_paths(tmp_path: Path) -> None:
+    """Git owns pathname decoding; C-quoted porcelain is not a filesystem path."""
+
+    checkout = _git_checkout(tmp_path)
+    unusual = checkout / 'line\nbreak\\quote".txt'
+    unusual.write_text("first bytes\n")
+    before = pbrun._git_identity(checkout)
+
+    unusual.write_text("second bytes\n")
+
+    assert pbrun._git_identity(checkout) != before
+
+
+def test_pbrun_identity_does_not_hide_legitimate_prefix_paths(tmp_path: Path) -> None:
+    """Only generated basenames reserve pbrun's stamp/result namespaces."""
+
+    checkout = _git_checkout(tmp_path)
+    pbrun.keep_droppings_out_of_git(checkout)
+    note = checkout / "notes" / "pbrun_result.notes.py"
+    note.parent.mkdir()
+    note.write_text("first bytes\n")
+    before = pbrun._git_identity(checkout)
+
+    note.write_text("second bytes\n")
+
+    assert pbrun._git_identity(checkout) != before
+
+
+def test_pbrun_identity_scans_the_repository_above_requested_cwd(
+    tmp_path: Path,
+) -> None:
+    """A repo-sibling special inode must not disappear from subdir identity."""
+
+    checkout = _git_checkout(tmp_path)
+    requested = checkout / "package"
+    requested.mkdir()
+    os.mkfifo(checkout / "outside-requested-cwd.pipe")
+
+    with pytest.raises(SystemExit, match="unsupported file type"):
+        pbrun._git_identity(requested)
+
+
+def test_pbrun_identity_refuses_an_unreadable_untracked_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient read failure is not a stable substitute for payload bytes."""
+
+    checkout = _git_checkout(tmp_path)
+    payload = checkout / "unreadable.bin"
+    payload.write_bytes(b"bytes that identity must bind")
+    real_open = Path.open
+
+    def unreadable(candidate, *args, **kwargs):
+        if candidate == payload and args and args[0] == "rb":
+            raise PermissionError("simulated read refusal")
+        return real_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", unreadable)
+    with pytest.raises(SystemExit, match="cannot hash untracked path"):
+        pbrun._git_identity(checkout)
+
+
+@pytest.mark.parametrize("failed_git_verb", ["ls-files", "diff"])
+def test_pbrun_identity_fails_closed_after_git_repository_detection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_git_verb: str,
+) -> None:
+    """A later Git error cannot collapse a repository delta to empty text."""
+
+    checkout = _git_checkout(tmp_path)
+    real_run = core_module.subprocess.run
+
+    def fail_one_git_read(argv, *args, **kwargs):
+        if (
+            argv[:3] == ["git", "-C", str(checkout)]
+            and failed_git_verb in argv[3:]
+        ):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="simulated Git read failure"
+            )
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(core_module.subprocess, "run", fail_one_git_read)
+    with pytest.raises(SystemExit, match="cannot compute pbrun checkout identity"):
+        pbrun._git_identity(checkout)
+
+
+def test_pbrun_identity_refuses_failed_initial_git_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A visible .git marker cannot be downgraded by transient rev-parse failure."""
+
+    checkout = _git_checkout(tmp_path)
+    real_run = core_module.subprocess.run
+
+    def fail_toplevel(argv, *args, **kwargs):
+        if (
+            argv[:3] == ["git", "-C", str(checkout)]
+            and "--show-toplevel" in argv
+        ):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="simulated initial Git failure"
+            )
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(core_module.subprocess, "run", fail_toplevel)
+    with pytest.raises(SystemExit, match="cannot compute pbrun checkout identity"):
+        pbrun._git_identity(checkout)
 
 
 def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> None:

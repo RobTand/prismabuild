@@ -174,8 +174,25 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
 - A `fleet/pbrun` cache miss additionally parses its closure stamp and
   recomputes the live checkout's Git identity immediately before argv. The
   canonical computation is one core function shared by submitter and worker:
-  `HEAD`, the tracked delta, and the content digest of every untracked file
-  (including files below a newly-added directory). A stamp whose bytes are
+  `HEAD`, the tracked delta, and the content digest of every untracked regular
+  file or the literal link text of every untracked symlink (including members
+  below a newly-added directory). Git's NUL-delimited, repository-root-relative
+  untracked roster owns pathname decoding, so quotes, backslashes, and newlines
+  remain literal path bytes and a requested subdirectory cannot hide a
+  repository sibling. Only basenames matching pbrun's exact generated
+  16-hex-fingerprint stamp/result grammar are excluded; submission migrates
+  the former broad local Git globs before taking identity and refuses if that
+  migration cannot be published. Once Git identifies a repository, every
+  subsequent Git roster/diff error also refuses rather than collapsing a
+  missing read to an empty delta. A filesystem `.git` marker at or above the
+  requested cwd establishes that state before the first Git subprocess, so a
+  transient initial `rev-parse` failure cannot downgrade a checkout to the
+  legacy no-Git identity; a true plain directory remains supported there.
+  Symlinks are never dereferenced into bytes
+  outside the checkout; an untracked FIFO, socket, or other special inode
+  anywhere in that repository refuses rather than being opened as an unstable
+  payload, and an untracked payload that cannot be read refuses rather than
+  collapsing to a reusable `unreadable` sentinel. A stamp whose bytes are
   intact but whose claim no longer matches therefore refuses before execution.
   This closes queued/retry drift; it does not make a live worktree immutable
   after preflight. Commit-addressed per-action materialisation is the remaining

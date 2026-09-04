@@ -117,9 +117,12 @@ git push <bare> $commit:refs/pbrun/$commit
 `git stash create` is the tempting shortcut and is the wrong one: it does not
 carry untracked files, and `pbrun` learned the hard way that an untracked file
 edit must move the action key (`core.git_checkout_identity`'s untracked
-digest). Include the same exclusions the delta digest already applies — the
-closure stamp and the result logs — or every submit will produce a new tree
-commit for its own droppings.
+digest). The identity reads Git's NUL-delimited, repository-root-relative
+untracked roster so unusual path bytes and repository siblings cannot disappear
+through display quoting or a requested subdirectory. Include the same exact
+generated-basename exclusions the delta digest already applies — the closure
+stamp and the result logs — or every submit will produce a new tree commit for
+its own droppings.
 
 ## Worker side
 
@@ -196,7 +199,7 @@ it names actually changes, which is exactly when the design needs re-reading.
 | where | the line it names |
 |---|---|
 | `core.git_checkout_identity` | `def git_checkout_identity(root: str \| Path) -> dict[str, str]:` |
-| `core.git_checkout_identity`, untracked digest | `    # ``--untracked-files=all`` is material: plain porcelain abbreviates a` |
+| `core.git_checkout_identity`, untracked digest | `    # Let Git delimit untracked pathnames. Line-oriented porcelain C-quotes` |
 | `pbrun`, stamp name fingerprint | `    fingerprint = hashlib.sha256(` |
 | `pbrun.placement_tags` | `def placement_tags(` |
 | `pbrun`, default environment | `    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:` |

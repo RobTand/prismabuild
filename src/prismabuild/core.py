@@ -43,6 +43,7 @@ WORKER_ATTESTATION_SCHEMA_V2 = "prismaquant.prismabuild.worker_attestation.v2"
 WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
+PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
 LOCAL_RESULT_CLAIM_SCHEMA_V1 = "prismaquant.prismabuild.local_result_claim.v1"
 INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1 = (
     "prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1"
@@ -1149,6 +1150,52 @@ def verify_code_closure(value: object, root: str | Path) -> dict[str, object]:
     return expected
 
 
+def is_pbrun_generated_path(path: str | Path) -> bool:
+    """Return whether a basename belongs to pbrun's generated-file grammar."""
+
+    name = Path(path).name
+    for prefix, suffix in (
+        (PBRUN_STAMP_PREFIX, ".json"),
+        (PBRUN_RESULT_PREFIX, ".txt"),
+    ):
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+        token = name[len(prefix):-len(suffix)]
+        if len(token) == PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH and all(
+            character in "0123456789abcdef" for character in token
+        ):
+            return True
+    return False
+
+
+def pbrun_git_exclude_patterns() -> tuple[str, str]:
+    """Return Git patterns for exactly pbrun's generated basenames."""
+
+    fingerprint = "[0-9a-f]" * PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH
+    return (
+        f"{PBRUN_STAMP_PREFIX}{fingerprint}.json",
+        f"{PBRUN_RESULT_PREFIX}{fingerprint}.txt",
+    )
+
+
+def find_git_worktree_marker(root: str | Path) -> Path | None:
+    """Find a filesystem ``.git`` marker at or above a requested cwd."""
+
+    requested = Path(root).resolve(strict=False)
+    for directory in (requested, *requested.parents):
+        marker = directory / ".git"
+        try:
+            marker.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ActionContractError(
+                f"cannot inspect Git worktree marker {marker}: {exc}"
+            ) from exc
+        return marker
+    return None
+
+
 def git_checkout_identity(root: str | Path) -> dict[str, str]:
     """Return pbrun's canonical commit-plus-working-tree identity.
 
@@ -1163,50 +1210,168 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
     """
 
     checkout = Path(root)
+    repository_detected = find_git_worktree_marker(checkout) is not None
 
-    def _git(*args: str) -> str:
+    def _git(
+        *args: str,
+        input_text: str | None = None,
+        accepted_returncodes: tuple[int, ...] = (0,),
+    ) -> str:
         try:
             completed = subprocess.run(
                 ["git", "-C", str(checkout), *args],
                 capture_output=True,
                 text=True,
+                errors="surrogateescape",
+                input=input_text,
                 timeout=30,
             )
-            return completed.stdout if completed.returncode == 0 else ""
-        except Exception:  # noqa: BLE001 - identity is total for legacy no-git mode
+        except (OSError, subprocess.SubprocessError) as exc:
+            if repository_detected:
+                raise ActionContractError(
+                    "cannot compute pbrun checkout identity: Git "
+                    f"{' '.join(args)} failed: {exc}"
+                ) from exc
             return ""
+        if completed.returncode not in accepted_returncodes:
+            if repository_detected:
+                detail = (completed.stderr or completed.stdout).strip()
+                raise ActionContractError(
+                    "cannot compute pbrun checkout identity: Git "
+                    f"{' '.join(args)} failed: "
+                    f"{detail or completed.returncode}"
+                )
+            return ""
+        return completed.stdout
 
+    top_level = _git("rev-parse", "--show-toplevel").rstrip("\n")
+    if top_level:
+        # Identity covers the repository, even when pbrun's requested cwd is
+        # a package below it. Git reports the tracked delta for that closure;
+        # the filesystem special-inode scan must cover the same closure.
+        checkout = Path(top_level)
+        repository_detected = True
     head = _git("rev-parse", "HEAD").strip() or "no-git"
-    # ``--untracked-files=all`` is material: plain porcelain abbreviates a
-    # whole new tree as ``?? directory/``. The former implementation skipped
-    # directory entries, so editing ``directory/campaign.py`` did not move the
-    # action key at all.
-    porcelain = "\n".join(
-        line
-        for line in _git(
-            "status", "--porcelain", "--untracked-files=all"
-        ).splitlines()
-        if PBRUN_STAMP_PREFIX not in line and PBRUN_RESULT_PREFIX not in line
+
+    # Let Git delimit untracked pathnames. Line-oriented porcelain C-quotes
+    # newlines, quotes, and backslashes, and hand-unquoting that display form
+    # can bind ``:unreadable`` instead of the actual file bytes. ``ls-files
+    # -z`` emits the repository-root-relative filesystem path verbatim.
+    untracked_paths = [
+        path
+        for path in _git(
+            "ls-files", "--others", "--exclude-standard", "-z"
+        ).split("\0")
+        if path and not is_pbrun_generated_path(path)
+    ]
+    # Git deliberately omits FIFOs, sockets, and device nodes from its
+    # untracked roster. Find those without opening them: opening a FIFO can
+    # block forever, and no special inode has stable bytes Git can transport.
+    # Prune Git-ignored directories before walking so an ignored environment
+    # or cache does not turn identity into an unrelated filesystem crawl.
+    ignored_directory_output = _git(
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "-z",
     )
-    untracked: list[str] = []
-    for line in porcelain.splitlines():
-        if not line.startswith("?? "):
-            continue
-        member = checkout / line[3:].strip().strip('"')
-        if member.is_dir() or not member.exists():
-            continue
+    ignored_directories = {
+        value.rstrip("/")
+        for value in ignored_directory_output.split("\0")
+        if value.endswith("/")
+    }
+    special_paths: list[str] = []
+
+    # Use scandir directly rather than os.walk followed by a second lstat for
+    # every entry.  Identity is on pbrun's submission hot path, and DirEntry
+    # can answer the supported-kind predicates from the directory record on
+    # common filesystems while preserving fail-closed error handling.
+    pending = [checkout]
+    while pending:
+        current = pending.pop()
+        relative_directory = current.relative_to(checkout)
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    relative = (relative_directory / entry.name).as_posix()
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            if (
+                                entry.name != ".git"
+                                and relative not in ignored_directories
+                            ):
+                                pending.append(Path(entry.path))
+                            continue
+                        if entry.is_file(follow_symlinks=False):
+                            continue
+                    except OSError as exc:
+                        raise ActionContractError(
+                            "cannot inspect pbrun checkout path "
+                            f"{relative!r}: {exc}"
+                        ) from exc
+                    special_paths.append(relative)
+        except OSError as exc:
+            raise ActionContractError(
+                f"cannot inspect pbrun checkout identity: {exc}"
+            ) from exc
+    if special_paths:
+        ignored_specials = set(
+            value
+            for value in _git(
+                "check-ignore",
+                "--no-index",
+                "-z",
+                "--stdin",
+                input_text="\0".join(special_paths) + "\0",
+                accepted_returncodes=(0, 1),
+            ).split("\0")
+            if value
+        )
+        unsupported = sorted(set(special_paths) - ignored_specials)
+        if unsupported:
+            raise ActionContractError(
+                "pbrun checkout identity refuses untracked paths with an "
+                "unsupported file type: " + ", ".join(map(repr, unsupported))
+            )
+    untracked: list[tuple[str, str]] = []
+    for relative in untracked_paths:
+        member = checkout / relative
         try:
             digest = hashlib.sha256()
-            with member.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1 << 20), b""):
-                    digest.update(chunk)
-            untracked.append(f"{line[3:]}:{digest.hexdigest()}")
-        except OSError:
-            untracked.append(f"{line[3:]}:unreadable")
-    dirty = porcelain + _git("diff", "HEAD") + "\n".join(sorted(untracked))
+            member_stat = member.lstat()
+            if stat.S_ISDIR(member_stat.st_mode):
+                continue
+            if stat.S_ISLNK(member_stat.st_mode):
+                digest.update(b"symlink\0")
+                digest.update(os.fsencode(os.readlink(member)))
+            elif stat.S_ISREG(member_stat.st_mode):
+                digest.update(b"file\0")
+                with member.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1 << 20), b""):
+                        digest.update(chunk)
+            else:
+                raise ActionContractError(
+                    "pbrun checkout identity refuses an untracked path with "
+                    f"an unsupported file type: {relative!r}"
+                )
+            untracked.append((relative, digest.hexdigest()))
+        except OSError as exc:
+            raise ActionContractError(
+                f"cannot hash untracked path {relative!r}: {exc}"
+            ) from exc
+    dirty = bytearray(os.fsencode(_git("diff", "--binary", "HEAD")))
+    for relative, digest in sorted(untracked, key=lambda item: os.fsencode(item[0])):
+        dirty.extend(b"\0untracked\0")
+        dirty.extend(os.fsencode(relative))
+        dirty.extend(b"\0")
+        dirty.extend(digest.encode("ascii"))
     return {
         "head": head,
-        "dirty_sha256": hashlib.sha256(dirty.encode()).hexdigest(),
+        "dirty_sha256": hashlib.sha256(dirty).hexdigest(),
     }
 
 
@@ -4452,6 +4617,7 @@ __all__ = [
     "INITIAL_MISS_RENDEZVOUS_READY_SCHEMA_V1",
     "INITIAL_MISS_RENDEZVOUS_RECEIPT_SCHEMA_V1",
     "LOCAL_RESULT_CLAIM_SCHEMA_V1",
+    "PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH",
     "PBRUN_RESULT_PREFIX",
     "PBRUN_STAMP_PREFIX",
     "WORKER_ATTESTATION_SCHEMA_V2",
@@ -4466,10 +4632,13 @@ __all__ = [
     "PrismaBuildError",
     "build_code_closure",
     "executable_toolchain_contract",
+    "find_git_worktree_marker",
     "git_checkout_identity",
     "identify_executable",
+    "is_pbrun_generated_path",
     "main",
     "preflight_action",
+    "pbrun_git_exclude_patterns",
     "repair_local_result",
     "run_local_action",
     "seal_action",

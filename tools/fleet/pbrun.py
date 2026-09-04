@@ -116,9 +116,12 @@ CONTAINER_WRAPPER_DIR = RUNTIME_ROOT / "tools"
 
 
 def _git_identity(cwd: Path) -> dict[str, str]:
-    """Commit plus a digest of the working-tree delta. Never raises."""
+    """Commit plus a digest of the working-tree delta, or a named refusal."""
 
-    return pb.git_checkout_identity(cwd)
+    try:
+        return pb.git_checkout_identity(cwd)
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: cannot identify checkout: {exc}") from None
 
 
 def _parse_demand(text: str) -> dict[str, int]:
@@ -228,33 +231,71 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
     in a worktree and only one is read: a pattern in
     ``.git/worktrees/<name>/info/exclude`` does not match (``git check-ignore``
     exits 1), the same pattern in the common ``.git/info/exclude`` does.  That
-    is also the right scope -- these prefixes are pbrun's everywhere in the
-    repo, not per worktree.
+    is also the right scope -- these generated basename grammars are pbrun's
+    everywhere in the repo, not per worktree.
 
-    Returns the file it wrote, or ``None``.  Never raises: a checkout that is
-    not a git repository at all is a supported way to submit.
+    Returns the file it wrote, or ``None`` when Git says this is not a
+    repository. Once Git identifies a checkout, inspection or publication
+    failure refuses: proceeding could leave a broad legacy glob hiding input
+    bytes from the action identity.
     """
 
+    try:
+        marker = pb.find_git_worktree_marker(cwd)
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: {exc}") from exc
     try:
         out = subprocess.run(["git", "-C", str(cwd), "rev-parse",
                               "--git-common-dir"],
                              capture_output=True, text=True, timeout=30)
-        if out.returncode != 0:
-            return None                       # not a git checkout; nothing to tell
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SystemExit(
+            f"pbrun: cannot inspect local Git excludes: {exc}"
+        ) from exc
+    if out.returncode != 0:
+        if marker is not None:
+            detail = (out.stderr or out.stdout).strip()
+            raise SystemExit(
+                "pbrun: cannot inspect local Git excludes: Git rev-parse "
+                f"failed for recognized checkout {cwd}: "
+                f"{detail or out.returncode}"
+            )
+        return None                           # true plain directory
+    try:
         common = Path(out.stdout.strip())
         if not common.is_absolute():
             common = cwd / common             # older git answers ".git"
         exclude = common / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
         current = exclude.read_text() if exclude.exists() else ""
-        with exclude.open("a", encoding="utf-8") as handle:
-            if STAMP_PREFIX not in current:
-                handle.write(f"{STAMP_PREFIX}*\n")
-            if RESULT_PREFIX not in current:
-                handle.write(f"{RESULT_PREFIX}*\n")
+        legacy_patterns = {f"{STAMP_PREFIX}*", f"{RESULT_PREFIX}*"}
+        lines = [
+            line
+            for line in current.splitlines(keepends=True)
+            if line.rstrip("\r\n") not in legacy_patterns
+        ]
+        updated = "".join(lines)
+        if updated and not updated.endswith(("\n", "\r")):
+            updated += "\n"
+        present = {line.rstrip("\r\n") for line in lines}
+        for pattern in pb.pbrun_git_exclude_patterns():
+            if pattern not in present:
+                updated += pattern + "\n"
+        if updated != current:
+            scratch = exclude.with_name(
+                f"{exclude.name}.pbrun.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+            )
+            try:
+                scratch.write_text(updated, encoding="utf-8")
+                os.replace(scratch, exclude)
+            finally:
+                if scratch.exists():
+                    scratch.unlink()
         return exclude
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except OSError as exc:
+        raise SystemExit(
+            f"pbrun: cannot update pbrun Git excludes: {exc}"
+        ) from exc
 
 
 def placement_tags(
@@ -862,6 +903,10 @@ def main() -> int:
                 "slot), or drop the variable.")
         variables["CUDA_VISIBLE_DEVICES"] = ""
 
+    # Migrate the former broad prefix globs before identity asks Git for its
+    # untracked roster; otherwise a legitimate prefix-bearing payload remains
+    # hidden for this submission even though the new grammar is exact.
+    keep_droppings_out_of_git(cwd)
     log_name, stamp_name = result_and_stamp_names(
         command, cwd, demand, variables)
     # The closure member must be under checkout_root: that is where the
@@ -902,9 +947,6 @@ def main() -> int:
     finally:
         if scratch.exists():
             scratch.unlink()
-    keep_droppings_out_of_git(cwd)
-
-
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
