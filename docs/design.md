@@ -183,8 +183,9 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   stamp/result grammar are excluded. Symlinks are never dereferenced into bytes
   outside the checkout; an untracked FIFO, socket, or other special inode
   anywhere in that repository refuses rather than being opened as an unstable
-  payload. A stamp whose bytes are intact but whose claim no longer matches
-  therefore refuses before execution.
+  payload, and an untracked payload that cannot be read refuses rather than
+  collapsing to a reusable `unreadable` sentinel. A stamp whose bytes are
+  intact but whose claim no longer matches therefore refuses before execution.
   This closes queued/retry drift; it does not make a live worktree immutable
   after preflight. Commit-addressed per-action materialisation is the remaining
   boundary, tracked in #5.

@@ -1308,8 +1308,10 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
                     f"an unsupported file type: {relative!r}"
                 )
             untracked.append((relative, digest.hexdigest()))
-        except OSError:
-            untracked.append((relative, "unreadable"))
+        except OSError as exc:
+            raise ActionContractError(
+                f"cannot hash untracked path {relative!r}: {exc}"
+            ) from exc
     dirty = bytearray(os.fsencode(_git("diff", "--binary", "HEAD")))
     for relative, digest in sorted(untracked, key=lambda item: os.fsencode(item[0])):
         dirty.extend(b"\0untracked\0")

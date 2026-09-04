@@ -365,6 +365,26 @@ def test_pbrun_identity_scans_the_repository_above_requested_cwd(
         pbrun._git_identity(requested)
 
 
+def test_pbrun_identity_refuses_an_unreadable_untracked_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient read failure is not a stable substitute for payload bytes."""
+
+    checkout = _git_checkout(tmp_path)
+    payload = checkout / "unreadable.bin"
+    payload.write_bytes(b"bytes that identity must bind")
+    real_open = Path.open
+
+    def unreadable(candidate, *args, **kwargs):
+        if candidate == payload and args and args[0] == "rb":
+            raise PermissionError("simulated read refusal")
+        return real_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", unreadable)
+    with pytest.raises(SystemExit, match="cannot hash untracked path"):
+        pbrun._git_identity(checkout)
+
+
 def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> None:
     """A path in argv is not part of the checkout closure by magic.
 
