@@ -93,7 +93,13 @@ from a working tree.
   (`checkout.ensure_shared_bare`).
 * `pbrun` pushes the synthesised commit as `refs/pbrun/<sha>`.
 * The item carries `checkout_commit`, `checkout_tree`, `checkout_repo`,
-  `checkout_origin`, `checkout_prefix` and `checkout_stamp` (`pool.PoolQueue.publish`, the tree fields).
+  `checkout_origin` and `checkout_stamp` -- the five that must travel together
+  or not at all -- plus `checkout_prefix` and a decorative `checkout_name`
+  (`pool.PoolQueue.publish`, the tree fields). The stamp is in the load-bearing
+  set deliberately: an item addressed by a tree with no stamp name materialises
+  with no closure stamp, and a tree addressed without a check on the tree that
+  got built is the case worth refusing loudest, because it is the one that
+  would run.
 
 Git's ref update takes its lock with `O_CREAT|O_EXCL`, the primitive this fleet
 already relies on for token minting (`pool`, token mint). That it holds on **this**
