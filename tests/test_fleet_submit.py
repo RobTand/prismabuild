@@ -209,3 +209,7 @@ def test_the_ladder_dispatcher_routes_through_the_shared_submit() -> None:
 
 def test_the_shard_dispatcher_routes_through_the_shared_submit() -> None:
     assert_routed_through_the_shared_submit("dispatch_tessera_shards.py")
+
+
+def test_the_smoke_publisher_routes_through_the_shared_submit() -> None:
+    assert_routed_through_the_shared_submit("seal_and_publish.py")
