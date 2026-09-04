@@ -42,6 +42,12 @@ import uuid
 from pathlib import Path
 
 SH = Path("/mnt/shared/prismabuild-fleet")
+#: Every box mounts this at the same path, so a checkout underneath it is
+#: visible to all of them and an action that runs there can run anywhere.
+#: A checkout outside it exists on exactly one box.  That is a *fact about
+#: the path*, which is why placement below is derived from it rather than
+#: asked of the submitter.
+SHARED_ROOT = Path("/mnt/shared")
 sys.path.insert(0, str(SH / "repo" / "src"))
 from prismabuild import core as pb, pool  # noqa: E402
 
@@ -137,6 +143,46 @@ def _parse_demand(text: str) -> dict[str, int]:
     return demand
 
 
+def placement_tags(
+    cwd: Path,
+    *,
+    explicit: list[str],
+    here: bool,
+    hostname: str,
+) -> list[str]:
+    """Return the placement tags for an action whose working directory is ``cwd``.
+
+    Placement is PrismaBuild's decision, not the submitter's.  The submitter
+    knows one thing the pool cannot infer -- an explicit ``--tag`` naming a
+    hardware class the work requires -- and everything else follows from where
+    the checkout lives:
+
+    * A checkout under ``/mnt/shared`` is mounted at the same path on every
+      box, so **any** worker that satisfies the demand can run the action and
+      no host tag is added.  This is the case that used to need ``--anywhere``,
+      and forgetting the flag was invisible: the work ran, correctly, on one
+      box, while the others sat idle.  A default that has to be remembered to
+      be right is not a default.
+    * A checkout anywhere else exists on exactly one box, so the action is
+      pinned to this host.  ``--here`` forces that pin even on shared storage,
+      for the rare action that is genuinely about *this* machine.
+
+    Nothing here decides *which* free box runs a shared-checkout action; the
+    queue does, from the demand and what each worker offers.  That separation
+    is the point.
+    """
+
+    if explicit:
+        return list(explicit)
+    if here:
+        return [hostname]
+    try:
+        cwd.resolve().relative_to(SHARED_ROOT)
+    except ValueError:
+        return [hostname]
+    return []
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Submit one command to the PrismaBuild pool and wait for it."
@@ -150,9 +196,12 @@ def main() -> int:
     ap.add_argument("--gpu-capacity", type=int, default=4,
                     help="slots one box declares; --exclusive demands all of them")
     ap.add_argument("--tag", action="append", default=[],
-                    help="placement tag; defaults to this box's hostname")
+                    help="require a box offering this tag (e.g. a hardware class)")
     ap.add_argument("--anywhere", action="store_true",
-                    help="let any box run it (only valid if the checkout is shared)")
+                    help="accepted and ignored; a shared checkout is already free "
+                         "to run anywhere")
+    ap.add_argument("--here", action="store_true",
+                    help="pin to this box even though the checkout is shared")
     ap.add_argument("--cwd", default=os.getcwd())
     ap.add_argument("--deterministic", action="store_true",
                     help="declare byte-identical output; enables CAS reuse")
@@ -186,12 +235,14 @@ def main() -> int:
         demand.setdefault("mem_gb", 16)
     demand.setdefault("mem_gb", 4)
 
-    tags = list(args.tag)
-    if not tags and not args.anywhere:
-        # Honest default: an agent's worktree exists on one box only, so the
-        # action is pinned there.  Cross-box placement is opt-in and is only
-        # correct when the checkout is on shared storage.
-        tags = [socket.gethostname()]
+    tags = placement_tags(
+        cwd,
+        explicit=list(args.tag),
+        here=args.here,
+        hostname=socket.gethostname(),
+    )
+    if args.anywhere and args.here:
+        raise SystemExit("--anywhere and --here contradict each other")
 
     # `run_local_action` builds the child's environment from *these* and
     # nothing else, so an empty dict is not "inherit the caller" -- it is an
