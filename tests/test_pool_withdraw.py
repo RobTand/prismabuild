@@ -20,10 +20,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -31,8 +33,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import pool  # noqa: E402
 
-KEY_A = "a" * 64
-KEY_B = "b" * 64
+# Unique per process, never a fixed string.  ``find_launcher_pids`` scans
+# every process on the box for a key, and agents run this suite concurrently on
+# boxes they share: with a constant key, one run's withdrawal finds another
+# run's launcher and kills it.  A test that can reach outside its own tmp_path
+# is not a private-root test however private its queue is.
+KEY_A = uuid.uuid4().hex + uuid.uuid4().hex
+KEY_B = uuid.uuid4().hex + uuid.uuid4().hex
 
 
 @pytest.fixture()
@@ -40,6 +47,30 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.ensure_layout()
     return q
+
+
+@pytest.fixture()
+def pidfile(tmp_path: Path):
+    """Where a stub records its action's pid -- and the sweep for it.
+
+    A test that fails partway through leaves a ``sleep 600`` behind on a box
+    other agents are working on, and the leak is not merely untidy: the /proc
+    scan finds launchers by action key, so a process left running by one run is
+    something a later run can find and signal.  Cleaning up is part of keeping
+    the private root private.
+    """
+
+    path = tmp_path / "action.pid"
+    yield path
+    try:
+        pid = int(path.read_text())
+    except (OSError, ValueError):
+        return
+    for target in (lambda: os.killpg(pid, signal.SIGKILL), lambda: os.kill(pid, signal.SIGKILL)):
+        try:
+            target()
+        except OSError:
+            pass
 
 
 def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
@@ -335,7 +366,7 @@ def test_a_prefix_still_resolves_after_the_action_is_terminal(
 
 
 def test_the_signal_reaches_the_action_group_not_only_the_launcher(
-    queue: pool.PoolQueue, tmp_path: Path
+    queue: pool.PoolQueue, tmp_path: Path, pidfile: Path
 ) -> None:
     """The distinguishing test: kill the work, not the process that started it.
 
@@ -345,7 +376,6 @@ def test_the_signal_reaches_the_action_group_not_only_the_launcher(
     is exactly the step the operator was doing by hand.
     """
 
-    pidfile = tmp_path / "grandchild.pid"
     stub = _grandchild_launcher(tmp_path, pidfile)
     _publish(queue, KEY_A, worker_script=str(stub))
     item = queue.claim()
@@ -372,11 +402,10 @@ def test_the_signal_reaches_the_action_group_not_only_the_launcher(
 
 
 def test_a_withdrawal_from_another_box_still_stops_the_action(
-    queue: pool.PoolQueue, tmp_path: Path
+    queue: pool.PoolQueue, tmp_path: Path, pidfile: Path
 ) -> None:
     """No signal can cross a box, so the worker watches for the marker itself."""
 
-    pidfile = tmp_path / "grandchild.pid"
     stub = _grandchild_launcher(tmp_path, pidfile)
     _publish(queue, KEY_A, worker_script=str(stub))
     item = queue.claim()
@@ -395,7 +424,7 @@ def test_a_withdrawal_from_another_box_still_stops_the_action(
 
 
 def test_a_worker_that_never_wrote_a_child_pid_is_still_signalled(
-    queue: pool.PoolQueue, tmp_path: Path
+    queue: pool.PoolQueue, tmp_path: Path, pidfile: Path
 ) -> None:
     """A cancellation must work against the fleet as it is, not as it will be.
 
@@ -407,7 +436,6 @@ def test_a_worker_that_never_wrote_a_child_pid_is_still_signalled(
     without the lease's help.
     """
 
-    pidfile = tmp_path / "grandchild.pid"
     stub = _grandchild_launcher(tmp_path, pidfile)
     _publish(queue, KEY_A, worker_script=str(stub))
     item = queue.claim()
@@ -480,3 +508,37 @@ def test_a_recycled_pid_is_not_signalled(queue: pool.PoolQueue) -> None:
     lease["child_pid"] = os.getpid()          # this test process, not an action
     queue.lease_path(KEY_A).write_text(json.dumps(lease))
     assert queue.withdraw(KEY_A)["signalled"] is None
+
+
+def test_a_process_that_merely_mentions_the_key_is_not_the_launcher(
+    pidfile: Path,
+) -> None:
+    """Naming an action is not running it.
+
+    ``pbrun --withdraw <full digest>`` puts the key in its own command line, and
+    so does any shell wrapper around it.  If a stale ``child_pid`` in a lease
+    collided with such a process, a key-only test would have the withdrawal
+    signal the operator's own terminal.  The canonical ``run-local`` verb is
+    what separates the two, so both naming paths ask for it.
+    """
+
+    talker = subprocess.Popen(
+        [sys.executable, "-c", f"import time; time.sleep(600)  # {KEY_A}"],
+        start_new_session=True,
+    )
+    pidfile.write_text(str(talker.pid))
+    try:
+        assert _await(lambda: KEY_A.encode() in _cmdline_of(talker.pid))
+        assert pool.launcher_owns_action(talker.pid, KEY_A) is False
+        assert talker.pid not in pool.find_launcher_pids(KEY_A)
+    finally:
+        talker.kill()
+        talker.wait(timeout=10)
+
+
+def _cmdline_of(pid: int) -> bytes:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            return handle.read()
+    except OSError:
+        return b""

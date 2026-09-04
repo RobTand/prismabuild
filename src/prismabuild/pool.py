@@ -307,15 +307,23 @@ def launcher_owns_action(pid: int, action_key: str) -> bool:
     command line.  A lease can outlive the process it describes -- that is what
     makes it a lease -- and a withdrawal that signalled a recycled pid would
     kill whatever the box started next.
+
+    The same predicate as ``find_launcher_pids``, and for the same reason: the
+    key alone is not enough, because a command line that *mentions* the key is
+    not a launcher.  ``pbrun --withdraw <full digest>`` is one, and a stale
+    foreign ``child_pid`` colliding with that shell's pid would have this
+    function signal the operator's own terminal.  The canonical ``run-local``
+    verb is what separates running the action from talking about it.
     """
 
     if not action_key:
         return False
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as handle:
-            return action_key.encode() in handle.read()
+            raw = handle.read()
     except OSError:
         return False
+    return action_key.encode() in raw and b"run-local" in raw
 
 
 def find_launcher_pids(action_key: str) -> list[int]:

@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
+import signal
 import sys
 import threading
 import time
+import uuid
 from unittest import mock
 
 import pytest
@@ -33,7 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
-KEY = "e" * 64
+# Unique per process; see the note in ``test_pool_withdraw``.
+KEY = uuid.uuid4().hex + uuid.uuid4().hex
 
 
 def _worker_loop():
@@ -52,10 +56,32 @@ def _await(predicate, *, timeout_s: float = 30.0) -> bool:
     return predicate()
 
 
+@pytest.fixture()
+def pidfile(tmp_path: Path):
+    """Where the action records its pid -- and the sweep for it.
+
+    A failure partway through this test would otherwise leave a ``sleep 600``
+    running on a box other agents are using, and ``find_launcher_pids`` scans
+    every process on the box: a leak from one run is something a later run can
+    find and signal.
+    """
+
+    path = tmp_path / "action.pid"
+    yield path
+    try:
+        pid = int(path.read_text())
+    except (OSError, ValueError):
+        return
+    for shot in (lambda: os.killpg(pid, signal.SIGKILL), lambda: os.kill(pid, signal.SIGKILL)):
+        try:
+            shot()
+        except OSError:
+            pass
+
+
 def test_an_operator_stops_a_running_action_and_the_worker_carries_on(
-    tmp_path: Path,
+    tmp_path: Path, pidfile: Path
 ) -> None:
-    pidfile = tmp_path / "action.pid"
     stub = tmp_path / "stub_worker.py"
     # Shaped like the real worker: ``core.run_local_action`` puts the action in
     # its own session, which is why the launcher is the wrong thing to signal.

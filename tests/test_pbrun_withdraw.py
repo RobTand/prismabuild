@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import uuid
 
 import pytest
 
@@ -25,7 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
 
-KEY_A = "a" * 64
+# Unique per process; see the note in ``test_pool_withdraw``.
+KEY_A = uuid.uuid4().hex + uuid.uuid4().hex
 
 
 class _Queue:
@@ -108,10 +110,11 @@ def test_one_bad_name_does_not_stop_the_others(
 ) -> None:
     """Withdrawing four suites at once is the case this exists for."""
 
-    keys = [chr(ord("a") + n) * 64 for n in range(4)]
+    keys = [uuid.uuid4().hex + uuid.uuid4().hex for _ in range(4)]
+    absent = (uuid.uuid4().hex + uuid.uuid4().hex)[:12]
     for key in keys:
         _publish(queue, key)
-    rc = pbrun.withdraw_main(queue, [k[:12] for k in keys] + ["ffffffffffff"])
+    rc = pbrun.withdraw_main(queue, [k[:12] for k in keys] + [absent])
     assert rc == 2, "the unknown name is still reported as a failure"
     for key in keys:
         assert queue.item_path(pool.WITHDRAWN, key).exists()
