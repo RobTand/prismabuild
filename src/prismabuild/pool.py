@@ -187,6 +187,33 @@ def worker_argv(
     ]
 
 
+def _scan(directory: Path):
+    """List a directory that another process may be deleting underneath us.
+
+    Every ledger scan walks entries a concurrent worker is free to remove --
+    ``release`` is documented safe to call twice, so two of them will have one
+    ``rmdir`` the directory the other is mid-iteration over.  At one worker per
+    box that never happens; at sixty it happens within minutes, and the worker
+    dies with ``FileNotFoundError`` on ``iterdir`` rather than losing a lease
+    gracefully.  A directory that vanished held nothing this caller can still
+    act on, so the honest answer is an empty listing, not an exception.
+    """
+
+    try:
+        return sorted(directory.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+
+def _glob(directory: Path, pattern: str):
+    """``Path.glob`` with the same disappearing-directory contract as `_scan`."""
+
+    try:
+        return sorted(directory.glob(pattern))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+
 class _Insufficient(Exception):
     """Internal: a demand could not be met in full."""
 
@@ -239,10 +266,10 @@ class ResourceLedger:
             total = int(count)
             if total < 0:
                 raise PoolContractError(f"capacity for {kind!r} must not be negative")
-            present = {path.name for path in self.free_dir.glob(f"{kind}-*")}
-            for holder in self.held_dir.iterdir() if self.held_dir.is_dir() else []:
+            present = {path.name for path in _glob(self.free_dir, f"{kind}-*")}
+            for holder in _scan(self.held_dir):
                 if holder.is_dir():
-                    present.update(path.name for path in holder.glob(f"{kind}-*"))
+                    present.update(path.name for path in _glob(holder, f"{kind}-*"))
             for index in range(total):
                 name = f"{kind}-{index:04d}"
                 if name in present:
@@ -275,12 +302,11 @@ class ResourceLedger:
             target = int(count)
             if target < 0:
                 raise PoolContractError(f"capacity for {kind!r} must not be negative")
-            free = sorted(self.free_dir.glob(f"{kind}-*"))
+            free = _glob(self.free_dir, f"{kind}-*")
             held = sum(
-                1 for holder in (self.held_dir.iterdir()
-                                 if self.held_dir.is_dir() else [])
+                1 for holder in _scan(self.held_dir)
                 if holder.is_dir()
-                for _ in holder.glob(f"{kind}-*")
+                for _ in _glob(holder, f"{kind}-*")
             )
             # Never retire below what is already held: those tokens exist.
             excess = max(0, len(free) + held - target)
@@ -296,24 +322,21 @@ class ResourceLedger:
         """Total tokens of each kind, free or held."""
 
         counts: dict[str, int] = {}
-        for path in list(self.free_dir.glob("*-*")) if self.free_dir.is_dir() else []:
+        for path in _glob(self.free_dir, "*-*"):
             counts[path.name.rsplit("-", 1)[0]] = counts.get(path.name.rsplit("-", 1)[0], 0) + 1
-        if self.held_dir.is_dir():
-            for holder in self.held_dir.iterdir():
-                if not holder.is_dir():
-                    continue
-                for path in holder.glob("*-*"):
-                    kind = path.name.rsplit("-", 1)[0]
-                    counts[kind] = counts.get(kind, 0) + 1
+        for holder in _scan(self.held_dir):
+            if not holder.is_dir():
+                continue
+            for path in _glob(holder, "*-*"):
+                kind = path.name.rsplit("-", 1)[0]
+                counts[kind] = counts.get(kind, 0) + 1
         return counts
 
     def available(self) -> dict[str, int]:
         """Tokens of each kind not currently held."""
 
         counts: dict[str, int] = {}
-        if not self.free_dir.is_dir():
-            return counts
-        for path in self.free_dir.glob("*-*"):
+        for path in _glob(self.free_dir, "*-*"):
             kind = path.name.rsplit("-", 1)[0]
             counts[kind] = counts.get(kind, 0) + 1
         return counts
@@ -334,7 +357,7 @@ class ResourceLedger:
         try:
             for kind, need in sorted(wanted.items()):
                 taken = 0
-                for token in sorted(self.free_dir.glob(f"{kind}-*")):
+                for token in _glob(self.free_dir, f"{kind}-*"):
                     if taken >= need:
                         break
                     try:
@@ -357,7 +380,7 @@ class ResourceLedger:
             return 0
         released = 0
         self.free_dir.mkdir(parents=True, exist_ok=True)
-        for token in sorted(destination.iterdir()):
+        for token in _scan(destination):
             try:
                 os.rename(token, self.free_dir / token.name)
             except OSError:
@@ -370,9 +393,7 @@ class ResourceLedger:
         return released
 
     def held_keys(self) -> list[str]:
-        if not self.held_dir.is_dir():
-            return []
-        return sorted(path.name for path in self.held_dir.iterdir() if path.is_dir())
+        return sorted(path.name for path in _scan(self.held_dir) if path.is_dir())
 
 
 class PoolQueue:

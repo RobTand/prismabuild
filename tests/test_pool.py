@@ -15,6 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import pathlib
+
 from prismabuild import pool  # noqa: E402
 
 KEY_A = "a" * 64
@@ -606,3 +608,51 @@ def test_retire_free_capacity_lowers_the_offer_but_never_a_held_token(tmp_path):
     ledger.retire_free_capacity({"mem_gb": 1})
     assert ledger.capacity()["mem_gb"] >= 6
     assert ledger.release("running-action") == 7
+
+
+def _vanishing(monkeypatch, victim):
+    """Make `victim` pass is_dir() and then raise on iterdir()/glob().
+
+    That is the actual race, and it cannot be staged by deleting the directory
+    first: the code checks `is_dir()` and *then* scans, so a test that deletes
+    up front takes the guarded early-return path and passes against the bug.
+    The window between the check and the scan is the whole defect, so the test
+    has to reproduce the window rather than the aftermath.
+    """
+    real_iterdir = pathlib.Path.iterdir
+    real_glob = pathlib.Path.glob
+
+    def iterdir(self):
+        if self == victim:
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_iterdir(self)
+
+    def glob(self, pattern):
+        if self == victim:
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_glob(self, pattern)
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", iterdir)
+    monkeypatch.setattr(pathlib.Path, "glob", glob)
+
+
+def test_release_survives_the_holder_vanishing_after_its_is_dir_check(tmp_path, monkeypatch):
+    ledger = pool.PoolQueue(tmp_path / "q").ledger("box")
+    ledger.ensure_capacity({"mem_gb": 4})
+    assert ledger.acquire("act", {"mem_gb": 2})
+    _vanishing(monkeypatch, ledger.held_dir / "act")
+    assert ledger.release("act") == 0        # not FileNotFoundError
+
+
+def test_every_ledger_scan_survives_the_held_tree_vanishing(tmp_path, monkeypatch):
+    # ensure_capacity, retire_free_capacity, capacity and held_keys all walk
+    # held_dir; a concurrent release removing a holder killed the worker.
+    ledger = pool.PoolQueue(tmp_path / "q").ledger("box")
+    ledger.ensure_capacity({"mem_gb": 4, "gpu": 1})
+    assert ledger.acquire("act", {"gpu": 1})
+    _vanishing(monkeypatch, ledger.held_dir)
+    assert ledger.held_keys() == []
+    assert ledger.capacity() == {"mem_gb": 4}
+    assert ledger.available() == {"mem_gb": 4}
+    ledger.ensure_capacity({"mem_gb": 4})
+    ledger.retire_free_capacity({"mem_gb": 2})
