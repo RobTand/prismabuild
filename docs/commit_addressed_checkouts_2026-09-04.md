@@ -98,10 +98,11 @@ qualified the rendezvous: two boxes, real concurrency, an explicit predicate.
 
 ## Dirty trees are the norm, so the commit is synthesised
 
-Agents submit from dirty trees constantly; `pbrun` has a whole delta digest
-for it (`pbrun._git_identity`), and 12 of 50 live failures were closure drift
-between sealing and running (`tools/fleet/pool_reset.py`). Requiring a
-clean tree would make the feature unusable.
+Agents submit from dirty trees constantly; the shared submitter/worker rule
+has a whole delta digest for it (`core.git_checkout_identity`), and 12 of 50
+live failures were closure drift between sealing and running
+(`tools/fleet/pool_reset.py`). Requiring a clean tree would make the feature
+unusable.
 
 Synthesise a commit from the working tree instead, without touching any
 branch or the user's index:
@@ -115,9 +116,10 @@ git push <bare> $commit:refs/pbrun/$commit
 
 `git stash create` is the tempting shortcut and is the wrong one: it does not
 carry untracked files, and `pbrun` learned the hard way that an untracked file
-edit must move the action key (`pbrun._git_identity`'s untracked digest). Include the same
-exclusions the delta digest already applies — the closure stamp and the result
-logs — or every submit will produce a new tree commit for its own droppings.
+edit must move the action key (`core.git_checkout_identity`'s untracked
+digest). Include the same exclusions the delta digest already applies — the
+closure stamp and the result logs — or every submit will produce a new tree
+commit for its own droppings.
 
 ## Worker side
 
@@ -130,8 +132,8 @@ logs — or every submit will produce a new tree commit for its own droppings.
 3. Run exactly as today: `worker_argv` gets `--checkout-root <that path>`
    (`pool.PoolQueue.worker_argv`), and everything downstream is unchanged.
 4. The closure check keeps its teeth. The materialiser writes the stamp by
-   recomputing `_git_identity` **from the tree it has just built**, exactly as
-   `pbrun` does at submit; `core.verify_code_closure`
+   calling `core.git_checkout_identity` **on the tree it has just built**,
+   exactly as `pbrun` does at submit; `core.verify_code_closure`
    then compares that against the action-pinned bytes. A worktree that landed
    on the wrong commit, or that is dirty, produces different bytes and the
    action refuses. This is a real check because the stamp is derived from the
@@ -193,14 +195,14 @@ it names actually changes, which is exactly when the design needs re-reading.
 
 | where | the line it names |
 |---|---|
-| `pbrun._git_identity` | `def _git_identity(cwd: Path) -> dict[str, str]:` |
-| `pbrun._git_identity`, untracked digest | `    # `git diff HEAD` covers tracked edits.  It says nothing about an` |
+| `core.git_checkout_identity` | `def git_checkout_identity(root: str \| Path) -> dict[str, str]:` |
+| `core.git_checkout_identity`, untracked digest | `    # ``--untracked-files=all`` is material: plain porcelain abbreviates a` |
 | `pbrun`, stamp name fingerprint | `    fingerprint = hashlib.sha256(` |
 | `pbrun.placement_tags` | `def placement_tags(` |
 | `pbrun`, default environment | `    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:` |
 | `pbrun`, stamp payload | `    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)` |
 | `pbrun`, action body params | `        "params": {"command": command, "cwd": str(cwd), "demand": demand},` |
-| `pbrun`, unplaceable refusal | `    verdict = q.placeable(intent)` |
+| `pbrun`, live placement read | `    live_verdict = q.placeable(intent)` |
 | `pbrun`, published checkout_root | `        checkout_root=str(cwd),` |
 | `pool`, token mint | `                    descriptor = os.open(token, os.O_WRONLY \| os.O_CREAT \| os.O_EXCL, 0o644)` |
 | `pool.PoolQueue.publish` | `    def publish(` |
