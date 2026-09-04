@@ -466,6 +466,50 @@ def _decode_strict_json(raw: bytes, *, where: str) -> object:
         raise ActionContractError(f"{where} is not strict UTF-8 JSON") from exc
 
 
+#: ``O_NONBLOCK`` on a regular-file open exists to keep a FIFO or a device from
+#: blocking before ``fstat`` can refuse it; POSIX gives it no meaning for a
+#: regular file. On NFSv4 it acquires one anyway -- the client may answer
+#: EAGAIN while a delegation is recalled -- so an open that is correct, and
+#: would succeed a millisecond later, fails instead. The fleet's checkouts all
+#: live on one NFS export and a dozen workers open the same closure stamp, which
+#: is exactly the shape that provokes it: five actions in the live queue died
+#: this way, each burning an attempt against its retry limit for a reason that
+#: had nothing to do with the work.
+_WOULD_BLOCK_OPEN_ATTEMPTS = 6
+_WOULD_BLOCK_OPEN_BACKOFF_S = 0.02
+
+
+def _open_retrying_would_block(
+    path: Path | str | bytes,
+    flags: int,
+    *,
+    dir_fd: int | None = None,
+) -> int:
+    """``os.open``, with "would block" treated as transient, not terminal.
+
+    Every other error is re-raised untouched, so each caller keeps its own
+    mapping from errno to the contract violation it means; only EAGAIN is
+    retried, and only for as long as the backoff allows. A path that keeps
+    saying "would block" still fails -- a blocking open would be the wrong
+    answer for a FIFO, which is what the flag is protecting against.
+    """
+
+    delay = _WOULD_BLOCK_OPEN_BACKOFF_S
+    last = _WOULD_BLOCK_OPEN_ATTEMPTS - 1
+    for attempt in range(_WOULD_BLOCK_OPEN_ATTEMPTS):
+        try:
+            if dir_fd is None:
+                return os.open(path, flags)
+            return os.open(path, flags, dir_fd=dir_fd)
+        except OSError as exc:
+            transient = exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}
+            if not transient or attempt == last:
+                raise
+            time.sleep(delay)
+            delay *= 2
+    raise AssertionError("unreachable")
+
+
 def _read_regular_file(path: Path, *, where: str) -> bytes:
     flags = (
         os.O_RDONLY
@@ -475,7 +519,7 @@ def _read_regular_file(path: Path, *, where: str) -> bytes:
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(path, flags)
+        descriptor = _open_retrying_would_block(path, flags)
     except OSError as exc:
         raise ActionContractError(f"cannot open {where} as a regular file: {path}") from exc
     try:
@@ -519,7 +563,7 @@ def _file_identity(path: Path, *, where: str) -> tuple[str, int]:
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(path, flags)
+        descriptor = _open_retrying_would_block(path, flags)
     except OSError as exc:
         raise ActionContractError(
             f"cannot open {where} as a regular file: {path}"
@@ -1566,7 +1610,8 @@ def _open_regular_nofollow(path: Path, *, where: str) -> tuple[int, int]:
         | getattr(os, "O_NONBLOCK", 0)
     )
     try:
-        descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+        descriptor = _open_retrying_would_block(
+            path.name, flags, dir_fd=parent_fd)
     except FileNotFoundError:
         os.close(parent_fd)
         raise
@@ -1797,7 +1842,7 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        source_fd = os.open(source, flags)
+        source_fd = _open_retrying_would_block(source, flags)
     except OSError as exc:
         os.close(staging_fd)
         raise LocalActionError(f"result is not a readable regular file: {source}") from exc
@@ -2367,7 +2412,7 @@ class PrismaBuildCAS:
                     | getattr(os, "O_NONBLOCK", 0)
                 )
                 try:
-                    published_fd = os.open(
+                    published_fd = _open_retrying_would_block(
                         digest, flags, dir_fd=directory_fd
                     )
                 except OSError as exc:

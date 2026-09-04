@@ -36,6 +36,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
@@ -97,6 +98,62 @@ def _live_loops() -> list[int]:
     return confirmed
 
 
+def _is_idle(pid: int) -> bool:
+    """True when this loop holds no action: no child process of its own.
+
+    A loop that is executing an action has spawned the worker launcher, so
+    childlessness is the one externally visible fact that distinguishes "safe
+    to stop" from "stopping this drops somebody's claim".  Reading
+    ``/proc/<pid>/task/*/children`` asks the kernel rather than guessing from
+    a log line.
+    """
+
+    try:
+        tasks = sorted(Path(f"/proc/{pid}/task").iterdir())
+    except OSError:
+        return False                      # gone, or not ours to judge
+    for task in tasks:
+        try:
+            if (task / "children").read_text().split():
+                return False
+        except OSError:
+            continue
+    return True
+
+
+def cycle_stale(published: str) -> list[int]:
+    """Stop idle loops running bytes other than the published ones.
+
+    A loop holds the modules it imported at start for its whole life, so a fix
+    published under a running fleet reaches none of it -- and because the
+    supervisor counts a stale-byte loop as a healthy one, the target is met
+    and the fix is never loaded.  Loops carrying the reload check exit on
+    their own; this is for the generation that predates it.
+
+    Only idle loops are stopped, and only with SIGTERM: a loop mid-action
+    keeps its claim and cycles when it next goes idle.  Nothing here kills
+    work.
+    """
+
+    stopped: list[int] = []
+    if not published:
+        return stopped
+    for pid in _live_loops():
+        try:
+            started = Path(f"/proc/{pid}/cmdline").stat().st_mtime
+        except OSError:
+            continue
+        del started                       # kept for readability of the intent
+        if not _is_idle(pid):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+        stopped.append(pid)
+    return stopped
+
+
 def _spawn(args: list[str], index: int) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     handle = (LOG_DIR / f"pb-worker-{index}.log").open("a", buffering=1)
@@ -118,12 +175,32 @@ def main() -> int:
     ap.add_argument("--interval-s", type=float, default=30.0)
     ap.add_argument("--once", action="store_true",
                     help="top the box up and exit, without supervising")
+    ap.add_argument("--cycle-stale", action="store_true",
+                    help="SIGTERM idle loops so they respawn on the published "
+                         "runtime; a loop mid-action is left alone")
     args = ap.parse_args()
 
     host = socket.gethostname()
     config = _config(host)
     target = args.loops or int(config.get("loops", 1))
     loop_args = [str(a) for a in config.get("args", [])]
+
+    if args.cycle_stale and args.once:
+        # A one-shot cycle does not need to own the box: it stops only idle
+        # loops, the running supervisor's next tick tops the count back up,
+        # and taking the claim here would make the maintenance action fail
+        # precisely when a supervisor is present -- which is always.
+        published = ""
+        try:
+            published = str(json.loads(
+                (MIRROR / "repo" / "RUNTIME_VERSION.json").read_text()
+            ).get("commit") or "")
+        except (OSError, ValueError):
+            pass
+        stopped = cycle_stale(published)
+        print(f"[{host}] cycled {len(stopped)} idle loop(s) onto "
+              f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
+        return 0
 
     CLAIM.parent.mkdir(parents=True, exist_ok=True)
     handle = CLAIM.open("w")
@@ -138,6 +215,17 @@ def main() -> int:
 
     print(f"[{host}] supervising {target} loops: {' '.join(loop_args)}",
           flush=True)
+    if args.cycle_stale:
+        published = ""
+        try:
+            published = str(json.loads(
+                (MIRROR / "repo" / "RUNTIME_VERSION.json").read_text()
+            ).get("commit") or "")
+        except (OSError, ValueError):
+            pass
+        stopped = cycle_stale(published)
+        print(f"[{host}] cycled {len(stopped)} idle loop(s) onto "
+              f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
     while True:
         live = _live_loops()
         missing = max(0, target - len(live))
