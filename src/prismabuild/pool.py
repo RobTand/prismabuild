@@ -73,6 +73,7 @@ POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
 POOL_LEASE_SCHEMA_V1 = "prismaquant.prismabuild.pool_lease.v1"
 POOL_OUTCOME_SCHEMA_V1 = "prismaquant.prismabuild.pool_outcome.v1"
+POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
 
 # The `prismaquant.` prefix is kept on purpose.  It is the namespace grammar of
 # every receipt already published to this CAS; mixing prefixes inside one store
@@ -104,6 +105,14 @@ STARVATION_FLOOR = 3
 
 RESERVATIONS = "reservations"
 PASSES = "passes"
+WORKERS = "workers"
+
+#: How long a worker's offer stays believable.  A loop re-announces on every
+#: poll, and the default poll is 10 s, so two minutes is a dozen missed polls:
+#: long enough that a slow NFS write or a long action never makes a live box
+#: look dead, short enough that a box taken down does not keep vouching for
+#: work nobody can run.
+OFFER_TIMEOUT_S = 120.0
 
 DEFAULT_POOL_ROOT = Path(
     os.environ.get("PRISMABUILD_POOL_ROOT", "/mnt/shared/pb-queue")
@@ -420,6 +429,109 @@ class PoolQueue:
     def ensure_layout(self) -> None:
         for state in _STATES:
             self.dir(state).mkdir(parents=True, exist_ok=True)
+        (self.root / WORKERS).mkdir(parents=True, exist_ok=True)
+
+    # -- what the fleet can actually run ---------------------------------
+
+    def announce(
+        self,
+        *,
+        host: str,
+        tags: Sequence[str],
+        has_gpu: bool,
+        capacity: Mapping[str, int] | None = None,
+    ) -> None:
+        """Record what this worker offers, so a submitter can be told the truth.
+
+        Without this the queue knows what work has been asked for and nothing
+        at all about what the fleet can do, so an item whose required tags no
+        box offers is indistinguishable from an item whose box is merely busy:
+        it sits in ``ready``, reported as pending, while every worker polls
+        past it forever.  That is not hypothetical -- a suite submitted with
+        ``--tag dl380`` waited ten minutes in front of fifteen idle workers
+        that offer ``x86``, and would have waited a day.
+
+        The offer is a *claim about this box, refreshed by this box*, and it
+        expires; a stale file is not evidence.  Nothing consumes it for
+        scheduling -- placement is still decided by the matching in
+        ``claim()`` -- so a wrong or missing offer costs a diagnostic, never a
+        misplacement.
+        """
+
+        record = {
+            "schema": POOL_OFFER_SCHEMA_V1,
+            "host": host,
+            "tags": sorted({str(t) for t in tags}),
+            "has_gpu": bool(has_gpu),
+            "capacity": {str(k): int(v) for k, v in (capacity or {}).items()},
+            "announced_unix": _now(),
+        }
+        directory = self.root / WORKERS
+        directory.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(directory / f"{host}.json", record)
+
+    def offers(self, *, max_age_s: float = OFFER_TIMEOUT_S) -> list[dict[str, object]]:
+        """Every worker offer still fresh enough to believe."""
+
+        directory = self.root / WORKERS
+        if not directory.is_dir():
+            return []
+        now = _now()
+        live: list[dict[str, object]] = []
+        for path in sorted(directory.glob("*.json")):
+            record = _read_json(path)
+            if record is None:
+                continue
+            announced = record.get("announced_unix")
+            if not isinstance(announced, (int, float)):
+                continue
+            if now - float(announced) <= max_age_s:
+                live.append(record)
+        return live
+
+    def placeable(
+        self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
+    ) -> bool | None:
+        """Can any live worker run this item?  ``None`` means nobody has said.
+
+        The three-valued answer is deliberate.  ``False`` is a fact worth
+        refusing a submission over; but an empty registry means only that no
+        worker has announced yet -- a fleet running loops that predate this
+        code, or a queue whose workers are down -- and refusing on *that*
+        would turn a missing diagnostic into a broken submit path.  Unknown
+        stays unknown.
+        """
+
+        live = self.offers(max_age_s=max_age_s)
+        if not live:
+            return None
+        required = item.get("tags") or []
+        if not isinstance(required, list):
+            raise PoolContractError("pool item tags must be a list")
+        wanted = {str(t) for t in required}
+        demand = self.demand_of(item)
+        needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
+        for offer in live:
+            tags = {str(t) for t in (offer.get("tags") or [])}
+            if not wanted.issubset(tags):
+                continue
+            if needs_gpu and not offer.get("has_gpu"):
+                continue
+            capacity = offer.get("capacity") or {}
+            if isinstance(capacity, Mapping) and any(
+                int(capacity.get(kind, 0)) < need for kind, need in demand.items()
+            ):
+                continue          # this box can never fit it, however idle
+            return True
+        return False
+
+    def offered_tags(self, *, max_age_s: float = OFFER_TIMEOUT_S) -> list[str]:
+        """Every tag some live worker offers -- what to print when nothing fits."""
+
+        seen: set[str] = set()
+        for offer in self.offers(max_age_s=max_age_s):
+            seen.update(str(t) for t in (offer.get("tags") or []))
+        return sorted(seen)
 
     # -- producer -------------------------------------------------------
 

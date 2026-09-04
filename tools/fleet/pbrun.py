@@ -356,6 +356,30 @@ def main() -> int:
     cas.publish_action_request(action)
 
     q = pool.PoolQueue(SH / "pb-queue")
+
+    # Refuse work the fleet cannot run, at the one moment the caller is still
+    # watching.  A required tag no box offers is not a slow submission: the
+    # item matches no worker's placement filter, so it sits in `ready` --
+    # counted, reported as pending -- while every idle worker polls past it
+    # until `--wait-s` expires a day later.  A suite submitted with
+    # `--tag dl380` did exactly that in front of fifteen idle boxes offering
+    # `x86`.  `placeable` answers None when no worker has announced at all,
+    # and that stays a warning: a fleet whose loops predate the offer
+    # registry must still be able to submit.
+    intent = {"tags": tags, "needs_gpu": bool(demand.get("gpu")), "resources": demand}
+    verdict = q.placeable(intent)
+    if verdict is False:
+        raise SystemExit(
+            f"pbrun: no live worker can run this action.\n"
+            f"  required tags: {tags or '(any box)'}\n"
+            f"  demand:        {demand}\n"
+            f"  offered now:   {q.offered_tags() or '(no worker has announced)'}\n"
+            f"Fix the --tag, or start a worker on a box that offers it."
+        )
+    if verdict is None:
+        print("pbrun: no worker offers on record; submitting unchecked",
+              file=sys.stderr, flush=True)
+
     q.publish(
         action_key=key,
         cas_root=str(SH / "cas"),

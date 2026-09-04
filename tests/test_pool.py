@@ -716,3 +716,71 @@ def test_a_keyless_ready_record_is_filed_rather_than_left_to_starve(
     assert filed["status"] == "orphaned_stub"
     assert filed["action_key"] == KEY_B
     assert "reap_stale" in filed["detail"]["reason"]
+
+
+def test_an_unplaceable_item_is_knowable_before_it_is_published(
+    queue: pool.PoolQueue,
+) -> None:
+    """The queue must be able to say "no box can run this".
+
+    Without an offer registry the queue knows what work was asked for and
+    nothing about what the fleet can do, so an item whose required tags no
+    worker offers is indistinguishable from an item whose box is merely busy.
+    A test suite submitted with tag ``dl380`` sat in ``ready`` for ten minutes
+    in front of fifteen idle workers offering ``x86``, and would have sat
+    there for a day.
+    """
+
+    queue.announce(host="dl380g10", tags=["x86", "dl380g10", "cpu"],
+                   has_gpu=False, capacity={"mem_gb": 60})
+    queue.announce(host="sparky", tags=["gb10", "sparky"],
+                   has_gpu=True, capacity={"gpu": 4, "mem_gb": 100})
+
+    assert queue.placeable({"tags": ["x86"], "resources": {"mem_gb": 4}}) is True
+    assert queue.placeable({"tags": ["dl380"], "resources": {"mem_gb": 4}}) is False
+    assert queue.offered_tags() == ["cpu", "dl380g10", "gb10", "sparky", "x86"]
+
+
+def test_a_gpu_demand_is_not_placeable_on_a_cpu_box(queue: pool.PoolQueue) -> None:
+    """Tags alone would match; the offer has to carry the GPU fact too."""
+
+    queue.announce(host="dl380g10", tags=["x86", "cpu"], has_gpu=False,
+                   capacity={"mem_gb": 60})
+    assert queue.placeable({"tags": [], "resources": {"gpu": 1}}) is False
+    assert queue.placeable({"tags": ["x86"], "needs_gpu": True}) is False
+    assert queue.placeable({"tags": ["x86"], "resources": {"mem_gb": 4}}) is True
+
+
+def test_a_demand_larger_than_any_box_is_refused_not_queued(
+    queue: pool.PoolQueue,
+) -> None:
+    """An idle box that can never fit the item is not a reason to wait for it."""
+
+    queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
+                   capacity={"gpu": 4, "mem_gb": 100})
+    assert queue.placeable({"tags": [], "resources": {"mem_gb": 400}}) is False
+
+
+def test_an_empty_registry_answers_unknown_rather_than_no(
+    queue: pool.PoolQueue,
+) -> None:
+    """Three-valued on purpose: refusing on silence breaks the submit path.
+
+    A fleet whose worker loops predate the registry announces nothing, and a
+    queue whose workers are down announces nothing.  Neither is evidence that
+    the work is unrunnable, and turning either into a refusal would replace a
+    missing diagnostic with a broken submitter.
+    """
+
+    assert queue.placeable({"tags": ["x86"]}) is None
+    assert queue.offered_tags() == []
+
+
+def test_a_stale_offer_does_not_vouch_for_a_dead_box(queue: pool.PoolQueue) -> None:
+    """An offer is a claim refreshed by its own box; expiry is what makes it one."""
+
+    queue.announce(host="dl380g10", tags=["x86"], has_gpu=False,
+                   capacity={"mem_gb": 60})
+    assert queue.placeable({"tags": ["x86"]}, max_age_s=1e6) is True
+    assert queue.placeable({"tags": ["x86"]}, max_age_s=-1.0) is None
+    assert queue.offered_tags(max_age_s=-1.0) == []

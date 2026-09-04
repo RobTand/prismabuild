@@ -113,6 +113,12 @@ def main():
     idle = 0
     served = 0
     while True:
+        # Say what this box offers before asking what it may run.  The queue
+        # otherwise knows only what has been *asked for*, which makes an item
+        # no box can run look exactly like an item whose box is busy.
+        queue.announce(
+            host=host, tags=offered, has_gpu=args.gpu_slots > 0, capacity=capacity,
+        )
         outcome = queue.serve_once(
             tags=offered, has_gpu=args.gpu_slots > 0, python=args.python,
             timeout_s=args.timeout_s, capacity=capacity,
