@@ -24,11 +24,45 @@ from pathlib import Path
 FLAG = Path("/home/rob/tmp/arb/require_pool.on")
 PBRUN = "/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py"
 
-# The CUDA interpreter and the flock wrappers.  Anything else -- nvidia-smi,
-# a CPU python, a git command -- is none of this hook's business.
+# The CUDA interpreter, the flock wrappers, and a bare flock on the GPU lock.
+# That last one is not hypothetical: the wrappers were only ever a convenience,
+# and the jam this hook exists to prevent re-formed from direct `flock
+# .../.gpu.lock ...` invocations that named no wrapper at all -- one pytest
+# holding an exclusive GPU lock for 73 minutes with a `docker run --gpus all`
+# waiting 53 minutes behind it.  Matching the wrappers alone would have left
+# the observed path open.
+#
+# Anything else -- nvidia-smi, a CPU python, a git command -- is none of this
+# hook's business.
 CONTENDS = re.compile(
-    r"venvs/prismaquant-cu130/bin/python|/gpuslot\.sh|/gpulock\.sh"
+    r"venvs/prismaquant-cu130/bin/python"
+    r"|/gpuslot\.sh"
+    r"|/gpulock\.sh"
+    r"|flock\s[^|;]*\.gpu\.lock"
 )
+
+
+#: Commands that never start GPU work, whatever their text contains.  A commit
+#: message quoting the refused pattern is prose ABOUT the rule, not an instance
+#: of it -- and this hook refused its own commit, then refused the edit that
+#: would have fixed that, before this existed.  A guard that can lock out its
+#: own repair is a worse failure than the one it guards against.
+NEVER_GPU = ("git", "gh", "echo", "cat", "grep", "sed", "awk", "less", "diff")
+
+
+def _first_token(command: str) -> str:
+    """The command actually being run, past any leading env assignments."""
+
+    stripped = command.lstrip()
+    while stripped:
+        head = stripped.split(" ", 1)[0]
+        if "=" not in head or head.startswith("/"):
+            break
+        parts = stripped.split(" ", 1)
+        if len(parts) == 1:
+            return ""
+        stripped = parts[1].lstrip()
+    return stripped.split(" ", 1)[0].rsplit("/", 1)[-1]
 
 
 def main() -> int:
@@ -39,6 +73,8 @@ def main() -> int:
     except Exception:                                        # noqa: BLE001
         return 0
     command = str((event.get("tool_input") or {}).get("command") or "")
+    if _first_token(command) in NEVER_GPU:
+        return 0
     if not CONTENDS.search(command):
         return 0
     if "pbrun.py" in command:
