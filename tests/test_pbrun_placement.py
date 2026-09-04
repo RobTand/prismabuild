@@ -141,3 +141,26 @@ def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
     with pytest.raises(SystemExit) as caught:
         pbrun.exclusive_gpu_demand(queue, [])
     assert "--gpu-capacity" in str(caught.value)
+
+
+def test_the_default_environment_bounds_the_thread_pools():
+    """A fleet's parallelism is many actions, not one action per box.
+
+    Torch, numpy and OpenBLAS each size their pool from the machine's core
+    count, and the pool admits many actions per box, so the default
+    multiplies.  dl380g10 ran a 24-worker pytest under 16 worker loops and
+    reached a load average of **927** on 80 cores -- every process fighting
+    for a scheduler slot it did not need.
+    """
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [sys.executable, str(pbrun.__file__), "--help"],
+        capture_output=True, text=True, check=False)
+    assert out.returncode == 0
+    source = Path(pbrun.__file__).read_text()
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        assert f'"{name}": "4"' in source, name
+    # And it must stay overridable: --env is applied after the defaults.
+    assert source.index('"OMP_NUM_THREADS"') < source.index("for entry in args.env")

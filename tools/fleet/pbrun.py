@@ -330,6 +330,18 @@ def main() -> int:
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
+        # Torch, numpy and OpenBLAS each size their thread pool from the
+        # machine's core count, and the pool admits many actions per box, so
+        # the default multiplies: dl380g10 ran a 24-worker pytest under 16
+        # worker loops and reached a load average of **927** on 80 cores, with
+        # every process fighting for a scheduler slot it did not need.  A
+        # fleet gets its parallelism from running many actions, not from each
+        # action taking the whole box, so the per-process share is small by
+        # default.  An action that genuinely wants threads says so with
+        # ``--env OMP_NUM_THREADS=N``, which overrides this.
+        "OMP_NUM_THREADS": "4",
+        "MKL_NUM_THREADS": "4",
+        "OPENBLAS_NUM_THREADS": "4",
     }
     for entry in args.env:
         if "=" not in entry:
