@@ -12,12 +12,12 @@ It is off until the fleet says it is ready, and the fleet says so per box. See
 
 ## The problem, measured
 
-An action carries `checkout_root`, an absolute path (`pool.py:1106`, written by
-`pbrun.py:1174`). When that path is a box-local worktree —
+An action carries `checkout_root`, an absolute path (`pool.PoolQueue.publish`, written by
+`pbrun`, published checkout_root). When that path is a box-local worktree —
 `/home/rob/tmp/ts101`, which is what an agent naturally creates — the action
 must be tagged to the box that holds it or it will be claimed by a worker that
 cannot see it. `pbrun.placement_tags` derives that pin from the path, and
-correctly (`pbrun.py:301`).
+correctly (`pbrun.placement_tags`).
 
 Read off the live queue on 2026-09-04 at 07:15, over the 22 items in `ready`:
 
@@ -41,7 +41,7 @@ worktree at that tree under its own local scratch, and runs there.**
 Nothing about the work changes; what changes is that the *location* stops
 being part of the request, so three boxes can each answer it. The mechanism
 lives in `checkout.py`; `pool.py` grew one line inside `execute`
-(`pool.py:2251`) and `pbrun.py` grew the submit half.
+(`pool`, worker_argv checkout) and `pbrun.py` grew the submit half.
 
 ### The identity is the tree, not the commit
 
@@ -50,7 +50,7 @@ submits of an unchanged working tree a second apart produce two different
 commits. Binding a commit would make every resubmit a CAS miss — the one
 property the action key exists to keep. So the **tree** sha is what the
 fingerprint, the sealed `params` and the closure stamp bind
-(`pbrun.py:237`, `pbrun.py:1091`, `checkout.py:115`); the commit is transport,
+(`pbrun`, the two key bindings, `pbrun`, action body params, `checkout.stamp_bytes`); the commit is transport,
 and it is what names the ref. The synthesiser fixes author, committer and dates
 for the same reason, so an unchanged tree does not churn a ref per submit.
 
@@ -62,17 +62,17 @@ submitter's absolute path was bound into the action key in three places, so the
 same work submitted from two boxes was two different actions with two different
 keys. All three moved:
 
-* `params.cwd` became `{repo, prefix, tree}` (`pbrun.py:1091`);
+* `params.cwd` became `{repo, prefix, tree}` (`pbrun`, action body params);
 * the closure stamp's *name* fingerprints the tree instead of `str(cwd)`
-  (`pbrun.py:237`);
-* the stamp's *content* is the tree alone (`pbrun.py:1038`), serialised by the
-  one function the materialiser also calls (`checkout.py:115`).
+  (`pbrun`, the two key bindings);
+* the stamp's *content* is the tree alone (`pbrun`, stamp payload), serialised by the
+  one function the materialiser also calls (`checkout.stamp_bytes`).
 
 `tests/test_checkout_commit_end_to_end.py` submits the same content from
 `ts101` and from `ts102` and asserts one action key.
 
 The repository's identity is its **root commit** and nothing else
-(`checkout.py:153`). A first version put the checkout's basename in front of it
+(`checkout.repo_identity`). A first version put the checkout's basename in front of it
 for readability, and a test caught what that cost: two worktrees of one
 repository produced two identities, two bare repositories and two action keys
 for one request — the very defect this addressing removes, reintroduced by its
@@ -90,13 +90,13 @@ from a working tree.
   `/mnt/shared/prismabuild-fleet/git/<root-commit>.git`, created by whoever is
   first through a private directory and a `rename`, because `git init` is not
   atomic and ENOTEMPTY is exactly the signal "somebody finished first"
-  (`checkout.py:293`).
+  (`checkout.ensure_shared_bare`).
 * `pbrun` pushes the synthesised commit as `refs/pbrun/<sha>`.
 * The item carries `checkout_commit`, `checkout_tree`, `checkout_repo`,
-  `checkout_origin`, `checkout_prefix` and `checkout_stamp` (`pool.py:1179`).
+  `checkout_origin`, `checkout_prefix` and `checkout_stamp` (`pool.PoolQueue.publish`, the tree fields).
 
 Git's ref update takes its lock with `O_CREAT|O_EXCL`, the primitive this fleet
-already relies on for token minting (`pool.py:613`). That it holds on **this**
+already relies on for token minting (`pool`, token mint). That it holds on **this**
 mount was qualified rather than assumed:
 
 > **24 concurrent submitters, one box, 2026-09-04.** 24 independent repositories
@@ -149,11 +149,11 @@ and deliberately not taken.
 ## Dirty trees are the norm, so the commit is synthesised
 
 Agents submit from dirty trees constantly; `pbrun` has a whole delta digest for
-it (`pbrun.py:115`), and 12 of 50 live failures were closure drift between
-sealing and running (`tools/fleet/pool_reset.py:12-14`). Requiring a clean tree
+it (`pbrun._git_identity`), and 12 of 50 live failures were closure drift between
+sealing and running (`tools/fleet/pool_reset.py`). Requiring a clean tree
 would make the feature unusable, so the tree is written from the working
 directory through a **scratch index** — never the caller's index, never a
-branch, never a stash (`checkout.py:244`):
+branch, never a stash (`checkout.synthesise_tree_commit`):
 
 ```
 GIT_INDEX_FILE=$scratch/index git read-tree HEAD   # seed, see below
@@ -171,12 +171,16 @@ The **`read-tree HEAD` seeding** is not decoration. `git add -A` skips a path an
 ignore rule matches, tracked or not; from an empty index a tracked-but-ignored
 file would silently vanish from the tree, and that is a wrong tree no later
 check can catch, because every later check compares against this one
-(`checkout.py:269`, and a test for exactly it).
+(`checkout.synthesise_tree_commit`, the index seed, and a test for exactly it).
 
 The stamp and the result logs are kept out of the tree through
 `.git/info/exclude`, which `pbrun` now writes *before* synthesising rather than
 after sealing — otherwise every submit would produce a new tree for its own
-droppings and never hit the CAS again.
+droppings and never hit the CAS again. This repository also ignores both in its
+tracked `.gitignore`, but the trees agents submit from are *other* repositories
+that do not, so `info/exclude` is the exclusion that has to hold and it is the
+one a test exercises. Measured: without it a stamp moves the synthesised tree;
+with it the tree is unchanged.
 
 ## Worker side
 
@@ -184,34 +188,34 @@ droppings and never hit the CAS again.
    `git fetch <origin> +refs/pbrun/<sha>:refs/pbrun/<sha>` when the object is
    absent. Fetched **by ref, never by raw sha**: `git fetch <path> <sha>` needs
    `uploadpack.allowAnySHA1InWant` on the serving side and is refused by
-   default (`checkout.py:615`).
+   default (`checkout._ensure_commit`).
 2. `git worktree add --detach /home/rob/tmp/pb-trees/<repo>/<sha>`, under a
    per-sha `O_EXCL` lock so two loops on one box do not race the same
-   materialisation (`checkout.py:395`). Reuse when it is already there — a
+   materialisation (`checkout._hold_lock`). Reuse when it is already there — a
    second action at the same tree costs a lock and a stat. Reuse tolerates an
    action's untracked droppings and refuses a **tracked** change, which is the
    code the action key pinned.
 3. Run exactly as today: `worker_argv` gets `--checkout-root <that path>`,
-   resolved by one line in `execute` (`pool.py:2251`, `pool.py:2191`).
+   resolved by one line in `execute` (`pool`, worker_argv checkout, `pool.PoolQueue.resolve_checkout`).
 4. **The closure keeps its teeth, by derivation.** The materialiser recomputes
    the tree sha *from the worktree it has just built* and writes the stamp from
-   that (`checkout.py:457`); `core.verify_code_closure` (`core.py:1136`) then
+   that (`checkout.materialise`); `core.verify_code_closure` (`core.verify_code_closure`) then
    compares it against the action-pinned bytes. A worktree that landed on the
    wrong tree produces different bytes and the action refuses. That is the
    difference between a check and a receipt, and it is what makes running on
    another box safe rather than merely possible.
-5. An LRU sweep bounds the scratch (`checkout.py:643`), run at the start of an
+5. An LRU sweep bounds the scratch (`checkout.sweep`), run at the start of an
    idle streak. Three guards, each a lesson: it removes only directories
    carrying a marker it wrote itself, it keeps any tree whose commit appears in
-   a live claim — asked of the queue (`pool.py:2160`), not of the clock — and
+   a live claim — asked of the queue (`pool.PoolQueue.live_commits`), not of the clock — and
    what it keeps is the most recently *used*, which is why materialising
    touches the marker on reuse.
 
 `checkout_root` stays the submitter's own path on a tree-addressed item. It is
 the honest record of where the work came from, and an empty one would be filed
-as an unexecutable stub by `quarantine_orphans` (`pool.py:1659`). Which readers
+as an unexecutable stub by `quarantine_orphans` (`pool`, orphan stub fields). Which readers
 may treat it as a pin is settled in exactly one place
-(`checkout.py:378`), because a second copy is how the pin and the measurement
+(`checkout.item_is_box_local`), because a second copy is how the pin and the measurement
 of the pin end up describing different fleets.
 
 ## Refusals at submit
@@ -219,19 +223,19 @@ of the pin end up describing different fleets.
 Two, and both are the caller's own mistake rather than the fleet's:
 
 * **An argv token or `--env` value naming the submitter's checkout**
-  (`pbrun.py:403`). A relocated tree breaks an absolute path *silently* — the
+  (`pbrun.refuse_paths_into_the_checkout`). A relocated tree breaks an absolute path *silently* — the
   command runs, against the wrong file or none. This is the one failure mode of
   the addressing that is not loud, so it is refused at the one moment the
   caller is watching. Matched on the repository toplevel, and only where the
   path ends or continues with a separator, so `/home/rob/tessera-results`
   beside `/home/rob/tessera` is not dragged in.
 * **A working tree that would add more than 2 GiB to the shared object store**
-  (`checkout.py:216`). Measured as what `add -A` would actually stage, not as a
+  (`checkout.pending_add_bytes`). Measured as what `add -A` would actually stage, not as a
   `du`: the 90 GB cache this exists to catch is normally `.gitignore`d and
   never enters a tree, so a `du` would refuse the submissions that are fine and
   miss the one that is not.
 
-Everything else **falls back to the pin and says why** (`pbrun.py:438`). A
+Everything else **falls back to the pin and says why** (`pbrun.plan_tree_addressing`). A
 non-git checkout, a repository with no commit, a fleet that has not announced,
 a push that failed on NFS: each leaves the action exactly as pinned as it is
 today, with the reason printed beside the pin. This is a widening, and a
@@ -241,7 +245,7 @@ widening that can fail a submission would be worse than the pin it removes.
 
 * **No worktrees on `/mnt/shared`.** Objects are shared; trees are not.
 * **`TRITON_CACHE_DIR` stays `/home/rob/.triton-cache`** — a local path per
-  box, same string, different disk (`pbrun.py:919`).
+  box, same string, different disk (`pbrun`, default environment).
 * **Results still travel through the CAS**, never through the tree. A
   materialised worktree is disposable by construction.
 * **It does not unpin `--here`**, which is a deliberate statement about one
@@ -250,9 +254,9 @@ widening that can fail a submission would be worse than the pin it removes.
 ## Rollout
 
 The gate is **attested, not asserted** (principle 14). A worker announces a
-`capabilities` list in its own offer record (`worker_loop.py:271`,
-`pool.py:872`, `pool.py:182`), and `pbrun` addresses an action by its tree only
-when **every** live offer carries `checkout_commit` (`pbrun.py:367`). A box
+`capabilities` list in its own offer record (`worker_loop`, the announce,
+`pool.PoolQueue.announce`, capabilities, `pool.WORKER_CAPABILITIES`), and `pbrun` addresses an action by its tree only
+when **every** live offer carries `checkout_commit` (`pbrun.fleet_materialises`). A box
 running older bytes announces nothing, and that silence is a "no" that cannot
 be got wrong — so on the fleet as published today this changes nothing at all,
 and it converts itself as the loops reload rather than on a date somebody
@@ -262,58 +266,62 @@ Both addressings coexist. An item with `checkout_root` alone behaves exactly as
 it does today, including the pin and the notice announcing it.
 `one_box_by_path` is the field to watch rather than `one_box`: `one_box` also
 falls when a box goes away, and only the path half says the migration is
-happening (`pool.py:1070`).
+happening (`pool.PoolQueue.placement_census`, the width cap).
 
 **Not qualified, and therefore not claimed:** two-box concurrent submission
 against one shared bare repository; the first fetch of a large repository's
 history into an empty mirror on a box, which is bounded by lease heartbeats
-(`pool.py:2191`) but has not been timed against a real repository; and any
+(`pool.PoolQueue.resolve_checkout`) but has not been timed against a real repository; and any
 behaviour at all on the live fleet, which has not run these bytes.
 
 ## Line references
 
-Every `file:line` above is repeated here with the line it points at, and
-`tests/test_design_doc_line_references.py` checks the two still agree. This
-table exists because they twice did not: the design was written against one
-arrangement of `pbrun.py`, the branch it describes moved those lines, and two
-separate commits went to re-pointing them by hand. A citation nothing checks is
-a citation that decays into a confident wrong number, which is worse than no
-number at all — so the check is mechanical, and a range is anchored by its
-first line.
+The design turns on particular lines of particular files, so each is quoted
+here beside the file it lives in and `tests/test_design_doc_line_references.py`
+checks the quotation still occurs there, exactly once.
 
-| citation | the line it names |
+Quotations rather than line numbers, learned the hard way three times on this
+branch: the first versions cited `file:line`, and each went stale inside an
+hour because the work the design describes moves those very lines — this pass
+re-pointed the whole table twice before the check itself was rewritten. A
+line-number check fails on every unrelated edit to `pbrun.py`, which several
+branches edit at once, and that is a check people delete rather than keep. A
+quotation fails only when the code it names actually changes, which is exactly
+when the design needs re-reading.
+
+| where | the line it names |
 |---|---|
-| `pbrun.py:115` | `def _git_identity(cwd: Path) -> dict[str, str]:` |
-| `pbrun.py:237` | `    if tree is None:` |
-| `pbrun.py:301` | `def placement_tags(` |
-| `pbrun.py:367` | `def fleet_materialises(queue) -> tuple[bool \| None, str]:` |
-| `pbrun.py:403` | `def refuse_paths_into_the_checkout(command, variables, toplevel: str) -> None:` |
-| `pbrun.py:438` | `def plan_tree_addressing(` |
-| `pbrun.py:919` | `    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:` |
-| `pbrun.py:1038` | `    payload = (ck.stamp_bytes(plan["tree"]).decode("utf-8") if plan is not None` |
-| `pbrun.py:1091` | `        "params": ({"command": command, "repo": plan["repo"],` |
-| `pbrun.py:1174` | `        checkout_root=str(cwd),` |
-| `checkout.py:115` | `def stamp_bytes(tree_sha: str) -> bytes:` |
-| `checkout.py:153` | `def repo_identity(cwd: str \| Path) -> dict[str, str] \| None:` |
-| `checkout.py:216` | `def pending_add_bytes(toplevel: str \| Path) -> int:` |
-| `checkout.py:244` | `def synthesise_tree_commit(toplevel: str \| Path, *, scratch: str \| Path,` |
-| `checkout.py:269` | `        _git("read-tree", "HEAD", cwd=toplevel, env=env, timeout=600)` |
-| `checkout.py:293` | `def ensure_shared_bare(repo: str, *, name: str = "",` |
-| `checkout.py:378` | `def item_is_box_local(item: Mapping[str, object]) -> bool:` |
-| `checkout.py:395` | `def _hold_lock(path: Path, *, wait_s: float, stale_s: float,` |
-| `checkout.py:457` | `def materialise(` |
-| `checkout.py:615` | `def _ensure_commit(mirror: Path, *, commit: str, origin: str,` |
-| `checkout.py:643` | `def sweep(` |
-| `pool.py:182` | `WORKER_CAPABILITIES: tuple[str, ...] = (ck.CHECKOUT_COMMIT_CAPABILITY,)` |
-| `pool.py:613` | `                    descriptor = os.open(token, os.O_WRONLY \| os.O_CREAT \| os.O_EXCL, 0o644)` |
-| `pool.py:872` | `            "capabilities": sorted({str(c) for c in (capabilities or ())}),` |
-| `pool.py:1070` | `            by_path = ck.item_is_box_local(item)` |
-| `pool.py:1179` | `        if checkout_commit and checkout_tree and checkout_repo and checkout_origin:` |
-| `pool.py:1106` | `    def publish(` |
-| `pool.py:1659` | `                              ("worker_script", "cas_root", "checkout_root")))` |
-| `pool.py:2160` | `    def live_commits(self, *, host: str \| None = None,` |
-| `pool.py:2191` | `    def resolve_checkout(self, item: Mapping[str, object]) -> str:` |
-| `pool.py:2251` | `            checkout_root=self.resolve_checkout(item),` |
-| `worker_loop.py:271` | `            capabilities=pool.WORKER_CAPABILITIES,` |
-| `core.py:1136` | `def verify_code_closure(value: object, root: str \| Path) -> dict[str, object]:` |
-| `tools/fleet/pool_reset.py:12-14` | `* twelve died on ``live code closure differs from the action-pinned` |
+| `pool.PoolQueue.publish` | `    def publish(` |
+| `pbrun`, published checkout_root | `        checkout_root=str(cwd),` |
+| `pbrun.placement_tags` | `def placement_tags(` |
+| `pbrun`, the two key bindings | `    if tree is None:` |
+| `pbrun`, action body params | `        "params": ({"command": command, "repo": plan["repo"],` |
+| `checkout.stamp_bytes` | `def stamp_bytes(tree_sha: str) -> bytes:` |
+| `pbrun`, stamp payload | `    payload = (ck.stamp_bytes(plan["tree"]).decode("utf-8") if plan is not None` |
+| `checkout.repo_identity` | `def repo_identity(cwd: str \| Path) -> dict[str, str] \| None:` |
+| `checkout.ensure_shared_bare` | `def ensure_shared_bare(repo: str, *, name: str = "",` |
+| `pool.PoolQueue.publish`, the tree fields | `        if checkout_commit and checkout_tree and checkout_repo and checkout_origin:` |
+| `pool`, token mint | `                    descriptor = os.open(token, os.O_WRONLY \| os.O_CREAT \| os.O_EXCL, 0o644)` |
+| `pbrun._git_identity` | `def _git_identity(cwd: Path) -> dict[str, str]:` |
+| `checkout.synthesise_tree_commit` | `def synthesise_tree_commit(toplevel: str \| Path, *, scratch: str \| Path,` |
+| `checkout.synthesise_tree_commit`, the index seed | `        _git("read-tree", "HEAD", cwd=toplevel, env=env, timeout=600)` |
+| `checkout._ensure_commit` | `def _ensure_commit(mirror: Path, *, commit: str, origin: str,` |
+| `checkout._hold_lock` | `def _hold_lock(path: Path, *, wait_s: float, stale_s: float,` |
+| `pool`, worker_argv checkout | `            checkout_root=self.resolve_checkout(item),` |
+| `pool.PoolQueue.resolve_checkout` | `    def resolve_checkout(self, item: Mapping[str, object]) -> str:` |
+| `checkout.materialise` | `def materialise(` |
+| `core.verify_code_closure` | `def verify_code_closure(value: object, root: str \| Path) -> dict[str, object]:` |
+| `checkout.sweep` | `def sweep(` |
+| `pool.PoolQueue.live_commits` | `    def live_commits(self, *, host: str \| None = None,` |
+| `pool`, orphan stub fields | `                              ("worker_script", "cas_root", "checkout_root")))` |
+| `checkout.item_is_box_local` | `def item_is_box_local(item: Mapping[str, object]) -> bool:` |
+| `pbrun.refuse_paths_into_the_checkout` | `def refuse_paths_into_the_checkout(command, variables, toplevel: str) -> None:` |
+| `checkout.pending_add_bytes` | `def pending_add_bytes(toplevel: str \| Path) -> int:` |
+| `pbrun.plan_tree_addressing` | `def plan_tree_addressing(` |
+| `pbrun`, default environment | `    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:` |
+| `worker_loop`, the announce | `            capabilities=pool.WORKER_CAPABILITIES,` |
+| `pool.PoolQueue.announce`, capabilities | `            "capabilities": sorted({str(c) for c in (capabilities or ())}),` |
+| `pool.WORKER_CAPABILITIES` | `WORKER_CAPABILITIES: tuple[str, ...] = (ck.CHECKOUT_COMMIT_CAPABILITY,)` |
+| `pbrun.fleet_materialises` | `def fleet_materialises(queue) -> tuple[bool \| None, str]:` |
+| `pool.PoolQueue.placement_census`, the width cap | `            by_path = ck.item_is_box_local(item)` |
+| `tools/fleet/pool_reset.py` | `* twelve died on ``live code closure differs from the action-pinned` |

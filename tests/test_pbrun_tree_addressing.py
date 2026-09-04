@@ -222,6 +222,30 @@ def test_the_flag_default_and_the_module_bound_are_the_same_number() -> None:
         ck_module.DEFAULT_MAX_ADD_BYTES / 1024 ** 3
 
 
+def test_a_submit_does_not_stage_its_own_droppings(repo, tmp_path, monkeypatch) -> None:
+    """Otherwise every submit produces a new tree and never hits the CAS again.
+
+    ``pbrun`` writes a closure stamp and a result log into whatever tree it
+    submits from.  This repository ignores both in its tracked ``.gitignore``,
+    but the trees agents submit from are OTHER repositories that do not -- so
+    the exclusion that has to hold is the one ``keep_droppings_out_of_git``
+    writes into ``.git/info/exclude``, and it has to be written BEFORE the tree
+    is synthesised rather than after the action is sealed.
+    """
+
+    clean, _ = _plan(repo, tmp_path, monkeypatch)
+    assert clean is not None
+
+    pbrun.keep_droppings_out_of_git(repo)
+    (repo / f"{pbrun.STAMP_PREFIX}deadbeef.json").write_text('{"checkout_tree": "x"}')
+    (repo / f"{pbrun.RESULT_PREFIX}deadbeef.txt").write_text("output of a past run\n")
+
+    littered, _ = _plan(repo, tmp_path, monkeypatch)
+    assert littered is not None
+    assert littered["tree"] == clean["tree"], (
+        "the submit's own droppings entered the tree it is describing")
+
+
 # -- what the widening does to placement ---------------------------------
 
 
