@@ -46,6 +46,15 @@ from prismabuild import core as pb, pool  # noqa: E402
 
 POLL_S = 5.0
 STAMP = ".pbrun-closure.json"
+#: Every action tees its output to a file inside the checkout, and the
+#: worker refuses to start when that file already exists.  A fixed name
+#: therefore lets the first submit from a tree poison every later one:
+#: 19 of the queue's failures were exactly this, all reading "declared
+#: result path must be absent before execution".  The name is derived
+#: from what distinguishes the action, so two different commands get two
+#: files while a resubmit of the same command still lands on the same
+#: name and stays a CAS hit.
+RESULT_PREFIX = "pbrun_result."
 
 
 def _git_identity(cwd: Path) -> dict[str, str]:
@@ -65,10 +74,13 @@ def _git_identity(cwd: Path) -> dict[str, str]:
     # Content of the delta, not just its file list: a re-edit that restores
     # the same bytes is the same action, and a one-character change is not.
     # The stamp itself is filtered out: it is written into this tree by the
-    # submit that is computing this very digest.
+    # submit that is computing this very digest.  So are the result logs: a
+    # leftover one is output *about* a previous action, not a change to the
+    # code this action runs, and leaving it in moved the key on every submit
+    # after the first -- a cache miss dressed up as a different action.
     porcelain = "\n".join(
         line for line in _git("status", "--porcelain").splitlines()
-        if STAMP not in line
+        if STAMP not in line and RESULT_PREFIX not in line
     )
     dirty = porcelain + _git("diff", "HEAD")
     return {
@@ -113,6 +125,10 @@ def main() -> int:
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument("--priority", type=int, default=0)
+    ap.add_argument("--env", action="append", default=[],
+                    help="K=V added to the action's environment (repeatable)")
+    ap.add_argument("--no-default-env", action="store_true",
+                    help="declare only --env, without the fleet defaults")
     ap.add_argument("command", nargs=argparse.REMAINDER)
     args = ap.parse_args()
 
@@ -150,13 +166,45 @@ def main() -> int:
         encoding="utf-8")
     exclude = cwd / ".git" / "info" / "exclude"
     try:
-        if exclude.parent.is_dir() and STAMP not in exclude.read_text():
+        if exclude.parent.is_dir():
+            current = exclude.read_text()
             with exclude.open("a", encoding="utf-8") as handle:
-                handle.write(f"{STAMP}\n")
+                if STAMP not in current:
+                    handle.write(f"{STAMP}\n")
+                if RESULT_PREFIX not in current:
+                    handle.write(f"{RESULT_PREFIX}*\n")
     except OSError:
         pass                       # a worktree without .git/info is not an error
 
-    log_name = "pbrun_result.txt"
+    # `run_local_action` builds the child's environment from *these* and
+    # nothing else, so an empty dict is not "inherit the caller" -- it is an
+    # empty environment, rescued only by `bash -lc` sourcing a profile.  That
+    # is why TRITON_CACHE_DIR never reached a worker and 38 tests failed on a
+    # root-owned cache; the fix is to declare the few the fleet actually needs.
+    #
+    # Every value here is deliberately the same string on every box, so the
+    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:
+    # the path must be box-LOCAL (never /mnt/shared, where concurrent boxes
+    # corrupt each other's cache), and it is local precisely because each box
+    # has its own /home/rob -- same string, different disk.
+    variables = {} if args.no_default_env else {
+        "HOME": "/home/rob",
+        "TMPDIR": "/home/rob/tmp",
+        "TRITON_CACHE_DIR": "/home/rob/.triton-cache",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+    }
+    for entry in args.env:
+        if "=" not in entry:
+            raise SystemExit(f"--env expects K=V, got {entry!r}")
+        key, value = entry.split("=", 1)
+        variables[key] = value
+
+    fingerprint = hashlib.sha256(
+        json.dumps([command, str(cwd), demand, variables], sort_keys=True).encode()
+    ).hexdigest()[:16]
+    log_name = f"{RESULT_PREFIX}{fingerprint}.txt"
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
@@ -178,7 +226,7 @@ def main() -> int:
         "inputs": [],
         "code_closure": pb.build_code_closure(cwd, [STAMP]),
         "params": {"command": command, "cwd": str(cwd), "demand": demand},
-        "environment": {"variables": {}, "toolchain": {}},
+        "environment": {"variables": variables, "toolchain": {}},
         "execution_scope": {
             "portability": "portable", "platform_key": None, "host_class": None,
         },
