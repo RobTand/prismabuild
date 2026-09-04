@@ -15,6 +15,7 @@ These tests pin the metric and the one matcher it shares with placement.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import socket
 import sys
@@ -97,25 +98,36 @@ def test_width_is_unknown_before_any_worker_announces(tmp_path: Path) -> None:
 def test_the_census_counts_items_placeable_on_exactly_one_box(
     tmp_path: Path,
 ) -> None:
-    """The live shape on 2026-09-04: everything waiting, all of it on one box."""
+    """The live shape on 2026-09-04: everything waiting, all of it on one box.
+
+    Every item here carries a ``/home/rob/tmp/ts101`` checkout, which is the
+    shape the issue is about, so the ``gb10`` item counts as one box wide
+    even though two boxes offer that tag: two may claim it, one can run it.
+    """
 
     queue = _fleet(tmp_path)
-    _publish(queue, "a", tags=["sparky"], resources={"cpu": 1, "mem_gb": 4})
-    _publish(queue, "b", tags=["sparky"], resources={"cpu": 2, "mem_gb": 8})
-    _publish(queue, "c", tags=["gx10-6b77"], resources={"cpu": 1, "mem_gb": 4})
-    _publish(queue, "d", tags=["gb10"], resources={"cpu": 1, "mem_gb": 4})
-    _publish(queue, "e", tags=["dl380g10"], resources={"mem_gb": 4096})
+    with mock.patch.object(pool.socket, "gethostname", return_value="sparky"):
+        _publish(queue, "a", tags=["sparky"], resources={"cpu": 1, "mem_gb": 4})
+        _publish(queue, "b", tags=["sparky"], resources={"cpu": 2, "mem_gb": 8})
+        _publish(queue, "c", tags=["gx10-6b77"], resources={"cpu": 1, "mem_gb": 4})
+        _publish(queue, "d", tags=["gb10"], resources={"cpu": 1, "mem_gb": 4})
+        _publish(queue, "e", tags=["dl380g10"], resources={"mem_gb": 4096})
 
     census = queue.placement_census()
 
     assert census["ready"] == 5
-    assert census["one_box"] == 3
-    assert census["pinned_to"] == {"gx10-6b77": 1, "sparky": 2}
-    assert census["wide"] == 1               # the gb10 item: two boxes offer it
+    assert census["one_box"] == 4
+    assert census["one_box_by_path"] == 4
+    # ``d`` is attributed to sparky by ``published_by``: the tags allow two
+    # boxes, and the tree is on the one that submitted it.
+    assert census["pinned_to"] == {"gx10-6b77": 1, "sparky": 3}
+    assert census["wide"] == 0
     assert census["unplaceable"] == 1        # 4 TB of memory, on no box
     line = pool.describe_placement_census(census)
-    assert "3 on exactly one box (gx10-6b77 1, sparky 2)" in line
-    assert "1 on more than one" in line and "1 on none" in line
+    assert "4 on exactly one box (gx10-6b77 1, sparky 3)" in line
+    assert "4 by a box-local checkout" in line
+    assert "0 on more than one" in line and "1 on none" in line
+    assert "unreadable" not in line          # a zero clause teaches skipping
 
 
 def test_a_capacity_kind_the_offer_omits_is_not_a_refusal(tmp_path: Path) -> None:
@@ -196,3 +208,43 @@ def test_an_idle_worker_says_how_much_of_the_queue_is_one_box_wide(
     host = socket.gethostname()
     assert f"[{host}] idle; ready 1, 1 on exactly one box (otherbox 1)" in out, out
     assert "nothing admissible" in out and "on exactly one box (otherbox 1)" in out
+
+
+def test_a_box_local_checkout_caps_the_width_at_one_box(tmp_path: Path) -> None:
+    """The census asked which boxes match the TAGS, never which can see the TREE.
+
+    An action tagged ``--tag gb10`` over a ``/home/rob/tmp/ts101`` worktree
+    matches two boxes and can run on one, so it counted as ``wide`` -- the
+    metric under-reporting the very pin it exists to report.  A
+    ``checkout_root`` outside ``/mnt/shared`` exists on exactly one box; that
+    is a fact about the path, and it caps the width at one however many boxes
+    the tags match.
+    """
+
+    queue = _fleet(tmp_path)
+    with mock.patch.object(pool.socket, "gethostname", return_value="sparky"):
+        _publish(queue, "d", tags=["gb10"], resources={"cpu": 1, "mem_gb": 4})
+
+    census = queue.placement_census()
+
+    assert census["one_box"] == 1 and census["wide"] == 0
+    assert census["pinned_to"] == {"sparky": 1}
+    assert census["one_box_by_path"] == 1
+    assert "1 by a box-local checkout" in pool.describe_placement_census(census)
+
+
+def test_a_shared_checkout_is_still_counted_as_wide(tmp_path: Path) -> None:
+    """The cap is the path, not the tags: the same tags on a shared tree are wide."""
+
+    queue = _fleet(tmp_path)
+    queue.publish(
+        action_key="d" * 64, cas_root=queue.root / "cas",
+        checkout_root="/mnt/shared/prismabuild-fleet/checkout",
+        worker_script="/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py",
+        tags=["gb10"], resources={"cpu": 1, "mem_gb": 4},
+    )
+
+    census = queue.placement_census()
+
+    assert census["wide"] == 1 and census["one_box"] == 0
+    assert census["one_box_by_path"] == 0

@@ -242,17 +242,39 @@ def placement_tags(
 def is_box_local(cwd: Path) -> bool:
     """Does this path exist on exactly one box?
 
-    The one rule, with two readers: ``placement_tags`` turns it into a pin,
-    and ``pin_notice`` turns it into the sentence that says so.  A second copy
-    of the test is a way for the pin and the explanation of the pin to
-    disagree.
+    Resolution happens here and only here.  The rule itself lives in
+    ``pool.is_box_local_path`` because the queue applies it too, to paths
+    other boxes recorded -- and it must not resolve those, since the reading
+    box's symlinks say nothing about a tree it does not have.  At submit the
+    path is local and real, so a symlink into shared storage is followed and
+    the checkout is correctly called shared.
     """
 
-    try:
-        cwd.resolve().relative_to(SHARED_ROOT)
-    except ValueError:
-        return True
-    return False
+    return pool.is_box_local_path(cwd.resolve())
+
+
+def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
+    """How many boxes this action WOULD have had, with the host tag taken off.
+
+    Not "how many boxes match the pinned tags" -- that is one, by
+    construction, and saying it would be a tautology dressed as a
+    measurement.  A demand only this box can meet costs nothing to pin, and
+    saying so keeps the notice from crying wolf on every GPU-heavy
+    submission.  ``None`` from ``placeable_hosts`` means no worker has
+    announced, and that stays unknown rather than being printed as zero.
+    """
+
+    unpinned = dict(intent)
+    unpinned["tags"] = [t for t in tags if t != hostname]
+    hosts = queue.placeable_hosts(unpinned)
+    if hosts is None:
+        return "Fleet width unknown: no worker has announced."
+    others = [h for h in hosts if h != hostname]
+    if not others:
+        return "No other live box fits this demand, so the pin costs nothing now."
+    return (f"{len(others)} other live box{'es' if len(others) > 1 else ''} "
+            f"fit{'' if len(others) > 1 else 's'} this demand: "
+            f"{', '.join(others)}.")
 
 
 def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool,
@@ -268,66 +290,100 @@ def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool,
     ``/home/rob/tmp/ts*`` worktree -- while sparky's queue backed up and the
     other two boxes idled.
 
-    The width is quoted from the same matcher the queue places by, and it is
-    the width the action WOULD have had: the host tag is removed before
-    asking, because "how many boxes fit this demand" is the question the pin
-    just answered with one.  ``None`` from ``placeable_hosts`` means no worker
-    has announced, and that stays unknown rather than being printed as zero.
+    **Everything below is read off the tags that LANDED, never off the flags
+    that asked for them.**  ``placement_tags`` returns ``list(explicit)`` the
+    moment any ``--tag`` is given, so ``--here`` and a box-local checkout are
+    both silently overridden by it.  A first version asked the ``here`` flag
+    instead, and so announced "PINNED to sparky by --here, so no other box can
+    claim this action" for a submission whose tags were ``['x86']`` -- naming,
+    as the *other* box, the only box that could actually run it.  A notice
+    about a pin has one job and that was it.
+
+    Exclusivity is claimed only where it is provable.  A tag naming this host
+    cannot be claimed elsewhere; a tag that merely happens to match one live
+    box today -- ``gb10``, ``sparklina`` -- is a fact about the fleet as
+    announced at this instant, and the second box offering it can claim an
+    action whose tree it does not have.  So that case is reported as the
+    contingency it is rather than as "match only this box".
 
     Returns "" when there is nothing to say -- a shared checkout that was
     already free to run anywhere.
     """
 
     tags = [str(t) for t in (intent.get("tags") or [])]
+    explicit = [str(t) for t in (explicit or [])]
     local = is_box_local(cwd)
-    if local and explicit:
-        # The path pins; an explicit tag REPLACES the pin rather than adding to
-        # it, so this action may be claimed by a box that cannot see its tree.
-        # That fails loudly rather than silently -- the worker refuses on
-        # "checkout root is unavailable", or on the closure check
-        # (``core.verify_code_closure``) when a same-named tree exists there
-        # with other bytes -- but it fails after a claim and two retries.  Say
-        # so here, where it costs nothing.
-        #
-        # Ask the placer, not the tag text.  ``--tag sparky`` from a sparky
-        # worktree is the submission the issue describes people making, and
-        # it is correct; so is a tag only one box offers (``--tag sparklina``).
-        # Warn only when a box that is NOT this one could actually claim it.
-        hosts = queue.placeable_hosts(intent)
-        if hosts is None:
-            # Nobody has announced, so the placer cannot answer.  Naming this
-            # box is the one tag form that provably cannot land elsewhere.
-            others = [] if hostname in [str(t) for t in explicit] else ["another box"]
-        else:
-            others = [h for h in hosts if h != hostname]
+    pinned = hostname in tags               # the pin as it landed, not as asked
+    claimants = queue.placeable_hosts(intent)
+    others = None if claimants is None else sorted(
+        h for h in claimants if h != hostname)
+
+    if pinned:
         if others:
-            return (f"pbrun: WARNING -- the checkout {cwd} exists only on "
-                    f"{hostname}, but tags {tags} let {', '.join(others)} claim "
-                    f"this action.  It will fail there rather than run on the "
-                    f"wrong tree; add --tag {hostname} if you meant this box, "
-                    f"or move the checkout under {SHARED_ROOT}.")
-        return (f"pbrun: PINNED to {hostname} -- the checkout {cwd} is box-local "
-                f"and tags {tags} match only this box.")
-    if not (local or here):
+            # A host tag should be this box's alone; a worker started
+            # elsewhere with ``--tag sparky`` makes it not.  Ask the placer
+            # rather than assert the construction.
+            return (f"pbrun: WARNING -- tags {tags} name {hostname}, but "
+                    f"{', '.join(others)} offer that tag too, so this action "
+                    f"is not exclusive to this box.  Check what those workers "
+                    f"were started with.")
+        if here and not local:
+            head = (f"pbrun: PINNED to {hostname} by --here, so no other box "
+                    f"can claim this action.")
+        elif local:
+            head = (f"pbrun: PINNED to {hostname} -- the checkout {cwd} is "
+                    f"box-local, so no other box can claim this action.")
+        else:
+            head = (f"pbrun: PINNED to {hostname} by --tag {hostname}, so no "
+                    f"other box can claim this action.")
+        tail = ("" if not local else
+                f"  Move the checkout under {SHARED_ROOT} to let any box claim "
+                f"it, or accept the pin knowingly.")
+        return f"{head}  {_width_of_the_pin(queue, intent, tags, hostname)}{tail}"
+
+    # No host tag landed.  Say what did, and what it costs.
+    notes: list[str] = []
+    if here:
+        notes.append(f"--here did NOT pin this action: an explicit --tag "
+                     f"REPLACES the host tag rather than adding to it, so "
+                     f"tags {tags} alone place it.")
+    if local:
+        if others is None:
+            notes.append(f"WARNING -- the checkout {cwd} exists only on "
+                         f"{hostname}, and no worker has announced, so tags "
+                         f"{tags} may let another box claim this action and "
+                         f"fail on the missing tree.")
+        elif others:
+            notes.append(f"WARNING -- the checkout {cwd} exists only on "
+                         f"{hostname}, but tags {tags} let {', '.join(others)} "
+                         f"claim this action.  It will fail there rather than "
+                         f"run on the wrong tree.")
+        else:
+            # True of the fleet as announced, and only of that.  Nothing
+            # reserves ``gb10`` or ``sparklina`` for one box, so the second
+            # box offering it can claim a tree it does not have -- which is
+            # the case the WARNING above exists to catch, arriving later.
+            notes.append(f"the checkout {cwd} exists only on {hostname}, and "
+                         f"no other live box offers tags {tags} -- but nothing "
+                         f"reserves those tags for this box, so a box that "
+                         f"starts offering them can claim this action and fail "
+                         f"on the missing tree.")
+        notes.append(f"Add --tag {hostname} if you meant this box, or move the "
+                     f"checkout under {SHARED_ROOT}.")
+    elif here:
+        if claimants is None:
+            notes.append("No worker has announced, so which box claims it is "
+                         "unknown.")
+        elif claimants:
+            notes.append(f"{len(claimants)} live "
+                         f"box{'es' if len(claimants) > 1 else ''} can claim "
+                         f"it: {', '.join(claimants)}.")
+        else:
+            notes.append("No live box offers these tags.")
+        notes.append(f"Add --tag {hostname} if you meant this box.")
+    if not notes:
         return ""
-    unpinned = dict(intent)
-    unpinned["tags"] = [t for t in tags if t != hostname]
-    hosts = queue.placeable_hosts(unpinned)
-    if hosts is None:
-        width = "Fleet width unknown: no worker has announced."
-    else:
-        others = [h for h in hosts if h != hostname]
-        width = (f"{len(others)} other live box{'es' if len(others) > 1 else ''} "
-                 f"fit{'' if len(others) > 1 else 's'} this demand: "
-                 f"{', '.join(others)}." if others else
-                 "No other live box fits this demand, so the pin costs nothing now.")
-    if here and not local:
-        return (f"pbrun: PINNED to {hostname} by --here, so no other box can "
-                f"claim this action.  {width}")
-    return (f"pbrun: PINNED to {hostname} -- the checkout {cwd} is box-local, "
-            f"so no other box can claim this action.  {width}  Move the "
-            f"checkout under {SHARED_ROOT} to let any box claim it, or accept "
-            f"the pin knowingly.")
+    return "pbrun: " + "  ".join(notes)
 
 
 def await_outcome(q, key: str, *, wait_s: float) -> int:

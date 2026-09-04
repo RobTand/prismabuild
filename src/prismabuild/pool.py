@@ -118,6 +118,37 @@ DEFAULT_POOL_ROOT = Path(
     os.environ.get("PRISMABUILD_POOL_ROOT", "/mnt/shared/pb-queue")
 )
 
+#: Every box mounts this at the same path.  A checkout underneath it is
+#: visible to all of them; a checkout outside it exists on exactly one box.
+SHARED_ROOT = Path("/mnt/shared")
+
+
+def is_box_local_path(path: object) -> bool:
+    """Does this absolute path exist on exactly one box?
+
+    The rule that decides an action's placement lives here rather than in
+    ``pbrun`` because two readers need it and they must not disagree: the
+    submitter turns it into a pin (``pbrun.placement_tags``), and the queue
+    turns it into a width (``placement_census``).  A second copy is how the
+    pin and the measurement of the pin end up describing different fleets.
+
+    A pure string test, deliberately.  The census reads paths recorded by
+    OTHER boxes, and ``resolve()`` would follow the reading box's symlinks
+    through a tree it does not have -- so resolution belongs at submit time,
+    where the path is local and real, and ``pbrun`` does it before this is
+    ever asked (``pbrun.py`` resolves ``--cwd`` and publishes the resolved
+    string).
+
+    An absent path answers ``False``: an item with no ``checkout_root``
+    recorded is a thing we know nothing about, and inventing a pin for it
+    would put a number in the census that no path put there.
+    """
+
+    text = str(path or "")
+    if not text:
+        return False
+    return not Path(text).is_relative_to(SHARED_ROOT)
+
 
 class PoolError(pb.PrismaBuildError):
     """A queue-level failure, distinct from an action-level one."""
@@ -610,6 +641,15 @@ class PoolQueue:
         are waiting on, because *which* box is queueing is what tells a
         person whether the pin is the reason the fleet looks busy.
 
+        Width is the number of boxes that can RUN an item, which is not the
+        number whose tags match it.  A ``checkout_root`` outside
+        ``/mnt/shared`` exists on exactly one box, so it caps the width at one
+        however many boxes the tags allow -- and ``one_box_by_path`` counts
+        the items where the path is what did the capping, because that is the
+        number commit-addressed checkouts are meant to drive down and the
+        only one that says the migration is working rather than that a box
+        went away.
+
         ``known`` is false when no worker has announced.  The buckets are then
         zero and mean nothing -- the same unknown-stays-unknown rule
         ``placeable`` follows, kept as a field rather than as three ``None``s
@@ -624,6 +664,7 @@ class PoolQueue:
             "known": bool(live),
             "unplaceable": 0,
             "one_box": 0,
+            "one_box_by_path": 0,
             "wide": 0,
             "pinned_to": {},
         }
@@ -635,13 +676,36 @@ class PoolQueue:
                 str(offer.get("host") or "?")
                 for offer in self._matching_offers(item, live=live)
             })
+            # Tags say which boxes are ALLOWED to claim it; the checkout says
+            # which box can actually run it.  A box-local ``checkout_root``
+            # exists on exactly one box, so it caps the width at one however
+            # many boxes the tags match -- and without this cap the metric
+            # under-reported the very pin it exists to report: an action
+            # tagged ``gb10`` over a ``/home/rob/tmp/ts101`` worktree matches
+            # two boxes and can run on one, and counted as ``wide``.
+            by_path = is_box_local_path(item.get("checkout_root"))
             if not hosts:
                 census["unplaceable"] = int(census["unplaceable"]) + 1
-            elif len(hosts) == 1:
-                census["one_box"] = int(census["one_box"]) + 1
-                pinned[hosts[0]] = pinned.get(hosts[0], 0) + 1
-            else:
+                continue
+            if not (by_path or len(hosts) == 1):
                 census["wide"] = int(census["wide"]) + 1
+                continue
+            census["one_box"] = int(census["one_box"]) + 1
+            if by_path:
+                census["one_box_by_path"] = int(census["one_box_by_path"]) + 1
+            # Which box: the tags when they answer alone, otherwise the box
+            # that published it, which is the box whose tree it is.  When
+            # neither answers -- a box-local item whose publisher is not
+            # among the boxes its tags match -- the item is still one box
+            # wide and simply goes unattributed, so ``pinned_to`` may sum to
+            # less than ``one_box``.  A name we cannot prove is worse than a
+            # missing one.
+            holder = hosts[0] if len(hosts) == 1 else None
+            if holder is None:
+                published_by = str(item.get("published_by") or "")
+                holder = published_by if published_by in hosts else None
+            if holder is not None:
+                pinned[holder] = pinned.get(holder, 0) + 1
         census["pinned_to"] = dict(sorted(pinned.items()))
         return census
 
@@ -1270,6 +1334,13 @@ def describe_placement_census(census: Mapping[str, object]) -> str:
     if isinstance(pinned, Mapping) and pinned:
         where = " (" + ", ".join(f"{host} {n}" for host, n in pinned.items()) + ")"
     parts.append(f"{one_box} on exactly one box{where}")
+    # The migration number.  ``one_box`` falls for two very different reasons
+    # -- submitters moving to a checkout every box can see, or a box simply
+    # going away -- and only the first is the fix working, so the half that
+    # a path caused is named separately.
+    by_path = int(census.get("one_box_by_path", 0))
+    if by_path:
+        parts.append(f"{by_path} by a box-local checkout")
     parts.append(f"{int(census.get('wide', 0))} on more than one")
     parts.append(f"{int(census.get('unplaceable', 0))} on none")
     return ", ".join(parts)

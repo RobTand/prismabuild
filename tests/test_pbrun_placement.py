@@ -272,9 +272,14 @@ def test_naming_this_box_is_the_correct_submission_not_a_warning(tmp_path) -> No
     ``--tag sparky`` from a sparky worktree is exactly what the issue says
     submitters do, and it is right: the action cannot land where its tree is
     absent.  A first draft warned on the presence of any ``--tag`` and so told
-    this submitter to add the tag they had just passed.  The question is not
-    what the tag says, it is whether any OTHER box could claim it -- so ask the
-    placer, which also gets a one-box alias (``--tag sparklina``) right.
+    this submitter to add the tag they had just passed.
+
+    A one-box alias (``--tag sparklina``) is right too, and is a weaker
+    statement: it is exclusive because of who is announcing, not because of
+    what the tag means.  So it is reported without a WARNING and without the
+    word PINNED -- naming the contingency instead, which is the difference
+    ``test_a_tag_no_other_box_offers_today_is_not_called_exclusive`` exists
+    to hold.
     """
 
     queue = _fleet(tmp_path)
@@ -286,10 +291,32 @@ def test_naming_this_box_is_the_correct_submission_not_a_warning(tmp_path) -> No
         cwd=Path("/home/rob/tmp/ts91"), hostname="gx10-6b77", here=False,
         explicit=["sparklina"])
 
-    for notice in (own, alias):
-        assert "WARNING" not in notice
-        assert "match only this box" in notice
-    assert notice_host(own) == "sparky" and notice_host(alias) == "gx10-6b77"
+    assert "WARNING" not in own and "WARNING" not in alias
+    assert notice_host(own) == "sparky"
+    assert "PINNED" not in alias
+    assert "exists only on gx10-6b77" in alias
+    assert "no other live box offers tags ['sparklina']" in alias
+    assert "--tag gx10-6b77" in alias
+
+
+def test_a_host_tag_another_box_also_offers_is_not_exclusive(tmp_path) -> None:
+    """The one thing a host tag is trusted for, checked rather than assumed.
+
+    ``sparky`` is this box's alone by construction of ``worker_loop``'s
+    offered tags -- until a loop is started elsewhere with ``--tag sparky``,
+    which is a thing a person can do.  The notice asks the placer instead of
+    reasoning from the construction, so the day that happens it says so.
+    """
+
+    queue = _fleet(tmp_path)
+    queue.announce(host="dl380g10", tags=["cpu", "dl380g10", "x86", HOST],
+                   has_gpu=False, capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
+
+    notice = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                     demand={"cpu": 1}, explicit=[HOST])
+
+    assert "WARNING" in notice and "dl380g10" in notice
+    assert "not exclusive to this box" in notice
 
 
 def notice_host(notice: str) -> str:
@@ -359,3 +386,62 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
     err = capsys.readouterr().err
     assert err.index("PINNED to sparky") < err.index("pbrun: queued")
     assert "1 other live box fits this demand: dl380g10" in err
+
+
+def test_here_overridden_by_a_tag_does_not_announce_a_pin_that_never_happened(
+    tmp_path,
+) -> None:
+    """``placement_tags`` returns ``list(explicit)``, so ``--tag`` REPLACES ``--here``.
+
+    The notice read the ``here`` FLAG rather than the tags that actually
+    landed, so from a shared checkout on sparky ``pbrun --here --tag x86``
+    printed, verbatim: "pbrun: PINNED to sparky by --here, so no other box can
+    claim this action.  1 other live box fits this demand: dl380g10." --
+    asserting an exclusivity that does not exist and then naming, as the
+    "other" box, the only box that can actually run the action.
+    """
+
+    tags = pbrun.placement_tags(Path("/mnt/shared/tessera-x86"),
+                                explicit=["x86"], here=True, hostname=HOST)
+    assert tags == ["x86"]                     # the host tag never landed
+
+    notice = _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86", tags=tags,
+                     demand={"cpu": 1}, here=True, explicit=["x86"])
+
+    assert "PINNED" not in notice
+    assert "--here" in notice                  # and that the flag did nothing
+    assert "dl380g10" in notice                # the box that will really run it
+
+
+def test_here_overridden_over_a_box_local_tree_says_both_things(tmp_path) -> None:
+    """The override and the tree that cannot travel are two separate facts."""
+
+    notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101", tags=["x86"],
+                     demand={"cpu": 1}, here=True, explicit=["x86"])
+
+    assert "PINNED" not in notice
+    assert "--here" in notice
+    assert "WARNING" in notice and "exists only on sparky" in notice
+
+
+def test_a_tag_no_other_box_offers_today_is_not_called_exclusive(tmp_path) -> None:
+    """"match only this box" was true of the fleet as ANNOUNCED, not of the fleet.
+
+    With only sparky's offer live, a box-local checkout submitted ``--tag
+    gb10`` printed "PINNED to sparky -- the checkout /home/rob/tmp/ts101 is
+    box-local and tags ['gb10'] match only this box."  gx10-6b77 offers
+    ``gb10`` too; the moment its offer refreshes it can claim an action whose
+    tree it does not have, which is exactly the case the WARNING branch
+    exists to catch.  Only a tag naming this host is provably exclusive.
+    """
+
+    lonely = pool_module.PoolQueue(tmp_path / "q")
+    lonely.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
+                    capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
+
+    notice = _notice(lonely, cwd="/home/rob/tmp/ts101", tags=["gb10"],
+                     demand={"cpu": 1}, explicit=["gb10"])
+
+    assert "match only this box" not in notice
+    assert "gb10" in notice
+    assert f"--tag {HOST}" in notice           # the submission that IS exclusive
