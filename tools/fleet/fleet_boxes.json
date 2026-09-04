@@ -1,25 +1,66 @@
 {
   "schema": "prismaquant.prismabuild.fleet_boxes.v1",
-  "_why": "One versioned statement of what each box offers the pool, so a supervisor on any box can be started by an identical command line and the shape of the fleet is a file somebody can read rather than three hand-typed invocations nobody wrote down. Values here are the ones the loops were observed running on 2026-09-03; changing the fleet means changing this file.",
+  "_why": "One versioned statement of what each box offers the pool, so a supervisor on any box can be started by an identical command line and the shape of the fleet is a file somebody can read rather than three hand-typed invocations nobody wrote down. Values here are the ones the loops were observed running on 2026-09-03; changing the fleet means changing this file. Raised 2026-09-04 against measurement, not intuition: see _measured_2026_09_04.",
   "boxes": {
     "sparky": {
       "loops": 5,
-      "args": ["--class", "gb10", "--gpu-slots", "2", "--mem-gb", "48",
-               "--timeout-s", "7200", "--max-idle", "500", "--poll-s", "15"]
+      "args": [
+        "--class",
+        "gb10",
+        "--gpu-slots",
+        "2",
+        "--mem-gb",
+        "72",
+        "--timeout-s",
+        "7200",
+        "--max-idle",
+        "500",
+        "--poll-s",
+        "15"
+      ]
     },
     "gx10-6b77": {
       "_alias": "sparklina",
       "loops": 3,
-      "args": ["--class", "gb10", "--tag", "sparklina", "--gpu-slots", "1",
-               "--mem-gb", "40", "--timeout-s", "7200", "--max-idle", "500",
-               "--poll-s", "20", "--python",
-               "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python"]
+      "args": [
+        "--class",
+        "gb10",
+        "--tag",
+        "sparklina",
+        "--gpu-slots",
+        "2",
+        "--mem-gb",
+        "80",
+        "--timeout-s",
+        "7200",
+        "--max-idle",
+        "500",
+        "--poll-s",
+        "20",
+        "--python",
+        "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python"
+      ]
     },
     "dl380g10": {
       "loops": 16,
-      "args": ["--class", "x86", "--gpu-slots", "0", "--mem-gb", "60",
-               "--all-cores", "--timeout-s", "3600", "--max-idle", "2000",
-               "--poll-s", "10", "--python", "/home/rob/venvs/pb-cpu/bin/python"]
+      "args": [
+        "--class",
+        "x86",
+        "--gpu-slots",
+        "0",
+        "--mem-gb",
+        "60",
+        "--all-cores",
+        "--timeout-s",
+        "3600",
+        "--max-idle",
+        "2000",
+        "--poll-s",
+        "10",
+        "--python",
+        "/home/rob/venvs/pb-cpu/bin/python"
+      ]
     }
-  }
+  },
+  "_measured_2026_09_04": "Both GB10 boxes are 121 GB unified. sparklina announced 40 of them and one GPU slot, and its only GPU token was held by a legitimate long out-of-pool encode drawing 14 W of a ~140 W envelope -- so a queued GPU action waited 30 minutes on a box that was, by power, one tenth loaded, with 111 GB available and load 3.0 across 10 cores. gpu-slots 1 -> 2, mem-gb 40 -> 80. sparky was the mirror case on memory alone: 96 GB available behind a 48 GB offer, so its 40 GB queue head could not pair with anything; mem-gb 48 -> 72, and gpu-slots stays 2 because load was already 14.5 across 10 cores and GPU concurrency, not memory, is what serialises that box. The caps stay well under available memory on purpose: the offer is the admission bound that keeps concurrent agent compute from taking a box down."
 }
