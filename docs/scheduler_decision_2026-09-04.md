@@ -64,7 +64,7 @@ thin lane being built keeps the transport-specific verbs to one small module.
 | Root access | `sudo -n true` fails on all three; password sudo only, so every install step is a runbook Rob runs |
 | Live queue | ready 0, claimed 2, done 912, failed 427, withdrawn 35 |
 | Failure ledger, by cause | 378 `failed` with the command's own non-zero exit (mostly red Tessera test arms, which is the command working), 34 `reset`, 11 `orphaned_stub` (#11), 4 `lease_lost_max_attempts`: **49 of 1,339 terminal records (3.7%) are pool-mechanism failures** |
-| Clock skew from sparky | sparklina +4 ms, dl380g10 +1.7 s; all three on `systemd-timesyncd` with no server configured (Rob wants 192.168.1.1) |
+| Clock skew from sparky | sparklina +4 ms; dl380g10 within 15 ms, measured by NFS server timestamps (an earlier +1.7 s figure was an artifact of the 3.5 s ssh handshake to that box and is withdrawn). All three ran `systemd-timesyncd` with no server configured; Rob pinned them to 192.168.1.1 the same day |
 | Worker signal dispositions | dl380g10 loops run with SIGINT ignored (`SigIgn 0x1001007`); sparky loops do not. This, not a timing bound, was #25 |
 | Repository history sizes | tessera pack 4.94 MiB / 1,375 commits; prismaquant 46.8 MiB / 2,173; well under the 512 MiB snapshot ceiling, so #35's ancestry fix is cheap |
 | Apt SLURM | Ubuntu 24.04 (Sparks) `slurm-wlm` 23.11.4; Ubuntu 26.04 (dl380g10) 25.11.2 |
