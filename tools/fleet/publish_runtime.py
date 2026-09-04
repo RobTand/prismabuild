@@ -43,8 +43,12 @@ FLEET_SCRIPTS = (
     "pbrun.py", "pbtest.py", "require_pool.py", "worker_loop.py", "worker.py",
     "render_identity.py", "seal_and_publish.py", "tessera_status.py",
     "dispatch_tessera_shards.py", "dispatch_tessera_ladder.py",
-    "publish_runtime.py", "pool_reset.py",
+    "publish_runtime.py", "pool_reset.py", "supervise.py",
 )
+#: Not code, but read by published code: the supervisor on each box reads the
+#: fleet's declared shape from here, so a runtime published without it starts
+#: no workers at all.
+FLEET_DATA = ("fleet_boxes.json",)
 
 
 def _sha256(path: Path) -> str:
@@ -89,6 +93,11 @@ def main() -> int:
             continue
         published[f"tools/{name}"] = _sha256(source)
         published[f"tools/fleet/{name}"] = published[f"tools/{name}"]
+    for name in FLEET_DATA:
+        source = CHECKOUT / "tools" / "fleet" / name
+        if source.is_file():
+            published[f"tools/{name}"] = _sha256(source)
+            published[f"tools/fleet/{name}"] = published[f"tools/{name}"]
     worker = CHECKOUT / "tools" / "prismabuild_worker.py"
     if worker.is_file():
         published["tools/prismabuild_worker.py"] = _sha256(worker)

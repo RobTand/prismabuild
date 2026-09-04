@@ -65,10 +65,36 @@ def _config(host: str) -> dict:
 
 
 def _live_loops() -> list[int]:
+    """The worker loops actually running, not the processes that mention one.
+
+    ``pgrep -f worker_loop.py`` matches any command line containing that
+    string, and plenty do: the ssh invocation that starts a supervisor, an
+    agent grepping for loops, this file being edited.  Over-counting is the
+    dangerous direction -- it makes a drained box look full and suppresses
+    exactly the respawn this exists for -- so a candidate is confirmed by
+    reading its own argv and requiring the loop script to be an argument to
+    an interpreter, which is what a running loop is and a mention of one
+    never is.
+    """
+
     proc = subprocess.run(["pgrep", "-f", "worker_loop.py"],
                           capture_output=True, text=True, check=False)
     mine = os.getpid()
-    return [int(p) for p in proc.stdout.split() if int(p) != mine]
+    confirmed: list[int] = []
+    for token in proc.stdout.split():
+        pid = int(token)
+        if pid == mine:
+            continue
+        try:
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue                      # exited between pgrep and here
+        args = [part.decode("utf-8", "replace") for part in argv if part]
+        if len(args) < 2 or "python" not in args[0].rsplit("/", 1)[-1]:
+            continue
+        if any(arg.endswith("worker_loop.py") for arg in args[1:2]):
+            confirmed.append(pid)
+    return confirmed
 
 
 def _spawn(args: list[str], index: int) -> int:
