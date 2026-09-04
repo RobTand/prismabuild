@@ -243,6 +243,73 @@ def placement_tags(
     return []
 
 
+def await_outcome(q, key: str, *, wait_s: float) -> int:
+    """Block until this action reaches a terminal directory, then report it.
+
+    Split out of ``main`` so the outcome half can be tested without a
+    submission: the bug this exists to prevent lived entirely in which
+    directories the loop watched, which is exactly the part a live-queue
+    test would have been least likely to reach.
+    """
+
+    # Watch BOTH terminal directories.  An action whose argv exits non-zero is
+    # retried and then filed under ``failed``, never under ``done`` -- and this
+    # loop used to watch ``done`` alone, so a caller whose suite legitimately
+    # failed sat here until ``--wait-s`` expired (a DAY, by default) and then
+    # got exit 75 and the words "gave up waiting".  The work had run, three
+    # times, and said why each time; none of it reached the person waiting.
+    # Sixty-six items sat in ``failed`` when this was found, and the agents who
+    # submitted them reported the pool as having never scheduled their work.
+    done = q.item_path("done", key)
+    failed = q.item_path("failed", key)
+    deadline = time.monotonic() + wait_s
+    # Poll by readdir, not by stat.  The queue lives on NFS, where a stat of a
+    # path that did not exist yet is negatively cached: the outcome landed and
+    # a bare ``done.exists()`` kept answering False.  Listing the directory
+    # revalidates it.
+    def _landed(path) -> bool:
+        try:
+            return path.name in os.listdir(path.parent)
+        except OSError:
+            return False
+
+    while True:
+        if _landed(done):
+            outcome_path = done
+            break
+        if _landed(failed):
+            outcome_path = failed
+            break
+        if time.monotonic() > deadline:
+            print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
+            return 75
+        time.sleep(POLL_S)
+
+    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
+    detail = outcome.get("detail") or {}
+    sys.stdout.write(str(detail.get("stdout") or ""))
+    sys.stderr.write(str(detail.get("stderr") or ""))
+    status = str(outcome.get("status"))
+    print(f"pbrun: {status} on {outcome.get('finished_host')} "
+          f"in {detail.get('elapsed_s', 0):.0f}s", file=sys.stderr)
+    if status == "cache_hit":
+        return 0
+    rc = detail.get("returncode")
+    if isinstance(rc, int):
+        return rc
+    if status == "executed":
+        return 0
+    # A failure the worker itself raised carries no returncode -- the argv's
+    # status is inside the exception text.  Surface the text; the caller gets a
+    # non-zero exit either way, but the text is what makes it actionable.
+    error = str(detail.get("error") or detail.get("exception") or "").strip()
+    if error:
+        print(f"pbrun: {error}", file=sys.stderr)
+    print(f"pbrun: outcome filed under {outcome_path.parent.name} after "
+          f"{outcome.get('attempts', '?')} attempt(s)", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Submit one command to the PrismaBuild pool and wait for it."
@@ -504,35 +571,7 @@ def main() -> int:
     print(f"pbrun: queued {key[:12]} tags={tags} demand={demand}{masked}",
           file=sys.stderr, flush=True)
 
-    done = q.item_path("done", key)
-    deadline = time.monotonic() + args.wait_s
-    # Poll by readdir, not by stat.  The queue lives on NFS, where a stat of a
-    # path that did not exist yet is negatively cached: the outcome landed and
-    # a bare ``done.exists()`` kept answering False.  Listing the directory
-    # revalidates it.
-    def _landed() -> bool:
-        try:
-            return done.name in os.listdir(done.parent)
-        except OSError:
-            return False
-
-    while not _landed():
-        if time.monotonic() > deadline:
-            print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
-            return 75
-        time.sleep(POLL_S)
-
-    outcome = json.loads(done.read_text(encoding="utf-8"))
-    detail = outcome.get("detail") or {}
-    sys.stdout.write(str(detail.get("stdout") or ""))
-    sys.stderr.write(str(detail.get("stderr") or ""))
-    status = str(outcome.get("status"))
-    print(f"pbrun: {status} on {outcome.get('finished_host')} "
-          f"in {detail.get('elapsed_s', 0):.0f}s", file=sys.stderr)
-    if status == "cache_hit":
-        return 0
-    rc = detail.get("returncode")
-    return int(rc) if isinstance(rc, int) else (0 if status == "executed" else 1)
+    return await_outcome(q, key, wait_s=args.wait_s)
 
 
 if __name__ == "__main__":
