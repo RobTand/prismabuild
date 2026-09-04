@@ -97,7 +97,12 @@ def contends(command: str) -> bool:
     permitted neighbour.
     """
 
-    for segment in SEPARATORS.split(command):
+    # A backslash-newline is a line continuation, not a command boundary.
+    # Splitting on the raw newline tears one command into pieces and strips
+    # each piece of the context that exempts it -- which refused a worker
+    # launch whose interpreter argument sat on its own continued line.
+    joined = re.sub(r"\\\s*\n", " ", command)
+    for segment in SEPARATORS.split(joined):
         if not CONTENDS.search(segment):
             continue
         if _first_token(segment) in NEVER_GPU:

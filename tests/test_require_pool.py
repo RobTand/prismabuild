@@ -129,3 +129,27 @@ def test_an_exempt_segment_is_still_exempt_beside_a_refused_shape(tmp_path):
         f"cd /mnt/shared && /usr/bin/python3 repo/tools/pbrun.py --gpu -- "
         f"{CUDA} -m pytest && echo done",
     ) == 0
+
+
+def test_a_line_continuation_is_not_a_command_boundary(tmp_path):
+    # Splitting on the raw newline tears one command into pieces and strips
+    # each piece of the context that exempts it.  This shape -- a worker
+    # launch whose --python argument sits on its own continued line -- was
+    # refused by the first version of the segment fix.
+    module = _armed(tmp_path, None)
+    command = (
+        "cd /mnt/shared/prismabuild-fleet\n"
+        "setsid nohup /usr/bin/python3 repo/tools/worker_loop.py \\\n"
+        "  --gpu-slots 1 --mem-gb 40 \\\n"
+        f"  --python {CUDA} \\\n"
+        "  >> /home/rob/tmp/worker.log 2>&1 &"
+    )
+    assert _verdict(module, command) == 0
+
+
+def test_a_continuation_does_not_smuggle_gpu_work_past_the_hook(tmp_path):
+    # The converse: joining continuations must not make a refused command
+    # look exempt by gluing it onto a permitted neighbour.
+    module = _armed(tmp_path, None)
+    command = f"echo starting\n{CUDA} \\\n  -m pytest tests"
+    assert _verdict(module, command) == 2
