@@ -40,6 +40,11 @@ The source's absolute location is absent from result/stamp naming, container
 ownership, the closure stamp, action params, and queue addressing. Two clones
 of the same bytes and logical subdirectory therefore describe the same work.
 
+The materialization itself lives in `prismabuild.materialize`, not in any one
+transport: the pull queue was simply the first caller. Both the queue worker and
+a SLURM batch job run that one sequence, because two transports materializing an
+action key two ways is two different executions wearing one name.
+
 The claiming worker fully verifies the CAS blob, creates a unique directory
 under its local `PRISMABUILD_LOCAL_CHECKOUT_ROOT`, initializes a repository,
 fetches only the advertised sealed ref, checks out the exact commit detached,
@@ -164,7 +169,8 @@ number.
 | `pbrun.build_git_checkout_snapshot` | `def build_git_checkout_snapshot(` |
 | `pbrun.require_relocatable_checkout` | `def require_relocatable_checkout(` |
 | `pbrun`, snapshot publication | `    publication["checkout_snapshot"] = checkout_snapshot` |
-| `pool._execution_checkout` | `def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:` |
+| `materialize._execution_checkout`, the sequence | `def _execution_checkout(` |
+| `pool._execution_checkout`, the queue's root | `def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:` |
 | `pool`, mutually exclusive addressing | `                    "checkout_root and checkout_snapshot are mutually exclusive"` |
 | `pool.PoolQueue.execute` | `        with _execution_checkout(item) as checkout_root:` |
 | `core`, subdirectory agreement | `                "pbrun checkout stamp cwd differs from snapshot subdirectory"` |
