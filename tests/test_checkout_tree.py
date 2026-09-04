@@ -434,3 +434,45 @@ def test_a_slow_step_that_never_ends_is_bounded(tmp_path) -> None:
         ck._run_while_beating(["sh", "-c", "sleep 30"], beat=lambda: None,
                               timeout=0.2, every=0.05)
     assert time.monotonic() - started < 5.0
+
+
+def test_a_tree_left_half_built_by_a_crash_is_rebuilt(repo, tmp_path) -> None:
+    """The marker lands after the build, so a crash between them poisons a path.
+
+    ``worktree add`` refuses a non-empty path, so the marker cannot be placed
+    before the tree it marks; a loop killed in the gap -- an OOM, or a SIGTERM
+    that no longer reaches git now it runs in its own session -- leaves a
+    marker-less directory at exactly the deterministic path the retry needs,
+    and the refusal that protects other people's directories would then keep
+    every retry on this box out of it forever.  The sibling ``.building`` file
+    is what tells the two cases apart, and it exists only inside the gap.
+    """
+
+    item = _plan(repo, tmp_path)
+    trees = tmp_path / "trees"
+    worktree = trees / item["checkout_repo"] / item["checkout_commit"]
+
+    # The crash: a tree at the path, no marker inside, the claim beside it.
+    worktree.mkdir(parents=True)
+    (worktree / "half.txt").write_text("written before the kill\n")
+    building = worktree.parent / f"{item['checkout_commit']}{ck.BUILDING_SUFFIX}"
+    building.write_text("some-box 1234\n")
+
+    built = _materialise(item, tmp_path)
+    assert Path(built) == worktree
+    assert (worktree / ck.TREE_MARKER).exists()
+    assert not (worktree / "half.txt").exists()
+    assert not building.exists(), "the claim is released once the marker lands"
+
+
+def test_a_directory_that_is_not_ours_is_still_refused(repo, tmp_path) -> None:
+    """The other half of the same rule, which the ``.building`` file must not weaken."""
+
+    item = _plan(repo, tmp_path)
+    worktree = tmp_path / "trees" / item["checkout_repo"] / item["checkout_commit"]
+    worktree.mkdir(parents=True)
+    (worktree / "somebody-elses-work.txt").write_text("do not delete me\n")
+
+    with pytest.raises(ck.CheckoutError, match="did not create it"):
+        _materialise(item, tmp_path)
+    assert (worktree / "somebody-elses-work.txt").exists()

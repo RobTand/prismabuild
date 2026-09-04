@@ -210,7 +210,18 @@ with it the tree is unchanged.
    wrong tree produces different bytes and the action refuses. That is the
    difference between a check and a receipt, and it is what makes running on
    another box safe rather than merely possible.
-5. An LRU sweep bounds the scratch (`checkout.sweep`), run at the start of an
+5. **A build that is interrupted does not poison the path.** The marker can
+   only be written after `worktree add` returns -- `add` refuses a non-empty
+   path, so it cannot be placed first -- and a loop killed in that gap leaves a
+   marker-less directory at exactly the deterministic path the retry needs,
+   which guard 4 below would then read as somebody else's directory forever.
+   A sibling `<sha>.building` file is written before the add and removed once
+   the marker lands, so its presence is only ever "this box was interrupted
+   mid-build" and is the one case where a marker-less tree may be removed
+   (`checkout.materialise`, the half-built claim). Everything else at that path is still
+   refused, which is the pair of tests that says the file did not weaken the
+   rule it sits beside.
+6. An LRU sweep bounds the scratch (`checkout.sweep`), run at the start of an
    idle streak. Three guards, each a lesson: it removes only directories
    carrying a marker it wrote itself, it keeps any tree whose commit appears in
    a live claim — asked of the queue (`pool.PoolQueue.live_commits`), not of the clock — and
@@ -318,6 +329,7 @@ when the design needs re-reading.
 | `pbrun.placement_tags` | `def placement_tags(` |
 | `pbrun`, the two key bindings | `    if tree is None:` |
 | `pbrun`, action body params | `        "params": ({"command": command, "repo": plan["repo"],` |
+| `checkout.materialise`, the half-built claim | `                if not (worktree / TREE_MARKER).exists() and not building.exists():` |
 | `checkout.stamp_bytes` | `def stamp_bytes(tree_sha: str) -> bytes:` |
 | `pbrun`, stamp payload | `    payload = (ck.stamp_bytes(plan["tree"]).decode("utf-8") if plan is not None` |
 | `checkout.repo_identity` | `def repo_identity(cwd: str \| Path) -> dict[str, str] \| None:` |

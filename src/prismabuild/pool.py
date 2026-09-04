@@ -2210,10 +2210,14 @@ class PoolQueue:
         the same action claimable by any box instead of only by the one whose
         worktree it was submitted from.
 
-        The lease is refreshed around every slow step.  It has to be: the
-        first fetch into an empty mirror pulls a whole history across NFS, the
-        lease expires after 300 s, and an expiry under a fetch is a requeue --
-        which is the same work running twice on two boxes.
+        The lease is refreshed *during* every slow step, not around it.  It
+        has to be: the first fetch into an empty mirror pulls a whole history
+        across NFS, the lease expires after 300 s, and an expiry under a fetch
+        is a requeue -- which is the same work running twice on two boxes.
+        Beating before and after the call, which is what a first version did,
+        leaves exactly the interval that matters unbeaten; the two unbounded
+        steps run under ``checkout._run_while_beating``, which polls the child
+        and calls this heartbeat while it works.
         """
 
         if not ck.item_checkout_commit(item):

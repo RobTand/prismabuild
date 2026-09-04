@@ -90,6 +90,12 @@ TREES_ROOT = Path(os.environ.get(
 #: prove it made.
 TREE_MARKER = ".pbrun-materialised.json"
 
+#: Sibling of a tree being built, held only between ``worktree add`` and the
+#: marker landing inside it.  Its presence says "this box was interrupted
+#: mid-build", which is the one case where a marker-less tree at the
+#: deterministic path is safe to remove.
+BUILDING_SUFFIX = ".building"
+
 #: How many trees per repository the sweep keeps.  Small because a tree is a
 #: full checkout and the box is at 86% of 1.8 TB with a 10% floor; larger than
 #: one because a fan-out of shards at one tree must all reuse it.
@@ -550,10 +556,13 @@ def materialise(
 ) -> str:
     """Build (or reuse) this box's worktree for the item's tree, and return its root.
 
-    ``heartbeat`` is called around every step that can take real time.  It is
-    not decoration: the first fetch into an empty mirror pulls a repository's
-    whole history across NFS, the lease expires after 300 s, and a lease that
-    expires under a fetch is requeued and run twice.
+    ``heartbeat`` is called *during* every step that can take real time, not
+    around it.  It is not decoration: the first fetch into an empty mirror
+    pulls a repository's whole history across NFS, the lease expires after
+    300 s, and a lease that expires under a fetch is requeued and run twice.
+    A first version beat before and after each call, which bounds nothing --
+    the process is blocked inside the call and can beat nothing while it is;
+    the two unbounded steps run under ``_run_while_beating`` instead.
 
     ``live_commits`` answers which trees are executing on this box right now,
     and is the guard on the one destructive branch -- a worktree whose tracked
@@ -621,6 +630,7 @@ def materialise(
         return str(checkout_root)
 
     lock = trees / repo / ".locks" / f"{commit}.lock"
+    building = trees / repo / f"{commit}{BUILDING_SUFFIX}"
     if not _hold_lock(lock, wait_s=LOCK_WAIT_S, stale_s=LOCK_STALE_S,
                       heartbeat=heartbeat):
         # Somebody on this box has held the lock longer than a fetch should
@@ -641,7 +651,7 @@ def materialise(
                         f"{worktree} does not match tree {tree[:12]} and an "
                         f"action is running in it; refusing to rebuild it "
                         f"under a live claim")
-                if not (worktree / TREE_MARKER).exists():
+                if not (worktree / TREE_MARKER).exists() and not building.exists():
                     raise CheckoutError(
                         f"{worktree} exists and carries no {TREE_MARKER}: this "
                         f"module did not create it and will not remove it")
@@ -658,6 +668,18 @@ def materialise(
             # its administrative entry behind, and ``worktree add`` then
             # refuses the path as already registered.
             _git("worktree", "prune", cwd=mirror, timeout=300, check=False)
+            # Claim the path *before* building it.  The marker can only be
+            # written after ``worktree add`` returns -- ``add`` refuses a
+            # non-empty path, so it cannot be placed first -- and a loop that
+            # dies in between (an OOM kill, or a SIGTERM that no longer
+            # reaches git now it has its own session) leaves a marker-less
+            # directory at exactly the deterministic path the retry needs,
+            # which the refusal above would then treat as somebody else's
+            # forever.  This sibling says "ours, half-built": it is removed
+            # once the marker lands, so its presence is only ever the crash.
+            building.parent.mkdir(parents=True, exist_ok=True)
+            building.write_text(f"{socket.gethostname()} {os.getpid()}\n",
+                                encoding="utf-8")
             _git_while_beating("worktree", "add", "--detach", "--quiet",
                                str(worktree), commit, cwd=mirror, beat=beat,
                                timeout=1800)
@@ -674,6 +696,7 @@ def materialise(
                 "origin": origin, "host": socket.gethostname(),
                 "created_unix": time.time(),
             }, indent=1, sort_keys=True), encoding="utf-8")
+            building.unlink(missing_ok=True)
         _write_stamp()
     finally:
         lock.unlink(missing_ok=True)
