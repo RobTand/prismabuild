@@ -7,12 +7,12 @@ described here only where they bound the design.
 
 ## The problem, measured
 
-An action carries `checkout_root`, an absolute path (`pool.py:737-784`,
-written by `pbrun.py:762`). When that path is a box-local worktree —
+An action carries `checkout_root`, an absolute path (`pool.py:1080-1127`,
+written by `pbrun.py:908`). When that path is a box-local worktree —
 `/home/rob/tmp/ts101`, which is what an agent naturally creates — the action
 must be tagged to the box that holds it or it will be claimed by a worker that
 cannot see it. `pbrun.placement_tags` derives that pin from the path, and
-correctly (`pbrun.py:250-284`).
+correctly (`pbrun.py:277-311`).
 
 Read off the live queue on 2026-09-04, over the 391 items in `ready`,
 `claimed`, `done` and `failed`:
@@ -61,11 +61,11 @@ actions**. The submitter's absolute path is bound into the action key in three
 places, so the same work submitted from two boxes is today two different
 actions with two different keys:
 
-* `params.cwd` is `str(cwd)` (`pbrun.py:715`), and `params` is part of the
+* `params.cwd` is `str(cwd)` (`pbrun.py:849`), and `params` is part of the
   sealed body (`core.py:62-72`, `seal_action` at `core.py:1371-1375`);
 * the closure stamp's *name* embeds a fingerprint over `str(cwd)`
-  (`pbrun.py:198-202`), so the closure member's path differs per box;
-* the stamp's *content* records `{"cwd": ...}` (`pbrun.py:666`).
+  (`pbrun.py:225-229`), so the closure member's path differs per box;
+* the stamp's *content* records `{"cwd": ...}` (`pbrun.py:800`).
 
 So step zero of (2) is to rebind the key from *(path, tree delta)* to
 *(repository identity, tree commit)*. After that a cache hit across boxes is
@@ -89,7 +89,7 @@ NFS load from a working tree.
   it carries no `checkout_root`.
 
 Git's ref update takes its lock with `O_CREAT|O_EXCL`, which is the primitive
-this fleet already relies on for token minting (`pool.py:319`). That it
+this fleet already relies on for token minting (`pool.py:603`). That it
 holds on this mount for `refs/` **must be verified, not assumed** — the mount
 is `local_lock=none`, and every concurrent submitter writes a *different* ref
 name here, so the contended case is the packed-refs rewrite rather than the
@@ -99,7 +99,7 @@ qualified the rendezvous: two boxes, real concurrency, an explicit predicate.
 ## Dirty trees are the norm, so the commit is synthesised
 
 Agents submit from dirty trees constantly; `pbrun` has a whole delta digest
-for it (`pbrun.py:75-121`), and 12 of 50 live failures were closure drift
+for it (`pbrun.py:102-148`), and 12 of 50 live failures were closure drift
 between sealing and running (`tools/fleet/pool_reset.py:12-14`). Requiring a
 clean tree would make the feature unusable.
 
@@ -115,7 +115,7 @@ git push <bare> $commit:refs/pbrun/$commit
 
 `git stash create` is the tempting shortcut and is the wrong one: it does not
 carry untracked files, and `pbrun` learned the hard way that an untracked file
-edit must move the action key (`pbrun.py:100-118`). Include the same
+edit must move the action key (`pbrun.py:127-145`). Include the same
 exclusions the delta digest already applies — the closure stamp and the result
 logs — or every submit will produce a new tree commit for its own droppings.
 
@@ -128,7 +128,7 @@ logs — or every submit will produce a new tree commit for its own droppings.
    materialisation. Reuse when it is already there — a second action at the
    same commit costs a lock and a stat.
 3. Run exactly as today: `worker_argv` gets `--checkout-root <that path>`
-   (`pool.py:1262-1268`), and everything downstream is unchanged.
+   (`pool.py:2128-2134`), and everything downstream is unchanged.
 4. The closure check keeps its teeth. The materialiser writes the stamp by
    recomputing `_git_identity` **from the tree it has just built**, exactly as
    `pbrun` does at submit; `core.verify_code_closure` (`core.py:1136-1149`)
@@ -145,7 +145,7 @@ logs — or every submit will produce a new tree commit for its own droppings.
 
 * **No worktrees on `/mnt/shared`.** Objects are shared; trees are not.
 * **`TRITON_CACHE_DIR` stays `/home/rob/.triton-cache`** — a local path per
-  box, same string, different disk (`pbrun.py:594-601`).
+  box, same string, different disk (`pbrun.py:728-735`).
 * **Results still travel through the CAS**, never through the tree. A
   materialised worktree is disposable by construction.
 * **It does not unpin `--here`**, which is a deliberate statement about one
@@ -159,7 +159,7 @@ logs — or every submit will produce a new tree commit for its own droppings.
   breaks absolute paths silently — the command runs, against the wrong file or
   none. This is the one failure mode of (2) that is not loud, so it is refused
   at the one moment the caller is watching, the way an unplaceable tag already
-  is (`pbrun.py:746-754`).
+  is (`pbrun.py:880-888`).
 * **A working tree bigger than a stated bound.** A synthesised tree commit of
   a checkout holding a 90 GB cache is not a submission, it is an accident.
 
@@ -190,18 +190,18 @@ first line.
 
 | citation | the line it names |
 |---|---|
-| `pbrun.py:75-121` | `def _git_identity(cwd: Path) -> dict[str, str]:` |
-| `pbrun.py:100-118` | `    # `git diff HEAD` covers tracked edits.  It says nothing about an` |
-| `pbrun.py:198-202` | `    fingerprint = hashlib.sha256(` |
-| `pbrun.py:250-284` | `def placement_tags(` |
-| `pbrun.py:594-601` | `    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:` |
-| `pbrun.py:666` | `    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)` |
-| `pbrun.py:715` | `        "params": {"command": command, "cwd": str(cwd), "demand": demand},` |
-| `pbrun.py:746-754` | `    verdict = q.placeable(intent)` |
-| `pbrun.py:762` | `        checkout_root=str(cwd),` |
-| `pool.py:319` | `                    descriptor = os.open(token, os.O_WRONLY \| os.O_CREAT \| os.O_EXCL, 0o644)` |
-| `pool.py:737-784` | `    def publish(` |
-| `pool.py:1262-1268` | `        key = str(item["action_key"])` |
+| `pbrun.py:102-148` | `def _git_identity(cwd: Path) -> dict[str, str]:` |
+| `pbrun.py:127-145` | `    # `git diff HEAD` covers tracked edits.  It says nothing about an` |
+| `pbrun.py:225-229` | `    fingerprint = hashlib.sha256(` |
+| `pbrun.py:277-311` | `def placement_tags(` |
+| `pbrun.py:728-735` | `    # action key stays box-independent.  TRITON_CACHE_DIR is the one to watch:` |
+| `pbrun.py:800` | `    payload = json.dumps({"cwd": str(cwd), **identity}, indent=1, sort_keys=True)` |
+| `pbrun.py:849` | `        "params": {"command": command, "cwd": str(cwd), "demand": demand},` |
+| `pbrun.py:880-888` | `    verdict = q.placeable(intent)` |
+| `pbrun.py:908` | `        checkout_root=str(cwd),` |
+| `pool.py:603` | `                    descriptor = os.open(token, os.O_WRONLY \| os.O_CREAT \| os.O_EXCL, 0o644)` |
+| `pool.py:1080-1127` | `    def publish(` |
+| `pool.py:2128-2134` | `        key = str(item["action_key"])` |
 | `core.py:62-72` | `_ACTION_BODY_KEYS = frozenset(` |
 | `core.py:1136-1149` | `def verify_code_closure(value: object, root: str \| Path) -> dict[str, object]:` |
 | `core.py:1371-1375` | `def seal_action(value: object) -> dict[str, object]:` |

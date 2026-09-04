@@ -452,8 +452,17 @@ def test_execute_reaps_the_action_when_the_worker_itself_is_interrupted(
     item = queue.claim()
     assert item is not None
 
+    calls = []
+
     def interrupt(*args: object, **kwargs: object) -> None:
-        raise KeyboardInterrupt
+        # The FIRST lease write is the one ``execute`` makes immediately after
+        # the Popen, to name the launcher for a same-box withdrawal.  Raising
+        # there would interrupt before the stub has written its pidfile, which
+        # is a different scenario -- and one this test cannot then observe.
+        # The heartbeat writes are the ones an interrupt lands on in practice.
+        calls.append(args)
+        if len(calls) > 1:
+            raise KeyboardInterrupt
 
     # The heartbeat is where an interrupt lands in practice; raising from it
     # is that same unwind without the signal-timing race.

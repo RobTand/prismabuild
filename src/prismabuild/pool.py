@@ -51,6 +51,29 @@ double dispatch after a stale-lease requeue costs a lookup, not a recomputation.
 The transport therefore never needs to reason about "did this already run" --
 the CAS is the single answer, which is the whole point of the action key.
 
+**Withdrawal is an operator's decision, and it is filed as one.**  ``finish``,
+``reap_stale`` and ``quarantine_orphans`` each describe a *worker's* health; none
+of them says "I have changed my mind", so cancelling meant rewriting
+``max_attempts`` into a live claimed record and then racing the retry that the
+kill would otherwise trigger.  ``withdraw`` is that missing verb.  It writes its
+marker *before* it removes anything, and ``claim``, ``finish`` and ``reap_stale``
+all consult that marker, so from the moment it exists the action cannot be
+claimed, cannot be requeued and cannot be filed as a defect -- whatever a
+concurrent worker is doing at the time.  The withdrawal wins the race by
+construction rather than by the operator being quick.
+
+**It cancels a run, not a name.**  An action key is a content hash, so the same
+command against the same tree fingerprints identically and re-submitting it is
+how anybody asks for the same work again.  A marker that blacklisted the key
+would therefore make the queue eat that request -- ``claim`` deleting the fresh
+record, ``pbrun`` answering the new run with the old run's reason -- with the
+only remedy a hand edit of the live queue, which is the thing this verb exists
+to abolish.  So the marker is scoped to the generation it was filed against
+(``published_unix``, which ``publish`` stamps fresh and every requeue carries
+forward), one predicate reads it at every guard site (``withdrawal_covers``),
+and a later ``publish`` retires it into ``withdrawn/superseded/``.  Nothing is
+ever removed silently: a record the queue drops is filed there first.
+
 Clock skew between claimant and reaper is real but immaterial here: both Sparks
 are NTP-synchronised and measured 1.2-2.5 ms apart against a 300 s lease.
 """
@@ -61,6 +84,7 @@ from collections.abc import Iterable, Mapping, Sequence
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
@@ -84,7 +108,12 @@ CLAIMED = "claimed"
 DONE = "done"
 FAILED = "failed"
 INTENT = "intent"
-_STATES = (READY, CLAIMED, DONE, FAILED, INTENT)
+#: Where an operator's cancellation is filed.  Deliberately not ``failed``: a
+#: withdrawn action is a decision, and putting it in the failure record makes
+#: the failure record lie about the fleet.  Four withdrawn test suites are in
+#: the live ``failed/`` for exactly that reason.
+WITHDRAWN = "withdrawn"
+_STATES = (READY, CLAIMED, DONE, FAILED, INTENT, WITHDRAWN)
 
 # Ported verbatim from pqwork: 30 s refresh, 300 s expiry.  The 10x margin is
 # what absorbs an NFS stall or a long GC pause without a spurious requeue.
@@ -136,6 +165,11 @@ WITHHOLD_CEILING_S = 900.0
 RESERVATIONS = "reservations"
 PASSES = "passes"
 WORKERS = "workers"
+
+#: How long each rung of a withdrawal's signal ladder waits before escalating.
+#: Matched to ``core._PROCESS_GROUP_GRACE_SECONDS``, which is the grace the
+#: launcher itself gives the action group it reaps on the way out.
+WITHDRAW_GRACE_S = 5.0
 
 #: How long a worker's offer stays believable.  A loop re-announces on every
 #: poll, and the default poll is 10 s, so two minutes is a dozen missed polls:
@@ -317,6 +351,191 @@ def _glob(directory: Path, pattern: str):
         return sorted(directory.glob(pattern))
     except (FileNotFoundError, NotADirectoryError):
         return []
+
+
+def _process_alive(pid: int) -> bool:
+    """True while ``pid`` exists and has not already exited.
+
+    ``os.kill(pid, 0)`` is the usual test and it is the wrong one here.  When
+    ``execute`` stops its own child, that child is a zombie between its exit and
+    the ``communicate()`` that reaps it -- and a zombie answers signal 0 quite
+    happily.  A stop that believed it would climb its whole escalation ladder,
+    signalling harder and harder at a process that had already died.
+    """
+
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            # The comm field can contain spaces and parentheses; everything
+            # after the last ")" is fixed-width, and state is its first field.
+            after_comm = handle.read().rsplit(") ", 1)[-1].split()
+    except OSError:
+        return False
+    return bool(after_comm) and after_comm[0] != "Z"
+
+
+def action_process_groups(launcher_pid: int) -> list[int]:
+    """The process groups this launcher's children lead -- i.e. the action.
+
+    ``execute`` launches ``worker.py run-local``, and that launcher is the only
+    pid this queue ever holds.  The *action* -- the pytest, the encode, the
+    thing holding the cores and the GPU -- is one level further down, and
+    ``core.run_local_action`` starts it with ``start_new_session=True``, so it
+    leads its own process group and **no signal aimed at the launcher reaches
+    it**.  That is precisely why cancelling by hand meant ``kill -TERM -$pgid``
+    with a pgid found by eye.  This function is that lookup, done by the queue.
+
+    Only a child that leads its own group is returned (``getpgid(c) == c``).  A
+    child sharing someone else's group is sharing *this worker's* -- ``execute``
+    does not start a new session -- and signalling that group would take the
+    worker loop down with the action.
+    """
+
+    try:
+        raw = Path(f"/proc/{launcher_pid}/task/{launcher_pid}/children").read_text()
+    except OSError:
+        return []
+    groups: list[int] = []
+    for token in raw.split():
+        try:
+            child = int(token)
+        except ValueError:
+            continue
+        try:
+            if os.getpgid(child) == child:
+                groups.append(child)
+        except OSError:
+            continue          # it exited between the read and the lookup
+    return groups
+
+
+def launcher_owns_action(pid: int, action_key: str) -> bool:
+    """Is ``pid`` still this action's launcher, or a recycled number?
+
+    The launcher's argv names the action's request file, so the key is in its
+    command line.  A lease can outlive the process it describes -- that is what
+    makes it a lease -- and a withdrawal that signalled a recycled pid would
+    kill whatever the box started next.
+
+    The same predicate as ``find_launcher_pids``, and for the same reason: the
+    key alone is not enough, because a command line that *mentions* the key is
+    not a launcher.  ``pbrun --withdraw <full digest>`` is one, and a stale
+    foreign ``child_pid`` colliding with that shell's pid would have this
+    function signal the operator's own terminal.  The canonical ``run-local``
+    verb is what separates running the action from talking about it.
+    """
+
+    if not action_key:
+        return False
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return False
+    return action_key.encode() in raw and b"run-local" in raw
+
+
+def find_launcher_pids(action_key: str) -> list[int]:
+    """Every live launcher of this action on this box, found from ``/proc``.
+
+    The lease names the process to signal, but only since withdrawal existed: a
+    worker started on earlier bytes writes a lease with no ``child_pid``, and a
+    cancellation is reached for on a bad night rather than after a fleet roll.
+    So the lease is the fast path and this is the one that always works.
+
+    The scan is exact, not a name match.  A launcher's argv carries the 64-hex
+    action key *and* the canonical ``run-local`` verb ``worker_argv`` pins, so a
+    process with both is a launcher for this action and nothing else is.  The
+    verb is required as well as the key so that a withdrawal invoked with the
+    full digest cannot match the operator's own command line and signal itself.
+    """
+
+    if len(action_key) != 64:
+        return []
+    needle = action_key.encode()
+    mine = os.getpid()
+    found: list[int] = []
+    for entry in _scan(Path("/proc")):
+        if not entry.name.isdigit() or int(entry.name) == mine:
+            continue
+        try:
+            with open(entry / "cmdline", "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue          # it exited, or it is not ours to read
+        if needle in raw and b"run-local" in raw:
+            found.append(int(entry.name))
+    return found
+
+
+def terminate_action(
+    launcher_pid: int, *, grace_s: float = WITHDRAW_GRACE_S
+) -> dict[str, object]:
+    """Stop a running action and everything it started.  Safe when it is gone.
+
+    Three rungs, each with its own reason, and each climbed only when the one
+    below went unanswered:
+
+    1. ``SIGTERM`` to the **action's** process group.  This is the operator's
+       own manual move, and it is the rung that reaches the work: the launcher
+       is not in that group and signalling it does nothing to the pytest.
+    2. ``SIGINT`` to the launcher, if it is still alive.  Not ``SIGTERM``:
+       Python's default disposition for ``SIGTERM`` kills the interpreter where
+       it stands, while ``SIGINT`` raises ``KeyboardInterrupt``, and
+       ``core.run_local_action``'s ``except BaseException`` branch then reaps
+       its own action group and releases the result lock on the way out.  The
+       handled signal is the one that unwinds in order.
+    3. ``SIGKILL`` to both, for whatever answers neither.
+
+    Every signal is best effort: a process that has already gone raises
+    ``ProcessLookupError``, and that is the successful case, not a failure.
+    Which is what makes the whole verb idempotent -- withdrawing twice is two
+    lookups and no signals.
+    """
+
+    groups = action_process_groups(launcher_pid)
+    sent: list[str] = []
+
+    def alive() -> bool:
+        return _process_alive(launcher_pid) or any(_process_alive(p) for p in groups)
+
+    def settle(seconds: float) -> bool:
+        deadline = _now() + seconds
+        while _now() < deadline:
+            if not alive():
+                return False
+            time.sleep(0.05)
+        return alive()
+
+    for pgid in groups:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            sent.append(f"TERM -{pgid}")
+        except OSError:
+            pass
+    if settle(grace_s / 2.0):
+        try:
+            os.kill(launcher_pid, signal.SIGINT)
+            sent.append(f"INT {launcher_pid}")
+        except OSError:
+            pass
+    if settle(grace_s / 2.0):
+        for pgid in groups:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+                sent.append(f"KILL -{pgid}")
+            except OSError:
+                pass
+        try:
+            os.kill(launcher_pid, signal.SIGKILL)
+            sent.append(f"KILL {launcher_pid}")
+        except OSError:
+            pass
+    return {
+        "launcher_pid": int(launcher_pid),
+        "action_pgids": groups,
+        "signals": sent,
+        "still_alive": alive(),
+    }
 
 
 class _Insufficient(Exception):
@@ -888,6 +1107,19 @@ class PoolQueue:
         if int(max_attempts) < 1:
             raise PoolContractError("max_attempts must be at least 1")
         self.ensure_layout()
+        # A submission is what retires a withdrawal.  The key is a content
+        # hash -- ``result_and_stamp_names`` says so: *"the same command at the
+        # same commit still fingerprints identically"* -- so re-submitting one
+        # is the normal way to ask for the same work again, not an attempt to
+        # defeat somebody's cancellation.  Treating the marker as a permanent
+        # blacklist on the key meant the re-submitted record was deleted by
+        # ``claim``'s guard and ``pbrun`` answered the new run with the old
+        # run's ``withdrawn_by``, at exit 143, with nothing filed anywhere; the
+        # only remedy was ``rm withdrawn/<key>.json`` on the live queue, which
+        # is the hand edit this whole verb exists to remove.  The decision is
+        # kept -- moved to ``superseded/``, not deleted -- and the new item
+        # carries what it revived.
+        superseded = self._supersede_withdrawal(action_key)
         item = {
             "schema": POOL_ITEM_SCHEMA_V1,
             "action_key": action_key,
@@ -903,6 +1135,13 @@ class PoolQueue:
             "published_unix": _now(),
             "published_by": socket.gethostname(),
         }
+        if superseded is not None:
+            item["supersedes_withdrawal"] = {
+                "withdrawn_unix": superseded.get("withdrawn_unix"),
+                "withdrawn_by": superseded.get("withdrawn_by"),
+                "withdrawn_host": superseded.get("withdrawn_host"),
+                "reason": superseded.get("reason"),
+            }
         path = self.item_path(READY, action_key)
         _write_json_atomic(path, item)
         return path
@@ -1003,7 +1242,20 @@ class PoolQueue:
             },
         )
 
-    def write_lease(self, action_key: str, *, owner: str) -> None:
+    def write_lease(
+        self, action_key: str, *, owner: str, child_pid: int | None = None
+    ) -> None:
+        """Refresh the claim's heartbeat, and say what is running under it.
+
+        ``pid`` is this *loop's* pid and always has been.  It is not the process
+        that runs the action, and signalling it would kill the worker rather
+        than the work, so it cannot be what a cancellation aims at.
+        ``child_pid`` is the launcher ``execute`` started, which is one lookup
+        away from the action's own process group -- see
+        ``action_process_groups``.  It is ``None`` in the lease ``claim``
+        writes, because at that moment nothing is running yet.
+        """
+
         _write_json_atomic(
             self.lease_path(action_key),
             {
@@ -1012,6 +1264,7 @@ class PoolQueue:
                 "owner": owner,
                 "host": socket.gethostname(),
                 "pid": os.getpid(),
+                "child_pid": int(child_pid) if child_pid is not None else None,
                 "heartbeat_unix": _now(),
             },
         )
@@ -1065,6 +1318,12 @@ class PoolQueue:
         owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         tagset = frozenset(str(t) for t in tags)
         self.ensure_layout()
+        # The load-bearing half of ``withdraw``.  A withdrawal that lands while
+        # a worker is mid-``finish`` can leave a requeued ready record behind
+        # it, and without this guard that record is claimed and the cancelled
+        # work runs again -- which is the race the operator used to have to win
+        # by hand.  Read once per scan, not once per item.
+        withdrawn = self.withdrawn_keys()
         ledger = None
         total: dict[str, int] = {}
         if capacity is not None:
@@ -1074,6 +1333,27 @@ class PoolQueue:
         for item in self.ready_items():
             key = str(item.get("action_key", ""))
             if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
+                continue
+            if key in withdrawn and self.withdrawal_covers(
+                    item, action_key=key, withdrawn=withdrawn) is not None:
+                # Already filed under ``withdrawn``, and of the generation that
+                # was withdrawn: this record is the losing half of a race, not
+                # work.  Drop it rather than leave it at the head of ``ready``
+                # for every future poll to step over -- but FILE it first.  A
+                # queue that removes a record it will not run and says nothing
+                # anywhere is the shape ``quarantine_orphans`` names in its own
+                # docstring, and the reason this guard was a blocker.
+                #
+                # A record of a LATER generation falls through and is claimed:
+                # somebody asked for this work again after the cancellation,
+                # which a content-addressed key makes the ordinary way to ask.
+                self._file_superseded(
+                    item, key=key, kind="dropped", status="dropped",
+                    dropped_unix=_now(), dropped_host=socket.gethostname(),
+                    reason="requeued into ready after the withdrawal that "
+                           "cancelled this generation",
+                )
+                self.item_path(READY, key).unlink(missing_ok=True)
                 continue
             demand = self.demand_of(item)
             if ledger is not None and demand:
@@ -1098,6 +1378,20 @@ class PoolQueue:
             except (FileNotFoundError, NotADirectoryError):
                 if ledger is not None:
                     ledger.release(key)   # lost the race: hold nothing
+                continue
+            if self.withdrawal_covers(item, action_key=key) is not None:
+                # Withdrawn between the scan above and this rename.  The window
+                # is microseconds wide and closing it here costs one listing on
+                # a path taken once per claim; leaving it open costs a cancelled
+                # action a full run before ``execute`` notices.
+                if ledger is not None:
+                    ledger.release(key)
+                self._file_superseded(
+                    item, key=key, kind="dropped", status="dropped",
+                    dropped_unix=_now(), dropped_host=socket.gethostname(),
+                    reason="withdrawn between the ready scan and the claim",
+                )
+                dst.unlink(missing_ok=True)
                 continue
             claimed = dict(item)
             claimed["claimed_by"] = owner
@@ -1171,6 +1465,18 @@ class PoolQueue:
                 # every worker that polls past it.  There is nothing to reap --
                 # the winner filed the item and released its capacity -- so the
                 # loser's only correct move is to leave it alone.
+                continue
+            if self.withdrawal_covers(record, action_key=key) is not None:
+                # A withdrawal that could not finish its own cleanup -- the
+                # operator's box died mid-verb, say -- leaves a claimed record
+                # whose lease nobody refreshes.  Requeueing that is the one
+                # thing withdrawal exists to prevent, so conclude it here
+                # instead: capacity back, records gone, nothing counted as
+                # reaped because nothing was returned to the pool.
+                holder = record.get("claimed_host")
+                self.ledger(holder if isinstance(holder, str) else None).release(key)
+                path.unlink(missing_ok=True)
+                self.lease_path(key).unlink(missing_ok=True)
                 continue
             # Read the holder's identity BEFORE the requeue branch strips it.
             # The reaper is frequently NOT the dead claimant's box, and its
@@ -1332,6 +1638,31 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
         record = _read_json(src)
+        if self.withdrawal_covers(record, action_key=action_key) is not None:
+            # An operator cancelled this while it was running.  Filing it under
+            # ``done`` or ``failed`` would put the pool's opinion of the work on
+            # top of a decision about it, and routing it back to ``ready`` --
+            # the retry branch below -- would restart exactly what was
+            # cancelled.  That restart is the race a hand-edited
+            # ``max_attempts`` was trying to lose.  The withdrawal record is
+            # already filed; all that is left here is the cleanup ``finish``
+            # would otherwise do on its way past.
+            #
+            # Read AFTER the record, not before it: a withdrawal that lands
+            # between the read and the write must still be seen, and this is
+            # the last moment at which it can be.
+            #
+            # Generation-scoped like every other guard: a marker left over from
+            # a cancellation the operator has since re-submitted past must not
+            # swallow the NEW run's outcome, which would file it nowhere at
+            # all.  ``record is None`` is the one case with no generation to
+            # compare, and is treated as covered -- the claim was concluded by
+            # somebody else, so there is nothing here to file either way.
+            host = (record or {}).get("claimed_host")
+            self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
+            src.unlink(missing_ok=True)
+            self.lease_path(action_key).unlink(missing_ok=True)
+            return self.item_path(WITHDRAWN, action_key)
         if record is None:
             # A reaper concluded this claim while the work was still running,
             # so the claim file is gone and the item has already been filed
@@ -1400,6 +1731,376 @@ class PoolQueue:
         self.lease_path(action_key).unlink(missing_ok=True)
         return dst
 
+    # -- operator decisions ---------------------------------------------
+
+    def withdrawn_keys(self) -> frozenset[str]:
+        """Every action an operator has withdrawn.
+
+        Listed rather than stat-ed, one call per decision point.  This queue
+        lives on NFS, where a stat of a path that did not exist yet is
+        negatively cached and keeps answering ``False`` after the file lands --
+        the same reason pbrun's wait loop polls by ``readdir``.  A withdrawal
+        that a guard could not see is not a withdrawal.
+        """
+
+        try:
+            names = os.listdir(self.dir(WITHDRAWN))
+        except OSError:
+            return frozenset()
+        return frozenset(
+            name[: -len(".json")] for name in names if name.endswith(".json")
+        )
+
+    def superseded_dir(self) -> Path:
+        """Where a withdrawal goes once it is no longer the live decision.
+
+        A subdirectory rather than a timestamped sibling, because every reader
+        of ``withdrawn/`` addresses it by ``<key>.json``: ``withdrawn_keys``
+        lists it, ``find_key`` globs it, ``item_path`` builds the name,
+        ``pbrun``'s wait loop lists it and ``tessera_status`` counts ``*.json``
+        in it.  A sibling named ``<key>.<unix>.json`` would look to all five
+        like an action whose key is nonsense; a subdirectory is invisible to
+        every one of them, and still there for the operator asking what was
+        cancelled, by whom, and when.
+        """
+
+        return self.dir(WITHDRAWN) / "superseded"
+
+    def _file_superseded(
+        self,
+        record: Mapping[str, object] | None,
+        *,
+        key: str,
+        kind: str,
+        **stamps: object,
+    ) -> Path:
+        """Keep a record that is no longer live, under a name of its own."""
+
+        when = _now()
+        payload = dict(record or {})
+        payload["action_key"] = key
+        payload.update(stamps)
+        path = self.superseded_dir() / f"{key}.{when:.6f}.{kind}.json"
+        _write_json_atomic(path, payload)
+        return path
+
+    def _supersede_withdrawal(self, action_key: str) -> dict[str, object] | None:
+        """Retire the live withdrawal for ``action_key``; return what it said."""
+
+        live = self.item_path(WITHDRAWN, action_key)
+        record = _read_json(live)
+        if record is None:
+            return None
+        self._file_superseded(
+            record, key=action_key, kind="withdrawal",
+            superseded_unix=_now(), superseded_host=socket.gethostname(),
+        )
+        live.unlink(missing_ok=True)
+        return record
+
+    def withdrawal_covers(
+        self,
+        record: Mapping[str, object] | None,
+        *,
+        action_key: str | None = None,
+        withdrawn: frozenset[str] | None = None,
+    ) -> dict[str, object] | None:
+        """The withdrawal that cancelled THIS record, or ``None``.
+
+        One predicate for all seven guard sites, because the alternative was
+        the rule half-applied: ``claim`` scoping the check while ``finish``
+        and ``execute`` still matched on the bare key would discard a
+        legitimate later run's outcome and kill the run outright.
+
+        **The generation, not the key.**  An action key is a content hash, so
+        a withdrawal has to name the *run* it cancelled, not the name of the
+        work for all time.  ``published_unix`` is that name: ``publish``
+        stamps a fresh one and every requeue -- ``finish``'s retry branch and
+        ``reap_stale``'s -- carries the original forward, so the losing half
+        of a withdrawal race and a fresh submission are distinguishable
+        without asking either of them to declare which it is.  The test is
+        equality, not "newer than": only two writers ever put a record in
+        ``ready`` -- ``publish``, which stamps a fresh ``published_unix``, and
+        the two requeue branches, which copy the original through unchanged --
+        so a record whose stamp DIFFERS from the withdrawal's is a different
+        request whichever way the difference runs.  Ordering would have made
+        the guard depend on the clock never stepping backwards between two
+        submissions, which is a promise nothing here needs to make.
+
+        A record with no generation to compare is treated as covered, which is
+        the safe direction: the cancelled work does not run.  Every caller
+        that then removes such a record files it first, so "covered" never
+        means "vanished".
+
+        The marker is read only for keys the listing just reported, so NFS's
+        negative cache -- the reason ``withdrawn_keys`` lists rather than
+        stats -- is not in this path.  A marker that is gone by the time it is
+        read was retired by a re-submission, and the record is not covered.
+        """
+
+        key = str(action_key or (record or {}).get("action_key") or "")
+        if not key:
+            return None
+        known = self.withdrawn_keys() if withdrawn is None else withdrawn
+        if key not in known:
+            return None
+        marker = _read_json(self.item_path(WITHDRAWN, key))
+        if marker is None:
+            return None
+        if record is None:
+            return marker
+        mine = record.get("published_unix")
+        theirs = marker.get("published_unix")
+        if isinstance(mine, (int, float)) and isinstance(theirs, (int, float)):
+            if float(mine) != float(theirs):
+                return None
+        return marker
+
+    def runtime_of(self, host: str | None) -> str | None:
+        """Which published bytes the worker on ``host`` is answering with.
+
+        ``None`` when no live offer names the host at all.  The empty string
+        when the offer predates ``runtime_commit`` -- both mean "cannot tell",
+        and a withdrawal that cannot tell has to say so rather than imply the
+        worker will honour it.
+        """
+
+        if not host:
+            return None
+        for offer in self.offers():
+            if str(offer.get("host")) == str(host):
+                return str(offer.get("runtime_commit") or "")
+        return None
+
+    def find_key(self, prefix: str) -> str:
+        """Resolve a key prefix to the one action it names.
+
+        Everything an operator has on screen is a prefix: ``pbrun`` prints
+        ``queued 8fc86da0e13f`` and the worker loop logs the same twelve
+        characters.  Requiring the full digest to cancel would mean going and
+        finding it in the queue directory first, at the moment the box is
+        already on fire.  Ambiguity is refused rather than guessed at, because
+        the wrong guess here kills someone else's work.
+        """
+
+        wanted = str(prefix)
+        if not wanted:
+            raise PoolContractError("an action key prefix must not be empty")
+        # An action key is a hex digest, so anything else is a typo -- and the
+        # match below is a glob, where a stray ``*`` would silently name every
+        # action in the queue and a stray ``[`` would raise from pathlib.
+        if any(character not in "0123456789abcdef" for character in wanted.lower()):
+            raise PoolContractError(
+                f"an action key is a hex digest; {wanted!r} is not a prefix of one")
+        seen: set[str] = set()
+        for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
+            for path in _glob(self.dir(state), f"{wanted}*.json"):
+                seen.add(path.stem)
+        if not seen:
+            raise PoolContractError(f"no action in the queue starts with {wanted!r}")
+        if len(seen) > 1:
+            listed = ", ".join(sorted(key[:16] for key in seen))
+            raise PoolContractError(
+                f"{wanted!r} names {len(seen)} actions ({listed}); "
+                "say more of the key")
+        return seen.pop()
+
+    def withdraw(
+        self,
+        action_key: str,
+        *,
+        reason: str = "",
+        by: str = "",
+        signal_child: bool = True,
+    ) -> dict[str, object]:
+        """Cancel an action by operator decision.  Not a defect; not a retry.
+
+        Every other terminal path in this module is the pool's opinion of a
+        *worker's* health -- a lease that stopped beating, a record no consumer
+        can address, an argv that exited non-zero.  None of them is "I have
+        changed my mind", so cancelling meant rewriting ``max_attempts`` into a
+        live claimed record, killing the child, and hoping the rewrite landed
+        first: if the kill won, ``finish`` requeued the action at its old
+        ``max_attempts`` and the whole thing restarted.  Four redundant test
+        suites ran to completion on a box at load average 371 because stopping
+        them was more dangerous than letting them finish.
+
+        Three things make this the verb that was missing.
+
+        **The marker is written before anything is removed.**  ``claim``,
+        ``finish`` and ``reap_stale`` all consult it, so from the instant it
+        exists the action cannot be claimed, cannot be requeued and cannot be
+        filed under ``done`` or ``failed`` -- whatever a concurrent worker is
+        doing at the time.  The withdrawal wins the race by construction; the
+        operator does not have to.
+
+        **It lands in ``withdrawn/``, not ``failed/``.**  The failure record is
+        what someone reads to ask whether the fleet is broken, and four
+        cancellations sitting in it say the fleet is broken when the truth is
+        that somebody changed their mind.
+
+        **The signal goes to the action's process group.**  Not to the
+        launcher, which is not in it, and not to this loop's pid, which the
+        lease has always carried and which is a different process again.  See
+        ``terminate_action``.  Cross-box that signal cannot be sent at all, so
+        ``execute`` also watches for the marker between heartbeats and stops
+        its own child; withdrawal is therefore correct from any box and merely
+        *faster* from the one running the work.
+
+        Tokens go back through the same ``ledger(host).release(key)`` path
+        ``finish`` uses.  They go back even while a remote action is still
+        being stopped: a reservation that outlives its holder is the starvation
+        bug's exact shape, and a worker one heartbeat from stopping is the
+        smaller risk.  Releasing twice is free, because tokens are filed under
+        the action key and the second release finds nothing to return.
+
+        Idempotent.  Run it twice and the second run re-signals, re-releases
+        and re-cleans -- all no-ops once they have happened -- and leaves the
+        first decision's record, timestamp and reason untouched.
+
+        **It cancels a run, not a name.**  The marker is scoped to the
+        generation it was filed against -- see ``withdrawal_covers`` -- and a
+        later ``publish`` of the same key retires it into
+        ``withdrawn/superseded/``.  An action key is a content hash, so
+        re-submitting one is how anybody asks for the same work again; a
+        withdrawal that blacklisted the key would make the queue silently eat
+        that request, and the only remedy would be a hand edit of the live
+        queue.
+        """
+
+        key = str(action_key)
+        self.ensure_layout()
+        withdrawn_path = self.item_path(WITHDRAWN, key)
+        claimed_path = self.item_path(CLAIMED, key)
+        ready_path = self.item_path(READY, key)
+
+        existing = _read_json(withdrawn_path)
+        record = _read_json(claimed_path)
+        origin: str | None = CLAIMED if record is not None else None
+        if record is None:
+            record = _read_json(ready_path)
+            origin = READY if record is not None else None
+        if record is None and existing is None:
+            for state in (DONE, FAILED):
+                finished = _read_json(self.item_path(state, key))
+                if finished is not None:
+                    # Nothing to stop and nothing to file.  Reporting this
+                    # rather than raising matters: an operator who withdraws an
+                    # action that finished a second earlier got what they asked
+                    # for, and should be told so, not told they mistyped.
+                    return {
+                        "action_key": key,
+                        "status": "already_finished",
+                        "state": state,
+                        "host": finished.get("finished_host"),
+                        "released": 0,
+                        "signalled": None,
+                        "path": str(self.item_path(state, key)),
+                        "reason": "",
+                    }
+            raise PoolContractError(f"no such action in the queue: {key}")
+
+        lease = _read_json(self.lease_path(key)) or {}
+        host: str | None = None
+        if isinstance(record, Mapping):
+            claimed_host = record.get("claimed_host")
+            host = claimed_host if isinstance(claimed_host, str) else None
+        if host is None and isinstance(lease.get("host"), str):
+            host = str(lease["host"])
+
+        if existing is None:
+            filed = dict(record or {})
+            filed.update(
+                {
+                    "schema": POOL_OUTCOME_SCHEMA_V1,
+                    "action_key": key,
+                    "status": "withdrawn",
+                    "withdrawn_from": origin or "unknown",
+                    "withdrawn_unix": _now(),
+                    "withdrawn_host": socket.gethostname(),
+                    "withdrawn_by": str(by),
+                    "reason": str(reason),
+                }
+            )
+            _write_json_atomic(withdrawn_path, filed)
+        else:
+            filed = existing
+
+        # Step one of the hand-edit, done by the verb: ``max_attempts: 1``
+        # written into the live claimed record.  The marker above stops every
+        # worker running THESE bytes, but a loop holds the module it imported
+        # at start, so part of the fleet cannot see it until the runtime rolls
+        # -- and the signal ladder below runs for seconds, which is exactly
+        # when a worker this withdrawal just SIGTERMed calls ``finish``.  An
+        # old ``finish`` reads this record: with the limit at one attempt its
+        # retry branch is unreachable, so the outcome is filed terminally
+        # instead of being requeued and re-run.  That is the race the operator
+        # used to have to win by hand, and it is the last of it that new bytes
+        # can reach.
+        if origin == CLAIMED and isinstance(record, Mapping):
+            poisoned = dict(record)
+            poisoned["max_attempts"] = 1
+            poisoned["withdrawn_unix"] = filed.get("withdrawn_unix")
+            poisoned["withdrawn_by"] = str(filed.get("withdrawn_by") or by)
+            poisoned["withdrawn_note"] = (
+                "withdrawn by an operator; the retry is closed so a worker "
+                "that cannot see withdrawn/ files this terminally"
+            )
+            _write_json_atomic(claimed_path, poisoned)
+
+        # The ready record goes NOW, not after the ladder.  The ladder can run
+        # for seconds; a re-submission landing inside it would otherwise be
+        # unlinked by a withdrawal that had already been superseded -- the
+        # blocker again, in this verb's own hand.  Gated on the generation for
+        # the same reason every other guard is.
+        if self.withdrawal_covers(
+                _read_json(ready_path), action_key=key) is not None:
+            ready_path.unlink(missing_ok=True)
+
+        # Signal before releasing, so this box does not admit work on top of an
+        # action that is still dying.
+        #
+        # No host check is needed and none is made: both ways of naming a target
+        # verify the *process*, not the record.  A ``child_pid`` copied from
+        # another box's lease is a number that means nothing here, and
+        # ``launcher_owns_action`` refuses it because the local process at that
+        # number is not running this action.  What is here is what gets
+        # signalled.
+        signalled: dict[str, object] | None = None
+        targets: list[int] = []
+        child_pid = lease.get("child_pid")
+        if isinstance(child_pid, int) and launcher_owns_action(int(child_pid), key):
+            targets.append(int(child_pid))
+        targets.extend(pid for pid in find_launcher_pids(key) if pid not in targets)
+        if signal_child and targets:
+            stopped = [terminate_action(pid) for pid in targets]
+            signalled = {
+                "launcher_pids": [int(one["launcher_pid"]) for one in stopped],
+                "action_pgids": [g for one in stopped for g in one["action_pgids"]],
+                "signals": [s for one in stopped for s in one["signals"]],
+                "still_alive": any(one["still_alive"] for one in stopped),
+            }
+
+        released = self.ledger(host).release(key)
+        claimed_path.unlink(missing_ok=True)
+        self.lease_path(key).unlink(missing_ok=True)
+        self.passes_path(key).unlink(missing_ok=True)
+        return {
+            "action_key": key,
+            "status": "already_withdrawn" if existing is not None else "withdrawn",
+            "state": origin,
+            "host": host,
+            # What the holder's worker is running, so the caller can be told
+            # whether this withdrawal is one it can see.  ``None`` means no
+            # live offer names the host; ``""`` means the offer predates the
+            # field.  Both are "cannot tell", and the CLI says so.
+            "holder_runtime": self.runtime_of(host),
+            "released": released,
+            "signalled": signalled,
+            "path": str(withdrawn_path),
+            "reason": str(filed.get("reason") or ""),
+        }
+
     # -- execution ------------------------------------------------------
 
     def execute(
@@ -1433,6 +2134,18 @@ class PoolQueue:
         )
         owner = str(item.get("claimed_by") or "")
         started = _now()
+        # Withdrawal checkpoint one of three: before the launch.  A cancellation
+        # that landed in the microseconds between ``claim``'s rename and this
+        # call would otherwise start the work anyway, and then have to stop it.
+        if self.withdrawal_covers(item) is not None:
+            return {
+                "status": "withdrawn",
+                "returncode": None,
+                "stdout": "",
+                "stderr": "",
+                "elapsed_s": 0.0,
+                "argv": argv,
+            }
         process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -1443,15 +2156,39 @@ class PoolQueue:
             # the launcher only, and leaves the action holding the GPU.
             start_new_session=True,
         )
-        # Refresh the lease while the child runs; a long action must not be
-        # reaped out from under itself.
+        # Say which process is the launcher, so a withdrawal ON THIS BOX can
+        # signal the action's group at once instead of waiting a heartbeat for
+        # the loop below to notice.  The lease's own ``pid`` is this loop, which
+        # is not the same process and must never be the signal's target.
+        # Inside the try, not before it: this write is the first thing after
+        # the Popen, and an unwind here -- a Ctrl-C landing on it, or the lease
+        # write itself failing -- would otherwise leave the action running in
+        # its own session with nothing left to reap it.  Everything after the
+        # Popen belongs under the same guard.
         try:
+            self.write_lease(key, owner=owner, child_pid=process.pid)
+            # Refresh the lease while the child runs; a long action must not be
+            # reaped out from under itself.
             while True:
                 try:
                     out, err = process.communicate(timeout=heartbeat_s)
                     break
                 except subprocess.TimeoutExpired:
-                    self.write_lease(key, owner=owner)
+                    # Checkpoint two: the cross-box path.  A withdrawal from another
+                    # box cannot signal anything on this one, so this poll is what
+                    # makes the verb correct from anywhere -- at a cost of at most
+                    # one heartbeat, and none at all when the operator is here.
+                    if self.withdrawal_covers(item) is not None:
+                        out, err = self._stop_action(process)
+                        return {
+                            "status": "withdrawn",
+                            "returncode": process.returncode,
+                            "stdout": out,
+                            "stderr": err,
+                            "elapsed_s": _now() - started,
+                            "argv": argv,
+                        }
+                    self.write_lease(key, owner=owner, child_pid=process.pid)
                     if timeout_s is not None and _now() - started > timeout_s:
                         # Worst case this branch spends three grace budgets
                         # -- TERM wait, KILL wait, drain (~45 s) -- without
@@ -1497,14 +2234,41 @@ class PoolQueue:
             pb._terminate_process_group(process, grace_s=timeout_grace_s)
             _drain(process, timeout_s=timeout_grace_s)
             raise
+        status = "executed" if process.returncode == 0 else "failed"
+        # Checkpoint three: on the way out.  When the operator's own signal
+        # reached the action group first, the launcher reports the SIGTERM that
+        # stopped it and this worker would otherwise log a defect for a
+        # decision.  ``finish`` files the outcome correctly either way; this is
+        # about the line the worker prints and the record's ``status``.
+        if status == "failed" and self.withdrawal_covers(item) is not None:
+            status = "withdrawn"
         return {
-            "status": "executed" if process.returncode == 0 else "failed",
+            "status": status,
             "returncode": process.returncode,
             "stdout": out,
             "stderr": err,
             "elapsed_s": _now() - started,
             "argv": argv,
         }
+
+    def _stop_action(self, process: subprocess.Popen) -> tuple[str, str]:
+        """Stop a withdrawn action and collect whatever it managed to say.
+
+        The read is bounded on purpose.  The action inherits the launcher's
+        stdout and stderr pipes, so an unbounded ``communicate()`` after a kill
+        returns only when the *action* exits -- the very process this is trying
+        to stop.  A stop path that can itself hang is not a stop path.
+        """
+
+        terminate_action(process.pid)
+        try:
+            return process.communicate(timeout=WITHDRAW_GRACE_S)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        try:
+            return process.communicate(timeout=WITHDRAW_GRACE_S)
+        except subprocess.TimeoutExpired:
+            return "", ""
 
     def serve_once(
         self,

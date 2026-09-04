@@ -131,6 +131,16 @@ def main() -> int:
 
     queue = pool.PoolQueue(SH / "pb-queue")
     failed = sorted(queue.dir(pool.FAILED).glob("*.json"))
+    # A withdrawal is a decision, and re-submitting it would undo it.  Two ways
+    # a cancelled action still reaches ``failed/``: a worker running bytes that
+    # predate ``withdraw`` files its own outcome there (the verb writes
+    # ``max_attempts: 1`` into the claimed record precisely so that outcome is
+    # terminal rather than a retry), and any worker can lose the claim to a
+    # reaper and take ``finish``'s lost-race branch.  Both records carry the
+    # ``withdrawn_by`` stamp the verb put on the claimed record; the live
+    # marker is the second reading, and it is generation-scoped, so a key that
+    # was withdrawn and then deliberately re-submitted is NOT skipped here.
+    withdrawn = queue.withdrawn_keys()
 
     plans: dict[tuple[str, str], dict] = {}
     skipped: list[tuple[str, str]] = []
@@ -141,6 +151,11 @@ def main() -> int:
             skipped.append((path.stem[:12], f"unreadable: {exc}"))
             continue
         if record.get("status") == "reset" and not args.include_reset:
+            continue
+        if path.stem in withdrawn or record.get("withdrawn_unix"):
+            who = record.get("withdrawn_by") or "an operator"
+            skipped.append((path.stem[:12],
+                            f"withdrawn by {who}; a decision, not a defect"))
             continue
         plan, why = _recover(record)
         if plan is None:
