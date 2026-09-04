@@ -120,6 +120,13 @@ import time
 import uuid
 
 from . import core as pb
+from .materialize import (  # relocated verbatim; see materialize.py
+    _cleanup_execution_checkout,
+    _now,
+    _run_materializer_git,
+    _write_json_atomic,
+)
+from . import materialize
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -223,12 +230,9 @@ SHARED_ROOT = Path("/mnt/shared")
 
 # The snapshot bundle travels through the shared CAS, but execution trees stay
 # on each worker's local disk. Same spelling on every box, different storage.
-LOCAL_CHECKOUT_ROOT = Path(
-    os.environ.get(
-        "PRISMABUILD_LOCAL_CHECKOUT_ROOT",
-        "/home/rob/tmp/prismabuild-checkouts",
-    )
-)
+# Read at call time rather than bound once, so that overriding it here steers
+# what this transport materializes and nothing else.
+LOCAL_CHECKOUT_ROOT = materialize.LOCAL_CHECKOUT_ROOT
 
 
 def is_box_local_path(path: object) -> bool:
@@ -277,26 +281,19 @@ class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
 
 
-def _now() -> float:
-    return time.time()
+@contextmanager
+def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:
+    """Yield the live path or a private checkout of the sealed snapshot.
 
+    The sequence itself is ``materialize._execution_checkout``; SLURM runs the
+    same one.  What this adds is the root: ``LOCAL_CHECKOUT_ROOT`` is read here,
+    at call time, so the queue's root is the queue's to state.
+    """
 
-def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
-    """Publish a record by rename, so no reader ever sees a partial file."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    data = pb._canonical_bytes(dict(payload))
-    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    os.replace(tmp, path)
+    with materialize._execution_checkout(
+        item, local_checkout_root=LOCAL_CHECKOUT_ROOT
+    ) as checkout_root:
+        yield checkout_root
 
 
 def _publish_immutable(path: Path, raw: bytes, *, where: str) -> None:
@@ -359,153 +356,6 @@ def worker_argv(
         "--checkout-root",
         str(checkout_root),
     ]
-
-
-def _run_materializer_git(
-    argv: Sequence[str],
-    *,
-    where: str,
-    environment: Mapping[str, str] | None = None,
-) -> str:
-    try:
-        completed = subprocess.run(
-            list(argv),
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=None if environment is None else dict(environment),
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PoolError(f"{where} failed: {exc}") from exc
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()
-        raise PoolError(f"{where} failed: {detail or completed.returncode}")
-    return completed.stdout
-
-
-def _cleanup_execution_checkout(
-    base: Path, temporary: Path, item: Mapping[str, object]
-) -> None:
-    """Remove one private tree, recording a leak without changing task status."""
-
-    error = ""
-    try:
-        shutil.rmtree(temporary)
-    except Exception as exc:  # cleanup must not turn completed work into retry
-        error = str(exc)
-    try:
-        remains = temporary.exists() or temporary.is_symlink()
-    except OSError as exc:
-        remains = True
-        error = error or f"cannot verify removal: {exc}"
-    if remains and not error:
-        error = "materialized checkout still exists after recursive cleanup"
-    if not error:
-        return
-
-    action_key = str(item.get("action_key") or "unknown-action")
-    record = {
-        "schema": "prismaquant.prismabuild.checkout_cleanup_failure.v1",
-        "action_key": action_key,
-        "path": str(temporary),
-        "error": error,
-        "recorded_unix": _now(),
-        "host": socket.gethostname(),
-    }
-    record_path = (
-        base / "cleanup-failures" /
-        f"{action_key}.{temporary.name}.json"
-    )
-    record_error = ""
-    try:
-        _write_json_atomic(record_path, record)
-    except Exception as exc:  # stderr remains the observable fallback
-        record_error = f"; could not publish {record_path}: {exc}"
-    print(
-        "prismabuild: checkout cleanup failed after action "
-        f"{action_key}: {temporary}: {error}{record_error}",
-        file=sys.stderr,
-        flush=True,
-    )
-
-
-@contextmanager
-def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:
-    """Yield the live path or a private checkout of the sealed snapshot."""
-
-    raw_snapshot = item.get("checkout_snapshot")
-    if raw_snapshot is None:
-        raw_root = item.get("checkout_root")
-        if not raw_root:
-            raise PoolContractError(
-                "pool item has neither checkout_root nor checkout_snapshot"
-            )
-        yield Path(str(raw_root))
-        return
-
-    snapshot = pb.validate_pbrun_checkout_snapshot(raw_snapshot)
-    cas = pb.PrismaBuildCAS(str(item["cas_root"]))
-    bundle = cas.input_path(snapshot["input"])
-    base = Path(LOCAL_CHECKOUT_ROOT)
-    if not base.is_absolute() or base == Path("/") or ".." in base.parts:
-        raise PoolContractError(
-            "PRISMABUILD_LOCAL_CHECKOUT_ROOT must be an absolute non-root path"
-        )
-    base.mkdir(parents=True, exist_ok=True)
-    temporary = Path(
-        tempfile.mkdtemp(
-            prefix=f"{str(item['action_key'])[:12]}.", dir=str(base)
-        )
-    )
-    repository = temporary / "checkout"
-    try:
-        _run_materializer_git(
-            ["git", "init", "-q", str(repository)],
-            where="initialize materialized checkout",
-        )
-        heads = _run_materializer_git(
-            ["git", "bundle", "list-heads", str(bundle)],
-            where="read checkout snapshot bundle",
-        )
-        commit = str(snapshot["commit"])
-        refs = [
-            fields[1]
-            for line in heads.splitlines()
-            if len(fields := line.split(maxsplit=1)) == 2 and fields[0] == commit
-        ]
-        if not refs:
-            raise PoolContractError(
-                "checkout snapshot bundle does not advertise its sealed commit"
-            )
-        _run_materializer_git(
-            [
-                "git", "-C", str(repository), "fetch", "-q", "--no-tags",
-                str(bundle), refs[0],
-            ],
-            where="fetch checkout snapshot bundle",
-        )
-        _run_materializer_git(
-            [
-                "git",
-                "-c", "core.autocrlf=false",
-                "-c", "core.attributesFile=/dev/null",
-                "-C", str(repository), "checkout", "-q", "--detach", commit,
-            ],
-            where="check out sealed commit",
-            environment={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
-        )
-        subdirectory = repository / str(snapshot["subdirectory"])
-        if not subdirectory.is_dir():
-            raise PoolContractError(
-                "checkout snapshot subdirectory is absent after materialization"
-            )
-        yield subdirectory
-    finally:
-        # The path was created by mkdtemp below a validated local-only root;
-        # never widen this cleanup to the root itself. A root-owned container
-        # dropping can leave residue inside this bounded root, but cleanup
-        # failure must not change an already-published action into a failure.
-        _cleanup_execution_checkout(base, temporary, item)
 
 
 def _drain(
