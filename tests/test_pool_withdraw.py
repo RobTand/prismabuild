@@ -394,6 +394,55 @@ def test_a_withdrawal_from_another_box_still_stops_the_action(
     assert _await(lambda: not pool._process_alive(grandchild))
 
 
+def test_a_worker_that_never_wrote_a_child_pid_is_still_signalled(
+    queue: pool.PoolQueue, tmp_path: Path
+) -> None:
+    """A cancellation must work against the fleet as it is, not as it will be.
+
+    A worker loop holds the bytes it imported at start for its whole life, so
+    every loop already running when this lands writes a lease with no
+    ``child_pid``.  If the lease were the only way to name the launcher, the
+    verb would not work on the one fleet it was written for until the runtime
+    rolled.  The launcher's own argv carries the action key, so it can be found
+    without the lease's help.
+    """
+
+    pidfile = tmp_path / "grandchild.pid"
+    stub = _grandchild_launcher(tmp_path, pidfile)
+    _publish(queue, KEY_A, worker_script=str(stub))
+    item = queue.claim()
+    thread, outcome = _run_in_background(queue, item, heartbeat_s=30.0)
+    assert _await(lambda: pidfile.exists())
+    grandchild = int(pidfile.read_text())
+
+    # What a pre-withdrawal worker's lease looks like.
+    lease = json.loads(queue.lease_path(KEY_A).read_text())
+    launcher = lease.pop("child_pid")
+    queue.lease_path(KEY_A).write_text(json.dumps(lease))
+
+    result = queue.withdraw(KEY_A)
+
+    signalled = result["signalled"] or {}
+    assert signalled.get("launcher_pids") == [launcher], (
+        "the launcher was found from /proc, not from the lease")
+    assert signalled.get("action_pgids") == [grandchild]
+    thread.join(timeout=30.0)
+    assert _await(lambda: not pool._process_alive(grandchild))
+    assert outcome["status"] == "withdrawn"
+
+
+def test_finding_a_launcher_never_matches_the_withdrawing_process(
+    queue: pool.PoolQueue
+) -> None:
+    """Withdrawing by full digest must not make this process a target."""
+
+    assert os.getpid() not in pool.find_launcher_pids(KEY_A)
+    assert pool.find_launcher_pids("short") == []
+    # This process's own command line, whatever it is, is not a launcher: the
+    # scan wants the canonical ``run-local`` verb as well as the key.
+    assert pool.find_launcher_pids("f" * 64) == []
+
+
 def test_a_withdrawn_action_is_never_started(
     queue: pool.PoolQueue, tmp_path: Path
 ) -> None:

@@ -318,6 +318,39 @@ def launcher_owns_action(pid: int, action_key: str) -> bool:
         return False
 
 
+def find_launcher_pids(action_key: str) -> list[int]:
+    """Every live launcher of this action on this box, found from ``/proc``.
+
+    The lease names the process to signal, but only since withdrawal existed: a
+    worker started on earlier bytes writes a lease with no ``child_pid``, and a
+    cancellation is reached for on a bad night rather than after a fleet roll.
+    So the lease is the fast path and this is the one that always works.
+
+    The scan is exact, not a name match.  A launcher's argv carries the 64-hex
+    action key *and* the canonical ``run-local`` verb ``worker_argv`` pins, so a
+    process with both is a launcher for this action and nothing else is.  The
+    verb is required as well as the key so that a withdrawal invoked with the
+    full digest cannot match the operator's own command line and signal itself.
+    """
+
+    if len(action_key) != 64:
+        return []
+    needle = action_key.encode()
+    mine = os.getpid()
+    found: list[int] = []
+    for entry in _scan(Path("/proc")):
+        if not entry.name.isdigit() or int(entry.name) == mine:
+            continue
+        try:
+            with open(entry / "cmdline", "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue          # it exited, or it is not ours to read
+        if needle in raw and b"run-local" in raw:
+            found.append(int(entry.name))
+    return found
+
+
 def terminate_action(
     launcher_pid: int, *, grace_s: float = WITHDRAW_GRACE_S
 ) -> dict[str, object]:
@@ -1461,19 +1494,27 @@ class PoolQueue:
 
         # Signal before releasing, so this box does not admit work on top of an
         # action that is still dying.
+        #
+        # No host check is needed and none is made: both ways of naming a target
+        # verify the *process*, not the record.  A ``child_pid`` copied from
+        # another box's lease is a number that means nothing here, and
+        # ``launcher_owns_action`` refuses it because the local process at that
+        # number is not running this action.  What is here is what gets
+        # signalled.
         signalled: dict[str, object] | None = None
+        targets: list[int] = []
         child_pid = lease.get("child_pid")
-        lease_host = lease.get("host")
-        on_this_box = (
-            str(lease_host) if isinstance(lease_host, str) else host
-        ) == socket.gethostname()
-        if (
-            signal_child
-            and isinstance(child_pid, int)
-            and on_this_box
-            and launcher_owns_action(int(child_pid), key)
-        ):
-            signalled = terminate_action(int(child_pid))
+        if isinstance(child_pid, int) and launcher_owns_action(int(child_pid), key):
+            targets.append(int(child_pid))
+        targets.extend(pid for pid in find_launcher_pids(key) if pid not in targets)
+        if signal_child and targets:
+            stopped = [terminate_action(pid) for pid in targets]
+            signalled = {
+                "launcher_pids": [int(one["launcher_pid"]) for one in stopped],
+                "action_pgids": [g for one in stopped for g in one["action_pgids"]],
+                "signals": [s for one in stopped for s in one["signals"]],
+                "still_alive": any(one["still_alive"] for one in stopped),
+            }
 
         released = self.ledger(host).release(key)
         claimed_path.unlink(missing_ok=True)
