@@ -129,6 +129,8 @@ def test_a_box_local_checkout_is_claimable_by_any_box_and_runs_off_its_own_tree(
     #    number the migration is judged on.
     census = queue.placement_census()
     assert census["wide"] == 1 and census["one_box_by_path"] == 0, census
+    assert queue.placeable_hosts(item) == sorted([HOST, "other-box"]), (
+        "the box that was idling must now be a box that could claim this")
 
     # 3. The worker runs it somewhere else entirely, off a tree it built.
     claimed = queue.claim(tags=[HOST, "x86", "cpu"], has_gpu=False,
