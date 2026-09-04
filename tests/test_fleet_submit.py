@@ -205,3 +205,7 @@ def assert_routed_through_the_shared_submit(name: str) -> None:
 
 def test_the_ladder_dispatcher_routes_through_the_shared_submit() -> None:
     assert_routed_through_the_shared_submit("dispatch_tessera_ladder.py")
+
+
+def test_the_shard_dispatcher_routes_through_the_shared_submit() -> None:
+    assert_routed_through_the_shared_submit("dispatch_tessera_shards.py")
