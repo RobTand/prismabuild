@@ -625,6 +625,9 @@ def container_owner(
     demand,
     variables,
     *,
+    determinism,
+    retry_policy,
+    marker_root,
     identity=None,
     logical_cwd=None,
     placement=None,
@@ -633,19 +636,30 @@ def container_owner(
 
     The action key includes the environment, and the environment needs this id,
     so using the final key would be recursive.  Hash the complete pre-lifecycle
-    submission identity, including normalized effective placement, instead;
-    adding these derived variables afterwards is deterministic and leaves no
-    caller-chosen ownership namespace.
+    submission identity, including task and retry policy, normalized effective
+    placement, the pre-owner environment, and the marker namespace, instead.
+    Adding the owner and marker variables afterwards is deterministic and
+    leaves no caller-chosen ownership namespace.
     """
 
     identity = _git_identity(Path(cwd)) if identity is None else identity
     cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
+    pre_owner_identity = {
+        "schema": "prismaquant.prismabuild.container_owner_identity.v1",
+        "task": {"determinism": determinism},
+        "checkout": identity,
+        "params": {
+            "command": command,
+            "cwd": cwd_identity,
+            "demand": demand,
+            "placement": placement or {"required_tags": []},
+            "retry_policy": retry_policy,
+        },
+        "environment": {"variables": variables},
+        "container_lifecycle": {"marker_root": str(marker_root)},
+    }
     return hashlib.sha256(
-        json.dumps(
-            ["prismabuild.container-owner.v2", command, cwd_identity, demand,
-             variables, identity, placement or {"required_tags": []}],
-            sort_keys=True,
-        ).encode()
+        json.dumps(pre_owner_identity, sort_keys=True).encode()
     ).hexdigest()
 
 
@@ -1409,6 +1423,7 @@ def main() -> int:
         "max_attempts": args.max_attempts,
         "retry_safe": args.retry_safe,
     }
+    determinism = "deterministic" if args.deterministic else "stochastic"
 
     cwd = Path(args.cwd).resolve()
     if not cwd.is_dir():
@@ -1526,28 +1541,6 @@ def main() -> int:
             command, variables, cwd, repository_root=repository_root
         )
 
-    # Docker's payload is reparented to containerd-shim and therefore survives
-    # a kill of every process group below the action launcher.  Put the fleet's
-    # Docker shim first even under --no-default-env; it records a durable marker
-    # and adds the derived ownership label which withdrawal/finish query before
-    # returning capacity.  This is control-plane state, not an optional action
-    # convenience, so a caller cannot override either identity variable.
-    identity = _git_identity(cwd)
-    owner = container_owner(
-        command,
-        cwd,
-        demand,
-        variables,
-        identity=identity,
-        logical_cwd=logical_cwd,
-        placement=placement,
-    )
-    marker = SH / "pb-queue" / pool.CONTAINER_OWNERS / f"{owner}.used"
-    prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
-    variables["PATH"] = f"{CONTAINER_WRAPPER_DIR}:{prior_path}"
-    variables[CONTAINER_OWNER_ENV] = owner
-    variables[CONTAINER_MARKER_ENV] = str(marker)
-
     # A CPU slot must not be able to run GPU work.  The pool's whole claim is
     # that the ledger knows what is on each accelerator, and that claim was
     # false in one direction: an action submitted WITHOUT ``--gpu`` inherited a
@@ -1575,6 +1568,36 @@ def main() -> int:
                 "Add --gpu (and --gpu-capacity N if you need more than one "
                 "slot), or drop the variable.")
         variables["CUDA_VISIBLE_DEVICES"] = ""
+
+    # Docker's payload is reparented to containerd-shim and therefore survives
+    # a kill of every process group below the action launcher.  Put the fleet's
+    # Docker shim first even under --no-default-env; it records a durable marker
+    # and adds the derived ownership label which withdrawal/finish query before
+    # returning capacity.  This is control-plane state, not an optional action
+    # convenience, so a caller cannot override either identity variable.
+    #
+    # Normalize every other environment value first.  The owner then hashes
+    # the exact action-defining state available before its own two recursive
+    # variables are injected, including the deployed wrapper path.
+    prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+    variables["PATH"] = f"{CONTAINER_WRAPPER_DIR}:{prior_path}"
+    identity = _git_identity(cwd)
+    marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
+    owner = container_owner(
+        command,
+        cwd,
+        demand,
+        variables,
+        determinism=determinism,
+        retry_policy=retry_policy,
+        marker_root=marker_root,
+        identity=identity,
+        logical_cwd=logical_cwd,
+        placement=placement,
+    )
+    marker = marker_root / f"{owner}.used"
+    variables[CONTAINER_OWNER_ENV] = owner
+    variables[CONTAINER_MARKER_ENV] = str(marker)
 
     # Migrate the former broad prefix globs before identity asks Git for its
     # untracked roster; otherwise a legitimate prefix-bearing payload remains
@@ -1645,7 +1668,7 @@ def main() -> int:
             # A pytest or a timing run is not byte-reproducible and must not
             # claim to be: the CAS only enforces canonical equality on
             # "deterministic", so mislabelling one would be a false receipt.
-            "determinism": "deterministic" if args.deterministic else "stochastic",
+            "determinism": determinism,
             "artifact_family": "generic",
             "artifact_kind": "generic",
             "argv": ["/bin/bash", "-lc",
