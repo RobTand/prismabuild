@@ -10,6 +10,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# Imported BEFORE ``pbrun`` is exec'd, on purpose.  ``pbrun`` puts the
+# published mirror (``/mnt/shared/prismabuild-fleet/repo/src``) at the front of
+# ``sys.path`` so a submitter runs the fleet's bytes, which means a bare
+# ``pytest tests/test_pbrun_placement.py`` would otherwise test THIS checkout's
+# pbrun against the MIRROR's pool -- and report a missing method as a failure
+# of code that is right here.  Binding the package first makes the file
+# self-contained however it is invoked.
+from prismabuild import pool as pool_module  # noqa: E402
+
 _SPEC = importlib.util.spec_from_file_location(
     "pbrun", Path(__file__).resolve().parents[1] / "tools" / "fleet" / "pbrun.py"
 )
@@ -116,8 +125,6 @@ def test_exclusive_demands_what_a_box_actually_offers(tmp_path):
     publishes an action no worker can ever claim, and the caller sees a queued
     item rather than a refusal.
     """
-    from prismabuild import pool as pool_module
-
     queue = pool_module.PoolQueue(tmp_path / "q")
     queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
                    capacity={"gpu": 2, "mem_gb": 48})
@@ -133,8 +140,6 @@ def test_exclusive_demands_what_a_box_actually_offers(tmp_path):
 
 def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
     """A CPU-only fleet has no answer to "the whole GPU", and says so."""
-    from prismabuild import pool as pool_module
-
     queue = pool_module.PoolQueue(tmp_path / "q")
     queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
                    capacity={"gpu": 0, "mem_gb": 60})
@@ -164,3 +169,116 @@ def test_the_default_environment_bounds_the_thread_pools():
         assert f'"{name}": "4"' in source, name
     # And it must stay overridable: --env is applied after the defaults.
     assert source.index('"OMP_NUM_THREADS"') < source.index("for entry in args.env")
+
+
+def _fleet(tmp_path: Path):
+    """The live fleet's shape, from ``tools/fleet/fleet_boxes.json``."""
+
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
+                   capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
+    queue.announce(host="gx10-6b77", tags=["gb10", "gx10-6b77", "sparklina"],
+                   has_gpu=True, capacity={"gpu": 1, "mem_gb": 40, "cpu": 10})
+    queue.announce(host="dl380g10", tags=["cpu", "dl380g10", "x86"],
+                   has_gpu=False, capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
+    return queue
+
+
+def _notice(queue, *, cwd: str, tags: list[str], demand: dict, here=False,
+            explicit=(), needs_gpu=False) -> str:
+    intent = {"tags": tags, "needs_gpu": needs_gpu, "resources": demand}
+    return pbrun.pin_notice(queue, intent, cwd=Path(cwd), hostname=HOST,
+                            here=here, explicit=list(explicit))
+
+
+def test_a_box_local_checkout_says_it_pinned_the_action(tmp_path) -> None:
+    """The pin was a silent consequence of a path.
+
+    ``pbrun`` printed ``tags=['sparky']`` and stopped there, so an agent that
+    had just made itself a worktree under ``/home/rob/tmp`` had no way to know
+    it had narrowed the fleet to one box.  129 of 394 items in the live queue
+    on 2026-09-04 carried a hostname tag; 114 of them were pinned to sparky by
+    a ``/home/rob/tmp/ts*`` worktree, while the other two boxes idled.
+    """
+
+    notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101",
+                     tags=[HOST], demand={"cpu": 1, "mem_gb": 4})
+
+    assert "PINNED to sparky" in notice
+    assert "/home/rob/tmp/ts101 is box-local" in notice
+    assert "2 other live boxes fit this demand: dl380g10, gx10-6b77" in notice
+    assert "/mnt/shared" in notice                     # and what to do about it
+
+
+def test_the_width_quoted_is_the_width_the_pin_cost(tmp_path) -> None:
+    """Not "how many boxes match the pinned tags" -- that is always one.
+
+    The question worth answering is how many boxes would have been eligible
+    without it, so the host tag comes off before the fleet is asked.  A demand
+    only this box can meet costs nothing to pin, and saying so keeps the
+    warning from crying wolf on every GPU-heavy submission.
+    """
+
+    queue = _fleet(tmp_path)
+
+    one_slot = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                       needs_gpu=True, demand={"gpu": 1, "mem_gb": 16})
+    both_slots = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                         needs_gpu=True, demand={"gpu": 2, "mem_gb": 16})
+
+    assert "1 other live box fits this demand: gx10-6b77" in one_slot
+    assert "No other live box fits this demand" in both_slots
+
+
+def test_a_shared_checkout_has_nothing_to_report(tmp_path) -> None:
+    """Silence is the correct output for an action that is already free."""
+
+    assert _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86", tags=[],
+                   demand={"cpu": 1}) == ""
+
+
+def test_here_is_still_reported_as_the_pin_it_is(tmp_path) -> None:
+    """Asked for on purpose, and still worth pricing."""
+
+    notice = _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86",
+                     tags=[HOST], demand={"cpu": 1}, here=True)
+
+    assert notice.startswith("pbrun: PINNED to sparky by --here")
+    assert "2 other live boxes fit this demand" in notice
+
+
+def test_an_explicit_tag_over_a_box_local_checkout_is_a_warning(tmp_path) -> None:
+    """``--tag`` REPLACES the pin, so the tree can be invisible where it lands.
+
+    That failure is loud rather than silent -- the worker refuses on an
+    unavailable checkout root, or on ``core.verify_code_closure`` when a
+    same-named tree exists there with other bytes -- but it is loud after a
+    claim and two retries, on another box, in a log nobody is watching.  The
+    submitter is here now.
+    """
+
+    notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101", tags=["x86"],
+                     demand={"cpu": 1}, explicit=["x86"])
+
+    assert "WARNING" in notice
+    assert "exists only on sparky" in notice
+    assert "--tag sparky" in notice
+
+
+def test_an_unannounced_fleet_reports_unknown_rather_than_zero(tmp_path) -> None:
+    """A missing diagnostic must not be printed as a measurement."""
+
+    empty = pool_module.PoolQueue(tmp_path / "q")
+
+    notice = _notice(empty, cwd="/home/rob/tmp/ts101", tags=[HOST],
+                     demand={"cpu": 1})
+
+    assert "PINNED to sparky" in notice
+    assert "Fleet width unknown" in notice
+
+
+def test_the_notice_is_printed_before_the_queue_is_told(tmp_path) -> None:
+    """A pin the submitter learns about after the fact is a receipt, not a warning."""
+
+    source = Path(pbrun.__file__).read_text()
+    assert source.index("pin_notice(q, intent") < source.index("q.publish(")

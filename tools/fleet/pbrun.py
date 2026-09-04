@@ -236,11 +236,82 @@ def placement_tags(
         return list(explicit)
     if here:
         return [hostname]
+    return [hostname] if is_box_local(cwd) else []
+
+
+def is_box_local(cwd: Path) -> bool:
+    """Does this path exist on exactly one box?
+
+    The one rule, with two readers: ``placement_tags`` turns it into a pin,
+    and ``pin_notice`` turns it into the sentence that says so.  A second copy
+    of the test is a way for the pin and the explanation of the pin to
+    disagree.
+    """
+
     try:
         cwd.resolve().relative_to(SHARED_ROOT)
     except ValueError:
-        return [hostname]
-    return []
+        return True
+    return False
+
+
+def pin_notice(queue, intent, *, cwd: Path, hostname: str, here: bool,
+               explicit) -> str:
+    """What the submitter is not otherwise told: this action is one box wide.
+
+    The pin is a silent consequence of a path.  ``pbrun`` printed
+    ``tags=['sparky']`` and nothing else, so the submitter -- usually an agent
+    that just made itself a worktree under ``/home/rob/tmp`` -- had no way to
+    know it had narrowed the fleet to one box.  Measured on the live queue,
+    2026-09-04: 129 of 394 items carried a hostname tag, 114 of them pinned to
+    ``sparky`` by a ``/home/rob/tmp/ts*`` worktree, while sparky's queue backed
+    up and the other two boxes idled.
+
+    The width is quoted from the same matcher the queue places by, and it is
+    the width the action WOULD have had: the host tag is removed before
+    asking, because "how many boxes fit this demand" is the question the pin
+    just answered with one.  ``None`` from ``placeable_hosts`` means no worker
+    has announced, and that stays unknown rather than being printed as zero.
+
+    Returns "" when there is nothing to say -- a shared checkout that was
+    already free to run anywhere.
+    """
+
+    tags = [str(t) for t in (intent.get("tags") or [])]
+    local = is_box_local(cwd)
+    if local and explicit:
+        # The path pins; an explicit tag replaces the pin rather than adding to
+        # it, so this action may be claimed by a box that cannot see its tree.
+        # That fails loudly rather than silently -- the worker refuses on
+        # "checkout root is unavailable", or on the closure check
+        # (``core.verify_code_closure``) when a same-named tree exists there
+        # with other bytes -- but it fails after a claim and two retries.  Say
+        # so here, where it costs nothing.
+        return (f"pbrun: WARNING -- the checkout {cwd} exists only on {hostname}, "
+                f"but tags {tags} let another box claim this action.  It will "
+                f"fail there rather than run on the wrong tree; add "
+                f"--tag {hostname} if you meant this box, or move the checkout "
+                f"under {SHARED_ROOT}.")
+    if not (local or here):
+        return ""
+    unpinned = dict(intent)
+    unpinned["tags"] = [t for t in tags if t != hostname]
+    hosts = queue.placeable_hosts(unpinned)
+    if hosts is None:
+        width = "Fleet width unknown: no worker has announced."
+    else:
+        others = [h for h in hosts if h != hostname]
+        width = (f"{len(others)} other live box{'es' if len(others) > 1 else ''} "
+                 f"fit{'' if len(others) > 1 else 's'} this demand: "
+                 f"{', '.join(others)}." if others else
+                 "No other live box fits this demand, so the pin costs nothing now.")
+    if here and not local:
+        return (f"pbrun: PINNED to {hostname} by --here, so no other box can "
+                f"claim this action.  {width}")
+    return (f"pbrun: PINNED to {hostname} -- the checkout {cwd} is box-local, "
+            f"so no other box can claim this action.  {width}  Move the "
+            f"checkout under {SHARED_ROOT} to let any box claim it, or accept "
+            f"the pin knowingly.")
 
 
 def await_outcome(q, key: str, *, wait_s: float) -> int:
@@ -553,6 +624,13 @@ def main() -> int:
     # and that stays a warning: a fleet whose loops predate the offer
     # registry must still be able to submit.
     intent = {"tags": tags, "needs_gpu": bool(demand.get("gpu")), "resources": demand}
+    # Say how wide this action is before saying it was queued.  A pin is a
+    # consequence of the checkout path, and nothing used to report it, so a
+    # submitter narrowed the fleet to one box without being told.
+    notice = pin_notice(q, intent, cwd=cwd, hostname=socket.gethostname(),
+                        here=args.here, explicit=list(args.tag))
+    if notice:
+        print(notice, file=sys.stderr, flush=True)
     verdict = q.placeable(intent)
     if verdict is False:
         raise SystemExit(
