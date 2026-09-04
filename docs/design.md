@@ -174,9 +174,11 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
 - A `fleet/pbrun` cache miss additionally parses its closure stamp and
   recomputes the live checkout's Git identity immediately before argv. The
   canonical computation is one core function shared by submitter and worker:
-  `HEAD`, the tracked delta, and the content digest of every untracked file
-  (including files below a newly-added directory). A stamp whose bytes are
-  intact but whose claim no longer matches therefore refuses before execution.
+  `HEAD`, the tracked delta, and the content digest of every untracked regular
+  file or the literal link text of every untracked symlink (including members
+  below a newly-added directory). Symlinks are never dereferenced into bytes
+  outside the checkout. A stamp whose bytes are intact but whose claim no
+  longer matches therefore refuses before execution.
   This closes queued/retry drift; it does not make a live worktree immutable
   after preflight. Commit-addressed per-action materialisation is the remaining
   boundary, tracked in #5.

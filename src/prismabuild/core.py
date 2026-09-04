@@ -1193,13 +1193,19 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
         if not line.startswith("?? "):
             continue
         member = checkout / line[3:].strip().strip('"')
-        if member.is_dir() or not member.exists():
-            continue
         try:
             digest = hashlib.sha256()
-            with member.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1 << 20), b""):
-                    digest.update(chunk)
+            member_stat = member.lstat()
+            if stat.S_ISDIR(member_stat.st_mode):
+                continue
+            if stat.S_ISLNK(member_stat.st_mode):
+                digest.update(b"symlink\0")
+                digest.update(os.fsencode(os.readlink(member)))
+            else:
+                digest.update(b"file\0")
+                with member.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1 << 20), b""):
+                        digest.update(chunk)
             untracked.append(f"{line[3:]}:{digest.hexdigest()}")
         except OSError:
             untracked.append(f"{line[3:]}:unreadable")

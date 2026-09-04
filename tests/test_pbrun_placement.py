@@ -217,6 +217,43 @@ def test_pbrun_identity_includes_bytes_below_an_untracked_directory(tmp_path) ->
     assert pbrun._git_identity(checkout) != before
 
 
+def test_pbrun_identity_hashes_untracked_symlink_to_directory_text(tmp_path) -> None:
+    """A directory-target symlink is a file whose payload is its link text.
+
+    ``Path.is_dir()`` follows the link, so the old identity silently omitted
+    this untracked member.  Retargeting it could therefore change which tree a
+    command reads without moving the action key.
+    """
+
+    checkout = _git_checkout(tmp_path)
+    (tmp_path / "outside-a").mkdir()
+    (tmp_path / "outside-b").mkdir()
+    link = checkout / "helper-tree"
+    link.symlink_to("../outside-a", target_is_directory=True)
+    before = pbrun._git_identity(checkout)
+
+    link.unlink()
+    link.symlink_to("../outside-b", target_is_directory=True)
+
+    assert pbrun._git_identity(checkout) != before
+
+
+def test_pbrun_identity_hashes_symlink_text_not_target_contents(tmp_path) -> None:
+    """Equal target bytes do not make two different symlinks equivalent."""
+
+    checkout = _git_checkout(tmp_path)
+    (tmp_path / "outside-a.py").write_text("print('same')\n")
+    (tmp_path / "outside-b.py").write_text("print('same')\n")
+    link = checkout / "helper.py"
+    link.symlink_to("../outside-a.py")
+    before = pbrun._git_identity(checkout)
+
+    link.unlink()
+    link.symlink_to("../outside-b.py")
+
+    assert pbrun._git_identity(checkout) != before
+
+
 def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> None:
     """A path in argv is not part of the checkout closure by magic.
 
