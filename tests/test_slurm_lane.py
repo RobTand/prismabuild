@@ -821,21 +821,42 @@ def test_the_slurm_transport_never_touches_the_pull_queue(
 
 
 def test_the_transport_default_is_still_the_pull_queue(
-    monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """SLURM is installed box by box, and the day a controller comes up is not
     the day every agent's ``pbrun`` starts talking to it.  Cutover is one
-    environment variable and rollback is unsetting it."""
+    environment variable and rollback is unsetting it.
+
+    Read through ``main`` rather than off the parser, so that the assertion is
+    about which dispatcher an operator's command line actually reached.  A test
+    that recomputed the default expression could only ever agree with itself.
+    """
+
+    routed: list[str] = []
+    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(pbrun.pool, "PoolQueue", lambda root: ("queue", root))
+    monkeypatch.setattr(
+        pbrun, "withdraw_main",
+        lambda queue, prefixes, **_kw: routed.append("pool") or 0)
+    monkeypatch.setattr(
+        pbrun, "withdraw_slurm_main",
+        lambda prefixes, **_kw: routed.append("slurm") or 0)
+    monkeypatch.setattr(sys, "argv", ["pbrun.py", "--withdraw", "abc123abc123"])
 
     monkeypatch.delenv(pbrun.DEFAULT_TRANSPORT_ENV, raising=False)
-    parser_default = _transport_default()
-    assert parser_default == "pool"
+    assert pbrun.main() == 0
+    assert routed == ["pool"]
+
     monkeypatch.setenv(pbrun.DEFAULT_TRANSPORT_ENV, "slurm")
-    assert _transport_default() == "slurm"
+    assert pbrun.main() == 0
+    assert routed == ["pool", "slurm"]
 
-
-def _transport_default() -> str:
-    return os.environ.get(pbrun.DEFAULT_TRANSPORT_ENV) or "pool"
+    # And the flag still outranks the environment, in both directions.
+    monkeypatch.setattr(
+        sys, "argv",
+        ["pbrun.py", "--transport", "pool", "--withdraw", "abc123abc123"])
+    assert pbrun.main() == 0
+    assert routed == ["pool", "slurm", "pool"]
 
 
 def test_a_refusal_from_sbatch_reaches_the_caller_as_a_refusal(
