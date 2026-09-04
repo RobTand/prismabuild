@@ -503,8 +503,13 @@ class PoolQueue:
         ledger is retired to; it is deliberately *not* what ``placeable``
         reads, because a box busy with someone else's work is a slow
         submission, and answering ``False`` there would turn it into a refused
-        one.  Older workers announce none of the three, and a reader must treat
-        their absence as "not measured" rather than as zero.
+        one.  ``observed_capacity`` is the *windowed* offer, so in the falling
+        direction it can lag ``foreign`` by up to ``--observe-samples`` polls:
+        a record reading ``observed_capacity {'gpu': 1}`` beside ``foreign
+        {'gpu': 2}`` is a box that has seen the foreign work and not yet agreed
+        with itself about it, which is the window doing its job.  Older workers
+        announce none of the three, and a reader must treat their absence as
+        "not measured" rather than as zero.
         """
 
         record = {
