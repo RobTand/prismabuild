@@ -506,10 +506,14 @@ class PoolQueue:
         one.  ``observed_capacity`` is the *windowed* offer, so in the falling
         direction it can lag ``foreign`` by up to ``--observe-samples`` polls:
         a record reading ``observed_capacity {'gpu': 1}`` beside ``foreign
-        {'gpu': 2}`` is a box that has seen the foreign work and not yet agreed
-        with itself about it, which is the window doing its job.  Older workers
-        announce none of the three, and a reader must treat their absence as
-        "not measured" rather than as zero.
+        {'gpu': 2}`` is a box that has seen the foreign work and has not yet
+        agreed with itself about it.  The lag is deliberate while a loop is
+        polling, and was a hole at the end of an action, where a window full of
+        pre-action readings re-minted retired tokens; ``CapacityObserver.
+        rejoin`` empties the window there, so a record written on the first
+        poll after an action carries no reading older than that poll.  Older
+        workers announce none of the three, and a reader must treat their
+        absence as "not measured" rather than as zero.
         """
 
         record = {

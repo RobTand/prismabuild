@@ -225,6 +225,10 @@ def main():
                 timeout_s=args.timeout_s, capacity=capacity,
             )
         except Exception as exc:                                 # noqa: BLE001
+            # The raise may have come two hours into an action, so this loop
+            # has been away from the box for as long as a returning one has.
+            if observer is not None:
+                observer.rejoin(queue.ledger().capacity())
             errors += 1
             print(f"[{host}] serve_once raised ({errors} in a row): "
                   f"{type(exc).__name__}: {exc}", flush=True)
@@ -236,6 +240,17 @@ def main():
             time.sleep(args.poll_s)
             continue
         errors = 0
+        if outcome is not None and observer is not None:
+            # Back from an action, having taken no reading of the box for as
+            # long as it ran.  The window's samples are from before it and the
+            # offer is a maximum, so they would go on deciding it for
+            # ``--observe-samples`` - 1 polls -- the polls in which this loop
+            # claims again -- and ``ensure_capacity`` would re-mint against
+            # them every free token a sibling loop had retired meanwhile.  The
+            # ledger is read here, after the action's tokens are released, and
+            # caps the first reading back rather than seeding it: part of that
+            # total is the token this loop has just let go of.
+            observer.rejoin(queue.ledger().capacity())
         if outcome is None:
             idle += 1
             # A loop imports ``prismabuild.pool`` once, at start, and holds

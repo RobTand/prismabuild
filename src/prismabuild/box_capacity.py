@@ -68,18 +68,41 @@ foreign work is gone.  A worker's first polls still correct ledger drift
 whatever the window says, because the offer is capped by the declaration
 either way.
 
-Several loops share one box and one ledger, and ``ensure_capacity`` is
-increase-only, so the box's effective offer is the most optimistic *live* loop's
--- which is why a starting loop must not prime its window with the declaration.
-A loop exits on ``--max-idle`` and the supervisor replaces it, so on a box with
-three to five loops one of them restarts every half hour or so; priming from
-the declaration would have each restart re-mint, for the length of its window,
-every free token the other loops had retired, and any loop on the box could
-then acquire one.  That is this blindness reopened on a timer.  So an observer
-is seeded with what the ledger already totals for this host, capped by the
-declaration, and only a box the ledger has never heard of is seeded with the
-declaration itself.  The seed can only ever *lower* the offer, because the
-offer is a maximum: one reading of an idle box restores it in a single poll.
+**A window only holds evidence, and evidence expires.**  The same two hours
+inside ``serve_once`` make the window a liability at the other end of the
+action.  Its samples describe the box *before* the action; the maximum is
+still taken over them for ``samples`` - 1 polls after the action returns, and
+those polls are the moment the loop is about to claim again.  Measured with
+these classes 2026-09-04: a loop that polled an idle box three times, claimed
+a GPU action, and came back to two foreign encodes went on offering 2 gpu for
+two more polls, re-minted the token a sibling loop had retired, and acquired
+against it twice.  That is this whole blindness, on a timer tied to the end of
+every action.
+
+So ``rejoin`` empties the window, and the first offer after it is capped by
+what the ledger already totals for this host.  A loop coming back from an
+action believes neither of the two things that would lie to it: not its own
+samples, which have expired, and not the token it has just released, which is
+why the ledger total is a cap and not a seed.  The price is one poll of
+possible under-offer, paid at the end of each action; a retire deletes free
+tokens only, and the three to sixteen other loops on a box re-mint them from
+their own next claim.
+
+Restarting is the same situation with one difference, and it is why the seed
+survives beside the cap: a starting loop has never read the box, so there is
+nothing to empty.  Several loops share one box and one ledger, and
+``ensure_capacity`` is increase-only, so the box's effective offer is the most
+optimistic *live* loop's -- which is why a starting loop must not prime its
+window with the declaration.  A loop exits on ``--max-idle`` and the
+supervisor replaces it, so on a box with three to five loops one of them
+restarts every half hour or so; priming from the declaration would have each
+restart re-mint, for the length of its window, every free token the other
+loops had retired, and any loop on the box could then acquire one.  So an
+observer is seeded with what the ledger already totals for this host, capped
+by the declaration, and only a box the ledger has never heard of is seeded
+with the declaration itself.  The seed can only ever *lower* the offer,
+because the offer is a maximum: one reading of an idle box restores it in a
+single poll.
 
 Nothing here reads a GPU's memory as a *pool* of its own.  On GB10 the GPU and
 the host share one physical memory, so a compute app's resident bytes are
@@ -321,28 +344,75 @@ class CapacityObserver:
         self.ledger_total = ({str(k): int(v) for k, v in ledger_total.items()}
                              if ledger_total else {})
         self._history: deque[dict[str, int]] = deque(maxlen=self.samples)
+        # The seed pads the window once, on the first reading this observer
+        # ever takes.  ``rejoin`` empties the window without setting this
+        # back, because a loop coming out of an action must not be padded --
+        # see the module docstring.
+        self._seeded = False
+        self._cap: dict[str, int] | None = None
         self.last: Observation | None = None
+
+    def rejoin(self, ledger_total: Mapping[str, int] | None = None) -> None:
+        """Forget the window: this observer has not been watching the box.
+
+        A worker loop spends the whole of an action inside ``serve_once`` --
+        up to ``--timeout-s`` 7200 -- and takes no readings while it is there.
+        Its samples then describe the box before the action, and ``offer`` is
+        an elementwise maximum, so they would go on deciding the offer for
+        ``samples`` - 1 polls after the action returns: exactly the polls in
+        which the loop claims again.  Measured with these classes, that lets a
+        loop re-mint a gpu token a sibling had retired and acquire against it
+        twice, on top of the foreign work the retire was about.
+
+        ``ledger_total`` caps the first offer taken after this call, and is
+        the host's ledger total read after the action released its tokens.  It
+        is a cap and not a seed because a seed would raise the offer back to
+        it, and part of it is the token this loop has just let go of.  Pass
+        nothing, or an empty mapping, for a ledger that has no total for this
+        host; that is "no verdict to inherit", not "no capacity".
+        """
+
+        self._history.clear()
+        # An emptied window is not a new one: the pad is what a start gets, and
+        # a return must not be given it -- see the module docstring.
+        self._seeded = True
+        self._cap = ({str(k): int(v) for k, v in ledger_total.items()}
+                     if ledger_total else None)
 
     def offer(
         self, declared: Mapping[str, int], held: Mapping[str, int] | None = None,
         **overrides: object,
     ) -> dict[str, int]:
         wanted = {str(kind): int(value) for kind, value in declared.items()}
-        # Seed the window, so a worker's first reading is never decisive on its
-        # own -- from the ledger's standing total where there is one, and from
-        # the declaration only on a host the ledger has never seen.  Drift
-        # correction still happens from the first poll either way: the offer is
-        # capped by the declaration, which is the whole of what it needs.
-        seed = dict(wanted) if not self.ledger_total else {
-            kind: min(value, self.ledger_total.get(kind, 0))
-            for kind, value in wanted.items()
-        }
-        while len(self._history) < self.samples - 1:
-            self._history.append(dict(seed))
+        if not self._seeded:
+            # Seed the window once, so a worker's first reading is never
+            # decisive on its own -- from the ledger's standing total where
+            # there is one, and from the declaration only on a host the ledger
+            # has never seen.  Drift correction still happens from the first
+            # poll either way: the offer is capped by the declaration, which is
+            # the whole of what it needs.
+            seed = dict(wanted) if not self.ledger_total else {
+                kind: min(value, self.ledger_total.get(kind, 0))
+                for kind, value in wanted.items()
+            }
+            while len(self._history) < self.samples - 1:
+                self._history.append(dict(seed))
+            self._seeded = True
         seen = observe(wanted, held, margin_gb=self.margin_gb, **overrides)  # type: ignore[arg-type]
         self.last = seen
-        self._history.append(dict(seen.capacity))
+        sample = dict(seen.capacity)
+        if self._cap is not None:
+            # The first reading back from an action, held down to what the
+            # ledger already totals here.  A kind the ledger has no total for
+            # is a kind this host has none of.
+            sample = {kind: min(value, self._cap.get(kind, 0))
+                      for kind, value in sample.items()}
+            self._cap = None
+        # The window remembers what was offered, not what was read: recording
+        # the uncapped reading would let the next poll's maximum undo a cap
+        # that has already been spent.
+        self._history.append(sample)
         return {
-            kind: min(value, max(sample.get(kind, value) for sample in self._history))
+            kind: min(value, max(s.get(kind, value) for s in self._history))
             for kind, value in wanted.items()
         }

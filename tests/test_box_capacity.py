@@ -230,6 +230,94 @@ def test_a_window_of_no_samples_is_refused() -> None:
         bc.CapacityObserver(samples=0)
 
 
+# -- coming back from an action -----------------------------------------
+
+SPARKY_DECLARED = {"cpu": 10, "gpu": 2, "mem_gb": 48}
+TWO_FOREIGN = [(1, 1000), (2, 1000)]
+
+
+def test_a_window_from_before_an_action_does_not_decide_after_it() -> None:
+    """The break this file was reopened for.
+
+    A loop polls an idle box, claims a GPU action, and takes no reading for as
+    long as the action runs -- ``--timeout-s`` is 7200.  Foreign work arrives
+    meanwhile and a sibling loop retires the box.  Because ``offer`` is an
+    elementwise maximum, the returning loop's pre-action readings still decide
+    its offer for ``samples`` - 1 polls, which are the polls in which it claims
+    again, and ``ensure_capacity`` re-mints against them.
+    """
+
+    idle = dict(gpu_apps=[], mem_gb=100, load1=0.0)
+    busy = dict(gpu_apps=TWO_FOREIGN, mem_gb=100, load1=0.0)
+
+    stale = bc.CapacityObserver(samples=3)
+    for _ in range(3):
+        stale.offer(SPARKY_DECLARED, {}, **idle)
+    # No rejoin: the window is what it was before the action.
+    assert stale.offer(SPARKY_DECLARED, {}, **busy)["gpu"] == 2
+    assert stale.last is not None and stale.last.foreign["gpu"] == 2
+
+    rejoined = bc.CapacityObserver(samples=3)
+    for _ in range(3):
+        rejoined.offer(SPARKY_DECLARED, {}, **idle)
+    rejoined.rejoin({"cpu": 10, "gpu": 1, "mem_gb": 48})
+
+    assert rejoined.offer(SPARKY_DECLARED, {}, **busy)["gpu"] == 0
+
+
+def test_the_ledger_caps_the_first_reading_back_rather_than_seeding_it() -> None:
+    """A sibling's verdict outranks one lucky reading, for one poll.
+
+    The foreign work on this fleet is a shell script launching one python
+    process after another, so a single reading can land in the gap between two
+    of them.  The ledger's total is the standing verdict of the loops that kept
+    polling, so it caps the first reading back.  It caps and does not seed,
+    because part of that total is the token the returning loop has just
+    released -- seeding would raise the offer back to it.
+    """
+
+    observer = bc.CapacityObserver(samples=3)
+    observer.rejoin({"cpu": 10, "gpu": 0, "mem_gb": 48})
+
+    # The gap: nvidia-smi shows nothing, but the box was retired to 0.
+    assert observer.offer(SPARKY_DECLARED, {}, gpu_apps=[], mem_gb=100,
+                          load1=0.0)["gpu"] == 0
+    # And the cap is spent, so a second reading of an idle box restores the
+    # offer.  That one poll is the whole price of emptying the window, and it
+    # is what makes the cap a cap rather than a deadlock.
+    assert observer.offer(SPARKY_DECLARED, {}, gpu_apps=[], mem_gb=100,
+                          load1=0.0)["gpu"] == 2
+
+
+def test_a_loop_back_from_an_action_is_not_padded_again() -> None:
+    """The seed pads a start, never a return.
+
+    A start has never read the box, and the ledger total it pads with is the
+    verdict of loops that have.  A return has readings and they have expired,
+    so there is nothing to pad with that is not either stale or the loop's own
+    released tokens.
+    """
+
+    observer = bc.CapacityObserver(samples=3, ledger_total=SPARKY_DECLARED)
+    observer.offer(SPARKY_DECLARED, {}, gpu_apps=[], mem_gb=100, load1=0.0)
+    observer.rejoin()
+
+    offer = observer.offer(SPARKY_DECLARED, {}, gpu_apps=TWO_FOREIGN,
+                           mem_gb=100, load1=0.0)
+
+    assert offer["gpu"] == 0
+
+
+def test_an_empty_ledger_total_caps_nothing() -> None:
+    """"The ledger has no total for this host" is not "this host has nothing"."""
+
+    observer = bc.CapacityObserver(samples=3)
+    observer.rejoin({})
+
+    assert observer.offer(SPARKY_DECLARED, {}, gpu_apps=[], mem_gb=100,
+                          load1=0.0)["gpu"] == 2
+
+
 # -- the readers --------------------------------------------------------
 
 def test_the_memory_reading_is_the_one_the_kernel_publishes() -> None:

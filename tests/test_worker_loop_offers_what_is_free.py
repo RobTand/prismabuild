@@ -51,14 +51,19 @@ def _worker_loop():
 
 
 def _run(tmp_path: Path, argv: list[str], *, apps=(), mem_gb=100, load1=0.0):
-    """One worker start against a private pool root, with the box's readings given."""
+    """One worker start against a private pool root, with the box's readings given.
 
+    ``apps`` may be a callable, for a box whose GPU changes while the loop
+    runs: it is called for each reading, as ``nvidia-smi`` would be.
+    """
+
+    reader = ({"side_effect": apps} if callable(apps)
+              else {"return_value": None if apps is None else list(apps)})
     wl = _worker_loop()
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
-         mock.patch.object(box_capacity, "gpu_compute_apps",
-                           return_value=None if apps is None else list(apps)), \
+         mock.patch.object(box_capacity, "gpu_compute_apps", **reader), \
          mock.patch.object(box_capacity, "mem_available_gb", return_value=mem_gb), \
          mock.patch.object(box_capacity, "run_queue", return_value=load1), \
          mock.patch.object(sys, "argv", ["worker_loop.py", *argv]):
@@ -249,3 +254,110 @@ def test_a_first_start_on_an_unknown_host_still_offers_its_declaration(tmp_path:
 
     assert queue.ledger(host).capacity()["gpu"] == 1
     assert _offer(queue, host)["observed_capacity"]["gpu"] == 1
+
+
+# -- the boundary at the end of an action --------------------------------
+
+#: sparky, the only box on the fleet with more than one gpu slot.
+SPARKY = ["--class", "gb10", "--gpu-slots", "2", "--mem-gb", "48",
+          "--cpu-slots", "10", "--all-cores", "--poll-s", "0"]
+
+
+def _gpu_action(tmp_path: Path, host: str, *, foreign: bool) -> Path:
+    """A worker script that stands in for one pool GPU action.
+
+    Running it is what a real action does to the box while a loop is inside
+    ``serve_once`` and reading nothing: out-of-pool work appears, and a sibling
+    loop on the same box sees it and retires the free tokens.
+    """
+
+    script = tmp_path / "fake_action.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src')!r})\n"
+        "from prismabuild import pool\n"
+        f"marker = {str(tmp_path / 'foreign.marker')!r}\n"
+        f"if {bool(foreign)!r}:\n"
+        "    open(marker, 'w').close()\n"
+        f"led = pool.PoolQueue({str(tmp_path / 'pb-queue')!r}).ledger({host!r})\n"
+        "led.retire_free_capacity({'gpu': 0, 'mem_gb': 48, 'cpu': 10})\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def _publish_gpu_item(queue: pool.PoolQueue, key: str, script: Path,
+                      host: str, tmp_path: Path) -> None:
+    queue.publish(
+        action_key=key, cas_root=tmp_path / "cas",
+        checkout_root=tmp_path / "co", worker_script=script,
+        tags=[host], needs_gpu=True, resources={"gpu": 1, "mem_gb": 16},
+    )
+
+
+def test_a_loop_coming_out_of_an_action_does_not_place_on_top(
+    tmp_path: Path,
+) -> None:
+    """The issue's own failure mode, at the end of every action.
+
+    A loop polls an idle box, claims a GPU action and stops reading the box for
+    as long as it runs -- ``--timeout-s`` is 7200.  Out-of-pool work starts
+    meanwhile and a sibling loop retires the free tokens against it.  Since the
+    offer is an elementwise maximum over the window, the returning loop's
+    pre-action readings would decide its offer for the next two polls, re-mint
+    the retired tokens through ``ensure_capacity``, and admit a second GPU
+    action on top of the foreign work.  Measured before the fix, with these
+    classes: ``offer gpu 2`` beside ``foreign {'gpu': 2}``, ledger total 1 -> 2,
+    ``acquire`` true twice.
+    """
+
+    host = socket.gethostname()
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    queue.ledger(host).ensure_capacity({"gpu": 2, "mem_gb": 48, "cpu": 10})
+    script = _gpu_action(tmp_path, host, foreign=True)
+    _publish_gpu_item(queue, "a" * 64, script, host, tmp_path)
+    _publish_gpu_item(queue, "c" * 64, script, host, tmp_path)
+    marker = tmp_path / "foreign.marker"
+
+    queue = _run(tmp_path, [*SPARKY, "--tag", host, "--max-idle", "3",
+                            "--python", sys.executable],
+                 apps=lambda: list(FOREIGN[:2]) if marker.exists() else [])
+
+    # The first action ran: without that this proves nothing.
+    assert queue.item_path(pool.DONE, "a" * 64).exists()
+    assert marker.exists()
+    # The second did not, and the box says why.
+    assert queue.item_path(pool.READY, "c" * 64).exists()
+    assert queue.ledger(host).capacity().get("gpu", 0) == 0
+    assert queue.ledger(host).available().get("gpu", 0) == 0
+    offer = _offer(queue, host)
+    assert offer["observed_capacity"]["gpu"] == 0
+    assert offer["foreign"]["gpu"] == 2
+
+
+def test_an_action_that_left_the_box_as_it_found_it_costs_no_capacity(
+    tmp_path: Path,
+) -> None:
+    """Emptying the window is free when the reading back agrees with the ledger.
+
+    The action here starts no foreign work and the sibling's retire is the
+    routine one, so the first reading back sees an idle box, the cap is the
+    ledger's own total, and the second item runs.
+    """
+
+    host = socket.gethostname()
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    queue.ledger(host).ensure_capacity({"gpu": 2, "mem_gb": 48, "cpu": 10})
+    script = _gpu_action(tmp_path, host, foreign=False)
+    _publish_gpu_item(queue, "a" * 64, script, host, tmp_path)
+    _publish_gpu_item(queue, "c" * 64, script, host, tmp_path)
+
+    queue = _run(tmp_path, [*SPARKY, "--tag", host, "--max-idle", "3",
+                            "--python", sys.executable], apps=[])
+
+    assert queue.item_path(pool.DONE, "a" * 64).exists()
+    assert queue.item_path(pool.DONE, "c" * 64).exists()
+    assert queue.ledger(host).capacity()["gpu"] == 2
+    assert _offer(queue, host)["foreign"] == {}
