@@ -771,12 +771,17 @@ on all three fleet boxes, and a box without them degrades loudly —
 
 **And the wrapper bounds that execution without moving it.** A transient unit
 is forked by the user manager, so the launcher's context reaches the work only
-by being named: cwd, environment, the CPU affinity `cpu_topology` pinned, and
-the soft `RLIMIT_NOFILE` are all carried explicitly, and the child's own view of
-all four is compared against the launcher's against a real kernel
+by being named: cwd, environment, the CPU affinity `cpu_topology` pinned, the
+umask, the nice level, and **every resource limit a unit file can express** are
+carried, by rule rather than by a hand-kept list, and the child's own view of
+each is compared against the launcher's against a real kernel
 (`tests/test_pool_cap_keeps_the_exec_context.py`). What the unit does change is
 the bound and only the bound — its cgroup, and an `oom_score_adj` that rises so
-the offender outranks the loop supervising it. Measured both ways at both
+the offender outranks the loop supervising it. One difference cannot be
+restated as a property and so is compensated instead: the unit is in neither
+the launcher's process group nor its session, so signalling that group — the
+mechanism every timeout on this box uses — does not reach the work, and both
+the timeout and the abort paths stop the *unit*. Measured both ways at both
 commits in `docs/memory_enforcement_2026-09-04.md` §4.
 
 **Isolation of GPU allocations in GB10's unified pool: refuted.** 8 GiB taken
@@ -786,7 +791,11 @@ through the CUDA allocator under a 4 GiB cap moved `memory.current` not at all
 bounds an action's **host footprint** and nothing else. Every field says so:
 offers carry `mem_cap_scope` and outcome records carry `cap_scope`, never a
 bare "enforced". Pinned host memory *is* charged and *is* killed, so the line
-is the allocator, not the device.
+is the allocator, not the device. On a GB10 that is the half that fills the
+box, so read "enforced" here as "enforced against host pages" everywhere it
+appears: bounding the device half is **prismabuild issue #8**, and nothing in
+this section or in `docs/memory_enforcement_2026-09-04.md` should be read as
+closing it.
 
 Two consequences stand. `mem_gb` remains a discrete token contract, and for the
 device half of a GB10 that shape is now measurably wrong — the real ceiling is

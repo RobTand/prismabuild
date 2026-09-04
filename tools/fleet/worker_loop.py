@@ -189,8 +189,8 @@ def main():
     if enforces:
         print(f"[{host}] declared mem_gb caps the HOST footprint: each action "
               f"runs under MemoryMax = its own declaration.  CUDA device "
-              f"allocations are not charged to that cgroup "
-              f"(docs/memory_enforcement_2026-09-04.md)", flush=True)
+              f"allocations are not charged to that cgroup and stay unbounded "
+              f"(issue #8; docs/memory_enforcement_2026-09-04.md)", flush=True)
     else:
         print(f"[{host}] declared mem_gb is NOT enforced on this box -- it is "
               f"a reservation only: {why_not}", flush=True)
