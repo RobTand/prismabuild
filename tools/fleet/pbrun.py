@@ -349,6 +349,34 @@ def main() -> int:
         key, value = entry.split("=", 1)
         variables[key] = value
 
+    # A CPU slot must not be able to run GPU work.  The pool's whole claim is
+    # that the ledger knows what is on each accelerator, and that claim was
+    # false in one direction: an action submitted WITHOUT ``--gpu`` inherited a
+    # visible device and ran CUDA anyway.  A pytest suite queued as a 4 GB CPU
+    # action executed its ``skipif(not torch.cuda.is_available())`` tests on a
+    # box whose GPU slots were held by somebody else -- work the ledger could
+    # not see, contending with work it had promised exclusivity to.
+    #
+    # The rule is enforced the way ``require_pool.py`` enforces its own escape
+    # hatch, by the kernel rather than by belief: with no device visible the
+    # child cannot do GPU work, so a mis-declared action fails instead of
+    # stealing.  Declaring a device on a slot that did not reserve one is the
+    # mis-declaration itself, so it is refused rather than honoured -- the fix
+    # is ``--gpu``, and the message says so.  This applies under
+    # ``--no-default-env`` too: an empty environment means every device is
+    # visible, which is the case this exists for.
+    declared = variables.get("CUDA_VISIBLE_DEVICES")
+    if not demand.get("gpu"):
+        if declared not in (None, ""):
+            raise SystemExit(
+                f"pbrun: this action reserves no GPU but sets "
+                f"CUDA_VISIBLE_DEVICES={declared!r}.\n"
+                "A CPU slot that touches the GPU is work the ledger cannot "
+                "see, contending with work it promised exclusivity to.\n"
+                "Add --gpu (and --gpu-capacity N if you need more than one "
+                "slot), or drop the variable.")
+        variables["CUDA_VISIBLE_DEVICES"] = ""
+
     log_name, stamp_name = result_and_stamp_names(
         command, cwd, demand, variables)
     # The closure member must be under checkout_root: that is where the
@@ -469,7 +497,11 @@ def main() -> int:
         priority=args.priority,
         resources=demand,
     )
-    print(f"pbrun: queued {key[:12]} tags={tags} demand={demand}",
+    # Say that the slot has no device, every time.  The mask is correct and it
+    # is also a silent narrowing: a suite that used to run its CUDA tests now
+    # skips them, and a skip that nobody announced reads as the same green.
+    masked = "" if demand.get("gpu") else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
+    print(f"pbrun: queued {key[:12]} tags={tags} demand={demand}{masked}",
           file=sys.stderr, flush=True)
 
     done = q.item_path("done", key)
