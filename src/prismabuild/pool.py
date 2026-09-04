@@ -581,9 +581,10 @@ class PoolQueue:
         this fleet had no way to ask for.  A queue that reports only "pending"
         makes an item pinned to one busy box look exactly like an item waiting
         its turn among three, and on 2026-09-03/04 that difference was the
-        whole problem: 129 of 394 items carried a hostname tag, 114 of them
-        pinned to ``sparky`` by a ``/home/rob/tmp/ts*`` worktree, while other
-        boxes idled.
+        whole problem: 131 of 391 items carried a hostname tag -- 129 of
+        those a consequence of a box-local path, 114 of them pinning
+        ``sparky`` from a ``/home/rob/tmp/ts*`` worktree -- while other boxes
+        idled.
 
         A nameless offer is reported as ``"?"`` rather than dropped: it still
         matched, so dropping it would make ``placeable_hosts`` disagree with

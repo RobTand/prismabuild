@@ -4,9 +4,10 @@ A queue that reports only ``ready`` cannot tell "queued behind one busy box"
 from "waiting its turn among three".  Through 2026-09-03/04 that difference
 was the whole problem: an action's ``checkout_root`` is a box-local worktree
 (``/home/rob/tmp/ts101``), which pins it to the submitting box, and the pin is
-a silent consequence of a path.  Measured on the live queue on 2026-09-04, 129
-of 394 items carried a hostname tag -- 114 of them ``sparky`` -- while
-``sparklina`` held zero tokens with everything free.
+a silent consequence of a path.  Measured on the live queue on 2026-09-04,
+131 of 391 items carried a hostname tag, 129 of them by that path -- 114
+pinning ``sparky`` -- while ``sparklina`` held zero tokens with everything
+free.
 
 These tests pin the metric and the one matcher it shares with placement.
 """

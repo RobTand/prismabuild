@@ -196,9 +196,10 @@ def test_a_box_local_checkout_says_it_pinned_the_action(tmp_path) -> None:
 
     ``pbrun`` printed ``tags=['sparky']`` and stopped there, so an agent that
     had just made itself a worktree under ``/home/rob/tmp`` had no way to know
-    it had narrowed the fleet to one box.  129 of 394 items in the live queue
-    on 2026-09-04 carried a hostname tag; 114 of them were pinned to sparky by
-    a ``/home/rob/tmp/ts*`` worktree, while the other two boxes idled.
+    it had narrowed the fleet to one box.  131 of 391 items in the live queue
+    on 2026-09-04 carried a hostname tag, 129 of them as a consequence of a
+    path -- 114 pinned to sparky by a ``/home/rob/tmp/ts*`` worktree -- while
+    the other two boxes idled.
     """
 
     notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101",

@@ -14,7 +14,7 @@ must be tagged to the box that holds it or it will be claimed by a worker that
 cannot see it. `pbrun.placement_tags` derives that pin from the path, and
 correctly (`pbrun.py:206-240`).
 
-Read off the live queue on 2026-09-04, over the 394 items in `ready`,
+Read off the live queue on 2026-09-04, over the 391 items in `ready`,
 `claimed`, `done` and `failed`:
 
 | items | tags | checkout_root |
@@ -24,11 +24,11 @@ Read off the live queue on 2026-09-04, over the 394 items in `ready`,
 | 106 | `x86` | `/mnt/shared/tessera-x86` |
 | 28 | *(none)* | *(none recorded)* |
 | 15 | `gx10-6b77` | `/home/rob/tmp/ts91/tessera` |
-| 10 | other | — |
+| 7 | other | — |
 
-129 items — a third of everything the fleet has ever been given — were
-placeable on exactly one box, and 129 of those pins were a consequence of a
-path rather than of the work. The new census reports it directly; live, while
+131 items — a third of everything the fleet has ever been given — carried a
+hostname tag, and 129 of those pins were a consequence of a path rather than
+of the work (the other two are shared checkouts pinned on purpose). The new census reports it directly; live, while
 this was being written, with all three boxes announcing:
 
     ready 18, 18 on exactly one box (sparky 18), 0 on more than one, 0 on none
