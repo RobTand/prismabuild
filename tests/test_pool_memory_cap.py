@@ -409,3 +409,17 @@ def test_a_box_with_no_user_manager_is_left_to_degrade_loudly(
 def test_an_environment_that_already_names_the_bus_is_inherited(monkeypatch) -> None:
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
     assert pool._bus_ready_env() is None
+
+
+def test_the_whole_action_dies_together_not_one_process_of_it() -> None:
+    """``OOMPolicy=kill`` sets ``memory.oom.group``; the default does not.
+
+    Measured 2026-09-04 on a unit whose fat process was a grandchild: under the
+    default ``stop`` the kernel takes the child and systemd then stops the
+    unit, so the caller sees SIGTERM (``ExecMainStatus=15``); under ``kill``
+    the tree goes together and the caller sees SIGKILL (9).  ``Result`` is
+    ``oom-kill`` either way, but "terminated" is not what happened.
+    """
+
+    argv = pool.capped_launch_argv(["/bin/true"], cap_gb=4, unit="u")
+    assert "OOMPolicy=kill" in argv

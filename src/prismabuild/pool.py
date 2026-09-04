@@ -282,6 +282,15 @@ def capped_launch_argv(
         # failing, and a loud kill becomes a slow box.
         "-p", "MemorySwapMax=0",
         "-p", "MemoryAccounting=yes",
+        # The unit of enforcement is the *action*, not whichever process the
+        # kernel happened to pick out of it.  ``kill`` sets
+        # ``memory.oom.group``, so the whole tree goes at once.  Under the
+        # default ``stop`` the fat child dies alone and systemd then stops the
+        # unit, which reaches the caller as SIGTERM: measured 2026-09-04 with
+        # a fat grandchild, ExecMainStatus 15 under ``stop`` against 9 under
+        # ``kill``, for the same cgroup kill.  "Terminated" is not what
+        # happened, and it is not what the submitter needs to be told.
+        "-p", "OOMPolicy=kill",
     ]
     if cwd is not None:
         launch += ["-p", f"WorkingDirectory={cwd}"]
