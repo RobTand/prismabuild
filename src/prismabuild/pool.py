@@ -240,6 +240,17 @@ def is_box_local_path(path: object) -> bool:
     return not Path(text).is_relative_to(SHARED_ROOT)
 
 
+def normalize_placement_tags(tags: Sequence[object]) -> list[str]:
+    """Canonicalize the exact tag conjunction the queue matcher enforces."""
+
+    if isinstance(tags, (str, bytes)):
+        raise PoolContractError("pool item tags must be a sequence of tags")
+    normalized = {str(tag) for tag in tags}
+    if any(not tag or tag.strip() != tag for tag in normalized):
+        raise PoolContractError("pool item tags must be nonempty trimmed strings")
+    return sorted(normalized)
+
+
 class PoolError(pb.PrismaBuildError):
     """A queue-level failure, distinct from an action-level one."""
 
@@ -1362,7 +1373,7 @@ class PoolQueue:
             "action_key": action_key,
             "cas_root": str(cas_root),
             "worker_script": str(worker_script),
-            "tags": sorted(str(t) for t in tags),
+            "tags": normalize_placement_tags(tags),
             "needs_gpu": bool(needs_gpu),
             "priority": int(priority),
             "resources": demand,

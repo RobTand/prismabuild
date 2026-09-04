@@ -82,7 +82,10 @@ There is deliberately no mutable-path escape hatch for a new submission.
   user-local interpreter. Direct path-shaped argv and caller-environment
   values receive a conservative screen, not heuristic proof of shell or
   application indirection. `--tag` owns those dependencies for a worker class;
-  `--anywhere` explicitly asserts that they are portable.
+  `--anywhere` explicitly asserts that they are portable. The sorted,
+  deduplicated effective tag conjunction is sealed in action params and in the
+  result/stamp and container-owner fingerprints, so changing admissible workers
+  changes identity while reordered or repeated tags do not.
 * An absolute path containing the submitter's repository root in argv or the
   environment refuses. Checking only the requested subdirectory would let
   `--cwd repo/subdir` escape through the submitter's mutable `repo/sibling`
