@@ -813,3 +813,27 @@ def test_the_transport_default_is_still_the_pull_queue(
 
 def _transport_default() -> str:
     return os.environ.get(pbrun.DEFAULT_TRANSPORT_ENV) or "pool"
+
+
+def test_a_refusal_from_sbatch_reaches_the_caller_as_a_refusal(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pool path refuses a tag no box offers, with the tags and the demand
+    on screen.  SLURM refuses the same thing at submit time, and the submitter
+    has to read the same kind of sentence rather than a traceback."""
+
+    monkeypatch.setenv("FAKE_SBATCH_REFUSE", "1")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "refused")
+    request = cas.publish_action_request(action)
+    with pytest.raises(SystemExit) as refusal:
+        pbrun.slurm_outcome(
+            action, cas=cas, request_path=request, tags=["nosuchbox"],
+            demand={"cpu": 1, "mem_gb": 4}, exclusive=False, timeout_s=600.0,
+            wait_s=60.0, retry_safe=False, max_attempts=1,
+            runtime_root=REPOSITORY, poll_s=0.0,
+        )
+    message = str(refusal.value)
+    assert "slurm refused this action" in message
+    assert "nosuchbox" in message
+    assert "node configuration" in message

@@ -1293,25 +1293,39 @@ def slurm_outcome(
 
     key = str(action["action_key"])
     resources = slurm_lane.LaneResources.from_demand(demand, exclusive=exclusive)
-    result = slurm_lane.run(
-        action,
-        cas=cas,
-        request_path=request_path,
-        placement=tags,
-        resources=resources,
-        timeout_s=timeout_s,
-        worker_script=runtime_root / "tools" / "prismabuild_worker.py",
-        job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
-        retry_safe=retry_safe,
-        max_attempts=max_attempts,
-        root=lane_root,
-        wait_s=wait_s,
-        on_submit=lambda job: print(
-            f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
-            f"(attempt {job.attempt}) tags={tags} demand={demand}",
-            file=sys.stderr, flush=True),
-        **lane_commands,
-    )
+    # sbatch's own refusal is this transport's capability gate: an unknown
+    # Feature or an impossible GRES is rejected at submit time, which is the
+    # moment the pool path's ``capability_verdict`` spoke.  So it reaches the
+    # caller as the message SLURM wrote, in the shape that message had, rather
+    # than as a traceback.
+    try:
+        result = slurm_lane.run(
+            action,
+            cas=cas,
+            request_path=request_path,
+            placement=tags,
+            resources=resources,
+            timeout_s=timeout_s,
+            worker_script=runtime_root / "tools" / "prismabuild_worker.py",
+            job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
+            retry_safe=retry_safe,
+            max_attempts=max_attempts,
+            root=lane_root,
+            wait_s=wait_s,
+            on_submit=lambda job: print(
+                f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
+                f"(attempt {job.attempt}) tags={tags} demand={demand}",
+                file=sys.stderr, flush=True),
+            **lane_commands,
+        )
+    except slurm_lane.SlurmLaneError as exc:
+        raise SystemExit(
+            f"pbrun: slurm refused this action.\n"
+            f"  required tags: {tags or '(any box)'}\n"
+            f"  demand:        {demand}\n"
+            f"  {exc}\n"
+            f"Fix the --tag, or read `sinfo -N -l` for a node that offers it."
+        ) from exc
 
     last = result.last
     if last is None:                       # unreachable: run always submits
