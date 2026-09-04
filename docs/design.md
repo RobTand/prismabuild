@@ -184,7 +184,11 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   the former broad local Git globs before taking identity and refuses if that
   migration cannot be published. Once Git identifies a repository, every
   subsequent Git roster/diff error also refuses rather than collapsing a
-  missing read to an empty delta. Symlinks are never dereferenced into bytes
+  missing read to an empty delta. A filesystem `.git` marker at or above the
+  requested cwd establishes that state before the first Git subprocess, so a
+  transient initial `rev-parse` failure cannot downgrade a checkout to the
+  legacy no-Git identity; a true plain directory remains supported there.
+  Symlinks are never dereferenced into bytes
   outside the checkout; an untracked FIFO, socket, or other special inode
   anywhere in that repository refuses rather than being opened as an unstable
   payload, and an untracked payload that cannot be read refuses rather than

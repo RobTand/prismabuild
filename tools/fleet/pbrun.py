@@ -241,6 +241,10 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
     """
 
     try:
+        marker = pb.find_git_worktree_marker(cwd)
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: {exc}") from exc
+    try:
         out = subprocess.run(["git", "-C", str(cwd), "rev-parse",
                               "--git-common-dir"],
                              capture_output=True, text=True, timeout=30)
@@ -249,7 +253,14 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
             f"pbrun: cannot inspect local Git excludes: {exc}"
         ) from exc
     if out.returncode != 0:
-        return None                           # not a git checkout; nothing to tell
+        if marker is not None:
+            detail = (out.stderr or out.stdout).strip()
+            raise SystemExit(
+                "pbrun: cannot inspect local Git excludes: Git rev-parse "
+                f"failed for recognized checkout {cwd}: "
+                f"{detail or out.returncode}"
+            )
+        return None                           # true plain directory
     try:
         common = Path(out.stdout.strip())
         if not common.is_absolute():

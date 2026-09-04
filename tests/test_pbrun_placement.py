@@ -412,6 +412,29 @@ def test_pbrun_identity_fails_closed_after_git_repository_detection(
         pbrun._git_identity(checkout)
 
 
+def test_pbrun_identity_refuses_failed_initial_git_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A visible .git marker cannot be downgraded by transient rev-parse failure."""
+
+    checkout = _git_checkout(tmp_path)
+    real_run = core_module.subprocess.run
+
+    def fail_toplevel(argv, *args, **kwargs):
+        if (
+            argv[:3] == ["git", "-C", str(checkout)]
+            and "--show-toplevel" in argv
+        ):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="simulated initial Git failure"
+            )
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(core_module.subprocess, "run", fail_toplevel)
+    with pytest.raises(SystemExit, match="cannot compute pbrun checkout identity"):
+        pbrun._git_identity(checkout)
+
+
 def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> None:
     """A path in argv is not part of the checkout closure by magic.
 

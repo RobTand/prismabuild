@@ -138,6 +138,29 @@ def test_legacy_exclude_migration_fails_closed_when_it_cannot_publish(
         pbrun.keep_droppings_out_of_git(root)
 
 
+def test_git_exclude_setup_refuses_failed_initial_repository_detection(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A checkout marker plus failed rev-parse is uncertainty, not no-Git."""
+
+    root = _repo(tmp_path)
+    real_run = pbrun.subprocess.run
+
+    def fail_common_dir(argv, *args, **kwargs):
+        if (
+            argv[:3] == ["git", "-C", str(root)]
+            and "--git-common-dir" in argv
+        ):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="simulated initial Git failure"
+            )
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(pbrun.subprocess, "run", fail_common_dir)
+    with pytest.raises(SystemExit, match="cannot inspect local Git excludes"):
+        pbrun.keep_droppings_out_of_git(root)
+
+
 def test_a_checkout_that_is_not_a_git_repository_is_not_an_error(tmp_path: Path) -> None:
     """Submitting from a plain directory is supported; it just has nothing to tell."""
 

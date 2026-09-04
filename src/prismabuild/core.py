@@ -1178,6 +1178,24 @@ def pbrun_git_exclude_patterns() -> tuple[str, str]:
     )
 
 
+def find_git_worktree_marker(root: str | Path) -> Path | None:
+    """Find a filesystem ``.git`` marker at or above a requested cwd."""
+
+    requested = Path(root).resolve(strict=False)
+    for directory in (requested, *requested.parents):
+        marker = directory / ".git"
+        try:
+            marker.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ActionContractError(
+                f"cannot inspect Git worktree marker {marker}: {exc}"
+            ) from exc
+        return marker
+    return None
+
+
 def git_checkout_identity(root: str | Path) -> dict[str, str]:
     """Return pbrun's canonical commit-plus-working-tree identity.
 
@@ -1192,7 +1210,7 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
     """
 
     checkout = Path(root)
-    repository_detected = False
+    repository_detected = find_git_worktree_marker(checkout) is not None
 
     def _git(
         *args: str,
@@ -4614,6 +4632,7 @@ __all__ = [
     "PrismaBuildError",
     "build_code_closure",
     "executable_toolchain_contract",
+    "find_git_worktree_marker",
     "git_checkout_identity",
     "identify_executable",
     "is_pbrun_generated_path",
