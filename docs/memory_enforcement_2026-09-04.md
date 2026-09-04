@@ -144,7 +144,13 @@ no `mem_gb` to offer at the time — its whole 48 GB and both GPU tokens are hel
 by an exclusive campaign — and the probe is a sub-second `systemd-run`, not
 compute. The launcher in the sparky column is therefore the probe's own shell.
 Its `oom_score_adj` of −1000 is what a *loop* carries too, read separately:
-all four `worker_loop.py` processes on sparky report −1000 in `/proc`.
+every `worker_loop.py` on sparky reports −1000 in `/proc` (five at the time of
+reading — four `--class gb10` loops and the exclusive campaign's). What a *pooled* launcher
+reads is not the same number: the dl380g10 arm, submitted through the pool and
+so forked by that box's loop, saw its launcher at 0. Whether that box's loop is
+also at −1000 was not read, so the two figures are recorded rather than
+resolved into a rule — which is why §7 says publish day moves a capped action
+from 0 or −1000 rather than picking one.
 
 **Affinity.** `cpu_topology.pin_to_preferred`'s stated mechanism is inheritance
 by fork — "Pin this process *and so every child it forks*" — which a unit is
