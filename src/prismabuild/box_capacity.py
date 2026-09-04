@@ -22,6 +22,19 @@ person at a prompt.
 
 So the box observes itself, and what it offers is the remainder.
 
+**Two kinds are clamped, one is only recorded.**  A kind can be clamped only
+when the instrument reads it in the token's own units.  A GPU compute app is
+countable against a ``gpu`` token, and ``MemAvailable`` is in the same
+gigabytes a ``mem_gb`` token is; those two are clamped.  A ``cpu`` token is a
+SLOT and the run queue counts THREADS, so subtracting one from the other has
+nothing to subtract -- an action holding one slot legitimately runs twenty
+threads.  Measured on sparky 2026-09-04: load1 22.47 against 5 held cpu
+tokens, every runnable task a pool-scheduled action, which the subtraction
+scored as 17 foreign cpu and would have taken the box from ten slots to zero
+for being busy with the pool's own work.  So the load travels in ``detail``
+for a human to read and clamps nothing, until an instrument exists that can
+attribute a thread to a reservation.
+
 **Attribution is by ledger, not by process tree.**  The obvious implementation
 -- walk the GPU compute apps and forgive the ones descended from a pool worker
 -- does not work on this fleet and cannot be made to.  Measured on sparky
@@ -51,17 +64,22 @@ long action therefore retires capacity for the length of that action, which is
 the "momentary spike permanently starves the box" failure.  So the offer is the
 elementwise **maximum** over the last few observations: it falls only when
 every one of them agrees, and it recovers on the first reading that says the
-foreign work is gone.  The window is primed with the declared capacity, so a
-worker's first polls can still correct ledger drift (that retire is bounded by
-the declaration) without a first-reading spike being decisive.
+foreign work is gone.  A worker's first polls still correct ledger drift
+whatever the window says, because the offer is capped by the declaration
+either way.
 
 Several loops share one box and one ledger, and ``ensure_capacity`` is
-increase-only, so the box's effective offer is the most optimistic *live* loop's:
-a loop that has just started re-mints for the two polls its window is primed
-for, and a loop inside a long action re-mints nothing at all.  They are reading
-the same box, so they agree within a window, and every disagreement in between
-is on the recovering side.  That is the same convergence the drift retire
-already relies on.
+increase-only, so the box's effective offer is the most optimistic *live* loop's
+-- which is why a starting loop must not prime its window with the declaration.
+A loop exits on ``--max-idle`` and the supervisor replaces it, so on a box with
+three to five loops one of them restarts every half hour or so; priming from
+the declaration would have each restart re-mint, for the length of its window,
+every free token the other loops had retired, and any loop on the box could
+then acquire one.  That is this blindness reopened on a timer.  So an observer
+is seeded with what the ledger already totals for this host, capped by the
+declaration, and only a box the ledger has never heard of is seeded with the
+declaration itself.  The seed can only ever *lower* the offer, because the
+offer is a maximum: one reading of an idle box restores it in a single poll.
 
 Nothing here reads a GPU's memory as a *pool* of its own.  On GB10 the GPU and
 the host share one physical memory, so a compute app's resident bytes are
@@ -249,11 +267,29 @@ def observe(
         if load1 is _READ:
             load1 = run_queue()
         if load1 is not None:
-            load = float(load1)                       # type: ignore[arg-type]
-            detail["load1"] = round(load, 2)
-            # Floor, not round: the reading is noisy, and half a runnable task
-            # is not evidence enough to take a core off the offer.
-            clamp("cpu", int(load) - max(0, ours.get("cpu", 0)))
+            # Recorded, never clamped.  A ``cpu`` token is a SLOT and the run
+            # queue counts THREADS, so the two are not in the same units and
+            # the subtraction above has nothing to subtract: an action holding
+            # one slot legitimately runs twenty threads, and the box would be
+            # charged as foreign for the pool's own work.  Measured on sparky
+            # 2026-09-04 -- load1 22.47 against 5 held cpu tokens, and every
+            # runnable task was a pool-scheduled action:
+            #
+            #     python3 -m pytest tests/ -q            (claimed)
+            #     python3 -m pytest tests/test_matched_reach.py -q  (claimed)
+            #     python -u experiments/refit_trailing_pair.py      (claimed)
+            #     python -u experiments/export_tessera_serving.py   (claimed)
+            #
+            # Clamping on that reading takes a busy-with-our-own-work box from
+            # ten cpu slots to zero.  That is the double-charge the ledger
+            # attribution exists to prevent, reappearing because the instrument
+            # does not measure the quantity the token names.  gpu and mem_gb do
+            # not have this problem: a compute app is countable against a gpu
+            # token, and MemAvailable is in the token's own units.  So the load
+            # travels in ``detail`` for a human to read, and the cpu offer
+            # stays the declaration until there is an instrument that can
+            # attribute a thread to a reservation.
+            detail["load1"] = round(float(load1), 2)  # type: ignore[arg-type]
 
     return Observation(capacity=capacity, foreign=foreign, detail=detail)
 
@@ -269,12 +305,21 @@ class CapacityObserver:
     """
 
     def __init__(
-        self, *, samples: int = DEFAULT_SAMPLES, margin_gb: int = MEMORY_MARGIN_GB
+        self, *, samples: int = DEFAULT_SAMPLES, margin_gb: int = MEMORY_MARGIN_GB,
+        ledger_total: Mapping[str, int] | None = None,
     ) -> None:
         if int(samples) < 1:
             raise ValueError("a capacity observer needs at least one sample")
         self.samples = int(samples)
         self.margin_gb = int(margin_gb)
+        # What this host's ledger already totals, read once by the caller: the
+        # window is seeded from it so a restarting loop inherits the box's
+        # standing verdict instead of re-asserting the declaration.  An empty
+        # mapping means the ledger has never heard of this host -- which is not
+        # the same as a host whose gpu total is zero, so a *known* host missing
+        # a kind seeds that kind at zero.
+        self.ledger_total = ({str(k): int(v) for k, v in ledger_total.items()}
+                             if ledger_total else {})
         self._history: deque[dict[str, int]] = deque(maxlen=self.samples)
         self.last: Observation | None = None
 
@@ -283,12 +328,17 @@ class CapacityObserver:
         **overrides: object,
     ) -> dict[str, int]:
         wanted = {str(kind): int(value) for kind, value in declared.items()}
-        # Prime the window with the declaration, so a worker's first reading is
-        # never decisive on its own.  Drift correction still happens from the
-        # first poll: the offer is capped by the declaration, which is the
-        # whole of what the drift retire needs.
+        # Seed the window, so a worker's first reading is never decisive on its
+        # own -- from the ledger's standing total where there is one, and from
+        # the declaration only on a host the ledger has never seen.  Drift
+        # correction still happens from the first poll either way: the offer is
+        # capped by the declaration, which is the whole of what it needs.
+        seed = dict(wanted) if not self.ledger_total else {
+            kind: min(value, self.ledger_total.get(kind, 0))
+            for kind, value in wanted.items()
+        }
         while len(self._history) < self.samples - 1:
-            self._history.append(dict(wanted))
+            self._history.append(dict(seed))
         seen = observe(wanted, held, margin_gb=self.margin_gb, **overrides)  # type: ignore[arg-type]
         self.last = seen
         self._history.append(dict(seen.capacity))

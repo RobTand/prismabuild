@@ -94,18 +94,41 @@ def test_the_offer_never_rises_above_the_declaration() -> None:
     assert seen.foreign == {}
 
 
-def test_cores_the_pool_did_not_claim_come_off_the_offer() -> None:
-    """The 80-core box at load 371 with four concurrent suites on it."""
+def test_the_run_queue_is_recorded_and_never_charged() -> None:
+    """A ``cpu`` token is a slot; loadavg counts threads.  Not the same unit.
 
-    seen = bc.observe({"cpu": 80}, {"cpu": 24}, load1=64.0)
+    Measured on sparky 2026-09-04: load1 22.47 against 5 held cpu tokens, with
+    every runnable task a pool-scheduled action (two pytest suites, a refit, an
+    export) -- each of them legitimately multithreaded under a one-slot
+    reservation.  Subtracting held slots from a thread count charged the box 17
+    foreign cpu and would have taken it from ten slots to zero for being busy
+    with the pool's own work: the exact double-charge the ledger attribution
+    exists to prevent, reappearing because the instrument does not measure the
+    quantity the token names.
 
-    assert seen.capacity["cpu"] == 40          # 64 runnable, 24 of them ours
-    assert seen.foreign["cpu"] == 40
+    So the load is carried for a human to read and nothing more.  gpu and
+    mem_gb are clamped because their instruments ARE in the token's units.
+    """
+
+    seen = bc.observe({"cpu": 10}, {"cpu": 5}, load1=22.47)
+
+    assert seen.capacity["cpu"] == 10
+    assert seen.foreign == {}
+    assert seen.detail["load1"] == 22.47
 
 
-def test_half_a_runnable_task_takes_no_core() -> None:
-    seen = bc.observe({"cpu": 10}, {}, load1=0.9)
+def test_a_genuinely_oversubscribed_box_is_also_not_charged() -> None:
+    """The honest limit, stated as a test: this kind is not observed at all.
 
+    The 80-core box at load 371 is really overloaded, and the offer still will
+    not fall -- because nothing here can tell that load from four of our own
+    suites.  Whoever finds an instrument that attributes a thread to a
+    reservation should delete this test and clamp.
+    """
+
+    seen = bc.observe({"cpu": 80}, {"cpu": 24}, load1=371.0)
+
+    assert seen.capacity["cpu"] == 80
     assert seen.foreign == {}
 
 

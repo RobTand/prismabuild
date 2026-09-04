@@ -209,3 +209,43 @@ def test_an_unreadable_box_keeps_its_declaration(tmp_path: Path) -> None:
 
     assert queue.ledger(host).capacity()["gpu"] == 1
     assert _offer(queue, host)["foreign"] == {}
+
+
+def test_a_loop_that_starts_on_a_busy_box_does_not_re_mint(tmp_path: Path) -> None:
+    """The restart must inherit the box's verdict, not re-assert the declaration.
+
+    A loop exits on ``--max-idle`` and the supervisor replaces it, so on a box
+    running three to five of them one restarts every half hour or so.  If a
+    starting loop primed its window with what it was *declared*, it would offer
+    the declaration for the length of that window and ``ensure_capacity`` would
+    re-mint every free token the other loops had retired -- and ``acquire``
+    reads the free directory, not any loop's window, so any loop on the box
+    could then take one.  That is this whole blindness, reopened on a timer.
+    """
+
+    host = socket.gethostname()
+    _run(tmp_path, [*SPARKLINA, "--max-idle", "3"], apps=FOREIGN)
+    assert pool.PoolQueue(tmp_path / "pb-queue").ledger(host).capacity().get("gpu", 0) == 0
+
+    # A fresh loop, one poll, the foreign work still there.  One poll is the
+    # worst case: the window is at its most optimistic on the first reading.
+    queue = _run(tmp_path, [*SPARKLINA, "--max-idle", "1"], apps=FOREIGN)
+
+    assert queue.ledger(host).capacity().get("gpu", 0) == 0
+    assert queue.ledger(host).available().get("gpu", 0) == 0
+    assert _offer(queue, host)["observed_capacity"]["gpu"] == 0
+
+
+def test_a_first_start_on_an_unknown_host_still_offers_its_declaration(tmp_path: Path) -> None:
+    """An empty ledger means "never seen", which is not the same as zero.
+
+    The seed is read from the ledger's standing total, so it must distinguish a
+    host it has never heard of -- which has no verdict to inherit -- from one
+    whose gpu total it has already retired to zero.
+    """
+
+    host = socket.gethostname()
+    queue = _run(tmp_path, [*SPARKLINA, "--max-idle", "1"], apps=[], mem_gb=100)
+
+    assert queue.ledger(host).capacity()["gpu"] == 1
+    assert _offer(queue, host)["observed_capacity"]["gpu"] == 1

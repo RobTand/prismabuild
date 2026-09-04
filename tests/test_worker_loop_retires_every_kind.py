@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import socket
 import sys
 from unittest import mock
 
@@ -68,8 +69,6 @@ def _drifted(tmp_path: Path, host: str, capacity: dict[str, int]):
 def test_a_shrunken_gpu_offer_shrinks_the_tokens(tmp_path: Path) -> None:
     """sparklina's live shape: four tokens minted, one slot offered."""
 
-    import socket
-
     host = socket.gethostname()
     _drifted(tmp_path, host, {"gpu": 4, "mem_gb": 96})
 
@@ -87,8 +86,6 @@ def test_a_shrunken_memory_offer_shrinks_without_the_flag(tmp_path: Path) -> Non
     drifted three-fold was exactly the box that could not correct itself.
     """
 
-    import socket
-
     host = socket.gethostname()
     _drifted(tmp_path, host, {"gpu": 0, "mem_gb": 180})
 
@@ -102,8 +99,6 @@ def test_a_running_action_keeps_the_tokens_it_is_executing_under(
     tmp_path: Path,
 ) -> None:
     """Retiring is blunt on purpose, so it must be safe under live work."""
-
-    import socket
 
     host = socket.gethostname()
     queue = _drifted(tmp_path, host, {"gpu": 4, "mem_gb": 96})
@@ -125,8 +120,6 @@ def test_a_running_action_keeps_the_tokens_it_is_executing_under(
 def test_a_grown_offer_still_mints_the_new_tokens(tmp_path: Path) -> None:
     """Retiring must not turn the ledger into a ratchet in the other direction."""
 
-    import socket
-
     host = socket.gethostname()
     _drifted(tmp_path, host, {"gpu": 1, "mem_gb": 8})
 
@@ -137,14 +130,35 @@ def test_a_grown_offer_still_mints_the_new_tokens(tmp_path: Path) -> None:
     assert (total["gpu"], total["mem_gb"]) == (2, 48)
 
 
-def test_the_retire_is_not_hidden_behind_the_honest_memory_flag() -> None:
-    """The defect was the guard, not the primitive; keep the guard gone."""
+def test_the_retire_is_not_conditional_on_anything(tmp_path: Path) -> None:
+    """The defect was the guard, not the primitive; keep the guard gone.
 
-    source = WORKER_LOOP.read_text()
-    call = "queue.ledger().retire_free_capacity(capacity)"
-    assert call in source
-    before = source.split(call)[0]
-    tail = before.rsplit("queue = pool.PoolQueue", 1)[-1]
-    assert "honest_memory" not in tail, (
-        "the retire is guarded again; a box that never passes the flag is "
-        "exactly the box that cannot correct its own drift")
+    It used to sit behind ``--honest-memory``, which no fleet argv passed, so
+    the box that could not correct its own drift was every box.  The guard that
+    could grow back now is the observation: a perfectly idle box clamps
+    nothing, and the retire must still run on the drift.  So this one is driven
+    with observation ON and every reading saying the box is free.
+    """
+
+    from prismabuild import box_capacity
+
+    host = socket.gethostname()
+    _drifted(tmp_path, host, {"gpu": 4, "mem_gb": 96})
+
+    wl = _worker_loop()
+    with mock.patch.object(wl, "SH", tmp_path), \
+         mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
+         mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(box_capacity, "gpu_compute_apps", return_value=[]), \
+         mock.patch.object(box_capacity, "mem_available_gb", return_value=512), \
+         mock.patch.object(box_capacity, "run_queue", return_value=0.0), \
+         mock.patch.object(sys, "argv", ["worker_loop.py", "--once", "--gpu-slots",
+                                         "1", "--mem-gb", "40", "--class", "gb10",
+                                         "--all-cores"]):
+        wl.main()
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    total = queue.ledger(host).capacity()
+    assert (total["gpu"], total["mem_gb"]) == (1, 40), (
+        "an idle box clamps nothing, and its drift went uncorrected: the "
+        "retire has been made conditional on the observation")

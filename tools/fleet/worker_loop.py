@@ -19,10 +19,13 @@ action is the honest figure and 96 GB leaves the box its working headroom.
 about what the pool scheduled and was blind to everything else, so a box six
 hours into an out-of-pool encode campaign reported every token free
 (sparklina, 2026-09-04 01:06: four GPU processes, ``ledger free 51 held 0``).
-Every poll now subtracts what else is running -- the GPU's compute apps,
-``MemAvailable``, the run queue, each minus the pool's own held tokens -- and
+Every poll now subtracts what else is running -- the GPU's compute apps and
+``MemAvailable``, each minus what the pool's own held tokens account for -- and
 retires free tokens to the remainder, so a busy box looks busy whoever made it
-busy.  ``prismabuild.box_capacity`` holds the arithmetic and the reasons.
+busy.  Cores are read and recorded but deliberately not charged: a ``cpu``
+token is a slot and the run queue counts threads, so clamping on it charges the
+box for its own multithreaded actions.  ``prismabuild.box_capacity`` holds the
+arithmetic and the reasons for both.
 
 ``serve_once`` returning ``None`` can now mean "denied admission" as well as
 "queue empty", including the deliberate case where a starved item is
@@ -126,10 +129,15 @@ def main():
     # What this box offers when the pool is the only thing on it.  What it can
     # offer *now* is that minus whatever else is running, read at every poll.
     declared = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb, "cpu": cores}
-    observer = None if args.assume_idle else box_capacity.CapacityObserver(
-        samples=args.observe_samples)
 
     queue = pool.PoolQueue(SH / "pb-queue")
+    # Read once, not per poll: it seeds the observer's window so a loop that
+    # starts while the box is busy inherits the standing verdict instead of
+    # re-minting, for the length of its window, every token the other loops on
+    # this box retired.  A loop exits on ``--max-idle`` and the supervisor
+    # replaces it, so that window would come round every half hour.
+    observer = None if args.assume_idle else box_capacity.CapacityObserver(
+        samples=args.observe_samples, ledger_total=queue.ledger().capacity())
     host = socket.gethostname()
     # A box offers its own hostname as well as its class.  Item tags must be a
     # subset of the worker's, so without this an action pinned to one box --

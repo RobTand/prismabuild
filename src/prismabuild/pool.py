@@ -780,12 +780,14 @@ class PoolQueue:
 
         ``capacity`` is the box's offer *now*, not its configuration -- a
         worker clamps it to what work the pool did not schedule has left free
-        (``prismabuild.box_capacity``).  So an item this host could normally
-        fit but cannot this minute is skipped here rather than denied: it
-        records no ``passes`` on this box, and ages on the denials of boxes
-        that could actually have run it.  That is the same trade the skip
-        already makes -- withholding a host for work it cannot presently run
-        is the deadlock -- and it unwinds by itself, because the offer
+        (``prismabuild.box_capacity``).  The never-fits test above reads the
+        ledger's *total*, and the retire deletes free tokens only, so the two
+        cases part on whether anything is holding: a kind the clamp has taken
+        to zero with no holder drops the total under the demand and the item is
+        skipped, recording no ``passes`` on a box that cannot presently run it;
+        a kind whose holders keep the total at or above the demand is denied
+        and aged exactly as before, since from the item's side that is an
+        ordinary busy box.  Either way it unwinds by itself, because the offer
         recovers as soon as the foreign work exits.
         """
 
