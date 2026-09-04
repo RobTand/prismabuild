@@ -509,6 +509,37 @@ class PoolQueue:
                 live.append(record)
         return live
 
+    def _matching_offers(
+        self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]]
+    ) -> list[Mapping[str, object]]:
+        """The offers among ``live`` that could run ``item``.
+
+        One matcher, several readers: "can this run at all", "on how many
+        boxes", and "which boxes" are the same question asked three ways, and
+        a second copy of the rule would be a way for the answers to disagree.
+        """
+
+        required = item.get("tags") or []
+        if not isinstance(required, list):
+            raise PoolContractError("pool item tags must be a list")
+        wanted = {str(t) for t in required}
+        demand = self.demand_of(item)
+        needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
+        matches: list[Mapping[str, object]] = []
+        for offer in live:
+            tags = {str(t) for t in (offer.get("tags") or [])}
+            if not wanted.issubset(tags):
+                continue
+            if needs_gpu and not offer.get("has_gpu"):
+                continue
+            capacity = offer.get("capacity") or {}
+            if isinstance(capacity, Mapping) and any(
+                int(capacity.get(kind, 0)) < need for kind, need in demand.items()
+            ):
+                continue          # this box can never fit it, however idle
+            matches.append(offer)
+        return matches
+
     def placeable(
         self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
     ) -> bool | None:
@@ -525,25 +556,79 @@ class PoolQueue:
         live = self.offers(max_age_s=max_age_s)
         if not live:
             return None
-        required = item.get("tags") or []
-        if not isinstance(required, list):
-            raise PoolContractError("pool item tags must be a list")
-        wanted = {str(t) for t in required}
-        demand = self.demand_of(item)
-        needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
-        for offer in live:
-            tags = {str(t) for t in (offer.get("tags") or [])}
-            if not wanted.issubset(tags):
-                continue
-            if needs_gpu and not offer.get("has_gpu"):
-                continue
-            capacity = offer.get("capacity") or {}
-            if isinstance(capacity, Mapping) and any(
-                int(capacity.get(kind, 0)) < need for kind, need in demand.items()
-            ):
-                continue          # this box can never fit it, however idle
-            return True
-        return False
+        return bool(self._matching_offers(item, live=live))
+
+    def placeable_hosts(
+        self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
+    ) -> list[str] | None:
+        """Which live boxes could run this item.  ``None`` means nobody has said.
+
+        The width of an item -- how many boxes it can land on -- is the number
+        this fleet had no way to ask for.  A queue that reports only "pending"
+        makes an item pinned to one busy box look exactly like an item waiting
+        its turn among three, and on 2026-09-03/04 that difference was the
+        whole problem: 129 of 394 items carried a hostname tag, 114 of them
+        pinned to ``sparky`` by a ``/home/rob/tmp/ts*`` worktree, while other
+        boxes idled.
+
+        A nameless offer is reported as ``"?"`` rather than dropped: it still
+        matched, so dropping it would make ``placeable_hosts`` disagree with
+        ``placeable`` about whether anything can run the item at all.
+        """
+
+        live = self.offers(max_age_s=max_age_s)
+        if not live:
+            return None
+        return sorted({
+            str(offer.get("host") or "?")
+            for offer in self._matching_offers(item, live=live)
+        })
+
+    def placement_census(
+        self, *, max_age_s: float = OFFER_TIMEOUT_S
+    ) -> dict[str, object]:
+        """How wide the waiting queue is, bucketed by how many boxes fit each item.
+
+        "Placeable on exactly one box" is the number worth watching: it is the
+        fleet's depth-vs-width, and it was previously obtainable only by
+        reading the queue by hand.  ``pinned_to`` names the boxes those items
+        are waiting on, because *which* box is queueing is what tells a
+        person whether the pin is the reason the fleet looks busy.
+
+        ``known`` is false when no worker has announced.  The buckets are then
+        zero and mean nothing -- the same unknown-stays-unknown rule
+        ``placeable`` follows, kept as a field rather than as three ``None``s
+        so a printer can read one flag.
+        """
+
+        live = self.offers(max_age_s=max_age_s)
+        ready = self.ready_items()
+        census: dict[str, object] = {
+            "ready": len(ready),
+            "offers": len(live),
+            "known": bool(live),
+            "unplaceable": 0,
+            "one_box": 0,
+            "wide": 0,
+            "pinned_to": {},
+        }
+        if not live:
+            return census
+        pinned: dict[str, int] = {}
+        for item in ready:
+            hosts = sorted({
+                str(offer.get("host") or "?")
+                for offer in self._matching_offers(item, live=live)
+            })
+            if not hosts:
+                census["unplaceable"] = int(census["unplaceable"]) + 1
+            elif len(hosts) == 1:
+                census["one_box"] = int(census["one_box"]) + 1
+                pinned[hosts[0]] = pinned.get(hosts[0], 0) + 1
+            else:
+                census["wide"] = int(census["wide"]) + 1
+        census["pinned_to"] = dict(sorted(pinned.items()))
+        return census
 
     def offered_tags(self, *, max_age_s: float = OFFER_TIMEOUT_S) -> list[str]:
         """Every tag some live worker offers -- what to print when nothing fits."""
@@ -1151,3 +1236,25 @@ class PoolQueue:
             raise
         self.finish(key, status=str(outcome["status"]), detail=outcome)
         return outcome
+
+
+def describe_placement_census(census: Mapping[str, object]) -> str:
+    """One line of the census, in the words every reader should use for it.
+
+    Kept beside the measurement rather than at each call site so the metric
+    has one name wherever it is printed.  A number two tools describe
+    differently is a number nobody can grep for.
+    """
+
+    if not census.get("known"):
+        return f"ready {int(census.get('ready', 0))} (fleet width unknown: no worker has announced)"
+    parts = [f"ready {int(census.get('ready', 0))}"]
+    one_box = int(census.get("one_box", 0))
+    pinned = census.get("pinned_to") or {}
+    where = ""
+    if isinstance(pinned, Mapping) and pinned:
+        where = " (" + ", ".join(f"{host} {n}" for host, n in pinned.items()) + ")"
+    parts.append(f"{one_box} on exactly one box{where}")
+    parts.append(f"{int(census.get('wide', 0))} on more than one")
+    parts.append(f"{int(census.get('unplaceable', 0))} on none")
+    return ", ".join(parts)

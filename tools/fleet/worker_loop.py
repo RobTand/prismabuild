@@ -201,6 +201,22 @@ def main():
         errors = 0
         if outcome is None:
             idle += 1
+            # Entering an idle streak is the moment this box starts paying for
+            # the fleet's WIDTH, so say how much of the waiting queue no other
+            # box could take.  Box-local worktrees pin an action to one box,
+            # and the pin is invisible from the queue's own counts: ten items
+            # in ``ready`` look identical whether they are queued behind one
+            # busy box or spread across three.  Live on 2026-09-04, with two
+            # boxes idle: "ready 10, 10 on exactly one box (sparky 10)".
+            #
+            # Printed at the START of the streak, not on every poll: the
+            # interesting event is the transition, and ``--max-idle`` is 500
+            # on this fleet, so an exit-only line would appear about twice a
+            # day per loop.
+            if idle == 1:
+                print(f"[{host}] idle; "
+                      f"{pool.describe_placement_census(queue.placement_census())}",
+                      flush=True)
             # A loop imports ``prismabuild.pool`` once, at start, and holds
             # those bytes for its whole life.  So a fix published while loops
             # are running is loaded by none of them, and the supervisor counts
@@ -222,7 +238,9 @@ def main():
             if args.once or idle >= args.max_idle:
                 free = queue.ledger().available()
                 print(f"[{host}] nothing admissible ({idle} idle polls); "
-                      f"served {served}; free {free}", flush=True)
+                      f"served {served}; free {free}; "
+                      f"{pool.describe_placement_census(queue.placement_census())}",
+                      flush=True)
                 return 0
             time.sleep(args.poll_s)
             continue
