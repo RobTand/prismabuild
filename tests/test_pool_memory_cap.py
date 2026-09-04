@@ -323,10 +323,18 @@ def test_an_oom_kill_is_named_in_the_error_the_caller_reads(
 # -- what the fleet can see ---------------------------------------------------
 
 
-def test_a_worker_publishes_whether_it_enforces(queue) -> None:
+def test_a_worker_publishes_what_its_cap_charges(queue) -> None:
+    """Scope, not a bool.
+
+    "This box enforces mem_gb" is exactly the sentence the issue said must not
+    be published: on a GB10 the host half is bounded and the device half of the
+    same 128 GB pool is not, so a submitter reading a bare ``true`` would take
+    a limit for something it is not.
+    """
+
     queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
-                   capacity={"mem_gb": 48}, enforces_mem_gb=True)
-    assert queue.offers()[0]["enforces_mem_gb"] is True
+                   capacity={"mem_gb": 48}, mem_cap_scope=pool.MEM_CAP_SCOPE_HOST)
+    assert queue.offers()[0]["mem_cap_scope"] == "host"
 
 
 def test_an_offer_that_does_not_say_stays_unknown(queue) -> None:
@@ -338,7 +346,7 @@ def test_an_offer_that_does_not_say_stays_unknown(queue) -> None:
     """
 
     queue.announce(host="sparky", tags=["gb10"], has_gpu=True)
-    assert queue.offers()[0]["enforces_mem_gb"] is None
+    assert queue.offers()[0]["mem_cap_scope"] is None
 
 
 # -- the launcher's own preconditions -----------------------------------------
@@ -380,7 +388,7 @@ def test_a_missing_user_bus_address_is_repaired_when_the_bus_is_there(
     """A loop spawned outside a login session has the bus but not its name.
 
     Answering "this box cannot cap" there would publish
-    ``enforces_mem_gb: false`` -- truthfully about the loop, falsely about the
+    ``mem_cap_scope: none`` -- truthfully about the loop, falsely about the
     hardware -- and quietly stand every declaration back down to an honour
     system.
     """

@@ -136,17 +136,35 @@ DEFAULT_POOL_ROOT = Path(
 # it is reactive, it can only kill what it started, and on unified memory it
 # is the recorded Ray failure mode of a monitor killing healthy ranks.
 #
-# **Scope is measured, not assumed** -- see
-# ``docs/memory_enforcement_2026-09-04.md``.  A cap that silently does not bind
-# is worse than no cap, because the ledger would then read as enforced, so what
-# the cgroup charges was measured on this hardware before the mechanism was
-# ported.  The outcome record says whether an action was capped and at what
-# figure; nothing here claims more than that.
+# **Scope is measured, and it is half.**  Three arms under one 4 GiB cap on
+# sparky, 2026-09-04 (action ``1244c3e5db31``, full trace in
+# ``docs/memory_enforcement_2026-09-04.md``):
+#
+#   host ``bytearray``        charged; killed at ``MemoryPeak`` 4294967296
+#   pinned host (torch)       charged; killed at ``MemoryPeak`` 4294967296
+#   CUDA device (torch)       **not charged**: ``memory.current`` flat at
+#                             381 MB through all 8 GiB, ``memory.events``
+#                             ``max 0 oom 0``, while ``MemAvailable`` fell
+#                             8725 MiB out of the same unified pool
+#
+# So this bounds an action's *host footprint* against a declaration that was
+# itself calibrated on resident host memory (``worker_loop.py`` capacity
+# notes), and it does not bound the device half at all.  That is why the offer
+# and every outcome record carry a ``scope`` rather than a yes: a cap that
+# silently does not bind is worse than no cap, because the ledger would then
+# read as enforced.
 
 #: Systemd properties every capped launch carries.  ``MemorySwapMax=0`` is not
 #: decoration: with swap available an over-budget action slides into swap and
 #: thrashes instead of failing, which converts a loud kill into a slow box.
 CAP_UNIT_PREFIX = "pbcap-"
+
+#: What a cap on this platform actually charges.  Not a bool: on a GB10 the
+#: host footprint is bounded and the device half of the same unified pool is
+#: not, and a field that said only "enforced" would be the ledger reading as a
+#: limit it is not.
+MEM_CAP_SCOPE_HOST = "host"
+MEM_CAP_SCOPE_NONE = "none"
 
 #: Environment names systemd sets *for* a unit.  Forwarding the launcher's
 #: copies would hand the child another process's identity.
@@ -167,7 +185,7 @@ def _bus_ready_env() -> dict[str, str] | None:
     ``XDG_RUNTIME_DIR``; a process spawned outside a login session may not have
     it even though the bus is there.  Without this the probe would answer "this
     box cannot cap" for a box that can, and the whole fleet would publish
-    ``enforces_mem_gb: false`` truthfully about the loop and falsely about the
+    ``mem_cap_scope: none`` truthfully about the loop and falsely about the
     hardware.  Repaired only when the socket actually exists, so a box with no
     user manager still degrades loudly instead of failing on a bad address.
     """
@@ -702,7 +720,7 @@ class PoolQueue:
         has_gpu: bool,
         capacity: Mapping[str, int] | None = None,
         runtime_commit: str = "",
-        enforces_mem_gb: bool | None = None,
+        mem_cap_scope: str | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -732,20 +750,24 @@ class PoolQueue:
             # this a fleet running four generations of the code at once looks
             # uniform from the queue.
             "runtime_commit": str(runtime_commit),
-            # Whether a declared ``mem_gb`` is a limit here or only a
-            # reservation.  Capping needs the memory controller delegated to
-            # the user manager, which is a property of the box, so three boxes
-            # can differ and the offer is the only place that difference shows
-            # up as a fleet fact rather than as one worker's log line.
+            # *How much* of a declared ``mem_gb`` is a limit here, not
+            # whether it is one.  ``"host"`` -- the only affirmative value
+            # today -- means the action's host footprint is capped and its
+            # CUDA device allocations are not, which on a GB10 is the larger
+            # half of the same physical pool (measured 2026-09-04, action
+            # 1244c3e5db31: 8 GiB through the CUDA allocator moved
+            # ``memory.current`` not at all while ``MemAvailable`` fell
+            # 8725 MiB).  ``"none"`` means this box cannot cap at all.
             #
+            # A bool here would have been the exact failure the issue named:
+            # a box publishing "I enforce mem_gb" while the half that fills
+            # the box goes uncharged, and a ledger read as a limit it is not.
             # Three-valued, like ``placeable``: ``None`` means this caller did
-            # not say.  The alternative -- probing here -- would start a
-            # transient unit from inside every announce, including the ones a
-            # test makes, and would let a submitter's guess be published as a
-            # box's answer.  The worker that runs the actions is the only
-            # thing that knows, so it is the only thing that states it.
-            "enforces_mem_gb": (
-                None if enforces_mem_gb is None else bool(enforces_mem_gb)
+            # not say.  The alternative -- probing inside ``announce`` -- would
+            # start a transient unit from every announce a test makes, and
+            # would let a submitter's guess be published as a box's answer.
+            "mem_cap_scope": (
+                None if mem_cap_scope is None else str(mem_cap_scope)
             ),
             "announced_unix": _now(),
         }
@@ -1387,6 +1409,12 @@ class PoolQueue:
         cap_fields: dict[str, object] = {
             "declared_mem_gb": cap_gb,
             "capped": unit is not None,
+            # What the cap charged, never merely that there was one.  See
+            # ``docs/memory_enforcement_2026-09-04.md``: the cgroup charges
+            # anonymous and pinned host pages and does not charge a CUDA
+            # allocation on GB10 unified memory, so a GPU action is bounded on
+            # one half of its footprint and unbounded on the other.
+            "cap_scope": MEM_CAP_SCOPE_HOST if unit is not None else "",
             "cap_unit": unit or "",
             "cap_unavailable": cap_detail,
         }

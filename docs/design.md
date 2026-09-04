@@ -752,18 +752,43 @@ Such actions would be marked explicitly, routed only to idle non-gold hardware,
 and governed by a disk budget (≥10 % free is non-negotiable). The spelling
 `speculative: true` is illustrative, not a currently accepted schema field.
 
-## Memory-pressure hypothesis (not live-validated; Rob, 2026-08-26)
+## Memory pressure: measured 2026-09-04, and it splits in two
 
-The adapter emits SLURM `--mem`, but this repository has not validated a live
-controller/cgroup configuration or GB10 unified-memory accounting. With
-correctly requested limits and a correctly configured cluster, cgroups should
-isolate an over-budget job instead of letting the kernel OOM-kill an unrelated
-victim. The current code and mocked tests do **not** establish that work which
-does not fit is never placed, that requested limits are correctly sized, or
-that GPU allocations in GB10's unified physical pool are isolated. Those
-claims require a live allocation plus cgroup and Netdata evidence. Lowering
-worker counts/capacity per node is the intended allocation-time knob, not a
-reactive userspace monitor like the recorded Ray landmine.
+*(Supersedes the "not live-validated" hypothesis of 2026-08-26. Full trace and
+method: `docs/memory_enforcement_2026-09-04.md`.)*
+
+Half of that hypothesis is now a live measurement and half of it is refuted.
+
+**Isolation of a host over-run: confirmed.** A declared `mem_gb` is enforced by
+the action's own cgroup — `PoolQueue.execute` runs every declared action inside
+a transient user unit with `MemoryMax` set to its declaration, `MemorySwapMax=0`
+and `OOMPolicy=kill`. Measured on sparky: a 4 GiB cap against a runaway host
+allocator died at `MemoryPeak` 4294967296 exactly, `Result=oom-kill`, with
+nothing else on the box disturbed; the same payload under a sufficient
+declaration completes. Cgroup delegation (`cpu memory pids`) and `Linger` hold
+on all three fleet boxes, and a box without them degrades loudly —
+`mem_cap_scope: "none"` in its offer — rather than silently.
+
+**Isolation of GPU allocations in GB10's unified pool: refuted.** 8 GiB taken
+through the CUDA allocator under a 4 GiB cap moved `memory.current` not at all
+(flat at 381 MB, `memory.events max 0 oom 0`) while system `MemAvailable` fell
+8725 MiB. `MemoryMax` does not account CUDA memory on this hardware, so the cap
+bounds an action's **host footprint** and nothing else. Every field says so:
+offers carry `mem_cap_scope` and outcome records carry `cap_scope`, never a
+bare "enforced". Pinned host memory *is* charged and *is* killed, so the line
+is the allocator, not the device.
+
+Two consequences stand. `mem_gb` remains a discrete token contract, and for the
+device half of a GB10 that shape is now measurably wrong — the real ceiling is
+system `MemAvailable`, and bounding it needs something that is not a cgroup.
+And the intended allocation-time knob is unchanged: lower worker
+counts/capacity per node, never a reactive userspace monitor like the recorded
+Ray landmine.
+
+What is still not established: that work which does not fit is never placed,
+and that requested limits are correctly sized. On the second, the fleet cannot
+yet even see its margins — `MemoryPeak` is readable only for units that failed,
+so declarations are calibrated by kills rather than by data.
 
 Even a validated scheduler limit would not retire the **intra-job** LRU: layer
 streaming exists because one task's working set (a 328 GB model through a

@@ -179,9 +179,12 @@ def main():
     # and the wrong thing to be quiet about.  A ledger read as a limit it is
     # not enforcing is worse than one that never claimed to.
     enforces, why_not = pool.memory_capping_supported()
+    cap_scope = pool.MEM_CAP_SCOPE_HOST if enforces else pool.MEM_CAP_SCOPE_NONE
     if enforces:
-        print(f"[{host}] declared mem_gb is ENFORCED: each action runs under "
-              f"MemoryMax = its own declaration", flush=True)
+        print(f"[{host}] declared mem_gb caps the HOST footprint: each action "
+              f"runs under MemoryMax = its own declaration.  CUDA device "
+              f"allocations are not charged to that cgroup "
+              f"(docs/memory_enforcement_2026-09-04.md)", flush=True)
     else:
         print(f"[{host}] declared mem_gb is NOT enforced on this box -- it is "
               f"a reservation only: {why_not}", flush=True)
@@ -191,7 +194,7 @@ def main():
         # no box can run look exactly like an item whose box is busy.
         queue.announce(
             host=host, tags=offered, has_gpu=args.gpu_slots > 0, capacity=capacity,
-            runtime_commit=loaded_commit, enforces_mem_gb=enforces,
+            runtime_commit=loaded_commit, mem_cap_scope=cap_scope,
         )
         # One bad item must not take the worker with it.  ``serve_once``
         # re-raises whatever ``execute`` raised, and this loop had no handler,

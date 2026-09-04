@@ -102,6 +102,7 @@ def test_the_loop_holds_an_action_to_the_figure_it_declared(tmp_path: Path) -> N
 
     assert record["_state"] == "failed"
     assert detail["capped"] is True, "the loop must use the wrapper, not just own it"
+    assert detail["cap_scope"] == "host"
     assert detail["declared_mem_gb"] == 1
     assert detail["oom_killed"] is True
     assert detail["returncode"] == -9
@@ -134,10 +135,15 @@ def test_the_same_payload_under_a_sufficient_declaration_completes(
     assert "FINISHED WITHOUT A KILL" in detail["stdout"]
 
 
-def test_the_worker_publishes_that_it_enforces(tmp_path: Path) -> None:
-    """A submitter can see which boxes hold a declaration and which merely take it."""
+def test_the_worker_publishes_what_its_cap_charges(tmp_path: Path) -> None:
+    """A submitter can see which boxes hold a declaration, and to what extent.
+
+    ``"host"``, never a bare "yes": the same loop leaves a GPU action's device
+    allocations uncharged, and a submitter reading "enforced" would size a
+    declaration against a limit that is not there.
+    """
 
     queue, _key = _publish_greedy(tmp_path, mem_gb=8)
     _run_one(tmp_path, mem_gb=8)
     offer = [o for o in queue.offers() if o["host"] == socket.gethostname()][0]
-    assert offer["enforces_mem_gb"] is True
+    assert offer["mem_cap_scope"] == "host"
