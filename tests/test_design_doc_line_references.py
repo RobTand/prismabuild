@@ -20,8 +20,6 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = sorted((ROOT / "docs").glob("*.md"))
 
@@ -69,27 +67,34 @@ def _table(text: str) -> dict[str, str]:
     return out
 
 
-@pytest.mark.parametrize("doc", DOCS, ids=lambda p: p.name)
-def test_every_cited_line_is_still_the_line_the_doc_quotes(doc: Path) -> None:
-    text = doc.read_text()
-    table = _table(text)
-    if not table:
-        pytest.skip(f"{doc.name} keeps no line-reference table")
+def test_every_cited_line_is_still_the_line_the_doc_quotes() -> None:
+    checked = 0
+    for doc in DOCS:
+        text = doc.read_text()
+        table = _table(text)
+        if not table:
+            continue                  # this doc keeps no line-reference table
+        checked += 1
 
-    body = text.split(SECTION, 1)[0]
-    prose = {m.group(0).strip("`") for m in CITATION.finditer(body)}
-    assert prose == set(table), (
-        f"{doc.name}: prose and the line-reference table disagree; "
-        f"only in prose {sorted(prose - set(table))}, "
-        f"only in the table {sorted(set(table) - prose)}"
-    )
-
-    for citation, quoted in sorted(table.items()):
-        name, first = citation.split(":", 1)
-        start = int(first.split("-", 1)[0])
-        lines = _resolve(name).read_text().splitlines()
-        assert start <= len(lines), f"{citation}: file has {len(lines)} lines"
-        assert lines[start - 1] == quoted, (
-            f"{citation} has moved\n  doc says: {quoted!r}\n  file has: "
-            f"{lines[start - 1]!r}"
+        body = text.split(SECTION, 1)[0]
+        prose = {m.group(0).strip("`") for m in CITATION.finditer(body)}
+        assert prose == set(table), (
+            f"{doc.name}: prose and the line-reference table disagree; "
+            f"only in prose {sorted(prose - set(table))}, "
+            f"only in the table {sorted(set(table) - prose)}"
         )
+
+        for citation, quoted in sorted(table.items()):
+            name, first = citation.split(":", 1)
+            start = int(first.split("-", 1)[0])
+            lines = _resolve(name).read_text().splitlines()
+            assert start <= len(lines), f"{citation}: file has {len(lines)} lines"
+            assert lines[start - 1] == quoted, (
+                f"{citation} has moved\n  doc says: {quoted!r}\n  file has: "
+                f"{lines[start - 1]!r}"
+            )
+    # One test rather than one per doc, so a suite that suddenly checks
+    # nothing says so instead of reporting a handful of green skips -- and a
+    # skip is exactly what a reader scanning for a CUDA-gated one would read
+    # past.
+    assert checked, "no doc keeps a line-reference table; the check is vacuous"
