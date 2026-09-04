@@ -44,6 +44,15 @@ a plausible way to be wrong that only a real controller can reveal:
 6. **Whether 25.11 built from source interoperates with 25.11.2 from apt.** Build
    the same patch version on the Sparks. A version skew inside 25.11 is not
    expected to matter, but it has not been observed here.
+7. **Whether the Epilog can delete its own state file over NFS.** The Epilog runs
+   as `root` on the compute node and removes
+   `/mnt/shared/prismabuild-fleet/slurm/jobs/<job id>.job`, which the job wrote
+   as `rob`. If dl380g10 exports that dataset with `root_squash`, the node's
+   `root` maps to `nobody` and the delete fails. The Epilog swallows the error
+   and still exits 0, as it must, so the symptom is silent: state files
+   accumulate in `jobs/`. Check that directory after the validation runs below.
+   The fix is a `no_root_squash` export for that path, or writing the state file
+   world-writable.
 
 ## What this replaces, and what it does not
 
@@ -332,32 +341,62 @@ srun --partition=gpu --gres=shard:1 bash -c 'grep -c "job_$SLURM_JOB_ID" /proc/s
 The result must be `1`. Anything else means `core._collect_worker_evidence`
 refuses every action, and `ProctrackType` is what to look at.
 
-Finally, run one real action through the lane without changing the default
-transport:
+Finally, run one real action through the lane. Run it with `--here`, and from
+the box you are standing on:
 
 ```bash
 cd /home/rob/prismabuild
-tools/fleet/pbrun.py --transport slurm --tag x86 --timeout-s 600 \
+tools/fleet/pbrun.py --transport slurm --here --timeout-s 600 \
     -- /bin/echo hello from slurm
 ```
 
-Expect `pbrun: submitted <key> as slurm job <id>`, then the job's output, then
-`pbrun: executed via slurm job <id> (COMPLETED)` and exit status 0. If the job
-runs and exits 0 but `pbrun` reports `published no receipt`, the work did not
-reach the CAS: read the `.out` and `.err` files in
+`--here` is load-bearing at this point in the install, and the reason is worth
+stating. `pbrun` builds the job script around its own location: `RUNTIME_ROOT =
+generation_root(__file__)`, so a job submitted from `/home/rob/prismabuild`
+execs `/home/rob/prismabuild/tools/fleet/slurm_job.py` on whichever node the
+scheduler picks. That path is one box's local checkout. `--here` adds the
+submitting box's hostname as a required tag, the tag matches that node's
+`Feature`, and the job lands where the path exists. A cross-box submission such
+as `--tag x86` from a Spark would land on dl380g10 and die with `No such file or
+directory` — which reads like a broken lane and is not one.
+
+The pull queue has the same property and lives with it, because agents run the
+*published* `pbrun` under `/mnt/shared/prismabuild-fleet/runtime/<generation>/`,
+a path every box mounts at the same place. So the cross-box check is meaningful
+only after step 9.4 publishes the runtime, and it belongs there:
+
+```bash
+# after the runtime is published, from the published path
+/mnt/shared/prismabuild-fleet/runtime/repo/tools/fleet/pbrun.py \
+    --transport slurm --tag x86 --timeout-s 600 -- /bin/echo hello from slurm
+```
+
+Either way, expect `pbrun: submitted <key> as slurm job <id>`, then the job's
+output, then `pbrun: executed via slurm job <id> (COMPLETED)` and exit status 0.
+If the job runs and exits 0 but `pbrun` reports `published no receipt`, the work
+did not reach the CAS: read the `.out` and `.err` files in
 `/mnt/shared/prismabuild-fleet/slurm/<action key>/`.
 
 Check the Epilog by cancelling a job that started a container:
 
 ```bash
-tools/fleet/pbrun.py --transport slurm --tag x86 --timeout-s 600 \
+tools/fleet/pbrun.py --transport slurm --here --timeout-s 600 \
     -- docker run -d --rm alpine sleep 300 &
 sleep 20
 tools/fleet/pbrun.py --transport slurm --withdraw <key prefix>
 docker ps --filter label=prismabuild.action
 ```
 
-The last command must list nothing.
+The last command must list nothing. Then check the other half of the Epilog's
+job, the one that fails silently:
+
+```bash
+ls -l /mnt/shared/prismabuild-fleet/slurm/jobs/
+```
+
+That directory must be empty. A `<job id>.job` file left behind for a job that
+has finished means the Epilog could not delete it, which on this fleet means
+`root_squash` on the NFS export — item 7 of the unverified list.
 
 ## Step 9: cut over
 
