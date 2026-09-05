@@ -4,7 +4,10 @@ Several modules default a root to the shared mount: ``pbrun.SH``,
 ``pbstatus.SHARED_ROOT``, ``pool_reset.SH``, ``fleet_submit.SH``,
 ``pool.DEFAULT_POOL_ROOT``, and the lane's ``PRISMABUILD_SLURM_LANE_ROOT`` and
 ``PRISMABUILD_SLURM_JOB_STATE_ROOT``. A test that forgets to pass a root then
-reads or writes the live queue, CAS, or lane root. Between 2026-09-04 and
+reads or writes the live queue, CAS, or lane root. One more root is box-local
+rather than shared, and leaks the same way: ``materialize.LOCAL_CHECKOUT_ROOT``
+puts a materialized checkout under ``/home/rob/tmp/prismabuild-checkouts``,
+which is a real tree the fleet's own workers use. Between 2026-09-04 and
 2026-09-05 the lane tests filed 336 terminal records, 145 CAS requests, and 6
 receipts into the live store that way, because their fixture never overrode
 ``pbrun.SH``. Those files were moved to ``quarantine/pytest-leak-2026-09-05``
@@ -58,6 +61,11 @@ LIVE_DEFAULTS = (
     ("fleet_submit", "SH", "fleet"),
     ("worker_loop", "SH", "fleet"),
     ("prismabuild.pool", "DEFAULT_POOL_ROOT", "pb-queue"),
+    # Two spellings of one root, and each transport reads its own: the SLURM
+    # job entry reads ``materialize.LOCAL_CHECKOUT_ROOT`` and the pull queue
+    # reads ``pool.LOCAL_CHECKOUT_ROOT``, which is a copy taken at import.
+    ("prismabuild.materialize", "LOCAL_CHECKOUT_ROOT", "checkouts"),
+    ("prismabuild.pool", "LOCAL_CHECKOUT_ROOT", "checkouts"),
 )
 
 #: Environment variables the lane and the pool read on use.
@@ -65,6 +73,10 @@ LIVE_ENV = (
     ("PRISMABUILD_SLURM_LANE_ROOT", "slurm"),
     ("PRISMABUILD_SLURM_JOB_STATE_ROOT", "slurm/jobs"),
     ("PRISMABUILD_POOL_ROOT", "pb-queue"),
+    # Read at import, so this reaches a module imported after the fixture ran
+    # and a child process such as ``slurm_job``; the attributes above reach
+    # the modules already imported.
+    ("PRISMABUILD_LOCAL_CHECKOUT_ROOT", "checkouts"),
 )
 
 
