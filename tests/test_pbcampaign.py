@@ -361,3 +361,34 @@ def test_a_row_asking_for_a_retry_nobody_would_watch_is_refused(
         pbcampaign.load_manifest(manifest)
     assert "--detach submits one attempt" in str(raised.value)
     assert "asks for 3" in str(raised.value)
+
+
+def test_retry_safe_on_a_row_is_sealed_into_the_action_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fleet_paths, capsys
+) -> None:
+    """The retry policy is part of the action, so the row has to be able to say it.
+
+    ``max_attempts`` above 1 is refused on a campaign, which could read as
+    making ``retry_safe`` decorative.  It is not: the policy is sealed into
+    ``params``, so a row that cannot spell it seals a different action from
+    the hand-typed ``pbrun --retry-safe`` it is meant to reproduce, and the
+    two never memoize each other.
+    """
+
+    work, _queue_unused = fleet_paths
+    manifest = _manifest(tmp_path, [
+        _row(work, "printf hello", retry_safe=True),
+        _row(work, "printf hello"),
+    ])
+    assert pbcampaign.main(["--detach", manifest]) == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+             if line.strip()]
+    retry_safe_key, plain_key = (line["action_key"] for line in lines)
+    assert retry_safe_key != plain_key
+
+    monkeypatch.setattr(sys, "argv", [
+        "pbrun.py", "--detach", "--retry-safe", "--cwd", str(work),
+        "--", "/bin/bash", "-lc", "printf hello",
+    ])
+    assert pbrun.main() == 0
+    assert _one_json_line(capsys.readouterr())["action_key"] == retry_safe_key

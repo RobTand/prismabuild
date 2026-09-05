@@ -15,6 +15,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# Bound before ``pbrun`` is exec'd, as ``test_pbrun_placement`` explains:
+# ``pbrun`` puts the published mirror at the front of ``sys.path``, and this
+# file is meant to test the checkout it lives in.
+from prismabuild import pool as pool_module  # noqa: E402,F401
+
 _SPEC = importlib.util.spec_from_file_location(
     "pbrun", Path(__file__).resolve().parents[1] / "tools" / "fleet" / "pbrun.py"
 )
