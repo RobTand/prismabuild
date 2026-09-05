@@ -46,6 +46,12 @@ and each one is exactly one ``pbrun`` flag:
 ``priority``         ``--priority``
 ===================  ====================================================
 
+Every field except ``argv`` is optional, and an omitted one is not passed to
+``pbrun`` at all, so the row inherits whatever ``pbrun`` decides.  ``timeout_s``
+is the one to be deliberate about: omitting it means no deadline, which is
+what a long stage that is making progress wants, and setting it means the
+scheduler kills the row at that many seconds whatever it was doing.
+
 An unknown field is refused rather than ignored: a typo that is silently
 dropped seals an action nobody asked for.
 
