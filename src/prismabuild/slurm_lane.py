@@ -1941,11 +1941,19 @@ def run(
     nothing about that.  A receipt in the CAS ends the loop whatever the exit
     code said, and so does a cancellation -- an operator's decision is not a
     defect to retry around.
+
+    ``wait_s`` is one budget for the whole run, as ``pbrun.await_outcome``
+    holds one deadline across the pool's retries: each attempt's ``wait`` is
+    given what is left of it, so three attempts cannot turn a 30 minute
+    ``--wait-s`` into ninety.  A retry submitted after the budget is spent
+    still goes out (the retry policy is about the action, the budget about
+    how long this caller stays) and its wait ends on the first poll.
     """
 
     key = str(action["action_key"])
     result = RunResult(action_key=key)
     attempts = max(1, int(max_attempts)) if retry_safe else 1
+    deadline = None if wait_s is None else clock() + float(wait_s)
     # One generation for the whole run, stamped on every submission record and
     # on the ending.  Retries are attempts within it, not new requests.
     published_unix = _now()
@@ -1993,7 +2001,7 @@ def run(
             squeue=squeue,
             sstat=sstat,
             poll_s=poll_s,
-            wait_s=wait_s,
+            wait_s=None if deadline is None else max(0.0, deadline - clock()),
             sleep=sleep,
             clock=clock,
             on_stall=on_stall,
