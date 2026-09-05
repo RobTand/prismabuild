@@ -3027,7 +3027,11 @@ def main() -> int:
              "the action can spell it (e.g. --snapshot-ref master for a "
              "master...HEAD gate); repeatable",
     )
-    ap.add_argument("--cwd", default=os.getcwd())
+    ap.add_argument("--cwd", default=os.getcwd(),
+                    help="directory the command runs in, on this box and "
+                         "inside the checkout being sealed; it is recorded "
+                         "in the action as a path relative to the checkout "
+                         "root, so the action stays portable")
     ap.add_argument("--deterministic", action="store_true",
                     help="declare byte-identical output; enables CAS reuse")
     ap.add_argument(
@@ -3092,7 +3096,9 @@ def main() -> int:
              "PRISMABUILD_TRANSPORT, else the published runtime generation's "
              "default_transport); the pull queue stays the default until the "
              "fleet has cut over to SLURM")
-    ap.add_argument("command", nargs=argparse.REMAINDER)
+    ap.add_argument("command", nargs=argparse.REMAINDER,
+                    help="the command to run, after a bare --; every word "
+                         "past it belongs to the command and not to pbrun")
     args = ap.parse_args()
 
     if args.withdraw:

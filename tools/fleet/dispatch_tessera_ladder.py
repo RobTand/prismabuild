@@ -113,9 +113,19 @@ def build_action(shard, closure, rung, calibrate_every):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shards", required=True, help="e.g. 1 or 1-120")
-    ap.add_argument("--rung", type=int, default=4)
-    ap.add_argument("--calibrate-every", type=int, default=32)
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--rung", type=int, default=4,
+                    help="body rate per code; one encode prices the whole "
+                         "[rung/arity, cap/arity] bpp band, so a lower rung "
+                         "widens the band and costs accuracy at equal bpp")
+    ap.add_argument("--calibrate-every", type=int, default=32,
+                    help="every Nth unit also gets native encodes, so the "
+                         "truncation bias in the band is measured rather "
+                         "than assumed")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print the action key each shard would be sealed "
+                         "under and enqueue nothing; the wrapper is still "
+                         "staged into the shared checkout, because the "
+                         "closure digest being previewed is computed over it")
     fleet_submit.add_transport_argument(ap)
     args = ap.parse_args()
 
