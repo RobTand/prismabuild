@@ -73,6 +73,30 @@ def _await(condition) -> None:
         time.sleep(0.005)
 
 
+def _await_marker(marker: Path) -> tuple[int, int]:
+    """The child's pid and process group, once the marker actually holds them.
+
+    ``write_text`` creates the file and then writes it, so a reader waiting on
+    ``exists()`` can win the race and parse an empty file. That is a test
+    failing on its own timing rather than on the behaviour it covers, and it
+    is what made this file fail about one run in six on the x86 box while
+    passing on the Sparks. Waiting for two integers waits for the write.
+    """
+
+    fields: list[str] = []
+
+    def written() -> bool:
+        nonlocal fields
+        try:
+            fields = marker.read_text().split()
+        except OSError:
+            return False
+        return len(fields) == 2 and all(field.isdigit() for field in fields)
+
+    _await(written)
+    return int(fields[0]), int(fields[1])
+
+
 def _start_leader(marker: Path, leader_mode: str) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         [sys.executable, "-c", LEADER_SOURCE, str(marker), leader_mode],
@@ -128,8 +152,7 @@ def test_termination_kills_a_term_ignoring_descendant(
     child_pid: int | None = None
     pgid: int | None = None
     try:
-        _await(marker.exists)
-        child_pid, pgid = (int(field) for field in marker.read_text().split())
+        child_pid, pgid = _await_marker(marker)
         assert pgid == process.pid
         assert os.getpgid(child_pid) == pgid
         if leader_mode == "exit":
@@ -222,8 +245,7 @@ def test_action_timeout_kills_a_term_ignoring_descendant(
                 checkout_root=checkout,
                 timeout_seconds=0.5,
             )
-        _await(marker.exists)
-        child_pid, pgid = (int(field) for field in marker.read_text().split())
+        child_pid, pgid = _await_marker(marker)
         assert not _alive(child_pid), (
             "the action's descendant outlived the reported timeout"
         )

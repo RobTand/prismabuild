@@ -145,6 +145,30 @@ def _await(predicate, *, timeout_s: float = 20.0) -> bool:
             return True
         time.sleep(0.02)
     return predicate()
+def _await_pid(path: Path, *, timeout_s: float = 20.0) -> int:
+    """The pid a helper wrote, once the file actually holds one.
+
+    ``write_text`` creates the file before it writes it, so waiting on
+    ``exists()`` and then calling ``int()`` can read an empty file and raise
+    ``invalid literal for int() with base 10: ''``. Waiting for a parsable pid
+    waits for the write instead.
+    """
+
+    pid = 0
+
+    def written() -> bool:
+        nonlocal pid
+        try:
+            text = path.read_text().strip()
+        except OSError:
+            return False
+        if not text.isdigit():
+            return False
+        pid = int(text)
+        return True
+
+    assert _await(written, timeout_s=timeout_s), f"nothing wrote a pid to {path}"
+    return pid
 
 
 def _grandchild_launcher(tmp_path: Path, pidfile: Path) -> Path:
@@ -570,8 +594,7 @@ def test_the_signal_reaches_the_action_group_not_only_the_launcher(
     # Heartbeat long enough that the cooperative poll inside ``execute`` cannot
     # fire: what stops the action here must be the withdrawal's own signal.
     thread, outcome = _run_in_background(queue, item, heartbeat_s=30.0)
-    assert _await(lambda: pidfile.exists()), "the stub never started its action"
-    grandchild = int(pidfile.read_text())
+    grandchild = _await_pid(pidfile)
     assert _await(lambda: (json.loads(queue.lease_path(KEY_A).read_text())
                            .get("child_pid") is not None))
 
@@ -632,9 +655,8 @@ def test_withdrawal_reaps_an_owned_container_before_releasing_capacity(
     marker.write_text(owner)
 
     thread, outcome = _run_in_background(queue, item, heartbeat_s=30.0)
-    assert _await(lambda: pidfile.exists() and container_pidfile.exists())
-    action_pid = int(pidfile.read_text())
-    container_pid = int(container_pidfile.read_text())
+    action_pid = _await_pid(pidfile)
+    container_pid = _await_pid(container_pidfile)
 
     def owned_ids(actual_owner: str) -> list[str]:
         assert actual_owner == owner
@@ -726,8 +748,7 @@ def test_a_withdrawal_from_another_box_still_stops_the_action(
     _publish(queue, KEY_A, worker_script=str(stub))
     item = queue.claim()
     thread, outcome = _run_in_background(queue, item, heartbeat_s=0.2)
-    assert _await(lambda: pidfile.exists())
-    grandchild = int(pidfile.read_text())
+    grandchild = _await_pid(pidfile)
 
     # ``signal_child=False`` is what being on another box amounts to: the
     # marker is all that crosses.
@@ -756,8 +777,7 @@ def test_a_worker_that_never_wrote_a_child_pid_is_still_signalled(
     _publish(queue, KEY_A, worker_script=str(stub))
     item = queue.claim()
     thread, outcome = _run_in_background(queue, item, heartbeat_s=30.0)
-    assert _await(lambda: pidfile.exists())
-    grandchild = int(pidfile.read_text())
+    grandchild = _await_pid(pidfile)
 
     # What a pre-withdrawal worker's lease looks like.
     lease = json.loads(queue.lease_path(KEY_A).read_text())
