@@ -702,9 +702,59 @@ and the action that reaches the scheduler is the snapshot-addressed one the
 node needs. Sealing moves the action key once, and only for an action that
 carried no snapshot; a producer should print `Submission.action_key`.
 
+A producer addresses its own code relative to the tree the action runs in.
+`fleet_submit` runs `pbrun`'s relocation guard over the action's argv and
+environment while it seals, so an absolute path into the submitter's checkout
+is refused before anything is queued. A sealed snapshot the executing process
+never imports is not provenance: the worker verifies the sealed bytes and the
+interpreter loads the shared ones. Both Tessera dispatchers therefore set
+`PYTHONPATH` to `tessera/src`. That is a different action key from the absolute
+spelling they used before 2026-09-05, so receipts published under the old keys
+are misses and those shards re-encode.
+
 `fleet_submit` files no endings. It returns as soon as the scheduler has the
 job, and the lane's submission record is what makes the job findable
 afterwards. Run `pbwait` on the keys to derive and file the terminal records.
 
+`tools/fleet/tessera_status.py` reads the export's progress from the CAS
+receipts of the export it names, not from files in the shared checkout. Under
+SLURM a shard writes its manifest inside a private checkout the job removes
+when it ends, so the receipt is the record. The export is identified by the
+digest of the allocation plan the dispatcher hands the exporter, so a receipt
+from a previous plan is counted on its own line instead of deciding the shard
+count. The screen reads the shared results directory only under the pull
+queue, which is the transport that wrote those files. It reports what it could
+not read rather than failing.
+
 Any producer that builds its own actions should do the same: seal the action,
 hand it to `fleet_submit`, print the key, and read the CAS for the verdict.
+
+## Smoke-test a transport
+
+`tools/fleet/seal_and_publish.py --transport pool|slurm` seals one trivial
+action and hands it to the named transport. It prints the submitted key, the
+key it sealed, and where the submission went, so a `ready/` item under the
+pull queue and a submission record under the lane are told apart.
+
+The SLURM lane addresses a checkout only through a sealed snapshot, so this
+command makes its smoke checkout sealable: if
+`/mnt/shared/prismabuild-fleet/checkout` has no commit, the first run
+initializes a Git repository there and commits `task_code.py`, and nothing
+else. A checkout that already has a commit is left as it is. Before
+2026-09-05 the command wrote a plain directory, and `--transport slurm`
+refused every run with `a non-Git checkout cannot be materialized` without
+reaching a scheduler command.
+
+A refused submission now prints the transport's reason on stderr and exits 2.
+
+Initializing the checkout is necessary but not sufficient. The snapshot roster
+is tracked plus nonignored-untracked paths, and `run_local_action` refuses an
+action whose declared result already exists in the execution tree with no
+recovery claim. `/mnt/shared/prismabuild-fleet/checkout` currently holds
+`fleet_result.txt`, `pbrun_result.*`, `.pbrun-closure.*` and 120 files under
+`results/glm53-tessera/`, and it has no `.gitignore`, so those files would ride
+into every snapshot and a node would refuse the action that declares one of
+them. Move them out of the checkout, or ignore them there, before the first
+SLURM dispatch from that tree. This applies to the smoke action, whose result
+is `fleet_result.txt`, and to every export shard, whose result is
+`results/glm53-tessera/shard-NNNNN.json`.
