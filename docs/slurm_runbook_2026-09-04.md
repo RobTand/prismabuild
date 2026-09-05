@@ -480,7 +480,11 @@ has finished means the Epilog could not delete it, which on this fleet means
 
 ## Step 9: cut over
 
-Do this only after step 8 passes on all three boxes.
+Do this only after step 8 passes on all three boxes. Before you switch the
+transport, settle what the cgroup settings should be: `ConstrainCores` and
+`ConstrainRAMSpace` turn a declared demand into a cpuset and a `memory.max`,
+and `docs/resource_enforcement_2026-09-05.md` has the three options, the
+container measurements for each, and a recommendation.
 
 1. Check that the pull queue is idle. No action may be in flight when the loops
    stop, because a stopped loop leaves its claim behind for the reaper:
