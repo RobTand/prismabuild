@@ -290,6 +290,41 @@ def _activate(generation: Path, *, migrate_directory: bool) -> Path | None:
     return legacy
 
 
+def _activate_existing(name: str, *, dry_run: bool) -> int:
+    """Point the live runtime at a generation that already exists.
+
+    Rollback's whole job.  A generation is immutable and already carries a
+    receipt proving its bytes, so restoring one is a namespace operation and
+    nothing else -- no copy, no re-hash, no dependence on what the checkout
+    happens to contain now.  Publication never deletes a generation, which is
+    what makes this possible at all.
+
+    The name is validated rather than trusted: it must be a direct child of the
+    generation store and it must carry a receipt.  A path that escapes the
+    store, or a directory that is not a published generation, is refused before
+    ``repo`` is touched.
+    """
+
+    store = MIRROR.parent / "runtime-generations"
+    if "/" in name or name in ("", ".", ".."):
+        raise SystemExit(f"not a generation name: {name!r}")
+    generation = store / name
+    if not (generation / "RUNTIME_VERSION.json").is_file():
+        raise SystemExit(
+            f"{generation} is not a published generation: no RUNTIME_VERSION.json"
+        )
+    receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
+    print(
+        f"activating {name}: commit {str(receipt.get('commit', ''))[:12]}, "
+        f"default transport {receipt.get('default_transport') or 'pool'}"
+    )
+    if dry_run:
+        return 0
+    _activate(generation, migrate_directory=False)
+    print(f"activated {MIRROR} -> {generation}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--allow-dirty", action="store_true",
@@ -298,8 +333,27 @@ def main() -> int:
         "--migrate-directory", action="store_true",
         help="perform the one-time fail-closed handoff from the legacy live directory",
     )
+    ap.add_argument(
+        "--default-transport", choices=("pool", "slurm"), default=None,
+        help="the transport every pbrun and producer running THIS generation "
+             "uses when nothing says otherwise; recorded in the receipt and "
+             "read by fleet_submit.default_transport.  Omitted means the pull "
+             "queue, which is what every generation published before the "
+             "SLURM cutover means too.",
+    )
+    ap.add_argument(
+        "--activate-generation", metavar="NAME", default=None,
+        help="point the live runtime at an existing generation instead of "
+             "publishing a new one; this is what rollback does, and it is "
+             "deliberately not a re-publish -- the previous generation's bytes "
+             "and receipt are already proved and a rebuild from a moved "
+             "checkout would not be the same thing.",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+
+    if args.activate_generation is not None:
+        return _activate_existing(args.activate_generation, dry_run=args.dry_run)
 
     # Identity is established before MIRROR is even enumerated, much less
     # touched.  Failure here is a refusal, never an empty field in a receipt.
@@ -358,6 +412,11 @@ def main() -> int:
         receipt: dict[str, object] = {
             "schema": "prismaquant.prismabuild.runtime_version.v1",
             "commit": commit,
+            # Optional, and absent means the pull queue: every generation
+            # published before the SLURM cutover has no such field and must
+            # keep behaving as it did.
+            **({"default_transport": args.default_transport}
+               if args.default_transport else {}),
             "dirty": dirty,
             "generation": generation_name,
             "published_unix": time.time(),

@@ -19,14 +19,22 @@ evidence, not a permanent suite-count claim.
 found the memoization core worth owning and the scheduler half to be the
 "roll-your-own queue dir" the spec had declined; see
 `docs/scheduler_decision_2026-09-04.md` for the evidence, the alternatives,
-the per-issue dispositions and the migration plan. Nothing changes on the
-fleet until Rob ratifies it and runs the install.
+the per-issue dispositions and the migration plan. Rob ratified it on
+2026-09-04. Nothing changes on the fleet until he runs the install
+(`fleet/slurm/install.sh`, as root, per box) and then the cutover
+(`fleet/slurm/cutover.sh`, on his word, with an idle queue).
 
-Both originally-shipped transports are inert here: `slurm.py` shells out to
-`sbatch`/`scontrol` and SLURM is installed on neither Spark; `dagster.py` needs
-Dagster, also absent. `pool.py` is the third transport — a pull-queue on the
-shared NFS mount, executing the *same* canonical worker argv SLURM would have
-submitted, so a result does not depend on which transport delivered it.
+SLURM is installed on no box yet. The transport that will carry it is the thin
+lane in `slurm_lane.py` (`pbrun --transport slurm`): one `sbatch` per sealed
+action, the CAS receipt as the verdict, and a terminal record filed into the
+same `pb-queue/done|failed|withdrawn` directories the pool's readers already
+read. It has run against a real `slurmctld` and `slurmd` in a privileged
+container on sparky (`fleet/slurm/smoke/`). `slurm.py` is the earlier
+durable-state SLURM adapter, superseded by the lane and retained until
+Phase 3 of the migration; `dagster.py` needs Dagster, absent here. `pool.py`
+is the transport that runs today — a pull-queue on the shared NFS mount,
+executing the *same* canonical worker argv SLURM would have submitted, so a
+result does not depend on which transport delivered it.
 
 `pqwork` — a stdlib-only pull-queue running as a live systemd unit on both
 Sparks — is the **predecessor** PrismaBuild replaces. Its NFS-safe primitives
@@ -146,12 +154,12 @@ not a dependency: this package imports nothing from prismaquant.
 ## Layout
 
     src/prismabuild/core.py       action keys, CAS, local execution
-    src/prismabuild/slurm.py      SLURM transport (inert here: no sbatch)
-    src/prismabuild/slurm_lane.py the thin SLURM lane pbrun submits through
+    src/prismabuild/slurm_lane.py the thin SLURM lane: submit one sealed action, wait, file its ending
+    src/prismabuild/slurm.py      earlier SLURM adapter, superseded by the lane (retired in Phase 3)
     src/prismabuild/dagster.py    Dagster transport (inert here)
-    src/prismabuild/pool.py       shared-FS pull queue (the one that runs here)
-    src/prismabuild/slurm_lane.py submit one sealed action to SLURM and wait
-    fleet/slurm/                  the fleet's SLURM configuration and its smoke
+    src/prismabuild/pool.py       shared-FS pull queue (the one that runs today)
+    tools/fleet/slurm_job.py      node side of the lane: materialize, run, publish the receipt
+    fleet/slurm/                  SLURM configuration, install/verify/cutover/rollback scripts, the smoke
     tools/fleet/pbstatus.py       fleet status: nodes, jobs, recent endings
     tools/prismabuild_worker.py   stdlib-only worker entry point
     tools/fleet/pbrun.py          submit one command as a sealed action
