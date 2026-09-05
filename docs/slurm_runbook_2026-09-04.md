@@ -439,7 +439,10 @@ fleet/slurm/verify.sh
 It prints PASS or FAIL per row and stops at the first failure, because the rows
 after a failure are being run against a fleet in a state nobody described. On
 success it writes `~/.prismabuild/slurm-verify-passed.json`, which
-`cutover.sh` looks for.
+`cutover.sh` looks for. It records the sha256 of the `slurm.conf` this
+verification ran against, and `cutover.sh` refuses a marker whose hash is not
+the one in the checkout it is about to publish -- so re-run `verify.sh` after
+any change to `slurm.conf`.
 
 The rows, and what each one is really asking:
 
@@ -548,10 +551,20 @@ Before you switch the transport, settle what the cgroup settings should be:
 and a `memory.max`, and `docs/resource_enforcement_2026-09-05.md` has the three
 options, the container measurements for each, and a recommendation.
 
-It refuses unless all five of these hold:
+It refuses unless all six of these hold:
 
 1. `verify.sh` passed -- its marker, or `--verified` if you ran it on another
-   box, because the marker is box-local.
+   box, because the marker is box-local. The marker is read, not counted: its
+   `slurm_conf_sha256` must be the sha256 of this checkout's
+   `fleet/slurm/slurm.conf`, and a marker with no readable
+   `slurm_conf_sha256` or `verified_unix` is refused. A verification against a
+   configuration this checkout no longer contains describes a different fleet
+   than the one the cutover would produce; re-run `verify.sh`, or check out
+   the commit it verified.
+
+   The marker's age, host and commit are *printed* -- `# verified 3h 12m ago
+   on sparky, commit <sha>` -- and never refused on. How old is too old is
+   your call, and so is whether a marker written at another commit matters.
 2. `/mnt/shared/prismabuild-fleet/pb-queue/claimed` and `.../ready` are both
    empty. A stopped loop leaves its claim behind for a reaper that will not run
    again, and an item in `ready` is an action no SLURM job will ever pick up.
@@ -563,7 +576,22 @@ It refuses unless all five of these hold:
    `git status` must be clean where you run this.
 4. No `pbrun` is waiting anywhere in the fleet. Each one is somebody watching
    for a result the loops are about to stop producing.
-5. `--yes`.
+5. `sinfo -h -N -o '%N %T'` reports every box -- `dl380g10`, `sparky` and
+   `gx10-6b77`, which is sparklina's `NodeName` -- under `idle`, `mixed` or
+   `allocated`. Trailing state flags (`idle*`, `mixed~`) are stripped before
+   the word is read, and a node absent from `sinfo -N` is as bad as one that
+   is `down`. This is the last question asked before anything is written, and
+   `--verified` does not skip it: the marker says a fleet passed once, this
+   asks whether it is up now. Step 3 stops the loops that are the only
+   execution plane until SLURM takes over, so a node the controller will not
+   schedule onto is a box that runs nothing afterwards. Resume a drained one
+   with `scontrol update NodeName=<node> State=RESUME`. `sinfo` missing from
+   `PATH`, or a `slurmctld` that will not answer, is refused the same way.
+6. `--yes`.
+
+`--dry-run` refuses nothing, and it *answers* the fifth question rather than
+naming it: `sinfo` only reads, so the plan tells you whether the fleet is up
+while you are still choosing the window.
 
 Then, in this order, and the order is not arrangeable:
 
@@ -792,6 +820,6 @@ reads `latest.json` to find the job to cancel.
 | `/mnt/shared/prismabuild-fleet/slurm/` | Job scripts, submission records, job logs |
 | `/mnt/shared/prismabuild-fleet/slurm/jobs/` | One state file per running job, for the Epilog |
 | `/home/rob/.munge-key.b64` | The key in transit, created on dl380g10 and shredded on each Spark |
-| `~/.prismabuild/slurm-verify-passed.json` | `verify.sh` passed here; `cutover.sh` looks for it |
+| `~/.prismabuild/slurm-verify-passed.json` | `verify.sh` passed here, against which `slurm.conf` and when; `cutover.sh` reads all three |
 | `~/.prismabuild/crontab.pre-cutover` | Each box's crontab as it was, for `rollback.sh` |
 | `~/.prismabuild/cutover-<unix>.json` | What the cutover replaced, for `rollback.sh` |
