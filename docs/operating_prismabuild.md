@@ -1188,3 +1188,67 @@ evidence, remove that map, then restart with the new shape. Never delete a map
 while claims or loops can still use its CPU-token interpretation. Adding a new
 host creates a separate map. Ordinary runtime publication with an unchanged
 map uses the existing idle-queue procedure.
+
+### Adaptive CPU admission
+
+The declared CPU demand remains an upper bound the action may actually use.
+PrismaBuild measures current host CPU activity and pressure, including unrelated
+processes, and combines that with consumption attributed to each running pool
+attempt. Startup and any unaccounted interval are charged at the full declared
+demand. Repeated executions of the same exact workload shape may establish a
+conservative CPU-cost profile; a phase that consumes more CPU raises that cost
+promptly, while old evidence decays slowly and expires.
+
+Free preferred CPU tokens remain the first choice. When those are exhausted but
+a running generation action has fresh, complete telemetry showing that it uses
+less CPU than it reserved, the next generation action may share those reserved
+preferred CPU IDs before taking free SMT siblings or efficiency cores. The same
+evidence can support admission beyond the nominal physical-token count when the
+box still has measured headroom. This is borrowing, not a smaller declaration:
+continue to request the action's real peak CPU use.
+
+Borrowing stops when host activity or CPU pressure reaches the admission bound,
+when a donor becomes busy, or when any required observation is stale, malformed
+or incomplete. Unknown startup work is protected at its full reservation, and
+one host sample can authorize at most one new borrowing decision. Memory and GPU
+tokens are always acquired in full; CPU evidence never relaxes either budget.
+An ordinary action may still acquire physically free tokens when per-attempt
+telemetry cannot be read, but it receives no borrowing credit.
+
+Measurements are stricter. They require a fresh nearly idle CPU observation,
+do not share CPU reservations, and wait while another CPU action is held on the
+host. Continue to use `--measurement --host-class CLASS`, and use an exclusive
+GPU reservation whenever competing GPU work would invalidate the result. GB10
+GPU utilization percentage is not a saturation measure; performance evidence
+should include device power, CPU activity, residency and useful work over time.
+
+Adaptive lending requires aggregate attempt telemetry for the complete execution
+scope: the direct payload, descendants and daemon-created Docker containers.
+The resource-broker design creates an exact-attempt cgroup, applies the action's
+memory ceiling there, launches the payload inside it, attaches owned containers,
+and releases the reservation only after the scope is empty. Missing broker
+attachment, an unaccounted container or incomplete telemetry must refuse lending.
+Treat this paragraph as the activation requirement; it does not by itself prove
+that the broker is installed or qualified on a given worker. Consult the current
+readiness record before relying on lending in a live campaign.
+
+### Elastic worker loops
+
+The supervisor treats each box's `fleet_boxes.json` loop count as a floor. With
+ready work and every current loop occupied, it starts a bounded batch of
+additional queue pollers. A poller that remains idle shows that queue admission
+has refused more work, so the supervisor does not keep multiplying processes.
+After the ready backlog clears, it sends `SIGTERM` only to attributable loops
+that a single claim census and the local process tree both prove idle; a loop
+holding or launching an action is retained.
+
+The automatic ceiling is derived from CPU affinity and visible memory and limits
+only cheap housekeeping processes. It is not an action-concurrency setting and
+does not replace adaptive admission. Busy or backlogged boxes are revisited on a
+short bounded interval; idle boxes keep the ordinary interval. Spawns are
+batched, and log indices are never reused, so contraction and later growth do
+not mix two live workers' append evidence.
+
+No loop-count tuning is required for ordinary operation. `--loops N` is the
+operator opt-out that fixes the count at `N`; `--once` retains deterministic
+one-shot behavior and tops up only to the configured floor.

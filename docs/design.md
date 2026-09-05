@@ -1076,7 +1076,7 @@ whereas a sweep only files an authoritative ending. Sweep before re-running a
 SLURM campaign to preserve its execution record. An unknown job without a CAS
 receipt remains unresolved; neither recovery path invents success.
 
-## Preferred and overflow CPU admission
+## Preferred, overflow and adaptive CPU admission
 
 The fleet retains `--all-cores` so all usable CPU capacity remains available.
 Within each worker's inherited affinity, physical performance cores form the
@@ -1111,6 +1111,63 @@ tokens. This is bounded advisory deferral over distributed observations, not
 an atomic global scheduling order. An incompatible host, an undersized host,
 or a stale offer does not strand host-specific or wide work. Local ordered
 allocation remains effective after the deferral expires.
+
+Physical CPU tokens are the conservative baseline, not a fixed concurrency
+gate. The adaptive controller samples busy time for every CPU in the worker's
+inherited mask and host CPU pressure. That host-level view includes processes
+outside PrismaBuild, so unrelated load can close admission even when the pool
+ledger appears free. Samples are short-lived; pressure or near-saturation stops
+new CPU claims. A local lock serializes each host's adaptive decisions, while
+the shared queue's rename still decides ownership.
+
+Every held action begins at its full declared CPU cost. A complete, fresh
+aggregate telemetry interval may lower the estimated cost of a generation
+action, with a safety margin. Repeated completions of the same exact workload
+shape build a bounded, expiring profile so short cheap jobs can benefit too.
+Consumption increases take effect immediately; decreases decay slowly. Shape
+identity retains command, code, environment, inputs, parameters and resources,
+while excluding result bookkeeping. Custom or unverifiable launch shapes never
+borrow. Declared CPU remains the peak contract and is not rewritten by learning.
+
+When preferred tokens are exhausted, freshly attributed low use may make a
+running generation action's preferred CPU IDs lendable. Admission shares those
+IDs before consuming free fallback CPUs. If total free tokens are insufficient,
+the same evidence may lend reserved IDs, but only while the fresh host sample
+shows enough aggregate headroom. Unknown startup intervals are charged in full,
+protected and excluded from the lending set. CPUs assigned to any busy, unknown
+or measurement action remain protected. One sample cannot authorize an
+unbounded burst: a successful borrowing decision consumes its freshness for the
+next borrower.
+
+Memory and GPU resources always retain ordinary all-or-nothing token admission;
+CPU telemetry cannot discount either. Measurements require a fresh nearly idle
+host, never lend or borrow CPU IDs, and do not overlap another held CPU action.
+Measurement placement, host-class identity and any required exclusive GPU
+reservation remain separate contracts. In particular, GB10 GPU utilization
+percentage is not accepted as saturation evidence; device power, CPU activity,
+residency and useful work per unit time are the relevant host view.
+
+Safe lending requires complete attribution of the entire attempt, including
+direct descendants and Docker containers created through a daemon. The resource
+scope architecture assigns each attempt one broker-owned cgroup, launches the
+payload inside it, attaches owned containers, enforces the declared memory limit
+over the aggregate, records CPU time and memory peak, and proves the scope empty
+before releasing its reservation. A missing broker, failed attachment,
+ambiguous container operation or incomplete/stale telemetry grants no lending
+credit. This is the activation contract, not evidence that broker deployment or
+cross-host qualification is complete; live status is recorded separately.
+
+Worker-loop count supplies enough claimants to exercise this admission policy
+without becoming a second scheduler. `fleet_boxes.json` declares an automatic
+floor. When ready work exists and every owned loop is busy, the supervisor grows
+in bounded batches up to a housekeeping ceiling derived from visible CPU and
+memory. Idle loops are feedback that admission has stopped, so they prevent
+continued growth. Once the backlog clears, only excess loops proven idle by one
+batched claim census plus local process state receive `SIGTERM`; active work is
+never selected. Busy or backlogged cycles use a short bounded tick, spawning is
+amortized, and monotonically allocated log slots preserve append evidence across
+shrink and growth. `--loops` explicitly selects fixed mode, while `--once` tops
+up only to the configured floor.
 
 Initial activation requires drained legacy reservations. Changing an existing
 host's topology map requires draining reservations, stopping that host's worker

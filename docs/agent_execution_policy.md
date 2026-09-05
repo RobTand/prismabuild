@@ -30,6 +30,28 @@ The pool selects CPUs, and agents must preserve its assigned affinity, including
 inside containers. A measurement must retain its host-class identity and reserve
 exclusive GPU capacity when competing work would invalidate the measurement.
 
+CPU admission is adaptive, so a declared CPU count remains the action's honest
+peak demand rather than a promise that every reserved core will stay busy. The
+pool uses free preferred cores first. Before it uses fallback cores, it may lend
+freshly attributed, lightly used preferred capacity from another generation
+action; it may also admit beyond the physical token count when the same evidence
+and current host headroom support it. Host CPU use and pressure include work
+outside PrismaBuild and can stop further admission. Missing, stale or incomplete
+attempt telemetry grants no lending credit. Memory and GPU demand are never
+discounted, and measurements do not borrow CPU capacity or overlap another
+admitted CPU action. On GB10, GPU utilization percentage is not evidence of
+saturation; use power, host activity, residency and useful throughput for a
+performance claim.
+
+Per-attempt telemetry must cover the whole execution scope, including direct
+children and daemon-created containers, before adaptive CPU lending is enabled
+on a worker. The privileged scope broker is the architectural boundary for that
+accounting, memory containment and exact-attempt termination. If the broker,
+scope attachment or aggregate telemetry is unavailable or ambiguous, the worker
+must fail closed for lending and must not treat partial process telemetry as the
+job's consumption. This requirement is not itself a claim that broker deployment
+or cross-host qualification has completed.
+
 Check the exit status, terminal record, logs and CAS receipt. A submission
 acknowledgement is not a passing test. Record skips and missing tooling. Install
 scoped tooling where required instead of silently skipping qualification.
