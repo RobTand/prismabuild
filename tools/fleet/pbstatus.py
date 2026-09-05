@@ -523,6 +523,10 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
             "host": record.get("finished_host") or record.get("claimed_host"),
             "elapsed_s": detail.get("elapsed_s"),
             "returncode": detail.get("returncode"),
+            # The action's own ending, on the records that carry one: the
+            # launcher's status above is 1 for every failure.
+            "action_returncode": detail.get("action_returncode"),
+            "action_signal": detail.get("action_signal"),
             # The pull queue's records carry no receipt field at all, which is
             # a different thing from a receipt that was not published.
             "receipt_published": detail.get("receipt_published"),
@@ -554,6 +558,20 @@ def _cell(value: object) -> str:
         return ",".join(str(part) for part in value) or ABSENT
     text = str(value)
     return text if text else ABSENT
+
+
+def _action_returncode(ending: Mapping[str, object]) -> object:
+    """The action's own status, when it is not already in the RC column."""
+
+    action = ending.get("action_returncode")
+    if not isinstance(action, int) or isinstance(action, bool):
+        return ABSENT
+    if action == ending.get("returncode"):
+        return ABSENT
+    signal = ending.get("action_signal")
+    if isinstance(signal, int) and not isinstance(signal, bool):
+        return f"signal {signal}"
+    return action
 
 
 def render_table(headers: Sequence[str], rows: Iterable[Sequence[object]],
@@ -664,7 +682,8 @@ def ending_lines(endings: Sequence[Mapping[str, object]]) -> list[str]:
     if not endings:
         return ["no endings filed under done/, failed/ or withdrawn/"]
     headers = (
-        "KEY", "STATUS", "VIA", "HOST", "ELAPSED", "RC", "RECEIPT", "SLURM",
+        "KEY", "STATUS", "VIA", "HOST", "ELAPSED", "RC", "ACTION RC",
+        "RECEIPT", "SLURM",
     )
     rows = []
     for ending in endings:
@@ -675,6 +694,9 @@ def ending_lines(endings: Sequence[Mapping[str, object]]) -> list[str]:
             f"{float(elapsed):.1f}s" if isinstance(elapsed, (int, float))
             else UNKNOWN,
             ending.get("returncode"),
+            # `-` unless the transport recorded the action's own ending and it
+            # differs from the launcher's status, which is 1 for every failure.
+            _action_returncode(ending),
             # `-` where the record has no such field, `no` where it has one
             # saying no receipt was published.
             ABSENT if ending.get("receipt_published") is None

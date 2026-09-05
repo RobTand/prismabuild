@@ -431,6 +431,29 @@ def test_a_withdrawal_is_an_ending_and_is_listed_from_withdrawn(fleet, capsys):
     assert not (fleet["queue"] / pool.FAILED / f"{'f6' * 32}.json").exists()
 
 
+def test_an_ending_names_the_actions_own_status_in_its_own_column(fleet, capsys):
+    """The RC column is the launcher's status, which is 1 for every failure.
+
+    The action's own goes in a column of its own rather than replacing it:
+    every reader of these records, this table included, means the run's status
+    by RC.
+    """
+
+    key = "e5" * 32
+    sl.publish_outcome(
+        queue_root=fleet["queue"], action_key=key, published_unix=1.0,
+        published_by="sparky", status="failed", attempts=1, max_attempts=1,
+        retry_safe=False, detail={"returncode": 1, "action_returncode": 7},
+    )
+    ending = _run_json(fleet, capsys)["endings"][0]
+    assert ending["returncode"] == 1
+    assert ending["action_returncode"] == 7
+
+    out = _run(fleet, capsys)
+    assert "ACTION RC" in out
+    assert "7" in out.split("== endings")[1]
+
+
 def test_a_receipt_puts_the_ending_under_done(fleet, capsys):
     _slurm_ending(fleet, "e5" * 32, status="executed", state="COMPLETED")
     ending = _run_json(fleet, capsys)["endings"][0]

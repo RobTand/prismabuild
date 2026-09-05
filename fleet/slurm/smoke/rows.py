@@ -276,17 +276,23 @@ def row_4_failure() -> None:
     path, rec = outcome("failed", prefix) if prefix else (None, {})
     detail = rec.get("detail", {}) if isinstance(rec, dict) else {}
     stderr_tail = str(detail.get("stderr") or "")
+    # `action.sh fail` exits 7 and the launcher exits 1, so the two numbers
+    # are different on purpose: `returncode` is the launcher's, which every
+    # fleet reader means by it, and `action_returncode` is the action's, which
+    # used to survive only as prose in the stderr tail.
     ok = (
         path is not None
         and rec.get("status") == "failed"
         and isinstance(detail.get("returncode"), int)
         and detail.get("returncode") != 0
+        and detail.get("action_returncode") == 7
         and "failing on purpose" in stderr_tail + str(detail.get("stdout") or "")
     )
     record(
-        "4 a failing command files failed/ with rc and stderr",
+        "4 a failing command files failed/ with both rcs and stderr",
         ok,
         f"job={job_id} rc={detail.get('returncode')} "
+        f"action_rc={detail.get('action_returncode')} "
         f"state={detail.get('slurm', {}).get('state')} "
         f"tail={'yes' if stderr_tail else 'no'}",
     )
