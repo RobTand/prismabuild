@@ -53,6 +53,8 @@ Environment, for the tests and for nothing else:
   PB_SSH          the ssh command (default "ssh -o BatchMode=yes")
   PB_STATE_DIR    where the state file lives (default $HOME/.prismabuild)
   PB_PUBLISH      the publish_runtime.py invocation
+  PB_SUPERVISOR_LOG  where step 4 sends a supervisor's output
+                  (default /home/rob/tmp/pb-supervisor.log)
 USAGE
 }
 
@@ -72,6 +74,11 @@ PUBLISH="${PB_PUBLISH:-python3 $REPO/tools/fleet/publish_runtime.py}"
 RUNTIME_DIR="${PB_RUNTIME_DIR:-/mnt/shared/prismabuild-fleet}"
 SSH="${PB_SSH:-ssh -o BatchMode=yes}"
 STATE_DIR="${PB_STATE_DIR:-$HOME/.prismabuild}"
+#: Where step 4's supervisor sends its output.  Overridable only so the tests
+#: that exercise these snippets do not append to the fleet's real log: a
+#: hardcoded absolute path was the one thing in this script that reached
+#: outside the directories a test names.
+SUPERVISOR_LOG="${PB_SUPERVISOR_LOG:-/home/rob/tmp/pb-supervisor.log}"
 
 exec 3>&1
 say() { printf '%s\n' "$*" >&3; }
@@ -139,27 +146,58 @@ fi
 
 say ""
 say "# step 2: restore each box's crontab from the backup cutover took"
+#
+# `set -e`, and then the crontab is read back.  The snippet used to end in an
+# `echo`, so a `crontab` that refused the file was reported as "crontab
+# restored" and the rollback went on to say it was complete with nothing
+# keeping a supervisor alive.  The read-back asks for the property step 2
+# exists for rather than for byte equality: some crons prepend their own
+# header to `crontab -l`, so a backup that carried the supervise line has to
+# produce a crontab that carries it, and a backup that carried none is not
+# evidence of anything to check.
 for box in $BOXES; do
-    on_box "$box" "if [ -f '$CRONTAB_BACKUP' ]; then
+    on_box "$box" "set -e
+if [ -f '$CRONTAB_BACKUP' ]; then
     crontab '$CRONTAB_BACKUP'
+    if grep -q supervise.py '$CRONTAB_BACKUP' \\
+        && ! crontab -l 2>/dev/null | grep -q supervise.py; then
+        echo \"\$(hostname -s): the supervise line is not in the crontab after restoring $CRONTAB_BACKUP\" >&2
+        exit 1
+    fi
     echo \"\$(hostname -s): crontab restored from $CRONTAB_BACKUP\"
 else
     echo \"\$(hostname -s): NO BACKUP at $CRONTAB_BACKUP; restore the supervise line by hand\"
     exit 1
-fi" || die "could not restore the crontab on $box; the supervise line is what keeps a supervisor alive"
+fi" || die "step 2 could not restore the crontab on $box; the supervise line is what keeps a supervisor alive.  The runtime is already back on $PREVIOUS, so restore that line by hand and re-run, or add it with crontab -e"
 done
 
 # -- 3. pqwork on the Sparks -------------------------------------------------
 
 say ""
 say "# step 3: start pqwork.service again on the Sparks"
+#
+# The mirror image of the cutover's step 4, and it had the same defect: the
+# trailing `echo` returned 0 whatever `start` did, so a unit that failed to
+# start was reported by its own state line and the rollback still said it was
+# complete.  A unit that is `active`, or on its way there, is started; an
+# `inactive` or `failed` one is the executor the rollback exists to bring
+# back, still absent.
 for box in $SPARKS; do
-    on_box "$box" "if systemctl --user list-unit-files pqwork.service >/dev/null 2>&1; then
+    on_box "$box" "set -e
+if systemctl --user list-unit-files pqwork.service >/dev/null 2>&1; then
     systemctl --user start pqwork.service
-    echo \"\$(hostname -s): pqwork.service \$(systemctl --user is-active pqwork.service 2>&1)\"
+    state=\"\$(systemctl --user is-active pqwork.service 2>&1 || true)\"
+    echo \"\$(hostname -s): pqwork.service \$state\"
+    case \"\$state\" in
+        active|activating|reloading) ;;
+        *)
+            echo \"\$(hostname -s): pqwork.service is \$state after start\" >&2
+            exit 1
+            ;;
+    esac
 else
     echo \"\$(hostname -s): no pqwork.service\"
-fi" || die "could not start pqwork.service on $box"
+fi" || die "step 3 could not start pqwork.service on $box.  The runtime is back on $PREVIOUS and the crontab is restored, so the pull queue's worker loops will come back; this box's legacy executor will not until the unit starts.  Start it by hand with: systemctl --user start pqwork.service"
 done
 
 # -- 4. a supervisor now, rather than in five minutes ------------------------
@@ -172,7 +210,7 @@ say ""
 say "# step 4: start one supervisor per box now"
 for box in $BOXES; do
     on_box "$box" "setsid /usr/bin/python3 $RUNTIME_DIR/repo/tools/supervise.py --ensure \\
-    >> /home/rob/tmp/pb-supervisor.log 2>&1 < /dev/null &
+    >> $SUPERVISOR_LOG 2>&1 < /dev/null &
 sleep 2
 echo \"\$(hostname -s): supervisors now: \$(pgrep -fc 'python.*supervise.py' 2>/dev/null || echo 0)\"" \
         || die "could not start a supervisor on $box"

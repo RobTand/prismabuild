@@ -597,13 +597,37 @@ done
 
 say ""
 say "# step 4: stop the legacy pqwork user unit on the Sparks"
+#
+# `set -e` and a state check, not an echo.  The snippet used to end in an
+# `echo` whose own status is what `on_box` returned, so a `stop` that failed
+# was reported as "pqwork.service active" and step 5 published the SLURM
+# generation with the legacy executor still draining the pull queue.  The
+# outer script's `set -uo pipefail` does not reach inside a snippet run by
+# another bash, and it carries no errexit to reach with.
+#
+# `is-active` prints `inactive` or `failed` for a unit that is not running,
+# and both of those are stopped.  What refuses is the unit still being up:
+# `active`, or on its way there.  The `|| true` is load-bearing -- `is-active`
+# exits nonzero for an inactive unit, which under `set -e` would end the
+# snippet at the assignment with nothing said.
 for box in $SPARKS; do
-    on_box "$box" "if systemctl --user list-unit-files pqwork.service >/dev/null 2>&1; then
+    on_box "$box" "set -e
+if systemctl --user list-unit-files pqwork.service >/dev/null 2>&1; then
     systemctl --user stop pqwork.service
-    echo \"\$(hostname -s): pqwork.service \$(systemctl --user is-active pqwork.service 2>&1)\"
+    state=\"\$(systemctl --user is-active pqwork.service 2>&1 || true)\"
+    echo \"\$(hostname -s): pqwork.service \$state\"
+    case \"\$state\" in
+        active|activating|reloading)
+            echo \"\$(hostname -s): pqwork.service is still \$state after stop\" >&2
+            exit 1
+            ;;
+    esac
 else
     echo \"\$(hostname -s): no pqwork.service\"
-fi" || die "could not stop pqwork.service on $box"
+fi" || die "step 4 could not stop pqwork.service on $box, so the legacy
+executor is still draining the pull queue there.  Nothing has been published:
+the fleet is still on $previous_generation.  Stop the unit by hand and re-run,
+or run fleet/slurm/rollback.sh."
 done
 say "# note: pqwork.service is left ENABLED, so a reboot starts it again."
 say "#       Stop it again after a reboot, or disable it deliberately."

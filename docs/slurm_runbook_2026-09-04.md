@@ -652,6 +652,9 @@ Then, in this order, and the order is not arrangeable:
 4. **`pqwork.service` on both Sparks**, with `systemctl --user stop`. It is a
    *user* unit and takes no sudo. It is stopped, not disabled, so a reboot
    starts it again; stop it again after a reboot, or disable it deliberately.
+   The step reads `systemctl --user is-active` back and refuses if the unit is
+   still up, so step 5 cannot publish the SLURM generation behind a legacy
+   executor that is still draining the pull queue.
 5. **The runtime generation**, published with
    `publish_runtime.py --default-transport slurm`.
 
@@ -713,10 +716,18 @@ it in reverse order, runtime first:
    published, and publication never deletes a generation. Restoring it restores
    the previous default transport in the same atomic namespace operation that
    changed it.
-2. restore each box's crontab from its verbatim backup
-3. start `pqwork.service` again on both Sparks
+2. restore each box's crontab from its verbatim backup, and read the crontab
+   back: a backup that carried the supervise line has to produce a crontab
+   that carries it, because that line is what keeps a supervisor alive
+3. start `pqwork.service` again on both Sparks, and read
+   `systemctl --user is-active` back
 4. start one supervisor per box now, rather than waiting up to five minutes for
    cron
+
+Steps 2 and 3 stop the rollback when they fail, naming the step. Neither is
+optional: a rollback that printed `rollback complete` over a fleet with no
+crontab entry and no `pqwork` had restored the transport and not the plane that
+executes on it.
 
 The runtime goes first deliberately. Between step 1 and step 4 the fleet has no
 workers and the default is the pull queue, so submissions queue and wait --
