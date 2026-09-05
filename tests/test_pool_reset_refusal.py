@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -31,9 +32,9 @@ sys.stderr.write("pbrun: live code closure differs from the action-pinned closur
 raise SystemExit(2)
 """
 
-WAITS = """import time
-time.sleep(10)
-"""
+ACK = {"schema": pool_reset.pbrun.DETACH_SCHEMA_V1, "action_key": "c" * 64,
+       "transport": "pool", "status": "submitted", "published_unix": 123.0}
+ACCEPTS = "import json; print(" + repr(json.dumps(ACK)) + ")\n"
 
 
 @pytest.fixture()
@@ -72,6 +73,27 @@ def fleet(tmp_path: Path) -> dict:
             "failed": failed, "tmp_path": tmp_path}
 
 
+@pytest.fixture()
+def reaped(monkeypatch: pytest.MonkeyPatch):
+    """Reap precisely the children this test starts, even after an assertion."""
+
+    started: list[subprocess.Popen] = []
+    begin = pool_reset.start_resubmission
+
+    def _collected(*args, **kwargs):
+        process, log = begin(*args, **kwargs)
+        started.append(process)
+        return process, log
+
+    monkeypatch.setattr(pool_reset, "start_resubmission", _collected)
+    yield started
+    for process in started:
+        if process.poll() is not None:
+            continue
+        process.kill()
+        process.wait()
+
+
 def _run(fleet: dict, monkeypatch: pytest.MonkeyPatch, script: str) -> int:
     """``--apply`` against a stand-in ``pbrun`` that does what ``script`` says.
 
@@ -89,7 +111,8 @@ def _run(fleet: dict, monkeypatch: pytest.MonkeyPatch, script: str) -> int:
         return built(plan, pbrun=fake, **kwargs)
 
     monkeypatch.setattr(pool_reset, "submit_command", _with_the_stand_in)
-    monkeypatch.setattr(pool_reset, "REFUSAL_WINDOW_S", 2.0, raising=False)
+    monkeypatch.setattr(pool_reset, "POLL_S", 0.01)
+    monkeypatch.setattr(pool_reset, "PROGRESS_INTERVAL_S", 0.02)
     return pool_reset.main([
         "--apply", "--transport", "pool",
         "--queue-root", str(fleet["queue_root"]),
@@ -98,7 +121,8 @@ def _run(fleet: dict, monkeypatch: pytest.MonkeyPatch, script: str) -> int:
 
 
 def test_a_child_that_refuses_is_reported_and_the_record_stands(
-    fleet: dict, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    fleet: dict, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    reaped: list,
 ) -> None:
     """The operator hears the refusal, and the work is still resettable.
 
@@ -119,24 +143,52 @@ def test_a_child_that_refuses_is_reported_and_the_record_stands(
     assert "reset" not in record
 
 
-def test_a_child_still_running_counts_as_submitted(
-    fleet: dict, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-) -> None:
-    """A submission is not refused merely because it has not returned.
-
-    main: ``main`` returns 0 and the ending is stamped ``reset``.
-    branch: the child's output is kept where an operator can read it, rather
-    than sent to ``/dev/null``.
-    """
-
-    code = _run(fleet, monkeypatch, WAITS)
+def test_a_slow_submission_waits_for_its_acknowledgement(
+    fleet, monkeypatch, capsys, reaped,
+):
+    code = _run(fleet, monkeypatch, "import time; time.sleep(0.1)\n" + ACCEPTS)
     printed = capsys.readouterr().out
-
     assert code == 0
-    assert "submitted" in printed
-
-    record = json.loads(fleet["failed"].read_text(encoding="utf-8"))
+    assert "still waiting" in printed
+    record = json.loads(fleet["failed"].read_text())
     assert record["status"] == "reset"
+    assert record["reset"]["submission"] == ACK
+    assert all(p.poll() == 0 for p in reaped)
 
-    logs = sorted((fleet["queue_root"] / "resets").glob(f"{KEY}*"))
+
+def test_a_slow_refusal_leaves_the_record_failed(fleet, monkeypatch, capsys, reaped):
+    code = _run(fleet, monkeypatch, "import time; time.sleep(0.1)\n" + REFUSES)
+    assert code == 1
+    printed = capsys.readouterr().out
+    assert "still waiting" in printed
+    assert "submitted " not in printed
+    assert json.loads(fleet["failed"].read_text())["status"] == "failed"
+    assert all(p.poll() == 2 for p in reaped)
+
+
+@pytest.mark.parametrize("reply", [None, {}, {**ACK, "status": "failed"},
+    {**ACK, "action_key": ""}, {**ACK, "transport": "unknown"}])
+def test_success_without_valid_acknowledgement_is_unclear(
+    fleet, monkeypatch, capsys, reaped, reply,
+):
+    script = "pass" if reply is None else "print(" + repr(json.dumps(reply)) + ")"
+    assert _run(fleet, monkeypatch, script) == 1
+    assert "unclear" in capsys.readouterr().out
+    assert json.loads(fleet["failed"].read_text())["status"] == "failed"
+
+
+def test_noisy_submission_has_bounded_log_and_keeps_acknowledgement(
+    fleet, monkeypatch, capsys, reaped,
+):
+    limit = pool_reset.LOG_LIMIT_BYTES
+    script = "import sys; sys.stderr.write('x' * " + str(limit * 4) + " + '\\n')\n"
+    assert _run(fleet, monkeypatch, script + ACCEPTS) == 0
+    logs = list((fleet["queue_root"] / "resets").glob("*.log"))
     assert len(logs) == 1
+    assert logs[0].stat().st_size <= limit
+    assert pool_reset.announced_submission(logs[0].read_text()) == ACK
+
+
+def test_resubmission_uses_detach(fleet):
+    plans, _ = pool_reset.plan_resets(fleet["queue"], cas_root=fleet["cas_root"])
+    assert "--detach" in pool_reset.submit_command(plans[0], transport="pool")

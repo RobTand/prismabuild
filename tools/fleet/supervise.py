@@ -42,6 +42,11 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root  # noqa: E402
+sys.path.insert(0, str(generation_root(__file__) / "src"))
+from prismabuild import pool  # noqa: E402
+
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
 CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
 CLAIM = Path("/home/rob/tmp/prismabuild-supervisor.claim")
@@ -73,6 +78,32 @@ LOOP_SCRIPT = "worker_loop.py"
 
 def _current_root() -> Path:
     return MIRROR / "repo"
+
+
+def _queue_root() -> Path:
+    """The pull queue this box's loops serve, spelled as they spell it.
+
+    Read from ``MIRROR`` at call time rather than bound at import, for the
+    same reason ``_current_root`` is: it is the one name a test can repoint to
+    keep the suite off the live store.
+    """
+
+    return MIRROR / "pb-queue"
+
+
+def _claim_holders() -> frozenset[int] | None:
+    """The pids on this box the queue says hold a claim, or ``None`` if unknown.
+
+    ``None`` is not the empty set.  A queue root that is not there answers the
+    question -- nobody holds a claim on a box with no queue, which is where the
+    fleet ends up after the cutover -- while a listing that fails for any other
+    reason answers nothing, and the caller must not read silence as idleness.
+    """
+
+    try:
+        return frozenset(pool.PoolQueue(_queue_root()).claim_holder_pids())
+    except (OSError, pool.PoolContractError):
+        return None
 
 
 def _config(host: str) -> dict:
@@ -283,15 +314,32 @@ def loop_args_of(pid: int) -> list[str] | None:
 
 
 def _is_idle(pid: int) -> bool:
-    """True when this loop holds no action: no child process of its own.
+    """True when this loop holds no action: no claim, and no child of its own.
 
-    A loop that is executing an action has spawned the worker launcher, so
-    childlessness is the one externally visible fact that distinguishes "safe
-    to stop" from "stopping this drops somebody's claim".  Reading
-    ``/proc/<pid>/task/*/children`` asks the kernel rather than guessing from
-    a log line.
+    Childlessness alone was wrong in one direction, and the direction that
+    costs work.  ``PoolQueue.claim`` returns as soon as its rename lands, and
+    ``execute`` then materializes a sealed checkout -- a bundle of up to
+    512 MiB out of the CAS -- before it reaches ``Popen``.  For all of that a
+    loop holds an action and has no child, so it read as idle, was SIGTERMed,
+    and left its claim in ``claimed/`` until ``reap_stale`` timed the lease out
+    ``LEASE_TIMEOUT_S`` later.  The action then ran again from the start.
+
+    So ask the queue first.  The loop already recorded the claim: ``claim``
+    writes its own pid into the lease before it returns and ``finish`` unlinks
+    it, so a lease naming this box and this pid IS the claim, where the process
+    tree is an inference about it.  When that answer cannot be had at all the
+    loop is treated as busy: a cycle deferred to the next tick costs a tick,
+    and a claim dropped costs the action.
+
+    The child check stays, and stays second.  It is what covers a loop running
+    an action under a generation whose lease this one cannot parse, and it
+    needs no shared filesystem.  Reading ``/proc/<pid>/task/*/children`` asks
+    the kernel rather than guessing from a log line.
     """
 
+    holders = _claim_holders()
+    if holders is None or pid in holders:
+        return False
     try:
         tasks = sorted(Path(f"/proc/{pid}/task").iterdir())
     except OSError:

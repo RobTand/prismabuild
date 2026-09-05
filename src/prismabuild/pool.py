@@ -2355,6 +2355,42 @@ class PoolQueue:
             return None
         return _now() - float(declared)
 
+    def claim_holder_pids(self, host: str | None = None) -> set[int]:
+        """The pids on ``host`` that hold a claim of this queue right now.
+
+        ``claim`` writes the lease before it returns and ``finish`` unlinks it,
+        so this is exactly the set of loops between those two points --
+        including one that has claimed an action and has not yet started
+        anything to run it.  Nothing about that loop's process tree says so,
+        which is why the question is asked here: the lease carries the
+        claiming loop's own pid, and has since it was written.
+
+        Host-qualified, because the queue is shared and a pid is a name only
+        one box can resolve.  A lease naming another box is another box's
+        business.
+
+        Missing or unreadable ownership is unknown, not idle. A claim is
+        renamed before its first lease is written, so inspect claimed items
+        and refuse to authorize a signal while any ownership is unresolved.
+        """
+
+        host = socket.gethostname() if host is None else host
+        pids: set[int] = set()
+        for claim in _glob(self.dir(CLAIMED), "*.json"):
+            lease = claim.with_suffix(".lease")
+            record = _read_json(lease)
+            if record is None:
+                if not claim.exists():
+                    continue  # Finished while the directory was being read.
+                raise PoolContractError(f"claim ownership is unknown: {claim}")
+            pid = record.get("pid")
+            if (not isinstance(record.get("host"), str) or not record["host"]
+                    or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0):
+                raise PoolContractError(f"claim ownership is invalid: {lease}")
+            if record["host"] == host:
+                pids.add(pid)
+        return pids
+
     def reap_stale(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
         """Return claims whose lease has expired to ``ready``.
 
@@ -3375,8 +3411,31 @@ class PoolQueue:
                 str(snapshot_host) if isinstance(snapshot_host, str) else None
             ).release(action_key)
             self.lease_path(action_key).unlink(missing_ok=True)
-            covered = self.terminal_outcome_covers(
-                snapshot, action_key=action_key)
+            try:
+                covered = self.terminal_outcome_covers(
+                    snapshot, action_key=action_key)
+            except PoolContractError:
+                # A terminal for this key exists and cannot be read.  Raising
+                # here ends the whole ``serve_once`` call over one bad file,
+                # and PR #52 introduced that on a branch which used to write
+                # unconditionally, so ask what is actually left to do.
+                #
+                # Nothing, is the answer.  This branch is reached only because
+                # a reaper already concluded the claim, so the key HAS an
+                # ending; the unreadable record is it.  Writing a second one
+                # beside it is the two-terminals defect PR #52 removed, and a
+                # generation this read cannot supply is no basis for deciding
+                # that this is a different run.  So report the terminal that
+                # is there and write nothing: the submitter's own reader
+                # reports an unreadable record at once (PR #50), which is
+                # where a corrupted queue record has to surface, and repairing
+                # it from here would be inventing an ending for an attempt
+                # this worker did not archive.
+                for state in (DONE, FAILED):
+                    unreadable = self.item_path(state, action_key)
+                    if unreadable.exists():
+                        return unreadable
+                raise
             if covered is not None:
                 return self.item_path(str(covered[0]), action_key)
             lost = self.item_path(
@@ -3900,10 +3959,22 @@ class PoolQueue:
             # decision reached nobody.  Keep the evidence under a name of its
             # own: the links still resolve, and no reader mistakes them for
             # this record's own ending.
+            #
+            # ``detail`` is the same fact one field over.  A record a requeue
+            # has touched carries the returncode, stdout and stderr of the
+            # attempt that failed, and under ``status: withdrawn`` that
+            # describes an ending this record does not have: ``pbrun`` wrote
+            # the failed attempt's stderr to the operator's terminal and only
+            # then said who withdrew the action, and ``pbstatus`` showed its
+            # returncode on the withdrawn row.  A cancellation has no detail of
+            # its own -- ``withdrawn_by`` and ``reason`` are what it has to say
+            # -- so the field is kept as evidence rather than left where every
+            # reader takes it for this record's ending.
             for field, kept in (
                 ("attempt_history", "attempt_history_before_withdrawal"),
                 ("attempt_history_missing_before",
                  "attempt_history_missing_before_withdrawal"),
+                ("detail", "detail_before_withdrawal"),
             ):
                 if field in filed:
                     filed[kept] = filed.pop(field)

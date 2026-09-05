@@ -48,19 +48,15 @@ on a box holding no copy of the source could not be done at all.  So such a
 record is re-submitted through ``slurm_lane`` unchanged, with the resources,
 constraint and exclusivity its own ending recorded.
 
-**A reset detaches, and files no ending.**  ``--apply`` starts every
-re-submission and returns; nothing here stays alive to watch a job, and an
-ending written now would say ``failed`` about work that is still queued.  It
-does wait one shared ``REFUSAL_WINDOW_S`` before stamping the records, because
-a child that refuses does so at once and a run that reported it as submitted
-was reporting work that does not exist.  Nothing is signalled at the end of
-that window: a child still running has been admitted, and its output is kept
-under ``<queue root>/resets/`` either way.  A
-re-sealed action goes out through a detached ``pbrun``, and a sealed one
-through ``slurm_lane.run(detach=True)``, which records the submission under
-``<lane root>/<key>/latest.json``.  Either way the ending is ``pbwait``'s to
-file, from that record and the CAS receipt -- which is why the key and the job
-id are printed: they are what an operator hands ``pbwait``.
+**A reset waits for admission, then detaches.** ``--apply`` waits for each
+``pbrun --detach`` child to exit and name its admitted action in a structured
+acknowledgement. A slow seal is reported as pending; a refusal or missing
+acknowledgement leaves the original failure resettable. Child diagnostics are
+kept as a bounded tail under ``<queue root>/resets/``. No action output is
+streamed into these logs. A sealed action goes through
+``slurm_lane.run(detach=True)``, which records its submission under
+``<lane root>/<key>/latest.json``. The ending is ``pbwait``'s to file from that
+record and the CAS receipt; the printed key and job id identify the new run.
 
 ``--priority`` reaches both halves.  The lane turns it into the ``sbatch
 --nice`` the controller subtracts, so a reset queues behind interactive work
@@ -78,6 +74,8 @@ import socket
 import subprocess
 import sys
 import time
+import threading
+import re
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -88,6 +86,7 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Mapping, Sequence  # noqa: E402
 import fleet_submit  # noqa: E402
+import pbrun  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 #: The submitter this tool re-submits through, under whichever layout the
@@ -484,6 +483,16 @@ def submit_command(
     ``shard:1``, a sharable slot, and an action that failed while it had the
     device to itself would be retried beside other work.
 
+    ``--detach`` is what this tool already meant.  A reset submits and walks
+    away, and an attached ``pbrun`` instead waits out ``--wait-s``, which
+    defaults to a day: the child sat in the background holding a log open for
+    the whole run, and the only thing it printed that this tool could act on
+    was whatever it said before it refused.  Detached, the child submits, says
+    on one line where the work went, and exits -- so the re-submission becomes
+    something this tool can *read* rather than infer from a clock.  Detaching
+    carries one attempt, which is ``pbrun``'s own default, and this tool asks
+    for no more.
+
     Args:
         plan: One recovered piece of work.
         transport: The dispatcher this re-submission rides.
@@ -512,6 +521,7 @@ def submit_command(
         )
     command = [
         python, str(pbrun),
+        "--detach",
         "--transport", str(transport),
         "--cwd", plan["cwd"],
         "--priority", str(priority),
@@ -532,17 +542,27 @@ def submit_command(
     return command + ["--"] + list(plan["argv"])
 
 
-#: How long ``--apply`` watches its re-submissions before calling them in
-#: flight.  One window is shared by every child, so a large reset costs it
-#: once rather than once per action.  It is not a deadline on the work:
-#: nothing is signalled at the end of it, and a child still running is a
-#: submission that landed and is now waiting for its outcome.
-REFUSAL_WINDOW_S = 10.0
+#: How often ``--apply`` says which re-submissions have not answered yet.
+#: Not a deadline: nothing is signalled when it elapses, and no record is
+#: stamped from the fact that it has.  A child that is still sealing a tree is
+#: making progress, and the only thing this interval decides is how often the
+#: operator is told so.
+PROGRESS_INTERVAL_S = 10.0
+
+#: How often the children are polled between those lines.  Small enough that a
+#: batch of fast submissions is not paced by it, large enough that waiting for
+#: a slow seal costs nothing.
+POLL_S = 0.25
 
 #: Where a re-submission's own output is kept, under the queue root.  A
 #: directory of its own, because every reader of this queue addresses the
 #: state directories by ``<key>.json`` and none of them looks here.
 RESETS = "resets"
+
+# Only the final acknowledgement and refusal diagnostics are consumed. Keep
+# enough tail for a traceback and the acknowledgement without storing action
+# output (the detached submitter exits before the action completes).
+LOG_LIMIT_BYTES = 64 * 1024
 
 
 def resubmission_log(queue_root: Path, key: str) -> Path:
@@ -567,52 +587,117 @@ def start_resubmission(
 
     log = resubmission_log(queue_root, key)
     log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("wb") as handle:
+    handle = log.open("wb", buffering=0)
+    try:
         process = subprocess.Popen(
-            list(command), stdout=handle, stderr=subprocess.STDOUT,
+            list(command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+    except BaseException:
+        handle.close()
+        raise
+
+    def capture() -> None:
+        tail = b""
+        with process.stdout, handle:
+            while chunk := process.stdout.read1(LOG_LIMIT_BYTES):
+                if getattr(process, "_reset_capture_error", None):
+                    continue  # Drain even if the log mount stopped accepting writes.
+                tail = (tail + chunk)[-LOG_LIMIT_BYTES:]
+                try:
+                    handle.seek(0)
+                    handle.write(tail)
+                    handle.truncate()
+                    handle.flush()
+                except OSError as exc:
+                    process._reset_capture_error = str(exc)
+
+    thread = threading.Thread(target=capture, name="pool-reset-output", daemon=True)
+    process._reset_capture = thread
+    thread.start()
     return process, log
 
 
-def refusal_of(
-    process: subprocess.Popen, log: Path, *, deadline: float
-) -> str | None:
-    """Why this child refused, or ``None`` if it did not.
+def announced_submission(said: str) -> dict | None:
+    """The line ``pbrun --detach`` printed, found among everything else.
 
-    ``pbrun`` refuses early and exits non-zero: a closure that no longer
-    matches the tree, a checkout that is gone, a demand no box can meet. A
-    child still running at the deadline has been admitted and is waiting for
-    its outcome, and one that exited zero was answered from the CAS. Neither
-    is a refusal, and neither is waited out: this window only decides what to
-    print and what to stamp.
-
-    Args:
-        process: The child started by ``start_resubmission``.
-        log: Where its output is being written.
-        deadline: A ``time.monotonic`` reading to stop waiting at.
-
-    Returns:
-        The child's status and the tail of what it said, or ``None``.
+    ``pbrun`` writes that line to stdout and everything meant for a person to
+    stderr, and this tool sends both to one file, so the line is identified by
+    the schema it carries rather than by being the only thing there.  The
+    schema is imported rather than restated: a fleet runs a published runtime
+    generation, and a second copy of a versioned name is a second place for it
+    to go stale.
     """
 
-    try:
-        returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired:
-        return None
-    if returncode == 0:
-        return None
+    for raw in said.splitlines():
+        raw = raw.strip()
+        if not raw.startswith("{"):
+            continue
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        if (isinstance(value, dict)
+                and value.get("schema") == pbrun.DETACH_SCHEMA_V1
+                and isinstance(value.get("action_key"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", value["action_key"])
+                and value.get("transport") in ("pool", "slurm")
+                and value.get("status") in ("submitted", "attached", "cache_hit")):
+            return value
+    return None
+
+
+def submission_outcome(process: subprocess.Popen, log: Path) -> dict:
+    """What this child did with the re-submission, from what it said.
+
+    The child is waited for.  A fixed window in its place was a guess wearing
+    a number: a re-submission seals the tree and writes a bundle of up to
+    512 MiB into the CAS over NFS before it can say anything, so a slow
+    submission and a refused one looked the same from outside, and the slow one
+    was reported as submitted and stamped ``reset``.  Nothing here is
+    signalled and nothing is given up on; a child that has not answered is
+    named in a progress line and waited for.
+
+    Returns:
+        ``{"state": ...}`` where the state is ``submitted`` with the
+        ``line`` the child printed, ``refused`` with the tail of what it said,
+        or ``unclear`` when it exited zero without printing the line at all,
+        which is a broken contract rather than a submission.
+    """
+
+    returncode = process.wait()
+    capture = getattr(process, "_reset_capture", None)
+    if capture is not None:
+        capture.join()
+    if error := getattr(process, "_reset_capture_error", None):
+        return {"state": "unclear", "detail": f"cannot capture {log}: {error}"}
     try:
         said = log.read_text(encoding="utf-8", errors="replace")
     except OSError:
         said = ""
     tail = [line for line in said.splitlines() if line.strip()][-3:]
-    return "\n    ".join(
-        [f"the re-submission exited {returncode}; its output is {log}"] + tail
-    )
+    if returncode != 0:
+        return {
+            "state": "refused",
+            "detail": "\n    ".join(
+                [f"the re-submission exited {returncode}; its output is {log}"]
+                + tail
+            ),
+        }
+    line = announced_submission(said)
+    if line is None:
+        return {
+            "state": "unclear",
+            "detail": "\n    ".join(
+                [f"the re-submission exited 0 without saying where the work "
+                 f"went; its output is {log}"] + tail
+            ),
+        }
+    return {"state": "submitted", "line": line}
 
 
-def _file_reset(plan: Mapping, *, reason: str) -> None:
+def _file_reset(plan: Mapping, *, reason: str,
+                submission: Mapping | None = None) -> None:
     """Mark this plan's endings ``reset`` so the failure count means something.
 
     Three things this rewrite is careful about, because the tool resets the
@@ -648,6 +733,11 @@ def _file_reset(plan: Mapping, *, reason: str) -> None:
             "reset_unix": time.time(),
             "reset_host": socket.gethostname(),
         }
+        if submission is not None:
+            # What the child said, as it said it.  A re-sealed action carries a
+            # key of its own, and without this the only record of which run
+            # replaced this one was a log line on the operator's terminal.
+            record["reset"]["submission"] = dict(submission)
         for field, kept in (
             ("attempt_history", "attempt_history_before_reset"),
             ("attempt_history_missing_before",
@@ -765,25 +855,77 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  no result to clear ({note})")
         process, log = start_resubmission(
             command, queue_root=Path(args.queue_root), key=plan["key"])
-        print(f"  submitted {label} (pid {process.pid})\n    output: {log}")
+        print(f"  submitting {label} (pid {process.pid})\n    output: {log}")
         started.append((plan, label, process, log))
-    # The record is stamped after the child has had its moment to refuse, not
-    # from the fact that a process was created.  A refusal used to leave the
-    # operator with a green run, a record saying the work had been
-    # re-submitted, and nothing in flight anywhere.  One deadline is shared by
-    # every child, so a reset of a hundred actions spends the window once.
-    deadline = time.monotonic() + REFUSAL_WINDOW_S
-    for plan, label, process, log in started:
-        refusal = refusal_of(process, log, deadline=deadline)
-        if refusal is not None:
-            print(f"  refused {label}\n    {refusal}")
-            refused.append(plan["key"])
-            continue
-        _file_reset(plan, reason="re-submitted as a fresh action by pool_reset")
+    # Every record is stamped from what its child said, and none from a clock.
+    # A refusal used to leave the operator with a green run, a record saying
+    # the work had been re-submitted, and nothing in flight anywhere; PR #52
+    # caught the refusals that arrive inside a shared ten-second window and
+    # reported the rest as submitted, which is the same sentence with a
+    # smaller subject.  A re-submission seals a tree and writes a bundle into
+    # the CAS before it can say anything, so that window was separating fast
+    # from slow and not refused from submitted.
+    #
+    # Detached, the child answers: one line naming the key, the transport and
+    # the generation, or a non-zero exit.  So wait for it.  Nothing is
+    # signalled and nothing is given up on -- a child that has not answered is
+    # named in a progress line, because a submission that is still working is
+    # not a submission to punish.
+    unclear: list[str] = []
+    outstanding = list(started)
+    announced = time.monotonic()
+    while outstanding:
+        pending = []
+        for entry in outstanding:
+            plan, label, process, log = entry
+            if process.poll() is None:
+                pending.append(entry)
+                continue
+            answer = submission_outcome(process, log)
+            if answer["state"] == "refused":
+                print(f"  refused {label}\n    {answer['detail']}")
+                refused.append(plan["key"])
+                continue
+            if answer["state"] == "unclear":
+                # Not stamped.  The record stays failed so the next run plans
+                # it again, which is free: an action key is a content hash, so
+                # a duplicate re-submission of work already queued is answered
+                # from the CAS or attaches to the run in flight.
+                print(f"  unclear {label}\n    {answer['detail']}")
+                unclear.append(plan["key"])
+                continue
+            line = answer["line"]
+            landed = str(line.get("action_key") or "")
+            # The key the child minted, which is what an operator hands
+            # ``pbwait`` -- and which this tool could not name before, because
+            # re-sealing a path-addressed action mints a key the plan's own
+            # record does not carry.
+            print(f"  {line.get('status')} {label}\n    as "
+                  f"{landed[:12]} on {line.get('transport')}"
+                  + (f", slurm job {line['job_id']}" if line.get("job_id")
+                     else "")
+                  + f"  (pbwait.py {landed[:12]})")
+            _file_reset(plan, reason=(
+                "re-submitted as a fresh action by pool_reset; the child "
+                f"reported {line.get('status')} for {landed} on "
+                f"{line.get('transport')}"), submission=line)
+        outstanding = pending
+        if not outstanding:
+            break
+        now = time.monotonic()
+        if now - announced >= PROGRESS_INTERVAL_S:
+            announced = now
+            print(f"  still waiting on {len(outstanding)} re-submission(s): "
+                  + ", ".join(entry[1] for entry in outstanding), flush=True)
+        time.sleep(POLL_S)
     if not args.apply:
         print("\nnothing submitted; re-run with --apply")
+    if unclear:
+        print(f"\n{len(unclear)} exited 0 without saying where the work went "
+              f"and were left failed")
     if refused:
         print(f"\n{len(refused)} refused and left failed")
+    if refused or unclear:
         return 1
     return 0
 

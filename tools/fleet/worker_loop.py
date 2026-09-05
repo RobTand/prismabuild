@@ -55,6 +55,7 @@ import argparse
 import json
 import os
 import socket
+import signal
 import sys
 import time
 from pathlib import Path
@@ -144,6 +145,27 @@ def census_line(queue) -> str:
 
 
 def main():
+    """Drain an in-flight action on SIGTERM, then exit before the next poll.
+
+    The supervisor's idle snapshot can race with claim acquisition. A signal
+    therefore requests shutdown instead of interrupting materialization or
+    execution and leaving a lease for the reaper. Action cancellation remains
+    the queue withdrawal protocol.
+    """
+    stopping = False
+
+    def request_stop(signum, frame):
+        nonlocal stopping
+        stopping = True
+
+    previous = signal.signal(signal.SIGTERM, request_stop)
+    try:
+        return _run_loop(lambda: stopping)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _run_loop(stop_requested):
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true",
                     help="serve at most one action and exit, whether or not "
@@ -232,6 +254,9 @@ def main():
     loaded_commit = loaded_runtime_commit()
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}", flush=True)
     while True:
+        if stop_requested():
+            print(f"[{host}] shutdown requested; current action drained", flush=True)
+            return 0
         # Fence stale imported bytes before the first queue read or mutation,
         # and again at the top of every later poll.  In particular, an old
         # orphan reaper must never classify a record emitted by a successor's
@@ -319,6 +344,8 @@ def main():
         # SystemExit must still stop the loop.  And the count is consecutive,
         # so a box whose every poll raises stops rather than spinning: that
         # shape is the box being broken, not the items.
+        if stop_requested():
+            return 0
         try:
             outcome = queue.serve_once(
                 tags=offered, has_gpu=args.gpu_slots > 0, python=args.python,
@@ -341,6 +368,8 @@ def main():
                       f"the items -- exiting for the supervisor to replace",
                       flush=True)
                 return 1
+            if stop_requested():
+                return 0
             time.sleep(args.poll_s)
             continue
         errors = 0

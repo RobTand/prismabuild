@@ -684,6 +684,12 @@ after `BOOT_FAIL`, `FAILED`, `NODE_FAIL`, `OUT_OF_MEMORY`, `PREEMPTED`, or
 `DEADLINE` because a resubmission would meet the same absolute deadline
 immediately.
 
+A pool worker receiving `SIGTERM` completes its current action and files the
+outcome before exiting. This protects claims acquired after the supervisor's
+idle check. Use the withdrawal command to cancel an action; worker rotation
+is a request to drain. Supervisors also defer rotation when claim ownership
+cannot be read, including the interval before a claim's first lease appears.
+
 ### Reset a batch of failures
 
 `pool_reset` re-submits the queue's failed items. It resets the work, not the
@@ -716,12 +722,17 @@ would undo a decision. A record `pool_reset` has already handled is filed as
 failure it recorded: the returncode, the output tails, and the job the lane
 submitted stay in `detail`, and the reset is stamped beside them under `reset`.
 
-`--apply` keeps each re-submission's output under `<queue root>/resets/` and
-waits a few seconds, once for the whole batch, before it stamps anything. A
-child `pbrun` that refuses does so at once, and a refusal is printed with the
-tail of what it said, leaves its record `failed` so the next run plans it
-again, and makes the command exit non-zero. A child still running at the end
-of that wait has been admitted and is left alone.
+`--apply` starts each path-addressed re-submission with `pbrun --detach` and
+waits for its structured admission acknowledgement and exit status. It prints
+progress for slow submissions; elapsed time never counts as admission. A
+refusal or missing/invalid acknowledgement leaves the original record `failed`
+and makes the command exit non-zero after the rest of the batch is handled.
+Successful acknowledgements, including cache hits and attachments to an
+existing run, are saved under `reset.submission` with the new action key and
+generation. The child exits after admission instead of streaming the action's
+output. Its last 64 KiB of diagnostics stay under `<queue root>/resets/` for
+operator inspection; each log is bounded, and old logs may be removed once
+that evidence is no longer needed.
 
 A record addressed by a snapshot, which is what the lane files for every
 submission, is not re-sealed. Its tree is a commit in the CAS and nothing can
