@@ -9,11 +9,12 @@ retains a host pin unless the caller explicitly names its worker class.
 ## Status, honestly
 
 The core, shared CAS, pull queue, and three-worker fleet are deployed, and
-`pool.py` is the sole execution plane for the current Tessera/PrismaQuant
-campaigns. It has dispatched real quantization, test, and measurement stages.
-On 2026-09-04, `claude/pb-fixes-2026-09-04` (on top of `44b9f8f`) recorded
-605 passed / 1 skipped in its CPU suite on sparky; that dated population is
-evidence, not a permanent suite-count claim.
+`pool.py` is the execution plane for the Tessera/PrismaQuant campaigns until
+the SLURM cutover runs. It has dispatched real quantization, test, and
+measurement stages. On 2026-09-05, commit `65c316b` recorded 1075 passed and
+3 skipped in its CPU suite on sparky and the same on dl380g10; that dated
+population is evidence, not a permanent suite-count claim. It names a commit
+rather than a branch because a merged working branch is deleted.
 
 **The pull queue is slated for replacement by SLURM.** The 2026-09-04 review
 found the memoization core worth owning and the scheduler half to be the
@@ -199,9 +200,12 @@ key a hand-typed `pbrun` produces and re-running a manifest runs nothing:
 
 `pbcampaign.py --help` and the module docstring carry the row schema.
 
-All three take `--transport slurm` (or `PRISMABUILD_TRANSPORT=slurm`) to
-hand the work to a scheduler instead of the pull queue. The result does not
-depend on which one carried it.
+`pbrun` and `pbcampaign` take `--transport slurm` (or
+`PRISMABUILD_TRANSPORT=slurm`) to hand the work to a scheduler instead of the
+pull queue, and a published runtime generation carries the default for a
+command that names neither. `pbwait` takes no transport: it finds an ending
+through the lane's submission record or through the terminal record, whichever
+transport filed it. The result does not depend on which one carried it.
 
 ## Test
 

@@ -4,7 +4,10 @@ Several modules default a root to the shared mount: ``pbrun.SH``,
 ``pbstatus.SHARED_ROOT``, ``pool_reset.SH``, ``fleet_submit.SH``,
 ``pool.DEFAULT_POOL_ROOT``, and the lane's ``PRISMABUILD_SLURM_LANE_ROOT`` and
 ``PRISMABUILD_SLURM_JOB_STATE_ROOT``. A test that forgets to pass a root then
-reads or writes the live queue, CAS, or lane root. Between 2026-09-04 and
+reads or writes the live queue, CAS, or lane root. One more root is box-local
+rather than shared, and leaks the same way: ``materialize.LOCAL_CHECKOUT_ROOT``
+puts a materialized checkout under ``/home/rob/tmp/prismabuild-checkouts``,
+which is a real tree the fleet's own workers use. Between 2026-09-04 and
 2026-09-05 the lane tests filed 336 terminal records, 145 CAS requests, and 6
 receipts into the live store that way, because their fixture never overrode
 ``pbrun.SH``. Those files were moved to ``quarantine/pytest-leak-2026-09-05``
@@ -16,16 +19,15 @@ Two guards, because neither is complete on its own:
     ``tmp_path`` before each test. It cannot reach a default bound at function
     definition, such as ``PoolQueue(root=DEFAULT_POOL_ROOT)``, so a test that
     calls one of those without a root still gets the live path.
-*   ``pytest_sessionfinish`` lists the live store's queue directories and lane
-    root before the session and after it, and fails the session when a new
-    entry names this session's ``basetemp``. A new entry that does not is
-    reported but not counted: the fleet may file real work while the suite
-    runs.
+*   ``pytest_sessionfinish`` walks the live store before the session and after
+    it, and fails the session when a new entry names this session's
+    ``basetemp``. A new entry that does not is reported but not counted: the
+    fleet may file real work while the suite runs.
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sys
 
 import pytest
@@ -37,15 +39,16 @@ LIVE_ROOT = Path(
     os.environ.get("PRISMABUILD_TEST_LIVE_ROOT") or "/mnt/shared/prismabuild-fleet"
 )
 
-#: Directories a test could file into by mistake, relative to ``LIVE_ROOT``.
-WATCHED = (
-    "pb-queue/ready",
-    "pb-queue/claimed",
-    "pb-queue/done",
-    "pb-queue/failed",
-    "pb-queue/withdrawn",
-    "slurm",
-)
+#: Top-level entries of ``LIVE_ROOT`` the guard leaves alone. The quarantine
+#: holds records already moved out of the fleet's way, so a new entry there is
+#: housekeeping and not a leak.
+UNWATCHED = frozenset({"quarantine"})
+
+#: The store's top-level entries, so the guard's own tests have a store to
+#: build and a reader can see the coverage without the mount. ``listing`` does
+#: not depend on this list being complete: it walks every top-level entry the
+#: store has, so a directory added to the store later is watched on sight.
+WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm")
 
 #: Module attributes that default to the live store, and the subpath under the
 #: test's guard root each is repointed at. Applied only to modules already
@@ -58,6 +61,11 @@ LIVE_DEFAULTS = (
     ("fleet_submit", "SH", "fleet"),
     ("worker_loop", "SH", "fleet"),
     ("prismabuild.pool", "DEFAULT_POOL_ROOT", "pb-queue"),
+    # Two spellings of one root, and each transport reads its own: the SLURM
+    # job entry reads ``materialize.LOCAL_CHECKOUT_ROOT`` and the pull queue
+    # reads ``pool.LOCAL_CHECKOUT_ROOT``, which is a copy taken at import.
+    ("prismabuild.materialize", "LOCAL_CHECKOUT_ROOT", "checkouts"),
+    ("prismabuild.pool", "LOCAL_CHECKOUT_ROOT", "checkouts"),
 )
 
 #: Environment variables the lane and the pool read on use.
@@ -65,6 +73,10 @@ LIVE_ENV = (
     ("PRISMABUILD_SLURM_LANE_ROOT", "slurm"),
     ("PRISMABUILD_SLURM_JOB_STATE_ROOT", "slurm/jobs"),
     ("PRISMABUILD_POOL_ROOT", "pb-queue"),
+    # Read at import, so this reaches a module imported after the fixture ran
+    # and a child process such as ``slurm_job``; the attributes above reach
+    # the modules already imported.
+    ("PRISMABUILD_LOCAL_CHECKOUT_ROOT", "checkouts"),
 )
 
 
@@ -80,15 +92,57 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     yield
 
 
-def listing(live_root: Path = LIVE_ROOT) -> dict[str, set[str]]:
-    """The names under each watched directory, empty for one that is absent."""
+def _top_level(live_root: Path) -> set[str]:
+    """The store's own entries, empty for a store that is not mounted."""
 
-    out: dict[str, set[str]] = {}
-    for rel in WATCHED:
-        try:
-            out[rel] = set(os.listdir(live_root / rel))
-        except OSError:
-            out[rel] = set()
+    try:
+        return {name for name in os.listdir(live_root) if name not in UNWATCHED}
+    except OSError:
+        return set()
+
+
+def _walk(root: Path) -> set[str]:
+    """Every path under ``root``, relative to it, empty for a missing one.
+
+    ``os.walk`` rather than ``Path.rglob``: a stale NFS handle or a directory
+    this user cannot read has to leave the rest of the listing intact, and a
+    guard that raises out of ``pytest_sessionfinish`` fails a suite over a
+    permission it never needed.
+
+    ``os.walk`` does not descend into a symlink it meets during the walk, but
+    it does follow ``root`` itself. The live ``repo`` link is a root here, so
+    the generation it points at is listed twice, once under ``repo`` and once
+    under ``runtime-generations``. That costs a second walk and reports a leak
+    into the live runtime under both names, which is the direction to err in.
+    """
+
+    found: set[str] = set()
+    for directory, subdirectories, files in os.walk(root, onerror=lambda _e: None):
+        base = Path(directory).relative_to(root)
+        for name in (*subdirectories, *files):
+            found.add((base / name).as_posix())
+    return found
+
+
+def listing(live_root: Path = LIVE_ROOT) -> dict[str, set[str]]:
+    """Every path in the store, keyed by the top-level entry that holds it.
+
+    Recursive, and over the whole store rather than a list of queue
+    directories, because both of the September leak's halves were invisible
+    to a shallower guard. A CAS request is
+    ``cas/requests/<shard>/<digest>.json``, so listing ``cas`` alone reports
+    the four directory names that were there before; the 145 requests and 6
+    receipts filed that day named this session's ``basetemp`` inside the JSON,
+    which ``leaked_entries`` reads, but nothing offered it the paths.
+
+    The ``""`` key holds the top-level names, so an entry written into the
+    store itself is a new entry too.
+    """
+
+    root = Path(live_root)
+    out: dict[str, set[str]] = {"": _top_level(root)}
+    for name in sorted(out[""] | set(WATCHED)):
+        out[name] = _walk(root / name)
     return out
 
 
@@ -129,8 +183,20 @@ def leaked_entries(
     leaked: list[str] = []
     unattributed: list[str] = []
     for rel, names in after.items():
-        for name in sorted(names - before.get(rel, set())):
-            entry = f"{rel}/{name}"
+        fresh = names - before.get(rel, set())
+        # A new directory and everything inside it are one leak. Reporting the
+        # directory and dropping its children keeps a leaked checkout to one
+        # line instead of several thousand; ``_names`` reads the whole subtree
+        # either way.
+        outermost = sorted(
+            name for name in fresh
+            if not any(
+                parent.as_posix() in fresh
+                for parent in PurePosixPath(name).parents
+            )
+        )
+        for name in outermost:
+            entry = f"{rel}/{name}" if rel else name
             if _names(live_root / rel / name, basetemp):
                 leaked.append(entry)
             else:

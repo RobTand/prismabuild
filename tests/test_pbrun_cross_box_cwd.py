@@ -15,20 +15,22 @@ path, and that the fix is to submit from the box that holds it.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 import socket
 import sys
 
 import pytest
 
+# The local tree's ``prismabuild`` first, so this file drives the code it is
+# testing.  An ordinary import rather than ``importlib``: a module executed
+# from a file and left out of ``sys.modules`` is a second ``pbrun`` object,
+# and conftest's live-store guard repoints ``SH`` on the registered one alone.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-_SPEC = importlib.util.spec_from_file_location(
-    "pbrun", Path(__file__).resolve().parents[1] / "tools" / "fleet" / "pbrun.py"
+sys.path.insert(
+    0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet")
 )
-pbrun = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(pbrun)                       # type: ignore[union-attr]
+
+import pbrun  # noqa: E402
 
 
 def _refusal(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> str:
@@ -61,3 +63,14 @@ def test_the_refusal_says_to_submit_from_the_box_that_holds_the_checkout(
     assert "submit from there" in message, message
     # And say WHY, so the constraint is learnable rather than arbitrary.
     assert "closure" in message, message
+
+
+def test_this_copy_of_pbrun_is_the_one_the_guard_repoints(tmp_path: Path) -> None:
+    """A module loaded from a file and left out of ``sys.modules`` is a second
+    ``pbrun``, and conftest's live-store guard repoints ``pbrun.SH`` on the
+    registered one alone. These tests stayed off the mount only because
+    ``main`` refuses before it reaches ``SH``, which is luck rather than a
+    guard."""
+
+    assert sys.modules.get("pbrun") is pbrun
+    assert tmp_path in pbrun.SH.parents, pbrun.SH

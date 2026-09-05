@@ -312,7 +312,7 @@ number.
 | where | the line it names |
 |---|---|
 | `docs/design.md`, the declined alternative | `- **Roll-your-own queue dir**: explicitly declined by Rob 2026-08-26.` |
-| `README.md`, what actually runs | ``pool.py` is the sole execution plane for the current Tessera/PrismaQuant` |
+| `README.md`, what actually runs | ``pool.py` is the execution plane for the Tessera/PrismaQuant campaigns until` |
 | `pool`, the scheduler contract | `* **A claim is a lease, not a grant.**  The claimant refreshes a heartbeat file;` |
 | `pool.PoolQueue.claim_intent_age` (#36) | `    def claim_intent_age(self, action_key: str) -> float \| None:` |
 | `core._sigterm_unwinds_this_process` (#25) | `def _sigterm_unwinds_this_process():` |

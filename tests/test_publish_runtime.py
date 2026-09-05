@@ -176,3 +176,101 @@ def test_a_failure_after_sealing_still_removes_the_staging_tree(
     assert (mirror / "src" / "prismabuild" / "core.py").read_text() == (
         "GENERATION = 'old'\n"
     )
+
+
+def test_every_fleet_tool_is_published_or_excluded_on_purpose() -> None:
+    """A tool nobody added to the list is a tool no box can run.
+
+    Neither dl380g10 nor sparklina has a checkout, so the published
+    generation is the only place a command exists for them. pool_reset.py:582
+    tells the operator to run ``pbwait.py <key>``, and pbwait.py was not
+    published, so that instruction named nothing on two of the three boxes.
+
+    Both directions are checked. A name in FLEET_SCRIPTS with no file behind
+    it is a script quietly not published: ``_publication_manifest`` skips a
+    missing source and says nothing.
+    """
+
+    fleet = ROOT / "tools" / "fleet"
+    on_disk = {source.name for source in fleet.glob("*.py")}
+    published = set(publish_runtime.FLEET_SCRIPTS)
+    excluded = {name for name, _reason in publish_runtime.EXCLUDED}
+
+    assert not published & excluded, sorted(published & excluded)
+    assert on_disk <= published | excluded, sorted(
+        on_disk - (published | excluded)
+    )
+    for name in published:
+        assert (fleet / name).exists() or (ROOT / "tools" / name).exists(), name
+    for name, reason in publish_runtime.EXCLUDED:
+        assert reason.strip(), name
+
+
+def _generation_store(tmp_path: Path) -> Path:
+    """A mirror whose sibling holds the published generations."""
+
+    mirror = tmp_path / "fleet" / "repo"
+    store = mirror.parent / "runtime-generations"
+    store.mkdir(parents=True)
+    return store
+
+
+def test_a_staging_tree_is_not_a_generation(tmp_path, monkeypatch) -> None:
+    """An interrupted publish can leave one behind, receipt and all.
+
+    The staging tree gets its receipt before it is sealed and renamed, and the
+    cleanup that removes it swallows an OSError with a warning (:440-442). So
+    a survivor holds a RUNTIME_VERSION.json and passes the receipt check, and
+    the name check admits it: it has no "/" and it is not "." or "..".
+    Activating it would point the live runtime at bytes no publish ever
+    finished proving.
+    """
+
+    store = _generation_store(tmp_path)
+    monkeypatch.setattr(publish_runtime, "MIRROR", store.parent / "repo")
+    for name in (".abc123-1788600000-def.staging", ".hidden"):
+        staging = store / name
+        staging.mkdir()
+        (staging / "RUNTIME_VERSION.json").write_text('{"commit": "' + "a" * 40 + '"}')
+        with pytest.raises(SystemExit, match="not a generation name"):
+            publish_runtime._activate_existing(name, dry_run=True)
+
+
+def test_a_damaged_receipt_is_a_refusal_and_not_a_traceback(
+    tmp_path, monkeypatch
+) -> None:
+    """Rollback is the one command that runs when everything else has failed."""
+
+    store = _generation_store(tmp_path)
+    monkeypatch.setattr(publish_runtime, "MIRROR", store.parent / "repo")
+    generation = store / "abc123-1788600000-def"
+    generation.mkdir()
+    (generation / "RUNTIME_VERSION.json").write_text('{"commit": "aaaa')
+
+    with pytest.raises(SystemExit, match="receipt is not readable"):
+        publish_runtime._activate_existing(generation.name, dry_run=True)
+
+
+def test_a_generation_store_that_cannot_be_written_is_a_refusal(
+    tmp_path, monkeypatch
+) -> None:
+    """Not a PermissionError traceback after "publishing N files"."""
+
+    commit = "a" * 40
+    checkout = _checkout(tmp_path / "checkout", "new")
+    fleet = tmp_path / "fleet"
+    fleet.mkdir()
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", fleet / "repo")
+    monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
+    monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
+    monkeypatch.setattr(
+        publish_runtime.subprocess, "run", _fake_git_and_probe(commit)
+    )
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    fleet.chmod(0o555)
+    try:
+        with pytest.raises(SystemExit, match="cannot write the generation store"):
+            publish_runtime.main()
+    finally:
+        fleet.chmod(0o755)

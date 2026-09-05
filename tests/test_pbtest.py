@@ -106,8 +106,18 @@ def test_the_transport_reaches_pbrun(tmp_path: Path, monkeypatch) -> None:
     assert command.index("--transport") < command.index("--")
 
 
-def test_the_pull_queue_stays_the_default(tmp_path: Path, monkeypatch) -> None:
-    """The cutover is one environment variable, and it is not set here."""
+def test_a_checkout_with_no_receipt_stays_on_the_pull_queue(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The default is the fleet's, and a checkout is not a generation.
+
+    This test used to say "the cutover is one environment variable", which
+    described one shell and no part of a fleet whose agents start pbtest from
+    cron, from systemd user units and from each other. The default rides in
+    the published runtime generation's receipt; a checkout has none, so it
+    keeps the pull queue until somebody says otherwise. The lane case is
+    ``test_default_transport_travels_with_the_generation``.
+    """
 
     monkeypatch.delenv("PRISMABUILD_TRANSPORT", raising=False)
     command = _dispatch(tmp_path, monkeypatch, [])

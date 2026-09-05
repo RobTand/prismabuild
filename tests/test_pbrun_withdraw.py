@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import socket
 import sys
 import uuid
 
@@ -28,6 +29,14 @@ import pbrun  # noqa: E402
 
 # Unique per process; see the note in ``test_pool_withdraw``.
 KEY_A = uuid.uuid4().hex + uuid.uuid4().hex
+
+#: A box that is provably not this one.  Naming a real fleet member as "the
+#: other box" reads fine until the suite runs ON that member: the holder these
+#: tests call foreign becomes the local host and the premise is gone.  The
+#: full suite runs on dl380g10, so the name these tests used was exactly the
+#: one they could not use.  Same reasoning, same spelling, as
+#: ``test_pool_withdraw.ELSEWHERE``.
+ELSEWHERE = f"not-{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 
 
 class _Queue:
@@ -138,12 +147,12 @@ def test_a_claimed_action_on_another_box_says_the_signal_did_not_land(
 
     _publish(queue, KEY_A)
     record = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
-    record["claimed_host"] = "dl380g10"
+    record["claimed_host"] = ELSEWHERE
     queue.item_path(pool.READY, KEY_A).unlink()
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
     assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
     err = capsys.readouterr().err
-    assert "no local child to signal on dl380g10" in err
+    assert f"no local child to signal on {ELSEWHERE}" in err
     assert "stops within a heartbeat" in err
 
 
@@ -160,16 +169,16 @@ def test_a_withdrawal_the_holder_cannot_see_is_said_out_loud(
 
     _publish(queue, KEY_A)
     record = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
-    record["claimed_host"] = "dl380g10"
+    record["claimed_host"] = ELSEWHERE
     queue.item_path(pool.READY, KEY_A).unlink()
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
-    queue.announce(host="dl380g10", tags=["x86"], has_gpu=False,
+    queue.announce(host=ELSEWHERE, tags=["x86"], has_gpu=False,
                    runtime_commit="a" * 40)
     monkeypatch.setattr(pbrun, "published_commit", lambda: "b" * 40)
 
     assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
     err = capsys.readouterr().err
-    assert "WARNING dl380g10 is running runtime " + "a" * 12 in err
+    assert f"WARNING {ELSEWHERE} is running runtime " + "a" * 12 in err
     assert "not the published " + "b" * 12 in err
 
 
@@ -180,13 +189,13 @@ def test_a_holder_that_never_announced_is_reported_as_unknown(
 
     _publish(queue, KEY_A)
     record = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
-    record["claimed_host"] = "dl380g10"
+    record["claimed_host"] = ELSEWHERE
     queue.item_path(pool.READY, KEY_A).unlink()
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
     monkeypatch.setattr(pbrun, "published_commit", lambda: "b" * 40)
 
     assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
-    assert "no live offer from dl380g10" in capsys.readouterr().err
+    assert f"no live offer from {ELSEWHERE}" in capsys.readouterr().err
 
 
 def test_a_worker_on_the_published_bytes_draws_no_warning(
@@ -194,10 +203,10 @@ def test_a_worker_on_the_published_bytes_draws_no_warning(
 ) -> None:
     _publish(queue, KEY_A)
     record = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
-    record["claimed_host"] = "dl380g10"
+    record["claimed_host"] = ELSEWHERE
     queue.item_path(pool.READY, KEY_A).unlink()
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
-    queue.announce(host="dl380g10", tags=["x86"], has_gpu=False,
+    queue.announce(host=ELSEWHERE, tags=["x86"], has_gpu=False,
                    runtime_commit="b" * 40)
     monkeypatch.setattr(pbrun, "published_commit", lambda: "b" * 40)
 
@@ -267,3 +276,15 @@ def test_the_command_line_withdraws_without_a_submission(
     assert filed["reason"] == "load average 371"
     assert "@" in filed["withdrawn_by"], "who withdrew it is recorded"
     assert f"withdrew {KEY_A[:12]}" in capsys.readouterr().err
+
+
+def test_the_foreign_holder_is_provably_not_this_box() -> None:
+    """Every "another box" case above depends on this and none of them says so.
+
+    Naming a real fleet member reads fine until the suite runs ON that
+    member, where the foreign holder and the local one become the same host
+    and the case tests nothing. The full suite runs on dl380g10: ``pbtest``
+    exists because its 80 x86 cores are idle.
+    """
+
+    assert ELSEWHERE != socket.gethostname()

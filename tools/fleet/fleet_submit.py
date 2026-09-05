@@ -101,6 +101,11 @@ def default_transport() -> str:
 
     ``PRISMABUILD_TRANSPORT`` in the environment wins, because a person or a
     test saying "this submission goes to SLURM" is never overruled by a file.
+    It is checked before it wins: ``argparse`` applies ``choices=`` to what it
+    parses and never to a default, so an unchecked value became
+    ``args.transport`` in every producer, and every producer branches on
+    ``transport == "slurm"``. ``PRISMABUILD_TRANSPORT=slrum`` therefore read
+    as "not slurm" and put the work in the pull queue under a name nobody had.
 
     Otherwise the *published runtime generation* answers.  Cutover used to be
     described as one environment variable, which is a fine description of one
@@ -122,6 +127,12 @@ def default_transport() -> str:
 
     from_environment = os.environ.get(DEFAULT_TRANSPORT_ENV)
     if from_environment:
+        if from_environment not in TRANSPORTS:
+            raise SystemExit(
+                f"{DEFAULT_TRANSPORT_ENV}={from_environment} is not a "
+                f"transport this code has ({', '.join(TRANSPORTS)}). "
+                "Unset it or spell it the way the fleet does."
+            )
         return from_environment
     try:
         receipt = json.loads(

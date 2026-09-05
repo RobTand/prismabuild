@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -43,11 +42,13 @@ RUNTIME_ROOT = generation_root(__file__)
 PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
 SHARED = Path("/mnt/shared")
 
-#: ``pbrun``'s own transport vocabulary.  This tool builds pbrun's argv rather
-#: than importing it, so every flag a shard needs has to be forwarded here --
-#: a flag that is not forwarded is a flag twenty shards never see.
-TRANSPORTS = ("pool", "slurm")
-DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
+#: ``pbrun``'s own transport vocabulary, and its own reader for the default.
+#: This tool builds pbrun's argv rather than importing it, so every flag a
+#: shard needs has to be forwarded here -- a flag that is not forwarded is a
+#: flag twenty shards never see.  ``fleet_submit`` is published beside this
+#: file and holds the one reader of the default, so a shard's transport is the
+#: fleet's transport rather than a second opinion about it.
+from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
 
 
 def discover(checkout: Path, paths: list[str]) -> list[str]:
@@ -91,9 +92,9 @@ def main() -> int:
     ap.add_argument("--wait-s", type=float, default=10800.0)
     ap.add_argument("--json", default="", help="write the per-shard result here")
     ap.add_argument(
-        "--transport", choices=TRANSPORTS,
-        default=os.environ.get(DEFAULT_TRANSPORT_ENV) or "pool",
-        help="which dispatcher carries the shards (env PRISMABUILD_TRANSPORT); "
+        "--transport", choices=TRANSPORTS, default=default_transport(),
+        help="which dispatcher carries the shards (env PRISMABUILD_TRANSPORT, "
+             "else the published runtime generation's default_transport); "
              "forwarded to pbrun unchanged")
     # TODO(claude/pb-35-snapshot-ancestry): forward --snapshot-ref once that
     # branch lands.  pbrun in this tree does not know the flag, and adding it

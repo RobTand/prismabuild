@@ -125,12 +125,99 @@ def test_a_damaged_receipt_does_not_take_submission_with_it(
     assert fleet_submit.default_transport() == "pool"
 
 
-def test_pbrun_reads_the_default_through_fleet_submit() -> None:
-    """One reader for the whole fleet, not an expression copied into two files."""
+def test_an_environment_transport_this_code_does_not_have_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A typed value is checked, not passed on.
 
-    source = (ROOT / "tools" / "fleet" / "pbrun.py").read_text(encoding="utf-8")
-    assert "from fleet_submit import default_transport" in source
-    assert "default=default_transport()," in source
+    ``argparse`` applies ``choices=`` to what it parses and never to a
+    default, so ``PRISMABUILD_TRANSPORT=slrum`` became ``args.transport`` in
+    every producer. Each one branches on ``transport == "slurm"``, so the
+    misspelling read as "not slurm" and submitted the work to the pull queue,
+    silently, under a name nobody had.
+    """
+
+    monkeypatch.setenv(fleet_submit.DEFAULT_TRANSPORT_ENV, "slrum")
+    with pytest.raises(SystemExit) as caught:
+        fleet_submit.default_transport()
+    assert "slrum" in str(caught.value)
+    assert fleet_submit.DEFAULT_TRANSPORT_ENV in str(caught.value)
+
+
+# -- every producer reads it, and reading it is what the tests check ---------
+#
+# A source-text check that pbrun spells ``default_transport()`` passed while
+# pbtest, pbcampaign and tessera_status each kept their own
+# ``os.environ.get(...) or "pool"``. These run the producers instead.
+
+
+def test_an_unflagged_pbtest_shards_onto_the_lane_the_generation_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Twenty shards onto a stopped queue is a day of waiting and no result."""
+
+    from test_pbtest import _dispatch
+
+    monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
+    monkeypatch.setattr(
+        fleet_submit, "RUNTIME_ROOT",
+        _generation(tmp_path / "gen", default_transport="slurm"),
+    )
+    command = _dispatch(tmp_path, monkeypatch, [])
+    assert command[command.index("--transport") + 1] == "slurm"
+
+
+def test_the_environment_still_holds_a_suite_back_from_the_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the same default: a generation does not overrule a person.
+
+    Someone debugging the lane has to be able to run a suite on the pull queue
+    while the published generation says ``slurm``, without republishing.
+    """
+
+    from test_pbtest import _dispatch
+
+    monkeypatch.setenv(fleet_submit.DEFAULT_TRANSPORT_ENV, "pool")
+    monkeypatch.setattr(
+        fleet_submit, "RUNTIME_ROOT",
+        _generation(tmp_path / "gen", default_transport="slurm"),
+    )
+    command = _dispatch(tmp_path, monkeypatch, [])
+    assert command[command.index("--transport") + 1] == "pool"
+
+
+def test_an_unflagged_pbcampaign_dispatches_onto_the_lane_the_generation_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """And a campaign of ``host_class`` rows is refused at manifest load
+    before it gets that far, because the class needs the lane."""
+
+    import pbcampaign
+    import pbrun
+
+    seen: dict[str, list[str]] = {}
+
+    def fake_main() -> int:
+        seen["argv"] = list(sys.argv)
+        print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
+        return 0
+
+    monkeypatch.setattr(pbrun, "main", fake_main)
+    monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
+    monkeypatch.setattr(
+        fleet_submit, "RUNTIME_ROOT",
+        _generation(tmp_path / "gen", default_transport="slurm"),
+    )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps([{"argv": ["/bin/bash", "-lc", "true"], "cwd": str(tmp_path)}]),
+        encoding="utf-8",
+    )
+
+    assert pbcampaign.main(["--detach", str(manifest)]) == 0
+    argv = seen["argv"]
+    assert argv[argv.index("--transport") + 1] == "slurm"
 
 
 # -- writing it --------------------------------------------------------------
