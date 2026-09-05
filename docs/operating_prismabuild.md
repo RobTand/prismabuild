@@ -205,7 +205,7 @@ already finished, and exited 75.
 | 0 | The work is done. A `cache_hit` counts as done. |
 | 1 | The action failed. `pbrun` prints the worker's message and the log paths. `pbwait` also exits 1 when an ending was filed and cannot be read, and names the file: that is not 75, because waiting again only re-reads the same record. |
 | 2 | `pbrun --withdraw` matched no submission, matched more than one, or every `scancel` refused. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
-| 74 | SLURM took the action, but `pbrun` could not write the record of it. `sysexits.h` calls 74 `EX_IOERR`, and that is what happened: the job is real and the work may be finished, only the account of it failed. |
+| 74 | A filesystem or record-persistence error prevented `pbrun` or `pbwait` from completing the operation. The diagnostic distinguishes a known accepted job from an unverified submission, and says whether a withdrawal reached `scancel`. |
 | 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
 
@@ -279,7 +279,7 @@ is real and the work may be finished.
 
     pbrun: slurm took this action, but pbrun could not write its record.
       slurm job: 1743
-      record:    /mnt/shared/prismabuild-fleet/pb-queue/done/<key>.json
+      record:    /mnt/shared/prismabuild-fleet/pb-queue/done/.<key>.json.<pid>.<uuid>.tmp
       reason:    Permission denied
     The receipt is in the CAS, so the work is done and re-running costs nothing.
     Clear what blocked the write, then run `tools/fleet/pbwait.py <key12>` to
@@ -294,6 +294,26 @@ A lane error raised after `sbatch` accepted the job reports the same way, with
 the same exit code. Only a refusal with no job behind it reports as a refusal,
 and only that one tells you to fix the `--tag`: a job the controller has
 already taken is not fixed by changing the submission.
+
+`pbwait` uses the same diagnostic when it cannot file a detached job's ending,
+returns a `record_error` row naming the job and failed path, and exits 74.
+A CAS read failure or a filesystem failure before submission instead says
+that filesystem access failed; it does not claim a record write was attempted
+or that SLURM accepted a job. The job id is retained when already known.
+If the CAS itself cannot be read, receipt status is reported as unknown.
+
+Withdrawal has two write stages. If its initial marker or terminal record
+cannot be written, no cancellation is sent. If `scancel` accepted the
+cancellation but the acceptance stamp cannot be written, the diagnostic says
+so. Both exit 74 and give the withdrawal command to retry after restoring
+record writes. The path in these diagnostics may name a temporary file;
+atomic record publication creates that file before renaming it.
+
+An unreadable terminal record that appears while a pull-queue wait is polling
+ends the wait immediately with exit 1 and the path and reason, instead of
+spending the remaining deadline and reporting exit 75. For a recorded SLURM
+submission, `pbwait` first tries to recover the ending from the controller and
+CAS; if it cannot repair the record, it reports an `unreadable` row.
 
 ### When `sbatch` stops answering
 
