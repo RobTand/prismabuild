@@ -26,9 +26,10 @@ So Rob chooses between three settings of `fleet/slurm/cgroup.conf`:
 - **Option A. Enforce both.** `ConstrainCores=yes`, `ConstrainRAMSpace=yes` --
   the file as it stands. The declared demand is a contract: an under-declared
   job is slow or killed, and the platform says which.
-- **Option B. Enforce memory, not cores.** `ConstrainCores=no`, and
-  `task/affinity` comes out of `TaskPlugin`. Cores stay an admission count, as
-  they were under the pull queue.
+- **Option B. Enforce memory, not cores.** `ConstrainCores=no` in
+  `fleet/slurm/cgroup.conf`, and `task/affinity` out of `TaskPlugin` in
+  `fleet/slurm/slurm.conf` -- two files, because the plugin is what writes the
+  cpuset. Cores stay an admission count, as they were under the pull queue.
 - **Option C. Enforce neither.** `ConstrainCores=no`,
   `ConstrainRAMSpace=no`. Admission only, which is the pull queue's exact
   semantics.
@@ -57,33 +58,37 @@ placed.
 
 Rows 14a-14d of `fleet/slurm/smoke` run a real `slurmctld` and `slurmd` in a
 container on a 20-CPU node, with the fleet's scheduler configuration. Three
-arms, one per setting under decision. The rows are quoted verbatim.
+arms: the file as it stands, option B, and option A with
+`ConstrainSwapSpace=yes`. Option C was not run, because its containment is the
+absence of what arms 1 and 2 measure and its admission is identical to both.
+The rows are quoted verbatim, each from a run whose whole 21-row transcript
+passed.
 
 ### Option A: `ConstrainCores=yes`, `ConstrainSwapSpace=no` (the file as it stands)
 
 ```
-[PASS] 13a what a --cpus 1 job may run on [cores=yes swap=no]  job affinity width=1 of the node's 20 CPUs (declared 1); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
-[PASS] 13b what a --cpus 2 job may run on [cores=yes swap=no]  job affinity width=2 of the node's 20 CPUs (declared 2); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
-[PASS] 13c a job over its mem_gb is constrained, not ignored [cores=yes swap=no]  job=17 declared mem_gb=1, wrote 3072 MiB -> filed done/ state='COMPLETED' rc=0 signal=0 pbrun said failed(COMPLETED)=False and named the declaration=False; binding cgroup /sys/fs/cgroup/system.slice/pbsmoke_slurmstepd.scope/job_17/step_batch/user memory.max=1073741824 (declared 1073741824) memory.swap.max=max memory.swap.current=2244640768 memory.events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0]
-[PASS] 13d a job within its mem_gb completes [cores=yes swap=no]  job=18 declared mem_gb=2, wrote 256 MiB -> filed done/ status=executed state=COMPLETED rc=0
+[PASS] 14a what a --cpus 1 job may run on [cores=yes swap=no]  job affinity width=1 of the node's 20 CPUs (declared 1); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
+[PASS] 14b what a --cpus 2 job may run on [cores=yes swap=no]  job affinity width=2 of the node's 20 CPUs (declared 2); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
+[PASS] 14c a job over its mem_gb is constrained, not ignored [cores=yes swap=no]  job=18 declared mem_gb=1, wrote 3072 MiB -> filed done/ state='COMPLETED' rc=0 signal=0 pbrun said failed(COMPLETED)=False and named the declaration=False; binding cgroup /sys/fs/cgroup/system.slice/pbsmoke_slurmstepd.scope/job_18/step_batch/user memory.max=1073741824 (declared 1073741824) memory.swap.max=max memory.swap.current=2246414336 memory.events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0]
+[PASS] 14d a job within its mem_gb completes [cores=yes swap=no]  job=19 declared mem_gb=2, wrote 256 MiB -> filed done/ status=executed state=COMPLETED rc=0
 ```
 
 ### Option B: `ConstrainCores=no`, `task/affinity` dropped
 
 ```
-[PASS] 13a what a --cpus 1 job may run on [cores=no swap=no]  job affinity width=20 of the node's 20 CPUs (declared 1); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
-[PASS] 13b what a --cpus 2 job may run on [cores=no swap=no]  job affinity width=20 of the node's 20 CPUs (declared 2); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
-[PASS] 13c a job over its mem_gb is constrained, not ignored [cores=no swap=no]  job=17 declared mem_gb=1, wrote 3072 MiB -> filed done/ state='COMPLETED' rc=0 signal=0 pbrun said failed(COMPLETED)=False and named the declaration=False; binding cgroup /sys/fs/cgroup/system.slice/pbsmoke_slurmstepd.scope/job_17/step_batch/user memory.max=1073741824 (declared 1073741824) memory.swap.max=max memory.swap.current=2244730880 memory.events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0]
-[PASS] 13d a job within its mem_gb completes [cores=no swap=no]  job=18 declared mem_gb=2, wrote 256 MiB -> filed done/ status=executed state=COMPLETED rc=0
+[PASS] 14a what a --cpus 1 job may run on [cores=no swap=no]  job affinity width=20 of the node's 20 CPUs (declared 1); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
+[PASS] 14b what a --cpus 2 job may run on [cores=no swap=no]  job affinity width=20 of the node's 20 CPUs (declared 2); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
+[PASS] 14c a job over its mem_gb is constrained, not ignored [cores=no swap=no]  job=18 declared mem_gb=1, wrote 3072 MiB -> filed done/ state='COMPLETED' rc=0 signal=0 pbrun said failed(COMPLETED)=False and named the declaration=False; binding cgroup /sys/fs/cgroup/system.slice/pbsmoke_slurmstepd.scope/job_18/step_batch/user memory.max=1073741824 (declared 1073741824) memory.swap.max=max memory.swap.current=2246651904 memory.events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0]
+[PASS] 14d a job within its mem_gb completes [cores=no swap=no]  job=19 declared mem_gb=2, wrote 256 MiB -> filed done/ status=executed state=COMPLETED rc=0
 ```
 
 ### Memory that kills: `ConstrainCores=yes`, `ConstrainSwapSpace=yes`
 
 ```
-[PASS] 13a what a --cpus 1 job may run on [cores=yes swap=yes]  job affinity width=1 of the node's 20 CPUs (declared 1); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
-[PASS] 13b what a --cpus 2 job may run on [cores=yes swap=yes]  job affinity width=2 of the node's 20 CPUs (declared 2); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
-[PASS] 13c a job over its mem_gb is constrained, not ignored [cores=yes swap=yes]  job=17 declared mem_gb=1, wrote 3072 MiB -> filed failed/ state='OUT_OF_MEMORY' rc=-125 signal=125 pbrun said failed(OUT_OF_MEMORY)=True and named the declaration=True; binding cgroup (none reported) memory.max=- (declared 1073741824) memory.swap.max=- memory.swap.current=- memory.events=[]
-[PASS] 13d a job within its mem_gb completes [cores=yes swap=yes]  job=18 declared mem_gb=2, wrote 256 MiB -> filed done/ status=executed state=COMPLETED rc=0
+[PASS] 14a what a --cpus 1 job may run on [cores=yes swap=yes]  job affinity width=1 of the node's 20 CPUs (declared 1); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
+[PASS] 14b what a --cpus 2 job may run on [cores=yes swap=yes]  job affinity width=2 of the node's 20 CPUs (declared 2); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
+[PASS] 14c a job over its mem_gb is constrained, not ignored [cores=yes swap=yes]  job=18 declared mem_gb=1, wrote 3072 MiB -> filed failed/ state='OUT_OF_MEMORY' rc=-125 signal=125 pbrun said failed(OUT_OF_MEMORY)=True and named the declaration=True; binding cgroup (none reported) memory.max=- (declared 1073741824) memory.swap.max=- memory.swap.current=- memory.events=[]
+[PASS] 14d a job within its mem_gb completes [cores=yes swap=yes]  job=19 declared mem_gb=2, wrote 256 MiB -> filed done/ status=executed state=COMPLETED rc=0
 ```
 
 ### What the rows say
@@ -97,7 +102,7 @@ differs.
 **`nproc` is not how a job learns its allocation.** It answered 4 in every arm,
 including the one where the job held a single CPU, because `nproc` honours
 `OMP_NUM_THREADS` and `pbrun`'s sealed environment pins that at 4
-(`tools/fleet/pbrun.py:2549`). An action that sizes its own parallelism from
+(`tools/fleet/pbrun.py:2577`). An action that sizes its own parallelism from
 `nproc` reads that 4 whatever it declared. The figure that matched the cpuset
 in every arm was the one the rows read, `taskset -cp $$`; in Python, the same
 answer comes from `len(os.sched_getaffinity(0))`.
@@ -135,7 +140,7 @@ together and it reached load average 371.
 
 | | Declared `--cpus 24` | Declared nothing (`--cpus` defaults to 1) |
 |---|---|---|
-| A | 24 cores held, 24 cores usable | Runs 24 workers on 1 core. Correct, and roughly 24 times slower |
+| A | 24 cores held, 24 cores usable | Runs 24 workers on 1 core. Correct, and slow by the parallelism it did not declare |
 | B | 24 cores held, 24 cores usable | 24 workers on all 20-80 cores of the box, holding an admission claim on 1 |
 | C | As B | As B |
 
@@ -234,5 +239,8 @@ PB_SMOKE_CONSTRAIN_SWAP=yes DEB_DIR=... bash fleet/slurm/smoke/run.sh
 ```
 
 Each run prints the arm it is in at the top of its transcript and names it in
-every row. `fleet/slurm/smoke/README.md` has what the harness does and does not
+every row. The rows quoted above come from
+`/home/rob/slurm-build/smoke/run-20260905T021615` (arm 1),
+`run-20260905T020326` (arm 2) and `run-20260905T020952` (arm 3), each 21/21.
+`fleet/slurm/smoke/README.md` has what the harness does and does not
 establish.
