@@ -144,6 +144,11 @@ STREAM_TAIL_BYTES = 256 * 1024
 #: is still queued or running; nothing has been cancelled.
 WAIT_TIMEOUT_STATE = "WAIT_TIMEOUT"
 
+#: What a detached submission reports in place of a scheduler state.  Nothing
+#: polled the job, so no state is known, and inventing ``PENDING`` would be an
+#: answer this process never asked the controller for.
+DETACHED_STATE = "DETACHED"
+
 #: What it reports when no scheduler command can say anything about the job --
 #: purged past ``MinJobAge`` with no accounting behind it.  The CAS still can.
 UNKNOWN_STATE = "UNKNOWN"
@@ -396,6 +401,12 @@ class RunResult:
     action_key: str
     attempts: list[tuple[SubmittedJob, Outcome]] = field(default_factory=list)
     receipt: dict[str, object] | None = None
+    #: The generation every attempt in this run was stamped with.  A detached
+    #: caller has to know it: the terminal record it will look for later is
+    #: identified by generation and not by key, because the key is a content
+    #: hash and the same key is submitted again every time somebody asks for
+    #: the same work again.
+    published_unix: float = 0.0
 
     @property
     def last(self) -> tuple[SubmittedJob, Outcome] | None:
@@ -1265,6 +1276,7 @@ def run(
     wait_s: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
     on_submit: Callable[[SubmittedJob], None] | None = None,
+    detach: bool = False,
 ) -> RunResult:
     """Submit, wait, and resubmit while the producer's contract allows it.
 
@@ -1274,6 +1286,16 @@ def run(
     nothing about that.  A receipt in the CAS ends the loop whatever the exit
     code said, and so does a cancellation -- an operator's decision is not a
     defect to retry around.
+
+    ``detach`` submits the first attempt and returns there, without waiting and
+    without filing an ending.  The caller is saying that something else reads
+    the job out later, so this must not file a verdict it has not observed: an
+    ending written now would say ``failed`` for a job that is still queued.
+    Everything up to the return is the same call, which is the point -- a
+    detached submission asks the scheduler for exactly what an attached one
+    asks for, partition and constraint and GRES included.  Retries stay with
+    the attached form: a resubmission needs somebody alive to see the attempt
+    fail, and after this returns nobody is.
     """
 
     key = str(action["action_key"])
@@ -1282,6 +1304,7 @@ def run(
     # One generation for the whole run, stamped on every submission record and
     # on the ending.  Retries are attempts within it, not new requests.
     published_unix = _now()
+    result.published_unix = published_unix
     published_by = socket.gethostname()
     if queue_root is not None:
         # A submission is what retires a withdrawal; see ``supersede_withdrawal``.
@@ -1319,6 +1342,16 @@ def run(
         )
         if on_submit is not None:
             on_submit(job)
+        if detach:
+            result.attempts.append((job, Outcome(
+                job_id=job.job_id,
+                state=DETACHED_STATE,
+                exit_code=None,
+                signal=None,
+                stdout_path=job.stdout_path,
+                stderr_path=job.stderr_path,
+            )))
+            return result
         outcome = wait(
             job,
             sacct=sacct,

@@ -108,6 +108,11 @@ CONTENT_TRANSFORM_ATTRIBUTES = frozenset(
 #: Non-zero because the command did not run; distinct from a real failure
 #: because nothing about it was a defect.
 WITHDRAWN_EXIT = 143
+
+#: The one line ``--detach`` prints.  Versioned because ``pbcampaign`` and
+#: ``pbwait`` parse it, and a fleet runs a published runtime generation that
+#: may be older than the tool reading its output.
+DETACH_SCHEMA_V1 = "prismaquant.prismabuild.pbrun_detach.v1"
 #: The receipt ``publish_runtime`` leaves for which bytes the fleet is serving.
 #: A worker loop holds the module it imported at start, so this is the only
 #: thing that says whether a given box's loop can see a withdrawal at all.
@@ -1249,6 +1254,72 @@ def pin_notice(
     return "pbrun: " + "  ".join(notes)
 
 
+def detach_line(
+    key: str,
+    *,
+    transport: str,
+    status: str,
+    queue_root,
+    published_unix: float | None = None,
+    job_id: str | None = None,
+    submission=None,
+) -> str:
+    """One line saying where a detached submission went, for a machine to read.
+
+    Everything ``pbrun`` prints for a person goes to stderr, so stdout carries
+    this and nothing else: a caller reads one line of JSON instead of parsing
+    prose written to be read aloud.
+
+    The generation travels in it because the terminal record a later wait looks
+    for is identified by generation and not by key.  An action key is a content
+    hash, so one key accumulates the records of every earlier run of the same
+    work, and a waiter given only the key cannot tell this run's ending from
+    the ending of a run that finished last week.
+    """
+
+    queue = Path(queue_root)
+    return json.dumps(
+        {
+            "schema": DETACH_SCHEMA_V1,
+            "action_key": str(key),
+            "transport": str(transport),
+            "status": str(status),
+            "published_unix": published_unix,
+            "job_id": str(job_id) if job_id is not None else None,
+            "submission": str(submission) if submission is not None else None,
+            "done": str(queue / pool.DONE / f"{key}.json"),
+            "failed": str(queue / pool.FAILED / f"{key}.json"),
+            "withdrawn": str(queue / pool.WITHDRAWN / f"{key}.json"),
+        },
+        sort_keys=True,
+    )
+
+
+def published_generation(q, key: str, path) -> float | None:
+    """The generation the pull queue stamped on this submission, or ``None``.
+
+    Read back rather than assumed: ``PoolQueue.publish`` stamps
+    ``published_unix`` itself, and a worker may have renamed the item into
+    ``claimed`` -- or run it to completion -- before this looks.  ``None`` is
+    the honest answer when none of those places has it, and it tells a later
+    wait to accept any record for the key rather than to pretend it knows which
+    run the record belongs to.
+    """
+
+    candidates = [Path(path)]
+    for state in (pool.CLAIMED, pool.DONE, pool.FAILED):
+        candidates.append(q.item_path(state, key))
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        stamped = value.get("published_unix") if isinstance(value, dict) else None
+        if isinstance(stamped, (int, float)) and not isinstance(stamped, bool):
+            return float(stamped)
+    return None
+
+
 def await_outcome(q, key: str, *, wait_s: float) -> int:
     """Block until this action reaches a terminal directory, then report it.
 
@@ -1389,6 +1460,7 @@ def slurm_outcome(
     wait_s: float,
     retry_safe: bool,
     max_attempts: int,
+    detach: bool = False,
     runtime_root: Path = RUNTIME_ROOT,
     lane_root=None,
     queue_root=None,
@@ -1406,6 +1478,11 @@ def slurm_outcome(
     no receipt means it was not, even from a job that exited zero.  That is the
     rule ``PoolQueue.finish`` already applies; only the machinery underneath it
     differs.
+
+    ``detach`` stops after ``sbatch`` accepted the job: the submission is
+    announced on stdout as one line of JSON and this returns 0.  No ending is
+    filed, because none has been observed -- whoever waits later files it, from
+    the same recorded submission ``--withdraw`` already builds a record out of.
     """
 
     key = str(action["action_key"])
@@ -1434,6 +1511,7 @@ def slurm_outcome(
             # cutover is a change to one dispatcher and not to every reader.
             queue_root=SH / "pb-queue" if queue_root is None else queue_root,
             wait_s=wait_s,
+            detach=detach,
             on_submit=lambda job: print(
                 f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
                 f"(attempt {job.attempt}) tags={tags} demand={demand}",
@@ -1454,6 +1532,17 @@ def slurm_outcome(
         print("pbrun: nothing was submitted", file=sys.stderr)
         return 1
     job, outcome = last
+    if detach:
+        print(detach_line(
+            key,
+            transport="slurm",
+            status="submitted",
+            queue_root=SH / "pb-queue" if queue_root is None else queue_root,
+            published_unix=result.published_unix,
+            job_id=job.job_id,
+            submission=job.record_path,
+        ), flush=True)
+        return 0
     total = len(result.attempts)
     for index, (attempted, reported) in enumerate(result.attempts, start=1):
         print(f"pbrun: attempt {index}/{total} slurm job {attempted.job_id} "
@@ -1784,6 +1873,16 @@ def main() -> int:
                          "SLURM under --transport slurm")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
+    ap.add_argument(
+        "--detach", action="store_true",
+        help="seal and submit exactly as usual, print one JSON line naming the "
+             "action key, the transport, the job id or queue record and the "
+             "terminal-record paths, and exit 0 without waiting; an action "
+             "already in the CAS prints status=cache_hit and submits nothing. "
+             "Wait for it later with pbwait.py. Incompatible with "
+             "--max-attempts greater than 1: a retry needs somebody alive to "
+             "see the attempt fail",
+    )
     ap.add_argument("--priority", type=int, default=0)
     ap.add_argument("--env", action="append", default=[],
                     help="K=V added to the action's environment (repeatable)")
@@ -1834,6 +1933,16 @@ def main() -> int:
         raise SystemExit(
             "pbrun: --max-attempts greater than 1 requires --retry-safe; "
             "--deterministic covers result bytes, not external side effects"
+        )
+    if args.detach and args.max_attempts > 1:
+        # A retry is a second submission made after somebody watched the first
+        # one fail.  Detaching means nobody is watching, so the choice is
+        # between silently running one attempt for a caller who asked for
+        # three, and saying so here.
+        raise SystemExit(
+            "pbrun: --detach submits one attempt and returns, so it cannot "
+            "honour --max-attempts greater than 1; submit it attached, or "
+            "detach with a single attempt"
         )
     retry_policy = {
         "max_attempts": args.max_attempts,
@@ -2133,6 +2242,23 @@ def main() -> int:
 
     request_path = cas.publish_action_request(action)
 
+    if args.detach and cas.lookup(action) is not None:
+        # Nothing to submit and nothing to wait for.  The attached path lets
+        # the worker discover this and file an ending, which is right when
+        # somebody is holding the terminal open; detached, that ending would be
+        # a job scheduled, a checkout materialized and a node occupied to learn
+        # what this process already knows.  A campaign re-run is the case: every
+        # row a hit, no new job ids.
+        print(f"pbrun: {key[:12]} is already in the CAS; nothing submitted",
+              file=sys.stderr, flush=True)
+        print(detach_line(
+            key,
+            transport=args.transport,
+            status="cache_hit",
+            queue_root=SH / "pb-queue",
+        ), flush=True)
+        return 0
+
     if args.transport == "slurm":
         # Everything below this point reads the pull queue -- worker offers,
         # the placement census, the ready directory -- and none of it describes
@@ -2153,6 +2279,7 @@ def main() -> int:
             wait_s=args.wait_s,
             retry_safe=args.retry_safe,
             max_attempts=args.max_attempts,
+            detach=args.detach,
         )
 
     q = pool.PoolQueue(SH / "pb-queue")
@@ -2241,7 +2368,7 @@ def main() -> int:
     # contract in both cases.
     if "retry_safe" in inspect.signature(q.publish).parameters:
         publication["retry_safe"] = args.retry_safe
-    q.publish(**publication)
+    queued_path = q.publish(**publication)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
@@ -2254,6 +2381,17 @@ def main() -> int:
     masked = "" if demand.get("gpu") else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
     print(f"pbrun: queued {key[:12]} tags={tags} demand={demand}{masked}",
           file=sys.stderr, flush=True)
+
+    if args.detach:
+        print(detach_line(
+            key,
+            transport="pool",
+            status="submitted",
+            queue_root=q.root,
+            published_unix=published_generation(q, key, queued_path),
+            submission=queued_path,
+        ), flush=True)
+        return 0
 
     return await_outcome(q, key, wait_s=args.wait_s)
 
