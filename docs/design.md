@@ -180,10 +180,32 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   `linux-aarch64-sm121`). Heterogeneous visible capabilities are ambiguous and
   refuse.
 - `worker_id` is the live hostname locally or SLURM's node name inside an
-  allocation. A `host_class_keyed` action is SLURM-only: its class must equal
-  the job partition or an exact constraint token, and the claimed numeric job
-  must occur in `/proc/self/cgroup`. Merely setting `SLURM_*` variables is not
-  attestation.
+  allocation. Inside an allocation the job id is derived from the `job_<id>`
+  cgroup the kernel placed the process in; `SLURM_JOB_ID`, `SLURMD_NODENAME`
+  and `SLURM_JOB_PARTITION` are recorded evidence that must agree with it and
+  decide nothing, because a batch script can export any variable regardless
+  of `--export=NIL`. `SLURM_JOB_CONSTRAINTS` is set only for the Prolog and
+  Epilog, never in a job's environment.
+- A `host_class_keyed` action is SLURM-only and is attested through the
+  controller: the worker runs `scontrol show job <id>` for `Partition`,
+  `BatchHost` and the job's own constraint (`Features=`), then
+  `scontrol show node <BatchHost>` for `ActiveFeatures`. The class is
+  attested when the node carries the Feature **and** the job's constraint is
+  a plain conjunction that requires it, so the scheduler enforced the
+  placement rather than a worker observing it. Partitions are the resource
+  axis (`all`, `gpu`, `cpu`) and never a class. The controller is retried on
+  the bounded `SCONTROL_RETRY_DELAYS_S` schedule; an unreachable controller
+  refuses by name and is never read as attested. Portable work inside a job
+  never asks the controller. The controller's answer is recorded as
+  `evidence.slurm.controller`, optional in the persisted shape so earlier
+  receipts keep validating, and a receipt re-derives the class from that
+  record alone.
+- `pbrun --measurement --host-class CLASS` seals such an action: the class
+  joins the effective placement, so the SLURM lane sends `--constraint=CLASS`
+  and the action key moves with it. The submission binds the submitting
+  box's argv[0] and ABI facts, as every nonportable action must, so it has to
+  originate on a box of that class; a worker of another class refuses it at
+  preflight, naming the field that differs.
 - The resolved regular file behind `argv[0]` is hashed before execution and
   checked again before publication. Nonportable actions must bind that digest
   and byte count as `environment.toolchain.{argv0.sha256,argv0.bytes}`, plus
