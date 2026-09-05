@@ -423,11 +423,13 @@ def test_a_pinned_cpu_action_is_not_forced_into_the_cpu_partition() -> None:
 
 def test_a_named_partition_reaches_sbatch(tmp_path: Path, fleet: Path) -> None:
     resources = sl.LaneResources.from_demand({"cpu": 2, "mem_gb": 4})
-    _submit(tmp_path, resources=resources,
-            partition=sl.partition_for(resources, []))
+    job = _submit(tmp_path, resources=resources,
+                  partition=sl.partition_for(resources, []))
     argv = _submissions(fleet)[0]["argv"]
     assert "--partition=cpu" in argv
     assert not [flag for flag in argv if flag.startswith("--constraint")]
+    record = json.loads(job.record_path.read_text(encoding="utf-8"))
+    assert record["partition"] == "cpu"
 
 
 def test_an_untagged_action_carries_no_constraint(
@@ -477,6 +479,7 @@ def test_the_submission_record_seals_the_job_id_and_the_exact_argv(
     assert record["argv"] == job.argv
     assert record["attempt"] == 1
     assert record["constraint"] == ["x86"]
+    assert record["partition"] == ""
     latest = json.loads((job.directory / "latest.json").read_text())
     assert latest == record
 

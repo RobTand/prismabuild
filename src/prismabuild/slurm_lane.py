@@ -631,6 +631,8 @@ def submit(
         "cas_root": str(cas.root),
         "constraint": tags,
         "gres": gres or "",
+        # Empty means the default partition: the constraint decided.
+        "partition": partition or "",
         "time_limit": format_time_limit(timeout_s),
         "cpus": resources.cpus,
         "memory_mib": resources.memory_mib,
