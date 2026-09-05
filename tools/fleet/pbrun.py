@@ -1357,8 +1357,10 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
         print(f"pbrun: withdrawn by {who}"
               f"{' -- ' + why if why else ''}", file=sys.stderr)
         return WITHDRAWN_EXIT
+    # ``elapsed_s`` is present and null on a SLURM record whose scheduler
+    # provenance was purged, so the key's presence must not defeat the default.
     print(f"pbrun: {status} on {outcome.get('finished_host')} "
-          f"in {detail.get('elapsed_s', 0):.0f}s", file=sys.stderr)
+          f"in {(detail.get('elapsed_s') or 0):.0f}s", file=sys.stderr)
     if status == "cache_hit":
         return 0
     rc = detail.get("returncode")
@@ -1510,6 +1512,42 @@ def _echo(path, stream) -> None:
         stream.write(Path(path).read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return
+
+
+def withdraw_routed(
+    prefixes, *, transport: str, reason: str = "", by: str = "",
+    lane_root=None, queue_root=None, scancel: str = "scancel", queue=None,
+) -> int:
+    """Send each prefix to the transport that recorded it.
+
+    An operator's shell need not name the transport.  A SLURM job has a
+    submission record under the lane root and a pull-queue item has none, so
+    the record decides where a prefix goes; ``--transport slurm`` still sends
+    every prefix to the lane.  Before this, ``--withdraw`` on a box whose
+    environment did not name the transport went to the pull queue, found
+    nothing there, and left the SLURM job running with exit status 2.
+    """
+
+    lane_prefixes, pool_prefixes = [], []
+    for prefix in prefixes:
+        if transport == "slurm" or slurm_lane.resolve_recorded(
+            str(prefix), root=lane_root
+        ):
+            lane_prefixes.append(prefix)
+        else:
+            pool_prefixes.append(prefix)
+    rc = 0
+    if lane_prefixes:
+        rc = max(rc, withdraw_slurm_main(
+            lane_prefixes, reason=reason, by=by, lane_root=lane_root,
+            queue_root=queue_root, scancel=scancel,
+        ))
+    if pool_prefixes:
+        if queue is None:
+            root = SH / "pb-queue" if queue_root is None else Path(queue_root)
+            queue = pool.PoolQueue(root)
+        rc = max(rc, withdraw_main(queue, pool_prefixes, reason=reason, by=by))
+    return rc
 
 
 def withdraw_slurm_main(
@@ -1815,14 +1853,9 @@ def main() -> int:
             who = getpass.getuser()
         except Exception:                                        # noqa: BLE001
             who = "unknown"      # no passwd entry is not a reason to refuse
-        if args.transport == "slurm":
-            return withdraw_slurm_main(
-                args.withdraw, reason=args.reason,
-                by=f"{who}@{socket.gethostname()}",
-            )
-        return withdraw_main(
-            pool.PoolQueue(SH / "pb-queue"), args.withdraw,
-            reason=args.reason, by=f"{who}@{socket.gethostname()}",
+        return withdraw_routed(
+            args.withdraw, transport=args.transport, reason=args.reason,
+            by=f"{who}@{socket.gethostname()}",
         )
 
     command = args.command
