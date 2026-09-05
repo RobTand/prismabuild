@@ -164,7 +164,7 @@ def test_no_ending_files_no_terminal_record(
     assert rc == 0
     assert (fleet / "cancelled").read_text().split() == ["1000"]
     assert "already has an outcome filed" not in capsys.readouterr().err
-    record = json.loads((queue / "failed" / f"{key}.json").read_text())
+    record = json.loads((queue / "withdrawn" / f"{key}.json").read_text())
     assert record["status"] == "withdrawn"
 
 

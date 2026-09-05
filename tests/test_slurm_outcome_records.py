@@ -192,7 +192,10 @@ def test_a_withdrawal_files_the_marker_pool_reset_reads(
     assert marker["action_key"] == key
     assert key in pool.PoolQueue(queue_root).withdrawn_keys()
 
-    outcome = _record(queue_root, pool.FAILED, key)
+    # The ending enriches the marker in place; nothing lands in failed/,
+    # which is the pool's rule: a withdrawal is a decision, not a failure.
+    assert not (queue_root / pool.FAILED / f"{key}.json").exists()
+    outcome = _record(queue_root, pool.WITHDRAWN, key)
     assert outcome["status"] == "withdrawn"
     assert outcome["withdrawn_by"] == "rob@sparky"
     assert isinstance(outcome["withdrawn_unix"], float)
@@ -487,7 +490,7 @@ def test_a_job_that_finishes_before_scancel_lands_is_still_a_withdrawal(
     ``--withdraw`` writes the marker, then ``scancel`` reports that the job may
     already have finished -- and it had, with a receipt.  If the submitter files
     its own ``executed`` account anyway, one generation carries a ``withdrawn/``
-    marker, a ``failed/`` record and a ``done/`` record at once: ``merge_suite``
+    record and a ``done/`` record at once: ``merge_suite``
     cannot resolve the double match and ``reclaim_terminal_reservation``
     refuses on two terminals.  The pool avoids this by reading the marker
     before every finish; so does this.
@@ -512,7 +515,8 @@ def test_a_job_that_finishes_before_scancel_lands_is_still_a_withdrawal(
     assert result.receipt is not None          # the work really did happen
 
     assert not (queue_root / pool.DONE / f"{key}.json").exists()
-    record = _record(queue_root, pool.FAILED, key)
+    assert not (queue_root / pool.FAILED / f"{key}.json").exists()
+    record = _record(queue_root, pool.WITHDRAWN, key)
     assert record["status"] == "withdrawn"
     assert record["withdrawn_by"] == "rob@sparky"
     assert record["reason"] == "wrong branch"
@@ -551,7 +555,7 @@ def test_a_withdrawal_between_attempts_stops_the_next_one(
     # it is what keeps a second run of this key from colliding with this one.
     names = sorted(x.name for x in submissions.iterdir())
     assert len(names) == 1 and names[0].endswith("-001.json"), names
-    record = _record(queue_root, pool.FAILED, str(action["action_key"]))
+    record = _record(queue_root, pool.WITHDRAWN, str(action["action_key"]))
     assert record["status"] == "withdrawn"
     assert record["attempts"] == 1
 
@@ -593,3 +597,39 @@ def test_the_record_says_whether_the_job_had_the_whole_device(
             queue_root, pool.FAILED, job.action_key)["detail"]["slurm"]["gres"]
 
     assert filed == {"whole": "gpu:1", "slot": "shard:1", "none": None}
+
+
+def test_a_cancelled_job_is_filed_under_withdrawn_and_never_under_failed(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pool's rule, from ``PoolQueue.withdraw``: a withdrawal lands in
+    ``withdrawn/``, never ``failed/``.  A job cancelled outside ``pbrun
+    --withdraw`` -- an operator's ``scancel``, the scheduler -- is still a
+    decision about the work and not a failure of it, so its ending carries the
+    job's detail into the withdrawn record and adds nothing to the failure
+    record that every reader counts."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "CANCELLED")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "cancelled-outside")
+    request = cas.publish_action_request(action)
+    queue_root = _queue(tmp_path)
+    key = str(action["action_key"])
+
+    result = sl.run(
+        action, cas=cas, request_path=request,
+        placement=["gb10"], resources=sl.LaneResources(gpu_slots=1),
+        timeout_s=600.0, worker_script=WORKER, job_entry=JOB_ENTRY,
+        queue_root=queue_root, poll_s=0.0,
+    )
+    assert result.receipt is None
+
+    assert not (queue_root / pool.FAILED / f"{key}.json").exists()
+    assert not (queue_root / pool.DONE / f"{key}.json").exists()
+    record = _record(queue_root, pool.WITHDRAWN, key)
+    assert record["status"] == "withdrawn"
+    assert record["withdrawn_by"] == "slurm:scancel"
+    assert isinstance(record["withdrawn_unix"], float)
+    assert record["detail"]["slurm"]["state"] == "CANCELLED"
+    assert record["detail"]["returncode"] == -15
+    assert key in pool.PoolQueue(queue_root).withdrawn_keys()

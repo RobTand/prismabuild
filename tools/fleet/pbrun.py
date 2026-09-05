@@ -2092,10 +2092,21 @@ def _file_slurm_withdrawal(
         # A submission record from before the generation stamp. Withdraw it,
         # but do not claim to know which request it belonged to.
         published_unix = float(submission.get("submitted_unix") or 0.0)
-    for state in (pool.DONE, pool.FAILED):
+    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         filed = queue_root / state / f"{key}.json"
-        if filed.exists() and slurm_lane._same_generation(filed, published_unix):
-            return None
+        if not filed.exists() or not slurm_lane._same_generation(filed, published_unix):
+            continue
+        if state == pool.WITHDRAWN:
+            # A bare marker is a withdrawal still in flight (or one whose
+            # scancel never landed); only a record carrying the job's ending
+            # says this generation is over.
+            try:
+                filed_record = json.loads(filed.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                filed_record = None
+            if not (isinstance(filed_record, dict) and "detail" in filed_record):
+                continue
+        return None
 
     _, marker = slurm_lane.publish_withdrawal(
         queue_root=queue_root, action_key=key, reason=reason, by=by,

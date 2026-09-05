@@ -1841,7 +1841,7 @@ def publish_outcome(
     withdrawn_unix: float | None = None,
     reason: str | None = None,
 ) -> Path | None:
-    """File one action's ending under ``done/`` or ``failed/``.
+    """File one action's ending under ``done/``, ``failed/`` or ``withdrawn/``.
 
     Which directory is decided by the CAS, not by the exit status: a receipt
     means the work was done whatever the job said afterwards, and no receipt
@@ -1856,10 +1856,38 @@ def publish_outcome(
 
     key = str(action_key)
     provenance = outcome.provenance if outcome is not None else None
-    state = pool.DONE if status == "executed" else pool.FAILED
+    if status == "executed":
+        state = pool.DONE
+    elif status == "withdrawn":
+        # The pool's rule, from ``PoolQueue.withdraw``: a withdrawal lands in
+        # ``withdrawn/``, never ``failed/``.  A withdrawn action is a decision,
+        # and a record of it under ``failed/`` makes the failure record lie
+        # about the fleet -- every reader that counts failures counts it.
+        # The marker ``publish_withdrawal`` filed there is the decision; this
+        # record enriches it with the job's ending and keeps its fields.
+        state = pool.WITHDRAWN
+    else:
+        state = pool.FAILED
     path = _queue_dir(queue_root, state) / f"{key}.json"
-    if path.exists() and _same_generation(path, published_unix):
-        return None
+    decision: dict[str, object] = {}
+    if path.exists():
+        if state == pool.WITHDRAWN:
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = None
+            if isinstance(existing, dict):
+                if "detail" in existing and _same_generation(path, published_unix):
+                    # A full ending is already filed for this generation.
+                    return None
+                decision = {
+                    field: existing[field]
+                    for field in ("withdrawn_unix", "withdrawn_by",
+                                  "withdrawn_host", "withdrawn_from", "reason")
+                    if field in existing
+                }
+        elif _same_generation(path, published_unix):
+            return None
 
     detail_status, returncode = detail_status_and_returncode(status, outcome)
     body: dict[str, object] = {
@@ -1934,6 +1962,11 @@ def publish_outcome(
         record["withdrawn_unix"] = float(withdrawn_unix)
     if reason is not None:
         record["reason"] = reason
+    # The marker's decision fields win over this call's: the first writer of
+    # a withdrawal is the one who decided it, and the pool's readers of this
+    # directory (``withdrawn_keys``, ``withdrawal_covers``, ``pool_reset``)
+    # read exactly those fields.
+    record.update(decision)
     _write_json_atomic(path, record)
     return path
 
