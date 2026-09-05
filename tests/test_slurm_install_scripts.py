@@ -43,7 +43,7 @@ def _fake_hostname(tmp_path: Path, name: str) -> dict[str, str]:
     script = binaries / "hostname"
     script.write_text(f"#!/bin/sh\necho {name}\n", encoding="utf-8")
     script.chmod(0o755)
-    environment = dict(os.environ)
+    environment = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LC_ALL": "C"}
     environment["PATH"] = f"{binaries}{os.pathsep}{environment['PATH']}"
     return environment
 
@@ -221,7 +221,7 @@ def test_the_munge_self_test_fails_when_munge_does(
         encoding="utf-8")
     for name in ("munge", "unmunge"):
         (fakes / name).chmod(0o755)
-    environment = dict(os.environ)
+    environment = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LC_ALL": "C"}
     environment["PATH"] = f"{fakes}{os.pathsep}{environment['PATH']}"
 
     broken = subprocess.run(
@@ -362,7 +362,7 @@ def _cutover_environment(tmp_path: Path) -> dict[str, str]:
     runtime = tmp_path / "runtime"
     (runtime / "runtime-generations" / "gen-old").mkdir(parents=True)
     (runtime / "repo").symlink_to("runtime-generations/gen-old")
-    environment = dict(os.environ)
+    environment = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LC_ALL": "C"}
     environment.update(
         PB_QUEUE_ROOT=str(queue),
         PB_RUNTIME_DIR=str(runtime),
@@ -703,14 +703,13 @@ def test_rollback_refuses_when_there_is_no_cutover_to_reverse(tmp_path: Path) ->
     assert "no cutover state file" in result.stderr
 
 
-# -- shellcheck, when it can be had ------------------------------------------
+# -- required shellcheck ------------------------------------------
 
 
-@pytest.mark.skipif(
-    shutil.which("docker") is None, reason="shellcheck is run through docker"
-)
 def test_shellcheck_is_clean() -> None:
-    """shellcheck 0.11.0 via koalaman/shellcheck-alpine; skipped without docker."""
+    """The fleet script lint gate must run; missing tooling is a failure."""
+
+    assert shutil.which("docker"), "install Docker and koalaman/shellcheck-alpine:stable to run required shellcheck"
 
     result = subprocess.run(
         [
@@ -720,8 +719,6 @@ def test_shellcheck_is_clean() -> None:
         ],
         capture_output=True, text=True, check=False,
     )
-    if result.returncode != 0 and "Unable to find image" in result.stderr:
-        pytest.skip("shellcheck image is not available and cannot be pulled")
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -857,7 +854,7 @@ def test_a_pid_that_exits_between_pgrep_and_the_read_is_silently_gone(
     (fakes / "pgrep").chmod(0o755)
     assert not Path(f"/proc/{dead}").exists()
 
-    environment = dict(os.environ)
+    environment = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LC_ALL": "C"}
     environment["PATH"] = f"{fakes}{os.pathsep}{environment['PATH']}"
     result = subprocess.run(
         ["bash", "-c", _stop_functions() + "\npb_pids supervise.py\n"],
@@ -906,7 +903,7 @@ def test_the_key_is_removed_on_a_box_that_has_no_shred(tmp_path: Path) -> None:
     result = subprocess.run(
         ["/bin/bash", "-c", lines[0].replace(KEY_B64, str(key))],
         capture_output=True, text=True, check=False,
-        env={**os.environ, "PATH": str(coreutils)},
+        env={"PATH": str(coreutils), "LC_ALL": "C"},
     )
 
     assert result.returncode == 0, result.stderr

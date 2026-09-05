@@ -103,8 +103,8 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     environment = {
         "PB_FAKE_DOCKER_STUBBORN": "1" if stubborn_docker else "0",
-        **os.environ,
-        "PATH": f"{node['bin']}{os.pathsep}{os.environ['PATH']}",
+        "PATH": f"{node['bin']}{os.pathsep}/usr/bin:/bin",
+        "LC_ALL": "C",
         "SLURM_JOB_ID": job_id,
         "PRISMABUILD_SLURM_JOB_STATE_ROOT": str(node["jobs"]),
         # The node's own bound on the `rm -rf`, which is the thing the state
