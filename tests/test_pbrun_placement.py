@@ -951,9 +951,29 @@ def test_git_snapshot_allows_an_internal_relative_symlink(tmp_path: Path) -> Non
     )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    pbrun.build_git_checkout_snapshot(
+    snapshot = pbrun.build_git_checkout_snapshot(
         checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
     )
+
+    # "Allows" has to mean "seals", not "does not raise": a snapshot that
+    # dropped the link, or followed it into a copy, would also not raise.
+    materialized = tmp_path / "materialized-internal-link"
+    materialized.mkdir()
+    assert _git(materialized, "init", "-q").returncode == 0
+    assert _git(
+        materialized,
+        "fetch",
+        "-q",
+        str(cas.input_path(snapshot["input"])),
+        "refs/heads/prismabuild-snapshot",
+    ).returncode == 0
+    assert _git(
+        materialized, "checkout", "-q", "--detach", str(snapshot["commit"])
+    ).returncode == 0
+
+    assert (materialized / "data").is_symlink()
+    assert os.readlink(materialized / "data") == "assets"
+    assert (materialized / "data" / "payload.txt").read_text() == "sealed bytes\n"
 
 
 def test_git_snapshot_refuses_a_gitlink_whose_working_bytes_are_not_bundled(
@@ -1299,6 +1319,20 @@ def test_portable_subdirectory_allows_a_relative_repository_sibling_script(
         repository_root=checkout,
     )
 
+    # The control the acceptance needs.  Nothing else refuses a *relative*
+    # token, so a gate that resolved only absolute ones read exactly like this
+    # acceptance: measured, by skipping relative tokens and running the whole
+    # suite, which stayed green.
+    outside = tmp_path / "outside" / "helper.py"
+    outside.parent.mkdir()
+    outside.write_text("print('helper')\n")
+    with pytest.raises(SystemExit, match="outside the snapshotted repository"):
+        pbrun.require_checkout_owned_scripts(
+            ["python", "../../outside/helper.py"],
+            requested,
+            repository_root=checkout,
+        )
+
 
 def test_a_non_git_checkout_cannot_fall_back_to_mutable_execution(
     tmp_path, monkeypatch,
@@ -1347,6 +1381,8 @@ def test_a_script_inside_the_checkout_is_bound_by_its_identity(tmp_path) -> None
     helper = checkout / "run-campaign.sh"
     helper.write_text("#!/bin/sh\nexit 0\n")
 
+    # No assertion: acceptance is the absence of the refusal, and the gate is
+    # proved to look at this argv shape by the refusal test directly above.
     pbrun.require_checkout_owned_scripts([str(helper)], checkout)
 
 
