@@ -118,9 +118,10 @@ def main() -> int:
         help="which dispatcher carries the shards (env PRISMABUILD_TRANSPORT, "
              "else the published runtime generation's default_transport); "
              "forwarded to pbrun unchanged")
-    # TODO(claude/pb-35-snapshot-ancestry): forward --snapshot-ref once that
-    # branch lands.  pbrun in this tree does not know the flag, and adding it
-    # here would fail every shard at argparse rather than pin an ancestry.
+    # pbrun does know --snapshot-ref, and this tool deliberately does not
+    # forward it.  An advertised ref exists so an action can spell a branch
+    # name, and a shard's command is pytest over repository-relative paths,
+    # which spells none.  Forward it when a shard has something to spell.
     ap.add_argument("paths", nargs="*", default=["tests"],
                     help="test files or directories to shard, relative to "
                          "--checkout; a directory contributes every "
