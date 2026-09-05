@@ -370,7 +370,9 @@ with at most its empty marker; no payload is written before publication. Success
 and ordinary refusal remove it. Cleanup enumerates from a fresh directory
 file description anchored to the held inode, so prior directory stream offsets
 cannot hide its ownership marker. The unlinked marker is closed before removing
-the directory so NFS removes any temporary open-file placeholder first.
+the directory so NFS removes any temporary open-file placeholder first. A
+source rejected before file-copy ownership transfers likewise closes its staged
+payload descriptor before unlinking it.
 Process death leaves
 an attributable directory whose lock is released by the kernel. A reaper must
 acquire the owner lock before removal; local PID absence cannot establish that

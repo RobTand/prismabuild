@@ -90,3 +90,28 @@ def test_a_regular_input_still_ingests_after_repeated_rejections(
     assert won
     assert entry["id"] == "model/valid"
     assert cas.input_path(entry).read_bytes() == b"valid ingest\n"
+
+
+def test_rejected_source_closes_staged_inode_before_unlink(tmp_path, monkeypatch):
+    closed = set()
+    observed = []
+    real_close, real_unlink = os.close, os.unlink
+
+    def close(descriptor):
+        info = os.fstat(descriptor)
+        closed.add((info.st_dev, info.st_ino))
+        return real_close(descriptor)
+
+    def unlink(path, *, dir_fd=None):
+        if str(path).startswith(".payload."):
+            info = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+            observed.append((info.st_dev, info.st_ino) in closed)
+        return real_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pb.os, "close", close)
+    monkeypatch.setattr(pb.os, "unlink", unlink)
+    source = tmp_path / "directory"
+    source.mkdir()
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    _reject(cas, source, "test/rejected")
+    assert observed == [True]

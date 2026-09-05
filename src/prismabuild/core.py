@@ -2849,6 +2849,13 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
         )
         return temporary, digest.hexdigest(), size
     except BaseException:
+        # A rejection before fdopen still owns the writable descriptor. Close
+        # before unlink so an NFS .nfs* placeholder cannot outlive the payload
+        # and confuse the enclosing private-directory cleanup.
+        if descriptor >= 0:
+            with suppress(OSError):
+                os.close(descriptor)
+            descriptor = -1
         try:
             os.unlink(temporary_name, dir_fd=staging_fd)
         except FileNotFoundError:
