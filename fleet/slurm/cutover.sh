@@ -11,11 +11,13 @@
 # rob's, pqwork.service is rob's user unit, and the runtime generation is
 # rob's to publish.
 #
-# It refuses unless all four of these hold, because each one is a way for the
+# It refuses unless all five of these hold, because each one is a way for the
 # cutover to lose work rather than move it:
 #
 #   * fleet/slurm/verify.sh passed (its marker, or --verified)
 #   * pb-queue/claimed and pb-queue/ready are both empty
+#   * publish_runtime.py --dry-run accepts this checkout, asked here rather
+#     than at step 5, which runs after every loop is already dead
 #   * no pbrun is waiting on a pull-queue action anywhere in the fleet
 #   * --yes
 #

@@ -38,9 +38,11 @@ patched. The host's real `/mnt/shared` is never touched.
 The container is not the fleet, and four things stay open for the install:
 
 - **Device containment.** `ConstrainDevices` is off here and the node's GRES is
-  bound to a character device nothing opens. Whether
-  `cgroup_allowed_devices_file.conf` admits exactly the right NVIDIA control
-  interfaces is answerable only on a box with a GPU.
+  bound to a character device nothing opens. On cgroup v2 the containment is an
+  eBPF program that denies exactly the GRES `File=` devices a job was not
+  allocated and admits everything else, and whether it lets a job holding
+  `shard:1` initialize CUDA while a job holding nothing cannot open
+  `/dev/nvidia0` is answerable only on a box with a GPU.
 - **The fleet's cgroup arrangement.** Delegation here needs `--privileged`,
   `--cgroupns=private`, a manual `cgroup.subtree_control` and
   `IgnoreSystemd=yes`; the fleet's boxes have systemd and slurmd under it.
