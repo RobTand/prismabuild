@@ -228,7 +228,20 @@ These still need the real install, and no container stands in for them:
    run: ten of its fifteen rows pass in the three-node smoke and the other
    five need a real box, and running it there found two defects, both fixed.
    See the row table in `fleet/slurm/smoke/README.md`.
-7. **That the addresses in `slurm.conf` are enough.** The resolution failure in
+7. **What a hand-run `sbatch` is actually charged.** `slurm.conf` now sets
+   `DefMemPerCPU=768`, the largest per-core default every node can honour at
+   full occupancy (61440 MiB / 80 CPUs on dl380g10, against 3686 and 4096 on
+   the Sparks). Before it, `CR_Core_Memory` charged a job that named no memory
+   the whole `RealMemory` of the node it landed on, so one `sbatch` without
+   `--mem` held a box. The lane always sends `--mem`, so nothing the fleet
+   submits exercises this line, and the fleet's controller has never read it.
+   The multinode smoke will be the first thing that does: `genconf.py` passes
+   every global through unchanged, and 768 fits every node it generates. Two
+   things to check on a real controller: that a job with no `--mem` is
+   admitted alongside others rather than alone, and that a job which exceeds
+   768 MiB per core is OOM-killed by `ConstrainRAMSpace` with a message an
+   operator can read. Pass `--mem` or `--mem-per-cpu` for anything larger.
+8. **That the addresses in `slurm.conf` are enough.** The resolution failure in
    both directions is measured and the addresses are measured, but no SLURM
    daemon has yet dialled one of them. `NodeAddr` is the documented remedy for
    exactly this; it has not been shown working on this fleet. The three-node
@@ -381,17 +394,22 @@ breaks `/mnt/shared` before it breaks the scheduler.
 
 ### Order, and the one thing you carry between boxes
 
-Run dl380g10 first. It creates the fleet's munge key and leaves a base64 copy
-at `/home/rob/.munge-key.b64`, mode 0600, owned by rob. Every box must
+Run dl380g10 first. It creates the fleet's munge key and exports a base64 copy
+to `/home/rob/.munge-key.b64`, mode 0600, owned by rob. Every box must
 authenticate with that same key.
 
 ```bash
 # 1. on dl380g10, from the copy you made above
 ssh -t dl380g10 sudo bash /home/rob/pb-slurm/install.sh
 
-# 2. as rob, from sparky, pull the key and hand it on.  dl380g10 cannot push
+# 2. as rob, from sparky, take the key and hand it on.  dl380g10 cannot push
 #    it: that box resolves neither Spark, so ssh from there fails on the name.
-scp dl380g10:/home/rob/.munge-key.b64 /home/rob/.munge-key.b64
+#    Taking it removes dl380g10's copy in the same command, so the fleet's
+#    shared secret does not sit in a home directory on the controller.  The
+#    export is owned by rob, so this needs no sudo and no tty.  The umask is
+#    what keeps the local copy at 0600: a redirect would create it 0644 under
+#    the default umask, and the scp below would carry that mode to sparklina.
+(umask 077; ssh dl380g10 'cat /home/rob/.munge-key.b64 && { shred -u /home/rob/.munge-key.b64 2>/dev/null || rm -f /home/rob/.munge-key.b64; }' > /home/rob/.munge-key.b64)
 scp /home/rob/.munge-key.b64 sparklina:/home/rob/.munge-key.b64
 
 # 3. on each Spark
@@ -399,17 +417,23 @@ ssh -t sparky     sudo bash /home/rob/prismabuild/fleet/slurm/install.sh
 ssh -t sparklina  sudo bash /home/rob/pb-slurm/install.sh
 ```
 
-A Spark's run installs that key, stamps its sha256 beside it, and shreds the
-copy. Do not carry the key through `/mnt/shared`: it is the fleet's shared
-secret and an NFS export is the wrong place for one. Do not stage it in `/tmp`,
-which an out-of-memory event cleared on this fleet once already.
+A Spark's run installs that key, stamps its sha256 beside it, and removes the
+copy, `shred -u` where there is a shred and an unlink where there is not. It
+removes it on a run that stops partway too, from the moment it reads the file.
+That costs a re-carry only when the run dies inside step 3 itself, between the
+decode and the stamp: an empty decode, or a `chown` or `chmod` that fails. The
+later refusals, on the SLURM version or the topology or the slurm uid, all fire
+after step 3 has finished, so a re-run of the install there finds the key
+already stamped and says so rather than asking for it again. Do not carry it
+through `/mnt/shared`: it is the fleet's
+shared secret and an NFS export is the wrong place for one. Do not stage it in
+`/tmp`, which an out-of-memory event cleared on this fleet once already.
 
-The controller's own copy is not shredded by anything, because dl380g10 is
-where it is created. Once both Sparks are installed, remove it yourself:
-
-```bash
-ssh dl380g10 shred -u /home/rob/.munge-key.b64
-```
+If step 2 fails halfway you are left with a truncated or empty
+`/home/rob/.munge-key.b64` and no copy on dl380g10. That is recoverable and it
+is not silent: a Spark refuses an export that decodes to an empty key, and
+re-running `install.sh` on dl380g10 exports the same key again. It exports on
+every run, including one that keeps the key already on the box.
 
 **Installing the `munge` package puts a key on the box by itself.** Measured
 2026-09-05 in an `ubuntu:24.04` container: after `apt install munge`,
@@ -449,7 +473,10 @@ node that disagree about `slurm.conf` produce errors that name neither.
 - the `slurm` user and group at uid/gid 64030, and
   `/var/spool/slurm/{ctld,d}` plus `/var/log/slurm` owned by them
 - munge installed, the fleet's key at `/etc/munge/munge.key` mode 0400, and
-  `/etc/munge/prismabuild-fleet-key.sha256` recording which key that is
+  `/etc/munge/prismabuild-fleet-key.sha256` recording which key that is. No
+  base64 copy: on a Spark the run removes the copy it read, and on dl380g10 the
+  export is removed by the command that carries it to the Sparks. A run that
+  stops after touching that copy removes it on the way out
 - SLURM 25.11.2 from apt on dl380g10, from the prebuilt debs on the Sparks
 - four configuration files in `/etc/slurm/`: `slurm.conf`, `gres.conf`,
   `cgroup.conf` and `epilog.sh`. Device containment needs no allow-list file:
@@ -975,7 +1002,7 @@ reads `latest.json` to find the job to cancel.
 | `/var/spool/slurm/` | Controller state and slurmd spool, local disks only |
 | `/mnt/shared/prismabuild-fleet/slurm/` | Job scripts, submission records, job logs |
 | `/mnt/shared/prismabuild-fleet/slurm/jobs/` | One state file per running job, for the Epilog |
-| `/home/rob/.munge-key.b64` | The key in transit, created on dl380g10 and shredded on each Spark |
+| `/home/rob/.munge-key.b64` | The key in transit, exported on dl380g10, removed there by the command that carries it away, and removed again on each Spark |
 | `~/.prismabuild/slurm-verify-passed.json` | `verify.sh` passed here, against which `slurm.conf` and when; `cutover.sh` reads all three |
 | `~/.prismabuild/slurm-verify-failed.json` | `verify.sh` did not pass here, which row failed and when; `cutover.sh` refuses while it exists |
 | `~/.prismabuild/crontab.pre-cutover` | Each box's crontab as it was, for `rollback.sh` |

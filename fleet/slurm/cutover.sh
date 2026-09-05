@@ -426,7 +426,13 @@ pb_pids() {
     script="$1"
     for pid in $(pgrep -f "$script" 2>/dev/null); do
         [ "$pid" = "$$" ] && continue
-        cmdline=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null) || continue
+        # 2>/dev/null goes before the input redirect, not after it: bash
+        # applies redirections left to right, so a pid that exited between
+        # pgrep and here fails `< /proc/N/cmdline` while stderr is still the
+        # terminal, and prints "No such file or directory" during the one
+        # operation nobody wants to see an error during.  A vanished pid is
+        # not running the loop, which is all this is asking.
+        cmdline=$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/cmdline") || continue
         interp=$(printf '%s\n' "$cmdline" | sed -n 1p)
         target=$(printf '%s\n' "$cmdline" | sed -n 2p)
         case "$interp" in *python*) ;; *) continue ;; esac
