@@ -546,6 +546,7 @@ for jobs the controller has forgotten. Use them directly for scheduler detail
 | `/mnt/shared/prismabuild-fleet/pb-queue/done/<key>.json` | The ending of an action whose work was done. |
 | `.../pb-queue/failed/<key>.json` | The ending of an action with no receipt. |
 | `.../pb-queue/withdrawn/<key>.json` | The marker for an action somebody cancelled. |
+| `.../pb-queue/claimed/<key>.<unix>.<host>.<pid>.<id>.tombstone` | A claim moved aside while its finisher publishes the action's next home. It exists for one write, and the finisher deletes it. One that outlives the lease timeout means the finisher was interrupted: the next reaper puts the record back as a claim, or, if the key already has a live or terminal record, files it under `withdrawn/superseded/` as evidence. No reader of `claimed/` counts it as a claim. |
 | `.../slurm/<key>/` | The lane directory: `scripts/<sha256>.sh`, the immutable script each submission sent, plus `job.sh` as a pointer to the newest, `submissions/`, `latest.json`, `liveness.jsonl`, and `<jobid>.out` and `.err`. |
 | `.../cas/` | The content-addressed store: action requests, results, and receipts. |
 
@@ -624,6 +625,21 @@ the run being submitted is left where it is, whenever it lands: it stops the
 remaining attempts of that run and it is the ending that gets filed. If the
 action finished a moment before you asked, `pbrun` says an outcome is already
 filed and withdraws nothing.
+
+On the pull queue, a withdrawal returns the action's capacity only once the
+action is known to have stopped. That is one of three things: the signal ladder
+on the holder's own box reported the process group dead, the holder is the box
+you ran the command on and no process there owns the action, or the holder's
+lease stopped beating and the reaper concluded the claim. Otherwise `pbrun` says
+`release pending on <host>` and reports `released 0`, and the claim, lease and
+reservation stay where they are with a `stop_pending` object stamped on the
+claimed record. The holder's worker sees the marker within a heartbeat, stops
+the action, files it under `withdrawn/` and returns the tokens then. Read
+`released 0` as "not yet", not as "there was nothing to release": a cross-box
+withdrawal is the ordinary case and it always reads that way. Waiting is the
+point. Releasing on the operator's word alone let a replacement action be
+admitted on the holder's only CPU token while the original payload was still
+running.
 
 ### Retry
 

@@ -102,7 +102,7 @@ are NTP-synchronised and measured 1.2-2.5 ms apart against a 300 s lease.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -150,6 +150,13 @@ INTENT = "intent"
 #: the live ``failed/`` for exactly that reason.
 WITHDRAWN = "withdrawn"
 _STATES = (READY, CLAIMED, DONE, FAILED, INTENT, WITHDRAWN)
+
+#: Suffix of a claim that has been moved out of the way while its finisher
+#: publishes the item's next home.  Every reader of ``claimed/`` addresses it
+#: as ``<key>.json`` or ``<key>.lease`` -- ``reap_stale`` and
+#: ``sweep_widowed_leases`` by glob, ``item_path`` and ``find_key`` by name --
+#: so a suffix that is neither is invisible to all of them, which is the point.
+TOMBSTONE_SUFFIX = ".tombstone"
 CONTAINER_OWNERS = "container-owners"
 CONTAINER_OWNER_LABEL = "prismabuild.action"
 DOCKER = "/usr/bin/docker"
@@ -656,6 +663,82 @@ class _Insufficient(Exception):
     """Internal: a demand could not be met in full."""
 
 
+#: Prefix of a claimant-private acquisition directory under ``held/``.  An
+#: action key is 64 hex characters, so a name carrying a dot cannot collide
+#: with one, and every reader that addresses a holder by key sees nothing.
+ACQUIRING_PREFIX = "claiming."
+
+
+#: What makes two readings of ``claimed/<key>.json`` the same claim.  The owner
+#: alone would be enough for two different workers, but not for one worker's
+#: two attempts at the same action, which is the case the reaper creates.
+_CLAIM_IDENTITY = ("claimed_by", "claimed_unix", "published_unix", "attempts")
+
+
+def _same_claim(
+    live: Mapping[str, object], snapshot: Mapping[str, object]
+) -> bool:
+    """Whether a live claimed record is the claim a worker actually ran.
+
+    Only fields the queue writes once per claim, so the guards that rewrite a
+    claimed record in place -- a container-cleanup retry, a withdrawal's
+    ``max_attempts`` poison, a pending stop -- do not read as a different
+    claim.
+    """
+
+    return all(
+        live.get(field) == snapshot.get(field) for field in _CLAIM_IDENTITY
+    )
+
+
+def _is_acquisition(name: str) -> bool:
+    """Whether a holder directory belongs to a claimant rather than an action.
+
+    One predicate for both readers, because the two must agree exactly.  A name
+    the sweep declines to recognise but ``held_keys`` reports as an action key
+    is a leak nothing owns: no queue directory holds that name, so no reaper
+    looks for it, and no sweep frees it.
+    """
+
+    return name.startswith(ACQUIRING_PREFIX)
+
+
+def _acquisition_clock(holder: Path) -> float | None:
+    """When a claimant began this acquisition, in seconds since the epoch.
+
+    The clock is in the *name* because there is nowhere else to put it that
+    survives: ``rename`` does not touch mtime, and the directory's own mtime is
+    bumped by every token moved into it, so a claimant that took one token and
+    died looks as fresh as one still working.  A name whose stamp this version
+    cannot read falls back to mtime, which is wrong in the conservative
+    direction -- too fresh, so swept later -- and never leaves the directory
+    unowned.  ``None`` only when the directory has gone.
+    """
+
+    parts = holder.name.split(".", 3)
+    if len(parts) >= 3:
+        try:
+            return int(parts[1]) / 1_000_000.0
+        except ValueError:
+            pass
+    try:
+        return holder.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _acquisition_claimant(name: str) -> tuple[str, int] | None:
+    """The host and pid a claimant stamped on its acquisition, if readable."""
+
+    parts = name.split(".")
+    if len(parts) < 6:
+        return None
+    try:
+        return parts[3], int(parts[4])
+    except ValueError:
+        return None
+
+
 class ResourceLedger:
     """Per-host capacity, held as tokens that are acquired by ``rename``.
 
@@ -690,34 +773,148 @@ class ResourceLedger:
     def held_dir(self) -> Path:
         return self.base / "held"
 
+    @property
+    def minted_dir(self) -> Path:
+        """Where the mint right for each token index is recorded, permanently.
+
+        One file per index, created with ``O_EXCL`` and never renamed.  It is
+        the only thing that decides whether an index has been minted, because
+        the tokens themselves move and a scan of where they move cannot be
+        made atomic.
+        """
+
+        return self.base / "minted"
+
     def ensure_capacity(self, capacity: Mapping[str, int]) -> None:
         """Create any missing token of each declared kind, idempotently.
 
-        A token index is present if it is either free or held, so two workers
-        declaring the same capacity converge and neither hands back a token the
-        other is using.
+        **The marker mints, not the scan.**  This used to snapshot ``free/``,
+        then scan ``held/``, then create anything neither listing had shown.
+        Movement between the two listings makes a present token invisible to
+        both: a token held by A, released while ``held/`` is being scanned and
+        re-acquired by B, appears in neither, and ``O_EXCL`` at its free
+        pathname does not protect a token of the same name under a holder.  The
+        ledger then reported ``cpu=2`` for a configured ``cpu=1`` and admitted
+        work against capacity that does not exist.  ``claim`` calls this on
+        every poll, so the interleaving overlaps ordinary action turnover
+        rather than only initialization.
+
+        So the decision to mint index ``i`` is an ``O_EXCL`` create of
+        ``minted/<kind>-<index>``, which never moves and is therefore never
+        invisible.  An index whose marker exists is skipped: its token exists
+        somewhere, or was deliberately retired.
+
+        **Adoption mints nothing.**  Every ledger already on the shared store
+        has free and held tokens and no markers, so the first call creates a
+        marker for each token it finds and leaves the totals alone.
+
+        Adoption is a scan, so it inherits the scan's blind spot: a union of
+        ``free/`` and ``held/`` is missable in either order, by a concurrent
+        release in one and a concurrent acquire in the other.  A token missed
+        by adoption is minted a second time here, and that residual duplicate
+        is *transient rather than permanent*, which is the property that makes
+        it tolerable: the duplicate can only be the free copy of a name whose
+        real token is held, and ``release`` renames a held token onto
+        ``free/<name>``, replacing it.  The two copies therefore collapse to
+        one the moment the holder finishes, without anything ever removing a
+        token a holder is using.  An earlier revision of this fix tried to
+        remove the duplicate on sight by inode; that reintroduced exactly the
+        check-then-act over a set a concurrent rename mutates that the markers
+        exist to retire, and it could take a token a second claimant had
+        already acquired.
+
+        Ordering note for the one window that remains: a process killed between
+        the marker create and the token create loses that index until an
+        operator removes the marker.  That direction under-declares capacity,
+        which is the safe one; the marker cannot be created second without
+        making the duplicate permanent again.
         """
 
         self.free_dir.mkdir(parents=True, exist_ok=True)
         self.held_dir.mkdir(parents=True, exist_ok=True)
+        self.minted_dir.mkdir(parents=True, exist_ok=True)
+        # One listing per call rather than an O_EXCL attempt per index: a
+        # 96-token memory ledger is polled every few seconds, and the marker
+        # remains the arbiter for anything this listing did not show.
+        minted = {path.name for path in _scan(self.minted_dir)}
+        minted |= self._adopt_present_tokens(minted)
         for kind, count in sorted(capacity.items()):
             total = int(count)
             if total < 0:
                 raise PoolContractError(f"capacity for {kind!r} must not be negative")
-            present = {path.name for path in _glob(self.free_dir, f"{kind}-*")}
-            for holder in _scan(self.held_dir):
-                if holder.is_dir():
-                    present.update(path.name for path in _glob(holder, f"{kind}-*"))
             for index in range(total):
                 name = f"{kind}-{index:04d}"
-                if name in present:
+                if name in minted:
                     continue
-                token = self.free_dir / name
                 try:
-                    descriptor = os.open(token, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                    descriptor = os.open(
+                        self.minted_dir / name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o644,
+                    )
                 except FileExistsError:
                     continue
                 os.close(descriptor)
+                minted.add(name)
+                if self._token_is_held(name):
+                    # Adoption did not see it, but a holder has it: the marker
+                    # now accounts for that token and nothing is minted.  The
+                    # check is a scan and can still miss, which is what the
+                    # docstring's transient duplicate is.
+                    continue
+                try:
+                    descriptor = os.open(
+                        self.free_dir / name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o644,
+                    )
+                except FileExistsError:
+                    continue      # a free token of this name already exists
+                os.close(descriptor)
+
+    def _token_is_held(self, name: str) -> bool:
+        """Whether any holder here currently contains a token called ``name``."""
+
+        return any(
+            (holder / name).exists()
+            for holder in _scan(self.held_dir)
+            if holder.is_dir()
+        )
+
+    def _adopt_present_tokens(self, minted: Container[str]) -> set[str]:
+        """Record the mint right for every token this ledger already has.
+
+        Called before minting so a ledger that predates the markers keeps the
+        capacity it has instead of having it minted a second time.  Creates
+        markers only; it never creates or removes a token.
+
+        ``minted`` is the marker listing already read, so the steady state
+        costs the directory walk and no syscall per token: every name is
+        already known and only a ledger being adopted opens anything.
+        """
+
+        adopted: set[str] = set()
+        present = {path.name for path in _glob(self.free_dir, "*-*")}
+        for holder in _scan(self.held_dir):
+            if holder.is_dir():
+                present.update(path.name for path in _glob(holder, "*-*"))
+        for name in sorted(present):
+            if name in minted:
+                continue
+            try:
+                descriptor = os.open(
+                    self.minted_dir / name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o644,
+                )
+            except FileExistsError:
+                adopted.add(name)
+                continue
+            except OSError:
+                continue
+            os.close(descriptor)
+            adopted.add(name)
+        return adopted
 
     def retire_free_capacity(self, capacity: Mapping[str, int]) -> dict[str, int]:
         """Lower a kind's total to ``capacity`` by deleting FREE tokens only.
@@ -763,11 +960,22 @@ class ResourceLedger:
             # and that is the documented behaviour: the total falls the rest of
             # the way as holders finish and their tokens are not re-created.
             for token in sorted(free, reverse=True)[:excess] if excess else []:
+                # The mint right goes FIRST, then the token.  Both orders have
+                # a two-syscall window, and they fail in opposite directions.
+                # Token first leaves a marker with no token, which
+                # ``ensure_capacity`` skips forever: capacity silently and
+                # permanently lost, undetectable without a scan that cannot be
+                # made safe.  Marker first leaves a token with no marker, which
+                # the next poll's adoption re-marks and this retire retires
+                # again -- the retire simply did not happen, which is the
+                # recoverable direction.  Adoption is why: a token with no
+                # marker is adopted, never minted a second time.
+                (self.minted_dir / token.name).unlink(missing_ok=True)
                 try:
                     token.unlink()
-                    retired[kind] = retired.get(kind, 0) + 1
                 except OSError:
-                    pass
+                    continue
+                retired[kind] = retired.get(kind, 0) + 1
         return retired
 
     def capacity(self) -> dict[str, int]:
@@ -793,18 +1001,40 @@ class ResourceLedger:
             counts[kind] = counts.get(kind, 0) + 1
         return counts
 
-    def acquire(self, action_key: str, demand: Mapping[str, int]) -> bool:
-        """Take every token the demand asks for, or none of them.
+    def begin_acquire(
+        self, action_key: str, demand: Mapping[str, int]
+    ) -> str | None:
+        """Take the whole demand into a directory only this claimant owns.
 
-        All-or-nothing is the repro's third bug stated as code: a multi-resource
-        actor that keeps what it managed to get while blocked on what it did not
-        is holding resources it cannot use.
+        Admission runs *before* the ready-to-claimed rename, so at the moment
+        tokens are taken it is not yet known which contender will own the
+        action.  Filing them under ``held/<action_key>`` gave every contender
+        for one key the same rollback target: the loser's ``release`` returned
+        the winner's tokens, and a third action was then admitted on capacity
+        the winner was already executing against.  The reservation therefore
+        belongs to the *claimant* until the rename decides, and only then to
+        the action.
+
+        The private directory lives under ``held/`` so that every reader which
+        counts what is not free -- ``ensure_capacity``'s holder scan,
+        ``capacity``, ``held``, ``retire_free_capacity`` -- accounts for tokens
+        in flight without knowing this mechanism exists.  Returns the handle to
+        commit or abandon, or ``None`` when the demand could not be met in
+        full.
+
+        All-or-nothing on the demand: a multi-resource actor that keeps what it
+        managed to get while blocked on what it did not is holding resources it
+        cannot use.
         """
 
         wanted = {k: int(v) for k, v in demand.items() if int(v) > 0}
+        handle = (
+            f"{ACQUIRING_PREFIX}{int(_now() * 1_000_000)}.{action_key}"
+            f".{socket.gethostname()}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+        )
         if not wanted:
-            return True
-        destination = self.held_dir / action_key
+            return handle
+        destination = self.held_dir / handle
         destination.mkdir(parents=True, exist_ok=True)
         try:
             for kind, need in sorted(wanted.items()):
@@ -820,26 +1050,151 @@ class ResourceLedger:
                 if taken < need:
                     raise _Insufficient(kind)
         except _Insufficient:
+            self._empty_into_free(destination)
+            return None
+        return handle
+
+    def commit_acquire(self, action_key: str, handle: str) -> int:
+        """Move a claimant's private tokens under its action.  Count moved.
+
+        Called by the winner of the ready-to-claimed rename, and by nobody
+        else.  The move is per token rather than one directory rename: a
+        leftover ``held/<action_key>`` from a release that could not remove its
+        own directory makes a directory rename fail with ``ENOTEMPTY``, and the
+        count this returns has to be exact so the caller can fail closed.  Per
+        token loses nothing, because both directories are under ``held/``: at
+        no point in the merge is a token countable as free, and at no point can
+        a second claimant take one.
+
+        The count is what the caller checks, and it has to be exact, which is
+        the other reason the move is per token.  A claimant swept as stale (see
+        :meth:`sweep_stale_acquisitions`) and then winning its rename would
+        otherwise proceed to run an action with no reservation, which is the
+        same over-admission by another road.  One directory rename would be
+        atomic but countable only by listing the source *before* it, and a
+        sweep landing between the count and the rename would inflate the count
+        -- the one direction the caller must not be lied to in.
+
+        A name already present under the destination is left where it is rather
+        than renamed over.  There is one token per index, so a collision means
+        some earlier incarnation's tokens are filed under this key; replacing
+        the file would delete a token with no retire and no marker, and the
+        short count instead makes the caller fail closed.
+        """
+
+        source = self.held_dir / handle
+        destination = self.held_dir / action_key
+        if not source.is_dir():
+            return 0
+        moved = 0
+        destination.mkdir(parents=True, exist_ok=True)
+        for token in _scan(source):
+            landing = destination / token.name
+            if landing.exists():
+                continue
+            try:
+                os.rename(token, landing)
+            except OSError:
+                continue
+            moved += 1
+        try:
+            source.rmdir()
+        except OSError:
+            pass
+        return moved
+
+    def abandon_acquire(self, handle: str) -> int:
+        """Return a claimant's own private tokens.  Its tokens, nothing else."""
+
+        return self._empty_into_free(self.held_dir / handle)
+
+    def acquire(self, action_key: str, demand: Mapping[str, int]) -> bool:
+        """Take every token the demand asks for, or none of them.
+
+        The uncontended spelling of begin-then-commit, for a caller that has
+        already decided the action is its own.  ``claim`` does not use it: the
+        rename that decides ownership sits between the two halves.
+        """
+
+        handle = self.begin_acquire(action_key, demand)
+        if handle is None:
+            return False
+        wanted = sum(int(v) for v in demand.values() if int(v) > 0)
+        if self.commit_acquire(action_key, handle) < wanted:
+            self.abandon_acquire(handle)
             self.release(action_key)
             return False
         return True
 
+    def sweep_stale_acquisitions(
+        self, *, grace_s: float = LEASE_TIMEOUT_S
+    ) -> list[str]:
+        """Free tokens a claimant took and never committed.
+
+        The window between ``begin_acquire`` and ``commit_acquire`` is one
+        claim-intent write and one rename, so a private directory older than
+        the grace belongs to a claimant that died inside it.  Nothing else
+        recovers those tokens: they are filed under a claimant, not an action
+        key, so no claimed record names them and ``reap_stale``'s release by
+        key cannot see them.
+
+        **The grace is the lease timeout, not the heartbeat.**  This sweep
+        decides that a claimant is dead with no heartbeat behind it, and that
+        is the judgement ``reap_stale``'s own docstring records getting wrong
+        at heartbeat length: it requeued a live seven-second action within a
+        second of its claim (issue #36).  Waiting costs almost nothing here,
+        because the private directory is under ``held/`` and is honestly
+        counted as consumed the whole time, whereas sweeping a live claimant
+        costs it its claim.  A sweep that does fire early is still not an
+        over-admission: ``commit_acquire`` counts what it moved and its caller
+        puts the item back rather than running it unreserved.
+
+        The stamped host and pid buy back the common case.  When the claimant
+        was on this host and its process is gone, there is nothing to wait for
+        and the heartbeat interval is enough.  A reused pid reads as alive and
+        waits the full grace, which is the safe direction.
+        """
+
+        swept: list[str] = []
+        now = _now()
+        local = socket.gethostname()
+        for holder in _scan(self.held_dir):
+            if not _is_acquisition(holder.name) or not holder.is_dir():
+                continue
+            started = _acquisition_clock(holder)
+            if started is None:
+                continue
+            bound = grace_s
+            claimant = _acquisition_claimant(holder.name)
+            if (claimant is not None and claimant[0] == local
+                    and not _process_alive(claimant[1])):
+                bound = min(bound, HEARTBEAT_S)
+            if now - started <= bound:
+                continue
+            self._empty_into_free(holder)
+            swept.append(holder.name)
+        return swept
+
     def release(self, action_key: str) -> int:
         """Return every token held for this action.  Safe to call twice."""
 
-        destination = self.held_dir / action_key
-        if not destination.is_dir():
+        return self._empty_into_free(self.held_dir / action_key)
+
+    def _empty_into_free(self, holder: Path) -> int:
+        """Rename every token under one holder back to ``free/``."""
+
+        if not holder.is_dir():
             return 0
         released = 0
         self.free_dir.mkdir(parents=True, exist_ok=True)
-        for token in _scan(destination):
+        for token in _scan(holder):
             try:
                 os.rename(token, self.free_dir / token.name)
             except OSError:
                 continue
             released += 1
         try:
-            destination.rmdir()
+            holder.rmdir()
         except OSError:
             pass
         return released
@@ -863,7 +1218,18 @@ class ResourceLedger:
         return counts
 
     def held_keys(self) -> list[str]:
-        return sorted(path.name for path in _scan(self.held_dir) if path.is_dir())
+        """Which actions hold tokens here.
+
+        Claimant-private acquisitions are excluded: they are named for the
+        claimant, not for an action, and the contender that will own the action
+        is not decided until its rename.  A caller asking which actions hold
+        capacity would otherwise be handed a name no queue directory has.
+        """
+
+        return sorted(
+            path.name for path in _scan(self.held_dir)
+            if path.is_dir() and not _is_acquisition(path.name)
+        )
 
 
 class PoolQueue:
@@ -889,6 +1255,35 @@ class PoolQueue:
 
     def lease_path(self, action_key: str) -> Path:
         return self.dir(CLAIMED) / f"{action_key}.lease"
+
+    def _entomb_claim(self, action_key: str) -> Path | None:
+        """Move a claim aside so its own cleanup cannot delete its successor.
+
+        ``finish`` and ``reap_stale`` both used to publish the item's next home
+        and only afterwards unlink ``claimed/<key>.json`` and its lease.  A
+        worker polling inside that window claims the newly published retry --
+        its rename lands on the same claimed filename -- and the old finisher
+        then deletes the *new* claim and the *new* lease on its way out.  The
+        retry disappears from the live queue, and because no claimed record and
+        no lease survive it, a crash of that second worker leaves a reservation
+        no reaper can find.
+
+        So the claim moves out of the way first, atomically, to a name no
+        reader of ``claimed/`` treats as a claim, and only the tombstone is
+        deleted afterwards.  A crash inside the window leaves the tombstone,
+        which :meth:`sweep_finish_tombstones` recovers.  ``None`` when there
+        was no claim to move, which is the ordinary lost-race case.
+        """
+
+        tombstone = self.dir(CLAIMED) / (
+            f"{action_key}.{int(_now() * 1_000_000)}.{socket.gethostname()}"
+            f".{os.getpid()}.{uuid.uuid4().hex[:8]}{TOMBSTONE_SUFFIX}"
+        )
+        try:
+            os.rename(self.item_path(CLAIMED, action_key), tombstone)
+        except OSError:
+            return None
+        return tombstone
 
     def attempt_generation(self, record: Mapping[str, object]) -> str:
         """Stable directory name for one submission of a content-addressed key."""
@@ -1703,10 +2098,12 @@ class PoolQueue:
                 self.item_path(READY, key).unlink(missing_ok=True)
                 continue
             demand = self.demand_of(item)
+            handle: str | None = None
             if ledger is not None and demand:
                 if any(total.get(kind, 0) < need for kind, need in demand.items()):
                     continue      # never fits this box; not this box's to hold
-                if not ledger.acquire(key, demand):
+                handle = ledger.begin_acquire(key, demand)
+                if handle is None:
                     denials = self.record_pass(key)
                     if (denials >= STARVATION_FLOOR
                             and self.withhold_age(key) <= WITHHOLD_CEILING_S):
@@ -1723,9 +2120,42 @@ class PoolQueue:
             try:
                 os.rename(src, dst)
             except (FileNotFoundError, NotADirectoryError):
-                if ledger is not None:
-                    ledger.release(key)   # lost the race: hold nothing
+                if ledger is not None and handle is not None:
+                    # Lost the race: hold nothing -- and return only what THIS
+                    # claimant took.  Releasing by action key here returned the
+                    # winner's reservation and let a third action be admitted
+                    # on top of it.
+                    ledger.abandon_acquire(handle)
                 continue
+            if ledger is not None and handle is not None:
+                # Won the rename, so the reservation stops belonging to this
+                # claimant and starts belonging to the action.  Every branch
+                # below releases by action key, which is correct only once the
+                # tokens are filed under it.
+                if ledger.commit_acquire(key, handle) < sum(demand.values()):
+                    # A stale-acquisition sweep took part of the reservation,
+                    # or tokens of an earlier incarnation are filed under this
+                    # key.  Fail closed rather than run unreserved: ``dst`` is
+                    # still byte-identical to the ready record, because the
+                    # rewrite below has not happened yet, so putting it back
+                    # restores the item exactly as it was.
+                    ledger.abandon_acquire(handle)
+                    ledger.release(key)
+                    # Link rather than rename.  ``publish`` writes ``ready``
+                    # unconditionally, so a re-submission of this key can
+                    # already be sitting there, and a rename would replace that
+                    # new generation with these older bytes and lose the
+                    # request.  If it is there, leave the claim for the reaper
+                    # instead: an extra reaper cycle costs one attempt, a
+                    # clobbered generation costs the whole submission.
+                    try:
+                        os.link(dst, src)
+                    except OSError:
+                        pass
+                    else:
+                        dst.unlink(missing_ok=True)
+                        self.item_path(INTENT, key).unlink(missing_ok=True)
+                    continue
             moved = _read_json(dst) or item
             terminal = self.terminal_outcome_covers(moved, action_key=key)
             if terminal is not None:
@@ -1969,25 +2399,172 @@ class PoolQueue:
                 # File the exact transition it proved rather than the local
                 # lease observation that lost the first-writer race.
                 record["schema"] = POOL_OUTCOME_SCHEMA_V1
-                _write_json_atomic(self.item_path(str(disposition), key), record)
-                path.unlink(missing_ok=True)
+                destination = self.item_path(str(disposition), key)
             else:
                 record["requeued_unix"] = _now()
                 for transient in ("claimed_by", "claimed_unix", "claimed_host"):
                     record.pop(transient, None)
-                try:
-                    _write_json_atomic(self.item_path(READY, key), record)
-                except OSError:
-                    continue
-                path.unlink(missing_ok=True)
+                destination = self.item_path(READY, key)
+            # Same ordering as ``finish``, and for the same reason: this loop
+            # published the requeue and only then unlinked the claim and lease,
+            # so a worker that claimed the requeue inside that window had its
+            # claim and lease deleted by this reaper.
+            tombstone = self._entomb_claim(key)
+            self.lease_path(key).unlink(missing_ok=True)
             # Whatever the outcome, the dead claimant's capacity goes back.  A
             # reservation outliving its holder is the starvation bug's shape.
             self.ledger(holder if isinstance(holder, str) else None).release(key)
-            self.lease_path(key).unlink(missing_ok=True)
+            try:
+                _write_json_atomic(destination, record)
+            except OSError:
+                # Put the claim back rather than leave the key with no record
+                # anywhere.  Link first: the tombstone must not replace a claim
+                # that appeared while this was in flight.
+                if tombstone is not None:
+                    try:
+                        os.link(tombstone, path)
+                    except OSError:
+                        pass
+                    else:
+                        tombstone.unlink(missing_ok=True)
+                continue
+            if tombstone is None:
+                path.unlink(missing_ok=True)
+            else:
+                tombstone.unlink(missing_ok=True)
             requeued.append(key)
         self.sweep_widowed_leases(timeout_s=timeout_s)
+        self.sweep_stale_acquisitions()
+        self.sweep_finish_tombstones()
         self.quarantine_orphans()
         return requeued
+
+    def sweep_finish_tombstones(
+        self, *, grace_s: float = LEASE_TIMEOUT_S
+    ) -> list[str]:
+        """Recover a claim whose finisher died with it moved out of the way.
+
+        ``finish`` and ``reap_stale`` move a claim to a tombstone, publish the
+        item's next home, then delete the tombstone.  A process killed inside
+        that window leaves a record that no consumer addresses: the key is in
+        neither ``ready`` nor ``claimed``, so nothing claims it, nothing reaps
+        it, and its waiter never sees an outcome.  This is the only thing that
+        looks.
+
+        Three dispositions, and which one applies is decided by what else the
+        key has, never by what the tombstone says about itself:
+
+        *   A record in ``ready`` or ``claimed``, **of any generation**, means
+            the key has moved on.  Re-injecting these bytes could only start a
+            fight with a live record, so the tombstone is filed as evidence and
+            removed.  Any generation, not just this one: a crash in this window
+            leaves the key addressable nowhere, so a submitter re-publishes it,
+            and restoring the old generation over that would have the reaper
+            requeue it straight over the new one.
+        *   A terminal record of the *same* generation means the publish landed
+            and the tombstone is redundant cleanup.  Filed and removed.
+        *   Otherwise the publish did not land: link the record back to
+            ``claimed/<key>.json`` and let the ordinary reaper conclude it.
+            Its lease is already gone, so the missing-lease path applies one
+            grace later, and it charges the same attempt number the finisher
+            archived -- ``archive_attempt`` is first-writer-wins, so the
+            finisher's real outcome is what the record adopts, not this
+            reaper's lease observation.
+
+        A record whose attempt links no longer verify is filed rather than
+        restored.  Restoring it would hand ``reap_stale`` a record that raises
+        from ``archive_attempt``, and that exception stops reaping on every box
+        for as long as the record exists.
+
+        The grace is the lease timeout: nothing is blocked behind this except
+        the action's own visibility, and a sweep that fires while a finisher is
+        mid-publish would put a claim beside a ready record of the same
+        generation.
+        """
+
+        swept: list[str] = []
+        claimed = self.dir(CLAIMED)
+        if not claimed.is_dir():
+            return swept
+        now = _now()
+        for tombstone in sorted(claimed.glob(f"*{TOMBSTONE_SUFFIX}")):
+            parts = tombstone.name.split(".", 2)
+            key = parts[0]
+            if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+                continue
+            when: float | None = None
+            if len(parts) >= 2:
+                try:
+                    when = int(parts[1]) / 1_000_000.0
+                except ValueError:
+                    when = None
+            if when is None:
+                try:
+                    when = tombstone.stat().st_mtime
+                except OSError:
+                    continue
+            if now - when <= grace_s:
+                continue
+            record = _read_json(tombstone)
+            live = any(
+                self.item_path(state, key).exists()
+                for state in (READY, CLAIMED)
+            )
+            covered = (
+                self.terminal_outcome_covers(record, action_key=key) is not None
+                or self.withdrawal_covers(record, action_key=key) is not None
+            )
+            restorable = record is not None and not live and not covered
+            if restorable and "attempt_history" in record:
+                try:
+                    self.attempt_outcomes(record)
+                except PoolContractError:
+                    restorable = False
+            if restorable:
+                try:
+                    os.link(tombstone, self.item_path(CLAIMED, key))
+                except OSError:
+                    pass
+                else:
+                    tombstone.unlink(missing_ok=True)
+                    swept.append(key)
+                    continue
+            self._file_superseded(
+                record, key=key, kind="finish-tombstone", status="dropped",
+                dropped_unix=_now(), dropped_host=socket.gethostname(),
+                reason="a finisher was interrupted between moving its claim "
+                       "aside and publishing the item's next home; the key "
+                       "already has a live or terminal record, so these bytes "
+                       "are evidence rather than work",
+            )
+            tombstone.unlink(missing_ok=True)
+            swept.append(key)
+        return swept
+
+    def sweep_stale_acquisitions(
+        self, *, grace_s: float = LEASE_TIMEOUT_S
+    ) -> list[str]:
+        """Free tokens a claimant on any box took and never committed.
+
+        Every host's ledger, not just this one: a claimant that died between
+        ``begin_acquire`` and ``commit_acquire`` left its tokens under its own
+        box's reservations, and the box that notices may not be that box.
+        ``reap_stale`` already releases a dead claimant's tokens from whatever
+        host held them, so a foreign write here is the established shape and
+        not a new one.
+        """
+
+        swept: list[str] = []
+        for directory in _scan(self.root / RESERVATIONS):
+            if not directory.is_dir():
+                continue
+            swept.extend(
+                f"{directory.name}/{name}"
+                for name in self.ledger(directory.name).sweep_stale_acquisitions(
+                    grace_s=grace_s
+                )
+            )
+        return swept
 
     def sweep_widowed_leases(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
         """Remove leases in ``claimed/`` whose item record is gone.
@@ -2407,6 +2984,76 @@ class PoolQueue:
             "detail": detail,
         }
 
+    def _finish_late(
+        self,
+        action_key: str,
+        *,
+        status: str,
+        detail: Mapping[str, object] | None,
+        snapshot: Mapping[str, object],
+        live: Mapping[str, object],
+    ) -> Path:
+        """File the result of an attempt that a newer one has already replaced.
+
+        ``finish`` used to read whichever record occupied
+        ``claimed/<key>.json`` and prefer it over ``claim_snapshot`` without
+        comparing identity.  When a lease expired while its launcher was still
+        alive, the reaper requeued the action and a second worker claimed the
+        retry, the first worker's ``finish`` then advanced *that* record's
+        attempt counter, archived its own result under the second worker's
+        identity, filed the generation terminal, released the second worker's
+        tokens and removed its claim.  A ``done`` record and an immutable
+        attempt both described a result the named attempt never produced, and
+        the running retry lost its reservation.
+
+        A worker may conclude only the attempt it executed.  The live claim,
+        its lease and its reservation are left exactly as they are, and this
+        attempt's result goes where it belongs: its own numbered attempt under
+        its own generation, first-writer-wins like every other immutable
+        outcome, so a reaper that already filed a lease loss for this attempt
+        keeps that record and this one does not overwrite it.
+
+        Containers are deliberately not cleaned up here.  ``container_owner``
+        is a property of the action, not of one attempt, so the census cannot
+        tell this attempt's payloads from the live attempt's, and removing
+        them would stop work that is legitimately running.  The live attempt's
+        own conclusion cleans up both.
+        """
+
+        attempt = int(snapshot.get("attempts", 0)) + 1
+        archived = dict(snapshot)
+        archived["action_key"] = action_key
+        archived["finished_unix"] = _now()
+        archived["finished_host"] = socket.gethostname()
+        succeeded = status in {"executed", "cache_hit"}
+        limit = int(snapshot.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
+        # The same rule ``adopted_attempt_summary`` applies, so this outcome can
+        # never be the one that makes a reader refuse the record.
+        disposition = (
+            DONE if succeeded else FAILED if attempt >= limit else "requeued"
+        )
+        self.archive_attempt(
+            archived,
+            attempt=attempt,
+            status=status,
+            disposition=disposition,
+            detail={
+                **dict(detail or {}),
+                "late_finisher": {
+                    "reason": "this claim was requeued and re-claimed while "
+                              "this worker was still running it, so its "
+                              "result is filed under its own attempt and the "
+                              "live claim, lease and reservation were left "
+                              "untouched",
+                    "live_claimed_by": live.get("claimed_by"),
+                    "live_claimed_unix": live.get("claimed_unix"),
+                    "live_attempts": live.get("attempts"),
+                    "live_published_unix": live.get("published_unix"),
+                },
+            },
+        )
+        return self.attempt_path(archived, attempt)
+
     def finish(
         self,
         action_key: str,
@@ -2427,6 +3074,14 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
         record = _read_json(src)
+        if (record is not None and claim_snapshot is not None
+                and not _same_claim(record, claim_snapshot)):
+            # Whatever is at ``claimed/<key>.json`` now is not the claim this
+            # worker executed, so none of the code below may touch it.
+            return self._finish_late(
+                action_key, status=status, detail=detail,
+                snapshot=claim_snapshot, live=record,
+            )
         effective_record = record or claim_snapshot or {}
         container_cleanup = self.cleanup_action_containers(effective_record)
         if not container_cleanup["complete"]:
@@ -2576,9 +3231,6 @@ class PoolQueue:
             }
         )
         disposition = adopted["disposition"]
-        # Capacity is released before the item is filed, so the next worker to
-        # look sees the tokens free rather than racing this rename.
-        self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
         if disposition in {DONE, FAILED}:
             dst = self.item_path(str(disposition), action_key)
         else:
@@ -2591,9 +3243,20 @@ class PoolQueue:
             for transient in ("claimed_by", "claimed_unix", "claimed_host"):
                 record.pop(transient, None)
             dst = self.item_path(READY, action_key)
-        _write_json_atomic(dst, record)
-        src.unlink(missing_ok=True)
+        # Everything this worker owns goes before the item's next home becomes
+        # visible: the claim to a tombstone, then its own lease.  A retry
+        # published while either still stood was claimed by the next poll, and
+        # the unlinks below then deleted that new claim and its lease.
+        tombstone = self._entomb_claim(action_key)
         self.lease_path(action_key).unlink(missing_ok=True)
+        # Capacity is released before the item is filed, so the next worker to
+        # look sees the tokens free rather than racing this rename.
+        self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
+        _write_json_atomic(dst, record)
+        if tombstone is None:
+            src.unlink(missing_ok=True)
+        else:
+            tombstone.unlink(missing_ok=True)
         return dst
 
     def reclaim_terminal_reservation(self, action_key: str) -> dict[str, object]:
@@ -2928,10 +3591,27 @@ class PoolQueue:
         *faster* from the one running the work.
 
         Tokens go back through the same ``ledger(host).release(key)`` path
-        ``finish`` uses, but only after the action-owned container census is
-        empty.  A cross-box withdrawal cannot inspect the holder's Docker
-        daemon, so it keeps the claim and reservation until that worker sees
-        the marker, stops the action and performs the local verification.
+        ``finish`` uses, but only once the action is known to have **stopped**,
+        and only after the action-owned container census is empty.  Those are
+        two different questions and the verb used to ask only the second: an
+        action with no Docker marker reports an empty census immediately, so a
+        withdrawal from another box released the holder's tokens and removed
+        its claim and lease while the payload was still running, and a
+        replacement action was admitted on the holder's only CPU token.  The
+        census proves no owned container remains; it says nothing about a
+        non-container payload.
+
+        Three things confirm a stop, and nothing else does: the local signal
+        ladder reporting ``still_alive`` false; the holder being this host with
+        no process owning the action, so there is nothing here to stop; and the
+        dead-holder case, which is the reaper's, not this verb's -- once the
+        lease stops beating, ``reap_stale``'s withdrawal branch concludes the
+        claim and releases the tokens from the holder's own ledger.  Otherwise
+        the claim, lease and reservation stay exactly where they are, a
+        ``stop_pending`` object is stamped on the claimed record the way
+        ``container_cleanup_pending`` is, and the result reports ``released:
+        0`` and the holder's host.  The holder's own launcher checkpoint then
+        stops the action, files it as withdrawn, and releases the tokens.
         Releasing twice is free, because tokens are filed under the action key
         and the second release finds nothing to return.
 
@@ -3034,16 +3714,16 @@ class PoolQueue:
         # instead of being requeued and re-run.  That is the race the operator
         # used to have to win by hand, and it is the last of it that new bytes
         # can reach.
-        if origin == CLAIMED and isinstance(record, Mapping):
-            poisoned = dict(record)
-            poisoned["max_attempts"] = 1
-            poisoned["withdrawn_unix"] = filed.get("withdrawn_unix")
-            poisoned["withdrawn_by"] = str(filed.get("withdrawn_by") or by)
-            poisoned["withdrawn_note"] = (
+        live = dict(record) if isinstance(record, Mapping) else None
+        if origin == CLAIMED and live is not None:
+            live["max_attempts"] = 1
+            live["withdrawn_unix"] = filed.get("withdrawn_unix")
+            live["withdrawn_by"] = str(filed.get("withdrawn_by") or by)
+            live["withdrawn_note"] = (
                 "withdrawn by an operator; the retry is closed so a worker "
                 "that cannot see withdrawn/ files this terminally"
             )
-            _write_json_atomic(claimed_path, poisoned)
+            _write_json_atomic(claimed_path, live)
 
         # The ready record goes NOW, not after the ladder.  The ladder can run
         # for seconds; a re-submission landing inside it would otherwise be
@@ -3079,7 +3759,37 @@ class PoolQueue:
             }
 
         container_cleanup = self.cleanup_action_containers(record or lease)
-        if container_cleanup["complete"]:
+        # Why the action is known to have stopped, or why it is not.  A claim
+        # is the only state with a payload to stop; ``ready`` never started.
+        stop_pending: dict[str, object] | None = None
+        if origin == CLAIMED:
+            local = socket.gethostname()
+            if signalled is not None:
+                if signalled["still_alive"]:
+                    stop_pending = {"reason": "the action's process group "
+                                              "survived the signal ladder"}
+            elif host is not None and host != local:
+                stop_pending = {
+                    "reason": f"the action is held on {host}, which this box "
+                              "cannot signal; its own worker stops it at the "
+                              "next heartbeat and releases the reservation "
+                              "then, and the reaper concludes it if that box "
+                              "is gone",
+                }
+            elif targets:
+                stop_pending = {
+                    "reason": "a local process owns the action and no signal "
+                              "was sent",
+                }
+            # Otherwise the holder is this host and nothing here is running
+            # the action, so there is nothing left to stop.
+            if stop_pending is not None:
+                stop_pending.update({
+                    "holder_host": host,
+                    "checked_unix": _now(),
+                    "checked_host": local,
+                })
+        if container_cleanup["complete"] and stop_pending is None:
             released = self.ledger(host).release(key)
             claimed_path.unlink(missing_ok=True)
             self.lease_path(key).unlink(missing_ok=True)
@@ -3087,12 +3797,20 @@ class PoolQueue:
         else:
             # The decision is already durable in withdrawn/, but the run is
             # not gone yet.  Preserve the claim, lease and reservation as its
-            # ownership record; the holder's worker/reaper retries cleanup.
+            # ownership record; the holder's worker/reaper concludes it.
             released = 0
-            if origin == CLAIMED and isinstance(record, Mapping):
-                pending = dict(record)
-                pending["container_cleanup_pending"] = container_cleanup
-                pending["container_cleanup_checked_unix"] = _now()
+            if origin == CLAIMED and live is not None:
+                # From the poisoned copy, not from the record as it was read.
+                # Rebuilding this from ``record`` wrote the pre-poison bytes
+                # back over the ``max_attempts: 1`` above, which is the one
+                # thing that stops a worker running older bytes from requeueing
+                # a cancelled action.
+                pending = dict(live)
+                if not container_cleanup["complete"]:
+                    pending["container_cleanup_pending"] = container_cleanup
+                    pending["container_cleanup_checked_unix"] = _now()
+                if stop_pending is not None:
+                    pending["stop_pending"] = stop_pending
                 _write_json_atomic(claimed_path, pending)
         return {
             "action_key": key,
@@ -3107,6 +3825,9 @@ class PoolQueue:
             "released": released,
             "signalled": signalled,
             "container_cleanup": container_cleanup,
+            # ``None`` when the action is known to have stopped.  Otherwise
+            # why the reservation is still held, and on which box.
+            "stop_pending": stop_pending,
             "path": str(withdrawn_path),
             "reason": str(filed.get("reason") or ""),
         }
