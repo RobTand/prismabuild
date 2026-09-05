@@ -715,12 +715,14 @@ an impossible GRES, is reported for that record, the record stays `failed`, and
 
 | Status | Meaning |
 |---|---|
-| `executed` | The work ran and published a receipt. Filed under `done/`. |
+| `executed` | The work ran. Filed under `done/`. The two transports decide it differently: the lane files `executed` only when the receipt is in the CAS, and the pull queue derives it from the launcher exiting 0. |
 | `cache_hit` | The receipt was already there. Counts as done. On the lane, `pbrun` finds it before submitting and submits nothing. A job that starts and finds it -- the second job of a key, held behind the first -- reports it too, before materializing anything. Either way `done/` keeps the record of the run that did the work: a `cache_hit` record is filed only when the key has none. |
 | `failed` | No receipt. Something refused, or the command exited non-zero. Filed under `failed/`. |
-| `timeout` | SLURM killed the job at a `--timeout-s` you asked for. `returncode` is null. Retriable. |
+| `timeout` | The action was killed at a deadline. `returncode` is null, because an action that finished inside the tick that crossed the deadline would otherwise report 0 for a record filed as a timeout: read `status`, not `returncode`. Filed under `failed/`. Retriable. Under SLURM the deadline is the `--timeout-s` you asked for and the scheduler enforces it. In the pull queue `pbrun --timeout-s` is parsed and not sent, so the deadline is the worker loop's own `--timeout-s` on the box that claimed the action. |
 | `withdrawn` | Somebody cancelled the run. Not a defect, and not retried. |
-| `reset` | A `failed` ending that `pool_reset --apply` re-submitted. The record stays under `failed/` with its `detail` intact and a `reset` object beside it (host, time, and the attempt history it inherited), so the next run plans the action again. See "Reset a batch of failures". |
+| `reset` | A `failed` ending that `pool_reset --apply` re-submitted. The record stays under `failed/` with its `detail` intact and a `reset` object beside it, carrying the reason, the time and the host that reset it. The attempt links move to `attempt_history_before_reset`, so a reader does not adopt the old attempt's `failed` as this record's own ending. See "Reset a batch of failures". |
+| `finish_lost_race` | The worker finished work whose claim a reaper had already concluded, and the item's own record was gone, so nothing could be carried forward. Filed under `failed/` with the reason in `detail` and the launcher's own result under `detail.worker_detail`. Only a failing outcome reaches this: a successful one files its real status. |
+| `unreadable` | Not a filed status. `pbstatus` prints this row for a record it could not read, so a truncated or unreadable newest record does not print the empty table a fleet that filed nothing prints. The note column names the reason and the path: `permission denied`, the OS error's own text, `not valid JSON`, or `not a JSON object`. No other column carries a value, because every other column is inside the file nobody could read. The row is placed by the file's modification time. |
 
 ## Read a failure
 
