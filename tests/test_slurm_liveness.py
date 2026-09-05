@@ -9,7 +9,9 @@ thing it must never do, which is call ``scancel`` on any evidence at all.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -45,6 +47,115 @@ class FakeClock:
         self.now += float(seconds)
         for hook in list(self.hooks):
             hook(self.now)
+
+
+class FakeScheduler:
+    """The shared fixture's fake scheduler, in-process.
+
+    Same state directory, same ``FAKE_*`` environment knobs and same output
+    as the scripts ``fleet`` puts on PATH, so a test can switch a fake from a
+    clock hook exactly as before.  Passed to ``wait`` as callables (the
+    lane's ``Command`` form), a poll costs a dictionary lookup rather than
+    an interpreter start; a 400 s wait at ``poll_s=5`` is eighty polls, and
+    a process for each of them was where these tests spent their seconds.
+    ``sbatch`` and ``scancel`` stay scripts: one call per test is cheap, the
+    sealed argv ``sbatch`` records is what several tests read, and the
+    withdrawal record stamps the ``scancel`` command name into JSON.
+    """
+
+    def __init__(self, state: Path) -> None:
+        self.state = state
+
+    @property
+    def commands(self) -> dict:
+        return {"sacct": self.sacct, "scontrol": self.scontrol,
+                "squeue": self.squeue, "sstat": self.sstat}
+
+    def commands_with(self, **overrides) -> dict:
+        return {**self.commands, **overrides}
+
+    @staticmethod
+    def _done(argv, rc: int, out: str = "", err: str = ""):
+        return subprocess.CompletedProcess(list(argv), rc, out, err)
+
+    @staticmethod
+    def _extra() -> list[str]:
+        env = os.environ.get
+        return [env("FAKE_SACCT_START", "2026-09-04T10:00:00"),
+                env("FAKE_SACCT_END", "2026-09-04T10:00:10"),
+                env("FAKE_SACCT_ELAPSED", "00:00:10"),
+                env("FAKE_SACCT_NODELIST", "sparky"),
+                env("FAKE_SACCT_PARTITION", "all")]
+
+    def _record(self, job: str) -> tuple[str, str] | None:
+        record = self.state / f"{job}.state"
+        if not record.exists():
+            return None
+        state, code = record.read_text().strip().split("|")
+        return state, code
+
+    def sacct(self, argv):
+        if os.environ.get("FAKE_SACCT_DISABLED") == "1":
+            return self._done(argv, 1, err="sacct: error: Slurm accounting storage is disabled\n")
+        job = argv[argv.index("-j") + 1]
+        found = self._record(job)
+        if found is None:
+            return self._done(argv, 0)
+        state, code = found
+        extra = "|".join(self._extra())
+        return self._done(argv, 0, out=f"{job}|{state}|{code}|{extra}\n"
+                                      f"{job}.batch|{state}|{code}|{extra}\n")
+
+    def scontrol(self, argv):
+        job = argv[-1]
+        if os.environ.get("FAKE_CONTROLLER_DOWN") == "1":
+            return self._done(argv, 1, err="slurm_load_jobs error: Unable to contact "
+                                           "slurm controller (connect failure)\n")
+        if os.environ.get("FAKE_SCONTROL_HANG"):
+            raise subprocess.TimeoutExpired(
+                ["scontrol", *argv], float(os.environ["FAKE_SCONTROL_HANG"]))
+        found = self._record(job)
+        if found is None:
+            return self._done(argv, 1, err="slurm_load_jobs error: Invalid job id specified\n")
+        state, code = found
+        start, end, elapsed, nodes, partition = self._extra()
+        return self._done(argv, 0, out=(
+            f"JobId={job} JobName=pb-test JobState={state} Reason=None ExitCode={code} "
+            f"StartTime={start} EndTime={end} RunTime={elapsed} NodeList={nodes} "
+            f"Partition={partition}\n"))
+
+    def squeue(self, argv):
+        job = argv[argv.index("-j") + 1]
+        if os.environ.get("FAKE_CONTROLLER_DOWN") == "1":
+            return self._done(argv, 1, err="squeue: error: slurm_load_jobs: Unable to "
+                                           "contact slurm controller (connect failure)\n")
+        found = self._record(job)
+        if found is None:
+            return self._done(argv, 0)
+        state, _ = found
+        return self._done(argv, 0, out=f"{state}\n" if state in {"PENDING", "RUNNING"} else "")
+
+    def sstat(self, argv):
+        mode = os.environ.get("FAKE_SSTAT_MODE", "progress")
+        if mode == "fail":
+            return self._done(argv, 1, err="sstat: error: no steps running for job\n")
+        job = argv[argv.index("-j") + 1]
+        with (self.state / "sstat.argv").open("a") as handle:
+            handle.write(" ".join(argv) + "\n")
+        counter = self.state / f"{job}.sstat"
+        calls = int(counter.read_text()) + 1 if counter.exists() else 1
+        counter.write_text(str(calls))
+        cpu = calls if mode == "progress" else 1
+        return self._done(argv, 0, out=(
+            f"{job}.batch|00:00:{cpu:02d}|00:00:{cpu:02d}|4194304|102400|0|1|"
+            f"cpu=00:00:{cpu:02d},energy=0,fs/disk=102400,mem=4194304,pages=0,vmem=0\n"
+            f"{job}.extern|00:00:00|00:00:00|102400|0|0|1|"
+            f"cpu=00:00:00,energy=0,fs/disk=0,mem=102400,pages=0,vmem=0\n"))
+
+
+@pytest.fixture
+def scheduler(fleet: Path) -> FakeScheduler:
+    return FakeScheduler(fleet)
 
 
 def _running_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -92,7 +203,7 @@ def test_the_window_is_arithmetic_over_the_measured_floors() -> None:
 # --------------------------------------------------------------------------
 
 def test_a_progressing_job_is_sampled_at_the_cadence_and_never_reported(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FAKE_SSTAT_MODE", "progress")
     job = _running_job(tmp_path, monkeypatch)
@@ -100,7 +211,7 @@ def test_a_progressing_job_is_sampled_at_the_cadence_and_never_reported(
     _finish_at(clock, fleet, job, 400.0)
     reports: list[sl.StallReport] = []
 
-    outcome = sl.wait(job, poll_s=5.0, sleep=clock.sleep, clock=clock,
+    outcome = sl.wait(job, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
                       on_stall=reports.append)
 
     assert outcome.state == "COMPLETED"
@@ -124,7 +235,7 @@ def test_a_progressing_job_is_sampled_at_the_cadence_and_never_reported(
 
 
 def test_a_job_whose_samples_stop_moving_is_reported_and_not_cancelled(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The stall is reported after the window, repeated at the bound, and the
     job is left exactly where it was.  It ends because it ends."""
@@ -136,7 +247,7 @@ def test_a_job_whose_samples_stop_moving_is_reported_and_not_cancelled(
     reports: list[tuple[float, sl.StallReport]] = []
 
     outcome = sl.wait(
-        job, poll_s=5.0, sleep=clock.sleep, clock=clock,
+        job, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
         on_stall=lambda report: reports.append((clock.now, report)),
     )
 
@@ -164,7 +275,7 @@ def test_a_job_whose_samples_stop_moving_is_reported_and_not_cancelled(
 
 
 def test_progress_resets_the_stall_clock(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A job that moves after a quiet spell is not still 'stalled since'
     the quiet spell.  ``sstat`` is frozen here; the log is what moves."""
@@ -180,7 +291,7 @@ def test_progress_resets_the_stall_clock(
     clock.hooks.append(write_at_200)
     reports: list[sl.StallReport] = []
 
-    outcome = sl.wait(job, poll_s=5.0, sleep=clock.sleep, clock=clock,
+    outcome = sl.wait(job, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
                       on_stall=reports.append)
 
     assert outcome.state == "COMPLETED"
@@ -200,7 +311,7 @@ def test_progress_resets_the_stall_clock(
 
 
 def test_the_liveness_file_is_append_only(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Issue #16 measured a 69 s NFS stall on a file rewritten every heartbeat.
     This file is only ever appended to: what was there stays byte-identical."""
@@ -217,7 +328,7 @@ def test_the_liveness_file_is_append_only(
             seen.append(path.read_bytes())
     clock.hooks.append(snapshot)
 
-    sl.wait(job, poll_s=5.0, sleep=clock.sleep, clock=clock)
+    sl.wait(job, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock)
 
     final = path.read_bytes()
     assert seen and len({len(s) for s in seen}) > 1
@@ -229,7 +340,7 @@ def test_the_liveness_file_is_append_only(
 
 @pytest.mark.parametrize("how", ["fail", "absent"])
 def test_without_sstat_the_evidence_is_the_logs_and_the_reason_is_recorded(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch, how: str
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch, how: str
 ) -> None:
     """No accounting is a configuration fact, not a dead job: the sample says
     which evidence it has, and the log's growth still counts as progress."""
@@ -249,7 +360,7 @@ def test_without_sstat_the_evidence_is_the_logs_and_the_reason_is_recorded(
     clock.hooks.append(grow)
     reports: list[sl.StallReport] = []
 
-    outcome = sl.wait(job, sstat=sstat, poll_s=5.0, sleep=clock.sleep,
+    outcome = sl.wait(job, **scheduler.commands_with(sstat=sstat), poll_s=5.0, sleep=clock.sleep,
                       clock=clock, on_stall=reports.append)
 
     assert outcome.state == "COMPLETED"
@@ -269,14 +380,14 @@ def test_without_sstat_the_evidence_is_the_logs_and_the_reason_is_recorded(
 
 
 def test_a_pending_job_is_not_sampled(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Queue time is not a stall, and ``sstat`` has no steps to read."""
 
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", "PENDING")
     job = _submit(tmp_path, resources=sl.LaneResources())
     clock = FakeClock()
-    outcome = sl.wait(job, poll_s=5.0, wait_s=300.0, sleep=clock.sleep,
+    outcome = sl.wait(job, **scheduler.commands, poll_s=5.0, wait_s=300.0, sleep=clock.sleep,
                       clock=clock)
     assert outcome.state == sl.WAIT_TIMEOUT_STATE
     assert not (fleet / "sstat.argv").exists()
@@ -290,7 +401,7 @@ def test_the_gpu_seam_claims_nothing() -> None:
 
 
 def test_read_liveness_returns_the_last_line_without_reading_the_file(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FAKE_SSTAT_MODE", "frozen")
     job = _running_job(tmp_path, monkeypatch)
@@ -298,7 +409,7 @@ def test_read_liveness_returns_the_last_line_without_reading_the_file(
     assert sl.read_liveness(job.action_key, root=root) is None
     clock = FakeClock()
     _finish_at(clock, fleet, job, 200.0)
-    sl.wait(job, poll_s=5.0, sleep=clock.sleep, clock=clock)
+    sl.wait(job, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock)
 
     found = sl.read_liveness(job.action_key, root=root)
     samples = _samples(job)
@@ -313,7 +424,7 @@ def test_read_liveness_returns_the_last_line_without_reading_the_file(
 
 
 def test_the_outcome_record_carries_the_liveness_summary(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FAKE_SSTAT_MODE", "frozen")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -333,7 +444,7 @@ def test_the_outcome_record_carries_the_liveness_summary(
         action, cas=cas, request_path=request, resources=sl.LaneResources(),
         timeout_s=None, worker_script=REPOSITORY / "tools" / "prismabuild_worker.py",
         job_entry=REPOSITORY / "tools" / "fleet" / "slurm_job.py",
-        queue_root=queue, poll_s=5.0, sleep=clock.sleep, clock=clock,
+        queue_root=queue, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
     )
     job, outcome = result.last
     record = json.loads((queue / "failed" / f"{action['action_key']}.json").read_text())
@@ -352,7 +463,7 @@ def test_the_outcome_record_carries_the_liveness_summary(
 # --------------------------------------------------------------------------
 
 def test_pbrun_reports_a_stall_on_stderr_and_cancels_nothing(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("FAKE_SSTAT_MODE", "frozen")
@@ -374,7 +485,7 @@ def test_pbrun_reports_a_stall_on_stderr_and_cancels_nothing(
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=None, wait_s=None, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, queue_root=tmp_path / "queue",
-        poll_s=5.0, sleep=clock.sleep, clock=clock,
+        **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
     )
 
     err = capsys.readouterr().err
@@ -395,13 +506,13 @@ def test_pbrun_reports_a_stall_on_stderr_and_cancels_nothing(
 
 
 def test_a_withdrawal_carries_the_last_liveness_sample(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FAKE_SSTAT_MODE", "frozen")
     job = _running_job(tmp_path, monkeypatch, seed="withdrawn")
     clock = FakeClock()
     _finish_at(clock, fleet, job, 200.0)
-    sl.wait(job, poll_s=5.0, sleep=clock.sleep, clock=clock)
+    sl.wait(job, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock)
     # Pretend the job is still running when the operator arrives.
     (fleet / f"{job.job_id}.state").write_text("RUNNING|0:0\n")
     queue = tmp_path / "queue"
