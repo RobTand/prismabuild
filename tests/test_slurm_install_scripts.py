@@ -146,13 +146,15 @@ def test_the_slurm_user_is_created_at_the_fleet_uid(rendered, box) -> None:
 
 
 @pytest.mark.parametrize("box", BOXES)
-def test_all_five_configuration_files_are_installed(rendered, box) -> None:
+def test_all_four_configuration_files_are_installed(rendered, box) -> None:
     text = rendered[box]
-    for name in (
-        "slurm.conf", "gres.conf", "cgroup.conf", "cgroup_allowed_devices_file.conf",
-    ):
+    for name in ("slurm.conf", "gres.conf", "cgroup.conf"):
         assert f"install -m 644 {FLEET / name} /etc/slurm/{name}" in text, name
     assert f"install -m 755 {FLEET / 'epilog.sh'} /etc/slurm/epilog.sh" in text
+    # Four files, not five.  On cgroup v2 SLURM parses AllowedDevicesFile only
+    # to warn about it and containment is an eBPF program, so a file listing
+    # the NVIDIA control interfaces was answering a question nothing asks.
+    assert "cgroup_allowed_devices_file.conf" not in text
 
 
 @pytest.mark.parametrize("box", BOXES)

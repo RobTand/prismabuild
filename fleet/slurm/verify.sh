@@ -17,21 +17,26 @@
 #
 # Two rows are worth reading before you run them.
 #
-# Row 4 is the claim no container could test.  `ConstrainDevices=yes` plus
-# cgroup_allowed_devices_file.conf are supposed to mean that a job which
-# reserved no GRES cannot reach the GPU, and the smoke had neither devices nor
-# a GPU to prove it with.  So row 4 is written to discriminate rather than to
-# assert: it checks that the job *ran*, and that it ran *on a Spark*, before it
-# reads anything into a GPU it could not see.  A job that failed to launch also
-# sees no GPU, and that is not device containment, it is a broken lane.  It
-# asks the question twice, once through `nvidia-smi -L` and once by opening
-# /dev/nvidia0 directly, because those can disagree: nvidia-smi may enumerate
-# through /dev/nvidiactl, which stays allowed by design.
+# Row 4 is the claim no container could test.  `ConstrainDevices=yes` is
+# supposed to mean that a job which reserved no GRES cannot reach the GPU -- on
+# cgroup v2 that is an eBPF program denying exactly the GRES `File=` devices
+# this job was not allocated -- and the smoke had neither devices nor a GPU to
+# prove it with.  So row 4 is written to discriminate rather than to assert: it
+# checks that the job *ran*, and that it ran *on a Spark*, before it reads
+# anything into a GPU it could not see.  A job that failed to launch also sees
+# no GPU, and that is not device containment, it is a broken lane.  It asks the
+# question twice, once through `nvidia-smi -L` and once by opening
+# /dev/nvidia0 directly: nvidia-smi opens that device itself, so it does
+# exercise the deny, and the bare open is the same question with nothing
+# between it and the kernel.
 #
 # Row 8 reads the lane's `jobs/` directory back out.  A `<job id>.job` file
-# left behind for a job that has finished means the Epilog could not delete it,
-# which on this fleet means root_squash on the NFS export.  Files belonging to
-# jobs that are still in the queue are not leftovers and are skipped.
+# left behind for a job that has finished usually means the Epilog could not
+# delete it, which on this fleet means root_squash on the NFS export.  Files
+# belonging to jobs that are still in the queue are not leftovers and are
+# skipped.  One other thing leaves a file behind and is not a defect: a node
+# power-cycled mid-job runs no Epilog at all, so its state file survives.  The
+# row reports the job's terminal state so the two can be told apart.
 #
 # On success it writes a marker at ~/.prismabuild/slurm-verify-passed.json,
 # which fleet/slurm/cutover.sh looks for.  The marker is box-local -- it says
@@ -271,8 +276,8 @@ else
     fail 3 "a --gres=shard:1 job sees the GPU" \
         "$out
 if this fails at CUDA init rather than at scheduling, the first place to look
-is /etc/slurm/cgroup_allowed_devices_file.conf: the NVIDIA control interfaces
-listed there are what CUDA needs even for a job that WAS granted the GPU"
+is the File= paths in /etc/slurm/gres.conf: those are the devices the eBPF
+program admits for a job that WAS granted the GPU, and nothing else is"
 fi
 
 # -- row 4: a job that reserved no GRES cannot reach it ----------------------
@@ -337,13 +342,19 @@ else
     fail 6a "a shard job in the default partition lands on a Spark" "landed on '$node': $out"
 fi
 
+# The lane's own rule, at the fleet level: slurm_lane.partition_for sends an
+# action with no GPU demand and no placement tag to the CPU partition, and the
+# CPU partition is dl380g10.  A node list that has grown a Spark, or a Spark
+# that has drifted into the CPU partition, breaks that rule silently -- an
+# untagged CPU action would start landing on a GPU box.
 out="$(timeout "$LIMIT" srun --chdir="$ANYWHERE" --time=00:05:00 \
     --partition=cpu hostname -s 2>&1)"
 node="$(printf '%s\n' "$out" | tail -n 1)"
 if [ "$node" = dl380g10 ]; then
-    pass 6b "a CPU job with no constraint lands on dl380g10" "$node"
+    pass 6b "an untagged CPU job lands on dl380g10, where --partition=cpu sends it" "$node"
 else
-    fail 6b "a CPU job with no constraint lands on dl380g10" "landed on '$node': $out"
+    fail 6b "an untagged CPU job lands on dl380g10, where --partition=cpu sends it" \
+        "landed on '$node': $out"
 fi
 
 # The lane never names a partition: pbrun turns tags into --constraint, and
@@ -384,16 +395,24 @@ if [ -d "$LANE_ROOT/jobs" ]; then
         if squeue -h -j "$id" >/dev/null 2>&1 && [ -n "$(squeue -h -j "$id" 2>/dev/null)" ]; then
             continue
         fi
-        leftovers="$leftovers $id"
+        # What the controller still remembers about it, so a reboot leak is
+        # not reported as an Epilog failure.  Past MinJobAge it remembers
+        # nothing, which is itself consistent with a leak from long ago.
+        ended="$(scontrol show job "$id" --oneliner 2>/dev/null \
+            | tr ' ' '\n' | sed -n 's/^JobState=//p' | head -n 1)"
+        leftovers="$leftovers $id(${ended:-forgotten})"
     done
 fi
 if [ -n "$leftovers" ]; then
     fail 8 "the lane's jobs/ directory holds no orphaned state file" \
         "left behind for finished jobs:$leftovers
-The Epilog could not delete these.  On this fleet that means root_squash on
-dl380g10's NFS export: epilog.sh deletes as \$SLURM_JOB_USER for exactly this
-reason, and 'state file ... survived cleanup' in /var/log/slurm/slurmd.log on
-the node says it tried."
+Usually the Epilog could not delete these, and on this fleet that means
+root_squash on dl380g10's NFS export: epilog.sh deletes as \$SLURM_JOB_USER for
+exactly that reason, and 'state file ... survived cleanup' in
+/var/log/slurm/slurmd.log on the node says it tried.
+A node power-cycled mid-job runs no Epilog at all, so a file whose job is
+COMPLETED, NODE_FAIL, or forgotten past MinJobAge is a reboot leak rather than
+a failure, and is safe to delete: rm \"$LANE_ROOT/jobs/<id>.job\""
 elif [ -d "$LANE_ROOT/jobs" ]; then
     pass 8 "the lane's jobs/ directory holds no orphaned state file"
 else

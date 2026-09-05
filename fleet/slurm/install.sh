@@ -170,7 +170,7 @@ DEB_GLOB="/home/rob/slurm-build/arm64-24.04/*.deb"
 KEY_B64="/home/rob/.munge-key.b64"
 KEY_OWNER="rob"
 LANE_JOBS="/mnt/shared/prismabuild-fleet/slurm/jobs"
-CONFIGS_644="slurm.conf gres.conf cgroup.conf cgroup_allowed_devices_file.conf"
+CONFIGS_644="slurm.conf gres.conf cgroup.conf"
 
 say "# prismabuild SLURM install"
 say "# box        : $NODE ($ROLE)"
@@ -389,8 +389,15 @@ if [ "$DRY_RUN" = 0 ]; then
 fi
 
 # -- step 6: the configuration -----------------------------------------------
+#
+# Four files.  There is no cgroup_allowed_devices_file.conf: on cgroup v2 SLURM
+# parses AllowedDevicesFile only to warn about it (25.11.2,
+# src/interfaces/cgroup.c:416-419), and containment is an eBPF program that
+# denies exactly the GRES File= devices this job was not allocated and admits
+# everything else.  A file listing the NVIDIA control interfaces was answering
+# a question the kernel no longer asks.
 
-step 6 "install the five configuration files into /etc/slurm"
+step 6 "install the four configuration files into /etc/slurm"
 
 run install -d -m 755 /etc/slurm
 for name in $CONFIGS_644; do

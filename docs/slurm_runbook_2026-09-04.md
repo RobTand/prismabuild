@@ -104,13 +104,15 @@ These need the real install, and the container cannot stand in for any of them:
    rdma misc dmem` available, measured 2026-09-04.
 2. **Device containment and real GPUs.** `ConstrainDevices` is off in the
    container and the node's GRES binds a `mknod`'d character device nothing
-   opens. Whether `cgroup_allowed_devices_file.conf` admits exactly the right
-   NVIDIA control interfaces -- `/dev/nvidiactl`, the UVM pair,
-   `nvidia-modeset` and `nvidia-caps/nvidia-cap1,2`, all measured present on
-   both GB10 boxes -- is answerable only on a box with a GPU. If a GPU job
-   fails at CUDA init while a non-GPU job runs, that list is the first place to
-   look. Note also that the fleet's 25.11.2 build ships no `gpu_nvml.so`, so
-   `AutoDetect=nvml` is not available at all and `gres.conf` must stay static.
+   opens. On cgroup v2 the containment is an eBPF program that denies exactly
+   the GRES `File=` devices a job was not allocated and admits everything else,
+   so what has to be shown on a real box is that a job holding `shard:1` can
+   still initialize CUDA while a job holding nothing cannot open
+   `/dev/nvidia0`. `verify.sh` rows 3 and 4 are that pair. If a GPU job fails
+   at CUDA init while a non-GPU job runs, the `File=` paths in `gres.conf` are
+   the first place to look. Note also that the fleet's 25.11.2 build ships no
+   `gpu_nvml.so`, so `AutoDetect=nvml` is not available at all and `gres.conf`
+   must stay static.
 3. **NFS `root_squash` end to end.** The export is measured and the Epilog is
    fixed, but the fix has been exercised only against a fake `runuser` and a
    local bind mount. The first killed job on the real fleet is the test.
@@ -273,7 +275,12 @@ node that disagree about `slurm.conf` produce errors that name neither.
 - munge installed, the fleet's key at `/etc/munge/munge.key` mode 0400, and
   `/etc/munge/prismabuild-fleet-key.sha256` recording which key that is
 - SLURM 25.11.2 from apt on dl380g10, from the prebuilt debs on the Sparks
-- the five configuration files in `/etc/slurm/`
+- four configuration files in `/etc/slurm/`: `slurm.conf`, `gres.conf`,
+  `cgroup.conf` and `epilog.sh`. There is no
+  `cgroup_allowed_devices_file.conf`: on cgroup v2 SLURM parses
+  `AllowedDevicesFile` only to log a warning about it, and device containment
+  is an eBPF program that denies exactly the GRES `File=` devices a job was not
+  allocated and admits everything else
 - `/mnt/shared/prismabuild-fleet/slurm/jobs`, mode 1777, created **as rob**:
   dl380g10 exports that dataset without `no_root_squash`, so root is `nobody`
   there and its `mkdir` would fail silently
@@ -319,11 +326,10 @@ Row 4 is the claim no container could test, and it is written to discriminate
 rather than to assert. A job that failed to launch also sees no GPU, and that is
 a broken lane, not device containment -- so the row checks that the job ran, and
 that it ran on a Spark, before reading anything into the absence. It asks twice,
-through `nvidia-smi -L` and by opening `/dev/nvidia0` directly, because those can
-disagree: `nvidia-smi` may enumerate through `/dev/nvidiactl`, which
-`cgroup_allowed_devices_file.conf` keeps open on purpose. If a GPU job instead
-fails at CUDA init while a non-GPU job runs, that same file is the first place
-to look.
+through `nvidia-smi -L` and by opening `/dev/nvidia0` directly. `nvidia-smi -L`
+opens that device itself, so it does exercise the eBPF deny; the bare open is
+the same question with nothing between it and the kernel, and a disagreement
+between the two would be worth knowing about.
 
 Row 5 is the check most likely to fail. `core._collect_worker_evidence` attests
 `SLURM_JOB_ID` against this process's cgroup membership before it will run
@@ -352,10 +358,20 @@ only after the cutover has published the runtime, and it belongs there:
 ```
 
 Row 8 is the other half of the Epilog's job, the half that fails silently. A
-`<job id>.job` file left behind for a job that has finished means the Epilog
-could not delete it, which on this fleet means `root_squash` on the NFS export.
-The row skips files whose jobs are still in `squeue`, so only an orphan fails
-it.
+`<job id>.job` file left behind for a job that has finished usually means the
+Epilog could not delete it, which on this fleet means `root_squash` on the NFS
+export. The row skips files whose jobs are still in `squeue`, so only an orphan
+fails it, and it prints each orphan's `JobState` because one kind of orphan is
+not a defect: **a node power-cycled mid-job runs no Epilog at all**, so its
+state file survives. A file whose job is `COMPLETED` or `NODE_FAIL`, or which
+the controller has forgotten because `MinJobAge` expired, is a reboot leak; it
+is safe to delete by hand:
+
+```bash
+rm /mnt/shared/prismabuild-fleet/slurm/jobs/<job id>.job
+```
+
+Anything else -- a job that ended while the node stayed up -- is the export.
 
 One check `verify.sh` does not do, because it leaves a container behind if it
 goes wrong: cancelling a job that started a container, to watch the Epilog
@@ -498,8 +514,13 @@ the whole device and asking for shards of it are mutually exclusive requests
 against one GPU, so exclusivity is a different GRES name, not a bigger number.
 
 Each submission seals a record next to the script at
-`<action key>/submissions/<attempt>.json`, with the job id and the exact argv,
-and points `<action key>/latest.json` at the newest attempt. `pbrun --withdraw`
+`<lane root>/<action key>/submissions/<published unix>-<attempt>.json`, with
+the job id and the exact argv, and points `<action key>/latest.json` at the
+newest attempt. The generation is part of the name because the action key is a
+content hash: asking for the same work twice is the same key and the same
+directory, and a record named by the attempt alone collided across runs, which
+refused every re-submission -- including the CAS hit that is the point of a
+content-addressed build. `pbrun --withdraw`
 reads `latest.json` to find the job to cancel.
 
 ## Reference: files this install touches
@@ -509,7 +530,6 @@ reads `latest.json` to find the job to cancel.
 | `/etc/slurm/slurm.conf` | Nodes, partitions, scheduling, `MinJobAge`, `Epilog` |
 | `/etc/slurm/gres.conf` | The GPU and its shards, per node, no autodetection |
 | `/etc/slurm/cgroup.conf` | Core, memory, and device containment |
-| `/etc/slurm/cgroup_allowed_devices_file.conf` | NVIDIA control devices CUDA needs |
 | `/etc/slurm/epilog.sh` | Node-side cleanup of containers and checkouts |
 | `/etc/munge/munge.key` | The fleet's shared authentication secret |
 | `/etc/munge/prismabuild-fleet-key.sha256` | Which key that is, so a package-generated one is not mistaken for it |
