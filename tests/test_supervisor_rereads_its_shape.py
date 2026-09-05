@@ -77,7 +77,7 @@ def test_only_idle_loops_are_stopped(monkeypatch):
     """
     monkeypatch.setattr(supervise, "_live_loops", lambda *_a, **_k: [11, 22, 33])
     monkeypatch.setattr(supervise, "_is_fleet_loop", lambda *_a, **_k: True)
-    monkeypatch.setattr(supervise, "_is_idle", lambda pid: pid != 22)
+    monkeypatch.setattr(supervise, "_is_idle", lambda pid, *_a: pid != 22)
     killed = []
     monkeypatch.setattr(supervise.os, "kill", lambda pid, sig: killed.append(pid))
     assert supervise._stop_idle_loops() == [11, 33]
@@ -134,7 +134,7 @@ def test_only_the_mismatched_loops_are_candidates(tmp_path, monkeypatch):
     # proof these fake pids cannot satisfy.
     monkeypatch.setattr(supervise, "_is_fleet_loop", lambda *_a, **_k: True)
     monkeypatch.setattr(supervise, "loop_args_of", lambda pid: carried[pid])
-    monkeypatch.setattr(supervise, "_is_idle", lambda pid: True)
+    monkeypatch.setattr(supervise, "_is_idle", lambda pid, *_a: True)
     killed = []
     monkeypatch.setattr(supervise.os, "kill", lambda pid, sig: killed.append(pid))
     spawned = []

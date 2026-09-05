@@ -66,7 +66,7 @@ def test_the_issues_reproduction_counts_and_signals_nothing(
     live = supervise._live_loops()
 
     sent: list[tuple[int, int]] = []
-    monkeypatch.setattr(supervise, "_is_idle", lambda _pid: True)
+    monkeypatch.setattr(supervise, "_is_idle", lambda _pid, *_a: True)
     monkeypatch.setattr(supervise.os, "kill",
                         lambda pid, sig: sent.append((pid, int(sig))))
     stopped = supervise._stop_idle_loops(live)
@@ -139,7 +139,7 @@ def signals(monkeypatch: pytest.MonkeyPatch):
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(supervise.os, "kill",
                         lambda pid, sig: sent.append((pid, int(sig))))
-    monkeypatch.setattr(supervise, "_is_idle", lambda pid: True)
+    monkeypatch.setattr(supervise, "_is_idle", lambda pid, *_a: True)
     return sent
 
 
