@@ -303,7 +303,12 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   Git checkouts are made immutable across the remaining interval by default:
   the submitter synthesizes a deterministic commit from the exact tracked
   and untracked working tree, including the closure stamp, parented on the
-  source's own `HEAD`, publishes its
+  source's own `HEAD`. The stamp is injected into the submitter's private Git
+  index directly from its UTF-8 payload; no stamp or temporary stamp pathname
+  is published into the source checkout. Its historical relative name, bytes,
+  and regular-file mode are retained, preserving closure and bundle identities
+  while concurrent submissions need no shared stamp lock or cleanup. Existing
+  source-side stamps from older versions are left untouched. The submitter publishes its
   bundle as a verified CAS input, and puts the commit rather than the
   submitter path in the queue. Those bundle bytes are a function of the sealed
   objects alone: the pack is written with every setting that influences it

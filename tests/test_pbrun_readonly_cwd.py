@@ -1,11 +1,7 @@
-"""A checkout that cannot hold the closure stamp is refused, not crashed on.
+"""Read-only source checkouts can submit through a private stamp overlay.
 
-``pbrun`` writes its closure stamp (``.pbrun-closure.<fingerprint>.json``)
-into the checkout, and the action tees its output to a result file in the
-same tree, so a checkout that is not writable cannot be submitted from at all.
-Issue #45: the three-node container harness mounts the repository read-only,
-and the stamp write escaped ``main`` as a bare ``OSError`` with a traceback.
-The refusal has to name the directory and say what the tree must hold.
+The worker verifies the stamp and writes results in its materialized tree.
+The submitting checkout only needs the generated-file excludes established.
 """
 
 from __future__ import annotations
@@ -28,6 +24,7 @@ sys.path.insert(
 )
 
 import pbrun  # noqa: E402
+from test_pbrun_detach import _queue, _run_pbrun
 
 
 def _git(cwd: Path, *argv: str) -> None:
@@ -47,7 +44,7 @@ def readonly_checkout(tmp_path: Path):
     _git(cwd, "add", "hello.txt")
     _git(cwd, "commit", "-q", "-m", "one")
     # The excludes are already in place, as they are on any checkout that has
-    # submitted before; the first write pbrun then attempts is the stamp.
+    # submitted before; no new source-side file should be needed.
     pbrun.keep_droppings_out_of_git(cwd)
     made_readonly: list[Path] = []
     for directory in [cwd, *[p for p in cwd.rglob("*") if p.is_dir()]]:
@@ -62,19 +59,12 @@ def readonly_checkout(tmp_path: Path):
             directory.chmod(0o755)
 
 
-def test_a_read_only_checkout_is_refused_by_name(
-    readonly_checkout: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_read_only_checkout_can_submit_a_snapshot(
+    readonly_checkout: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(
-        sys, "argv", ["pbrun.py", "--cwd", str(readonly_checkout), "--", "true"]
-    )
-    with pytest.raises(SystemExit) as caught:
-        pbrun.main()
-    message = str(caught.value)
-    assert message.startswith("pbrun: "), message
-    assert str(readonly_checkout) in message, message
-    assert "closure stamp" in message, message
-    assert "result" in message, message
+    queue = _queue(tmp_path)
+    assert _run_pbrun(tmp_path, monkeypatch, readonly_checkout, "--detach") == 0
+    assert len(queue.ready_items()) == 1
     # Nothing of ours is left behind in a tree we could not write to.
     assert not list(readonly_checkout.glob(f"{pbrun.STAMP_PREFIX}*"))
 

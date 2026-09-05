@@ -851,10 +851,21 @@ def write_deterministic_bundle(
         )
 
 
+def build_stamp_closure(stamp_name: str, payload: str) -> dict[str, object]:
+    """Describe the UTF-8 bytes injected into the snapshot's private index."""
+    raw = payload.encode("utf-8")
+    body = {"schema": pb.CODE_CLOSURE_SCHEMA_V1,
+            "files": [{"path": stamp_name, "sha256": hashlib.sha256(raw).hexdigest(),
+                       "bytes": len(raw)}]}
+    return pb.validate_code_closure(
+        {**body, "closure_sha256": pb.canonical_sha256(body)})
+
+
 def build_git_checkout_snapshot(
     cwd: Path,
     *,
     stamp_name: str | None = None,
+    stamp_payload: str | None = None,
     cas: pb.PrismaBuildCAS,
     max_bytes: int = CHECKOUT_SNAPSHOT_MAX_BYTES,
     expected_identity: dict[str, str] | None = None,
@@ -870,6 +881,9 @@ def build_git_checkout_snapshot(
             action that pinned it; a snapshot-addressed action is compared
             against its own sealed commit instead, so a producer that never
             writes a stamp does not need one invented for it.
+        stamp_payload: Optional UTF-8 stamp contents injected into the private
+            Git index, without writing a stamp into the submitting worktree.
+            The name, bytes and Git mode remain identical to a regular stamp.
         cas: The store the bundle is ingested into.
         max_bytes: The local-disk bound this snapshot may not exceed.
         expected_identity: The checkout identity the caller already read, so
@@ -884,6 +898,17 @@ def build_git_checkout_snapshot(
     if root is None:
         raise SystemExit("pbrun: a non-Git checkout cannot be materialized")
     require_checkout_snapshot_limit(max_bytes)
+    if stamp_payload is not None:
+        if (not stamp_name or Path(stamp_name).name != stamp_name
+                or stamp_name in {".", ".."}):
+            raise SystemExit("pbrun: overlay stamp name must be a plain basename")
+        subdirectory = cwd.relative_to(root).as_posix() or "."
+        stamp_relative = (Path(subdirectory) / stamp_name).as_posix()
+        return _build_git_checkout_snapshot(
+            cwd, root, subdirectory, stamp_relative, (),
+            stamp_payload=stamp_payload, cas=cas, max_bytes=max_bytes,
+            expected_identity=expected_identity, snapshot_refs=snapshot_refs,
+        )
     if stamp_name is None:
         subdirectory = cwd.relative_to(root).as_posix() or "."
         stamp_relative = None
@@ -929,12 +954,19 @@ def _build_git_checkout_snapshot(
     max_bytes: int,
     expected_identity: dict[str, str] | None,
     snapshot_refs: Sequence[str],
+    stamp_payload: str | None = None,
 ) -> dict[str, object]:
     """Seal the tree once the caller has settled where the stamp is, if any."""
 
     paths = snapshot_path_roster(root, extra_paths=stamp_paths)
-    require_working_tree_size(root, paths, max_bytes=max_bytes)
-    require_untransformed_checkout(root, paths)
+    working_bytes = require_working_tree_size(root, paths, max_bytes=max_bytes)
+    if stamp_payload is not None:
+        overlay_bytes = len(stamp_payload.encode("utf-8"))
+        if working_bytes + overlay_bytes > max_bytes:
+            raise SystemExit("pbrun: working tree plus closure stamp exceeds "
+                             "checkout snapshot size limit")
+    require_untransformed_checkout(
+        root, paths + ([stamp_relative] if stamp_payload is not None else []))
     identity = expected_identity or _git_identity(cwd)
     if _git_identity(cwd) != identity:
         raise SystemExit("pbrun: checkout changed before it could be snapshotted")
@@ -988,7 +1020,20 @@ def _build_git_checkout_snapshot(
             [*PERSONAL_EXCLUDES_PIN, "add", "-A"],
             environment=object_environment,
         )
-        if stamp_relative is not None:
+        if stamp_payload is not None:
+            # This index and object store belong only to this submission.
+            # Keep the historical pathname and mode so unchanged action bytes
+            # produce exactly the same commit, bundle, and closure identity.
+            stamp_blob = _snapshot_git(
+                root, ["hash-object", "-w", "--stdin", "--no-filters"],
+                environment=object_environment, input_text=stamp_payload,
+            )
+            _snapshot_git(
+                root, ["update-index", "--add", "--cacheinfo",
+                       f"100644,{stamp_blob},{stamp_relative}"],
+                environment=object_environment,
+            )
+        elif stamp_relative is not None:
             _snapshot_git(
                 root,
                 ["add", "-f", "--", stamp_relative],
@@ -3581,77 +3626,19 @@ def main() -> int:
         logical_cwd=logical_cwd,
         placement=placement,
     )
-    # The closure member must be under checkout_root: that is where the
-    # worker re-verifies it, on whichever box claimed the action.
-    # Written through a private temp file and renamed, because rename is the
-    # one primitive this fleet trusts on NFS and a plain write is not atomic.
-    # Concurrent submits from one checkout -- forty test shards, say -- all
-    # write this same file, and a reader that catches a partial one gets
-    # "cannot open code closure file as a regular file" or "live code closure
-    # differs from the action-pinned closure".  The content is identical across
-    # those submits *because the commit is in the name*, so atomicity is the
-    # whole fix and ordering does not matter.  It was not identical before
-    # that: the name held the command and the content held the commit.
-    #
-    # The stamp stays in the checkout after the bundle is built, and issue #57
-    # asks why.  Because that same concurrency is what an unlink would break.
-    # This submission still reads the stamp after the seal -- the closure below
-    # hashes it -- and so does every other submitter of this fingerprint that
-    # is mid-seal, all the way through ``resolve(strict=True)``, ``add -f`` and
-    # its own closure.  Measured: removing the file turns those into "cannot
-    # open code closure file as a regular file" and a bare FileNotFoundError.
-    # There is no unlink-if-nobody-else-needs-it: every correct version is a
-    # lock or a refcount over this path, and the submit side holds neither --
-    # the only lock in this system is the worker's output flock, on the far
-    # side of the queue from here.  Moving the stamp
-    # into a ``.pbrun/`` directory instead would move ``stamp_relative``, which
-    # is a closure entry path and a path in the sealed tree, so it is a key
-    # change and Rob's to make.
+    # Seal the stamp only in the private snapshot index. Publishing it in the
+    # source tree creates both litter and races: another submitter can hash a
+    # scratch name just as it is renamed. Unlinking the final stamp also races
+    # with readers sealing the same fingerprint. No shared stamp path exists
+    # now; workers still verify the same name and bytes in the materialization.
     payload = json.dumps(
         {"cwd": logical_cwd, **identity}, indent=1, sort_keys=True
     )
-    scratch = cwd / f"{stamp_name}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
-    try:
-        # fsync both the file and its directory before publishing.  The submit
-        # side is usually an NFS client and the worker may be the box holding
-        # the export, so a write that has only reached the client's page cache
-        # is invisible to the reader that is about to verify it -- the action
-        # gets published, a worker claims it within milliseconds, and it fails
-        # with "cannot open code closure file as a regular file" for a file
-        # that plainly exists a second later.  Durability before publication is
-        # the ordering the queue already assumes everywhere else.
-        try:
-            with scratch.open("w", encoding="utf-8") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(scratch, cwd / stamp_name)
-        except OSError as exc:
-            # A read-only mount, a checkout owned by another user, a full
-            # disk.  The stamp is not optional and neither is the result file
-            # the action tees into the same tree, so the tree itself is what
-            # is unfit here, and the refusal names it rather than tracing.
-            raise SystemExit(
-                f"pbrun: cannot write into the checkout {cwd}: {exc}. "
-                "The checkout must be writable: pbrun keeps the closure "
-                f"stamp {stamp_name} there, and the action tees its output "
-                f"to {log_name} in the same tree. Submit from a writable "
-                "clone or worktree of it."
-            ) from None
-        directory = os.open(cwd, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        except OSError:
-            pass                     # some filesystems refuse directory fsync
-        finally:
-            os.close(directory)
-    finally:
-        if scratch.exists():
-            scratch.unlink()
     cas = pb.PrismaBuildCAS(SH / "cas")
     checkout_snapshot = build_git_checkout_snapshot(
         cwd,
         stamp_name=stamp_name,
+        stamp_payload=payload,
         cas=cas,
         max_bytes=args.checkout_snapshot_max_bytes,
         expected_identity=identity,
@@ -3678,7 +3665,7 @@ def main() -> int:
             "result_path": log_name,
         },
         "inputs": [checkout_snapshot["input"]],
-        "code_closure": pb.build_code_closure(cwd, [stamp_name]),
+        "code_closure": build_stamp_closure(stamp_name, payload),
         "params": {
             "command": command,
             "cwd": logical_cwd,
