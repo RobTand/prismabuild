@@ -312,20 +312,43 @@ def _activate_existing(name: str, *, dry_run: bool) -> int:
     what makes this possible at all.
 
     The name is validated rather than trusted: it must be a direct child of the
-    generation store and it must carry a receipt.  A path that escapes the
-    store, or a directory that is not a published generation, is refused before
-    ``repo`` is touched.
+    generation store, it must not be a dot-name, and it must carry a receipt
+    that reads.  A path that escapes the store, a staging tree, or a directory
+    that is not a published generation is refused before ``repo`` is touched.
     """
 
     store = MIRROR.parent / "runtime-generations"
-    if "/" in name or name in ("", ".", ".."):
-        raise SystemExit(f"not a generation name: {name!r}")
+    # A dot-name is never a generation, and one shape of it is dangerous.  A
+    # publish stages at ``.<generation>.staging`` in this same store, writes
+    # the receipt into it, and removes it on failure -- but that removal
+    # reports an OSError and continues, so an interrupted publish can leave a
+    # survivor that carries a receipt and passes every other check here.  Its
+    # bytes were never sealed or probed.
+    if "/" in name or name in ("", ".", "..") or name.startswith("."):
+        raise SystemExit(
+            f"not a generation name: {name!r}. A staging tree left behind by "
+            "an interrupted publish is a dot-name and carries a receipt; it "
+            "is not a generation."
+        )
     generation = store / name
     if not (generation / "RUNTIME_VERSION.json").is_file():
         raise SystemExit(
             f"{generation} is not a published generation: no RUNTIME_VERSION.json"
         )
-    receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
+    # Rollback is the command that runs when everything else has failed, so a
+    # short or damaged receipt has to be a sentence rather than a traceback.
+    try:
+        receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"{generation}: receipt is not readable ({exc}); this is not a "
+            "generation to point the live runtime at."
+        ) from exc
+    if not isinstance(receipt, dict):
+        raise SystemExit(
+            f"{generation}: receipt is not readable (not a JSON object); this "
+            "is not a generation to point the live runtime at."
+        )
     print(
         f"activating {name}: commit {str(receipt.get('commit', ''))[:12]}, "
         f"default transport {receipt.get('default_transport') or 'pool'}"
