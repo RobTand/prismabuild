@@ -6,7 +6,7 @@ held a job to them: an action that declared `mem_gb=4` and used 40 GiB got 40
 GiB, and an action that declared one core and ran `pytest -n 24` got 24 cores.
 
 Under SLURM they become `--cpus-per-task` and `--mem`
-(`src/prismabuild/slurm_lane.py:747`), and `fleet/slurm/cgroup.conf`'s
+(`src/prismabuild/slurm_lane.py:793`), and `fleet/slurm/cgroup.conf`'s
 `ConstrainCores=yes` and `ConstrainRAMSpace=yes` turn those into a cpuset and a
 `memory.max`. A `pytest -n 24` submitted without `--cpus` then runs on one
 core, and a build that outgrows its declared `mem_gb` is held to it -- which,
@@ -97,7 +97,7 @@ differs.
 **`nproc` is not how a job learns its allocation.** It answered 4 in every arm,
 including the one where the job held a single CPU, because `nproc` honours
 `OMP_NUM_THREADS` and `pbrun`'s sealed environment pins that at 4
-(`tools/fleet/pbrun.py:2463`). An action that sizes its own parallelism from
+(`tools/fleet/pbrun.py:2549`). An action that sizes its own parallelism from
 `nproc` reads that 4 whatever it declared. The figure that matched the cpuset
 in every arm was the one the rows read, `taskset -cp $$`; in Python, the same
 answer comes from `len(os.sched_getaffinity(0))`.

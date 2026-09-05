@@ -58,7 +58,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -1549,6 +1549,11 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         "finished_host": outcome.get("finished_host"),
         "elapsed_s": detail.get("elapsed_s"),
         "returncode": detail.get("returncode"),
+        # The action's own ending, where the transport recorded one.  The
+        # launcher's status above is 1 for every failure, so an action that
+        # exited 7 reads as 1 without this.
+        "action_returncode": detail.get("action_returncode"),
+        "action_signal": detail.get("action_signal"),
         "receipt_published": detail.get("receipt_published"),
         "attempts": outcome.get("attempts"),
         "withdrawn_by": outcome.get("withdrawn_by"),
@@ -1676,7 +1681,8 @@ def await_outcome(
     # ``elapsed_s`` is present and null on a SLURM record whose scheduler
     # provenance was purged, so the key's presence must not defeat the default.
     print(f"pbrun: {status} on {outcome.get('finished_host')} "
-          f"in {(detail.get('elapsed_s') or 0):.0f}s", file=sys.stderr)
+          f"in {(detail.get('elapsed_s') or 0):.0f}s"
+          f"{action_status_suffix(detail)}", file=sys.stderr)
     if status == "cache_hit":
         return 0
     rc = detail.get("returncode")
@@ -1693,6 +1699,28 @@ def await_outcome(
     print(f"pbrun: outcome filed under {outcome_path.parent.name} after "
           f"{outcome.get('attempts', '?')} attempt(s)", file=sys.stderr)
     return 1
+
+
+def action_status_suffix(detail: Mapping[str, object]) -> str:
+    """What to add to an outcome line when the action's status is not the run's.
+
+    Nothing at all when the two agree, which is the ordinary case: an action
+    that exited 3 under a transport that reports its own launcher's status
+    would say the same number twice. When they differ -- the launcher exits 1
+    for every failure -- the run's number stays first, because that is the one
+    ``pbrun`` returns as its own exit status, and the action's is named as the
+    action's.
+    """
+
+    action = detail.get("action_returncode")
+    if not isinstance(action, int) or isinstance(action, bool):
+        return ""
+    if action == detail.get("returncode"):
+        return ""
+    signal = detail.get("action_signal")
+    if isinstance(signal, int) and not isinstance(signal, bool):
+        return f"; rc={detail.get('returncode')} (action killed by signal {signal})"
+    return f"; rc={detail.get('returncode')} (action exited {action})"
 
 
 def _report_stall(key: str, report) -> None:
@@ -1712,6 +1740,17 @@ def _report_stall(key: str, report) -> None:
           f"pbrun --withdraw {key[:12]} if it is dead.",
           file=sys.stderr, flush=True)
 
+
+#: The scheduler commands ``live_submission`` needs to ask whether a recorded
+#: job is still alive, and the keyword arguments ``slurm_lane.resume`` accepts.
+#: Named explicitly rather than passed through: ``slurm_outcome`` forwards
+#: whatever a caller gave it to ``run``, and ``run`` takes flags -- ``sbatch``,
+#: ``retry_safe`` -- that neither of these two has any use for.
+_QUERY_COMMANDS = frozenset({"sacct", "scontrol", "squeue"})
+_RESUME_COMMANDS = frozenset({
+    "poll_s", "sacct", "scontrol", "squeue", "sstat", "sleep", "clock",
+    "on_stall", "on_notice",
+})
 
 #: The interpreter pbrun's sealed argv starts with.  A nonportable action
 #: binds its exact bytes, so the name is stated once, where the scope is built.
@@ -1849,44 +1888,91 @@ def slurm_outcome(
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
     masked = "" if slots else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
+    queue = SH / "pb-queue" if queue_root is None else queue_root
+    # Attach to a run already in flight rather than start a second copy of it.
+    #
+    # A key is a content hash, so asking for the same work twice is the normal
+    # way to ask whether it is done.  The pull queue answered that with one
+    # ``ready/<key>.json`` and a claim: the second ask could not become a
+    # second execution.  SLURM has no claim, and this path submitted
+    # unconditionally -- so two attached ``pbrun``s of one key were two jobs of
+    # one action on the fleet, materializing the same checkout, taking the same
+    # GPU twice and racing to publish one receipt.
+    #
+    # ``--detach`` already made this check (it is the same
+    # ``live_submission``); it just never ran for a caller who waits.  Live
+    # means recorded, no ending covering that generation, and a job the
+    # controller still knows in a non-terminal state -- so a terminal or
+    # forgotten submission submits afresh here exactly as it does there.
+    attached = None
+    if not detach:
+        found = live_submission(
+            pool.PoolQueue(queue), key, lane_root=lane_root,
+            **{name: lane_commands[name]
+               for name in _QUERY_COMMANDS if name in lane_commands},
+        )
+        # A live *pool* item is not this transport's to wait on: it belongs to
+        # a worker, and ``resume`` reconstructs a SLURM submission record.
+        attached = found if found is not None and found[0] == "slurm" else None
     # sbatch's own refusal is this transport's capability gate: an unknown
     # Feature or an impossible GRES is rejected at submit time, which is the
     # moment the pool path's ``capability_verdict`` spoke.  So it reaches the
     # caller as the message SLURM wrote, in the shape that message had, rather
     # than as a traceback.
     try:
-        result = slurm_lane.run(
-            action,
-            cas=cas,
-            request_path=request_path,
-            placement=tags,
-            resources=resources,
-            partition=slurm_lane.partition_for(
-                resources, tags, anywhere=anywhere),
-            # ``--priority`` is a queue hint on either transport: the pool
-            # sorts its ready list on it, and SLURM subtracts the derived nice
-            # from the base priority its scheduler assigned.  Dropping it here
-            # is what let ``pool_reset``'s bulk ``--priority -10`` land
-            # alongside interactive work instead of behind it.
-            priority=priority,
-            timeout_s=timeout_s,
-            worker_script=runtime_root / "tools" / "prismabuild_worker.py",
-            job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
-            retry_safe=retry_safe,
-            max_attempts=max_attempts,
-            root=lane_root,
-            # Eleven fleet tools and Tessera's ``merge_suite`` read one action's
-            # ending out of this directory.  The lane files it there so the
-            # cutover is a change to one dispatcher and not to every reader.
-            queue_root=SH / "pb-queue" if queue_root is None else queue_root,
-            wait_s=wait_s,
-            detach=detach,
-            on_submit=lambda job: print(
-                f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
-                f"(attempt {job.attempt}) tags={tags} demand={demand}{masked}",
-                file=sys.stderr, flush=True),
-            **lane_commands,
-        )
+        if attached is not None:
+            submission = attached[2]
+            job_id = str(submission.get("job_id") or "")
+            print(f"pbrun: {key[:12]} is already running (slurm job {job_id}); "
+                  f"attaching to it rather than submitting a second copy"
+                  f"{masked}", file=sys.stderr, flush=True)
+            # ``resume`` files the ending ``run`` would have filed, off the
+            # recorded submission alone -- the same reconstruction
+            # ``--withdraw`` builds a terminal record from.  So the caller
+            # reads the same lines and gets the same exit code whether it
+            # submitted this job or joined it.
+            result = slurm_lane.resume(
+                submission,
+                action=action,
+                cas=cas,
+                queue_root=queue,
+                wait_s=wait_s,
+                **{name: value for name, value in lane_commands.items()
+                   if name in _RESUME_COMMANDS},
+            )
+        else:
+            result = slurm_lane.run(
+                action,
+                cas=cas,
+                request_path=request_path,
+                placement=tags,
+                resources=resources,
+                partition=slurm_lane.partition_for(
+                    resources, tags, anywhere=anywhere),
+                # ``--priority`` is a queue hint on either transport: the pool
+                # sorts its ready list on it, and SLURM subtracts the derived nice
+                # from the base priority its scheduler assigned.  Dropping it here
+                # is what let ``pool_reset``'s bulk ``--priority -10`` land
+                # alongside interactive work instead of behind it.
+                priority=priority,
+                timeout_s=timeout_s,
+                worker_script=runtime_root / "tools" / "prismabuild_worker.py",
+                job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
+                retry_safe=retry_safe,
+                max_attempts=max_attempts,
+                root=lane_root,
+                # Eleven fleet tools and Tessera's ``merge_suite`` read one action's
+                # ending out of this directory.  The lane files it there so the
+                # cutover is a change to one dispatcher and not to every reader.
+                queue_root=queue,
+                wait_s=wait_s,
+                detach=detach,
+                on_submit=lambda job: print(
+                    f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
+                    f"(attempt {job.attempt}) tags={tags} demand={demand}{masked}",
+                    file=sys.stderr, flush=True),
+                **lane_commands,
+            )
     except slurm_lane.SlurmLaneError as exc:
         raise SystemExit(
             f"pbrun: slurm refused this action.\n"
@@ -1906,7 +1992,7 @@ def slurm_outcome(
             key,
             transport="slurm",
             status="submitted",
-            queue_root=SH / "pb-queue" if queue_root is None else queue_root,
+            queue_root=queue,
             published_unix=result.published_unix,
             job_id=job.job_id,
             submission=job.record_path,

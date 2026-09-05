@@ -85,3 +85,44 @@ def test_nothing_filed_still_times_out(monkeypatch, capsys, tmp_path):
     q = _Queue(tmp_path)
     assert _wait(monkeypatch, capsys, q, "abc", wait_s=0.01) == 75
     assert "gave up waiting" in capsys.readouterr().err
+
+
+def test_the_actions_own_status_is_named_when_it_is_not_the_runs(
+    monkeypatch, capsys, tmp_path
+):
+    """The launcher exits 1 for every failure, so 1 alone is not the story.
+
+    ``pbrun`` still returns the run's status -- that is what a caller's shell
+    tests -- and says the action's beside it.
+    """
+
+    q = _Queue(tmp_path)
+    _file(q, "failed", "abc", {
+        "status": "failed", "attempts": 1, "finished_host": "sparky",
+        "detail": {"returncode": 1, "action_returncode": 7, "elapsed_s": 1.0},
+    })
+    assert _wait(monkeypatch, capsys, q, "abc") == 1
+    assert "rc=1 (action exited 7)" in capsys.readouterr().err
+
+
+def test_a_signalled_action_is_named_by_its_signal(monkeypatch, capsys, tmp_path):
+    q = _Queue(tmp_path)
+    _file(q, "failed", "abc", {
+        "status": "failed", "attempts": 1, "finished_host": "sparky",
+        "detail": {"returncode": 1, "action_returncode": -9,
+                   "action_signal": 9, "elapsed_s": 1.0},
+    })
+    assert _wait(monkeypatch, capsys, q, "abc") == 1
+    assert "rc=1 (action killed by signal 9)" in capsys.readouterr().err
+
+
+def test_an_agreeing_status_is_not_said_twice(monkeypatch, capsys, tmp_path):
+    """A transport that reports the action's own status says one number."""
+
+    q = _Queue(tmp_path)
+    _file(q, "failed", "abc", {
+        "status": "failed", "attempts": 1, "finished_host": "sparky",
+        "detail": {"returncode": 7, "action_returncode": 7, "elapsed_s": 1.0},
+    })
+    assert _wait(monkeypatch, capsys, q, "abc") == 7
+    assert "action exited" not in capsys.readouterr().err

@@ -32,6 +32,13 @@ USER = getpass.getuser()
 SH = VOL / "prismabuild-fleet"
 QUEUE = SH / "pb-queue"
 LANE = SH / "slurm"
+#: Where the jobs leave their Epilog state files.  A node-side path, resolved
+#: by `slurm_job.py` and `epilog.sh` from `PRISMABUILD_SLURM_JOB_STATE_ROOT` or
+#: this same default, and deliberately not derived from the lane root above --
+#: a submitter may move that one, and moving it must not move this.
+JOB_STATE_ROOT = Path(
+    os.environ.get("PRISMABUILD_SLURM_JOB_STATE_ROOT")
+    or "/mnt/shared/prismabuild-fleet/slurm/jobs")
 WORK = VOL / "work"
 SRC = WORK / "src"
 PBRUN = REPO / "tools" / "fleet" / "pbrun.py"
@@ -269,17 +276,23 @@ def row_4_failure() -> None:
     path, rec = outcome("failed", prefix) if prefix else (None, {})
     detail = rec.get("detail", {}) if isinstance(rec, dict) else {}
     stderr_tail = str(detail.get("stderr") or "")
+    # `action.sh fail` exits 7 and the launcher exits 1, so the two numbers
+    # are different on purpose: `returncode` is the launcher's, which every
+    # fleet reader means by it, and `action_returncode` is the action's, which
+    # used to survive only as prose in the stderr tail.
     ok = (
         path is not None
         and rec.get("status") == "failed"
         and isinstance(detail.get("returncode"), int)
         and detail.get("returncode") != 0
+        and detail.get("action_returncode") == 7
         and "failing on purpose" in stderr_tail + str(detail.get("stdout") or "")
     )
     record(
-        "4 a failing command files failed/ with rc and stderr",
+        "4 a failing command files failed/ with both rcs and stderr",
         ok,
         f"job={job_id} rc={detail.get('returncode')} "
+        f"action_rc={detail.get('action_returncode')} "
         f"state={detail.get('slurm', {}).get('state')} "
         f"tail={'yes' if stderr_tail else 'no'}",
     )
@@ -371,24 +384,28 @@ def row_6_withdraw() -> None:
     marker_path = next(
         (p for p in (QUEUE / "withdrawn").glob(f"{prefix}*.json")), None
     ) if prefix else None
-    # ``withdrawn/``, not ``failed/``: ``publish_outcome`` files a withdrawal
-    # where the marker already is, so that readers counting failures do not
-    # count a decision.  The enriched record replaces the marker in place.
+    # The pool's rule: a withdrawal lands in withdrawn/ and never in failed/.
+    # The marker pbrun --withdraw filed is enriched with the job's ending in
+    # place, so one record carries the decision and the detail.
     path, rec = outcome("withdrawn", prefix) if prefix else (None, {})
+    failed_path, _ = outcome("failed", prefix) if prefix else (None, {})
     ok = (
         running
         and withdrawn is not None
         and withdrawn.returncode == 0
         and marker_path is not None
         and path is not None
+        and failed_path is None
         and rec.get("status") == "withdrawn"
         and bool(rec.get("withdrawn_by"))
-        and not any((QUEUE / "failed").glob(f"{prefix}*.json"))
+        and isinstance(rec.get("detail"), dict)
+        and (rec.get("detail") or {}).get("slurm", {}).get("job_id") == job_id
     )
     record(
-        "6 --withdraw scancels and files the ending under withdrawn/",
+        "6 --withdraw scancels and files one withdrawn/ record, nothing in failed/",
         ok,
         f"job={job_id} running={running} marker={bool(marker_path)} "
+        f"failed_record={failed_path is not None} "
         f"status={rec.get('status')} by={rec.get('withdrawn_by')!r}"
         + ("" if ok else
            f" pbrun rc={process.returncode} first={line.strip()!r} "
@@ -451,13 +468,27 @@ def row_7_gres_and_constraint() -> None:
     )
 
 
-def row_8_epilog(job_id: str) -> None:
-    """The Epilog ran for the job SLURM killed, and matched on the owner label.
+def _leftover_state_files() -> list[Path]:
+    """State files for jobs the Epilog has not cleaned up after yet."""
 
-    Read off row 5's job, not a fresh one: ``slurm_job.py`` removes its own
-    state file when it gets to exit normally, so a job that ended cleanly
-    leaves the Epilog nothing to do -- which is the design, and which is why
-    the evidence has to come from a job that was killed.
+    if not JOB_STATE_ROOT.is_dir():
+        return []
+    return sorted(JOB_STATE_ROOT.glob("*.job"))
+
+
+def row_8_epilog(job_id: str) -> None:
+    """The Epilog ran, matched on the owner label, and left nothing behind.
+
+    Read off row 5's killed job, which is where the container evidence is: a
+    job that reaches its own exit still has containers to remove -- they are
+    reparented to containerd-shim and outlive it either way -- but a killed one
+    is the case that has nothing else to fall back on.
+
+    The state files are a settled reading, not an instant one.  The job runner
+    no longer deletes its own: the Epilog owns node-side cleanup on every
+    ending, and it runs after the job's processes are gone, which is after
+    ``pbrun`` and ``scancel`` have already returned.  So a file for a job that
+    ended a moment ago is not yet a leak.
     """
 
     log = VOL / "docker.log"
@@ -465,7 +496,11 @@ def row_8_epilog(job_id: str) -> None:
     lines = [line for line in text.splitlines() if line.strip()]
     filtered = [line for line in lines if "label=prismabuild.action=" in line]
     removed = [line for line in lines if line.startswith("rm -f ")]
-    state_files = sorted((LANE / "jobs").glob("*.job")) if (LANE / "jobs").is_dir() else []
+    def settled() -> bool:
+        return not _leftover_state_files()
+
+    wait_for(settled, timeout_s=60, poll_s=2.0)
+    state_files = _leftover_state_files()
     try:
         said = [
             line for line in (VOL / "logs" / "slurmd.log").read_text(
@@ -960,7 +995,7 @@ def row_14_cpu_containment() -> None:
 
     Read off ``taskset``, not ``nproc``.  ``nproc`` honours ``OMP_NUM_THREADS``
     before it looks at the affinity mask, and ``pbrun``'s sealed environment
-    sets that to 4 (``tools/fleet/pbrun.py:2463``), so ``nproc`` answers 4
+    sets that to 4 (``tools/fleet/pbrun.py:2549``), so ``nproc`` answers 4
     under every declaration.  It is reported anyway, because an action that
     sizes its own parallelism from ``nproc`` is reading that 4.
     """

@@ -144,6 +144,7 @@ def _row(key: str, status: str, **fields) -> dict:
     row = {
         "action_key": key, "status": status, "transport": "-", "job": "-",
         "host": "-", "elapsed_s": None, "returncode": None,
+        "action_returncode": None, "action_signal": None,
         "receipt_published": None,
         "succeeded": status in {"executed", "cache_hit"},
     }
@@ -165,6 +166,8 @@ def _from_record(q, outcome_path, outcome) -> dict:
         host=summary["finished_host"] or "-",
         elapsed_s=summary["elapsed_s"],
         returncode=summary["returncode"],
+        action_returncode=summary["action_returncode"],
+        action_signal=summary["action_signal"],
         receipt_published=summary["receipt_published"],
         succeeded=summary["succeeded"],
     )
@@ -314,7 +317,19 @@ def _cell(row: dict, field: str) -> str:
         return f"{float(value):.1f}s" if isinstance(value, (int, float)) else "-"
     if field == "returncode":
         value = row.get("returncode")
-        return str(value) if isinstance(value, int) else "-"
+        if not isinstance(value, int):
+            return "-"
+        # The launcher's status is 1 for every failure, so the action's own is
+        # named beside it whenever the two differ. One column, because an
+        # operator reads this table across a campaign's worth of rows.
+        action = row.get("action_returncode")
+        if isinstance(action, int) and not isinstance(action, bool) \
+                and action != value:
+            signal = row.get("action_signal")
+            if isinstance(signal, int) and not isinstance(signal, bool):
+                return f"{value} (action signal {signal})"
+            return f"{value} (action {action})"
+        return str(value)
     if field == "receipt":
         value = row.get("receipt_published")
         return "-" if value is None else ("yes" if value else "no")

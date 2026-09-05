@@ -45,6 +45,14 @@ set -u
 JOB_STATE_ROOT="${PRISMABUILD_SLURM_JOB_STATE_ROOT:-/mnt/shared/prismabuild-fleet/slurm/jobs}"
 DOCKER="${PRISMABUILD_EPILOG_DOCKER:-docker}"
 LABEL="prismabuild.action"
+# The second label the shim stamps, naming the SLURM job the container was
+# created inside.  The owner label is the ACTION's identity, and under the pull
+# queue that was also one execution; SLURM has no claim, so two jobs of one
+# action can run on one node and share the owner label.  Removing on the owner
+# label alone therefore removed a sibling job's containers.  The shim reads the
+# job id from its own cgroup, which is where proctrack/cgroup puts it and which
+# nothing in the job can move itself out of.
+JOB_LABEL="prismabuild.job"
 # Who owns the files under the job-state root.  The job wrote them; this script runs
 # as root; and dl380g10 exports that dataset without no_root_squash --
 # measured 2026-09-04:
@@ -75,22 +83,43 @@ fi
 field() { sed -n "s/^$1=//p" "$state_file" | head -n 1; }
 
 owner="$(field container_owner)"
+marker="$(field container_marker)"
+container_job="$(field container_job)"
 checkout_dir="$(field checkout_dir)"
 local_root="$(field local_checkout_root)"
 
+# Whether the ownership label has no containers left behind it.  Starts true:
+# an action that started none is as clean as one whose containers were removed,
+# and both are allowed to retire the marker below.
+owner_settled=1
+
 # -- containers --------------------------------------------------------------
-# Matched by label, never by name or by image: the label is the action's
-# complete identity and the only thing that distinguishes this job's container
-# from an identical one somebody else is using right now.
+# Matched by label, never by name or by image: the labels are the action's
+# identity and this job's, and together they are the only thing that
+# distinguishes this job's container from an identical one somebody else --
+# including another job of the same action -- is using right now.
 case "$owner" in
     "")
         ;;
     *[!0-9a-f]* | ?)
         log "container owner is not a 64-hex digest; refusing to match on it"
+        owner_settled=0
         ;;
     *)
         if [ "${#owner}" -eq 64 ]; then
-            containers="$("$DOCKER" ps -aq --filter "label=${LABEL}=${owner}" 2>/dev/null)"
+            # Both labels, ANDed by the daemon.  A state file written before
+            # the job label existed -- a job that was already running when the
+            # runtime generation rolled -- records no job id, and matching on
+            # the owner alone is what this did for all of them; say so, because
+            # in that window a sibling job's container can still be caught.
+            if [ -n "$container_job" ]; then
+                filters="--filter label=${LABEL}=${owner} --filter label=${JOB_LABEL}=${container_job}"
+            else
+                filters="--filter label=${LABEL}=${owner}"
+                log "no job id recorded for ${owner:0:12}; matching on the owner label alone"
+            fi
+            # shellcheck disable=SC2086
+            containers="$("$DOCKER" ps -aq $filters 2>/dev/null)"
             if [ -n "$containers" ]; then
                 # shellcheck disable=SC2086
                 if "$DOCKER" rm -f $containers >/dev/null 2>&1; then
@@ -98,9 +127,22 @@ case "$owner" in
                 else
                     log "could not remove containers for ${owner:0:12}"
                 fi
+                # Asked again rather than inferred from the exit status, the
+                # way cleanup_action_containers asks: the marker below may be
+                # retired only when the label has nothing left behind it.
+            fi
+            # Asked on the OWNER label alone, and asked whether or not this job
+            # started anything: the marker below is the ACTION's, so a sibling
+            # job's container has to keep it alive, and this job may have
+            # started none at all while that sibling did.
+            remaining="$("$DOCKER" ps -aq --filter "label=${LABEL}=${owner}" 2>/dev/null)"
+            if [ -n "$remaining" ]; then
+                owner_settled=0
+                log "containers for ${owner:0:12} remain: $(echo "$remaining" | tr '\n' ' ')"
             fi
         else
             log "container owner is not 64 characters; refusing to match on it"
+            owner_settled=0
         fi
         ;;
 esac
@@ -133,6 +175,8 @@ fi
 # for months.  Falling back to a plain unlink keeps a job-state root that is
 # NOT on NFS -- a single-box deployment, the container smoke -- working
 # unchanged.
+# $1 is the path; $2 names it for the log, because the smoke and the runbook
+# read those lines back and "removed state file" has to keep meaning that one.
 lane_delete() {
     if [ -n "$JOB_USER" ] && command -v runuser >/dev/null 2>&1; then
         if runuser -u "$JOB_USER" -- rm -f -- "$1" 2>/dev/null; then
@@ -141,7 +185,7 @@ lane_delete() {
             # SLURM_JOB_USER was never set looks exactly like a run where the
             # squash-safe path worked, and the smoke could not tell them
             # apart.
-            log "removed state file $1 as $JOB_USER"
+            log "removed $2 $1 as $JOB_USER"
             return 0
         fi
         log "could not remove $1 as $JOB_USER; trying as $(id -un)"
@@ -149,7 +193,35 @@ lane_delete() {
     rm -f -- "$1" 2>/dev/null || true
 }
 
-lane_delete "$state_file"
+# -- the container-ownership marker ------------------------------------------
+# The shim writes it on first container creation and the pull queue's
+# `finish` unlinks it once the containers are gone.  Under SLURM nothing did,
+# so `container-owners/` grew a file per containerized action and never shrank.
+# Deleted here, in the same step and as the same user as the state file, and
+# only once the label has no containers left -- a marker removed while a
+# container still carries its label would tell the next reader the action never
+# used Docker.
+#
+# Bounded the way the checkout removal is: an absolute path whose last
+# component is exactly this action's own `<owner>.used`.  A cleanup that can be
+# talked into deleting an arbitrary path is worse than a leaked file.
+if [ "$owner_settled" -eq 1 ] && [ -n "$marker" ] && [ "${#owner}" -eq 64 ]; then
+    case "$marker" in
+        /*)
+            if [ "${marker##*/}" = "${owner}.used" ]; then
+                [ -e "$marker" ] && lane_delete "$marker" \
+                    "container-ownership marker"
+            else
+                log "recorded marker $marker does not name ${owner:0:12}; left alone"
+            fi
+            ;;
+        *)
+            log "recorded marker $marker is not an absolute path; left alone"
+            ;;
+    esac
+fi
+
+lane_delete "$state_file" "state file"
 if [ -e "$state_file" ]; then
     # Say it rather than exit non-zero: a non-zero Epilog drains the node, and
     # a state file nobody could delete is not a reason to take a box out of the
