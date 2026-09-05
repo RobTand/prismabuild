@@ -2257,7 +2257,10 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Submit one command to the PrismaBuild pool and wait for it."
+        description="Submit one command to the PrismaBuild fleet and wait for "
+                    "it. Either the pull queue or SLURM carries it, per "
+                    "--transport or the published generation's default; the "
+                    "result does not depend on which."
     )
     ap.add_argument("--demand", default="",
                     help="resource demand, e.g. gpu=1,mem_gb=16")
