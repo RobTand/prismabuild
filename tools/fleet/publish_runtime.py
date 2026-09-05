@@ -384,7 +384,15 @@ def main() -> int:
              "and receipt are already proved and a rebuild from a moved "
              "checkout would not be the same thing.",
     )
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--dry-run", action="store_true",
+        help="report what would happen and write nothing.  A publish still "
+             "resolves the commit and still refuses a dirty tree, then lists "
+             "the files it would publish and stops before the generation "
+             "store is created.  With --activate-generation the name and its "
+             "receipt are validated and the target is printed, but the live "
+             "runtime is not repointed.",
+    )
     args = ap.parse_args()
 
     if args.activate_generation is not None:

@@ -109,15 +109,22 @@ def _encode_one_shard(tmp_path: Path, checkout: Path, plan_sha: str,
 
 def _screen(tmp_path: Path, cas: pb.PrismaBuildCAS, results: Path,
             plan_path: Path, monkeypatch: pytest.MonkeyPatch,
-            transport: str = "slurm", *, flags: bool = False) -> str:
+            transport: str = "slurm", *, flags: bool = False,
+            expect: int = tessera_status.EXIT_OK) -> str:
     """The command, reading this test's store instead of the fleet's.
 
     The store root and the plan travel as module constants rather than as
     command-line flags, so the same invocation runs against either version of
     the reader and the assertion is about the count rather than about which
     options exist.
+
+    The queue and CAS roots are created because these tests mean an empty
+    store rather than an absent one, and the screen tells those apart: a root
+    that is not there is a root it could not read, and it says so.
     """
 
+    (tmp_path / "queue").mkdir(exist_ok=True)
+    cas.root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
         tessera_status, "describe_squeue_depth",
         lambda **_kwargs: "no jobs queued or running")
@@ -132,7 +139,7 @@ def _screen(tmp_path: Path, cas: pb.PrismaBuildCAS, results: Path,
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
         code = tessera_status.main(argv)
-    assert code == 0
+    assert code == expect
     return output.getvalue()
 
 
@@ -215,10 +222,11 @@ def test_a_status_screen_survives_an_unreadable_store(
 
     printed = _screen(
         tmp_path, cas, checkout / "results" / "glm53-tessera", plan_path,
-        monkeypatch)
+        monkeypatch, expect=tessera_status.EXIT_PARTIAL)
 
     assert "shards     0/120 encoded   missing 120" in printed
     assert "skipped  entries that could not be read: 1" in printed
+    assert str(request) in printed
 
 
 def test_an_unreadable_plan_is_reported_rather_than_guessed(
@@ -233,7 +241,7 @@ def test_an_unreadable_plan_is_reported_rather_than_guessed(
 
     printed = _screen(
         tmp_path, cas, checkout / "results" / "glm53-tessera", plan_path,
-        monkeypatch)
+        monkeypatch, expect=tessera_status.EXIT_PARTIAL)
 
     assert "shards     0/120 encoded   missing 120" in printed
     assert "plan     unreadable" in printed
