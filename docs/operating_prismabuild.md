@@ -183,8 +183,8 @@ queue the worker files the ending and `pbwait` only watches.
 | Code | Meaning |
 |---|---|
 | 0 | The work is done. A `cache_hit` counts as done. |
-| 1 | The action failed. `pbrun` prints the worker's message and the log paths. |
-| 2 | `pbrun --withdraw` matched no submission, matched more than one, or `scancel` refused the job. Also argparse's own usage error. |
+| 1 | The action failed. `pbrun` prints the worker's message and the log paths. `pbwait` also exits 1 when an ending was filed and cannot be read, and names the file: that is not 75, because waiting again only re-reads the same record. |
+| 2 | `pbrun --withdraw` matched no submission, matched more than one, or `scancel` refused the job. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
 | 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
 
@@ -411,8 +411,10 @@ It prints three tables:
 
 `pbstatus` never blocks, never writes, and never fails. A controller that is not
 installed prints one line saying so, and the endings table still prints, because
-those records are files on the shared mount. `--json` prints one object with the
-three lists and any scheduler notes.
+those records are files on the shared mount. A record it cannot read prints as an
+`unreadable` row whose note names the path and the reason, so a truncated or
+unreadable newest record does not read as a fleet that filed nothing. `--json`
+prints one object with the three lists and any scheduler notes.
 
 The underlying commands are `sinfo` for nodes, `squeue` for jobs, and `sacct`
 for jobs the controller has forgotten. Use them directly for scheduler detail

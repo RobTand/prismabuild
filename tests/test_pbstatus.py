@@ -500,6 +500,68 @@ def test_a_receipt_puts_the_ending_under_done(fleet, capsys):
     assert ending["path"].endswith(f"/{pool.DONE}/{'e5' * 32}.json")
 
 
+def _truncated_ending(fleet: dict, key: str, state: str = pool.FAILED) -> Path:
+    """A terminal record that stopped mid-write, the way a full disk leaves one."""
+
+    directory = fleet["queue"] / state
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{key}.json"
+    path.write_text('{"action_key": "' + key, encoding="utf-8")
+    return path
+
+
+def test_a_record_that_cannot_be_parsed_is_a_row_not_a_silence(fleet, capsys):
+    """The newest record is read first, so dropping it empties the table.
+
+    ``--recent`` slices before the records are read, so one unreadable record
+    at the head of the list used to print exactly what a fleet that had filed
+    nothing prints. The two are opposite states and needed opposite responses.
+    """
+
+    key = "c3" * 32
+    path = _truncated_ending(fleet, key)
+    endings = _run_json(fleet, capsys, "--recent", "1")["endings"]
+    assert len(endings) == 1
+    assert endings[0]["status"] == "unreadable"
+    assert endings[0]["unreadable"] == "not valid JSON"
+    assert endings[0]["path"] == str(path)
+
+    out = _run(fleet, capsys, "--recent", "1").split("== endings")[1]
+    assert "unreadable" in out
+    assert "not valid JSON" in out
+    assert str(path) in out
+    assert "no endings filed" not in out
+
+
+def test_an_unreadable_record_says_which_way_it_is_unreadable(fleet, capsys):
+    """A record nobody may read and a record nobody can parse are different
+    faults with different fixes, and they took the same arm before."""
+
+    if os.geteuid() == 0:
+        pytest.skip("root reads a 000 file, so the two arms cannot differ")
+    _pool_ending(fleet, "d4" * 32)
+    unreadable = fleet["queue"] / pool.DONE / f"{'d4' * 32}.json"
+    unreadable.chmod(0o000)
+    try:
+        endings = _run_json(fleet, capsys)["endings"]
+        assert [row["status"] for row in endings] == ["unreadable"]
+        assert endings[0]["unreadable"] == "permission denied"
+
+        _truncated_ending(fleet, "e5" * 32)
+        reasons = {row["unreadable"]
+                   for row in _run_json(fleet, capsys)["endings"]}
+        assert reasons == {"permission denied", "not valid JSON"}
+    finally:
+        unreadable.chmod(0o644)
+
+
+def test_a_readable_ending_carries_no_unreadable_note(fleet, capsys):
+    _pool_ending(fleet, "d4" * 32)
+    ending = _run_json(fleet, capsys)["endings"][0]
+    assert ending["unreadable"] is None
+    assert "unreadable" not in _run(fleet, capsys).split("== endings")[1]
+
+
 def test_recent_bounds_how_many_records_are_read(fleet, capsys):
     _slurm_ending(fleet, "c3" * 32, status="failed", state="TIMEOUT")
     _pool_ending(fleet, "d4" * 32)
