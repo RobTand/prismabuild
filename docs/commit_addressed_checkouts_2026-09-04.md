@@ -75,8 +75,8 @@ gate `tools/impacted_tests.py --ref BASE...HEAD` is exactly that shape, and two
 real actions failed three retries each on runtime generation
 `aa6d3cfa2f77-1788542034-2b84265567ac`.
 
-Sealing the parent fixes it by construction: `git bundle create` walks from
-every named ref, so the ancestry travels with no history depth to choose. The
+Sealing the parent fixes it by construction: the bundle walks from every named
+ref, so the ancestry travels with no history depth to choose. The
 measured repositories fit far inside the existing ceiling — the Tessera pack is
 4.94 MiB over 1375 commits and PrismaQuant's 46.8 MiB over 2173, against a
 512 MiB bundle limit that still applies unchanged.
@@ -91,10 +91,58 @@ a worker. The materializer refuses a recorded id the bundle contradicts, since
 the record and the bundle travel separately and a branch created at an
 unreachable id would make every later comparison a silent lie.
 
-**Every pbrun action key moves once with this change.** The snapshot input bytes
-are part of the action, so the same argv over the same tree now hashes
-differently. That is accepted: it costs one round of cache misses, and it is
-the honest consequence of the sealed bytes changing.
+**Every pbrun action key moved once with this change, and moves once more with
+the determinism fix below.** The snapshot input bytes are part of the action,
+so the same argv over the same tree hashes differently. That is accepted twice:
+each costs one round of cache misses, and each is the honest consequence of the
+sealed bytes changing. What is *not* accepted is a key that moves on every
+submission, which is what the next section is about.
+
+## Why the sealer writes the bundle itself
+
+The bundle bytes are hashed into the action key twice, through
+`params.checkout_snapshot.input` and through `inputs`. So an action key is only
+as stable as those bytes, and as first written they were not stable at all.
+Measured on sparky (git 2.43.0, 20 cores) against this repository at 4253 loose
+objects: three seals of one unchanged tree produced three different bundle
+digests and therefore three different action keys. No CAS hit, campaign resume
+or singleton hold could ever apply to a repository of that size. The suite did
+not see it because its fixtures hold about fifteen objects, and Git's delta
+search is single-threaded below roughly a thousand.
+
+Two causes, both now closed in `pbrun.write_deterministic_bundle`:
+
+* **The threaded delta search.** `pack-objects` splits the object list across
+  one thread per core, and which thread wins a candidate decides which delta
+  base it gets. Every setting Git documents as influencing the emitted pack is
+  now pinned on the command line — `pack.threads=1` first among them, together
+  with the window, depth, window memory, compression levels, big-file
+  threshold, pack reuse, bitmaps, sparse walk, path walk and delta islands.
+  Each is pinned to the value Git documents as its default, so this is a
+  one-time key move rather than a different pack.
+* **Delta reuse from the source's packs.** A delta already sitting in a pack is
+  copied out verbatim, so the same tree sealed to different bytes on either
+  side of a `git gc` — and auto-gc runs unbidden. No configuration key reaches
+  that; `--no-reuse-delta` and `--no-reuse-object` do, and `git bundle create`
+  accepts neither. The sealer therefore writes the bundle header itself (the
+  `# v2 git bundle` line, or `# v3` with `@object-format` for a non-SHA-1
+  repository, then one `<oid> <ref>` line per advertised ref and a blank line)
+  and pipes `pack-objects` straight into the same file. With reuse allowed, the
+  hand-written file was measured byte-identical to `git bundle create`'s over
+  the same objects, which is what says the header is right.
+
+Three measurements, all on this repository:
+
+| what | result |
+|---|---|
+| three seals of one unchanged tree, sparky | one digest `e35b637f2124b57e`, one action key |
+| the same tree after `git gc` packed its objects | the same digest as when they were loose |
+| the same sealed input on dl380g10 (git 2.53.0, 80 cores, x86_64) | the same digest as sparky |
+
+A full delta search with no reuse costs 5.2 s against 1.0 s for the reusing
+`git bundle create`, on the largest repository this fleet seals. That is the
+price of a key that means something.
+
 
 Two sources cannot supply the ancestry and are refused up front with a named
 message rather than a Git internal error: a shallow clone and a partial clone.
@@ -241,6 +289,8 @@ number.
 | `pbrun.require_complete_history` | `def require_complete_history(root: Path) -> None:` |
 | `pbrun.resolve_snapshot_refs` | `def resolve_snapshot_refs(` |
 | `pbrun`, the parent that carries ancestry | `            ["commit-tree", tree, "-p", parent],` |
+| `pbrun.write_deterministic_bundle` | `def write_deterministic_bundle(` |
+| `pbrun`, the pins no config file may move | `    ("pack.threads", "1"),` |
 | `core.validate_pbrun_snapshot_ref_name` | `def validate_pbrun_snapshot_ref_name(value: object, *, where: str) -> str:` |
 | `core._verify_pbrun_checkout_ancestry` | `def _verify_pbrun_checkout_ancestry(` |
 | `materialize._execution_checkout`, the sequence | `def _execution_checkout(` |

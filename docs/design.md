@@ -273,7 +273,11 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   and untracked working tree, including the closure stamp, parented on the
   source's own `HEAD`, publishes its
   bundle as a verified CAS input, and puts the commit rather than the
-  submitter path in the queue. `--snapshot-ref NAME` adds a source branch to
+  submitter path in the queue. Those bundle bytes are a function of the sealed
+  objects alone: the pack is written with every setting that influences it
+  pinned on the command line and with delta reuse off, so an unchanged tree
+  seals to one action key across repeated submissions, across a `git gc` of
+  the source, and across boxes. `--snapshot-ref NAME` adds a source branch to
   that bundle by name. The claimant fetches that bundle into a fresh
   worker-local checkout, runs from the original relative subdirectory, and
   removes the private tree afterward. A failed removal is warned and recorded
