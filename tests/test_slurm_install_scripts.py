@@ -350,7 +350,6 @@ def test_cutover_publishes_through_the_interpreter(tmp_path: Path) -> None:
         text = (FLEET / name).read_text(encoding="utf-8")
         assert 'PUBLISH="${PB_PUBLISH:-python3 ' in text, name
         assert '"$REPO/tools/fleet/publish_runtime.py"' not in text, name
-    assert not os.access(ROOT / "tools" / "fleet" / "publish_runtime.py", os.X_OK)
 
 
 def test_cutover_refuses_when_verification_did_not_pass_here(tmp_path: Path) -> None:

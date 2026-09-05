@@ -253,10 +253,15 @@ Measured 2026-09-05, and it is the reason `slurm.conf` carries
   name. Its nsswitch is `files dns mymachines`, avahi is inactive, and neither
   Spark is in DNS or in its `/etc/hosts`. slurmctld would have had no address
   to contact a node on, and the message for that names a node, not a resolver.
-- The Sparks resolve dl380g10 to two addresses, wrong one first. `getent
-  ahostsv4 dl380g10` answers 192.168.1.165, an mDNS record for a host that does
-  not answer ping, before the live 192.168.1.107 on `bond0`. A controller
-  address that is right on the second try is a fleet that works intermittently.
+- The Sparks resolve dl380g10, wrong answers first. `getent hosts dl380g10`
+  gives `::`, and `getent ahostsv4 dl380g10` gives 192.168.1.165, a host that
+  does not answer ping, before the live 192.168.1.107 on `bond0`. Both come
+  from the router at 192.168.1.1, which serves the `.lan` zone and holds two A
+  records for `dl380g10.lan`: `dig +short @192.168.1.1 dl380g10.lan A` returns
+  .165 then .107. It is a stale DHCP record on the router, not avahi --
+  `mdns4_minimal` answers `.local` only, and `dl380g10.local` times out. Ask
+  whoever administers the router to delete the .165 record; a controller
+  address that is right on the third try is a fleet that works intermittently.
 
 Ports were measured open the same day: 6817 and 6818 answer "connection
 refused" rather than timing out, in both directions, so `ufw` (active on all
@@ -293,6 +298,13 @@ A Spark's run installs that key, stamps its sha256 beside it, and shreds the
 copy. Do not carry the key through `/mnt/shared`: it is the fleet's shared
 secret and an NFS export is the wrong place for one. Do not stage it in `/tmp`,
 which an out-of-memory event cleared on this fleet once already.
+
+The controller's own copy is not shredded by anything, because dl380g10 is
+where it is created. Once both Sparks are installed, remove it yourself:
+
+```bash
+ssh dl380g10 shred -u /home/rob/.munge-key.b64
+```
 
 **Installing the `munge` package puts a key on the box by itself.** Measured
 2026-09-05 in an `ubuntu:24.04` container: after `apt install munge`,
@@ -457,6 +469,9 @@ fleet/slurm/cutover.sh --dry-run --yes     # read the plan
 fleet/slurm/cutover.sh --yes               # do it
 ```
 
+Run it from sparky. It reaches every box by ssh, and sparky is the only box
+that can resolve the other two by name.
+
 Nothing in it needs root. The loops are rob's processes, the crontab is rob's,
 `pqwork.service` is rob's user unit, and the runtime generation is rob's to
 publish.
@@ -545,6 +560,9 @@ cd /home/rob/prismabuild
 fleet/slurm/rollback.sh --dry-run
 fleet/slurm/rollback.sh
 ```
+
+Run it from sparky, for the same reason as the cutover: it reaches every box by
+ssh, and sparky is the only box that can resolve the other two by name.
 
 It reads the state file `cutover.sh` wrote -- the newest
 `~/.prismabuild/cutover-*.json` unless `--state` names another -- and reverses

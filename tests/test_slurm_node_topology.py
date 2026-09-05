@@ -29,8 +29,10 @@ import re
 CONF = Path(__file__).resolve().parents[1] / "fleet" / "slurm" / "slurm.conf"
 
 #: What each box reports, and therefore what its stanza may say.  The Sparks
-#: are the measurement quoted above; dl380g10 is ``lscpu`` on that box,
-#: 2 sockets x 20 cores x 2 threads.
+#: are the measurement quoted above.  dl380g10 was read the same way on
+#: 2026-09-05, 25.11.2 ``slurmd -C`` in an ``ubuntu:26.04`` container on that
+#: box, and it confirmed rather than changed what ``lscpu`` had said:
+#: ``CPUs=80 SocketsPerBoard=2 CoresPerSocket=20 ThreadsPerCore=2``.
 MEASURED = {
     "sparky": {
         "CPUs": 20, "SocketsPerBoard": 1, "CoresPerSocket": 20, "ThreadsPerCore": 1,
@@ -106,9 +108,11 @@ def test_every_node_carries_its_address_because_the_names_do_not_resolve() -> No
     ``files dns mymachines``, avahi is inactive, and neither Spark is in DNS or
     in ``/etc/hosts``.  slurmctld would have had no address for either node.
 
-    In the other direction the Sparks do resolve ``dl380g10``, to two
-    addresses, wrong one first: ``getent ahostsv4 dl380g10`` answers
-    192.168.1.165 (mDNS, stale, silent to ping) before 192.168.1.107.
+    In the other direction the Sparks do resolve ``dl380g10``, wrong answers
+    first: ``getent hosts`` gives ``::`` and ``getent ahostsv4`` gives
+    192.168.1.165, a host silent to ping, before the live 192.168.1.107.  Both
+    come from the router at 192.168.1.1, which holds two A records for
+    ``dl380g10.lan``; it is a stale DHCP record there, not avahi.
 
     So the addresses live in the file.  Ports were measured open the same day
     -- 6817 and 6818 answer "connection refused" rather than timing out, in
