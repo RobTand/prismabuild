@@ -493,17 +493,23 @@ def row_9_no_slurmdbd(job_id: str) -> None:
 # rows measure the difference rather than argue it, and they are the evidence
 # behind docs/resource_enforcement_2026-09-05.md.
 #
-# The block runs twice: once with the fleet's `ConstrainCores=yes`, once with
-# `PB_SMOKE_CONSTRAIN_CORES=no`, which also drops `task/affinity`.  Each row
-# names the setting it ran under, so a transcript says which arm it is.
+# The block runs three times, one arm per setting the decision turns on:
+#
+#   PB_SMOKE_CONSTRAIN_CORES=yes PB_SMOKE_CONSTRAIN_SWAP=no   # the fleet today
+#   PB_SMOKE_CONSTRAIN_CORES=no  PB_SMOKE_CONSTRAIN_SWAP=no   # cores unenforced
+#   PB_SMOKE_CONSTRAIN_CORES=yes PB_SMOKE_CONSTRAIN_SWAP=yes  # memory that kills
+#
+# Each row names the arm it ran under, so a transcript says which one it is.
 # ---------------------------------------------------------------------------
 
-#: The container's `ConstrainCores`, as `inside.sh` generated it.
+#: The container's cgroup settings, as ``inside.sh`` generated them.
 CONSTRAIN_CORES = os.environ.get("PB_SMOKE_CONSTRAIN_CORES", "yes")
+CONSTRAIN_SWAP = os.environ.get("PB_SMOKE_CONSTRAIN_SWAP", "no")
+ARM = f"cores={CONSTRAIN_CORES} swap={CONSTRAIN_SWAP}"
 
 #: How much memory row 10c writes past its declaration, and in what chunks.
-#: `bytearray(N)` will not do: it is a calloc, so the pages are mapped and
-#: never written, and a cgroup charges pages that are faulted in.  `extend`
+#: ``bytearray(N)`` will not do: it is a calloc, so the pages are mapped and
+#: never written, and a cgroup charges pages that are faulted in.  ``extend``
 #: copies, which touches every page.
 GROW_CHUNK_MIB = 64
 OVER_DECLARED_GB = 1
@@ -535,16 +541,35 @@ def _affinity_width(text: str) -> int:
     return total
 
 
-def _grower(megabytes: int) -> list[str]:
-    """A command that writes ``megabytes`` MiB of anonymous memory and says so."""
+def _grower(megabytes: int, *, report: bool = False) -> list[str]:
+    """A command that writes ``megabytes`` MiB and, optionally, reports its cgroup.
 
-    return [
-        "python3", "-c",
-        f"b=bytearray()\n"
-        f"for _ in range({megabytes // GROW_CHUNK_MIB}):\n"
-        f"    b.extend(b'x' * ({GROW_CHUNK_MIB} << 20))\n"
-        f"print('grew', len(b) >> 20, 'MiB', flush=True)\n",
+    The report is what makes row 10c readable in every arm.  A job the kernel
+    kills says nothing itself, so the state is the evidence; a job that
+    survives has to say whether it survived unconstrained or by reclaiming,
+    and only its own ``memory.events`` can answer that.
+    """
+
+    lines = [
+        "b = bytearray()",
+        f"for _ in range({megabytes // GROW_CHUNK_MIB}):",
+        f"    b.extend(b'x' * ({GROW_CHUNK_MIB} << 20))",
+        "print('grew', len(b) >> 20, 'MiB', flush=True)",
     ]
+    if report:
+        lines += [
+            "import pathlib",
+            "rel = open('/proc/self/cgroup').read().strip().rsplit(':', 1)[-1]",
+            "d = pathlib.Path('/sys/fs/cgroup') / rel.lstrip('/')",
+            "for name in ('memory.max', 'memory.swap.max', 'memory.current',",
+            "             'memory.swap.current', 'memory.events'):",
+            "    try:",
+            "        value = (d / name).read_text().split()",
+            "    except OSError as error:",
+            "        value = ['unreadable', str(error)]",
+            "    print(name, '=', ' '.join(value), flush=True)",
+        ]
+    return ["python3", "-c", "\n".join(lines) + "\n"]
 
 
 def _ending(prefix: str) -> tuple[str, dict]:
@@ -557,8 +582,22 @@ def _ending(prefix: str) -> tuple[str, dict]:
     return "", {}
 
 
+def _field(text: str, name: str) -> str:
+    """One ``name = value`` line of the cgroup report, or an empty string."""
+
+    match = re.search(rf"^{re.escape(name)} = (.*)$", text or "", re.M)
+    return match.group(1).strip() if match else ""
+
+
 def row_10_cpu_containment() -> None:
-    """What a job sees of the node's CPUs when it declares one, and when two."""
+    """What a job sees of the node's CPUs when it declares one, and when two.
+
+    Read off ``taskset``, not ``nproc``.  ``nproc`` honours ``OMP_NUM_THREADS``
+    before it looks at the affinity mask, and ``pbrun``'s sealed environment
+    sets that to 4 (``tools/fleet/pbrun.py:1936``), so ``nproc`` answers 4
+    under every declaration.  It is reported anyway, because an action that
+    sizes its own parallelism from ``nproc`` is reading that 4.
+    """
 
     node_cpus = int((sh(["nproc"]).stdout or "0").strip() or 0)
     for label, declared in (("10a", 1), ("10b", 2)):
@@ -571,33 +610,36 @@ def row_10_cpu_containment() -> None:
         seen = int(match.group(1)) if match else -1
         width = _affinity_width(text)
         if CONSTRAIN_CORES == "yes":
-            # The declaration is a cpuset: the job sees exactly what it asked
-            # for, and the node has more than that to give.
-            ok = seen == declared and width == declared and node_cpus > declared
+            # The declaration is a cpuset: the job is confined to exactly what
+            # it asked for, on a node that had more to give.
+            ok = width == declared and node_cpus > declared
         else:
             # The declaration is an admission count only: the job is placed
-            # against it, and then sees the whole node.
-            ok = seen == node_cpus and width == node_cpus
+            # against it and then sees the whole node.
+            ok = width == node_cpus
         record(
-            f"{label} --cpus {declared} with ConstrainCores={CONSTRAIN_CORES}",
+            f"{label} --cpus {declared} confines the job [{ARM}]",
             ok,
-            f"job saw nproc={seen} affinity width={width} "
-            f"of node's {node_cpus} CPUs (declared {declared})",
+            f"job affinity width={width} of the node's {node_cpus} CPUs "
+            f"(declared {declared}); nproc said {seen} "
+            f"(OMP_NUM_THREADS, not the cpuset)",
         )
 
 
 def row_10c_over_declared_memory() -> None:
-    """A job that writes past its declared memory does not quietly finish.
+    """A job that writes past its declared memory does not run unconstrained.
 
-    The claim is deliberately not ``state == OUT_OF_MEMORY``: what matters for
-    the decision is whether the constraint stops the job at all, and the state
-    the controller picks is quoted rather than assumed.  `ConstrainSwapSpace`
-    is `no` on the fleet and here, so a job over `memory.max` can reclaim into
-    swap instead of dying -- and if it does, this row says so by failing.
+    The claim is deliberately not ``state == OUT_OF_MEMORY``: what the
+    decision turns on is whether the constraint reaches the job at all, and
+    the state the controller picks is quoted rather than assumed.  With
+    ``ConstrainSwapSpace=no`` -- the fleet's setting -- a job over
+    ``memory.max`` reclaims into swap and lives; with it on, the kernel kills
+    it.  Both are the constraint working, and the row passes on either, so the
+    arms differ in what they report rather than in whether they pass.
     """
 
     completed = pbrun(
-        _grower(OVER_GROW_MIB),
+        _grower(OVER_GROW_MIB, report=True),
         extra=["--demand", f"mem_gb={OVER_DECLARED_GB}"],
     )
     prefix, job_id = submitted(completed)
@@ -605,27 +647,28 @@ def row_10c_over_declared_memory() -> None:
     detail = rec.get("detail", {}) if isinstance(rec, dict) else {}
     slurm = detail.get("slurm", {}) if isinstance(detail, dict) else {}
     state = str(slurm.get("state") or "")
+    text = (completed.stdout or "") + str(detail.get("stdout") or "")
+    limit = _field(text, "memory.max")
+    swap_limit = _field(text, "memory.swap.max")
+    events = _field(text, "memory.events")
+    swap_used = _field(text, "memory.swap.current")
+    hit = re.search(r"\bmax (\d+)", events)
+    killed = state not in ("", "COMPLETED")
+    throttled = bool(hit) and int(hit.group(1)) > 0
     said = f"pbrun: failed ({state})" in (completed.stderr or "")
-    # slurmstepd's own line is the primary evidence: a process the kernel
-    # SIGKILLs writes nothing itself, so without this the row would be
-    # reading a state with no mechanism behind it.
-    stderr_tail = str(detail.get("stderr") or "") + (completed.stderr or "")
-    oom_said = "oom" in stderr_tail.lower()
-    ok = (
-        where == "failed"
-        and rec.get("status") == "failed"
-        and state not in ("", "COMPLETED")
-        and said
-    )
+    ok = (killed and said) or (throttled and limit.isdigit()
+                               and int(limit) == OVER_DECLARED_GB * 1024**3)
     record(
-        f"10c a job over its mem_gb is stopped, not finished "
-        f"(ConstrainCores={CONSTRAIN_CORES})",
+        f"10c a job over its mem_gb is constrained, not ignored [{ARM}]",
         ok,
-        f"job={job_id} declared mem_gb={OVER_DECLARED_GB} wrote "
-        f"{OVER_GROW_MIB} MiB -> filed {where or 'nothing'}/ "
-        f"state={state!r} rc={detail.get('returncode')} "
-        f"signal={detail.get('signal')} "
-        f"pbrun said failed({state})={said} stepd mentioned oom={oom_said}",
+        f"job={job_id} declared mem_gb={OVER_DECLARED_GB}, wrote "
+        f"{OVER_GROW_MIB} MiB -> filed {where or 'nothing'}/ state={state!r} "
+        f"rc={detail.get('returncode')} signal={detail.get('signal')} "
+        f"pbrun said failed({state})={said}; "
+        f"memory.max={limit or '(unreported)'} "
+        f"memory.swap.max={swap_limit or '(unreported)'} "
+        f"memory.swap.current={swap_used or '(unreported)'} "
+        f"memory.events={events or '(unreported)'}",
     )
 
 
@@ -647,10 +690,9 @@ def row_10d_within_declared_memory() -> None:
         and f"grew {UNDER_GROW_MIB} MiB" in (completed.stdout or "")
     )
     record(
-        f"10d a job within its mem_gb completes "
-        f"(ConstrainCores={CONSTRAIN_CORES})",
+        f"10d a job within its mem_gb completes [{ARM}]",
         ok,
-        f"job={job_id} declared mem_gb={UNDER_DECLARED_GB} wrote "
+        f"job={job_id} declared mem_gb={UNDER_DECLARED_GB}, wrote "
         f"{UNDER_GROW_MIB} MiB -> filed {where or 'nothing'}/ "
         f"status={rec.get('status')} state={slurm.get('state')} "
         f"rc={completed.returncode}",

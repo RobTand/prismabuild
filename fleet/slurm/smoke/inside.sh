@@ -38,11 +38,18 @@ trap share_logs EXIT
 # nothing to constrain has no cpuset to write.
 CONSTRAIN_CORES="${PB_SMOKE_CONSTRAIN_CORES:-yes}"
 
+# Whether a job over its `memory.max` may reclaim into swap.  `no` is the
+# fleet's setting, and under it an over-declared job survives by swapping;
+# `yes` sets `memory.swap.max` from AllowedSwapSpace, and the kernel kills it
+# instead.  Row 10c measures both, so neither is asserted here.
+CONSTRAIN_SWAP="${PB_SMOKE_CONSTRAIN_SWAP:-no}"
+
 say "== prismabuild SLURM smoke =="
 say "node          : $NODE"
 say "repo          : $REPO"
 say "volume        : $VOL"
 say "constrain cpu : $CONSTRAIN_CORES (PB_SMOKE_CONSTRAIN_CORES)"
+say "constrain swap: $CONSTRAIN_SWAP (PB_SMOKE_CONSTRAIN_SWAP)"
 
 # -- cgroup v2 delegation ----------------------------------------------------
 #
@@ -84,9 +91,10 @@ prepare_cgroups() {
     return 0
 }
 
-case "$CONSTRAIN_CORES" in
-    yes|no) ;;
-    *) say "smoke: PB_SMOKE_CONSTRAIN_CORES must be yes or no, not $CONSTRAIN_CORES"
+case "$CONSTRAIN_CORES:$CONSTRAIN_SWAP" in
+    yes:yes|yes:no|no:yes|no:no) ;;
+    *) say "smoke: PB_SMOKE_CONSTRAIN_CORES and PB_SMOKE_CONSTRAIN_SWAP must"
+       say "smoke: each be yes or no, not $CONSTRAIN_CORES and $CONSTRAIN_SWAP"
        exit 2 ;;
 esac
 
@@ -188,7 +196,7 @@ CgroupPlugin=autodetect
 IgnoreSystemd=yes
 ConstrainCores=$CONSTRAIN_CORES
 ConstrainRAMSpace=yes
-ConstrainSwapSpace=no
+ConstrainSwapSpace=$CONSTRAIN_SWAP
 ConstrainDevices=no
 EOF
 
@@ -251,6 +259,7 @@ exec runuser -u rob -- env \
     PB_SMOKE_VOL="$VOL" \
     PB_SMOKE_NODE="$NODE" \
     PB_SMOKE_CONSTRAIN_CORES="$CONSTRAIN_CORES" \
+    PB_SMOKE_CONSTRAIN_SWAP="$CONSTRAIN_SWAP" \
     HOME=/home/rob \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     python3 "$REPO/fleet/slurm/smoke/rows.py"
