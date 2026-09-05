@@ -76,6 +76,7 @@ import socket
 import subprocess
 import time
 from typing import Callable
+import uuid
 
 from . import core as pb
 from . import pool
@@ -816,13 +817,36 @@ def _publish_record(path: Path, payload: Mapping[str, object]) -> None:
 
 
 def _write_latest(path: Path, payload: Mapping[str, object]) -> None:
-    """Point at the newest attempt by rename, so a reader sees one or the other."""
+    """Point at the newest attempt by rename, so a reader sees one or the other.
+
+    The temp name carries a UUID and is created ``O_EXCL``, which is the shape
+    ``materialize._write_json_atomic`` uses and for the reason this lane needs
+    it: a lane directory is on the shared mount and two boxes submitting one
+    action key write into it.  A pid is unique only within a box, so
+    ``.latest.json.<pid>.tmp`` was one file for both of them -- the first
+    writer renamed it away and the second's ``os.replace`` raised
+    ``FileNotFoundError`` after its own ``sbatch`` had been accepted, leaving a
+    queued job with nothing in ``latest.json`` for ``--withdraw`` to resolve.
+
+    Flushed and fsynced before the rename, so the bytes a reader on another box
+    sees after this returns are the whole record rather than a hole.  The temp
+    file is removed if anything goes wrong on the way, because a lane directory
+    an operator reads should not accumulate the debris of failed writes.
+    """
 
     raw = pb._canonical_file_bytes(dict(payload))
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
-    tmp.write_bytes(raw)
-    os.replace(tmp, path)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _now() -> float:
@@ -831,6 +855,9 @@ def _now() -> float:
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
     """Replace a terminal record whole, the way ``pool._write_json_atomic`` does.
+
+    Same writer as ``_write_latest`` above, which is where the uniqueness of
+    the temp name, the fsync and the cleanup live.
 
     The mutable summary is a pointer, not an audit log: the queue rewrites it on
     every retry and so must this.  First-writer-wins belongs to the *immutable*
