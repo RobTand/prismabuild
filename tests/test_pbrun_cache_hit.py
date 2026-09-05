@@ -24,8 +24,10 @@ KEY = "ab" * 32
 class _Receipted:
     def __init__(self, receipt):
         self.receipt = receipt
+        self.lookups = 0
 
     def lookup(self, action):
+        self.lookups += 1
         return self.receipt
 
 
@@ -35,12 +37,17 @@ def _outcome(monkeypatch, tmp_path, *, receipt):
 
     monkeypatch.setattr(pbrun.slurm_lane, "run", never)
     monkeypatch.setattr(pbrun.slurm_lane, "resume", never)
-    return pbrun.slurm_outcome(
-        {"action_key": KEY}, cas=_Receipted(receipt), request_path="r.json",
+    cas = _Receipted(receipt)
+    rc = pbrun.slurm_outcome(
+        {"action_key": KEY}, cas=cas, request_path="r.json",
         tags=["gb10"], demand={"cpu": 2, "mem_gb": 8}, exclusive=False,
         timeout_s=None, wait_s=30.0, retry_safe=False, max_attempts=1,
         queue_root=tmp_path / "queue", lane_root=tmp_path / "lane",
     )
+    # A lookup verifies the result blob, gigabytes over NFS for a rendered
+    # model, so the attached path asks exactly once.
+    assert cas.lookups == 1
+    return rc
 
 
 def test_receipted_work_is_not_submitted_and_is_reported_done(

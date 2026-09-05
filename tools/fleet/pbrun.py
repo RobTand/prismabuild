@@ -1982,10 +1982,13 @@ def slurm_outcome(
     # of its rows was not.  The node still checks (``run-local`` looks the
     # action up before it runs anything), so a receipt that lands between
     # this check and the job's start costs a materialization, never a rerun.
-    if not detach and cas.lookup(action) is not None:
+    # One lookup: it verifies the result blob, which on a rendered model is
+    # gigabytes hashed over NFS.
+    receipt = None if detach else cas.lookup(action)
+    if receipt is not None:
         return cached_outcome(
             key,
-            receipt=cas.lookup(action),
+            receipt=receipt,
             queue_root=queue,
             resources=resources,
             tags=tags,
