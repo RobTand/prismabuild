@@ -211,6 +211,11 @@ STARVATION_FLOOR = 3
 #: than the multi-hour actions that turn the guard pathological.
 WITHHOLD_CEILING_S = 900.0
 
+#: How much of an unparseable record is kept inline with the evidence.  Enough
+#: to recognise a writer's handwriting, little enough that a runaway producer
+#: cannot fill the queue root with the file it already failed to write.
+UNREADABLE_HEAD_BYTES = 2048
+
 RESERVATIONS = "reservations"
 PASSES = "passes"
 WORKERS = "workers"
@@ -332,7 +337,7 @@ def _read_json(path: Path) -> dict[str, object] | None:
         return None
     try:
         value = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise PoolContractError(f"queue record is not valid JSON: {path}") from exc
     if not isinstance(value, dict):
         raise PoolContractError(f"queue record is not an object: {path}")
@@ -1828,6 +1833,46 @@ class PoolQueue:
         _write_json_atomic(path, item)
         return path
 
+    #: Everything that describes the claim that has just ended.  A ready item
+    #: is claimed by nobody and holds no tokens, so none of it may survive a
+    #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
+    _CLAIM_SCOPED_FIELDS = (
+        "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes",
+        "container_cleanup_pending", "container_cleanup_checked_unix",
+        "stop_pending",
+    )
+
+    def _shape_as_ready_item(
+        self, record: dict[str, object], *, action_key: str
+    ) -> Path:
+        """Turn a concluded claim back into a ready item; say where it goes.
+
+        Three producers write into ``ready``: ``publish`` above, ``finish``'s
+        retry branch and ``reap_stale``'s.  The two requeues each spelled the
+        shape out for themselves and had drifted apart -- one stamped the
+        outcome schema onto a queue item, the other left ``action_key`` to
+        whatever the claim happened to carry -- so one directory held records
+        a consumer could tell apart by which writer produced them.  Teaching
+        the readers to accept both is the fix that drifts again; one writer is
+        the fix that cannot.
+
+        The rules are the ones ``publish`` already keeps.  ``schema`` says what
+        kind of record this is, and a record in ``ready`` is an item, not an
+        outcome.  The filename is the identity, because every consumer
+        addresses an item by key.  Nothing claim-scoped survives.
+
+        What does survive is the item's own history: ``attempts`` is what the
+        next try is counted against, and ``status``, ``detail`` and
+        ``attempt_history`` are how the last one went.
+        """
+
+        record["schema"] = POOL_ITEM_SCHEMA_V1
+        record["action_key"] = action_key
+        record["requeued_unix"] = _now()
+        for field in self._CLAIM_SCOPED_FIELDS:
+            record.pop(field, None)
+        return self.item_path(READY, action_key)
+
     # -- consumer -------------------------------------------------------
 
     def _placement_matches(
@@ -1846,7 +1891,17 @@ class PoolQueue:
         if not ready.is_dir():
             return out
         for path in sorted(ready.glob("*.json")):
-            record = _read_json(path)
+            try:
+                record = _read_json(path)
+            except PoolContractError:
+                # A record nobody can parse is nobody's work.  Raising it out
+                # of here took ``claim`` down on every box at once for one
+                # foreign writer's truncated file, and ``reap_stale`` with it
+                # -- so the sweep that files the thing was itself among the
+                # casualties.  Skip it and keep serving; ``quarantine_orphans``
+                # files it, and ``serve_once`` reaches that sweep before its
+                # next claim.
+                continue
             if record is not None:
                 record["passes"] = self.passes(str(record.get("action_key", "")))
                 out.append(record)
@@ -2159,6 +2214,24 @@ class PoolQueue:
                     # on top of it.
                     ledger.abandon_acquire(handle)
                 continue
+            moved = _read_json(dst) or item
+            if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
+                    or self.demand_of(moved) != demand):
+                # Admission described the scanned generation. A replacement
+                # may need a different host or more tokens; put it back for a
+                # fresh admission before committing this claimant's tokens.
+                if ledger is not None and handle is not None:
+                    ledger.abandon_acquire(handle)
+                try:
+                    os.link(dst, src)
+                except OSError:
+                    # A still newer submission may own ready already. Leave
+                    # the moved record for the reaper, as below.
+                    pass
+                else:
+                    dst.unlink(missing_ok=True)
+                    self.item_path(INTENT, key).unlink(missing_ok=True)
+                continue
             if ledger is not None and handle is not None:
                 # Won the rename, so the reservation stops belonging to this
                 # claimant and starts belonging to the action.  Every branch
@@ -2188,7 +2261,6 @@ class PoolQueue:
                         dst.unlink(missing_ok=True)
                         self.item_path(INTENT, key).unlink(missing_ok=True)
                     continue
-            moved = _read_json(dst) or item
             terminal = self.terminal_outcome_covers(moved, action_key=key)
             if terminal is not None:
                 # A stale reaper can put a generation back in ``ready`` after
@@ -2208,7 +2280,7 @@ class PoolQueue:
                 dst.unlink(missing_ok=True)
                 self.passes_path(key).unlink(missing_ok=True)
                 continue
-            if self.withdrawal_covers(item, action_key=key) is not None:
+            if self.withdrawal_covers(moved, action_key=key) is not None:
                 # Withdrawn between the scan above and this rename.  The window
                 # is microseconds wide and closing it here costs one listing on
                 # a path taken once per claim; leaving it open costs a cancelled
@@ -2216,13 +2288,32 @@ class PoolQueue:
                 if ledger is not None:
                     ledger.release(key)
                 self._file_superseded(
-                    item, key=key, kind="dropped", status="dropped",
+                    moved, key=key, kind="dropped", status="dropped",
                     dropped_unix=_now(), dropped_host=socket.gethostname(),
                     reason="withdrawn between the ready scan and the claim",
                 )
                 dst.unlink(missing_ok=True)
                 continue
-            claimed = dict(item)
+            # From ``moved``, not from ``item``: past the rename the bytes in
+            # ``claimed`` are the item, and the scan's copy may be a generation
+            # ``publish`` has already replaced.  Rebuilding the claim from the
+            # scan wrote that replaced generation back over the one the rename
+            # moved, so the worker ran a submission nobody had asked for and
+            # ``finish`` filed the outcome under the retired ``published_unix``
+            # -- where the waiter on the live one never looked.  The terminal
+            # and withdrawal guards above already read ``moved`` for this
+            # reason; the record this method returns is the last place that
+            # still did not.
+            claimed = dict(moved)
+            # ``passes`` is not a field of the item; it is the aging sidecar,
+            # which ``ready_items`` stamps on its copy so the ready ordering
+            # can read it and which this method deletes four lines below.
+            # Copying it into the claim freezes a denial count into the
+            # claimed record, into every attempt archived from it, and into
+            # the done or failed record it becomes -- a number describing a
+            # counter that no longer exists, on a record no admission decision
+            # ever reads.
+            claimed.pop("passes", None)
             claimed["claimed_by"] = owner
             claimed["claimed_unix"] = _now()
             claimed["claimed_host"] = socket.gethostname()
@@ -2437,10 +2528,7 @@ class PoolQueue:
                 record["schema"] = POOL_OUTCOME_SCHEMA_V1
                 destination = self.item_path(str(disposition), key)
             else:
-                record["requeued_unix"] = _now()
-                for transient in ("claimed_by", "claimed_unix", "claimed_host"):
-                    record.pop(transient, None)
-                destination = self.item_path(READY, key)
+                destination = self._shape_as_ready_item(record, action_key=key)
             # Same ordering as ``finish``, and for the same reason: this loop
             # published the requeue and only then unlinked the claim and lease,
             # so a worker that claimed the requeue inside that window had its
@@ -2661,6 +2749,75 @@ class PoolQueue:
             swept.append(key)
         return swept
 
+    def _file_unreadable(self, path: Path, *, reason: str) -> str | None:
+        """Take one unparseable queue record out of the live queue, loudly.
+
+        The original bytes and a bounded diagnostic go to ``superseded/``
+        so whoever has to find the writer still can; a
+        record with the file's own name goes to ``failed/`` because that is
+        what ``pbstatus`` and ``pbwait`` read, and a defect nobody counts is
+        the silence this sweep exists to end.
+
+        Never over a terminal record.  A corrupt ready file says nothing about
+        an ending already filed for that key, and a key with two terminals is
+        a worse defect than the one being cleaned up.
+        """
+
+        key = path.stem
+        # Take the bytes out of the live namespace before diagnosing or filing
+        # them. A later publish must not be unlinked by this sweep. Preserve the
+        # complete original alongside the bounded inline diagnostic.
+        evidence = self.superseded_dir() / f"{key}.{uuid.uuid4().hex}.unreadable.raw"
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.rename(path, evidence)
+        except FileNotFoundError:
+            return None
+        try:
+            repaired = _read_json(evidence)
+        except PoolContractError:
+            repaired = None
+        else:
+            if repaired is not None:
+                # The producer repaired/replaced the record after the scan.
+                # Restore without overwriting another concurrent publication.
+                try:
+                    os.link(evidence, path)
+                except FileExistsError:
+                    pass  # the replacement remains available as evidence
+                else:
+                    evidence.unlink()
+                return None
+        raw = evidence.read_bytes()
+        self._file_superseded(
+            None, key=key, kind="unreadable", state=READY,
+            status="unreadable_record",
+            filed_unix=_now(), filed_host=socket.gethostname(),
+            reason=reason, raw_bytes=len(raw),
+            raw_path=str(evidence.relative_to(self.root)),
+            raw_head=raw[:UNREADABLE_HEAD_BYTES].decode("utf-8", "replace"),
+        )
+        if not any(self.item_path(state, key).exists()
+                   for state in (DONE, FAILED)):
+            pb._atomic_publish(
+                self.item_path(FAILED, key),
+                pb._canonical_bytes({
+                    "schema": POOL_OUTCOME_SCHEMA_V1,
+                    "action_key": key,
+                    "status": "unreadable_record",
+                    "finished_unix": _now(),
+                    "finished_host": socket.gethostname(),
+                    "detail": {
+                        "reason": "the ready record could not be parsed, so no "
+                                  "worker could ever claim it; its bytes are "
+                                  "kept under withdrawn/superseded/",
+                        "parse_error": reason,
+                        "bytes": len(raw),
+                    },
+                }),
+            )
+        return key
+
     def quarantine_orphans(self) -> list[str]:
         """File ready records that no consumer can address.
 
@@ -2672,6 +2829,13 @@ class PoolQueue:
         the sweep stays whether or not that race can still fire.  Filing them
         is the point -- a countable ``orphaned_stub`` in ``failed`` is a
         defect someone can see; a permanent resident of ``ready`` is not.
+
+        A record whose bytes will not parse is the same defect one step
+        earlier, so it takes the same route.  It used to take the whole fleet
+        instead: ``_read_json`` refuses a malformed record, and that refusal
+        reached ``claim``, ``ready_items``, ``reap_stale`` and this sweep, so
+        one foreign writer's truncated file stopped every consumer on every
+        box until somebody deleted it by hand.
         """
 
         filed: list[str] = []
@@ -2679,8 +2843,23 @@ class PoolQueue:
         if not ready.is_dir():
             return filed
         for path in sorted(ready.glob("*.json")):
-            record = _read_json(path)
+            try:
+                record = _read_json(path)
+            except PoolContractError as exc:
+                key = self._file_unreadable(path, reason=str(exc))
+                if key is not None:
+                    filed.append(key)
+                continue
             if record is None:
+                # ``None`` covers two different things.  The file vanishing
+                # under the glob is an ordinary race with a concurrent claim
+                # and is not this sweep's business.  A file that is still
+                # there and holds zero bytes is a torn write no consumer will
+                # ever address, which is exactly what this sweep is for.
+                if path.exists():
+                    key = self._file_unreadable(path, reason="queue record is empty")
+                    if key is not None:
+                        filed.append(key)
                 continue
             # Two ways to be unaddressable, and both belong here.  A record
             # with the wrong (or no) ``action_key`` is skipped by ``claim()``
@@ -3281,10 +3460,7 @@ class PoolQueue:
             # external state before failing even when its CAS result would be
             # reproducible.  ``fleet/pbrun`` reaches it only with
             # ``--retry-safe`` and a bound above one.
-            record["requeued_unix"] = _now()
-            for transient in ("claimed_by", "claimed_unix", "claimed_host"):
-                record.pop(transient, None)
-            dst = self.item_path(READY, action_key)
+            dst = self._shape_as_ready_item(record, action_key=action_key)
         # Everything this worker owns goes before the item's next home becomes
         # visible: the claim to a tombstone, then its own lease.  A retry
         # published while either still stood was claimed by the next poll, and

@@ -47,6 +47,17 @@ execution plane until the cutover. The fleet has dispatched Tessera and
 PrismaQuant test, quantization, and measurement campaigns. Dagster and the
 proposed observability stack remain uninstalled.
 
+The pull queue admits the generation actually moved from `ready/`, including
+its placement and resource demand. A replacement whose admission requirements
+changed returns to `ready/` for a fresh decision. Requeued records use the item
+schema and retain attempt history, but discard claim ownership, reservation and
+cleanup stamps, and the sidecar aging count. Unparseable ready records are
+isolated under `withdrawn/superseded/` with their original bytes and a bounded
+diagnostic; healthy records continue through the queue. A quarantine restores
+a concurrently repaired record without replacing another submission and never
+overwrites an existing failed outcome. These contracts have local filesystem
+regression coverage; they are not a cross-host NFS qualification claim.
+
 Local task output is now crash-recoverable without accepting unowned bytes.
 Before argv, the worker publishes an immutable claim for the exact action,
 resolved checkout, working directory, and declared result. Under the same
