@@ -2423,6 +2423,59 @@ def publish_outcome(
     return path
 
 
+def read_withdrawal_marker(
+    queue_root: str | Path, action_key: str
+) -> tuple[Path, dict[str, object] | None]:
+    """The marker filed for this key, revalidated before it is read.
+
+    ``pb-queue/withdrawn`` is on NFS with default attribute caching, and this
+    fleet already measured what that does to a lookup of a name that did not
+    exist yet: the client caches the negative entry, so ``exists()`` keeps
+    answering False and ``open()`` keeps raising ``ENOENT`` after the marker
+    has landed.  ``pbrun.terminal_record`` polls the terminal directories by
+    ``os.listdir`` for exactly that reason, and this is the same rule for the
+    same directory.
+
+    Listing the parent is what revalidates the entry, so the listing happens
+    first and the read happens only for a name the directory actually holds.
+    What that costs is one ``READDIRPLUS`` per call; what it buys is that the
+    three readers below cannot be told a decision was never made.
+
+    An operator on another box withdraws a key inside the cache window: the
+    marker is written, the terminal record is written, then ``scancel`` runs.
+    The submitter's ``wait`` returns ``CANCELLED``, ``_file_ending`` asks
+    ``withdrawal_covers``, and on a stale answer it calls
+    ``publish_withdrawal``, whose own read misses too -- so the operator's
+    marker is replaced, ``withdrawn_by`` becomes ``slurm:scancel``, the reason
+    is lost, and ``publish_outcome`` copies both into the terminal record.  The
+    same stale read in ``supersede_withdrawal`` leaves a live marker in place
+    after a submission has retired it, and the one in ``run``'s retry gate lets
+    a ``--retry-safe`` run submit attempt 2 of a withdrawn action.
+
+    Returns:
+        The marker's path, and the record it holds -- ``None`` when the
+        directory does not hold that name, or holds bytes that are not a JSON
+        object.
+    """
+
+    key = str(action_key)
+    directory = Path(queue_root) / pool.WITHDRAWN
+    path = directory / f"{key}.json"
+    try:
+        if path.name not in os.listdir(directory):
+            return path, None
+    except OSError:
+        # No directory yet, or one this box cannot list.  Either way there is
+        # nothing to read, and inventing a decision would be worse than
+        # missing one.
+        return path, None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return path, None
+    return path, record if isinstance(record, dict) else None
+
+
 def publish_withdrawal(
     *,
     queue_root: str | Path,
@@ -2445,13 +2498,10 @@ def publish_withdrawal(
     """
 
     key = str(action_key)
-    path = _queue_dir(queue_root, pool.WITHDRAWN) / f"{key}.json"
-    try:
-        existing = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(existing, dict):
-            return path, existing
-    except (OSError, ValueError):
-        pass
+    _queue_dir(queue_root, pool.WITHDRAWN)
+    path, existing = read_withdrawal_marker(queue_root, key)
+    if existing is not None:
+        return path, existing
     filed = dict(submission or {})
     filed.update({
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
@@ -2493,14 +2543,15 @@ def withdrawal_covers(
     not an attempt to defeat somebody's cancellation.
     """
 
-    marker = Path(queue_root) / pool.WITHDRAWN / f"{action_key}.json"
-    if not marker.exists() or not _same_generation(marker, published_unix):
+    _, record = read_withdrawal_marker(queue_root, action_key)
+    if record is None:
         return None
-    try:
-        record = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    # The generation is checked on the record this already read, rather than by
+    # a second open of the same path: one revalidated read is the whole point.
+    theirs = record.get("published_unix")
+    if not isinstance(theirs, (int, float)) or isinstance(theirs, bool):
         return None
-    return record if isinstance(record, dict) else None
+    return record if float(theirs) == float(published_unix) else None
 
 
 def supersede_withdrawal(
@@ -2516,12 +2567,8 @@ def supersede_withdrawal(
     """
 
     key = str(action_key)
-    live = Path(queue_root) / pool.WITHDRAWN / f"{key}.json"
-    try:
-        record = json.loads(live.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(record, dict):
+    live, record = read_withdrawal_marker(queue_root, key)
+    if record is None:
         return None
     when = _now()
     kept = dict(record)
