@@ -559,6 +559,54 @@ def require_supported_snapshot_tree(
     return logical_bytes
 
 
+#: How many missing paths a refusal names before it stops listing them.  A cone
+#: that hides a large subtree would otherwise print thousands of lines.
+SPARSE_REFUSAL_SAMPLE = 3
+
+
+def require_materialized_checkout(root: Path) -> None:
+    """Refuse a checkout whose bytes the submitter does not have on disk.
+
+    Git marks a path it deliberately leaves out of the working tree with the
+    skip-worktree bit: that is how ``git sparse-checkout`` works, and
+    ``git update-index --skip-worktree`` sets the same bit by hand.  ``git add
+    -A`` honours the bit, so the sealed tree keeps HEAD's bytes for every such
+    path.  Measured: with ``sparse-checkout set keep``, the bundle carried
+    ``away/b.txt`` from HEAD while the submitter had no copy of it.
+
+    That is not a seal.  The action key would claim bytes the person who typed
+    the command could not read, review, or change, and two submitters with the
+    same HEAD and different cones would get the same key for trees they never
+    both saw.  Refuse instead, the way this sealer already refuses a shallow
+    clone and an active content filter: say what is missing and name the one
+    command that fixes it.
+
+    Not ``--snapshot-ref``: that flag pins extra branch refs into the bundle
+    and has no bearing on which working-tree paths are sealed, so sending a
+    sparse submitter there would be the wrong lever.
+    """
+
+    listing = _snapshot_git(root, ["ls-files", "-t", "-z"], strip=False)
+    skipped = [
+        entry[2:]
+        for entry in listing.split("\0")
+        if entry.startswith("S ")
+    ]
+    if not skipped:
+        return
+    named = sorted(skipped)[:SPARSE_REFUSAL_SAMPLE]
+    remaining = len(skipped) - len(named)
+    sample = ", ".join(named)
+    if remaining > 0:
+        sample += f", and {remaining} more"
+    raise SystemExit(
+        f"pbrun: this checkout leaves {len(skipped)} tracked path(s) out of "
+        f"the working tree ({sample}), so their sealed bytes would come from "
+        "HEAD rather than from anything you have on disk; restore the full "
+        "worktree (git sparse-checkout disable) before submitting"
+    )
+
+
 def require_complete_history(root: Path) -> None:
     """Refuse a source whose own history it cannot hand a worker.
 
@@ -876,6 +924,7 @@ def _build_git_checkout_snapshot(
     if _git_identity(cwd) != identity:
         raise SystemExit("pbrun: checkout changed before it could be snapshotted")
     parent = identity["head"]
+    require_materialized_checkout(root)
     require_complete_history(root)
     resolved_refs = resolve_snapshot_refs(root, snapshot_refs)
 
