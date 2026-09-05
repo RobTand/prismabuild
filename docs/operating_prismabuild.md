@@ -57,6 +57,14 @@ checkout on the box you submit from. The checkout must be writable: `pbrun`
 keeps its closure stamp there, and the action tees its output to a result file
 in the same tree.
 
+The checkout has a size ceiling. `pbrun` refuses a working tree whose sealed
+paths exceed 512 MiB, before it hashes anything, and refuses the bundle at the
+same bound. `--checkout-snapshot-max-bytes N` lowers that ceiling for one
+submission, which is useful when you want the refusal early rather than after a
+large tree has been read. It cannot raise it: a value above the fleet ceiling is
+refused by name. The ceiling covers local disk on the box that materializes the
+checkout, so it is not part of the action's identity.
+
 ### Placement vocabulary
 
 These flags say what the action needs and where it may run.
@@ -534,6 +542,12 @@ those records are files on the shared mount. A record it cannot read prints as a
 `unreadable` row whose note names the path and the reason, so a truncated or
 unreadable newest record does not read as a fleet that filed nothing. `--json`
 prints one object with the three lists and any scheduler notes.
+
+Two flags say where `pbstatus` looks. `--lane-root` is the SLURM lane root that
+job names are resolved against, and it defaults to `$PRISMABUILD_SLURM_LANE_ROOT`, or
+to the fleet lane root when that is unset. `--queue-root` is the queue root
+holding `done/` and `failed/`, which is where the endings table is read from.
+Point them at a test fleet to read one without touching the live store.
 
 The underlying commands are `sinfo` for nodes, `squeue` for jobs, and `sacct`
 for jobs the controller has forgotten. Use them directly for scheduler detail
