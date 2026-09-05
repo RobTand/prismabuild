@@ -6,7 +6,7 @@ held a job to them: an action that declared `mem_gb=4` and used 40 GiB got 40
 GiB, and an action that declared one core and ran `pytest -n 24` got 24 cores.
 
 Under SLURM they become `--cpus-per-task` and `--mem`
-(`src/prismabuild/slurm_lane.py:605`), and `fleet/slurm/cgroup.conf`'s
+(`src/prismabuild/slurm_lane.py:747`), and `fleet/slurm/cgroup.conf`'s
 `ConstrainCores=yes` and `ConstrainRAMSpace=yes` turn those into a cpuset and a
 `memory.max`. A `pytest -n 24` submitted without `--cpus` then runs on one
 core, and a build that outgrows its declaration can be killed.
@@ -46,7 +46,7 @@ settings go, so under all three options:
 - A demand no node can satisfy is refused at submit rather than queued
   forever. The fleet's budgets are `CPUs=20 RealMemory=73728` on sparky,
   `CPUs=20 RealMemory=81920` on sparklina, and `CPUs=80 RealMemory=61440` on
-  dl380g10 (`fleet/slurm/slurm.conf:124-154`).
+  dl380g10 (`fleet/slurm/slurm.conf:173-198`).
 
 What the three options change is only what happens to a job *after* it is
 placed.
@@ -95,7 +95,7 @@ differs.
 **`nproc` is not how a job learns its allocation.** It answered 4 in every arm,
 including the one where the job held a single CPU, because `nproc` honours
 `OMP_NUM_THREADS` and `pbrun`'s sealed environment pins that at 4
-(`tools/fleet/pbrun.py:2294`). An action that sizes its own parallelism from
+(`tools/fleet/pbrun.py:2463`). An action that sizes its own parallelism from
 `nproc` reads that 4 whatever it declared. The figure that matched the cpuset
 in every arm was the one the rows read, `taskset -cp $$`; in Python, the same
 answer comes from `len(os.sched_getaffinity(0))`.
@@ -171,7 +171,7 @@ differently in a way that matters more:
 | C | No limit. The declaration is an admission claim only |
 
 Note that under A and B, `retry_safe` actions resubmit after `OUT_OF_MEMORY`
-(`slurm_lane.py:127`) with an identical `--mem`, so a retried OOM dies the same
+(`slurm_lane.py:198`) with an identical `--mem`, so a retried OOM dies the same
 way, once per remaining attempt.
 
 ### `pbrun -- echo hello`
@@ -200,9 +200,9 @@ every render -- is not charged to the limit at all. That leaves under-declared
 cores as A's one real cost, and it is a cost with a fix the submitter controls
 and a message at submit time that names the number.
 
-Taking A leaves one sub-choice, and it is a real one. Rob's own description of
-A was "slow or OOM-killed, and the platform says so plainly", and the rows show
-that the file as it stands does not do the second half: with
+Taking A leaves one sub-choice, and it is a real one. Option A is usually
+described as "slow or OOM-killed, and the platform says so plainly", and the
+rows show that the file as it stands does not do the second half: with
 `ConstrainSwapSpace=no` an over-declared job throttles into swap and reports
 `COMPLETED`, so the platform says nothing at all. `ConstrainSwapSpace=yes` is
 what turns the limit into the plain refusal, at the price of ending a build that
@@ -218,7 +218,7 @@ Two further things follow from taking A, and neither is a reason to take B:
   before treating it as a slow suite.
 - If the swap sub-choice goes to `yes`, note that `retry_safe` actions
   resubmit after `OUT_OF_MEMORY` with an identical `--mem`
-  (`slurm_lane.py:127`), so an OOM under A burns every remaining attempt on the
+  (`slurm_lane.py:198`), so an OOM under A burns every remaining attempt on the
   same limit before it is reported.
 
 ## Reproducing the measurements
