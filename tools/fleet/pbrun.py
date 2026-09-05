@@ -33,9 +33,10 @@ external state and then fail, so arbitrary commands get one attempt.  A larger
 ``--max-attempts`` is accepted only with ``--retry-safe``, which declares the
 whole command idempotent, and that policy is sealed into the action identity.
 
-The stamp carrying that identity has to live *inside* the checkout, because
+The stamp carrying that identity lives inside the materialized checkout, because
 the worker verifies the closure against ``checkout_root`` on the box that
-runs it.  So it is excluded from the identity it records -- otherwise each
+runs it. A private snapshot index injects it without writing the source tree.
+Legacy stamps are excluded from the identity they record -- otherwise each
 submit would dirty the tree it is describing and no two submits of the same
 command would ever agree -- and it is added to ``.git/info/exclude`` (local
 only, never the committed ignore file) so it cannot make a clean tree look
@@ -3417,7 +3418,7 @@ def main() -> int:
         # workaround; it is where the closure can honestly be taken.
         raise SystemExit(
             f"--cwd is not a directory on {socket.gethostname()}: {cwd}\n"
-            f"pbrun stamps the code closure inside the checkout, so it can "
+            f"pbrun reads the source checkout to seal its bytes, so it can "
             f"only submit for a checkout on the box it runs on. If this path "
             f"exists on another box, submit from there -- the queue is "
             f"shared, the filesystem is not."
