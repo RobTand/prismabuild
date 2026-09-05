@@ -369,7 +369,9 @@ def main() -> int:
                     help="exit 0 if a supervisor already owns this box")
     ap.add_argument("--loops", type=int, default=0,
                     help="override the configured target count")
-    ap.add_argument("--interval-s", type=float, default=30.0)
+    ap.add_argument("--interval-s", type=float, default=30.0,
+                    help="seconds between supervision cycles; ignored with "
+                         "--once")
     ap.add_argument("--once", action="store_true",
                     help="top the box up and exit, without supervising")
     ap.add_argument("--cycle-stale", action="store_true",

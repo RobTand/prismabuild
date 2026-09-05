@@ -54,9 +54,16 @@ def _worker_loops() -> list[dict[str, object]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", required=True)
-    parser.add_argument("--activation-unix", required=True, type=float)
-    parser.add_argument("--expected-loops", required=True, type=int)
+    parser.add_argument("--host", required=True,
+                        help="the box this census is meant to describe; "
+                             "exits 2 if it is not the box running it")
+    parser.add_argument("--activation-unix", required=True, type=float,
+                        help="when the runtime was activated, as a Unix "
+                             "timestamp; a loop that started at or before it "
+                             "is stale and exits 4")
+    parser.add_argument("--expected-loops", required=True, type=int,
+                        help="how many worker loops this box should be "
+                             "running; any other count exits 3")
     args = parser.parse_args()
 
     actual_host = socket.gethostname()
