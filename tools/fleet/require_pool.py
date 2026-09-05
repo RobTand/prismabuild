@@ -376,6 +376,11 @@ def _pipeline_after(line: str, at: int) -> str:
     ``;``, a ``&&``, a ``||``, a ``&`` or a newline.  A ``|`` deliberately
     does not end it, because a pipeline is the one boundary that hands a
     command's output to the next command as input.
+
+    Only a lone ``&`` ends it, on the same reading ``_commands_in`` uses: the
+    redirection spellings that merely contain the character belong to the
+    command they sit in, and ``cat <<'EOF' 2>&1 | bash`` still pipes its body
+    into an interpreter.
     """
 
     quote = ""
@@ -396,6 +401,10 @@ def _pipeline_after(line: str, at: int) -> str:
             continue
         if line.startswith("&&", index) or line.startswith("||", index):
             return line[at:index]
+        if char == "&" and (line[index + 1:index + 2] == ">"
+                            or (index and line[index - 1] in "><&")):
+            index += 1
+            continue
         if char in ";&\n()":
             return line[at:index]
         index += 1
