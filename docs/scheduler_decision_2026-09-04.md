@@ -110,8 +110,11 @@ announcement; nativelink README). Everything else is judgment.
   CUDA allocations, so neither SLURM's `ConstrainRAMSpace` nor HTCondor's
   cgroup policy can bound the device half of unified memory. `--mem` bounds the
   host half. Device memory stays a **cooperative budget** declared by the
-  action, under any scheduler. Both issues stay open and are labelled
-  `needs-decision`.
+  action, under any scheduler. Both closed on 2026-09-05: #1 as fixed for the
+  host half, #9 as not planned, with the measurement in
+  `docs/resource_enforcement_2026-09-05.md`. The one setting still open on #1,
+  `ConstrainSwapSpace` in `cgroup.conf`, is Rob's configuration choice, not a
+  defect.
 - **Fairness.** Without `slurmdbd`, SLURM runs FIFO plus backfill; that is
   adequate for one user on three boxes and is not what starved `pqwork` (that
   was capacity eviction, which SLURM does not do). Revisit only if a
@@ -190,17 +193,20 @@ needed it; move this document's issue table to closed.
 
 ## 7. Open issues, dispositioned
 
-`fixed` means on the fixes branch with a pre-fix failure line in the commit.
-`moot` means the defect cannot exist under SLURM; with the decision ratified
-they close with the cutover PR, not before, because the pool stays the live
-plane until then. Nothing is closed by this document.
+`fixed` means on `main` with a pre-fix failure line in the commit. `moot`
+means the defect cannot exist under SLURM. Every issue in the table closed on
+2026-09-05 at the merge of the lane to `main` (PR #41, `c01f25c` after PRs #46
+to #48), each with a closing comment that names the commit. The pool keeps the
+live plane until the cutover, so an issue reopens if a pool campaign hits it
+first; the queue was idle at closing time. #1 closed as fixed for the host
+half and #9 as not planned, a measured platform limitation (section 5).
 
 | # | Title (short) | Class | Disposition |
 |---|---|---|---|
-| 1 | `mem_gb` declared, nothing enforces it | platform | stays open, `needs-decision`: host half enforced by `--mem` under SLURM; device half cooperative (section 5). Salvage the probe and `docs/memory_enforcement_2026-09-04.md` from `pb/issue-1` as a measurement record |
+| 1 | `mem_gb` declared, nothing enforces it | platform | closed 2026-09-05 as fixed for the host half: `--mem` sets the job cgroup's `memory.max` to the declaration, measured in three arms (`docs/resource_enforcement_2026-09-05.md`); device half is #9; the `ConstrainSwapSpace` sub-choice is a `cgroup.conf` setting for Rob, not a defect |
 | 6 | busy worker stops announcing offers | scheduler | moot: `slurmd` reports node state |
 | 7 | `--exclusive` conflates GPU and whole box | scheduler | moot: `--gres=gpu:1` versus `shard:1`, `--mem` separately |
-| 9 | device half of GB10 memory unbounded | platform | stays open, `needs-decision` (section 5) |
+| 9 | device half of GB10 memory unbounded | platform | closed 2026-09-05 as not planned: measured platform limitation (section 5); reopen if a cooperative device-side limit is wanted as a feature |
 | 10 | claimed record keeps prior attempt's status | scheduler | moot: job state lives on the controller |
 | 11 | requeue stub orphaned by the reaper | scheduler | moot after cutover; a pool stopgap exists on `pb/issue-11-requeue-stub` (conflicts with `main`); merge only if the cutover is more than a campaign away |
 | 12 | `pbrun` reports a stale terminal record | scheduler | moot: `pbrun` waits on its own job id |
