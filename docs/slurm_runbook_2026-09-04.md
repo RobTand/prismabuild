@@ -546,6 +546,16 @@ is safe to delete by hand:
 rm /mnt/shared/prismabuild-fleet/slurm/jobs/<job id>.job
 ```
 
+One more kind of orphan is deliberate: the Epilog keeps the state file when a
+`docker ps` census exits non-zero, because a census nobody could take is not a
+census that found nothing. The slurmd log carries a `docker census failed;
+keeping <path>` line for each one, and the retained file is what names the
+owner label, the job, the marker and the checkout, so it is where a sweep of
+whatever the daemon was hiding starts. The ownership marker under
+`pb-queue/container-owners/` is kept with it. Reconcile with `docker ps -a
+--filter label=prismabuild.action=<owner>` once the daemon is back, then delete
+both files.
+
 Anything else -- a job that ended while the node stayed up -- is the export.
 
 One check `verify.sh` does not do, because it leaves a container behind if it
