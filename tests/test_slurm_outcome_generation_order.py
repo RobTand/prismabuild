@@ -152,3 +152,74 @@ def test_a_delayed_resume_of_an_older_job_leaves_the_newer_ending(
     assert record["published_unix"] == 200.0
     assert record["claimed_by"] == "1002"
     assert pbrun.terminal_record(_failed(queue), 200.0) is not None
+
+
+def test_a_delayed_write_cannot_erase_a_newer_writer_that_already_returned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A newer writer must wait until the older compare/write is complete."""
+    import concurrent.futures
+    import threading
+
+    replace = sl._write_json_atomic
+    older_checked = threading.Event()
+    newer_attempted = threading.Event()
+    newer_returned = threading.Event()
+
+    def delayed_write(path: Path, payload) -> None:
+        if payload.get("published_unix") == 100.0:
+            older_checked.set()
+            assert newer_attempted.wait(5)
+            # Unlocked code lets the newer writer completely finish before
+            # the older rename. Locked code blocks it until this write ends.
+            newer_returned.wait(0.5)
+        replace(path, payload)
+
+    def newer_writer():
+        assert older_checked.wait(5)
+        newer_attempted.set()
+        result = _file(tmp_path, 200.0)
+        newer_returned.set()
+        return result
+
+    assert _file(tmp_path, 50.0) is not None
+    monkeypatch.setattr(sl, "_write_json_atomic", delayed_write)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        older = executor.submit(_file, tmp_path, 100.0)
+        newer = executor.submit(newer_writer)
+        older.result(timeout=10)
+        newer.result(timeout=10)
+
+    assert older_checked.is_set()
+    assert json.loads(_failed(tmp_path).read_text())["published_unix"] == 200.0
+
+
+def test_unreadable_summary_is_preserved_before_known_ending_is_filed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _failed(tmp_path)
+    path.parent.mkdir()
+    path.write_bytes(b"{broken evidence")
+    real_link = sl._publish_json_if_absent
+    attempts = 0
+
+    def bounded_link(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        assert attempts <= 3, "unreadable summary caused a retry loop"
+        return real_link(*args, **kwargs)
+
+    monkeypatch.setattr(sl, "_publish_json_if_absent", bounded_link)
+    assert _file(tmp_path, 100.0) is not None
+    assert json.loads(path.read_text())["published_unix"] == 100.0
+    preserved = list((path.parent / "unreadable").glob("*.json"))
+    assert len(preserved) == 1
+    assert preserved[0].read_bytes() == b"{broken evidence"
+
+
+def test_older_failure_cannot_be_filed_beside_newer_success(tmp_path: Path) -> None:
+    assert _file(tmp_path, 200.0, status="executed") is not None
+    assert _file(tmp_path, 100.0, status="failed") is None
+    assert not _failed(tmp_path).exists()
+    done = tmp_path / pool.DONE / f"{KEY}.json"
+    assert json.loads(done.read_text())["published_unix"] == 200.0
