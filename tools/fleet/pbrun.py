@@ -963,12 +963,23 @@ def placement_tags(
       mutable bytes. ``--here`` still forces a host pin for work genuinely
       about *this* machine.
 
+    ``--tag`` and ``--here`` are two constraints, not two spellings of one.
+    A submitter who passes both asks for a box of that class *and* for this
+    box, so both land: the explicit tags, then ``hostname``, deduplicated and
+    with the hostname last.  Returning ``list(explicit)`` instead dropped the
+    host pin without saying so, which is a narrowing the submitter asked for
+    and did not get.  (The order is for a reader: the conjunction is sorted
+    by ``pool.normalize_placement_tags`` before it is sealed.)
+
     Nothing here decides *which* free box runs a shared-checkout action; the
     queue does, from the demand and what each worker offers.  That separation
     is the point.
     """
 
     if explicit:
+        if here:
+            return [*dict.fromkeys(t for t in explicit if t != hostname),
+                    hostname]
         return list(explicit)
     if here:
         return [hostname]
@@ -1232,13 +1243,13 @@ def pin_notice(
     other two boxes idled.
 
     **Everything below is read off the tags that LANDED, never off the flags
-    that asked for them.**  ``placement_tags`` returns ``list(explicit)`` the
-    moment any ``--tag`` is given, so ``--here`` and a box-local checkout are
-    both silently overridden by it.  A first version asked the ``here`` flag
-    instead, and so announced "PINNED to sparky by --here, so no other box can
-    claim this action" for a submission whose tags were ``['x86']`` -- naming,
-    as the *other* box, the only box that could actually run it.  A notice
-    about a pin has one job and that was it.
+    that asked for them.**  A first version asked the ``here`` flag instead,
+    and so announced "PINNED to sparky by --here, so no other box can claim
+    this action" for a submission whose tags were ``['x86']`` -- naming, as
+    the *other* box, the only box that could actually run it.  A notice about
+    a pin has one job and that was it.  ``placement_tags`` no longer drops the
+    host pin that way, but the reading rule is what keeps this correct
+    whatever it returns.
 
     Exclusivity is claimed only where it is provable.  A tag naming this host
     cannot be claimed elsewhere; a tag that merely happens to match one live
@@ -1293,10 +1304,6 @@ def pin_notice(
 
     # No host tag landed.  Say what did, and what it costs.
     notes: list[str] = []
-    if here:
-        notes.append(f"--here did NOT pin this action: an explicit --tag "
-                     f"REPLACES the host tag rather than adding to it, so "
-                     f"tags {tags} alone place it.")
     if local:
         if others is None:
             notes.append(f"WARNING -- the checkout {cwd} exists only on "
@@ -1755,6 +1762,24 @@ _RESUME_COMMANDS = frozenset({
 #: The interpreter pbrun's sealed argv starts with.  A nonportable action
 #: binds its exact bytes, so the name is stated once, where the scope is built.
 SEALED_ARGV0 = "/bin/bash"
+
+
+def detached_attempts_refusal(max_attempts: int) -> str:
+    """Why a detached submission cannot carry more than one attempt.
+
+    A retry is a second submission made after somebody watched the first one
+    fail.  Detaching means nobody is watching, so the choice is between
+    silently running one attempt for a caller who asked for three, and saying
+    so.  A function rather than a literal because ``pbcampaign`` submits every
+    row detached and has to refuse the same row for the same reason, at
+    manifest load; two copies of the sentence would be two policies.
+    """
+
+    return (
+        f"pbrun: --detach submits one attempt and returns, so it cannot "
+        f"honour --max-attempts greater than 1 (this asks for {int(max_attempts)}); "
+        f"submit it attached, or detach with a single attempt"
+    )
 
 
 def require_host_class_scope(
@@ -2329,7 +2354,10 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Submit one command to the PrismaBuild pool and wait for it."
+        description="Submit one command to the PrismaBuild fleet and wait for "
+                    "it. Either the pull queue or SLURM carries it, per "
+                    "--transport or the published generation's default; the "
+                    "result does not depend on which."
     )
     ap.add_argument("--demand", default="",
                     help="resource demand, e.g. gpu=1,mem_gb=16")
@@ -2416,7 +2444,15 @@ def main() -> int:
              "--max-attempts greater than 1: a retry needs somebody alive to "
              "see the attempt fail",
     )
-    ap.add_argument("--priority", type=int, default=0)
+    ap.add_argument("--priority", type=int, default=0,
+                    help="a queue hint, higher runs sooner; not part of the "
+                         "action's identity, so two submissions that differ "
+                         "only in priority are the same action. The pull "
+                         "queue sorted its ready list on it, before age; the "
+                         "SLURM lane spends it as a --nice "
+                         "(slurm_lane.nice_for), scaled so one priority step "
+                         "outranks submission order rather than one later "
+                         "submission")
     ap.add_argument("--env", action="append", default=[],
                     help="K=V added to the action's environment (repeatable)")
     ap.add_argument("--no-default-env", action="store_true",
@@ -2464,15 +2500,7 @@ def main() -> int:
             "--deterministic covers result bytes, not external side effects"
         )
     if args.detach and args.max_attempts > 1:
-        # A retry is a second submission made after somebody watched the first
-        # one fail.  Detaching means nobody is watching, so the choice is
-        # between silently running one attempt for a caller who asked for
-        # three, and saying so here.
-        raise SystemExit(
-            "pbrun: --detach submits one attempt and returns, so it cannot "
-            "honour --max-attempts greater than 1; submit it attached, or "
-            "detach with a single attempt"
-        )
+        raise SystemExit(detached_attempts_refusal(args.max_attempts))
     retry_policy = {
         "max_attempts": args.max_attempts,
         "retry_safe": args.retry_safe,
@@ -2569,6 +2597,19 @@ def main() -> int:
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")
+    if args.anywhere and args.tag:
+        # The same contradiction with the second constraint spelled as a
+        # class rather than as a hostname: --anywhere asserts that every
+        # eligible worker can run this action, and --tag says only the boxes
+        # offering that tag may.  Both landed before, and --anywhere won the
+        # part the SLURM lane reads -- an action tagged x86 went to the
+        # default partition as portable work.
+        raise SystemExit(
+            "--anywhere and --tag contradict each other: --anywhere asserts "
+            "every eligible worker can run this action, and --tag admits only "
+            "the boxes offering "
+            f"{', '.join(sorted(set(args.tag)))}.  Drop whichever is not true."
+        )
     require_host_class_scope(
         measurement=args.measurement, host_class=args.host_class,
         transport=args.transport,

@@ -44,6 +44,10 @@ and each one is exactly one ``pbrun`` flag:
 ``exclusive``        ``--exclusive``
 ``gpu_capacity``     ``--gpu-capacity``
 ``priority``         ``--priority``
+``measurement``      ``--measurement``
+``host_class``       ``--host-class``: a node Feature name, e.g. ``gb10``
+``retry_safe``       ``--retry-safe``
+``max_attempts``     ``--max-attempts``
 ===================  ====================================================
 
 Every field except ``argv`` is optional, and an omitted one is not passed to
@@ -54,6 +58,23 @@ scheduler kills the row at that many seconds whatever it was doing.
 
 An unknown field is refused rather than ignored: a typo that is silently
 dropped seals an action nobody asked for.
+
+Three rows are refused at load for the reason ``pbrun`` would refuse them at
+submit, so a campaign of measurements is refused before it spends the fleet on
+its first row rather than on its last:
+
+* ``measurement`` without ``host_class``.  A measurement's numerics do not
+  transfer across architectures, so its result is keyed on the class that
+  produced it.
+* ``host_class`` under ``--transport pool``.  The class is attested through
+  the SLURM controller, so a pull-queue worker refuses the action at preflight.
+  This one depends on the campaign's transport rather than on the row.
+* ``max_attempts`` greater than 1.  Every row is submitted detached -- that is
+  what lets one campaign hold N actions open -- and a retry needs somebody
+  alive to see the attempt fail.  ``retry_safe`` is still worth spelling on a
+  row without it: the retry policy is sealed into the action's identity, so a
+  row that omits it is a different action from the hand-typed ``pbrun`` that
+  passes it.
 
 ``--transport`` is a flag on the campaign and not a row field, because which
 dispatcher carries the work is a fact about the fleet rather than about the
@@ -127,6 +148,8 @@ _VALUE_FIELDS = (
     ("timeout_s", "--timeout-s"),
     ("gpu_capacity", "--gpu-capacity"),
     ("priority", "--priority"),
+    ("host_class", "--host-class"),
+    ("max_attempts", "--max-attempts"),
 )
 _SWITCH_FIELDS = (
     ("deterministic", "--deterministic"),
@@ -134,6 +157,8 @@ _SWITCH_FIELDS = (
     ("here", "--here"),
     ("no_default_env", "--no-default-env"),
     ("exclusive", "--exclusive"),
+    ("measurement", "--measurement"),
+    ("retry_safe", "--retry-safe"),
 )
 _REPEATED_FIELDS = (
     ("tags", "--tag"),
@@ -151,12 +176,55 @@ class ManifestError(Exception):
     """The manifest says something this cannot turn into a submission."""
 
 
-def load_manifest(path) -> list[dict]:
+def _require_submittable_row(row, *, index: int, transport: str) -> None:
+    """Refuse a row ``pbrun`` would refuse, in ``pbrun``'s own words.
+
+    The refusals are asked of ``pbrun`` rather than restated here.  A second
+    copy of the measurement rule would be a second policy, and the row that
+    told the operator something different from the flag it becomes is exactly
+    the row this tool exists to make reproducible at the terminal.
+
+    ``transport`` decides one of them: a host class is attested through the
+    SLURM controller, so it is a refusal under ``--transport pool`` and not a
+    refusal on the lane.
+    """
+
+    try:
+        pbrun.require_host_class_scope(
+            measurement=bool(row.get("measurement")),
+            host_class=row.get("host_class"),
+            transport=transport,
+        )
+    except SystemExit as exc:
+        raise ManifestError(f"row {index}: {exc}") from None
+    attempts = row.get("max_attempts")
+    if attempts is None:
+        return
+    if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 1:
+        raise ManifestError(
+            f"row {index}: max_attempts must be an integer of at least 1"
+        )
+    if attempts > 1:
+        # Every row goes out detached, so this is pbrun's own refusal reached
+        # by a route the row's author cannot see.
+        raise ManifestError(
+            f"row {index}: {pbrun.detached_attempts_refusal(attempts)}.\n"
+            f"A campaign submits every row detached, which is what lets one "
+            f"command hold N actions open."
+        )
+
+
+def load_manifest(path, *, transport: str = "slurm") -> list[dict]:
     """Read the manifest, and refuse anything it cannot mean.
 
     Refused at load time, before a single row is sealed: a campaign that
     submits forty rows and then discovers the forty-first is malformed has
     already spent the fleet on a manifest its author has to edit.
+
+    ``transport`` is the campaign's, and only the host-class rule reads it.
+    The default is the lane, where a class is honoured, so a caller checking a
+    manifest without a fleet in mind is told about the row and not about the
+    transport.
     """
 
     try:
@@ -188,6 +256,7 @@ def load_manifest(path) -> list[dict]:
             raise ManifestError(
                 f"row {index} needs argv: a non-empty list of strings"
             )
+        _require_submittable_row(row, index=index, transport=transport)
         rows.append(row)
     return rows
 
@@ -331,7 +400,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        rows = load_manifest(args.manifest)
+        rows = load_manifest(args.manifest, transport=args.transport)
     except ManifestError as exc:
         raise SystemExit(f"pbcampaign: {exc}")
     if not rows:
