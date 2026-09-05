@@ -69,7 +69,7 @@ passed.
 ```
 [PASS] 14a what a --cpus 1 job may run on [cores=yes swap=no]  job affinity width=1 of the node's 20 CPUs (declared 1); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
 [PASS] 14b what a --cpus 2 job may run on [cores=yes swap=no]  job affinity width=2 of the node's 20 CPUs (declared 2); nproc said 4 (OMP_NUM_THREADS, not the cpuset)
-[PASS] 14c a job over its mem_gb is constrained, not ignored [cores=yes swap=no]  job=18 declared mem_gb=1, wrote 3072 MiB -> filed done/ state='COMPLETED' rc=0 signal=0 pbrun said failed(COMPLETED)=False and named the declaration=False; binding cgroup /sys/fs/cgroup/system.slice/pbsmoke_slurmstepd.scope/job_18/step_batch/user memory.max=1073741824 (declared 1073741824) memory.swap.max=max memory.swap.current=2246414336 memory.events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0]
+[PASS] 14c a job over its mem_gb is constrained, not ignored [cores=yes swap=no]  job=18 declared mem_gb=1, wrote 3072 MiB -> filed done/ state='COMPLETED' rc=0 signal=0 pbrun said failed(COMPLETED)=False and named the declaration=False; binding cgroup /sys/fs/cgroup/system.slice/pbsmoke_slurmstepd.scope/job_18/step_batch/user memory.max=1073741824 (declared 1073741824) memory.swap.max=max memory.swap.current=2246758400 memory.events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0]
 [PASS] 14d a job within its mem_gb completes [cores=yes swap=no]  job=19 declared mem_gb=2, wrote 256 MiB -> filed done/ status=executed state=COMPLETED rc=0
 ```
 
@@ -240,7 +240,7 @@ PB_SMOKE_CONSTRAIN_SWAP=yes DEB_DIR=... bash fleet/slurm/smoke/run.sh
 
 Each run prints the arm it is in at the top of its transcript and names it in
 every row. The rows quoted above come from
-`/home/rob/slurm-build/smoke/run-20260905T021615` (arm 1),
+`/home/rob/slurm-build/smoke/run-20260905T022428` (arm 1),
 `run-20260905T020326` (arm 2) and `run-20260905T020952` (arm 3), each 21/21.
 `fleet/slurm/smoke/README.md` has what the harness does and does not
 establish.
