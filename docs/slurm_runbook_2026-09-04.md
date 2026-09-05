@@ -741,11 +741,12 @@ re-reads the `repo` symlink, but without the ownership mark, because setting
 the mark is the new bytes' behaviour and that supervisor is not running them.
 The next supervisor started on the new bytes counts none of those loops and
 tops the box up beside them, and the unmarked ones stay until they reach
-`--max-idle` on their own, which is 500 polls of 15 seconds, so about two
-hours. So restart the supervisor on each box as part of the publish rather
-than leaving it to the crontab. Extra loops waste polls and cannot
-oversubscribe the box, because admission is by the pool's resource ledger and
-not by loop count.
+`--max-idle` on their own, which `fleet_boxes.json` sets per box: 500 polls of
+15 seconds on sparky, 500 of 20 on gx10-6b77, and 2000 of 10 on dl380g10, so
+between two and six hours. So restart the supervisor on each box as part of
+the publish rather than leaving it to the crontab. Extra loops waste polls and
+cannot oversubscribe the box, because admission is by the pool's resource
+ledger and not by loop count.
 
 The second consequence is in the maintenance path. `supervise.py
 --cycle-stale --once` running the new bytes reaches only marked loops, so it
