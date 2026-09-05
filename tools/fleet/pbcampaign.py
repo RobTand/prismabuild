@@ -335,11 +335,21 @@ def main(argv=None) -> int:
                 print(json.dumps(payload, sort_keys=True), flush=True)
         return 1 if refused else 0
 
-    keys = [str(one["action_key"]) for one in submissions
-            if one.get("status") == "submitted"]
+    submitted = [one for one in submissions if one.get("status") == "submitted"]
+    keys = [str(one["action_key"]) for one in submitted]
+    # The generation each row was submitted under, taken from what pbrun
+    # printed rather than read back off the queue.  Reading it back is a race
+    # against a worker that claims and finishes the item first, and the cost of
+    # losing it is reporting an older run's ending for this row.
+    generations = {
+        str(one["action_key"]): one.get("published_unix")
+        for one in submitted
+        if isinstance(one.get("published_unix"), (int, float))
+    }
     queue = pool.PoolQueue(pbrun.SH / "pb-queue")
     cas = pb.PrismaBuildCAS(pbrun.SH / "cas")
-    waited = pbwait.wait_for_keys(queue, keys, cas=cas, wait_s=args.wait_s)
+    waited = pbwait.wait_for_keys(
+        queue, keys, cas=cas, wait_s=args.wait_s, generations=generations)
     table = rows_for(submissions, waited)
     print(pbwait.render(table))
     return 1 if refused else pbwait.verdict(table)

@@ -1379,17 +1379,36 @@ def landed_outcome(
     Returns ``None`` when the caller's patience ran out first.  Split out of
     ``await_outcome`` so a waiter that reports many actions at once can share
     one deadline across them instead of spending ``--wait-s`` on each in turn.
+
+    A caller that cannot name the generation gets the NEWEST ending rather than
+    the first directory in order.  One key can hold a ``done`` from a run last
+    week beside a ``failed`` from the run just now, and answering with the
+    ``done`` because ``done`` is looked at first would report success for work
+    that failed.
     """
+
+    def _stamp(entry) -> float:
+        value = entry[1].get("published_unix")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return float("-inf")
 
     watched = [q.item_path(state, key)
                for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
     deadline = time.monotonic() + wait_s
     while True:
+        found = []
         for path in watched:
             record = terminal_record(path, generation)
             if record is not None:
-                return path, record
-        if time.monotonic() > deadline:
+                found.append((path, record))
+        if len(found) == 1 or (found and generation is not None):
+            return found[0]
+        if found:
+            return max(found, key=_stamp)
+        # ``>=``, so a non-blocking probe (``wait_s=0``) does not spend a poll
+        # interval finding out that it had none to spend.
+        if time.monotonic() >= deadline:
             return None
         time.sleep(POLL_S)
 

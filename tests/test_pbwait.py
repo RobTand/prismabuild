@@ -144,6 +144,40 @@ def test_a_failed_action_makes_the_verdict_nonzero_beside_the_ones_that_worked(
     assert bad[:12] in pbwait.render(rows)
 
 
+def test_the_newest_ending_answers_when_no_generation_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One key holds the ending of every run of the same work, so a stale
+    ``done`` can sit beside this run's ``failed``.  ``done`` is read first, so
+    before the fix a bare-key wait reported ``executed`` for work that failed.
+
+    A caller who knows the generation is not exposed to this at all: ``pbrun
+    --detach`` prints it and ``pbcampaign`` passes it back.  The bare key is the
+    case where nobody can, which is why the newest ending has to win.
+    """
+
+    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    key = "d" * 64
+    _file(queue, pool.DONE, _outcome(key, 100.0, status="executed",
+                                     returncode=0))
+    _file(queue, pool.FAILED, _outcome(key, 200.0, status="failed",
+                                       returncode=7))
+
+    rows = pbwait.wait_for_keys(queue, [key], cas=cas, wait_s=1.0)
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["returncode"] == 7
+    assert pbwait.verdict(rows) == 1
+
+    # Naming the older generation still answers with the older run: the
+    # question was about that run, and its ending has not changed.
+    older = pbwait.wait_for_keys(queue, [key], cas=cas, wait_s=1.0,
+                                 generations={key: 100.0})
+    assert older[0]["status"] == "executed"
+
+
 def test_patience_running_out_is_reported_as_waiting_not_as_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

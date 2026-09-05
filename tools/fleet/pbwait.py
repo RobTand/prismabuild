@@ -199,6 +199,7 @@ def wait_one(
     *,
     cas,
     deadline: float,
+    generation: float | None = None,
     lane_root=None,
     queue_root=None,
     **lane_commands,
@@ -207,16 +208,22 @@ def wait_one(
 
     ``deadline`` is a monotonic instant shared by every key in one call, so
     ``--wait-s`` bounds the whole wait rather than each key in turn.
+
+    ``generation`` says which run is meant.  A caller that submitted the work
+    knows it -- ``pbrun --detach`` prints it -- and should pass it, because
+    reading it back off the queue is a race: a worker can claim and finish the
+    item before this looks, leaving nothing outstanding to read it from.
     """
 
     found = outstanding(q, key, lane_root=lane_root)
-    generation = found[1] if found is not None else None
+    if generation is None and found is not None:
+        generation = found[1]
 
     landed = pbrun.landed_outcome(q, key, wait_s=0.0, generation=generation)
     if landed is not None:
         return _from_record(q, *landed)
 
-    if found is not None and found[0] == "slurm":
+    if found is not None and found[0] == "slurm" and found[1] == generation:
         action = recorded_action(cas, key)
         if action is None:
             return _row(
@@ -262,8 +269,8 @@ def wait_one(
 
 
 def wait_for_keys(
-    q, keys, *, cas, wait_s: float, lane_root=None, queue_root=None,
-    **lane_commands,
+    q, keys, *, cas, wait_s: float, generations=None, lane_root=None,
+    queue_root=None, **lane_commands,
 ) -> list[dict]:
     """Wait for every key at once, under one deadline, and return their rows.
 
@@ -276,6 +283,7 @@ def wait_for_keys(
     unique = list(dict.fromkeys(str(key) for key in keys))
     if not unique:
         return []
+    stamped = dict(generations or {})
     deadline = time.monotonic() + float(wait_s)
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=min(32, len(unique))
@@ -283,6 +291,7 @@ def wait_for_keys(
         futures = {
             pens.submit(
                 wait_one, q, key, cas=cas, deadline=deadline,
+                generation=stamped.get(key),
                 lane_root=lane_root, queue_root=queue_root, **lane_commands,
             ): key
             for key in unique
