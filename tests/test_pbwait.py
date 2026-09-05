@@ -86,7 +86,7 @@ def test_a_detached_pool_action_is_reported_once_a_worker_runs_it(
     table = pbwait.render(rows)
     assert table.splitlines()[0].split() == [
         "key", "status", "transport", "job", "host", "elapsed", "rc",
-        "receipt"]
+        "receipt", "note"]
     # No job handle under the pull queue: the worker ran it in a process that
     # is gone, and there is nothing an operator could look up.
     assert rows[0]["job"] == "-"
@@ -177,6 +177,39 @@ def test_the_newest_ending_answers_when_no_generation_is_named(
     older = pbwait.wait_for_keys(queue, [key], cas=cas, wait_s=1.0,
                                  generations={key: 100.0})
     assert older[0]["status"] == "executed"
+
+
+def test_a_terminal_record_nobody_can_read_ends_the_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ending that was filed is an ending, readable or not.
+
+    ``pbrun.terminal_record`` returns ``None`` for a record it cannot parse,
+    which is right for "is this the generation I asked about" and wrong as the
+    whole answer: the wait then spent ``--wait-s`` -- a day, by default -- on a
+    verdict that was already on disk, and exited 75, which tells the operator
+    to wait again. Terminal records are published by rename, so waiting again
+    can only find the same broken file.
+    """
+
+    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    key = "ba" * 32
+    path = queue.item_path(pool.FAILED, key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"action_key": "' + key, encoding="utf-8")
+
+    started = time.monotonic()
+    rows = pbwait.wait_for_keys(queue, [key], cas=cas, wait_s=30.0)
+    assert time.monotonic() - started < 10.0
+    assert rows[0]["status"] == "unreadable"
+    assert rows[0]["note"] == f"not valid JSON: {path}"
+    # 1, not 75. The guide gives 75 to "no verdict yet", whose remedy is to
+    # run pbwait again; there is a record here and running again re-reads it.
+    assert pbwait.verdict(rows) == 1
+    assert "not valid JSON" in pbwait.render(rows)
 
 
 def test_patience_running_out_is_reported_as_waiting_not_as_failure(
@@ -494,4 +527,8 @@ def test_a_wait_says_what_the_scheduler_says_while_it_waits(
     )
 
     assert rows[0]["status"] == "waiting"
+    # The job id is what the operator reads the scheduler's own tools with,
+    # and the submission record has it, so a waiting row prints it rather than
+    # making them go and look it up.
+    assert rows[0]["job"] == "1007"
     assert "waiting for slurm job 1006" in capsys.readouterr().err

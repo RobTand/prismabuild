@@ -183,7 +183,7 @@ queue the worker files the ending and `pbwait` only watches.
 | Code | Meaning |
 |---|---|
 | 0 | The work is done. A `cache_hit` counts as done. |
-| 1 | The action failed. `pbrun` prints the worker's message and the log paths. |
+| 1 | The action failed. `pbrun` prints the worker's message and the log paths. `pbwait` also exits 1 when an ending was filed and cannot be read, and names the file: that is not 75, because waiting again only re-reads the same record. |
 | 2 | `pbrun --withdraw` matched no submission, matched more than one, or `scancel` refused the job. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
 | 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |

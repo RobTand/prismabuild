@@ -71,6 +71,7 @@ _COLUMNS = (
     ("elapsed", "elapsed"),
     ("returncode", "rc"),
     ("receipt", "receipt"),
+    ("note", "note"),
 )
 
 
@@ -156,6 +157,50 @@ def recorded_action(cas, key: str):
     return value if isinstance(value, dict) else None
 
 
+def unreadable_terminal(q, key: str):
+    """A terminal record filed for this key that cannot be read, or ``None``.
+
+    Returns ``(path, reason)``. ``pbrun.terminal_record`` answers ``None`` for
+    a record it cannot parse, which is the right answer to "is this the
+    generation I asked about" and the wrong answer to "has anything been
+    filed". Without this, the one state where the answer is on disk and
+    unreadable is the state a waiter spends its whole ``--wait-s`` on.
+
+    Terminal records are published by rename, in ``materialize.
+    _write_json_atomic`` and ``slurm_lane._write_latest``, so a record that
+    does not parse is a fault and never a write still in flight. There is
+    nothing to wait for.
+
+    An unreadable record cannot say which generation it belongs to, so one
+    left over from an older run of the same key ends the wait too. That is
+    deliberate: the operator is handed the path of the file to fix, which is
+    the only move available either way. Guessing the generation from the
+    file's modification time would put a guess where the record's own answer
+    should be.
+    """
+
+    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+        path = q.item_path(state, key)
+        try:
+            # By readdir, like ``pbrun.terminal_record``: a stat of a path that
+            # did not exist yet is negatively cached on NFS.
+            if path.name not in os.listdir(path.parent):
+                continue
+        except OSError:
+            continue
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            return path, "permission denied"
+        except OSError as exc:
+            return path, str(exc.strerror or type(exc).__name__).lower()
+        except ValueError:
+            return path, "not valid JSON"
+        if not isinstance(record, dict):
+            return path, "not a JSON object"
+    return None
+
+
 # --------------------------------------------------------------------------
 # Waiting for one
 # --------------------------------------------------------------------------
@@ -165,11 +210,26 @@ def _row(key: str, status: str, **fields) -> dict:
         "action_key": key, "status": status, "transport": "-", "job": "-",
         "host": "-", "elapsed_s": None, "returncode": None,
         "action_returncode": None, "action_signal": None,
-        "receipt_published": None,
+        "receipt_published": None, "note": None,
         "succeeded": status in {"executed", "cache_hit"},
     }
     row.update(fields)
     return row
+
+
+def _job_id(found) -> str:
+    """The job id the submission recorded, or ``-``.
+
+    On a waiting row this is the whole of what an operator can take to
+    ``squeue`` or ``sacct``, and it was printed only after the ending landed:
+    the rows that named no job were exactly the rows somebody was reading
+    because they wanted to go and look.
+    """
+
+    if found is None:
+        return "-"
+    submission = found[2] if isinstance(found[2], dict) else {}
+    return str(submission.get("job_id") or "-")
 
 
 def _from_record(q, outcome_path, outcome) -> dict:
@@ -264,11 +324,24 @@ def wait_one(
         # it, which is the property the CAS exists to give.
         return _row(key, "cache_hit", transport="cas", receipt_published=True)
 
+    broken = unreadable_terminal(q, key)
+    if broken is not None:
+        # An ending was filed and cannot be read. Waiting is what a caller does
+        # for an ending that has not arrived; this one has.
+        return _row(
+            key, "unreadable",
+            transport=found[0] if found is not None else "-",
+            job=_job_id(found),
+            note=f"{broken[1]}: {broken[0]}",
+        )
+
     if slurm_run:
         if action is None:
             return _row(
                 key, "unreadable", transport="slurm",
+                job=_job_id(found),
                 host=str(found[2].get("submitted_host") or "-"),
+                note="no sealed action in the CAS to resume the job with",
             )
         # Under SLURM nobody else will file this ending: the submitter
         # detached.  Resuming the recorded job is what makes the record appear
@@ -285,6 +358,7 @@ def wait_one(
         if landed is not None:
             return _from_record(q, *landed)
         return _row(key, "waiting", transport="slurm",
+                    job=_job_id(found),
                     host=str(found[2].get("submitted_host") or "-"))
 
     landed = pbrun.landed_outcome(
@@ -295,6 +369,7 @@ def wait_one(
         return _row(
             key, "waiting",
             transport=found[0] if found is not None else "-",
+            job=_job_id(found),
         )
     return _from_record(q, *landed)
 
