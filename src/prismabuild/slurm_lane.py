@@ -142,14 +142,26 @@ DEFAULT_JOB_PYTHON = "/usr/bin/python3"
 #: unprivileged submitter has over it is ``--nice``, which is SUBTRACTED from
 #: that base.  So a higher pool priority has to become a smaller nice, and the
 #: base exists because a NEGATIVE nice -- a boost -- requires SlurmUser
-#: privilege that the submitting user does not have.  Starting at 10000 leaves
-#: every realistic priority on the non-negative side of that line while keeping
-#: the relative order the pool's sort produced.
+#: privilege that the submitting user does not have.  A base of 2**30 leaves
+#: every realistic priority on the non-negative side of that line and inside
+#: sbatch's +-2147483645 range.
+#:
+#: The scale is what makes priority mean what it meant on the pool.  The pool
+#: sorted its ready queue on priority before age, so a ``--priority -10`` reset
+#: sat behind every interactive item however old the reset grew.  Under
+#: ``priority/basic`` the base priority steps down by one per submission and
+#: the nice is subtracted from it, so a nice one unit larger sinks a job behind
+#: exactly one later submission.  Multiplying the priority by 2**20 makes one
+#: priority step outrank a million submissions, which is the pool's order for
+#: any queue this fleet will hold.
 #:
 #: This is a queue hint and nothing more.  It is not part of the action
 #: identity, it does not reach ``seal_action``, and two submissions of one
 #: action that differ only in priority are the same action.
-NICE_BASE = 10000
+NICE_BASE = 1 << 30
+
+#: Nice units per priority step; see ``NICE_BASE``.
+NICE_SCALE = 1 << 20
 
 #: How long ``wait`` leaves between polls of a job that has not finished.
 DEFAULT_POLL_S = 5.0
@@ -258,12 +270,13 @@ def nice_for(priority: int) -> int:
     """The ``--nice`` value that carries one pool priority.
 
     Clamped at zero rather than refused: ``sbatch`` rejects a negative nice
-    from an unprivileged submitter, and a priority past the base is asking for
-    a boost this user cannot be granted.  Zero is the most this lane can do for
-    it, and it is still ordered ahead of every ordinary submission.
+    from an unprivileged submitter, and a priority past ``NICE_BASE //
+    NICE_SCALE`` is asking for a boost this user cannot be granted.  Zero is
+    the most this lane can do for it, and it is still ordered ahead of every
+    ordinary submission.
     """
 
-    return max(0, NICE_BASE - int(priority))
+    return max(0, NICE_BASE - int(priority) * NICE_SCALE)
 
 
 def lane_directory(action_key: str, *, root: str | Path | None = None) -> Path:

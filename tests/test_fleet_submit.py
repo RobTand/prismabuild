@@ -110,7 +110,7 @@ def test_a_producers_priority_reaches_the_scheduler(
         resources={"cpu": 1, "mem_gb": 4}, priority=-10,
         queue_root=tmp_path / "pb-queue",
     )
-    assert f"--nice={sl.NICE_BASE + 10}" in _submissions(fleet)[0]["argv"]
+    assert f"--nice={sl.NICE_BASE + 10 * sl.NICE_SCALE}" in _submissions(fleet)[0]["argv"]
 
 
 def test_an_untagged_cpu_action_goes_to_the_cpu_partition(

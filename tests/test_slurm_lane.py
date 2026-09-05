@@ -398,7 +398,7 @@ def test_a_gpu_slot_action_asks_for_shards_its_tags_and_its_own_time(
         f"--error={directory}/%j.err",
         "--mem=73728M",
         "--cpus-per-task=4",
-        "--nice=10000",
+        f"--nice={sl.NICE_BASE}",
         "--time=02:00:00",
         "--gres=shard:1",
         "--constraint=gb10&sparklina",
@@ -467,7 +467,11 @@ def test_a_requested_deadline_still_becomes_a_time_limit(
 
 @pytest.mark.parametrize(
     ("priority", "expected"),
-    [(0, "--nice=10000"), (5, "--nice=9995"), (-10, "--nice=10010")],
+    [
+        (0, f"--nice={sl.NICE_BASE}"),
+        (5, f"--nice={sl.NICE_BASE - 5 * sl.NICE_SCALE}"),
+        (-10, f"--nice={sl.NICE_BASE + 10 * sl.NICE_SCALE}"),
+    ],
 )
 def test_the_submitters_priority_becomes_the_nice_slurm_can_honour(
     tmp_path: Path, fleet: Path, priority: int, expected: str
@@ -497,9 +501,10 @@ def test_a_priority_past_the_base_asks_for_the_most_it_can_be_given(
     priority past the base is clamped to zero rather than turned into a
     submission the scheduler rejects."""
 
-    assert sl.nice_for(sl.NICE_BASE + 1) == 0
+    past = sl.NICE_BASE // sl.NICE_SCALE + 1
+    assert sl.nice_for(past) == 0
     job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
-                  priority=sl.NICE_BASE + 1, seed="clamped")
+                  priority=past, seed="clamped")
     record = [r for r in _submissions(fleet) if r["job_id"] == int(job.job_id)][0]
     assert "--nice=0" in record["argv"]
 
@@ -513,7 +518,7 @@ def test_the_submission_record_says_what_the_priority_became(
     job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
                   priority=-10, seed="recorded")
     record = json.loads(job.record_path.read_text(encoding="utf-8"))
-    assert record["nice"] == 10010
+    assert record["nice"] == sl.NICE_BASE + 10 * sl.NICE_SCALE
     assert "partition" in record
 
 
@@ -1060,7 +1065,7 @@ def test_a_priority_reaches_sbatch_through_the_whole_lane(
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0, priority=-10,
     )
 
-    assert f"--nice={sl.NICE_BASE + 10}" in _submissions(fleet)[0]["argv"]
+    assert f"--nice={sl.NICE_BASE + 10 * sl.NICE_SCALE}" in _submissions(fleet)[0]["argv"]
 
 
 def test_the_slurm_path_prints_the_placement_notices_the_pool_path_prints(
