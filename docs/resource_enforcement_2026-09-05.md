@@ -25,7 +25,10 @@ So Rob chooses between three settings of `fleet/slurm/cgroup.conf`:
 
 - **Option A. Enforce both.** `ConstrainCores=yes`, `ConstrainRAMSpace=yes` --
   the file as it stands. The declared demand is a contract: an under-declared
-  job is slow or killed, and the platform says which.
+  `--cpus` makes the job slow, and an under-declared `mem_gb` holds it to a
+  `memory.max`, which as the file stands means throttled into swap rather than
+  killed. `ConstrainSwapSpace=yes` is what makes it a kill the platform
+  reports; the rows below measure both, and the recommendation returns to it.
 - **Option B. Enforce memory, not cores.** `ConstrainCores=no` in
   `fleet/slurm/cgroup.conf`, and `task/affinity` out of `TaskPlugin` in
   `fleet/slurm/slurm.conf` -- two files, because the plugin is what writes the
