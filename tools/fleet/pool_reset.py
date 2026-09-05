@@ -496,17 +496,49 @@ def submit_command(
 
 
 def _file_reset(plan: Mapping, *, reason: str) -> None:
-    """Mark this plan's endings ``reset`` so the failure count means something."""
+    """Mark this plan's endings ``reset`` so the failure count means something.
+
+    Three things this rewrite is careful about, because the tool resets the
+    work and not the record.
+
+    **It publishes by rename.**  ``path.write_text`` truncates and then writes,
+    and these records are read from three boxes over NFS: a reader taking
+    ``claim``'s path through ``terminal_outcome_covers`` could see the half of
+    the file that had landed and raise with the item already moved into
+    ``claimed/``.  ``pool._write_json_atomic`` is what every other writer in
+    the queue uses, and it is what this uses now.
+
+    **The rewritten record stays readable.**  Changing ``status`` while leaving
+    ``attempt_history`` in place made ``pbrun.outcome_summary`` refuse the
+    record: it adopts the immutable attempt whenever those links are present,
+    and the attempt still says ``failed``.  The links are kept under a name of
+    their own, exactly as ``pool.withdraw`` keeps them.
+
+    **The evidence stays.**  Replacing ``detail`` with the reason destroyed the
+    returncode and the output tails, which are the whole reason somebody reads
+    a failed record afterwards, and on a lane-filed record it destroyed the
+    GRES a later reset needs to restore ``--exclusive``.  The reset is recorded
+    beside ``detail``, not on top of it.
+    """
 
     for path in plan["paths"]:
-        record = json.loads(path.read_text())
+        record = pool._read_json(path)
+        if record is None:
+            continue
         record["status"] = "reset"
-        record["detail"] = {
+        record["reset"] = {
             "reason": reason,
             "reset_unix": time.time(),
             "reset_host": socket.gethostname(),
         }
-        path.write_text(json.dumps(record, indent=1))
+        for field, kept in (
+            ("attempt_history", "attempt_history_before_reset"),
+            ("attempt_history_missing_before",
+             "attempt_history_missing_before_reset"),
+        ):
+            if field in record:
+                record[kept] = record.pop(field)
+        pool._write_json_atomic(path, record)
 
 
 def main(argv: list[str] | None = None) -> int:

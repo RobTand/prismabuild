@@ -519,7 +519,9 @@ the GRES the lane recorded, because `{"gpu": 1}` alone cannot say it. A record f
 `--transport` says, because re-submitting a lane-filed failure into a queue no
 worker drains would lose it. Withdrawn actions are skipped: re-submitting them
 would undo a decision. A record `pool_reset` has already handled is filed as
-`reset` and skipped, unless you pass `--include-reset`.
+`reset` and skipped, unless you pass `--include-reset`. That record keeps the
+failure it recorded: the returncode, the output tails, and the job the lane
+submitted stay in `detail`, and the reset is stamped beside them under `reset`.
 
 A record addressed by a snapshot, which is what the lane files for every
 submission, is not re-sealed. Its tree is a commit in the CAS and nothing can
