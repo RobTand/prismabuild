@@ -1,24 +1,12 @@
-"""``pbrun`` sends no deadline unless one was asked for.
-
-Rob's rule: a worker that is progressing is never killed on elapsed time.
-The pull queue parsed ``--timeout-s`` and dropped it (issue #32); the SLURM
-lane enforces it, so a default of 7200 s would have turned the cutover into a
-two-hour kill on every submission that never mentioned a deadline.
-"""
-from __future__ import annotations
-
-from pathlib import Path
-import subprocess
-import sys
-
-PBRUN = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "pbrun.py"
+"""An unspecified submission deadline stays absent from the sealed action."""
+import json
+from test_pbrun_detach import _checkout, _queue, _run_pbrun
 
 
-def test_the_timeout_flag_defaults_to_no_deadline() -> None:
-    text = subprocess.run(
-        [sys.executable, str(PBRUN), "--help"], capture_output=True,
-        text=True, check=True,
-    ).stdout
-    flag = text.split("--timeout-s", 1)[1]
-    assert "unset means the action runs while it is running" in " ".join(flag.split())
-    assert "default: 7200" not in text
+def test_the_timeout_flag_defaults_to_no_deadline(tmp_path, monkeypatch, capsys):
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
+    key = json.loads(capsys.readouterr().out)["action_key"]
+    action = json.loads((tmp_path / "cas" / "requests" / key[:2] / f"{key}.json").read_text())
+    assert "execution_timeout_s" not in action["params"]

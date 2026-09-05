@@ -612,7 +612,8 @@ def test_pbrun_identity_prunes_git_ignored_directories(
     real_scandir = os.scandir
 
     def observed_scandir(path):
-        visited.append(Path(path))
+        if not isinstance(path, int):
+            visited.append(Path(path))
         return real_scandir(path)
 
     monkeypatch.setattr(core_module.os, "scandir", observed_scandir)
@@ -684,7 +685,7 @@ def test_pbrun_identity_refuses_an_unreadable_untracked_file(
         pbrun._git_identity(checkout)
 
 
-@pytest.mark.parametrize("failed_git_verb", ["ls-files", "diff"])
+@pytest.mark.parametrize("failed_git_verb", ["ls-files", "diff-index"])
 def test_pbrun_identity_fails_closed_after_git_repository_detection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
