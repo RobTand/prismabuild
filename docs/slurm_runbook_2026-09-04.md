@@ -32,8 +32,10 @@ DEB_DIR=/home/rob/slurm-build/arm64-24.04 fleet/slurm/smoke/run.sh
 PRISMABUILD_SLURM_SMOKE=1 PYTHONPATH=src pytest -q tests/test_slurm_smoke.py
 ```
 
-Both SLURMs pass all eleven rows: the fleet's 25.11.2 rebuild (primary) and
-Ubuntu 24.04's own 23.11.4 (secondary). What that settles:
+The first eleven rows pass on both SLURMs: the fleet's 25.11.2 rebuild
+(primary) and Ubuntu 24.04's own 23.11.4 (secondary). Rows 10a-14d, added on
+2026-09-05 for campaigns, host classes, liveness, and resource enforcement,
+have run on the 25.11.2 rebuild only. What the eleven settle:
 
 - **The `shard` syntax in `gres.conf`** (was item 1). `File=` is *required*, not
   optional: a `shard` with no sharing `gpu` bound to a device file is fatal at
