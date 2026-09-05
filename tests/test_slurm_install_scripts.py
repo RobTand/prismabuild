@@ -184,6 +184,37 @@ def test_only_the_controller_runs_a_controller(rendered) -> None:
 
 
 @pytest.mark.parametrize("box", BOXES)
+def test_the_munge_self_test_fails_when_munge_does(
+    rendered, box, tmp_path: Path
+) -> None:
+    """``munge -n | unmunge | head`` reports ``head``'s status, so pre-fix a
+    munge that could not round-trip a credential passed the only check the
+    install makes of it, and the first ``sbatch`` failed instead."""
+
+    lines = [line for line in rendered[box].splitlines() if "munge -n" in line]
+    assert len(lines) == 1, lines
+    self_test = lines[0]
+    assert self_test.startswith("set -o pipefail;"), self_test
+
+    fakes = tmp_path / f"fakes-{box}"
+    fakes.mkdir()
+    (fakes / "munge").write_text(
+        "#!/bin/sh\necho 'munge: Error: Failed to access \"/run/munge/munge.socket.2\"' >&2\nexit 1\n",
+        encoding="utf-8")
+    (fakes / "unmunge").write_text("#!/bin/sh\ncat\n", encoding="utf-8")
+    for name in ("munge", "unmunge"):
+        (fakes / name).chmod(0o755)
+    environment = dict(os.environ)
+    environment["PATH"] = f"{fakes}{os.pathsep}{environment['PATH']}"
+    result = subprocess.run(
+        ["bash", "-c", self_test], capture_output=True, text=True,
+        check=False, env=environment,
+    )
+    assert result.returncode != 0
+    assert "munge.socket" in result.stderr
+
+
+@pytest.mark.parametrize("box", BOXES)
 def test_every_box_runs_a_node_daemon_and_munge(rendered, box) -> None:
     assert "systemctl enable slurmd" in rendered[box]
     assert "systemctl enable munge" in rendered[box]
