@@ -58,8 +58,13 @@ dropped seals an action nobody asked for.
 ``--transport`` is a flag on the campaign and not a row field, because which
 dispatcher carries the work is a fact about the fleet rather than about the
 action.  One caveat that belongs to ``pbrun`` and travels here: ``exclusive``
-is the one field whose demand ``pbrun`` derives differently per transport, so
-it is the one field that moves an action key when the transport changes.
+is the one field whose demand ``pbrun`` derives differently per transport --
+its ``--exclusive`` branch seals ``demand["gpu"] = gpu_capacity or 1`` under
+SLURM and ``gpu_capacity or exclusive_gpu_demand(...)`` under the pull queue,
+reading the pool's announced slot count -- and ``demand`` is sealed into the
+action's params.  So an exclusive row keyed on one transport is a different
+action on the other, and the two do not memoize each other.  Every other field
+seals identically either way.
 
 Example
 -------
