@@ -1898,6 +1898,24 @@ def outstanding_submission(q, key: str, *, lane_root=None):
     return max(candidates, key=lambda entry: entry[1])
 
 
+def publish_or_refuse(q, publication: Mapping[str, object]):
+    """Enqueue one submission, or say why the queue would not take it.
+
+    ``PoolQueue.publish`` refuses a fenced queue: ``fleet/slurm/cutover.sh``
+    removes the write bit on ``pb-queue/ready`` while it retires the pull
+    queue's execution plane, so a rename into that directory fails with
+    EACCES rather than leaving an accepted action in a queue whose workers are
+    being stopped.  That refusal is the caller's to read -- the submitter is
+    the one who can resubmit through SLURM or wait -- so it arrives as a line
+    rather than as a traceback.
+    """
+
+    try:
+        return q.publish(**publication)
+    except pool.PoolContractError as exc:
+        raise SystemExit(f"pbrun: {exc}") from exc
+
+
 def live_submission(q, key: str, *, lane_root=None, **lane_commands):
     """The submission this key is still running under, or ``None``.
 
@@ -3603,7 +3621,7 @@ def main() -> int:
     # contract in both cases.
     if "retry_safe" in inspect.signature(q.publish).parameters:
         publication["retry_safe"] = args.retry_safe
-    queued_path = q.publish(**publication)
+    queued_path = publish_or_refuse(q, publication)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.

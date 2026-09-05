@@ -42,6 +42,15 @@
 # which fleet/slurm/cutover.sh looks for.  The marker is box-local -- it says
 # "verification passed and this is where it was run from" -- which is why
 # cutover also accepts --verified for the case where you verified elsewhere.
+#
+# A failure retires the success a previous run recorded.  The marker's hash
+# still matched, the nodes still registered, and nothing anywhere said that
+# the operator had just watched verification fail, so an ordinary
+# `cutover.sh --yes` retired a working pull queue on the strength of last
+# week's pass.  So a failing run removes the success marker and writes
+# ~/.prismabuild/slurm-verify-failed.json in its place, carrying the reason,
+# the time and the commit; cutover.sh refuses while that file is there, and
+# the next passing run removes it.  --verified stays the operator's override.
 
 set -uo pipefail
 
@@ -60,9 +69,11 @@ Environment, for the tests and for nothing else:
                                (default /mnt/shared/prismabuild-fleet/slurm/jobs)
   PB_VERIFY_TIMEOUT_S          wall-clock bound per job-running row (default 900)
 
-On success it writes ~/.prismabuild/slurm-verify-passed.json.  That marker is
-box-local; fleet/slurm/cutover.sh accepts --verified instead when you verified
-from another box.
+On success it writes ~/.prismabuild/slurm-verify-passed.json and removes any
+~/.prismabuild/slurm-verify-failed.json.  A failure does the reverse, so a
+verification that stopped working invalidates the one that passed before it.
+Both markers are box-local; fleet/slurm/cutover.sh accepts --verified instead
+when you verified from another box.
 USAGE
 }
 
@@ -100,6 +111,10 @@ LIMIT="${PB_VERIFY_TIMEOUT_S:-900}"
 ANYWHERE=/home/rob
 MARKER_DIR="$HOME/.prismabuild"
 MARKER="$MARKER_DIR/slurm-verify-passed.json"
+#: Written whenever this script does not pass, and read by cutover.sh as the
+#: refusal.  Same directory and the same box-local meaning as MARKER; the two
+#: never coexist, because each one's writer removes the other.
+FAILURE_MARKER="$MARKER_DIR/slurm-verify-failed.json"
 
 PASSED=0
 FAILED=0
@@ -128,12 +143,21 @@ finish() {
     printf '%s\n' "$(printf '=%.0s' $(seq 1 72))"
     for line in "${RESULTS[@]}"; do printf '%s\n' "$line"; done
     if [ "$FAILED" -gt 0 ]; then
-        printf '\nverification did not pass; no marker written\n'
+        printf '\nverification did not pass\n'
+        local why=""
+        for line in "${RESULTS[@]}"; do
+            case "$line" in FAIL*) why="$line"; break ;; esac
+        done
+        invalidate "${why:-verification failed}"
         exit 1
     fi
     mkdir -p "$MARKER_DIR"
     local commit
     commit="$(git -C "$REPO" rev-parse --verify HEAD 2>/dev/null || echo unknown)"
+    if [ -f "$FAILURE_MARKER" ]; then
+        rm -f "$FAILURE_MARKER"
+        printf '\nremoved %s: this run passed\n' "$FAILURE_MARKER"
+    fi
     cat > "$MARKER" <<EOF
 {
  "schema": "prismaquant.prismabuild.slurm_verify.v1",
@@ -148,6 +172,42 @@ EOF
     printf '\nwrote %s\n' "$MARKER"
     printf 'the fleet is ready for fleet/slurm/cutover.sh\n'
     exit 0
+}
+
+#: Retire the success a previous run recorded here, and say why.
+#:
+#: Called from every path that ends without a pass, `finish` and the early
+#: exits alike.  A success marker that outlives a later failure is the one
+#: piece of evidence cutover.sh trusts, and it cannot tell "passed an hour
+#: ago" from "passed an hour ago and has failed twice since".  The reason is
+#: stripped of quotes and backslashes because it goes into a JSON string
+#: field that no parser writes.
+invalidate() {
+    local reason commit
+    reason="${1//\"/}"
+    reason="${reason//\\/}"
+    mkdir -p "$MARKER_DIR"
+    if [ -f "$MARKER" ]; then
+        rm -f "$MARKER"
+        printf 'removed %s: it recorded a pass that this run contradicts\n' \
+            "$MARKER"
+    fi
+    commit="$(git -C "$REPO" rev-parse --verify HEAD 2>/dev/null || echo unknown)"
+    cat > "$FAILURE_MARKER" <<EOF
+{
+ "schema": "prismaquant.prismabuild.slurm_verify_failed.v1",
+ "host": "$(hostname -s)",
+ "failed_unix": $(date +%s),
+ "checkout": "$REPO",
+ "commit": "$commit",
+ "slurm_conf_sha256": "$(sha256sum "$CONF" 2>/dev/null | cut -d' ' -f1)",
+ "reason": "$reason",
+ "rows_passed": $PASSED,
+ "rows_failed": $FAILED
+}
+EOF
+    printf 'wrote %s\n' "$FAILURE_MARKER"
+    printf 'fleet/slurm/cutover.sh refuses while it is there\n'
 }
 
 # -- reading the configuration this fleet is supposed to have ----------------
@@ -188,6 +248,10 @@ printf 'lane root: %s\njob state: %s\n\n' "$LANE_ROOT" "$JOB_STATE_ROOT"
 
 if ! command -v sinfo >/dev/null 2>&1; then
     printf 'verify.sh: sinfo is not on PATH; run fleet/slurm/install.sh on this box first\n' >&2
+    # An early exit is a verification that did not pass, so it retires the
+    # success marker too.  A box whose SLURM install has gone missing is
+    # exactly the box whose last pass says nothing about it now.
+    invalidate "sinfo is not on PATH on $(hostname -s)"
     exit 2
 fi
 
