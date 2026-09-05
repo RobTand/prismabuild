@@ -209,7 +209,10 @@ transport filed it. The result does not depend on which one carried it.
 
 ## Test
 
-    PYTHONPATH=src python3 -m pytest -q tests/
+Agents must follow [the execution policy](docs/agent_execution_policy.md).
+Submit tests through the published fleet runtime, reserving the resources used:
+
+    python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --tag x86 --cpus 8 --demand mem_gb=8 -- env PYTHONPATH=src OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 /home/rob/venvs/pb-cpu/bin/python -m pytest -n 8 tests/
 
 The suite never touches the fleet's live store. `tests/conftest.py` repoints
 every default that names the shared mount at the test's own temporary
