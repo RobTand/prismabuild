@@ -241,6 +241,20 @@ def _snapshot_git(
     return completed.stdout.strip() if strip else completed.stdout
 
 
+#: Git reads three exclude sources under ``--exclude-standard``: the
+#: repository's own ``.gitignore`` files, ``$GIT_DIR/info/exclude``, and
+#: ``core.excludesFile``.  The first describes the repository and the second is
+#: where ``keep_droppings_out_of_git`` puts pbrun's own generated basenames, so
+#: both belong to the seal.  ``core.excludesFile`` is a personal setting on the
+#: box that submits, and the sealed tree must not be a function of it.
+#: Measured: one untracked file matched by a submitter's global exclude seals a
+#: different tree, and therefore a different action key, for identical bytes.
+#: Pinned to an empty file rather than cleared, because an empty value falls
+#: back to Git's default of ``$XDG_CONFIG_HOME/git/ignore``, which is the very
+#: file this has to stop reading.
+PERSONAL_EXCLUDES_PIN: tuple[str, ...] = ("-c", "core.excludesFile=/dev/null")
+
+
 def snapshot_path_roster(
     root: Path, *, extra_paths: tuple[str, ...] = ()
 ) -> list[str]:
@@ -248,7 +262,7 @@ def snapshot_path_roster(
 
     raw_paths = _snapshot_git(
         root,
-        ["ls-files", "-co", "--exclude-standard", "-z"],
+        [*PERSONAL_EXCLUDES_PIN, "ls-files", "-co", "--exclude-standard", "-z"],
         strip=False,
     )
     return list(dict.fromkeys(
@@ -901,7 +915,15 @@ def _build_git_checkout_snapshot(
             root, ["read-tree", "HEAD"], environment=object_environment
         )
         _seed_index_roster(root, object_environment)
-        _snapshot_git(root, ["add", "-A"], environment=object_environment)
+        # Same exclude pin as the roster, and for the same reason: ``add -A``
+        # applies the ignore rules to an untracked path, so without it the
+        # roster the identity hashes and the tree the bundle carries disagree
+        # on exactly the paths a submitter's global excludes match.
+        _snapshot_git(
+            root,
+            [*PERSONAL_EXCLUDES_PIN, "add", "-A"],
+            environment=object_environment,
+        )
         if stamp_relative is not None:
             _snapshot_git(
                 root,
