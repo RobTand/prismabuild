@@ -869,8 +869,11 @@ class ResourceLedger:
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
-    def __init__(self, root: str | Path = DEFAULT_POOL_ROOT) -> None:
-        self.root = Path(root)
+    def __init__(self, root: str | Path | None = None) -> None:
+        # Read the module attribute at call time, not at definition time, so
+        # a caller (or the test guard) that re-points ``DEFAULT_POOL_ROOT``
+        # after import gets the root it named rather than the live store.
+        self.root = Path(DEFAULT_POOL_ROOT if root is None else root)
         if not self.root.is_absolute():
             raise PoolContractError("pool root must be absolute")
 
