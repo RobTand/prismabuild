@@ -10,7 +10,7 @@ drift was.
 
 The topology pinning path always preserved an outer restriction, since it pins
 inside the affinity it inherited.  Turning the pin off must not throw that
-away.  ``--cpu-slots`` stays the explicit override on both paths.
+away.  ``--cpu-slots`` can cap either path but cannot exceed its affinity.
 
 Nothing here changes an affinity, a queue, or a process: the host readings are
 synthetic and the queue is this test's own.
@@ -112,15 +112,20 @@ def test_all_cores_offers_the_inherited_affinity_not_the_machine(
         "a confined worker advertised CPUs it cannot run an action on")
 
 
-def test_an_explicit_slot_count_still_wins_on_the_all_cores_path() -> None:
-    """``--cpu-slots`` is the override, and this does not take it away."""
-
+def test_explicit_slots_cannot_advertise_more_cpus_than_the_affinity() -> None:
+    """A slot now names one CPU, so overdeclaring the mask must refuse."""
     module = _worker_loop()
+    with pytest.raises(SystemExit) as raised:
+        _offer(module, [*BASE, "--all-cores", "--cpu-slots", "8"],
+               affinity={2, 3}, cpu_count=80)
+    assert raised.value.code == 2
 
-    offer = _offer(module, [*BASE, "--all-cores", "--cpu-slots", "8"],
+
+def test_explicit_slots_can_cap_the_inherited_affinity() -> None:
+    module = _worker_loop()
+    offer = _offer(module, [*BASE, "--all-cores", "--cpu-slots", "1"],
                    affinity={2, 3}, cpu_count=80)
-
-    assert offer["cpu"] == 8
+    assert offer["cpu"] == 1
 
 
 def test_the_pinned_path_still_offers_what_it_pinned() -> None:

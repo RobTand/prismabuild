@@ -38,57 +38,85 @@ def _read_int(path: Path):
         return None
 
 
-def _online(root: Path):
-    cpus = []
-    for entry in root.glob("cpu[0-9]*"):
-        name = entry.name[3:]
-        if name.isdigit():
-            cpus.append(int(name))
+def parse_cpus(text: str) -> list[int]:
+    """Parse a kernel CPU list, refusing malformed or descending ranges."""
+    cpus = set()
+    for part in text.strip().split(","):
+        if not part:
+            continue
+        bounds = part.split("-")
+        if len(bounds) > 2 or any(not x.isdigit() for x in bounds):
+            raise ValueError(f"invalid CPU list: {text!r}")
+        lo, hi = int(bounds[0]), int(bounds[-1])
+        if hi < lo:
+            raise ValueError(f"invalid CPU range: {part!r}")
+        cpus.update(range(lo, hi + 1))
     return sorted(cpus)
 
 
-def _is_first_sibling(root: Path, cpu: int) -> bool:
-    """True when this CPU leads its SMT group (or has no siblings)."""
-    text = ""
+def _read_cpus(path: Path):
     try:
-        text = (root / f"cpu{cpu}" / "topology" / "thread_siblings_list").read_text()
-    except OSError:
-        return True  # no SMT information: treat every CPU as its own core
-    members = []
-    for part in text.strip().split(","):
-        lo = part.split("-")[0]
-        if lo.isdigit():
-            members.append(int(lo))
-        if "-" in part:
-            hi = part.split("-")[1]
-            if lo.isdigit() and hi.isdigit():
-                members.extend(range(int(lo), int(hi) + 1))
-    return not members or cpu == min(members)
+        return parse_cpus(path.read_text())
+    except (OSError, ValueError):
+        return None
 
 
-def classify(root: Path = SYSFS_CPU):
-    """Split the online CPUs into ``(preferred, fallback)``, best first.
+def _online(root: Path):
+    online = _read_cpus(root / "online")
+    if online is not None:
+        return online
+    return sorted(int(entry.name[3:]) for entry in root.glob("cpu[0-9]*")
+                  if entry.name[3:].isdigit()
+                  and _read_int(entry / "online") != 0)
 
-    ``preferred`` is the high-capacity CPUs that lead their SMT group.  The
-    capacity threshold is the midpoint of the observed range, not equality with
-    the maximum: GB10's fast cores do not all report the same number (997,
-    1017 and 1024 all appear), so an equality test would return a single core.
-    A machine with one capacity value has every CPU above its own midpoint,
-    which is the correct answer for a uniform box.
+
+def classify(root: Path = SYSFS_CPU, *, allowed=None, pmu_root=None):
+    """Return usable CPUs as (preferred physical fast cores, fallback).
+
+    Class capacity is assessed before the outer affinity is applied, so an
+    E-core-only cpuset does not turn its CPUs into fast cores. SMT leadership
+    is chosen inside the usable set: an offline or excluded primary thread
+    does not demote the only usable thread of a fast physical core. Intel's
+    hybrid PMU cpu_atom list identifies E-cores where cpu_capacity is absent.
     """
-    cpus = _online(root)
-    if not cpus:
+    online = _online(root)
+    if not online:
         return [], []
-    caps = {c: (_read_int(root / f"cpu{c}" / "cpu_capacity") or 1024) for c in cpus}
-    lo, hi = min(caps.values()), max(caps.values())
-    threshold = (lo + hi) / 2.0
+    caps = {c: (_read_int(root / f"cpu{c}" / "cpu_capacity") or 1024)
+            for c in online}
+    threshold = (min(caps.values()) + max(caps.values())) / 2.0
+    pmu = Path(pmu_root) if pmu_root is not None else root.parent.parent
+    efficient = set(_read_cpus(pmu / "cpu_atom" / "cpus") or [])
+    cpus = set(online) if allowed is None else set(online) & set(allowed)
     preferred, fallback = [], []
-    for cpu in cpus:
-        fast = caps[cpu] >= threshold
-        lead = _is_first_sibling(root, cpu)
-        (preferred if (fast and lead) else fallback).append(cpu)
-    fallback.sort(key=lambda c: (-caps[c], not _is_first_sibling(root, c), c))
+    lead, fast = {}, {}
+    for cpu in sorted(cpus):
+        siblings = set(_read_cpus(root / f"cpu{cpu}" / "topology" /
+                                  "thread_siblings_list") or [cpu]) & cpus
+        lead[cpu] = cpu == min(siblings | {cpu})
+        fast[cpu] = caps[cpu] >= threshold and cpu not in efficient
+        (preferred if fast[cpu] and lead[cpu] else fallback).append(cpu)
+    # Stable CPU IDs within each class: small capacity fluctuations must not
+    # reinterpret existing ledger token ordinals.
+    fallback.sort(key=lambda c: (not fast[c], not lead[c], c))
     return preferred, fallback
+
+
+def inherited_tiers(root: Path = SYSFS_CPU):
+    """Topology within the worker affinity, or None without affinity support."""
+    try:
+        allowed = os.sched_getaffinity(0)
+    except (AttributeError, OSError):
+        return None
+    preferred, fallback = classify(root, allowed=allowed)
+    # Missing sysfs must not silently remove usable capacity.
+    known = {int(entry.name[3:]) for entry in root.glob("cpu[0-9]*")
+             if entry.name[3:].isdigit()}
+    unknown = set(allowed) - known - set(preferred) - set(fallback)
+    online = _read_cpus(root / "online")
+    if online is not None:
+        unknown &= set(online)
+    return {"preferred": preferred + sorted(unknown), "fallback": fallback}
 
 
 def preferred_cpus(root: Path = SYSFS_CPU):
@@ -122,12 +150,11 @@ def pin_to_preferred(root: Path = SYSFS_CPU):
     cgroup, a container's cpuset) still wins: widening someone else's
     restriction would be this module overruling an explicit decision.
     """
-    want = set(preferred_cpus(root))
     try:
         allowed = os.sched_getaffinity(0)
     except (AttributeError, OSError):
         return None
-    want &= allowed
+    want = set(classify(root, allowed=allowed)[0])
     if not want or want == allowed:
         return sorted(allowed)
     try:

@@ -126,7 +126,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
     _run_materializer_git,
     _write_json_atomic,
 )
-from . import materialize
+from . import materialize, cpu_topology
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -812,6 +812,47 @@ class ResourceLedger:
 
         return self.base / "minted"
 
+    def configure_cpu_tiers(self, tiers: Mapping[str, Sequence[int]]) -> dict:
+        """Bind token ordinals to CPUs once; all loops on a host must agree.
+
+        Changing this map requires stopping workers, draining reservations,
+        and removing cpu-map.json before restarting. Never reinterpret a held
+        ordinal under another affinity or topology.
+        """
+        record = {kind: list(tiers[kind]) for kind in ("preferred", "fallback")}
+        cpus = record["preferred"] + record["fallback"]
+        if (not cpus or any(type(c) is not int or c < 0 for c in cpus)
+                or len(cpus) != len(set(cpus))):
+            raise PoolContractError("CPU tiers must contain distinct nonnegative CPU IDs")
+        path = self.base / "cpu-map.json"
+        existing = _read_json(path)
+        if existing is None:
+            if self.held().get("cpu", 0):
+                raise PoolContractError("drain legacy CPU reservations before enabling CPU tiers")
+            self.base.mkdir(parents=True, exist_ok=True)
+            pb._atomic_publish(path, pb._canonical_bytes(record))
+            existing = _read_json(path)
+        if existing != record:
+            raise PoolContractError("CPU tier map differs: stop workers, drain reservations "
+                                    "and remove cpu-map.json before changing topology")
+        return record
+
+    def cpu_allocation(self, holder: str, tiers: Mapping) -> dict:
+        """The actual CPUs represented by this claimant's held tokens."""
+        ordered = list(tiers["preferred"]) + list(tiers["fallback"])
+        cpus = []
+        for token in _glob(self.held_dir / holder, "cpu-*"):
+            index = int(token.name.split("-")[-1])
+            if index >= len(ordered):
+                raise PoolContractError("CPU token exceeds configured topology")
+            cpus.append(ordered[index])
+        return {kind: [c for c in tiers[kind] if c in cpus]
+                for kind in ("preferred", "fallback")}
+
+    def free_preferred(self, tiers: Mapping) -> int:
+        return sum(int(token.name.split("-")[-1]) < len(tiers["preferred"])
+                   for token in _glob(self.free_dir, "cpu-*"))
+
     def ensure_capacity(self, capacity: Mapping[str, int]) -> None:
         """Create any missing token of each declared kind, idempotently.
 
@@ -1267,6 +1308,7 @@ class PoolQueue:
         # a caller (or the test guard) that re-points ``DEFAULT_POOL_ROOT``
         # after import gets the root it named rather than the live store.
         self.root = Path(DEFAULT_POOL_ROOT if root is None else root)
+        self._cpu_deferrals: dict[tuple[str, str], float] = {}
         if not self.root.is_absolute():
             raise PoolContractError("pool root must be absolute")
 
@@ -1409,6 +1451,7 @@ class PoolQueue:
         tags: Sequence[str],
         has_gpu: bool,
         capacity: Mapping[str, int] | None = None,
+        cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         runtime_commit: str = "",
         observed_capacity: Mapping[str, int] | None = None,
         foreign: Mapping[str, int] | None = None,
@@ -1472,6 +1515,7 @@ class PoolQueue:
             # the module it imported at start for its whole life, so without
             # this a fleet running four generations of the code at once looks
             # uniform from the queue.
+            "cpu_tiers": dict(cpu_tiers or {}),
             "runtime_commit": str(runtime_commit),
             "announced_unix": _now(),
         }
@@ -1860,6 +1904,7 @@ class PoolQueue:
     #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
     _CLAIM_SCOPED_FIELDS = (
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes",
+        "cpu_allocation",
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "stop_pending",
     )
@@ -2130,6 +2175,36 @@ class PoolQueue:
             raise PoolContractError("pool item resources must be an object")
         return {str(k): int(v) for k, v in raw.items() if int(v) > 0}
 
+    def _defer_fallback(self, item: Mapping, demand: Mapping) -> bool:
+        """Give a compatible host with free preferred CPUs up to 20s to claim.
+
+        Offers and remote ledger scans are advisory snapshots, not an atomic
+        fleet allocation. The bounded wait prevents stale-but-fresh offers
+        from stranding work. A host that cannot fit the whole demand never
+        delays another host, nor does incompatible placement.
+        """
+        identity = (str(item["action_key"]), repr(item.get("published_unix")))
+        started = self._cpu_deferrals.setdefault(identity, time.monotonic())
+        if time.monotonic() - started >= 20.0:
+            return False
+        for offer in self._matching_offers(item, live=self.offers()):
+            host = str(offer.get("host") or "")
+            if not host or host == socket.gethostname():
+                continue
+            tiers = offer.get("cpu_tiers")
+            if not isinstance(tiers, Mapping) or not tiers.get("preferred"):
+                continue
+            remote = self.ledger(host)
+            if _read_json(remote.base / "cpu-map.json") != tiers:
+                continue
+            free = remote.available()
+            observed = offer.get("observed_capacity") or {}
+            if (remote.free_preferred(tiers) >= demand.get("cpu", 0)
+                    and all(free.get(k, 0) >= n and observed.get(k, free[k]) >= n
+                            for k, n in demand.items())):
+                return True
+        return False
+
     def claim(
         self,
         *,
@@ -2137,6 +2212,7 @@ class PoolQueue:
         has_gpu: bool = False,
         owner: str | None = None,
         capacity: Mapping[str, int] | None = None,
+        cpu_tiers: Mapping[str, Sequence[int]] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -2179,9 +2255,22 @@ class PoolQueue:
         total: dict[str, int] = {}
         if capacity is not None:
             ledger = self.ledger()
+            if cpu_tiers is None:
+                cpu_tiers = _read_json(ledger.base / "cpu-map.json")
+            if cpu_tiers is not None:
+                cpu_tiers = ledger.configure_cpu_tiers(cpu_tiers)
+                if int(capacity.get("cpu", 0)) > sum(map(len, cpu_tiers.values())):
+                    raise PoolContractError("CPU capacity exceeds the inherited CPU map")
+                ledger.retire_free_capacity({"cpu": int(capacity.get("cpu", 0))})
             ledger.ensure_capacity(capacity)
             total = ledger.capacity()
-        for item in self.ready_items():
+        ready = self.ready_items()
+        live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
+                            for item in ready}
+        for generation in list(self._cpu_deferrals):
+            if generation not in live_generations:
+                self._cpu_deferrals.pop(generation, None)
+        for item in ready:
             key = str(item.get("action_key", ""))
             if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
                 continue
@@ -2222,6 +2311,11 @@ class PoolQueue:
                     # the head of the ordering -- but stops holding the box shut
                     # for work it cannot do anything with.
                     continue
+            if (ledger is not None and handle is not None and cpu_tiers is not None
+                    and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
+                    and self._defer_fallback(item, demand)):
+                ledger.abandon_acquire(handle)
+                continue
             # Intent precedes the claim, so a crash in between leaves evidence.
             self._write_claim_intent(key, owner=owner)
             src = self.item_path(READY, key)
@@ -2336,9 +2430,13 @@ class PoolQueue:
             # counter that no longer exists, on a record no admission decision
             # ever reads.
             claimed.pop("passes", None)
+            claimed.pop("cpu_allocation", None)
+            self._cpu_deferrals.pop((key, repr(moved.get("published_unix"))), None)
             claimed["claimed_by"] = owner
             claimed["claimed_unix"] = _now()
             claimed["claimed_host"] = socket.gethostname()
+            if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
+                claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
             claimed["reserved_on"] = socket.gethostname() if demand else None
             _write_json_atomic(dst, claimed)
             self.write_lease(
@@ -4199,6 +4297,25 @@ class PoolQueue:
             cas_root=item["cas_root"],
             checkout_root=checkout_root,
         )
+        allocation = item.get("cpu_allocation")
+        if allocation is not None:
+            host = str(item.get("reserved_on") or "")
+            if host != socket.gethostname():
+                raise PoolContractError("CPU allocation belongs to another host")
+            ledger = self.ledger(host)
+            tiers = _read_json(ledger.base / "cpu-map.json")
+            if tiers is None or ledger.cpu_allocation(key, tiers) != allocation:
+                raise PoolContractError("CPU allocation differs from held reservation")
+            cpus = list(allocation["preferred"]) + list(allocation["fallback"])
+            if len(cpus) != self.demand_of(item).get("cpu", 0):
+                raise PoolContractError("CPU allocation does not cover demand")
+            if cpus:
+                if not set(cpus) <= os.sched_getaffinity(0):
+                    raise PoolContractError("CPU allocation exceeds current affinity")
+                # taskset applies affinity before exec, without preexec_fn in
+                # this multithread-capable parent. Descendants inherit it.
+                argv = ["/usr/bin/taskset", "--cpu-list", cpu_topology.as_range(cpus),
+                        *argv]
         owner = str(item.get("claimed_by") or "")
         started = _now()
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
@@ -4213,6 +4330,7 @@ class PoolQueue:
                 "stderr": "",
                 "elapsed_s": 0.0,
                 "argv": argv,
+                "cpu_allocation": allocation,
             }
         process = subprocess.Popen(
             argv,
@@ -4264,6 +4382,7 @@ class PoolQueue:
                             "stderr": err,
                             "elapsed_s": _now() - started,
                             "argv": argv,
+                            "cpu_allocation": allocation,
                         }
                     self.write_lease(
                         key,
@@ -4307,6 +4426,7 @@ class PoolQueue:
                             "action_survived_kill": survived,
                             "elapsed_s": _now() - started,
                             "argv": argv,
+                            "cpu_allocation": allocation,
                         }
         except BaseException:
             # The launcher leads its own session now, so a Ctrl-C or any other
@@ -4332,6 +4452,7 @@ class PoolQueue:
             "stderr": err,
             "elapsed_s": _now() - started,
             "argv": argv,
+            "cpu_allocation": allocation,
         }
 
     def _stop_action(self, process: subprocess.Popen) -> tuple[str, str]:
@@ -4361,6 +4482,7 @@ class PoolQueue:
         python: str | Path = sys.executable,
         timeout_s: float | None = None,
         capacity: Mapping[str, int] | None = None,
+        cpu_tiers: Mapping[str, Sequence[int]] | None = None,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -4371,7 +4493,8 @@ class PoolQueue:
         """
 
         self.reap_stale()
-        item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity)
+        item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
+                          cpu_tiers=cpu_tiers)
         if item is None:
             return None
         key = str(item["action_key"])

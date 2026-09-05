@@ -24,7 +24,8 @@ KEY_B = "b" * 64
 
 #: Fields that describe the claim that has just ended.  A ready item is not
 #: claimed by anybody, so none of them may survive a requeue.
-CLAIM_TRANSIENTS = ("claimed_by", "claimed_unix", "claimed_host", "reserved_on")
+CLAIM_TRANSIENTS = ("claimed_by", "claimed_unix", "claimed_host", "reserved_on",
+                    "cpu_allocation")
 
 #: Fields whose values legitimately differ between two requeues of two
 #: different actions: which action it is, where it may run, when it was
@@ -51,6 +52,7 @@ def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
         worker_script=kw.pop("worker_script", "/w.py"),
         max_attempts=kw.pop("max_attempts", 3),
         retry_safe=kw.pop("retry_safe", True),
+        resources={"cpu": 1},
         **kw,
     )
 
@@ -63,7 +65,8 @@ def _tag(key: str) -> str:
 
 def _requeued_by_finish(q: pool.PoolQueue, key: str) -> dict:
     _publish(q, key, tags=[_tag(key)])
-    claimed = q.claim(tags=[_tag(key)])
+    claimed = q.claim(tags=[_tag(key)], capacity={"cpu": 1},
+                      cpu_tiers={"preferred": [0], "fallback": []})
     assert claimed is not None and claimed["action_key"] == key
     q.finish(key, status="failed", detail={"returncode": 3},
              claim_snapshot=claimed)
@@ -74,7 +77,8 @@ def _requeued_by_finish(q: pool.PoolQueue, key: str) -> dict:
 
 def _requeued_by_the_reaper(q: pool.PoolQueue, key: str) -> dict:
     _publish(q, key, tags=[_tag(key)])
-    claimed = q.claim(tags=[_tag(key)])
+    claimed = q.claim(tags=[_tag(key)], capacity={"cpu": 1},
+                      cpu_tiers={"preferred": [0], "fallback": []})
     assert claimed is not None and claimed["action_key"] == key
     assert q.reap_stale(timeout_s=-1.0) == [key]
     return json.loads(

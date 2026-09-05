@@ -100,3 +100,38 @@ def test_pin_never_widens_an_outer_restriction(tmp_path, monkeypatch):
     # outer mask stands and nothing is set.
     assert topo.pin_to_preferred(root) == [0, 1]
     assert applied == []
+
+
+def test_offline_leader_does_not_demote_its_online_sibling(tmp_path):
+    root = _sysfs(tmp_path, {0: 1024, 1: 1024}, {0: '0-1', 1: '0-1'})
+    (root / 'online').write_text('1\n')
+    assert topo.classify(root) == ([1], [])
+
+
+def test_allowed_sibling_becomes_primary_without_promoting_slow_cores(tmp_path):
+    root = _sysfs(tmp_path, {0: 1024, 1: 1024, 2: 512}, {0: '0-1', 1: '0-1'})
+    assert topo.classify(root, allowed={1, 2}) == ([1], [2])
+    assert topo.classify(root, allowed={2}) == ([], [2])
+
+
+def test_x86_hybrid_pmu_without_capacity(tmp_path):
+    root = _sysfs(tmp_path, {0: None, 1: None, 2: None}, {0: '0-1', 1: '0-1'})
+    pmu = tmp_path / 'devices'
+    (pmu / 'cpu_atom').mkdir(parents=True)
+    (pmu / 'cpu_atom' / 'cpus').write_text('2\n')
+    assert topo.classify(root, pmu_root=pmu) == ([0], [1, 2])
+
+
+def test_inherited_mask_does_not_readd_known_offline_cpu(tmp_path, monkeypatch):
+    root = _sysfs(tmp_path, {0: 1024, 1: 1024}, {0: '0-1', 1: '0-1'})
+    (root / 'online').write_text('1\n')
+    monkeypatch.setattr(topo.os, 'sched_getaffinity', lambda _: {0, 1, 9})
+    assert topo.inherited_tiers(root) == {'preferred': [1], 'fallback': []}
+
+
+def test_capacity_fluctuations_within_classes_do_not_reorder_tokens(tmp_path):
+    root = _sysfs(tmp_path, {0: 500, 1: 510, 2: 1000, 3: 1024})
+    before = topo.classify(root)
+    (root / 'cpu0' / 'cpu_capacity').write_text('515')
+    (root / 'cpu2' / 'cpu_capacity').write_text('1024')
+    assert topo.classify(root) == before == ([2, 3], [0, 1])
