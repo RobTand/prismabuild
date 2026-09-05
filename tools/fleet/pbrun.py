@@ -164,7 +164,10 @@ STAMP_PREFIX = getattr(pb, "PBRUN_STAMP_PREFIX", ".pbrun-closure.")
 #: result path must be absent before execution".  The name is derived
 #: from what distinguishes the action, so two different commands get two
 #: files while a resubmit of the same command still lands on the same
-#: name and stays a CAS hit.
+#: name.  That name is only half of what a CAS hit needs: the sealed checkout
+#: bundle is the other half, and its bytes were nondeterministic until
+#: ``write_deterministic_bundle`` pinned the pack, so a resubmit that landed
+#: on this same name still missed the cache on every real repository.
 RESULT_PREFIX = getattr(pb, "PBRUN_RESULT_PREFIX", "pbrun_result.")
 CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
@@ -484,6 +487,150 @@ def resolve_snapshot_refs(
     return resolved
 
 
+#: Everything that measurably changes the bytes ``git pack-objects`` emits,
+#: pinned on the command line so the bundle is a function of the objects and
+#: not of the box, the clock or the source repository's storage layout.  The
+#: sealer's bundle bytes are hashed into ``params.checkout_snapshot`` and into
+#: ``inputs``, so a byte that moves moves the action key, and an action key
+#: that moves can never be a CAS hit, resume a campaign, or hold a singleton.
+#:
+#: ``pack.threads`` is the defect that was measured: Git's delta search splits
+#: the object list across one thread per core, and which thread wins which
+#: candidate decides which delta bases are chosen.  On sparky (git 2.43.0, 20
+#: cores) three unmodified seals of this repository produced three different
+#: bundle digests and three different action keys.  A fifteen-object fixture
+#: never sees it, which is why the suite did not.
+#:
+#: Each value is the one Git documents as its default, so this costs one
+#: round of cache misses and no further key movement.  ``pack.compression``
+#: and ``core.compression`` are spelled ``6`` rather than the ``-1`` that
+#: means "the zlib default": the two were measured byte-identical here, and
+#: the explicit level is the one that cannot drift with a zlib release.
+#: ``pack.usePathWalk`` does not exist before git 2.49 and is ignored there;
+#: on a newer Git it selects a different delta ordering.  ``pack.deltaCache*``
+#: bound memory rather than output and are deliberately absent.  The delta-
+#: island pin is measured inert and kept as belt and braces: on a two-branch
+#: fixture, on both git 2.43.0 and 2.53.0, ``repack.useDeltaIslands=true``
+#: with a ``pack.island`` regex changed nothing, while ``--delta-islands`` on
+#: the command line changed the pack -- so only the option this sealer never
+#: passes engages islands, and a ``pack.island`` regex in a user's config
+#: cannot reach the seal.  ``-c`` cannot clear that multi-valued key anyway.
+BUNDLE_PACK_CONFIGURATION: tuple[tuple[str, str], ...] = (
+    ("pack.threads", "1"),
+    ("pack.window", "10"),
+    ("pack.depth", "50"),
+    ("pack.windowMemory", "0"),
+    ("pack.compression", "6"),
+    ("core.compression", "6"),
+    ("core.bigFileThreshold", "512m"),
+    ("pack.allowPackReuse", "false"),
+    ("pack.useBitmaps", "false"),
+    ("pack.useSparse", "true"),
+    ("pack.usePathWalk", "false"),
+    ("repack.useDeltaIslands", "false"),
+)
+
+#: Configuration alone leaves one source of movement that no ``-c`` key can
+#: reach: a delta already present in a source pack is reused verbatim, so the
+#: same tree seals to different bytes before and after a ``git gc`` -- and
+#: auto-gc runs on its own.  These are the pack-objects options that turn the
+#: reuse off, and they are the reason this code no longer calls ``git bundle
+#: create``, which accepts no pack-objects options.  Measured on this
+#: repository: loose and packed storage seal to one digest with them, and to
+#: two without.
+BUNDLE_PACK_OPTIONS: tuple[str, ...] = (
+    "--stdout",
+    "--thin",
+    "--delta-base-offset",
+    "--all-progress-implied",
+    "--quiet",
+    "--no-reuse-delta",
+    "--no-reuse-object",
+)
+
+#: A full delta search with no reuse is the price of a stable key: 5.2 s
+#: against 1.0 s for the reusing ``bundle create``, measured on the largest
+#: repository this fleet seals (prismaquant, 144 MiB of objects, 2173
+#: commits).  The bound below is far above that because a slow disk is a
+#: stall to report, not a failure to manufacture.
+BUNDLE_PACK_TIMEOUT_S = 1800
+
+
+def deterministic_bundle_argv(git_dir: Path) -> list[str]:
+    """The exact ``pack-objects`` command line the sealer runs."""
+
+    pins: list[str] = []
+    for key, value in BUNDLE_PACK_CONFIGURATION:
+        pins += ["-c", f"{key}={value}"]
+    return [
+        "git", f"--git-dir={git_dir}", *pins, "pack-objects",
+        *BUNDLE_PACK_OPTIONS,
+    ]
+
+
+def write_deterministic_bundle(
+    root: Path,
+    bundle: Path,
+    refs: Sequence[tuple[str, str]],
+    *,
+    git_dir: Path,
+    environment: dict[str, str],
+) -> None:
+    """Write a Git bundle whose bytes depend only on the objects in it.
+
+    ``git bundle create`` is a header followed by the output of ``git
+    pack-objects --stdout --thin --delta-base-offset``, fed the tip object ids
+    on standard input.  Writing those two halves here rather than calling the
+    porcelain is what makes ``--no-reuse-delta`` reachable; with the pins above
+    and identical objects the two spellings were measured byte-identical.
+
+    Args:
+        root: The source worktree the child Git runs in.
+        bundle: The file to create, header and pack.
+        refs: ``(fully qualified name, object id)`` in advertisement order.
+        git_dir: The bare repository the pack is walked in, so that a
+            ``refs/replace`` or a graft in the source cannot alter the walk.
+        environment: The object-directory environment the snapshot was built
+            in, without which the sealed commit is not visible.
+    """
+
+    object_format = _snapshot_git(
+        root,
+        [f"--git-dir={git_dir}", "rev-parse", "--show-object-format"],
+        environment=environment,
+    )
+    # v2 carries no capability lines and cannot name a hash algorithm, so a
+    # non-SHA-1 repository needs v3 -- which is what ``bundle create`` emits
+    # in the same case.
+    if object_format == "sha1":
+        header = "# v2 git bundle\n"
+    else:
+        header = f"# v3 git bundle\n@object-format={object_format}\n"
+    header += "".join(f"{oid} {name}\n" for name, oid in refs) + "\n"
+    tips = "".join(f"{oid}\n" for _, oid in refs)
+    argv = deterministic_bundle_argv(git_dir)
+    try:
+        with bundle.open("wb") as handle:
+            handle.write(header.encode("utf-8"))
+            handle.flush()
+            completed = subprocess.run(
+                argv,
+                cwd=str(root),
+                env=environment,
+                input=tips.encode("utf-8"),
+                stdout=handle,
+                stderr=subprocess.PIPE,
+                timeout=BUNDLE_PACK_TIMEOUT_S,
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SystemExit(f"pbrun: cannot snapshot checkout: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or b"").decode("utf-8", "replace").strip()
+        raise SystemExit(
+            f"pbrun: cannot snapshot checkout: {detail or completed.returncode}"
+        )
+
+
 def build_git_checkout_snapshot(
     cwd: Path,
     *,
@@ -652,16 +799,21 @@ def _build_git_checkout_snapshot(
                 environment=object_environment,
             )
         bundle = temporary / "checkout.bundle"
-        # ``bundle create`` walks every named ref, so the ancestry travels by
+        # The bundle walks every named ref, so the ancestry travels by
         # construction: no explicit history depth to choose, and a requested
         # branch that has diverged simply adds its own side.  The byte ceiling
         # below is what keeps that bounded.
-        _snapshot_git(
+        write_deterministic_bundle(
             root,
-            [
-                f"--git-dir={bare}", "bundle", "create", str(bundle), ref,
-                *(f"refs/heads/{name}" for name in sorted(resolved_refs)),
-            ],
+            bundle,
+            (
+                (ref, commit),
+                *(
+                    (f"refs/heads/{name}", resolved_refs[name])
+                    for name in sorted(resolved_refs)
+                ),
+            ),
+            git_dir=bare,
             environment=object_environment,
         )
         size = bundle.stat().st_size
