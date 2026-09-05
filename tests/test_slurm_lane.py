@@ -85,7 +85,10 @@ else:
     code, slurm_state = 0, verdict
 # A job SLURM killed at its limit or on scancel reports ExitCode=0:15 (smoke
 # row 5, 2026-09-04): exit code zero, signal fifteen.  The fake says the same.
+# A job the memory cgroup killed reports 0:125 (smoke row 13c,
+# PB_SMOKE_CONSTRAIN_SWAP=yes arm, 2026-09-05).
 signal = 15 if slurm_state in {"TIMEOUT", "CANCELLED"} else 0
+signal = 125 if slurm_state == "OUT_OF_MEMORY" else signal
 (state / f"{number}.state").write_text(f"{slurm_state}|{code}:{signal}\\n")
 print(number)
 '''

@@ -487,6 +487,11 @@ Nothing in it needs root. The loops are rob's processes, the crontab is rob's,
 `pqwork.service` is rob's user unit, and the runtime generation is rob's to
 publish.
 
+Before you switch the transport, settle what the cgroup settings should be:
+`ConstrainCores` and `ConstrainRAMSpace` turn a declared demand into a cpuset
+and a `memory.max`, and `docs/resource_enforcement_2026-09-05.md` has the three
+options, the container measurements for each, and a recommendation.
+
 It refuses unless all five of these hold:
 
 1. `verify.sh` passed -- its marker, or `--verified` if you ran it on another

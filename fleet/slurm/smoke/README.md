@@ -38,6 +38,9 @@ patched. The host's real `/mnt/shared` is never touched.
 | 11 | `pbrun --measurement --host-class gb10` executes, and the receipt's producer carries `host_class="gb10"` with the controller's `job_features` and `node_active_features` |
 | 12 | `--host-class` for a Feature no node has is refused at submit by `sbatch` |
 | 13 | `sstat` answers without `slurmdbd` and lists the fields the lane asks for; a job that sleeps with no output is reported by `pbrun` as stalled ("still running"), is not cancelled, and files `done/<key>.json` with `status=executed` and its samples under `detail.liveness`; `liveness.jsonl` in the lane directory holds them |
+| 14a, 14b | with `ConstrainCores=yes`, a `--cpus N` job is confined to N CPUs of a node that has more; with `ConstrainCores=no` it is placed against the count and then sees the whole node |
+| 14c | a job that writes past its declared `mem_gb` runs against a `memory.max` equal to the declaration: it is throttled into swap under `ConstrainSwapSpace=no` and killed `OUT_OF_MEMORY` under `ConstrainSwapSpace=yes`, which `pbrun` reports |
+| 14d | a job that stays under its declared `mem_gb` completes |
 
 ## What it does not establish
 
@@ -83,6 +86,25 @@ to be worked around for 23.11.4, and neither is a lane defect:
   a stalled fleet. That is an argument for putting the 25.11 packages on the
   nodes beyond the RPC-version one.
 
+## The resource-enforcement arm
+
+Rows 14a-14d run three times, because the settings they measure are the ones Rob has to
+decide:
+
+```
+fleet/slurm/smoke/run.sh                                  # the fleet's settings
+PB_SMOKE_CONSTRAIN_CORES=no fleet/slurm/smoke/run.sh      # cores unenforced
+PB_SMOKE_CONSTRAIN_SWAP=yes fleet/slurm/smoke/run.sh      # memory that kills
+```
+
+`PB_SMOKE_CONSTRAIN_CORES=no` writes `ConstrainCores=no` into the container's
+`cgroup.conf` and drops `task/affinity` from `TaskPlugin`; one variable drives
+both, because `task/affinity` with no cores to constrain has no cpuset to
+write. `PB_SMOKE_CONSTRAIN_SWAP=yes` writes `ConstrainSwapSpace=yes`, which is
+what decides whether an over-declared job is throttled or killed.
+`ConstrainRAMSpace` stays `yes` in every arm. The measurements and what they
+mean for the cutover are in `docs/resource_enforcement_2026-09-05.md`.
+
 ## Deviations from `fleet/slurm/slurm.conf`, and why
 
 `inside.sh` generates the config rather than copying it, and prints every
@@ -96,9 +118,12 @@ deviation at the top of the run:
 | `KillWait` | 30 | 10 | rows 5 and 6 would otherwise spend it waiting |
 | `ConstrainDevices` | `yes` | `no` | there are no devices to constrain |
 | `IgnoreSystemd` | absent | `yes` | there is no systemd to ask for a cgroup scope |
+| `ConstrainCores` | `yes` | `yes`, or `no` under `PB_SMOKE_CONSTRAIN_CORES=no` | rows 14a and 14b measure both settings; the default is the fleet's |
+| `ConstrainSwapSpace` | `no` | `no`, or `yes` under `PB_SMOKE_CONSTRAIN_SWAP=yes` | row 14c measures both settings; the default is the fleet's |
 | `gres.conf` `File=` | `/dev/nvidia0` | `/dev/nvidia0`, a `mknod`'d character device | slurmd refuses `shard` with no `File=` on the sharing GRES; see below |
 
 Every scheduler *choice* is the fleet's unchanged: `select/cons_tres` with
-`CR_Core_Memory`, `proctrack/cgroup`, `task/cgroup,task/affinity`,
+`CR_Core_Memory`, `proctrack/cgroup`, `task/cgroup,task/affinity` (except in the
+`PB_SMOKE_CONSTRAIN_CORES=no` arm),
 `jobacct_gather/cgroup`, `sched/backfill`, `priority/basic`, `MinJobAge=3600`,
 `AccountingStorageType=accounting_storage/none`, and the real `epilog.sh`.
