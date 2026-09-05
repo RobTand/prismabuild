@@ -3,17 +3,23 @@
 # and named by Epilog= in slurm.conf.  Runs as root on the compute node, with
 # SLURM_JOB_ID set, after the job's processes are gone.
 #
-# It exists because two things outlive a job that was killed rather than ended.
+# It exists because things outlive the job, and this is the only thing that
+# runs after every ending, killed or not.  It is therefore the single owner of
+# node-side cleanup: the job runner leaves its state file in place and this
+# script does both cleanups and then deletes the file.
 #
 # A Docker container started by an action is reparented to containerd-shim and
 # runs under dockerd's cgroup: it survives a kill of every process group below
-# the job, and no cgroup limit ever charged it.  The one thing that connects it
-# back to the job is the ownership label the fleet's Docker shim stamps on
-# creation (prismabuild.action=<owner>), which is why the job writes that owner
-# down before it starts work.
+# the job, and no cgroup limit ever charged it -- and it survives a NORMAL
+# ending just as completely, which is why this runs on both.  The one thing
+# that connects it back to the job is the ownership label the fleet's Docker
+# shim stamps on creation (prismabuild.action=<owner>), which is why the job
+# writes that owner down before it starts work.
 #
 # A materialized checkout is removed by the job itself on the way out -- unless
-# the job did not get a way out, which is exactly what a time limit is.
+# the job did not get a way out, which is exactly what a time limit is.  Both
+# cases arrive here; the removal below is guarded on the tree still existing,
+# so the job having done it already is not an error.
 #
 # THIS SCRIPT ALWAYS EXITS 0.  A non-zero Epilog drains the node, and a cleanup
 # that could not find a container must not take a box out of the fleet.  Every
@@ -61,8 +67,8 @@ fi
 
 state_file="${JOB_STATE_ROOT}/${job_id}.job"
 if [ ! -f "$state_file" ]; then
-    # The normal ending.  A job that finished on its own removed this file
-    # itself, having already done both cleanups.
+    # Not a PrismaBuild job, or one whose launcher never got as far as writing
+    # its state file.  Either way there is nothing recorded to clean up.
     exit 0
 fi
 

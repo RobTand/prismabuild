@@ -12,8 +12,8 @@ three things and nothing else:
    does not depend on which transport delivered it;
 2. leave the node-side Epilog the two facts it will need after this process is
    gone -- the container-ownership label the Docker shim stamps, and the tree to
-   remove -- because a job killed at its time limit does not get to clean up
-   after itself;
+   remove -- and leave that state file in place on the way out, because the
+   Epilog is the single owner of node-side cleanup;
 3. exec the canonical ``run-local`` worker argv inside that tree, via
    ``pool.worker_argv``, so the launch is the pull queue's launch to the byte.
 
@@ -229,17 +229,23 @@ def main(argv: list[str] | None = None) -> int:
         # replace the process that owes it.  On a scheduler kill it does not:
         # SLURM's time limit signals the whole step, and Python's default
         # SIGTERM disposition ends this interpreter at once, with no finally
-        # and no __exit__.  That case is the Epilog's, which reads the state
-        # file written above and removes the checkout and any containers as
-        # root; smoke row 8 is the evidence for that path.
+        # and no __exit__.  Either way the Epilog runs afterwards, reads the
+        # state file written above, and removes the checkout and any containers
+        # as root; smoke row 8 is the evidence for that path.
         completed = subprocess.run(worker, check=False)
-    if state_path is not None:
-        # Removed last: from here on the Epilog has nothing left to do that
-        # this process has not already done.
-        try:
-            state_path.unlink()
-        except OSError:
-            pass
+    # The state file is deliberately NOT removed here.  It used to be, on every
+    # ending this process reached, and that made the Epilog's first check --
+    # "no state file, nothing to do" -- true for exactly the jobs whose
+    # containers were still running.  A container the action started is
+    # reparented to containerd-shim and outlives the job whether the job was
+    # killed or not; under the pull queue `finish` removed it on every ending,
+    # and under SLURM the Epilog is the only thing that can.  So the Epilog
+    # owns all of it and this process leaves it the file it needs.
+    #
+    # Nothing is cleaned twice: the materializer already removed the checkout
+    # on a normal ending, and the Epilog removes a recorded tree only if it is
+    # still a directory.  Nothing is left behind either: the Epilog deletes the
+    # state file itself, as the job's user, for the NFS reason it documents.
     return completed.returncode
 
 

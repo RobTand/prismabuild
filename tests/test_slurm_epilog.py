@@ -256,6 +256,34 @@ def test_a_controller_that_names_no_job_user_still_cleans_up(
     assert not node["runuser"].exists()
 
 
+def test_it_cleans_up_after_a_job_that_ended_normally(
+    node: dict[str, Path]
+) -> None:
+    """The ending the Epilog now owns as well as the killed one.
+
+    A job that ran to completion removed its own checkout on the way out but
+    could not remove the container the action started: that is reparented to
+    containerd-shim and outlives the job either way.  So the launcher leaves
+    the state file behind, this runs, and the tree that is already gone must
+    not be reported as a failed removal.
+    """
+
+    node["listed"].write_text("c0ffee03\n")
+    tree = node["checkouts"] / "already-removed.tmpdir"
+    node["checkouts"].mkdir(parents=True, exist_ok=True)
+    state = _state(node, job_id="1240", owner=OWNER, checkout_dir=str(tree),
+                   local_root=str(node["checkouts"]))
+
+    result = _run(node, "1240")
+
+    assert result.returncode == 0
+    calls = node["calls"].read_text().splitlines()
+    assert calls[0] == f"ps -aq --filter label=prismabuild.action={OWNER}"
+    assert calls[1] == "rm -f c0ffee03"
+    assert "could not remove" not in result.stderr
+    assert not state.exists()
+
+
 def test_the_epilog_and_the_lane_name_the_same_job_state_root() -> None:
     """The one thing the shell script and the Python launcher must agree on.
 

@@ -787,10 +787,16 @@ def test_the_job_materializes_the_snapshot_and_publishes_a_real_receipt(
     receipt = cas.lookup(action)
     assert receipt is not None
     assert cas.result_path(receipt, action).read_text() == "sealed by slurm\n"
-    # The per-action tree does not survive the job, and neither does the state
-    # file the Epilog would otherwise act on.
+    # The per-action tree does not survive the job.  The state file does: the
+    # Epilog runs after every ending, and it is the only thing on the node that
+    # can remove a container the action started -- a container is reparented to
+    # containerd-shim and outlives a job that ended normally just as completely
+    # as one that was killed.  So the launcher leaves it the file it needs, and
+    # the Epilog deletes it.
     assert not list(checkouts.glob("*/checkout"))
-    assert not (state_root / "4242.job").exists()
+    survivor = state_root / "4242.job"
+    assert survivor.exists()
+    assert "container_owner=" in survivor.read_text(encoding="utf-8")
 
 
 def test_the_job_leaves_the_epilog_the_owner_and_the_tree_while_it_runs(
