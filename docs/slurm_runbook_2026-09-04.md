@@ -81,33 +81,66 @@ levers and not something to set at install time.  The Epilog finds `docker` on
 
 ## Still not verified
 
-These need the real install, and the container cannot stand in for any of them:
+`fleet/slurm/smoke/multinode` settled five things that were on this list, in
+containers on sparky, against the fleet's own 25.11.2 packages and a config
+generated from `fleet/slurm/slurm.conf`, `gres.conf` and `cgroup.conf`:
 
-1. **The cgroup *plugins* as the fleet will run them.** Delegation in the
+- **Three-box RPC.** A controller on `dl380g10` schedules onto remote `slurmd`s
+  on `sparky` and `gx10-6b77` over munge, with one shared key.
+- **Cross-box placement.** A `pbrun` submitted in the `sparky` container
+  executes on `dl380g10` and its output comes back through the shared volume.
+  The submitter is not the executor.
+- **Partition and weight routing.** Untagged CPU-only work goes to
+  `--partition=cpu`; `--gpu` goes to `--partition=gpu --gres=shard:1`; a
+  hostname or class tag goes to the default partition and the `--constraint`
+  decides; `--anywhere` prefers `dl380g10` on `Weight=1` and overflows to a
+  Spark when it is full.
+- **A node leaving and returning.** A node whose `slurmd` and job processes are
+  killed under a running job ends it as `NODE_FAIL`, `pbrun` reports that state
+  with no receipt, and the node returns to idle on `ReturnToService=2` with no
+  operator action.
+- **A controller restart.** slurmctld stopped for sixty seconds under a running
+  job: the job completes and the submitting `pbrun` still receives the outcome,
+  because `StateSaveLocation` is on local disk. This is where a lane defect was
+  found and fixed -- `wait` used to report `UNKNOWN` for a job it merely could
+  not ask about.
+
+These still need the real install, and no container stands in for them:
+
+1. **The cgroup *plugins* as the fleet will run them.** Delegation in a
    container needs `--privileged`, `--cgroupns=private`, a hand-written
    `cgroup.subtree_control` and `IgnoreSystemd=yes`. The fleet's boxes have
    systemd and `slurmd` under it, which is a different arrangement; all three
    boxes are cgroup v2 (`cgroup2fs`) with `cpuset cpu io memory hugetlb pids
-   rdma misc dmem` available, measured 2026-09-04.
-2. **Device containment and real GPUs.** `ConstrainDevices` is off in the
-   container and the node's GRES binds a `mknod`'d character device nothing
-   opens. Whether `cgroup_allowed_devices_file.conf` admits exactly the right
-   NVIDIA control interfaces -- `/dev/nvidiactl`, the UVM pair,
-   `nvidia-modeset` and `nvidia-caps/nvidia-cap1,2`, all measured present on
-   both GB10 boxes -- is answerable only on a box with a GPU. If a GPU job
-   fails at CUDA init while a non-GPU job runs, that list is the first place to
-   look. Note also that the fleet's 25.11.2 build ships no `gpu_nvml.so`, so
-   `AutoDetect=nvml` is not available at all and `gres.conf` must stay static.
+   rdma misc dmem` available, measured 2026-09-04. Three containers do show
+   that this is three independent instances of one arrangement rather than
+   something that worked because there was one of it.
+2. **Device containment on a box with a driver.** `ConstrainDevices` is off in
+   the containers and the Sparks' GRES binds a `mknod`'d character device
+   nothing opens. What is left to check on the real boxes is one pair of facts:
+   a `--gres=shard:1` job can open `/dev/nvidia0`, and a job that reserved no
+   GRES cannot. `verify.sh` checks both. There is no allow-list to get wrong --
+   on cgroup v2 SLURM constrains devices with an eBPF program that denies
+   exactly the unallocated `File=` devices, so the control interfaces
+   (`/dev/nvidiactl`, the UVM pair, `nvidia-modeset`, `nvidia-caps/*`) pass
+   because nothing denies them. Note also that the fleet's 25.11.2 build ships
+   no `gpu_nvml.so`, so `AutoDetect=nvml` is not available at all and
+   `gres.conf` must stay static.
 3. **NFS `root_squash` end to end.** The export is measured and the Epilog is
    fixed, but the fix has been exercised only against a fake `runuser` and a
-   local bind mount. The first killed job on the real fleet is the test.
-4. **Three-box RPC.** One node cannot show a controller talking to a remote
-   `slurmd`, a node draining and returning under `ReturnToService=2`, or an
-   action landing on a box other than the submitter's.
-5. **Whether 25.11 built from source interoperates with 25.11.2 from apt** (was
-   item 6). The Sparks' packages are a rebuild of Ubuntu 26.04's own source
-   package at the same patch version, and both ends have now been exercised
-   separately; they have not been exercised against each other.
+   bind mount. Three containers share one lane root, which makes it one
+   filesystem but not a squashing one. The first killed job on the real fleet
+   is the test.
+4. **A version skew between boxes.** All three containers run the same
+   packages, so nothing here says what a 25.11.2 controller does with a 23.11.4
+   `slurmd`. Both SLURMs have been run separately, never against each other.
+   Related, and also open: whether 25.11 built from source interoperates with
+   25.11.2 from apt. The Sparks' packages are a rebuild of Ubuntu 26.04's own
+   source package at the same patch version.
+5. **Anything about load or wall-clock.** Three containers share one GB10's
+   twenty cores and one clock, and the harness shortens `KillWait` and
+   `SlurmdTimeout` so its rows finish. How the fleet schedules under real
+   concurrent builds is not a question a container answers.
 
 ## What this replaces, and what it does not
 
