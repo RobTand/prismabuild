@@ -50,7 +50,9 @@ Submit a command with `pbrun`. Everything after `--` is the command.
 
 `pbrun` waits for the action and exits with the result. `--cwd` selects the
 checkout to seal; it defaults to the current directory and must be inside a Git
-checkout on the box you submit from.
+checkout on the box you submit from. The checkout must be writable: `pbrun`
+keeps its closure stamp there, and the action tees its output to a result file
+in the same tree.
 
 ### Placement vocabulary
 
@@ -506,6 +508,10 @@ These are refusals at submission, before anything reaches the fleet.
     belong to another box. `pbrun` stamps the code closure inside the checkout,
     so it can submit only for a checkout on the box it runs on. Submit from that
     box; the queue is shared, the filesystem is not.
+*   **`cannot write into the checkout <dir>`** — the checkout is read-only, or
+    owned by someone else, or the disk is full. `pbrun` keeps the closure stamp
+    there and the action tees its output into the same tree, so submit from a
+    writable clone or worktree of it.
 *   **`command executable is absent or not executable on the submitting box`** —
     `pbrun` resolves `argv[0]` exactly against the declared `PATH`. Pass `--tag`
     for the worker class that owns the executable, or `--anywhere` to assert an
