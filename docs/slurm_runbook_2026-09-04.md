@@ -552,7 +552,9 @@ time of the first sample in the current run of unchanged samples, or null.
 **What it reads.**
 
 - `sstat -j <jobid> -a -P -n --noconvert
-  --format=JobID,AveCPU,TotalCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,NTasks`.
+  --format=JobID,AveCPU,MinCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,NTasks,TRESUsageInTot`.
+  (`TotalCPU` is an `sacct` field; `sstat` 25.11.2 refuses it. `AveCPU` is
+  whole seconds and the `cpu=` entry of `TRESUsageInTot` is milliseconds.)
   This is the job's own cgroup accounting on the node, so an action does
   nothing to be measured and the numbers come from where the work runs.
   `sstat` reads running steps from `slurmd` and works without `slurmdbd`;

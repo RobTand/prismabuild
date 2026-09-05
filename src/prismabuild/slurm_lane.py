@@ -888,7 +888,8 @@ def query_state(
 #
 # What is read, and why it is the job's and not the action's:
 #
-# * ``sstat`` -- CPU time, RSS and I/O bytes of the job's steps, gathered by
+# * ``sstat`` -- CPU time (``AveCPU``, and ``cpu=`` milliseconds out of
+#   ``TRESUsageInTot``), RSS and I/O bytes of the job's steps, gathered by
 #   ``jobacct_gather/cgroup`` on the node from the job's own cgroup.  The action
 #   does nothing to produce it, so an action that never heard of this lane is
 #   measured exactly as well as one that did, and the numbers are taken where
@@ -961,16 +962,23 @@ STALL_REPORT_EVERY_S = 5 * STALL_WINDOW_S
 LIVENESS_HISTORY = int(STALL_WINDOW_S // LIVENESS_SAMPLE_S) + 2
 
 #: What ``sstat`` is asked for.  Every name is one ``sstat --helpformat``
-#: prints; row 10 of the container smoke quotes that list beside the answer.
-#: ``TotalCPU`` is the evidence; ``AveCPU``, ``MaxRSS`` and the disk counters
-#: are recorded so a reader can see *what kind* of work the job was doing.
-SSTAT_FORMAT = "JobID,AveCPU,TotalCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,NTasks"
+#: prints on 25.11.2 -- checked in the container smoke (row 10), which is how
+#: ``TotalCPU`` was found to be an ``sacct`` field that ``sstat`` refuses
+#: (``Invalid field requested: "TotalCPU"``, 2026-09-05).  ``AveCPU`` is the
+#: CPU time per task, whole seconds; ``TRESUsageInTot`` carries the same
+#: number in milliseconds as ``cpu=``, which is the one that moves for a job
+#: using little CPU.  ``MaxRSS`` and the disk counters are recorded so a
+#: reader can see *what kind* of work the job was doing.
+SSTAT_FORMAT = (
+    "JobID,AveCPU,MinCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,NTasks,TRESUsageInTot"
+)
 
 #: The sample fields compared between consecutive samples.  ``progressing`` is
 #: true when any of them changed; a field that is ``None`` on either side is
 #: not evidence either way.
 PROGRESS_FIELDS = (
-    "cpu_s", "rss_kib", "disk_read", "disk_write", "out_bytes", "err_bytes",
+    "cpu_s", "cpu_ms", "rss_kib", "disk_read", "disk_write", "out_bytes",
+    "err_bytes",
 )
 
 
@@ -1023,7 +1031,8 @@ def _parse_sstat(job_id: str, stdout: str) -> dict[str, object]:
     """
 
     steps: list[str] = []
-    cpu = ave_cpu = read = write = 0.0
+    cpu = min_cpu = read = write = 0.0
+    cpu_ms: float | None = None
     rss: float | None = None
     ntasks = 0
     seen_cpu = seen_io = False
@@ -1035,13 +1044,16 @@ def _parse_sstat(job_id: str, stdout: str) -> dict[str, object]:
         if step != job_id and not step.startswith(f"{job_id}."):
             continue
         steps.append(step)
-        value = _parse_slurm_duration(fields[2])
+        value = _parse_slurm_duration(fields[1])
         if value is not None:
             cpu += value
             seen_cpu = True
-        value = _parse_slurm_duration(fields[1])
+        value = _parse_slurm_duration(fields[2])
         if value is not None:
-            ave_cpu += value
+            min_cpu += value
+        match = re.search(r"(?:^|,)cpu=(\d+(?:\.\d+)?)", _field(fields, 7))
+        if match:
+            cpu_ms = (cpu_ms or 0.0) + float(match.group(1))
         value = _parse_slurm_size(fields[3], unit_bytes=1024.0)
         if value is not None:
             rss = value if rss is None else max(rss, value)
@@ -1060,7 +1072,8 @@ def _parse_sstat(job_id: str, stdout: str) -> dict[str, object]:
     return {
         "steps": steps,
         "cpu_s": cpu if seen_cpu else None,
-        "ave_cpu_s": ave_cpu if seen_cpu else None,
+        "cpu_ms": cpu_ms,
+        "min_cpu_s": min_cpu if seen_cpu else None,
         "rss_kib": rss,
         "disk_read": read if seen_io else None,
         "disk_write": write if seen_io else None,
@@ -1186,7 +1199,8 @@ class LivenessMonitor:
             "node": node,
             "steps": list(accounting.get("steps") or []),
             "cpu_s": accounting.get("cpu_s"),
-            "ave_cpu_s": accounting.get("ave_cpu_s"),
+            "cpu_ms": accounting.get("cpu_ms"),
+            "min_cpu_s": accounting.get("min_cpu_s"),
             "rss_kib": accounting.get("rss_kib"),
             "disk_read": accounting.get("disk_read"),
             "disk_write": accounting.get("disk_write"),

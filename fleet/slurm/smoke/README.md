@@ -32,6 +32,7 @@ patched. The host's real `/mnt/shared` is never touched.
 | 7b | `--constraint` for a Feature no node has is refused at submit and reported by `pbrun` |
 | 8 | the Epilog ran for a killed job, matched containers by the action's ownership label, and removed its state file as the job's user rather than as root |
 | 9 | with no `slurmdbd`, `sacct` answers nothing and the lane's provenance comes from `scontrol` |
+| 10 | `sstat` answers without `slurmdbd` and lists the fields the lane asks for; a job that sleeps with no output is reported by `pbrun` as stalled ("still running"), is not cancelled, and files `done/<key>.json` with `status=executed` and its samples under `detail.liveness`; `liveness.jsonl` in the lane directory holds them |
 
 ## What it does not establish
 
@@ -55,7 +56,9 @@ The container is not the fleet, and four things stay open for the install:
 
 ## The two SLURMs behave differently, and the differences are recorded
 
-Both pass all eleven rows. Two things had to be worked around for 23.11.4, and
+Both pass all eleven rows (twelve since row 10, which adds about five
+minutes: a job has to sleep through the lane's 120 s stall window and then
+finish on its own). Two things had to be worked around for 23.11.4, and
 neither is a lane defect:
 
 - Its `cgroup/v2` plugin creates its stepd scope under `/sys/fs/cgroup/system.slice`

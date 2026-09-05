@@ -160,8 +160,9 @@ calls = int(counter.read_text()) + 1 if counter.exists() else 1
 counter.write_text(str(calls))
 cpu = calls if mode == "progress" else 1
 # --noconvert shapes: KB without a suffix for RSS, bytes for the disk counters.
-print(f"{job}.batch|00:00:{cpu:02d}|00:{cpu:02d}.500|4096|102400|0|1")
-print(f"{job}.extern|00:00:00|00:00.000|100|0|0|1")
+print(f"{job}.batch|00:00:{cpu:02d}|00:00:{cpu:02d}|4096|102400|0|1|"
+      f"cpu={cpu * 1000 + 500},energy=0,fs/disk=102400,mem=4194304,pages=0,vmem=0")
+print(f"{job}.extern|00:00:00|00:00:00|100|0|0|1|cpu=0,energy=0,fs/disk=0,mem=102400,pages=0,vmem=0")
 '''
 
 _SCANCEL = '''\
