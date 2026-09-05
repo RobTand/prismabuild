@@ -683,12 +683,21 @@ def row_10c_over_declared_memory() -> None:
     limit = binding.get("limit", "")
     events = binding.get("events", "")
     hit = re.search(r"\bmax (\d+)", events)
+    swap_used = binding.get("swap_current", "")
     killed = state not in ("", "COMPLETED")
-    throttled = bool(hit) and int(hit.group(1)) > 0
     declared_bytes = OVER_DECLARED_GB * 1024 ** 3
     said = f"pbrun: failed ({state})" in (completed.stderr or "")
+    # Evidence that the limit did something, not merely that it exists.  A
+    # `max` event is the direct form; pages in swap are the form it takes
+    # under `ConstrainSwapSpace=no`, where reclaim succeeds and the counter
+    # stays at zero -- measured on 2026-09-05: `memory.max` exactly the
+    # declared 1073741824 bytes, `memory.events` all zero, and 2246184960
+    # bytes of a 3072 MiB allocation resident in swap.
+    acted = (bool(hit) and int(hit.group(1)) > 0) or (
+        swap_used.isdigit() and int(swap_used) > 0
+    )
     ok = (killed and said) or (
-        throttled and limit.isdigit() and int(limit) == declared_bytes
+        acted and limit.isdigit() and int(limit) == declared_bytes
     )
     record(
         f"10c a job over its mem_gb is constrained, not ignored [{ARM}]",
@@ -701,7 +710,7 @@ def row_10c_over_declared_memory() -> None:
         f"memory.max={limit or '-'} "
         f"(declared {declared_bytes}) "
         f"memory.swap.max={binding.get('swap_limit', '-')} "
-        f"memory.swap.current={binding.get('swap_current', '-')} "
+        f"memory.swap.current={swap_used or '-'} "
         f"memory.events=[{events}]",
     )
 
