@@ -184,7 +184,8 @@ queue the worker files the ending and `pbwait` only watches.
 |---|---|
 | 0 | The work is done. A `cache_hit` counts as done. |
 | 1 | The action failed. `pbrun` prints the worker's message and the log paths. `pbwait` also exits 1 when an ending was filed and cannot be read, and names the file: that is not 75, because waiting again only re-reads the same record. |
-| 2 | `pbrun --withdraw` matched no submission, matched more than one, or `scancel` refused the job. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
+| 2 | `pbrun --withdraw` matched no submission, matched more than one, or every `scancel` refused. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
+| 74 | SLURM took the action, but `pbrun` could not write the record of it. `sysexits.h` calls 74 `EX_IOERR`, and that is what happened: the job is real and the work may be finished, only the account of it failed. |
 | 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
 
@@ -209,6 +210,34 @@ running, and under SLURM `pbwait` is what files the ending once it stops.
 After a 75 that says the fate of a submission is unknown, run the `squeue` in
 the message instead. There is nothing to wait on: no submission was recorded,
 because none is known.
+
+### When a record will not write
+
+The lane writes every fact it keeps after the fact is already true: the
+submission record after `sbatch` returned an id, the terminal record after the
+receipt landed in the CAS. A full mount, a queue directory somebody tightened,
+or a stale NFS handle turns that write into an error at a point where the job
+is real and the work may be finished.
+
+`pbrun` reports it and exits 74:
+
+    pbrun: slurm took this action, but pbrun could not write its record.
+      slurm job: 1743
+      record:    /mnt/shared/prismabuild-fleet/pb-queue/done/<key>.json
+      reason:    Permission denied
+    The receipt is in the CAS, so the work is done and re-running costs nothing.
+    Clear what blocked the write, then run `tools/fleet/pbwait.py <key12>` to
+    file the ending.
+
+The last two lines change with what the CAS holds. With no receipt, the job may
+still be running, so the advice is to `pbwait` on it or to withdraw it. Either
+way the job id is on the line, because the record that would have carried it is
+the one that failed.
+
+A lane error raised after `sbatch` accepted the job reports the same way, with
+the same exit code. Only a refusal with no job behind it reports as a refusal,
+and only that one tells you to fix the `--tag`: a job the controller has
+already taken is not fixed by changing the submission.
 
 ### When `sbatch` stops answering
 

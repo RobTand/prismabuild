@@ -105,6 +105,13 @@ Two lane defects the fakes could not see were found and fixed here:
   zero, signal fifteen -- so `pbrun` announced that it "exited 0 but published
   no receipt" and pointed the operator at an empty job log instead of at
   `TIMEOUT`.  It reads `Outcome.succeeded` now.
+- A record the lane could not write reached the operator as a traceback ending
+  in a temp file name, with the job id nowhere in it -- and a lane error raised
+  after `sbatch` had accepted the job was reported as "slurm refused this
+  action ... Fix the --tag", which sends a submitter to change a submission the
+  controller already holds.  Both now print the job id, the path and the
+  `pbwait` that files the ending, and exit 74.  Grep `pb-queue` write failures
+  out of a campaign log with `could not write its record`.
 
 And one thing an operator would have assumed wrongly: the Epilog's environment
 is SLURM's own, built from its `SLURM_*` variables, so nothing a submitter

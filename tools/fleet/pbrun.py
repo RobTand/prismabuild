@@ -113,6 +113,13 @@ CONTENT_TRANSFORM_ATTRIBUTES = frozenset(
 #: Non-zero because the command did not run; distinct from a real failure
 #: because nothing about it was a defect.
 WITHDRAWN_EXIT = 143
+#: What ``pbrun`` exits with when the fleet took the action but the record of
+#: it could not be written.  ``sysexits.h`` calls 74 ``EX_IOERR``, and that is
+#: exactly what happened: the work is unaffected, the account of it is what
+#: failed.  Deliberately neither ``GAVE_UP_EXIT`` (which means no verdict yet
+#: and nothing to do) nor ``WITHDRAWN_EXIT`` (which means somebody decided),
+#: because a caller that retries on those would do the wrong thing here.
+RECORD_WRITE_FAILED_EXIT = 74
 
 #: The one line ``--detach`` prints.  Versioned because ``pbcampaign`` and
 #: ``pbwait`` parse it, and a fleet runs a published runtime generation that
@@ -2048,6 +2055,76 @@ def cached_outcome(
     return 0
 
 
+def _unfiled_record(
+    exc: BaseException,
+    *,
+    key: str,
+    action,
+    cas,
+    record: str = "",
+) -> int:
+    """Report a record write that failed after the thing it records happened.
+
+    The lane writes every fact it keeps after the fact is already true: the
+    submission record after ``sbatch`` returned an id, the terminal record
+    after the receipt landed in the CAS. So a full mount or a queue directory
+    somebody tightened produces an ``OSError`` at a point where the job is
+    real and the work may be finished. Reported as a traceback, that told an
+    operator a temp file name and nothing else: not the job id, not whether
+    the work was done, not which command would file the ending.
+
+    Args:
+        exc: The failure the lane raised. ``exc.job_id`` names the accepted
+            job when the lane knew one; see ``slurm_lane._naming_job``.
+        key: The action key, for the prefix every fleet tool takes.
+        action: The sealed action, to ask the CAS whether the work is done.
+        cas: The CAS to ask.
+        record: The path that would not write, when the caller knows it and
+            the exception does not carry one.
+
+    Returns:
+        ``RECORD_WRITE_FAILED_EXIT``.
+    """
+
+    job_id = str(getattr(exc, "job_id", "") or "")
+    path = str(getattr(exc, "filename", "") or record or "")
+    # A ``SlurmLaneError`` carries its path inside its message and has no
+    # ``strerror``; an ``OSError`` carries both as fields.  Print whichever the
+    # failure actually has rather than a placeholder for the other.
+    reason = str(getattr(exc, "strerror", "") or exc)
+    where = f"  record:    {path}\n" if path else ""
+    try:
+        done = cas.lookup(action) is not None
+    except OSError:
+        # The mount that would not take the record may not answer this either.
+        done = False
+    if done:
+        advice = (
+            f"The receipt is in the CAS, so the work is done and re-running "
+            f"costs nothing.\n"
+            f"Clear what blocked the write, then run "
+            f"`tools/fleet/pbwait.py {key[:12]}` to file the ending."
+        )
+    else:
+        advice = (
+            f"No receipt is in the CAS, so the job may still be running.\n"
+            f"Clear what blocked the write, then run "
+            f"`tools/fleet/pbwait.py {key[:12]}` "
+            f"to wait on it and file the ending, or "
+            f"`tools/fleet/pbrun.py --transport slurm --withdraw {key[:12]}` "
+            f"to stop it."
+        )
+    print(
+        f"pbrun: slurm took this action, but pbrun could not write its "
+        f"record.\n"
+        f"  slurm job: {job_id or '(none accepted)'}\n"
+        f"{where}"
+        f"  reason:    {reason}\n"
+        f"{advice}",
+        file=sys.stderr, flush=True)
+    return RECORD_WRITE_FAILED_EXIT
+
+
 def slurm_outcome(
     action,
     *,
@@ -2240,6 +2317,12 @@ def slurm_outcome(
               file=sys.stderr, flush=True)
         return GAVE_UP_EXIT
     except slurm_lane.SlurmLaneError as exc:
+        if getattr(exc, "job_id", None):
+            # sbatch accepted this before the lane failed, so this is a record
+            # that would not write and not a refusal.  Reported as a refusal it
+            # told a submitter to fix the ``--tag`` of a job that was already
+            # queued, which is both wrong and expensive to act on.
+            return _unfiled_record(exc, key=key, action=action, cas=cas)
         raise SystemExit(
             f"pbrun: slurm refused this action.\n"
             f"  required tags: {tags or '(any box)'}\n"
@@ -2247,6 +2330,12 @@ def slurm_outcome(
             f"  {exc}\n"
             f"Fix the --tag, or read `sinfo -N -l` for a node that offers it."
         ) from exc
+    except OSError as exc:
+        # Not a scheduler failure: ``slurm_lane._run`` turns every one of those
+        # into a ``SlurmLaneError`` above.  What reaches here is a write to the
+        # lane directory or the queue that the filesystem refused, at a point
+        # where the job is real and the work may already be finished.
+        return _unfiled_record(exc, key=key, action=action, cas=cas)
 
     last = result.last
     if last is None:                       # unreachable: run always submits

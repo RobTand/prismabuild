@@ -62,7 +62,8 @@ box that must not need a package installed to talk to the scheduler.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+import contextlib
 from dataclasses import dataclass, field
 import getpass
 import json
@@ -800,6 +801,29 @@ def _run(argv: Sequence[object], *, where: str) -> subprocess.CompletedProcess[s
         raise SlurmLaneError(f"{where} failed: {exc}") from exc
 
 
+@contextlib.contextmanager
+def _naming_job(job_id: str) -> Iterator[None]:
+    """Stamp an accepted job's id on whatever this block raises.
+
+    Every record this lane writes is written *after* the thing it records: the
+    submission record after ``sbatch`` returned an id, the terminal record
+    after the receipt landed.  A write that fails there leaves a real job on
+    the fleet and nothing on disk that names it, so the id has to travel on the
+    failure or no caller can report it.  ``pbrun`` reads it back as
+    ``exc.job_id`` and prints it beside the path that would not write.
+
+    An id already on the exception is left alone: the innermost writer is the
+    one that knows which job it was writing for.
+    """
+
+    try:
+        yield
+    except BaseException as exc:
+        if getattr(exc, "job_id", None) is None:
+            exc.job_id = str(job_id)          # type: ignore[attr-defined]
+        raise
+
+
 def _publish_record(path: Path, payload: Mapping[str, object]) -> None:
     """First-writer-publish one submission record; refuse conflicting bytes."""
 
@@ -1135,8 +1159,9 @@ def submit(
     record_path = submission_record_path(
         directory, published_unix=generation, attempt=attempt
     )
-    _publish_record(record_path, record)
-    _write_latest(directory / "latest.json", record)
+    with _naming_job(job_id):
+        _publish_record(record_path, record)
+        _write_latest(directory / "latest.json", record)
     return SubmittedJob(
         action_key=key,
         job_id=job_id,
@@ -2696,7 +2721,8 @@ def run(
             # ``supersede_withdrawal``.  After ``sbatch`` accepted, not before:
             # a refused submission has retired nothing, and an operator's
             # decision must not be moved aside by a job that never existed.
-            supersede_withdrawal(queue_root, key)
+            with _naming_job(job.job_id):
+                supersede_withdrawal(queue_root, key)
         if on_submit is not None:
             on_submit(job)
         if detach:
@@ -2729,17 +2755,19 @@ def run(
         if outcome.state not in RETRIABLE_STATES:
             break
     if queue_root is not None:
-        _file_ending(
-            result,
-            action=action,
-            queue_root=queue_root,
-            published_unix=published_unix,
-            published_by=published_by,
-            resources=resources,
-            tags=placement,
-            max_attempts=max_attempts,
-            retry_safe=retry_safe,
-        )
+        last_job = result.attempts[-1][0] if result.attempts else None
+        with _naming_job(last_job.job_id if last_job is not None else ""):
+            _file_ending(
+                result,
+                action=action,
+                queue_root=queue_root,
+                published_unix=published_unix,
+                published_by=published_by,
+                resources=resources,
+                tags=placement,
+                max_attempts=max_attempts,
+                retry_safe=retry_safe,
+            )
     return result
 
 
@@ -2831,17 +2859,18 @@ def resume(
         gpu_slots=int(count) if count.isdigit() else 0,
         exclusive_gpu=gres.startswith("gpu:"),
     )
-    _file_ending(
-        result,
-        action=action,
-        queue_root=queue_root,
-        published_unix=published_unix,
-        published_by=str(submission.get("published_by") or ""),
-        resources=resources,
-        tags=[str(tag) for tag in (submission.get("constraint") or [])],
-        max_attempts=int(submission.get("max_attempts") or 1),
-        retry_safe=bool(submission.get("retry_safe")),
-    )
+    with _naming_job(str(submission.get("job_id") or "")):
+        _file_ending(
+            result,
+            action=action,
+            queue_root=queue_root,
+            published_unix=published_unix,
+            published_by=str(submission.get("published_by") or ""),
+            resources=resources,
+            tags=[str(tag) for tag in (submission.get("constraint") or [])],
+            max_attempts=int(submission.get("max_attempts") or 1),
+            retry_safe=bool(submission.get("retry_safe")),
+        )
     return result
 
 
