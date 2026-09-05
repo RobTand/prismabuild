@@ -66,6 +66,7 @@ from collections.abc import Iterator, Mapping, Sequence
 import contextlib
 from dataclasses import dataclass, field
 import getpass
+import hashlib
 import json
 import math
 import os
@@ -83,6 +84,11 @@ from . import core as pb
 from . import pool
 
 SUBMISSION_SCHEMA_V1 = "prismaquant.prismabuild.slurm_lane_submission.v1"
+
+#: Where a lane directory keeps the immutable batch scripts, one per distinct
+#: set of bytes, named by their sha256.  ``job.sh`` beside it is a pointer to
+#: the newest and is not what any job executes; see ``submit``.
+SCRIPT_DIRNAME = "scripts"
 
 #: The terminal record this lane files where the pull queue files its own.
 #:
@@ -243,8 +249,10 @@ class CommandTimedOut(SlurmLaneError):
     Distinct from every other failure because it is the only one that leaves
     the question open on the *submitting* side: ``sbatch`` may have been
     accepted and the answer lost, so a plain refusal would tell the caller a
-    job does not exist while it runs.  ``wait`` treats it exactly as it treated
-    it before -- no answer this poll -- because it is a ``SlurmLaneError``.
+    job does not exist while it runs.  A read that hangs is one reader out of
+    three: ``query_provenance`` tries the others before this reaches ``wait``,
+    which treats it as no answer this poll -- because it is a
+    ``SlurmLaneError`` -- and keeps polling.
     """
 
 
@@ -724,6 +732,12 @@ class SubmittedJob:
     stdout_path: Path
     stderr_path: Path
     record_path: Path
+    #: The run this submission belongs to, as ``published_unix`` in its
+    #: record.  Carried on the job because the generation is what every
+    #: withdrawal question is scoped to, and a caller holding the job should
+    #: not have to re-read the record to ask one.  ``None`` only on a job a
+    #: caller built without naming a generation.
+    published_unix: float | None = None
 
 
 @dataclass(frozen=True)
@@ -877,6 +891,41 @@ def _now() -> float:
     return time.time()
 
 
+def _publish_bytes_if_absent(
+    path: Path, raw: bytes, *, mode: int = 0o644
+) -> bool:
+    """Link ``raw`` into place at ``path`` only when nothing is there yet.
+
+    The writer under ``_publish_json_if_absent``, which is where the reason
+    for the shape lives.  Separated because the batch script is bytes and a
+    mode rather than a JSON payload, and it is published under the same rule:
+    the name is the digest of these bytes, so a name that already exists holds
+    the same bytes and nothing was substituted.
+
+    Returns True when this call linked the file and False when one was already
+    there; the temp file is gone either way.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Explicit, because ``os.open``'s mode is masked by the umask and a
+        # script an operator reproduces by hand should be executable.
+        os.chmod(tmp, mode)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _publish_json_if_absent(path: Path, payload: Mapping[str, object]) -> bool:
     """File ``payload`` at ``path`` only when nothing is there yet.
 
@@ -897,22 +946,8 @@ def _publish_json_if_absent(path: Path, payload: Mapping[str, object]) -> bool:
     already there; the temp file is gone either way.
     """
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw = pb._canonical_file_bytes(dict(payload))
-    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(tmp, path)
-        except FileExistsError:
-            return False
-        return True
-    finally:
-        tmp.unlink(missing_ok=True)
+    return _publish_bytes_if_absent(
+        path, pb._canonical_file_bytes(dict(payload)))
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
@@ -923,9 +958,10 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
 
     The mutable summary is a pointer, not an audit log: the queue rewrites it on
     every retry and so must this.  First-writer-wins belongs to the *immutable*
-    records -- the submission records above -- and the generation check in
-    ``publish_outcome`` is what keeps two writers inside one generation from
-    overwriting each other.
+    records -- the submission records above -- and ``_land_summary`` is what
+    keeps two writers of one key from overwriting each other: it compares
+    generations before this call and re-reads after it, so an older waiter
+    cannot leave its ending standing over a later run's.
     """
 
     _write_latest(path, payload)
@@ -943,6 +979,11 @@ def job_script_text(
     local_checkout_root: str | Path | None = None,
 ) -> str:
     """The batch script: materialize inside the job, then run the worker.
+
+    Deterministic in its arguments, which is what lets ``submit`` name the
+    file by the digest of these bytes: two submissions that would send the
+    same script share one immutable file, and a submission that would send a
+    different one gets a different name rather than replacing anything.
 
     Materialization happens *here*, on the node that won the allocation, rather
     than at submit time on the submitter's box.  A checkout materialized before
@@ -1030,7 +1071,6 @@ def submit(
     directory = lane_directory(key, root=root)
     directory.mkdir(parents=True, exist_ok=True)
 
-    script = directory / "job.sh"
     text = job_script_text(
         request_path=request_path,
         cas_root=cas.root,
@@ -1041,15 +1081,34 @@ def submit(
         worker_python=worker_python,
         local_checkout_root=local_checkout_root,
     )
-    # Rewritten rather than published immutably: the script is derived from the
-    # action and the deployment, and the deployment's runtime generation may
-    # legitimately roll between two submissions of one action key.  What must
-    # not drift is the record of what each submission actually sent, and that
-    # is first-writer-published below.
-    tmp = directory / f".job.sh.{os.getpid()}.tmp"
-    tmp.write_text(text, encoding="utf-8")
-    tmp.chmod(0o755)
-    os.replace(tmp, script)
+    raw = text.encode("utf-8")
+    # Named by the digest of its own bytes, because a mutable ``job.sh`` was
+    # not the submission's script but the directory's.  An action key is a
+    # content hash, so two callers submitting one key is the ordinary case,
+    # and the deployment's runtime generation may legitimately roll between
+    # them: the second caller replaced ``job.sh`` before the first caller's
+    # ``sbatch`` had read it, so job A ran runtime B's request and CAS root
+    # while A's sealed record still named A's.  Content addressing removes the
+    # substitution rather than serializing around it -- two submitters with
+    # the same bytes share the file, and different bytes are different names.
+    digest = hashlib.sha256(raw).hexdigest()
+    script = directory / SCRIPT_DIRNAME / f"{digest}.sh"
+    _publish_bytes_if_absent(script, raw, mode=0o755)
+    # A pointer to the newest attempt's script, for a reader that wants one
+    # name.  It is not what any job executes and nothing derives a submission
+    # from it: ``sbatch`` is handed the immutable path above and the record
+    # names it with its digest.  The temp name carries a UUID for the reason
+    # ``_write_latest`` gives: a lane directory is on the shared mount and a
+    # pid is unique only within a box.
+    pointer = directory / "job.sh"
+    tmp = directory / f".job.sh.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        tmp.write_bytes(raw)
+        tmp.chmod(0o755)
+        os.replace(tmp, pointer)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
     nice = nice_for(priority)
     stdout_template = directory / "%j.out"
@@ -1164,6 +1223,11 @@ def submit(
         "job_id": job_id,
         "argv": list(argv),
         "script": str(script),
+        # The bytes ``sbatch`` was handed, named by their own digest.  A
+        # submission record that says which script ran is only worth as much
+        # as the script's immutability, so the record carries the check an
+        # operator can repeat: ``sha256sum`` of the path above.
+        "script_sha256": digest,
         "directory": str(directory),
         "stdout": str(directory / f"{job_id}.out"),
         "stderr": str(directory / f"{job_id}.err"),
@@ -1210,6 +1274,7 @@ def submit(
         stdout_path=directory / f"{job_id}.out",
         stderr_path=directory / f"{job_id}.err",
         record_path=record_path,
+        published_unix=generation,
     )
 
 
@@ -1510,16 +1575,42 @@ def query_provenance(
     of being read as "no such job": before that distinction existed, a
     ``systemctl restart slurmctld`` turned every running job's wait into
     ``UNKNOWN`` on the next poll, and ``run`` filed it as failed.
+
+    The three readers are independent programs against independent daemons,
+    so one that cannot be *run* does not stop the others.  ``sacct`` talks to
+    slurmdbd and ``scontrol`` and ``squeue`` talk to slurmctld: accounting can
+    hang while the controller is healthy and holds the job's ending, and a
+    ``sacct`` that hung used to escape this loop before ``scontrol`` was ever
+    asked.  Every poll then started again at the same hung call, so a job that
+    had completed stayed unobserved until the caller's wait expired, or
+    forever when there was no wait budget.
+
+    A failure is therefore carried rather than raised, and raised only when no
+    reader could establish the state.  The first one is what raises, because it
+    is the failure that started the outage.  An answer of ``None`` from a
+    reader that *did* answer is not enough on its own when another could not
+    be asked: ``squeue`` legitimately knows nothing about a finished job, so
+    treating that as "no such job" would turn an accounting outage into an
+    ``UNKNOWN`` ending.  The distinction ``wait`` reads is preserved: ``None``
+    only when all three answered and none knew the job.
     """
 
+    failure: SlurmLaneError | None = None
     for reader in (
         lambda: _sacct_state(job_id, sacct=sacct),
         lambda: _scontrol_state(job_id, scontrol=scontrol),
         lambda: _squeue_state(job_id, squeue=squeue),
     ):
-        answer = reader()
+        try:
+            answer = reader()
+        except SlurmLaneError as exc:
+            if failure is None:
+                failure = exc
+            continue
         if answer is not None:
             return answer
+    if failure is not None:
+        raise failure
     return None
 
 
@@ -2263,6 +2354,46 @@ def _queue_dir(queue_root: str | Path, state: str) -> Path:
     return directory
 
 
+def _record_generation(record: Mapping[str, object] | None) -> float | None:
+    """The run one record belongs to, or ``None`` when it names none.
+
+    ``published_unix`` is the generation in both transports, and a record that
+    carries no readable one cannot be placed in time.  Every caller here reads
+    that as "cannot be proved older", which is the direction that keeps a
+    decision: ``pool.withdrawal_covers`` reads a record with no generation as
+    covered for the same reason.
+    """
+
+    if not isinstance(record, Mapping):
+        return None
+    theirs = record.get("published_unix")
+    if isinstance(theirs, bool) or not isinstance(theirs, (int, float)):
+        return None
+    return float(theirs)
+
+
+def _read_json_object(path: Path) -> dict[str, object] | None:
+    """The JSON object at ``path``, revalidated first, or ``None``.
+
+    Listing the parent before the read is the rule ``read_withdrawal_marker``
+    and ``pbrun.terminal_record`` already follow on these directories: they are
+    on NFS with default attribute caching, where a lookup of a name that did
+    not exist yet is negatively cached and keeps answering ENOENT after the
+    file has landed.
+    """
+
+    try:
+        if path.name not in os.listdir(path.parent):
+            return None
+    except OSError:
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
 def _same_generation(path: Path, published_unix: float) -> bool:
     """Is the record already there this submission's own, or an older one?
 
@@ -2271,14 +2402,17 @@ def _same_generation(path: Path, published_unix: float) -> bool:
     queue's own generation rule -- ``terminal_outcome_covers`` states it, and
     states that an old outcome must not blacklist a later submission -- so a
     writer defers to a record of its own generation and replaces an older one.
+    A *newer* record is not replaced either; ``_land_summary`` holds that half
+    of the rule, because equality alone let a delayed waiter file its ending
+    over a later run's.
     """
 
     try:
         existing = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    theirs = existing.get("published_unix") if isinstance(existing, dict) else None
-    return isinstance(theirs, (int, float)) and float(theirs) == float(published_unix)
+    theirs = _record_generation(existing if isinstance(existing, dict) else None)
+    return theirs is not None and theirs == float(published_unix)
 
 
 def detail_status_and_returncode(
@@ -2328,6 +2462,108 @@ def _submitted_gres(job: SubmittedJob | None) -> str | None:
     return None
 
 
+def _newer_ending_stands(
+    existing: Mapping[str, object], published_unix: float
+) -> bool:
+    """Is the record at the summary a later run's ending, and not this one's
+    to replace?
+
+    A ``cache_hit`` is the one exception, and it is not a generation rule.  A
+    hit is the ending of a run that executed nothing: it says the receipt was
+    already in the CAS.  The record of the run that *did* the work carries the
+    job id, the elapsed time and the logs, and it is the one every reader
+    wants, so an execution replaces a standing hit whichever generation each
+    belongs to.  ``_file_ending`` and ``pbrun.cached_outcome`` state the same
+    rule from the other side: a hit is filed only when the key has no ending
+    at all, link-first, so it can never replace one.
+
+    A record with no readable generation cannot be shown to be later, and is
+    replaced as it always was.
+    """
+
+    theirs = _record_generation(existing)
+    if theirs is None or theirs <= float(published_unix):
+        return False
+    return str(existing.get("status") or "") != "cache_hit"
+
+
+def _land_summary(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    published_unix: float,
+    refuse_same_generation: bool,
+) -> bool:
+    """Leave ``payload`` standing at ``path`` unless a newer ending is there.
+
+    The mutable terminal summary is one name per key, and every run of one
+    content-addressed key files its ending at that name.  So the rule is an
+    ordering and not an equality: a later generation replaces an earlier one,
+    and an earlier one may not replace a later one.  Only equality was
+    checked, so a waiter that resumed an old job after a newer run of the same
+    key had already finished replaced the newer ending with its own --
+    ``pbrun.terminal_record(path, <newer generation>)`` then answered ``None``
+    and a generation-specific waiter timed out with an ending on disk saying
+    the older run.
+
+    Read-then-rename cannot state that rule, because the comparison and the
+    write are two steps and two writers cross inside them.  This is the
+    re-read form: the write lands, then the bytes that stand are read back,
+    and a record older than this one is written over again.  A writer that
+    crossed us and lost sees a *newer* record on its own re-read and stops, so
+    the fixed point is the highest generation whichever order the two ran in.
+    The absent case is link-first (``_publish_json_if_absent``), so two
+    writers arriving at an empty name cannot both think they were first.
+
+    Repair stops on anything but a readable older generation.  A record with
+    no generation is not evidence this one is stale, and a *vanished* record
+    must not be recreated: ``supersede_withdrawal`` unlinks a withdrawal
+    marker, and a repair loop that re-published one would revive a decision a
+    later submission had already retired.
+
+    The residual window is a crash: a writer that replaces a newer record and
+    dies before its re-read leaves the older ending standing.  That is a
+    reporting error an operator can see and re-file, where the shape it
+    replaces was a silent loss on every crossing.
+
+    Args:
+        path: The terminal summary, ``<state>/<key>.json``.
+        payload: The record to land.
+        published_unix: The generation ``payload`` belongs to.
+        refuse_same_generation: Whether a record of this same generation is
+            left standing.  False only for the withdrawal enrichment, whose
+            whole job is to replace the marker of its own generation with the
+            marker plus the job's ending.
+
+    Returns:
+        True when a record of this generation or newer stands at ``path`` and
+        this call put it there, False when a record this call may not replace
+        was found instead.
+    """
+
+    floor = float(published_unix)
+    while True:
+        existing = _read_json_object(path)
+        if existing is None:
+            if not _publish_json_if_absent(path, payload):
+                # A record landed between the read and the link.  Compare
+                # against it rather than replacing it unseen.
+                continue
+        else:
+            if _newer_ending_stands(existing, floor) or (
+                refuse_same_generation
+                and _record_generation(existing) == floor
+            ):
+                return False
+            _write_json_atomic(path, payload)
+        after = _read_json_object(path)
+        standing = None if after is None else _record_generation(after)
+        if standing is None or standing >= floor:
+            # Ours, or a later run's, or one that names no generation -- and a
+            # vanished one, which is deliberately not re-published.
+            return True
+
+
 def publish_outcome(
     *,
     queue_root: str | Path,
@@ -2359,9 +2595,13 @@ def publish_outcome(
     ``PoolQueue.finish`` applies through ``succeeded``; only the machinery
     underneath it differs.
 
-    Returns the path written, or ``None`` when a record of this same generation
-    was already there -- the first account of a generation is the one that
-    stands, and a later generation replaces it.
+    Returns the path written, or ``None`` when a record this call may not
+    replace was already there: one of this same generation, because the first
+    account of a generation is the one that stands, or one of a *newer*
+    generation, because a later run's ending is not an older waiter's to
+    overwrite.  ``_land_summary`` states both halves and applies them across
+    the write rather than only before it, and ``_newer_ending_stands`` carries
+    the one exception, a standing ``cache_hit``.
     """
 
     key = str(action_key)
@@ -2383,23 +2623,26 @@ def publish_outcome(
         state = pool.FAILED
     path = _queue_dir(queue_root, state) / f"{key}.json"
     decision: dict[str, object] = {}
-    if path.exists():
+    existing = _read_json_object(path)
+    if existing is not None:
+        if _newer_ending_stands(existing, published_unix):
+            # A later run of this key has already ended.  Its account stands:
+            # this one is a delayed waiter for a request nobody is waiting on
+            # any more.  ``_land_summary`` applies the same rule again across
+            # the write, for a record that lands while this one is built.
+            return None
+        theirs = _record_generation(existing)
         if state == pool.WITHDRAWN:
-            try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                existing = None
-            if isinstance(existing, dict):
-                if "detail" in existing and _same_generation(path, published_unix):
-                    # A full ending is already filed for this generation.
-                    return None
-                decision = {
-                    field: existing[field]
-                    for field in ("withdrawn_unix", "withdrawn_by",
-                                  "withdrawn_host", "withdrawn_from", "reason")
-                    if field in existing
-                }
-        elif _same_generation(path, published_unix):
+            if "detail" in existing and theirs == float(published_unix):
+                # A full ending is already filed for this generation.
+                return None
+            decision = {
+                field: existing[field]
+                for field in ("withdrawn_unix", "withdrawn_by",
+                              "withdrawn_host", "withdrawn_from", "reason")
+                if field in existing
+            }
+        elif theirs == float(published_unix):
             return None
 
     detail_status, returncode = detail_status_and_returncode(status, outcome)
@@ -2498,7 +2741,14 @@ def publish_outcome(
         if not _publish_json_if_absent(path, record):
             return None
         return path
-    _write_json_atomic(path, record)
+    if not _land_summary(
+        path, record, published_unix=float(published_unix),
+        # The withdrawal enrichment replaces the marker of its own generation
+        # with the marker plus the job's ending, which is the one write that
+        # legitimately lands on a record of the same generation.
+        refuse_same_generation=state != pool.WITHDRAWN,
+    ):
+        return None
     return path
 
 
@@ -2634,33 +2884,94 @@ def withdrawal_covers(
 
 
 def supersede_withdrawal(
-    queue_root: str | Path, action_key: str
+    queue_root: str | Path, action_key: str, published_unix: float | None
 ) -> dict[str, object] | None:
-    """Retire a live withdrawal, because a submission is what retires one.
+    """Retire a withdrawal of an EARLIER run, because a submission retires one.
 
     ``PoolQueue.publish`` does this and says at length why: the marker stops a
     claim, so leaving it in place makes the re-submitted action unrunnable and
     the only remedy a hand edit of the live queue.  This lane submits without
     going through ``publish``, so it does the same thing itself or inherits the
     bug the queue already fixed.  The decision is kept, not deleted.
+
+    Only an *earlier* generation is retired.  ``submit`` makes ``latest.json``
+    visible before it returns, so an operator on another box can resolve that
+    record and withdraw the run while the submitting process is still between
+    ``sbatch`` and its own next step.  Retiring whatever marker happened to be
+    there then erased that decision: the retry gate found no marker and a
+    ``--retry-safe`` run submitted attempt 2 of the action somebody had just
+    cancelled, and the ending was filed as a failure rather than as the
+    withdrawal it was.  A withdrawal of the generation being submitted is left
+    exactly where it is, and it is what stops the remaining attempts (``run``)
+    and what decides the ending (``_file_ending``).
+
+    A marker naming no generation *is* retired.  Every writer in this tree
+    stamps the generation on the marker it files -- ``publish_withdrawal``
+    takes it from the submission and ``pbrun._file_slurm_withdrawal`` from
+    ``latest.json`` -- so a marker without one belongs to a run older than the
+    generation stamp itself, and leaving it in place is exactly the
+    unrunnable-action state the pool fixed.
+
+    ``published_unix`` is the generation being submitted, or ``None`` from a
+    caller that cannot name one.  A caller that cannot name its own generation
+    cannot compare, so it retires nothing.
+
+    The claim on the marker is one ``rename``, which is what makes the
+    comparison safe against a publication that crosses it.  The old shape read
+    the marker, wrote an archive copy and then unlinked the live name, so a
+    withdrawal filed inside that window was unlinked unread.  Now the rename
+    takes whichever marker is at the name at that instant, the archived bytes
+    are re-read, and a marker this call had no right to retire is linked back.
+    A crash between the rename and the decision leaves the marker under
+    ``superseded/`` instead of at the live name, which is a state a reader can
+    see and repair; the window it replaces lost the bytes.
+
+    Returns the withdrawal that was retired, or ``None`` when none was.
     """
 
     key = str(action_key)
     live, record = read_withdrawal_marker(queue_root, key)
     if record is None:
         return None
+    if published_unix is None:
+        return None
+    theirs = _record_generation(record)
+    if theirs is not None and theirs >= float(published_unix):
+        return None
     when = _now()
-    kept = dict(record)
+    archive_directory = _queue_dir(queue_root, pool.WITHDRAWN) / "superseded"
+    archive_directory.mkdir(parents=True, exist_ok=True)
+    archive = archive_directory / f"{key}.{when:.6f}.withdrawal.json"
+    try:
+        os.rename(live, archive)
+    except OSError:
+        # Gone between the read and the claim: another submission of a later
+        # generation retired it, and archiving it is that call's business.
+        return None
+    claimed = _read_json_object(archive)
+    generation = _record_generation(claimed)
+    if claimed is None or (generation is not None
+                           and generation >= float(published_unix)):
+        # A withdrawal landed at the live name between the read and the
+        # rename, and this call has no right to retire it.  Put it back.
+        try:
+            os.link(archive, live)
+        except FileExistsError:
+            # A third writer already filed a marker there.  These bytes stay
+            # under ``superseded/`` as history rather than being deleted.
+            return None
+        except OSError:
+            return None
+        archive.unlink(missing_ok=True)
+        return None
+    kept = dict(claimed or {})
     kept.update({
         "action_key": key,
         "superseded_unix": when,
         "superseded_host": socket.gethostname(),
     })
-    archive = _queue_dir(queue_root, pool.WITHDRAWN) / "superseded"
-    archive.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(archive / f"{key}.{when:.6f}.withdrawal.json", kept)
-    live.unlink(missing_ok=True)
-    return record
+    _write_json_atomic(archive, kept)
+    return claimed
 
 
 def run(
@@ -2770,7 +3081,7 @@ def run(
             # a refused submission has retired nothing, and an operator's
             # decision must not be moved aside by a job that never existed.
             with _naming_job(job.job_id):
-                supersede_withdrawal(queue_root, key)
+                supersede_withdrawal(queue_root, key, published_unix)
         if on_submit is not None:
             on_submit(job)
         if detach:
@@ -2879,6 +3190,7 @@ def resume(
         record_path=submission_record_path(
             directory, published_unix=published_unix, attempt=attempt
         ),
+        published_unix=published_unix,
     )
     result = RunResult(action_key=key, published_unix=published_unix)
     outcome = wait(

@@ -91,7 +91,11 @@ def build_action(shard, closure, rung, calibrate_every):
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
                 "HOME": "/home/rob",
                 "LANG": "C.UTF-8",
-                "PYTHONPATH": str(CHECKOUT / "tessera" / "src"),
+                # Relative to the tree this action runs in: see the same
+                # entry in ``dispatch_tessera_shards``.  An absolute path
+                # into the submitter's checkout escapes the sealed snapshot
+                # the SLURM lane materializes.
+                "PYTHONPATH": "tessera/src",
                 "TMPDIR": "/home/rob/tmp",
                 "TRITON_CACHE_DIR": "/home/rob/.triton-cache",
             },
