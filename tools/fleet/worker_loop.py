@@ -97,6 +97,29 @@ def loaded_runtime_commit() -> str:
     return _commit_at(GENERATION_VERSION)
 
 
+def inherited_cpus() -> int:
+    """How many CPUs this process may actually run on.
+
+    ``--all-cores`` turns the topology pin off, and the automatic capacity then
+    fell back to ``os.cpu_count()``, which is the machine's total rather than
+    this process's affinity.  An outer ``taskset`` or cpuset confines the loop
+    and every action it launches, so a confined worker advertised the whole
+    box: the checked-in dl380g10 configuration passes ``--all-cores``, and 80
+    cpu tokens against a two-CPU affinity is the same promise the box cannot
+    keep that the capacity drift was.  The topology pinning path already
+    preserved an outer restriction; turning the pin off must not throw it
+    away.
+
+    ``os.cpu_count()`` remains the last resort, for a platform with no
+    affinity call at all.
+    """
+
+    try:
+        return len(os.sched_getaffinity(0)) or 1
+    except (AttributeError, OSError):
+        return os.cpu_count() or 1
+
+
 def census_line(queue) -> str:
     """The fleet's width, or why it is missing -- and never an exception.
 
@@ -160,10 +183,13 @@ def main():
     #
     # The offer is what this loop is *pinned to*, not what the box has: on a
     # GB10 that is ten of twenty cores, and offering twenty would be the same
-    # promise-the-box-cannot-keep the capacity drift was.
+    # promise-the-box-cannot-keep the capacity drift was.  With ``--all-cores``
+    # there is no pin, and the offer is then the inherited affinity rather than
+    # the machine count; ``--cpu-slots`` is the explicit override on both
+    # paths.  See ``inherited_cpus``.
     cores = args.cpu_slots
     if cores <= 0:
-        cores = len(pinned) if pinned else (os.cpu_count() or 1)
+        cores = len(pinned) if pinned else inherited_cpus()
     # What this box offers when the pool is the only thing on it.  What it can
     # offer *now* is that minus whatever else is running, read at every poll.
     declared = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb, "cpu": cores}
