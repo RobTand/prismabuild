@@ -32,6 +32,13 @@ USER = getpass.getuser()
 SH = VOL / "prismabuild-fleet"
 QUEUE = SH / "pb-queue"
 LANE = SH / "slurm"
+#: Where the jobs leave their Epilog state files.  A node-side path, resolved
+#: by `slurm_job.py` and `epilog.sh` from `PRISMABUILD_SLURM_JOB_STATE_ROOT` or
+#: this same default, and deliberately not derived from the lane root above --
+#: a submitter may move that one, and moving it must not move this.
+JOB_STATE_ROOT = Path(
+    os.environ.get("PRISMABUILD_SLURM_JOB_STATE_ROOT")
+    or "/mnt/shared/prismabuild-fleet/slurm/jobs")
 WORK = VOL / "work"
 SRC = WORK / "src"
 PBRUN = REPO / "tools" / "fleet" / "pbrun.py"
@@ -447,13 +454,27 @@ def row_7_gres_and_constraint() -> None:
     )
 
 
-def row_8_epilog(job_id: str) -> None:
-    """The Epilog ran for the job SLURM killed, and matched on the owner label.
+def _leftover_state_files() -> list[Path]:
+    """State files for jobs the Epilog has not cleaned up after yet."""
 
-    Read off row 5's job, not a fresh one: ``slurm_job.py`` removes its own
-    state file when it gets to exit normally, so a job that ended cleanly
-    leaves the Epilog nothing to do -- which is the design, and which is why
-    the evidence has to come from a job that was killed.
+    if not JOB_STATE_ROOT.is_dir():
+        return []
+    return sorted(JOB_STATE_ROOT.glob("*.job"))
+
+
+def row_8_epilog(job_id: str) -> None:
+    """The Epilog ran, matched on the owner label, and left nothing behind.
+
+    Read off row 5's killed job, which is where the container evidence is: a
+    job that reaches its own exit still has containers to remove -- they are
+    reparented to containerd-shim and outlive it either way -- but a killed one
+    is the case that has nothing else to fall back on.
+
+    The state files are a settled reading, not an instant one.  The job runner
+    no longer deletes its own: the Epilog owns node-side cleanup on every
+    ending, and it runs after the job's processes are gone, which is after
+    ``pbrun`` and ``scancel`` have already returned.  So a file for a job that
+    ended a moment ago is not yet a leak.
     """
 
     log = VOL / "docker.log"
@@ -461,7 +482,11 @@ def row_8_epilog(job_id: str) -> None:
     lines = [line for line in text.splitlines() if line.strip()]
     filtered = [line for line in lines if "label=prismabuild.action=" in line]
     removed = [line for line in lines if line.startswith("rm -f ")]
-    state_files = sorted((LANE / "jobs").glob("*.job")) if (LANE / "jobs").is_dir() else []
+    def settled() -> bool:
+        return not _leftover_state_files()
+
+    wait_for(settled, timeout_s=60, poll_s=2.0)
+    state_files = _leftover_state_files()
     try:
         said = [
             line for line in (VOL / "logs" / "slurmd.log").read_text(

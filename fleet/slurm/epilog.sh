@@ -75,8 +75,14 @@ fi
 field() { sed -n "s/^$1=//p" "$state_file" | head -n 1; }
 
 owner="$(field container_owner)"
+marker="$(field container_marker)"
 checkout_dir="$(field checkout_dir)"
 local_root="$(field local_checkout_root)"
+
+# Whether the ownership label has no containers left behind it.  Starts true:
+# an action that started none is as clean as one whose containers were removed,
+# and both are allowed to retire the marker below.
+owner_settled=1
 
 # -- containers --------------------------------------------------------------
 # Matched by label, never by name or by image: the label is the action's
@@ -87,6 +93,7 @@ case "$owner" in
         ;;
     *[!0-9a-f]* | ?)
         log "container owner is not a 64-hex digest; refusing to match on it"
+        owner_settled=0
         ;;
     *)
         if [ "${#owner}" -eq 64 ]; then
@@ -99,8 +106,18 @@ case "$owner" in
                     log "could not remove containers for ${owner:0:12}"
                 fi
             fi
+            # Asked again rather than inferred from the exit status, the way
+            # cleanup_action_containers asks, and asked whether or not this job
+            # started anything: the marker below may be retired only when the
+            # label has nothing left behind it.
+            remaining="$("$DOCKER" ps -aq --filter "label=${LABEL}=${owner}" 2>/dev/null)"
+            if [ -n "$remaining" ]; then
+                owner_settled=0
+                log "containers for ${owner:0:12} remain: $(echo "$remaining" | tr '\n' ' ')"
+            fi
         else
             log "container owner is not 64 characters; refusing to match on it"
+            owner_settled=0
         fi
         ;;
 esac
@@ -133,6 +150,8 @@ fi
 # for months.  Falling back to a plain unlink keeps a job-state root that is
 # NOT on NFS -- a single-box deployment, the container smoke -- working
 # unchanged.
+# $1 is the path; $2 names it for the log, because the smoke and the runbook
+# read those lines back and "removed state file" has to keep meaning that one.
 lane_delete() {
     if [ -n "$JOB_USER" ] && command -v runuser >/dev/null 2>&1; then
         if runuser -u "$JOB_USER" -- rm -f -- "$1" 2>/dev/null; then
@@ -141,7 +160,7 @@ lane_delete() {
             # SLURM_JOB_USER was never set looks exactly like a run where the
             # squash-safe path worked, and the smoke could not tell them
             # apart.
-            log "removed state file $1 as $JOB_USER"
+            log "removed $2 $1 as $JOB_USER"
             return 0
         fi
         log "could not remove $1 as $JOB_USER; trying as $(id -un)"
@@ -149,7 +168,35 @@ lane_delete() {
     rm -f -- "$1" 2>/dev/null || true
 }
 
-lane_delete "$state_file"
+# -- the container-ownership marker ------------------------------------------
+# The shim writes it on first container creation and the pull queue's
+# `finish` unlinks it once the containers are gone.  Under SLURM nothing did,
+# so `container-owners/` grew a file per containerized action and never shrank.
+# Deleted here, in the same step and as the same user as the state file, and
+# only once the label has no containers left -- a marker removed while a
+# container still carries its label would tell the next reader the action never
+# used Docker.
+#
+# Bounded the way the checkout removal is: an absolute path whose last
+# component is exactly this action's own `<owner>.used`.  A cleanup that can be
+# talked into deleting an arbitrary path is worse than a leaked file.
+if [ "$owner_settled" -eq 1 ] && [ -n "$marker" ] && [ "${#owner}" -eq 64 ]; then
+    case "$marker" in
+        /*)
+            if [ "${marker##*/}" = "${owner}.used" ]; then
+                [ -e "$marker" ] && lane_delete "$marker" \
+                    "container-ownership marker"
+            else
+                log "recorded marker $marker does not name ${owner:0:12}; left alone"
+            fi
+            ;;
+        *)
+            log "recorded marker $marker is not an absolute path; left alone"
+            ;;
+    esac
+fi
+
+lane_delete "$state_file" "state file"
 if [ -e "$state_file" ]; then
     # Say it rather than exit non-zero: a non-zero Epilog drains the node, and
     # a state file nobody could delete is not a reason to take a box out of the

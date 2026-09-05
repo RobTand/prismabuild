@@ -44,6 +44,14 @@ from prismabuild import materialize, pool, slurm_lane  # noqa: E402
 #: one question get into a system.
 CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 
+#: The durable marker the shim writes on first container creation, and the
+#: file the pull queue's ``cleanup_action_containers`` unlinks once an action's
+#: containers are gone.  Under SLURM nothing unlinked it, so the shared
+#: ``container-owners/`` directory grew one file per containerized action and
+#: never shrank.  The Epilog does it now, which is why the path is written down
+#: here: it is in the sealed environment, so it is read rather than rebuilt.
+CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
+
 
 def _load_action(path: Path) -> dict[str, object]:
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -52,14 +60,22 @@ def _load_action(path: Path) -> dict[str, object]:
     return value
 
 
-def _container_owner(action: dict[str, object]) -> str:
+def _sealed_variable(action: dict[str, object], name: str) -> str:
     environment = action.get("environment")
     variables = (
         environment.get("variables") if isinstance(environment, dict) else None
     )
     if not isinstance(variables, dict):
         return ""
-    return str(variables.get(CONTAINER_OWNER_ENV) or "")
+    return str(variables.get(name) or "")
+
+
+def _container_owner(action: dict[str, object]) -> str:
+    return _sealed_variable(action, CONTAINER_OWNER_ENV)
+
+
+def _container_marker(action: dict[str, object]) -> str:
+    return _sealed_variable(action, CONTAINER_MARKER_ENV)
 
 
 def _queue_item(action: dict[str, object], *, cas_root: Path) -> dict[str, object]:
@@ -122,6 +138,7 @@ def _write_job_state(
     *,
     action_key: str,
     container_owner: str,
+    container_marker: str,
     checkout_dir: Path | None,
     local_checkout_root: Path,
 ) -> None:
@@ -135,6 +152,7 @@ def _write_job_state(
     lines = [
         f"action_key={action_key}",
         f"container_owner={container_owner}",
+        f"container_marker={container_marker}",
         f"checkout_dir={checkout_dir or ''}",
         f"local_checkout_root={local_checkout_root}",
         f"host={socket.gethostname()}",
@@ -171,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     cas_root = Path(args.cas_root)
     key = str(action["action_key"])
     owner = _container_owner(action)
+    marker = _container_marker(action)
     local_root = (
         Path(args.checkout_root) if args.checkout_root
         else materialize.LOCAL_CHECKOUT_ROOT
@@ -202,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
             state_path,
             action_key=key,
             container_owner=owner,
+            container_marker=marker,
             checkout_dir=None,
             local_checkout_root=local_root,
         )
@@ -215,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
                 state_path,
                 action_key=key,
                 container_owner=owner,
+                container_marker=marker,
                 checkout_dir=_temporary_root(Path(checkout_root), local_root),
                 local_checkout_root=local_root,
             )

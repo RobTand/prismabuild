@@ -36,11 +36,18 @@ def node(tmp_path: Path) -> dict[str, Path]:
     listed = tmp_path / "docker-ps-output"
     listed.write_text("")
     docker = binaries / "docker"
+    # `rm` empties the listing, so a second `ps` answers what a real daemon
+    # would after a successful removal.  The Epilog asks twice on purpose: the
+    # ownership marker may be retired only when the label has nothing left
+    # behind it.  PB_FAKE_DOCKER_STUBBORN=1 is the daemon that did not remove.
     docker.write_text(
         "#!/bin/bash\n"
         f'printf "%s\\n" "$*" >> {calls}\n'
         'if [ "$1" = "ps" ]; then\n'
         f'    cat {listed}\n'
+        "fi\n"
+        'if [ "$1" = "rm" ] && [ "${PB_FAKE_DOCKER_STUBBORN:-0}" != "1" ]; then\n'
+        f'    : > {listed}\n'
         "fi\n"
         "exit 0\n",
         encoding="utf-8",
@@ -70,13 +77,14 @@ def node(tmp_path: Path) -> dict[str, Path]:
 
 
 def _state(node: dict[str, Path], *, job_id: str, owner: str,
-           checkout_dir: str, local_root: str) -> Path:
+           checkout_dir: str, local_root: str, marker: str = "") -> Path:
     jobs = node["jobs"]
     jobs.mkdir(parents=True, exist_ok=True)
     path = jobs / f"{job_id}.job"
     path.write_text(
         f"action_key={'cd' * 32}\n"
         f"container_owner={owner}\n"
+        f"container_marker={marker}\n"
         f"checkout_dir={checkout_dir}\n"
         f"local_checkout_root={local_root}\n"
         "host=sparky\n"
@@ -87,9 +95,11 @@ def _state(node: dict[str, Path], *, job_id: str, owner: str,
 
 
 def _run(
-    node: dict[str, Path], job_id: str, *, job_user: str | None = "rob"
+    node: dict[str, Path], job_id: str, *, job_user: str | None = "rob",
+    stubborn_docker: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     environment = {
+        "PB_FAKE_DOCKER_STUBBORN": "1" if stubborn_docker else "0",
         **os.environ,
         "PATH": f"{node['bin']}{os.pathsep}{os.environ['PATH']}",
         "SLURM_JOB_ID": job_id,
@@ -304,3 +314,87 @@ def test_the_epilog_and_the_lane_name_the_same_job_state_root() -> None:
         f'-{slurm_lane.DEFAULT_JOB_STATE_ROOT}}}"'
     )
     assert expected in text
+
+
+def _marker(node: dict[str, Path], owner: str) -> Path:
+    """The file the Docker shim writes on first container creation."""
+
+    owners = node["checkouts"].parent / "pb-queue" / "container-owners"
+    owners.mkdir(parents=True, exist_ok=True)
+    path = owners / f"{owner}.used"
+    path.write_text(owner + "\n", encoding="utf-8")
+    return path
+
+
+def test_it_retires_the_container_ownership_marker(
+    node: dict[str, Path]
+) -> None:
+    """The shim writes the marker and the pull queue's `finish` unlinks it once
+    the containers are gone.  Under SLURM nothing did, so `container-owners/`
+    grew one file per containerized action and never shrank."""
+
+    node["listed"].write_text("c0ffee04\n")
+    marker = _marker(node, OWNER)
+    state = _state(node, job_id="1250", owner=OWNER, checkout_dir="",
+                   local_root=str(node["checkouts"]), marker=str(marker))
+
+    result = _run(node, "1250")
+
+    assert result.returncode == 0
+    assert not marker.exists()
+    assert not state.exists()
+    # As the job's user, for the same reason the state file is: root is
+    # squashed to `nobody` on the shared mount and its unlink fails silently.
+    calls = node["runuser"].read_text().splitlines()
+    assert f"-u rob -- rm -f -- {marker}" in calls
+
+
+def test_it_keeps_the_marker_while_a_container_still_carries_the_label(
+    node: dict[str, Path]
+) -> None:
+    """A marker removed while a container is still labelled would tell the next
+    reader the action never used Docker.  The daemon is asked again after the
+    removal rather than trusting its exit status."""
+
+    node["listed"].write_text("c0ffee05\n")   # and this docker does not remove
+    marker = _marker(node, OWNER)
+    _state(node, job_id="1251", owner=OWNER, checkout_dir="",
+           local_root=str(node["checkouts"]), marker=str(marker))
+
+    result = _run(node, "1251", stubborn_docker=True)
+
+    assert result.returncode == 0
+    assert marker.exists()
+    assert "remain" in result.stderr
+
+
+def test_it_refuses_a_marker_that_does_not_name_this_action(
+    node: dict[str, Path]
+) -> None:
+    """Bounded like the checkout removal: an absolute path whose last component
+    is exactly this action's own `<owner>.used`.  A cleanup that can be talked
+    into deleting an arbitrary path is worse than a leaked file."""
+
+    node["listed"].write_text("")
+    stranger = node["checkouts"].parent / "somebody-elses.file"
+    stranger.parent.mkdir(parents=True, exist_ok=True)
+    stranger.write_text("not a marker\n", encoding="utf-8")
+    _state(node, job_id="1252", owner=OWNER, checkout_dir="",
+           local_root=str(node["checkouts"]), marker=str(stranger))
+
+    result = _run(node, "1252")
+
+    assert result.returncode == 0
+    assert stranger.exists()
+    assert "left alone" in result.stderr
+
+
+def test_a_relative_marker_path_is_left_alone(node: dict[str, Path]) -> None:
+    node["listed"].write_text("")
+    _state(node, job_id="1253", owner=OWNER, checkout_dir="",
+           local_root=str(node["checkouts"]), marker="../../etc/passwd")
+
+    result = _run(node, "1253")
+
+    assert result.returncode == 0
+    assert "not an absolute path" in result.stderr
