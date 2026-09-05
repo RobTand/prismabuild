@@ -217,10 +217,14 @@ def main(argv: list[str] | None = None) -> int:
             cas_root=cas_root,
             checkout_root=checkout_root,
         )
-        # A child rather than an exec: the materializer's cleanup runs on the
-        # way out of the context manager, and an exec would replace the process
-        # that owes it.  SLURM's time limit signals the whole job step, so this
-        # process is reached too and the cleanup still gets its chance.
+        # A child rather than an exec: on a normal ending the materializer's
+        # cleanup runs on the way out of the context manager, and an exec would
+        # replace the process that owes it.  On a scheduler kill it does not:
+        # SLURM's time limit signals the whole step, and Python's default
+        # SIGTERM disposition ends this interpreter at once, with no finally
+        # and no __exit__.  That case is the Epilog's, which reads the state
+        # file written above and removes the checkout and any containers as
+        # root; smoke row 8 is the evidence for that path.
         completed = subprocess.run(worker, check=False)
     if state_path is not None:
         # Removed last: from here on the Epilog has nothing left to do that

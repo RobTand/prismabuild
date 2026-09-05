@@ -35,6 +35,7 @@ LANE = SH / "slurm"
 WORK = VOL / "work"
 SRC = WORK / "src"
 PBRUN = REPO / "tools" / "fleet" / "pbrun.py"
+PBCAMPAIGN = REPO / "tools" / "fleet" / "pbcampaign.py"
 
 #: Job submission through this lane costs a git materialization and a poll
 #: interval, so a row that expects an ending waits minutes, not seconds.
@@ -70,6 +71,50 @@ def pbrun(command: list[str], *, extra: list[str] = [],
         "--", *command,
     ]
     return sh(argv, timeout=timeout)
+
+
+def campaign(manifest: Path, *, extra: list[str] = [],
+             timeout: float = 900.0) -> subprocess.CompletedProcess:
+    argv = [
+        sys.executable, str(PBCAMPAIGN),
+        "--transport", "slurm",
+        "--wait-s", str(WAIT_S),
+        *extra,
+        str(manifest),
+    ]
+    return sh(argv, timeout=timeout)
+
+
+def table_rows(completed: subprocess.CompletedProcess) -> list[dict[str, str]]:
+    """The campaign's table, as one dict per row keyed by its column name."""
+
+    lines = [line for line in (completed.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return []
+    header = lines[0].split()
+    if header[:2] != ["key", "status"]:
+        return []
+    return [dict(zip(header, line.split())) for line in lines[1:]]
+
+
+def lane_latest(prefix: str) -> dict:
+    """The newest submission recorded for a key, found by its printed prefix."""
+
+    if not prefix or not LANE.is_dir():
+        return {}
+    for directory in sorted(LANE.iterdir()):
+        if directory.is_dir() and directory.name.startswith(prefix):
+            try:
+                return json.loads((directory / "latest.json").read_text())
+            except (OSError, ValueError):
+                return {}
+    return {}
+
+
+def lane_submissions() -> int:
+    """Every submission record the lane holds, across every action."""
+
+    return len(list(LANE.glob("*/submissions/*.json"))) if LANE.is_dir() else 0
 
 
 def submitted(completed: subprocess.CompletedProcess) -> tuple[str, str]:
@@ -483,8 +528,187 @@ def row_9_no_slurmdbd(job_id: str) -> None:
     del path
 
 
+def row_10a_campaign(nonces: list[Path]) -> None:
+    """One manifest, three rows, mixed demand, one table.
+
+    This is the fan-out claim: an agent submits N actions with one command and
+    waits for all of them with one command, and each one is a CAS-memoized
+    action sealed by ``pbrun`` itself.  Two rows ask for a shard so the node's
+    ``shard:2`` admits them together; the third asks for no GPU at all, which
+    is the shape that goes to the CPU partition on the fleet.
+    """
+
+    manifest = WORK / "campaign.json"
+    manifest.write_text(json.dumps([
+        {"argv": ["bash", "action.sh", "run", str(nonces[0])],
+         "cwd": str(SRC), "demand": {"gpu": 1, "mem_gb": 2},
+         "timeout_s": 600},
+        {"argv": ["bash", "action.sh", "run", str(nonces[1])],
+         "cwd": str(SRC), "demand": {"gpu": 1, "mem_gb": 2},
+         "timeout_s": 600},
+        {"argv": ["bash", "action.sh", "run", str(nonces[2])],
+         "cwd": str(SRC), "demand": {"cpu": 2, "mem_gb": 2},
+         "timeout_s": 600},
+    ], indent=1), encoding="utf-8")
+
+    completed = campaign(manifest)
+    rows = table_rows(completed)
+    for line in (completed.stdout or "").splitlines():
+        if line.strip():
+            print(f"    | {line}", flush=True)
+    jobs = [row.get("job", "") for row in rows]
+    checks = {
+        "campaign rc==0": completed.returncode == 0,
+        "three rows": len(rows) == 3,
+        "all executed": all(row.get("status") == "executed" for row in rows),
+        "all via slurm": all(row.get("transport") == "slurm" for row in rows),
+        "distinct job ids": len(set(jobs)) == 3 and all(j.isdigit() for j in jobs),
+        f"all on {NODE}": all(row.get("host") == NODE for row in rows),
+        "each ran once": all(
+            nonce.exists() and nonce.read_text().count("\n") == 1
+            for nonce in nonces
+        ),
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    record(
+        "10a a three-row campaign runs on the fleet and reports one table",
+        not failed,
+        f"jobs={jobs} " + (
+            f"missing: {failed}; rc={completed.returncode}; "
+            f"stderr={(completed.stderr or '')[-600:]}" if failed else
+            f"hosts={[row.get('host') for row in rows]}"
+        ),
+    )
+
+
+def row_10b_campaign_rerun(nonces: list[Path]) -> None:
+    """The same manifest again: every row a cache hit, and no new job ids.
+
+    A detached submission of work already in the CAS would be a node occupied
+    and a checkout materialized to discover what the submitter already knew,
+    so the campaign does not submit one.  The lane's own record is the witness:
+    the newest submission for each key is still the job that ran it.
+    """
+
+    manifest = WORK / "campaign.json"
+    lines_before = [nonce.read_text().count("\n") for nonce in nonces]
+    submissions_before = lane_submissions()
+    completed = campaign(manifest)
+    rows = table_rows(completed)
+    for line in (completed.stdout or "").splitlines():
+        if line.strip():
+            print(f"    | {line}", flush=True)
+    lines_after = [nonce.read_text().count("\n") for nonce in nonces]
+    checks = {
+        "campaign rc==0": completed.returncode == 0,
+        "three rows": len(rows) == 3,
+        "all cache_hit": all(row.get("status") == "cache_hit" for row in rows),
+        "no job ids": all(row.get("job") == "-" for row in rows),
+        "nothing re-ran": lines_before == lines_after,
+        "no new submissions": lane_submissions() == submissions_before,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    record(
+        "10b the same manifest re-run costs no job at all",
+        not failed,
+        f"nonce lines {lines_before}->{lines_after} "
+        f"lane submissions {submissions_before}->{lane_submissions()} "
+        + (f"missing: {failed}; rc={completed.returncode}; "
+           f"stderr={(completed.stderr or '')[-600:]}" if failed else
+           f"statuses={[row.get('status') for row in rows]}"),
+    )
+
+
+def row_10_scontrol_answers_the_job(nonce_dir: Path) -> None:
+    """From inside a batch step, the controller shows the job's constraint and
+    the node's Features to the job's owner -- the two facts the worker's
+    host-class attestation reads.  Quoted, because the docs said what SLURM
+    sets in a job's environment and were wrong once already."""
+
+    out = WORK / "attest-%j.out"
+    completed = sh([
+        "sbatch", "--wait", "--constraint=gb10", f"--chdir={WORK}",
+        f"--output={out}",
+        "--wrap=scontrol show job $SLURM_JOB_ID; "
+        "scontrol show node $SLURMD_NODENAME; "
+        "echo env-constraints=${SLURM_JOB_CONSTRAINTS-unset}",
+    ], timeout=180)
+    text = ""
+    for candidate in sorted(WORK.glob("attest-*.out")):
+        text = candidate.read_text(errors="replace")
+    features = [line.strip() for line in text.splitlines()
+                if "Features=" in line or line.startswith("env-constraints=")]
+    job_features = [line for line in features if line.startswith("Features=")
+                    or " Features=" in line]
+    node_features = [line for line in features if "ActiveFeatures=" in line]
+    ok = (
+        completed.returncode == 0
+        and any(re.search(r"(^|\s)Features=gb10(\s|$)", line) for line in job_features)
+        and any(re.search(r"ActiveFeatures=[^ ]*\bgb10\b", line) for line in node_features)
+        and "env-constraints=unset" in text
+    )
+    record(
+        "10 scontrol inside a job shows Features= and ActiveFeatures=",
+        ok,
+        f"rc={completed.returncode} " + " | ".join(features)[:400],
+    )
+    del nonce_dir
+
+
+def row_11_host_class_measurement(nonce: Path) -> None:
+    completed = pbrun(
+        ["bash", "action.sh", "run", str(nonce)],
+        extra=["--measurement", "--host-class", "gb10"],
+    )
+    prefix, job_id = submitted(completed)
+    path, rec = outcome("done", prefix) if prefix else (None, {})
+    producer: dict = {}
+    if prefix:
+        for candidate in sorted((SH / "cas" / "actions" / "v3" / prefix[:2]).glob(
+                f"{prefix}*.json")):
+            try:
+                producer = json.loads(candidate.read_text()).get("producer", {})
+            except (OSError, ValueError):
+                producer = {}
+    slurm = (producer.get("evidence") or {}).get("slurm") or {}
+    controller = slurm.get("controller") or {}
+    checks = {
+        "pbrun rc==0": completed.returncode == 0,
+        "done record": path is not None and rec.get("status") == "executed",
+        "producer.host_class==gb10": producer.get("host_class") == "gb10",
+        "controller.job_features has gb10": "gb10" in (controller.get("job_features") or []),
+        "controller.node_active_features has gb10":
+            "gb10" in (controller.get("node_active_features") or []),
+        f"controller.batch_host=={NODE}": controller.get("batch_host") == NODE,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    record(
+        "11 --measurement --host-class gb10 executes with an attested receipt",
+        not failed,
+        f"job={job_id} host_class={producer.get('host_class')!r} "
+        f"partition={slurm.get('partition')!r} controller={controller}"
+        + (f" missing: {failed}; rc={completed.returncode}; "
+           f"stderr={(completed.stderr or '')[-600:]}" if failed else ""),
+    )
+
+
+def row_12_unknown_host_class_is_refused() -> None:
+    refused = pbrun(
+        ["bash", "action.sh", "run", ""],
+        extra=["--measurement", "--host-class", "smoke-nonexistent", "--wait-s", "30"],
+        timeout=180,
+    )
+    said = (refused.stderr or "") + (refused.stdout or "")
+    record(
+        "12 --host-class for a Feature no node has is refused at submit",
+        refused.returncode != 0 and "slurm refused this action" in said
+        and "submitted" not in (refused.stderr or ""),
+        f"rc={refused.returncode} {said.strip().splitlines()[-1][:120] if said.strip() else ''}",
+    )
+
+
 # ---------------------------------------------------------------------------
-# Rows 10a-10d: what ConstrainCores and ConstrainRAMSpace actually do
+# Rows 13a-13d: what ConstrainCores and ConstrainRAMSpace actually do
 #
 # Under the pull queue, `pbrun --cpus` and `--demand mem_gb=` were admission
 # declarations that nothing enforced.  Under `select/cons_tres` with
@@ -507,7 +731,7 @@ CONSTRAIN_CORES = os.environ.get("PB_SMOKE_CONSTRAIN_CORES", "yes")
 CONSTRAIN_SWAP = os.environ.get("PB_SMOKE_CONSTRAIN_SWAP", "no")
 ARM = f"cores={CONSTRAIN_CORES} swap={CONSTRAIN_SWAP}"
 
-#: How much memory row 10c writes past its declaration, and in what chunks.
+#: How much memory row 13c writes past its declaration, and in what chunks.
 #: ``bytearray(N)`` will not do: it is a calloc, so the pages are mapped and
 #: never written, and a cgroup charges pages that are faulted in.  ``extend``
 #: copies, which touches every page.
@@ -544,7 +768,7 @@ def _affinity_width(text: str) -> int:
 def _grower(megabytes: int, *, report: bool = False) -> list[str]:
     """A command that writes ``megabytes`` MiB and, optionally, reports its cgroup.
 
-    The report is what makes row 10c readable in every arm.  A job the kernel
+    The report is what makes row 13c readable in every arm.  A job the kernel
     kills says nothing itself, so the state is the evidence; a job that
     survives has to say whether it survived unconstrained or by reclaiming,
     and only its own ``memory.events`` can answer that.
@@ -620,7 +844,7 @@ def _binding_cgroup(text: str) -> dict[str, str]:
     return {}
 
 
-def row_10_cpu_containment() -> None:
+def row_13_cpu_containment() -> None:
     """What a job sees of the node's CPUs when it declares one, and when two.
 
     Read off ``taskset``, not ``nproc``.  ``nproc`` honours ``OMP_NUM_THREADS``
@@ -631,7 +855,7 @@ def row_10_cpu_containment() -> None:
     """
 
     node_cpus = int((sh(["nproc"]).stdout or "0").strip() or 0)
-    for label, declared in (("10a", 1), ("10b", 2)):
+    for label, declared in (("13a", 1), ("13b", 2)):
         completed = pbrun(
             ["bash", "-c", "echo nproc=$(nproc); taskset -cp $$"],
             extra=["--cpus", str(declared)],
@@ -657,7 +881,7 @@ def row_10_cpu_containment() -> None:
         )
 
 
-def row_10c_over_declared_memory() -> None:
+def row_13c_over_declared_memory() -> None:
     """A job that writes past its declared memory does not run unconstrained.
 
     The claim is deliberately not ``state == OUT_OF_MEMORY``: what the
@@ -700,7 +924,7 @@ def row_10c_over_declared_memory() -> None:
         acted and limit.isdigit() and int(limit) == declared_bytes
     )
     record(
-        f"10c a job over its mem_gb is constrained, not ignored [{ARM}]",
+        f"13c a job over its mem_gb is constrained, not ignored [{ARM}]",
         ok,
         f"job={job_id} declared mem_gb={OVER_DECLARED_GB}, wrote "
         f"{OVER_GROW_MIB} MiB -> filed {where or 'nothing'}/ state={state!r} "
@@ -715,7 +939,7 @@ def row_10c_over_declared_memory() -> None:
     )
 
 
-def row_10d_within_declared_memory() -> None:
+def row_13d_within_declared_memory() -> None:
     """And a job that stays under its declaration is untouched by the limit."""
 
     completed = pbrun(
@@ -733,7 +957,7 @@ def row_10d_within_declared_memory() -> None:
         and f"grew {UNDER_GROW_MIB} MiB" in (completed.stdout or "")
     )
     record(
-        f"10d a job within its mem_gb completes [{ARM}]",
+        f"13d a job within its mem_gb completes [{ARM}]",
         ok,
         f"job={job_id} declared mem_gb={UNDER_DECLARED_GB}, wrote "
         f"{UNDER_GROW_MIB} MiB -> filed {where or 'nothing'}/ "
@@ -766,9 +990,19 @@ def main() -> int:
     row_7_gres_and_constraint()
     row_8_epilog(timeout_job)
     row_9_no_slurmdbd(timeout_job or first_job)
-    row_10_cpu_containment()
-    row_10c_over_declared_memory()
-    row_10d_within_declared_memory()
+    # Last, and after row 8: the Epilog row asserts that no job state file is
+    # left in the lane, and a campaign in flight would legitimately hold three.
+    campaign_nonces = [VOL / f"campaign-{name}.txt" for name in "abc"]
+    for nonce in campaign_nonces:
+        nonce.write_text("")
+    row_10a_campaign(campaign_nonces)
+    row_10b_campaign_rerun(campaign_nonces)
+    row_10_scontrol_answers_the_job(WORK)
+    row_11_host_class_measurement(VOL / "nonce-measurement.txt")
+    row_12_unknown_host_class_is_refused()
+    row_13_cpu_containment()
+    row_13c_over_declared_memory()
+    row_13d_within_declared_memory()
     del prefix, timeout_prefix
 
     width = max(len(name) for name, _, _ in results)

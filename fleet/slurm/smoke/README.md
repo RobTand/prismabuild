@@ -32,9 +32,14 @@ patched. The host's real `/mnt/shared` is never touched.
 | 7b | `--constraint` for a Feature no node has is refused at submit and reported by `pbrun` |
 | 8 | the Epilog ran for a killed job, matched containers by the action's ownership label, and removed its state file as the job's user rather than as root |
 | 9 | with no `slurmdbd`, `sacct` answers nothing and the lane's provenance comes from `scontrol` |
-| 10a, 10b | with `ConstrainCores=yes`, a `--cpus N` job is confined to N CPUs of a node that has more; with `ConstrainCores=no` it is placed against the count and then sees the whole node |
-| 10c | a job that writes past its declared `mem_gb` runs against a `memory.max` equal to the declaration: it is throttled into swap under `ConstrainSwapSpace=no` and killed `OUT_OF_MEMORY` under `ConstrainSwapSpace=yes`, which `pbrun` reports |
-| 10d | a job that stays under its declared `mem_gb` completes |
+| 10a | a three-row `pbcampaign` manifest with mixed demand -- two `shard:1` rows and one no-GPU row -- runs on the fleet and reports one table with each row's job id and node |
+| 10b | the same manifest re-run is three CAS hits: no new job id, no new submission record, and no action ran again |
+| 10 | from inside a batch step, `scontrol show job` and `scontrol show node` return `Features=` and `ActiveFeatures=` to the job's owner, and `SLURM_JOB_CONSTRAINTS` is unset |
+| 11 | `pbrun --measurement --host-class gb10` executes, and the receipt's producer carries `host_class="gb10"` with the controller's `job_features` and `node_active_features` |
+| 12 | `--host-class` for a Feature no node has is refused at submit by `sbatch` |
+| 13a, 13b | with `ConstrainCores=yes`, a `--cpus N` job is confined to N CPUs of a node that has more; with `ConstrainCores=no` it is placed against the count and then sees the whole node |
+| 13c | a job that writes past its declared `mem_gb` runs against a `memory.max` equal to the declaration: it is throttled into swap under `ConstrainSwapSpace=no` and killed `OUT_OF_MEMORY` under `ConstrainSwapSpace=yes`, which `pbrun` reports |
+| 13d | a job that stays under its declared `mem_gb` completes |
 
 ## What it does not establish
 
@@ -58,8 +63,10 @@ The container is not the fleet, and four things stay open for the install:
 
 ## The two SLURMs behave differently, and the differences are recorded
 
-Both pass all eleven rows. Two things had to be worked around for 23.11.4, and
-neither is a lane defect:
+Both pass rows 1 to 9. The campaign rows (10a, 10b) and the host-class rows
+(10 to 12) were added afterwards and have run on 25.11.2 only
+(run-20260905T010019, 13/13, and run-20260905T010156, 14/14). Two things had
+to be worked around for 23.11.4, and neither is a lane defect:
 
 - Its `cgroup/v2` plugin creates its stepd scope under `/sys/fs/cgroup/system.slice`
   and refuses to initialize when that directory is absent (`Could not create
@@ -75,7 +82,7 @@ neither is a lane defect:
 
 ## The resource-enforcement arm
 
-Rows 10a-10d run twice, because the setting they measure is the one Rob has to
+Rows 13a-13d run three times, because the settings they measure are the ones Rob has to
 decide:
 
 ```
@@ -105,8 +112,8 @@ deviation at the top of the run:
 | `KillWait` | 30 | 10 | rows 5 and 6 would otherwise spend it waiting |
 | `ConstrainDevices` | `yes` | `no` | there are no devices to constrain |
 | `IgnoreSystemd` | absent | `yes` | there is no systemd to ask for a cgroup scope |
-| `ConstrainCores` | `yes` | `yes`, or `no` under `PB_SMOKE_CONSTRAIN_CORES=no` | rows 10a and 10b measure both settings; the default is the fleet's |
-| `ConstrainSwapSpace` | `no` | `no`, or `yes` under `PB_SMOKE_CONSTRAIN_SWAP=yes` | row 10c measures both settings; the default is the fleet's |
+| `ConstrainCores` | `yes` | `yes`, or `no` under `PB_SMOKE_CONSTRAIN_CORES=no` | rows 13a and 13b measure both settings; the default is the fleet's |
+| `ConstrainSwapSpace` | `no` | `no`, or `yes` under `PB_SMOKE_CONSTRAIN_SWAP=yes` | row 13c measures both settings; the default is the fleet's |
 | `gres.conf` `File=` | `/dev/nvidia0` | `/dev/nvidia0`, a `mknod`'d character device | slurmd refuses `shard` with no `File=` on the sharing GRES; see below |
 
 Every scheduler *choice* is the fleet's unchanged: `select/cons_tres` with
