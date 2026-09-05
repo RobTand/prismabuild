@@ -313,25 +313,16 @@ def test_it_cleans_up_after_a_job_that_ended_normally(
     assert not state.exists()
 
 
-#: The Epilog's two root variables, in the order the script assigns them.
-ROOT_VARIABLES = ("JOB_STATE_ROOT", "CHECKOUT_ROOT")
-
-
 def _root_prologue() -> str:
-    """The Epilog down to its last root assignment, ready to be sourced.
+    """The Epilog's configuration before its first job operation.
 
     A slice rather than the one line, because the value is what the shell
     computes: an assignment split over a helper variable, or spelled with
     ``${VAR}`` braces, is the same path and a different string.
     """
 
-    lines = EPILOG.read_text(encoding="utf-8").splitlines()
-    assigned = [
-        index for index, line in enumerate(lines)
-        if line.startswith(tuple(f"{name}=" for name in ROOT_VARIABLES))
-    ]
-    assert assigned, "no root assignment found; has the Epilog moved?"
-    return "\n".join(lines[: assigned[-1] + 1])
+    source = EPILOG.read_text(encoding="utf-8")
+    return source[:source.index('job_id="${SLURM_JOB_ID:-}"')]
 
 
 def _root(name: str, environment: dict[str, str]) -> str:

@@ -23,8 +23,10 @@ both Sparks by construction.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
+import subprocess
 
 CONF = Path(__file__).resolve().parents[1] / "fleet" / "slurm" / "slurm.conf"
 
@@ -125,20 +127,86 @@ def test_every_node_carries_its_address_because_the_names_do_not_resolve() -> No
     assert "SlurmctldHost=dl380g10(192.168.1.107)" in text
 
 
+INSTALL = Path(__file__).resolve().parents[1] / "fleet" / "slurm" / "install.sh"
+
+#: The driver the step runs under: the install's own reporting helpers, and a
+#: ``capture`` that answers for the box instead of asking it.  What is done
+#: with those answers is the script's own text, spliced in below.
+_DRIVER = """set -uo pipefail
+DRY_RUN=0
+STEP="5"
+say() { printf '%s\\n' "$*"; }
+die() { printf 'install.sh: FAILED at step %s: %s\\n' "$STEP" "$*" >&2; exit 1; }
+capture() {
+    case "$1" in
+        slurmd) printf '%s\\n' "$FAKE_SLURMD_C" ;;
+        ip) printf '%s\\n' "$FAKE_IP" ;;
+        *) printf 'unexpected capture: %s\\n' "$*" >&2; exit 3 ;;
+    esac
+}
+"""
+
+
+def _step_5() -> str:
+    """install.sh's stanza cross-check, taken from its own text.
+
+    The step is gated on a live run, because it is a question about the box,
+    and a live run installs packages and writes ``/etc/slurm`` as root.  So
+    what runs here is the step and not the script: everything from the stanza
+    helpers to the end of the address check, unchanged.
+    """
+
+    lines = INSTALL.read_text(encoding="utf-8").splitlines()
+    start = [i for i, line in enumerate(lines) if line.startswith("node_stanza() {")]
+    end = [i for i, line in enumerate(lines) if line.startswith("# -- step 6:")]
+    assert start and end and start[0] < end[0], (
+        "step 5 was not found between its markers; has install.sh moved?")
+    return "\n".join(lines[start[0]:end[0]])
+
+
+def _address_check(node: str, held: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run that step against a box holding ``held`` and reporting its layout."""
+
+    layout = MEASURED[node]
+    environment = dict(os.environ)
+    environment.update(
+        NODE=node,
+        CONF_SRC=str(CONF.parent),
+        FAKE_SLURMD_C=(
+            "NodeName={} CPUs={CPUs} Boards=1 SocketsPerBoard={SocketsPerBoard} "
+            "CoresPerSocket={CoresPerSocket} ThreadsPerCore={ThreadsPerCore} "
+            "RealMemory=124546".format(node, **layout)),
+        FAKE_IP="\n".join(
+            f"2: eth0    inet {address}/24 brd 192.168.1.255 scope global eth0"
+            for address in held),
+    )
+    return subprocess.run(
+        ["/bin/bash", "-c", _DRIVER + _step_5()],
+        capture_output=True, text=True, env=environment,
+    )
+
+
 def test_the_install_script_refuses_an_address_the_box_does_not_hold() -> None:
     """The addresses are DHCP leases, so they can move.
 
     That has to be a refusal rather than a node which never registers, and the
     box running the install is the only one that can answer the question about
-    itself.
+    itself.  So the question is put to the step twice, with the box's answer
+    stubbed both ways: the refusal is the behaviour, and a step whose source
+    still reads right with its condition inverted is what this notices.
     """
 
-    script = (
-        Path(__file__).resolve().parents[1] / "fleet" / "slurm" / "install.sh"
-    ).read_text(encoding="utf-8")
-    assert 'declared_address="$(stanza_field "$declared" NodeAddr)"' in script
-    assert "ip -4 -o addr show scope global" in script
-    assert "declares no NodeAddr" in script
+    address = ADDRESSES["sparky"]
+
+    holds_it = _address_check("sparky", [address])
+    assert holds_it.returncode == 0, holds_it.stderr
+    assert f"# NodeAddr {address} is one of this box's addresses" in holds_it.stdout
+
+    moved = _address_check("sparky", ["192.168.1.254"])
+    assert moved.returncode == 1
+    assert f"the address {address}, and this box does not hold it" in moved.stderr
+    assert "192.168.1.254" in moved.stderr
+    assert "A DHCP lease probably moved" in moved.stderr
 
 
 # -- the default a hand-run job is charged -----------------------------------
@@ -198,3 +266,4 @@ def test_the_memory_default_is_one_every_node_can_honour_at_full_occupancy() -> 
             f"{node}: a whole-node job defaults to {charged} MiB of "
             f"{fields['RealMemory']} MiB"
         )
+
