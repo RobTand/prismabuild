@@ -271,6 +271,41 @@ def test_a_dry_run_runs_nothing_at_all(rendered, box) -> None:
 # -- cutover.sh refuses ------------------------------------------------------
 
 
+#: One box, and it is no box.  Naming this box instead made ``on_box`` take
+#: its local branch, so a live cutover under test ran the STOP_FUNCTIONS
+#: snippet -- ``kill`` and ``kill -9`` included -- on the developer's machine,
+#: and only a fake ``pgrep`` that exits 1 kept it from finding a pid.  A name
+#: no box answers to sends every snippet down the remote branch instead, which
+#: is also the branch the fleet actually uses.  It must not contain "sparky" or
+#: "sparklina": one test asserts neither name reaches step 4.
+FAKE_BOX = "pb-no-such-box"
+
+
+def _fake_ssh(tmp_path: Path) -> Path:
+    """An ``ssh`` that runs the snippet here, against the fakes.
+
+    ``cutover.sh`` pipes the snippet into ``$SSH <box> bash -s``, so dropping
+    the box name and exec-ing the rest reads the same snippet from the same
+    stdin.  The fakes go on ``PATH`` first, which is what makes ``pgrep`` and
+    ``crontab`` inside the snippet the test's own.
+    """
+
+    fakes = tmp_path / "fakes"
+    fakes.mkdir(exist_ok=True)
+    script = fakes / "ssh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"echo \"ssh $*\" >> '{tmp_path}/calls'\n"
+        "shift\n"
+        f"PATH='{fakes}':\"$PATH\"\n"
+        "export PATH\n"
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
 def _cutover_environment(tmp_path: Path) -> dict[str, str]:
     queue = tmp_path / "pb-queue"
     (queue / "claimed").mkdir(parents=True)
@@ -285,13 +320,9 @@ def _cutover_environment(tmp_path: Path) -> dict[str, str]:
         PB_QUEUE_ROOT=str(queue),
         PB_RUNTIME_DIR=str(runtime),
         PB_STATE_DIR=str(state),
-        # One box, and it is this one, so nothing here can reach the fleet even
-        # if a refusal failed to fire.
-        PB_BOXES=subprocess.run(
-            ["hostname", "-s"], capture_output=True, text=True, check=True
-        ).stdout.strip(),
+        PB_BOXES=FAKE_BOX,
         PB_SPARKS="",
-        PB_SSH="false",
+        PB_SSH=str(_fake_ssh(tmp_path)),
     )
     return environment
 
@@ -430,18 +461,19 @@ def test_cutover_honours_an_empty_pb_sparks(tmp_path: Path) -> None:
 def _live_cutover(tmp_path: Path, *, crontab: str, publish_exit: int) -> dict[str, str]:
     """An environment in which a live cutover touches only fakes.
 
-    ``pgrep`` finds nothing, so the kill steps have nothing to kill and the
-    pbrun scan finds no waiter; ``crontab`` reads and writes one file under
-    ``tmp_path``; the publish stub accepts ``--dry-run`` and exits
-    ``publish_exit`` on the real publication.  The fakes log every call, and
-    the tests read the log before trusting that the real commands were never
-    reached.
+    Every snippet reaches ``_fake_ssh`` rather than this box's shell, and the
+    fakes it puts on ``PATH`` answer the commands inside: ``pgrep`` finds
+    nothing, so the stop steps have nothing to signal and the pbrun scan finds
+    no waiter; ``crontab`` reads and writes one file under ``tmp_path``; the
+    publish stub accepts ``--dry-run`` and exits ``publish_exit`` on the real
+    publication.  The fakes log every call, and the tests read the log before
+    trusting that the real commands were never reached.
     """
 
     environment = _cutover_environment(tmp_path)
     (Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json").write_text("{}")
     fakes = tmp_path / "fakes"
-    fakes.mkdir()
+    fakes.mkdir(exist_ok=True)
     (fakes / "pgrep").write_text(
         "#!/bin/sh\n"
         f"echo \"pgrep $*\" >> '{tmp_path}/calls'\n"
@@ -680,3 +712,23 @@ def test_verify_row_4_reports_nvidia_smis_own_status() -> None:
     )
     assert 'smi="$(nvidia-smi -L 2>&1)"; rc=$?' in text
     assert 'echo "smi-rc=$rc"' in text
+
+
+def test_a_live_cutover_under_test_never_runs_a_stop_snippet_on_this_box(
+    tmp_path: Path,
+) -> None:
+    """``PB_BOXES`` was this box's hostname, so ``on_box`` took the branch that
+    runs the snippet locally: ``bash -c "$STOP_FUNCTIONS ..."`` with the real
+    ``kill`` at cutover.sh:162 and ``kill -9`` at :172, on the machine running
+    the suite.  Nothing about that was intended, and the remote branch the
+    fleet uses was never exercised.
+    """
+
+    environment = _live_cutover(
+        tmp_path, crontab=SUPERVISE_LINE + "\n", publish_exit=1)
+    result = _cutover(environment, "--yes")
+
+    assert result.returncode == 1, result.stderr
+    assert "(this box)" not in result.stdout
+    calls = (tmp_path / "calls").read_text(encoding="utf-8")
+    assert f"ssh {FAKE_BOX} bash -s" in calls
