@@ -28,7 +28,10 @@ Three properties follow from that.
     untracked bytes included — as a Git bundle in the content-addressed store
     (CAS). The worker materializes a fresh checkout of that commit wherever the
     action lands, so `HEAD~1`, `git merge-base` and `BASE...HEAD` resolve there.
-    Edits you make after submitting cannot change what runs.
+    Edits you make after submitting cannot change what runs. A path you staged
+    with `git add -f` travels too, with the bytes it has in your worktree, even
+    though the ignore rules match it; a path your worktree no longer has does
+    not travel, whether it was committed or only staged.
 *   **A receipt is the verdict.** A worker that finishes the work publishes a
     CAS receipt. Under SLURM, a job that exits 0 without publishing a receipt
     did not do the work, and a job that ends badly after publishing one did.

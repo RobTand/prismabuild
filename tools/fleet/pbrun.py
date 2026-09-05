@@ -256,6 +256,51 @@ def snapshot_path_roster(
     ))
 
 
+def _seed_index_roster(root: Path, environment: dict[str, str]) -> None:
+    """Force every source-index path into the alternate index.
+
+    ``git add -A`` honours the ignore rules for a path the alternate index
+    does not already carry, and an index seeded from ``HEAD`` does not carry a
+    path the submitter staged with ``git add -f``.  That path is in the roster
+    the snapshot identity hashes, so omitting it seals a tree the identity
+    does not describe.  Force-add the source index roster instead, with the
+    working-tree bytes each path has now.
+
+    Paths whose working-tree entry is absent are left out: a staged addition
+    that was then removed from the worktree has nothing to force-add, and the
+    ``git add -A`` that follows records the removal, which is what a tracked
+    deletion already did.
+    """
+
+    raw_paths = _snapshot_git(root, ["ls-files", "-z"], strip=False)
+    staged = []
+    for relative in raw_paths.split("\0"):
+        if not relative:
+            continue
+        try:
+            (root / relative).lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SystemExit(
+                f"pbrun: cannot inspect checkout path {relative!r}: {exc}"
+            ) from exc
+        staged.append(relative)
+    if not staged:
+        return
+    # ``GIT_LITERAL_PATHSPECS`` keeps a pathname that looks like pathspec
+    # magic or a glob from being read as one; these are exact paths Git just
+    # reported, never patterns.
+    literal_environment = dict(environment)
+    literal_environment["GIT_LITERAL_PATHSPECS"] = "1"
+    _snapshot_git(
+        root,
+        ["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        environment=literal_environment,
+        input_text="\0".join(staged) + "\0",
+    )
+
+
 def require_working_tree_size(
     root: Path, paths: list[str], *, max_bytes: int
 ) -> int:
@@ -755,11 +800,16 @@ def _build_git_checkout_snapshot(
         )
         # An alternate index begins empty. Overlaying the worktree directly
         # would therefore treat a HEAD-tracked file that now matches an ignore
-        # rule as untracked and omit it. Seed the exact tracked roster first;
-        # ``git add -A`` then applies deletions and live-byte changes on top.
+        # rule as untracked and omit it, and ``git add -A`` would drop a path
+        # that the submitter staged with ``git add -f`` but that HEAD has never
+        # carried. Seed the sealed roster from the source index, which is the
+        # roster the snapshot identity hashes, so the roster hashed and the
+        # roster sealed are the same roster. ``git add -A`` then applies
+        # deletions and live-byte changes on top.
         _snapshot_git(
             root, ["read-tree", "HEAD"], environment=object_environment
         )
+        _seed_index_roster(root, object_environment)
         _snapshot_git(root, ["add", "-A"], environment=object_environment)
         if stamp_relative is not None:
             _snapshot_git(
