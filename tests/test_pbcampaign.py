@@ -252,3 +252,112 @@ def test_a_row_pbrun_refuses_does_not_stop_the_others(
     assert len([line for line in captured.out.splitlines() if line.strip()]) == 2
     assert "row 1 refused" in captured.err
     assert len(list(queue.dir(pool.READY).glob("*.json"))) == 2
+
+
+# --------------------------------------------------------------------------
+# Measurement rows
+# --------------------------------------------------------------------------
+
+def test_a_measurement_row_reaches_pbrun_with_every_flag_it_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A campaign of measurements was not expressible at all.
+
+    ``--measurement``, ``--host-class``, ``--retry-safe`` and
+    ``--max-attempts`` had no row field, so the only way to run a measurement
+    on the fleet was N hand-typed ``pbrun`` invocations -- which is what
+    ``pbcampaign`` exists to replace.  Each of the four seals into the action:
+    the class rides the placement axis and the retry policy is sealed into the
+    identity, so a row missing one is a different action from the hand-typed
+    command it is meant to reproduce.
+    """
+
+    seen: dict[str, list[str]] = {}
+
+    def fake_main() -> int:
+        seen["argv"] = list(sys.argv)
+        print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
+        return 0
+
+    monkeypatch.setattr(pbrun, "main", fake_main)
+    published = pbcampaign.submit_row(
+        {
+            "argv": ["/bin/bash", "-lc", "./probe.sh"],
+            "cwd": "/home/rob/tree",
+            "measurement": True,
+            "host_class": "gb10",
+            "retry_safe": True,
+            "max_attempts": 1,
+        },
+        transport="slurm",
+    )
+
+    assert published["status"] == "submitted"
+    argv = seen["argv"]
+    assert argv[argv.index("--host-class") + 1] == "gb10"
+    assert argv[argv.index("--max-attempts") + 1] == "1"
+    assert "--measurement" in argv and "--retry-safe" in argv
+
+
+def test_the_four_fields_are_one_pbrun_command_line_and_nothing_else() -> None:
+    """The mapping stays mechanical, so it can be read rather than trusted."""
+
+    assert pbcampaign.pbrun_argv({
+        "argv": ["./probe.sh"],
+        "host_class": "gb10",
+        "max_attempts": 1,
+        "measurement": True,
+        "retry_safe": True,
+    }) == [
+        "--host-class", "gb10",
+        "--max-attempts", "1",
+        "--measurement",
+        "--retry-safe",
+        "--", "./probe.sh",
+    ]
+
+
+def test_a_measurement_without_a_host_class_is_refused_before_anything_is_sealed(
+    tmp_path: Path, fleet_paths
+) -> None:
+    """In ``pbrun``'s words: a portable measurement lets any box's KL stand in."""
+
+    work, queue = fleet_paths
+    manifest = _manifest(tmp_path, [
+        _row(work, "printf a"),
+        _row(work, "./probe.sh", measurement=True),
+    ])
+    with pytest.raises(SystemExit) as raised:
+        pbcampaign.main([manifest])
+
+    assert "row 1" in str(raised.value)
+    assert "--measurement requires --host-class" in str(raised.value)
+    assert not list(queue.dir(pool.READY).glob("*.json"))
+
+
+def test_a_host_class_row_is_refused_on_the_pull_queue(tmp_path: Path) -> None:
+    """The class is attested through the controller, so the queue cannot run it."""
+
+    manifest = _manifest(tmp_path, [
+        {"argv": ["./probe.sh"], "host_class": "gb10"},
+    ])
+    with pytest.raises(pbcampaign.ManifestError) as raised:
+        pbcampaign.load_manifest(manifest, transport="pool")
+    assert "--host-class needs --transport slurm" in str(raised.value)
+
+    # And the same manifest is a submittable row on the lane.
+    assert pbcampaign.load_manifest(manifest, transport="slurm")
+
+
+def test_a_row_asking_for_a_retry_nobody_would_watch_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Every row goes out detached, which is pbrun's own reason to refuse."""
+
+    manifest = _manifest(tmp_path, [
+        {"argv": ["./stage.sh"], "retry_safe": True, "max_attempts": 3},
+    ])
+    with pytest.raises(pbcampaign.ManifestError) as raised:
+        pbcampaign.load_manifest(manifest)
+    assert "--detach submits one attempt" in str(raised.value)
+    assert "asks for 3" in str(raised.value)

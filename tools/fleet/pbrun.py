@@ -1725,6 +1725,24 @@ def _report_stall(key: str, report) -> None:
 SEALED_ARGV0 = "/bin/bash"
 
 
+def detached_attempts_refusal(max_attempts: int) -> str:
+    """Why a detached submission cannot carry more than one attempt.
+
+    A retry is a second submission made after somebody watched the first one
+    fail.  Detaching means nobody is watching, so the choice is between
+    silently running one attempt for a caller who asked for three, and saying
+    so.  A function rather than a literal because ``pbcampaign`` submits every
+    row detached and has to refuse the same row for the same reason, at
+    manifest load; two copies of the sentence would be two policies.
+    """
+
+    return (
+        f"pbrun: --detach submits one attempt and returns, so it cannot "
+        f"honour --max-attempts greater than 1 (this asks for {int(max_attempts)}); "
+        f"submit it attached, or detach with a single attempt"
+    )
+
+
 def require_host_class_scope(
     *, measurement: bool, host_class: str | None, transport: str
 ) -> None:
@@ -2374,15 +2392,7 @@ def main() -> int:
             "--deterministic covers result bytes, not external side effects"
         )
     if args.detach and args.max_attempts > 1:
-        # A retry is a second submission made after somebody watched the first
-        # one fail.  Detaching means nobody is watching, so the choice is
-        # between silently running one attempt for a caller who asked for
-        # three, and saying so here.
-        raise SystemExit(
-            "pbrun: --detach submits one attempt and returns, so it cannot "
-            "honour --max-attempts greater than 1; submit it attached, or "
-            "detach with a single attempt"
-        )
+        raise SystemExit(detached_attempts_refusal(args.max_attempts))
     retry_policy = {
         "max_attempts": args.max_attempts,
         "retry_safe": args.retry_safe,

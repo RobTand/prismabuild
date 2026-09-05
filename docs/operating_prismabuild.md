@@ -220,11 +220,46 @@ an omitted field is not passed at all.
 | `exclusive` | `--exclusive` |
 | `gpu_capacity` | `--gpu-capacity` |
 | `priority` | `--priority` |
+| `measurement` | `--measurement` |
+| `host_class` | `--host-class`, a node Feature name such as `gb10` |
+| `retry_safe` | `--retry-safe` |
+| `max_attempts` | `--max-attempts` |
 
 An unknown field is refused when the manifest loads, before any row is sealed:
-a dropped typo would seal an action nobody asked for. A row cannot express
-`--measurement`, `--host-class`, `--retry-safe`, or `--max-attempts`; submit
-those with `pbrun` directly.
+a dropped typo would seal an action nobody asked for.
+
+Three rows are refused at load as well, each for the reason `pbrun` gives at
+submit:
+
+*   `measurement` without `host_class`. A measurement's numerics do not
+    transfer across architectures, so its result is keyed on the class that
+    produced it.
+*   `host_class` under `--transport pool`. The class is attested through the
+    SLURM controller, so a pull-queue worker refuses the action at preflight.
+    This is the one refusal that depends on the campaign's transport rather
+    than on the row.
+*   `max_attempts` greater than 1. A campaign submits every row detached,
+    which is what lets one command hold N actions open, and a retry needs
+    somebody alive to see the attempt fail.
+
+Set `retry_safe` on a row even without `max_attempts`. The retry policy is
+sealed into the action's identity, so a row that omits it is a different action
+from the hand-typed `pbrun` that passes it.
+
+A campaign of measurements therefore reads like this, and every row of it is a
+cache hit on the second run:
+
+    [
+      {
+        "argv": ["./probe.sh", "--shard", "0"],
+        "cwd": "/home/rob/mypkg",
+        "measurement": true,
+        "host_class": "gb10",
+        "retry_safe": true
+      }
+    ]
+
+Run it with `--transport slurm`, from a box of that class.
 
 `--transport` is a flag on the campaign, not a row field, because which
 dispatcher carries the work is a fact about the fleet. One caveat travels with
