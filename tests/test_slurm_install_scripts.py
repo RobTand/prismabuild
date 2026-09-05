@@ -17,6 +17,7 @@ is the fleet's shared secret and an NFS export is the wrong place for one).
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -432,3 +433,50 @@ def test_shellcheck_is_clean() -> None:
     if result.returncode != 0 and "Unable to find image" in result.stderr:
         pytest.skip("shellcheck image is not available and cannot be pulled")
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# -- what the runbook's scripts execute --------------------------------------
+
+
+def test_every_tool_the_scripts_run_directly_is_executable() -> None:
+    """`verify.sh` row 7 runs `tools/fleet/pbrun.py` as a command, not as an
+    argument to an interpreter, and so do the README and the runbook.
+
+    That is three documents agreeing on how the tool is invoked, against a file
+    that was mode 644 with no shebang. Every one of them failed the same way,
+    and none of the tests caught it because they all spell it
+    ``sys.executable, str(PBRUN)``. Found on 2026-09-05, the first time
+    `verify.sh` ran anywhere -- in `fleet/slurm/smoke/multinode`, against a
+    real controller:
+
+        [FAIL] 7    pbrun --transport slurm --here runs an action end to end
+                  exit 126
+                  timeout: failed to run command 'tools/fleet/pbrun.py':
+                  Permission denied
+    """
+
+    executed: set[Path] = set()
+    pattern = re.compile(r"(?<![\w/.-])(tools/fleet/[A-Za-z0-9_.-]+\.py)")
+    for script in SCRIPTS:
+        for line in script.read_text(encoding="utf-8").splitlines():
+            bare = line.strip()
+            if bare.startswith("#"):
+                continue
+            for name in pattern.findall(bare):
+                # An argument to an interpreter does not need the bit.
+                head = bare[: bare.index(name)]
+                if re.search(r"python3?\s+\S*$", head):
+                    continue
+                executed.add(ROOT / name)
+
+    assert executed, "no tool invocation found; has the pattern gone stale?"
+    wrong = []
+    for tool in sorted(executed):
+        if not tool.is_file():
+            wrong.append(f"{tool}: does not exist")
+            continue
+        if not os.access(tool, os.X_OK):
+            wrong.append(f"{tool}: not executable")
+        if not tool.read_text(encoding="utf-8").startswith("#!"):
+            wrong.append(f"{tool}: no shebang")
+    assert not wrong, "\n".join(wrong)
