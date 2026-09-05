@@ -87,6 +87,15 @@ def _config(host: str) -> dict:
             continue
         if host in boxes:
             return boxes[host]
+        # The second Spark was renamed from gx10-6b77 to sparklina.  Its
+        # declared alias names the same machine, not a second capacity offer.
+        # Keep one shape so the old and new hostname cannot drift apart.
+        aliases = [shape for shape in boxes.values()
+                   if shape.get("_alias") == host]
+        if len(aliases) > 1:
+            raise SystemExit(f"ambiguous fleet hostname alias {host}: {path}")
+        if aliases:
+            return aliases[0]
     raise SystemExit(
         f"no fleet_boxes.json entry for {host}; refusing to guess what this "
         f"box offers -- add it to tools/fleet/fleet_boxes.json and publish"
