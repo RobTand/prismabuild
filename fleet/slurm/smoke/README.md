@@ -179,6 +179,16 @@ because SLURM's own client library absorbs it -- a `scontrol` issued while the
 controller is down blocks about forty seconds and then answers. Sixty seconds
 is what it takes for a poll to really come back with nothing.
 
+## Both SLURMs, three nodes
+
+All eleven rows pass on both. The difference is time, and it is the same one
+the one-node harness records: with `AccountingStorageType=accounting_storage/none`
+23.11.4 schedules every job as `InvalidAccount` and starts it about thirty
+seconds later, once the association refresh fills in `Assoc=0`. Measured on
+2026-09-05: 4 min 12 s on 25.11.2, 9 min 05 s on 23.11.4, same rows, same box.
+Nothing fails; a fleet on 23.11 would simply be slower at everything, which is
+one more argument for putting the 25.11 packages on the nodes.
+
 ## What it does not establish
 
 - **Real GPUs.** `ConstrainDevices` is off and the Sparks' GRES binds a
