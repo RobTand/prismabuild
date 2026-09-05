@@ -102,7 +102,7 @@ def _claim_holders() -> frozenset[int] | None:
 
     try:
         return frozenset(pool.PoolQueue(_queue_root()).claim_holder_pids())
-    except OSError:
+    except (OSError, pool.PoolContractError):
         return None
 
 

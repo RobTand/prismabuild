@@ -2278,23 +2278,26 @@ class PoolQueue:
         one box can resolve.  A lease naming another box is another box's
         business.
 
-        A lease that cannot be read is skipped rather than raised on.  The
-        caller is deciding whether one of its own processes may be signalled,
-        and a single unreadable file must not stop a box managing its loops.
+        Missing or unreadable ownership is unknown, not idle. A claim is
+        renamed before its first lease is written, so inspect claimed items
+        and refuse to authorize a signal while any ownership is unresolved.
         """
 
         host = socket.gethostname() if host is None else host
         pids: set[int] = set()
-        for lease in _glob(self.dir(CLAIMED), "*.lease"):
-            try:
-                record = _read_json(lease)
-            except PoolContractError:
-                continue
-            if record is None or record.get("host") != host:
-                continue
+        for claim in _glob(self.dir(CLAIMED), "*.json"):
+            lease = claim.with_suffix(".lease")
+            record = _read_json(lease)
+            if record is None:
+                if not claim.exists():
+                    continue  # Finished while the directory was being read.
+                raise PoolContractError(f"claim ownership is unknown: {claim}")
             pid = record.get("pid")
-            if isinstance(pid, int) and not isinstance(pid, bool):
-                pids.add(int(pid))
+            if (not isinstance(record.get("host"), str) or not record["host"]
+                    or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0):
+                raise PoolContractError(f"claim ownership is invalid: {lease}")
+            if record["host"] == host:
+                pids.add(pid)
         return pids
 
     def reap_stale(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:

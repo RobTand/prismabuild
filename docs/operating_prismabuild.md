@@ -678,6 +678,12 @@ after `BOOT_FAIL`, `FAILED`, `NODE_FAIL`, `OUT_OF_MEMORY`, `PREEMPTED`, or
 `DEADLINE` because a resubmission would meet the same absolute deadline
 immediately.
 
+A pool worker receiving `SIGTERM` completes its current action and files the
+outcome before exiting. This protects claims acquired after the supervisor's
+idle check. Use the withdrawal command to cancel an action; worker rotation
+is a request to drain. Supervisors also defer rotation when claim ownership
+cannot be read, including the interval before a claim's first lease appears.
+
 ### Reset a batch of failures
 
 `pool_reset` re-submits the queue's failed items. It resets the work, not the

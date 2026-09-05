@@ -121,3 +121,16 @@ def test_a_queue_that_is_not_there_leaves_the_process_tree_deciding(
 
     monkeypatch.setattr(supervise, "MIRROR", tmp_path / "no-such-mirror")
     assert supervise._is_idle(childless.pid) is True
+
+
+@pytest.mark.parametrize("lease_bytes", [None, "{", '{}'])
+def test_a_claim_with_unknown_ownership_does_not_authorize_a_signal(
+    tmp_path, monkeypatch, childless, lease_bytes,
+):
+    queue = _queue(tmp_path, monkeypatch)
+    _hold_a_claim(queue, childless.pid, host=socket.gethostname())
+    if lease_bytes is None:
+        queue.lease_path(KEY).unlink()
+    else:
+        queue.lease_path(KEY).write_text(lease_bytes)
+    assert supervise._is_idle(childless.pid) is False
