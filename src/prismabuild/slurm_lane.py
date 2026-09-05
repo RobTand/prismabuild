@@ -877,6 +877,44 @@ def _now() -> float:
     return time.time()
 
 
+def _publish_json_if_absent(path: Path, payload: Mapping[str, object]) -> bool:
+    """File ``payload`` at ``path`` only when nothing is there yet.
+
+    Link-first: the bytes go to a unique temp file that is then hard-linked
+    to ``path``, and ``os.link`` refuses a name that already exists -- the
+    same primitive the CAS publishes receipts with.  Where
+    ``_write_json_atomic`` replaces whatever it finds, this never does, which
+    is the rule a ``cache_hit`` ending lives under: it is filed only when the
+    key has no ending at all (``publish_outcome``).
+
+    An existence check followed by a rename has a window, and row 15b of
+    fleet/slurm/smoke measured two submitters of one key inside it on
+    2026-09-05 (run-20260905T122808): started together, both polled on the
+    same tick, the executing job's record was filed, and the hit's rename
+    then replaced it.  The run that did the work keeps the record.
+
+    Returns True when this call filed the record and False when a record was
+    already there; the temp file is gone either way.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = pb._canonical_file_bytes(dict(payload))
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
     """Replace a terminal record whole, the way ``pool._write_json_atomic`` does.
 
@@ -2450,6 +2488,16 @@ def publish_outcome(
     # directory (``withdrawn_keys``, ``withdrawal_covers``, ``pool_reset``)
     # read exactly those fields.
     record.update(decision)
+    if status == "cache_hit":
+        # Filed only when the key has no ending at all, and link-first so that
+        # holds against a writer this call never saw: ``_file_ending``'s
+        # ``exists()`` check and the executing submitter's own filing can
+        # interleave, and a rename here replaced the execution's record with
+        # the hit's.  ``None`` means a record already stands, as it does for a
+        # same-generation record above.
+        if not _publish_json_if_absent(path, record):
+            return None
+        return path
     _write_json_atomic(path, record)
     return path
 
