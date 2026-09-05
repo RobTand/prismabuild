@@ -2554,7 +2554,10 @@ def slurm_outcome(
     # this check and the job's start costs a materialization, never a rerun.
     # One lookup: it verifies the result blob, which on a rendered model is
     # gigabytes hashed over NFS.
-    receipt = None if detach else cas.lookup(action)
+    try:
+        receipt = None if detach else cas.lookup(action)
+    except OSError as exc:
+        return _lane_io_failure(exc, key=key, action=action, cas=cas)
     if receipt is not None:
         return cached_outcome(
             key,

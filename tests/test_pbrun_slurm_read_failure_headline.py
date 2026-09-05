@@ -61,9 +61,10 @@ class _CASThatStopsAnswering:
                       str(Path(self.root) / "receipts"))
 
 
+@pytest.mark.parametrize("answers", [0, 1])
 def test_a_read_the_lane_could_not_make_is_not_reported_as_an_unwritten_record(
     tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], answers: int,
 ) -> None:
     """The facts stay; the headline stops naming a write that never happened."""
 
@@ -71,7 +72,7 @@ def test_a_read_the_lane_could_not_make_is_not_reported_as_an_unwritten_record(
     real = pb.PrismaBuildCAS(tmp_path / "cas")
     action = _paper_action(tmp_path, "unreadable-cas")
     request = real.publish_action_request(action)
-    cas = _CASThatStopsAnswering(real)
+    cas = _CASThatStopsAnswering(real, answers=answers)
 
     code = pbrun.slurm_outcome(
         action, cas=cas, request_path=request, tags=[], demand={},
