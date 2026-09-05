@@ -4,11 +4,10 @@ This guide is for the operator or agent who puts work on the fleet. It covers
 submitting a command, waiting for it, running a campaign, watching what the
 fleet is doing, stopping work, and reading a failure.
 
-For installing SLURM, see the [SLURM install
-runbook](slurm_runbook_2026-09-04.md). For why the fleet moved from its own
-pull queue to SLURM, see the [scheduler
-decision](scheduler_decision_2026-09-04.md). For the system's own map, see
-[the design document](design.md).
+To install SLURM, see the [SLURM install
+runbook](slurm_runbook_2026-09-04.md). For why the fleet moved from its own pull
+queue to SLURM, see the [scheduler decision](scheduler_decision_2026-09-04.md).
+For the system's own map, see [the design document](design.md).
 
 Two dispatchers carry work: the pull queue (`pool`) and SLURM (`slurm`). The
 result does not depend on which one carried it. Examples below name the
@@ -25,24 +24,23 @@ digest, and the fleet prints its first 12 characters.
 
 Three properties follow from that.
 
-*   **A snapshot, not a path.** `pbrun` seals your Git checkout — including
-    dirty and untracked bytes — as a Git bundle in the content-addressed store
+*   **A snapshot, not a path.** `pbrun` seals your Git checkout — dirty and
+    untracked bytes included — as a Git bundle in the content-addressed store
     (CAS). The worker materializes a fresh checkout of that commit wherever the
     action lands, so `HEAD~1`, `git merge-base` and `BASE...HEAD` resolve there.
     Edits you make after submitting cannot change what runs.
 *   **A receipt is the verdict.** A worker that finishes the work publishes a
-    CAS receipt for the action. Under SLURM, a job that exits 0 without
-    publishing a receipt did not do the work, and a job that ends badly after
-    publishing one did.
+    CAS receipt. Under SLURM, a job that exits 0 without publishing a receipt
+    did not do the work, and a job that ends badly after publishing one did.
 *   **A re-run is a lookup.** Asking for the same work again produces the same
-    key. If the CAS already holds a receipt for that key, nothing runs and the
-    submission reports `cache_hit`. This is what makes a campaign resumable:
+    key. If the CAS already holds a receipt for it, nothing runs and the
+    submission reports `cache_hit`. That is what makes a campaign resumable:
     submit every row, and only the missing ones cost anything.
 
 Placement is part of identity. `pbrun` normalizes and sorts the tags that
-actually landed, including a hostname pin derived from a box-local executable,
-and seals them before computing the key. Flag order and duplicate tags do not
-move the key; a different admissible worker population does.
+landed, including a hostname pin derived from a box-local executable, and seals
+them before computing the key. Flag order and duplicate tags do not move the
+key; a different admissible worker population does.
 
 ## Submit one command
 
@@ -63,14 +61,18 @@ These flags say what the action needs and where it may run.
 | `--gpu` | Shorthand for `gpu=1,mem_gb=16`. | `--gres=shard:1`, partition `gpu`. |
 | `--demand gpu=2,cpu=8,mem_gb=32` | The full demand. `mem_gb` defaults to 4, `cpu` to `--cpus`. | `--gres=shard:2 --cpus-per-task=8 --mem=32768M`. |
 | `--exclusive` | The whole GPU of one box. Requires a GPU demand. | `--gres=gpu:1` rather than a larger shard count. |
-| `--gpu-capacity N` | Slots to demand for `--exclusive`. | Under SLURM, `demand["gpu"] = N or 1`. |
+| `--gpu-capacity N` | Slots to demand for `--exclusive`. | Under SLURM, only `1` is accepted: `--gres=gpu:1` is the whole device, so a larger count would be read and discarded. |
 | `--cpus N` | Cores the action will actually use. Defaults to 1. | `--cpus-per-task=N`. |
 | `--tag NAME` | Require a box offering this tag. Repeatable. | `--constraint=NAME`, ANDed with `&`. |
 | `--here` | Pin the action to this box. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
+| `--priority N` | A queue hint. Higher runs sooner. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 
 `--anywhere` and `--here` contradict each other and `pbrun` refuses both
 together.
+
+`--priority` is a queue hint and nothing more. It is not part of the action
+identity, so two submissions that differ only in priority are the same action.
 
 ### Which partition an action lands in
 
@@ -90,21 +92,18 @@ nothing to the action's identity:
 Every job is submitted with `--no-requeue` and `--export=NIL`. Only SLURM's own
 variables reach the job; the action's environment is the sealed one the worker
 builds. `--chdir`, `--output` and `--error` point at the action's own lane
-directory. Retries are new submissions with new job ids, never `--requeue`.
-
-The install runbook's [reference section on what the lane
-sends](slurm_runbook_2026-09-04.md) shows a full `sbatch` line.
+directory. Retries are new submissions with new job ids, never `--requeue`. The
+[install runbook](slurm_runbook_2026-09-04.md) shows a full `sbatch` line.
 
 ### Demand is enforced under SLURM
 
-On the pull queue, a demand was an admission claim: it decided what could be
-placed, and nothing stopped an action from using more than it asked for. On
-2026-09-04 four `pytest -n 24` runs each declaring `mem_gb=4` were admitted to
-one 80-core box together, and its load average reached 371.
+On the pull queue, a demand decided what could be placed and nothing stopped an
+action from using more. On 2026-09-04 four `pytest -n 24` runs each declaring
+`mem_gb=4` were admitted to one 80-core box together, and its load average
+reached 371.
 
 Under SLURM the same demand becomes `--cpus-per-task` and `--mem`, and
-`cgroup.conf` contains cores, memory, and devices. An action that asks for 8
-cores gets 8 cores. Declare what the work uses.
+`cgroup.conf` contains cores, memory, and devices. Declare what the work uses.
 
 ## Wait, detach, and give up
 
@@ -132,11 +131,10 @@ Wait for detached keys later, in any number, with `pbwait`:
 prints one table and exits 0 only if every action's work is done. Its `--wait-s`
 is the deadline for all the keys together, not for each.
 
-Under SLURM, `pbwait` does more than watch. The waiting process is what files
-the terminal record, so a detached submission has nobody to file one. `pbwait`
-resumes the recorded job, waits on it, and files the ending the waiter would
-have filed. Under the pull queue the worker files the ending and `pbwait` only
-watches.
+Under SLURM, `pbwait` does more than watch. The waiting process files the
+terminal record, so a detached submission has nobody to file one. `pbwait`
+resumes the recorded job, waits on it, and files that ending. Under the pull
+queue the worker files the ending and `pbwait` only watches.
 
 ### Exit codes
 
@@ -154,6 +152,11 @@ Exit 1 is the worker launcher's status, not the command's own exit code. A
 command that exits 7 makes the worker refuse to publish a receipt, and both
 transports report that refusal as 1.
 
+The two transports reach the verdict by different rules, and they part on one
+ending. The pull queue's authority is the launcher's exit code; the lane's is
+the receipt. A launcher that publishes its receipt and is then signalled is
+filed `failed` by the queue and `executed` by the lane.
+
 After a 75, run `pbwait` on the key. The job is still queued or running, and
 under SLURM `pbwait` is what files the ending once it stops.
 
@@ -164,10 +167,10 @@ something runs until it ends. Elapsed time is never treated as evidence that a
 worker is dead.
 
 What the lane does instead is measure. While a job is `RUNNING`, the waiting
-`pbrun` samples the job's own cgroup accounting and the size of its logs, at the
+`pbrun` samples the job's own cgroup accounting and its log sizes at the
 accounting interval. A sample is progressing when CPU time, RSS, disk bytes, or
 log size changed. After 120 seconds of unchanged samples, `pbrun` prints one
-line to stderr naming the job and the node, and repeats it every ten minutes:
+line to stderr and repeats it every ten minutes:
 
     pbrun: <key12> slurm job <id> has shown no progress for <N> min on <node>; it is still running. Withdraw with pbrun --withdraw <key12> if it is dead.
 
@@ -211,10 +214,9 @@ an omitted field is not passed at all.
 | `priority` | `--priority` |
 
 An unknown field is refused when the manifest loads, before any row is sealed:
-a typo that was silently dropped would seal an action nobody asked for.
-
-A row cannot express `--measurement`, `--host-class`, `--retry-safe`, or
-`--max-attempts`. Submit those with `pbrun` directly.
+a dropped typo would seal an action nobody asked for. A row cannot express
+`--measurement`, `--host-class`, `--retry-safe`, or `--max-attempts`; submit
+those with `pbrun` directly.
 
 `--transport` is a flag on the campaign, not a row field, because which
 dispatcher carries the work is a fact about the fleet. One caveat travels with
@@ -244,11 +246,9 @@ Two rows, one wanting a GPU and one that must not have one:
 
 Run the same manifest again. A row that finished is a cache hit and costs
 nothing. A row still on a node is attached to by its recorded job id rather than
-started a second time, and the table reports it like any other row. A waiter
-that died, a closed laptop, or a dropped connection costs the wait, never the
-work.
-
-To submit and walk away, use `--detach`, then `pbwait` on the keys it printed.
+started a second time. A waiter that died, a closed laptop, or a dropped
+connection therefore costs the wait, never the work. To submit and walk away,
+use `--detach`, then `pbwait` on the keys it printed.
 
 ## Submit a measurement
 
@@ -278,8 +278,8 @@ for the partition, batch host and the job's own constraint, then `scontrol show
 node` for that node's active features. The class is attested when the node
 carries the Feature and the job's constraint is a plain conjunction requiring
 it, so the scheduler enforced the placement rather than a worker observing it.
-An unreachable controller refuses; it is never read as attested. The
-controller's answer is recorded on the receipt under `evidence.slurm.controller`.
+An unreachable controller refuses. The controller's answer is recorded on the
+receipt under `evidence.slurm.controller`.
 
 ## Watch the fleet
 
@@ -302,13 +302,12 @@ It prints three tables:
 
 `pbstatus` never blocks, never writes, and never fails. A controller that is not
 installed prints one line saying so, and the endings table still prints, because
-those records are files on the shared mount.
-
-`--json` prints one object with the three lists and any scheduler notes.
+those records are files on the shared mount. `--json` prints one object with the
+three lists and any scheduler notes.
 
 The underlying commands are `sinfo` for nodes, `squeue` for jobs, and `sacct`
-for jobs the controller has already forgotten. Use them directly when you want
-scheduler detail `pbstatus` does not join in.
+for jobs the controller has forgotten. Use them directly for scheduler detail
+`pbstatus` does not join in.
 
 ### Where the records live
 
@@ -363,11 +362,10 @@ with neither would be re-submitted by the next bulk reset.
 
 A withdrawal cancels the run, not the name. The marker is scoped to the
 generation it was filed against, and a later submission of the same key retires
-it into `withdrawn/superseded/`. The action key is a content hash, so
-re-submitting it is how anybody asks for the same work again.
-
-If the action finished a moment before you asked, `pbrun` says an outcome is
-already filed and withdraws nothing.
+it into `withdrawn/superseded/`: the action key is a content hash, so
+re-submitting it is how anybody asks for the same work again. If the action
+finished a moment before you asked, `pbrun` says an outcome is already filed and
+withdraws nothing.
 
 ### Retry
 
@@ -400,12 +398,20 @@ the closure against the tree as it is now.
     tools/fleet/pool_reset.py                 # report only
     tools/fleet/pool_reset.py --apply --limit 20
 
-The default only reports. Duplicates are collapsed by working directory and
-argv. A record filed by the SLURM lane always goes back out on the lane whatever
+The default only reports, and it sends no deadline unless you pass
+`--timeout-s`. It submits at `--priority -10` by default, behind everything
+interactive. Duplicates are collapsed by working directory and argv. An
+action that had the whole device to itself keeps `--exclusive`, restored from
+the GRES the lane recorded, because `{"gpu": 1}` alone cannot say it. A record filed by the SLURM lane always goes back out on the lane whatever
 `--transport` says, because re-submitting a lane-filed failure into a queue no
 worker drains would lose it. Withdrawn actions are skipped: re-submitting them
 would undo a decision. A record `pool_reset` has already handled is filed as
 `reset` and skipped, unless you pass `--include-reset`.
+
+A lane record sealed by a producer cannot be reset here. It is addressed by a
+snapshot — a commit and a subdirectory — and names no source tree, so there is
+no working directory to re-submit against. `pool_reset` says so and skips it;
+re-dispatch that action from the producer that sealed it.
 
 ### What each terminal status means
 
@@ -423,10 +429,10 @@ Start with `pbstatus`, which names the status, the transport, the host, the
 return code, whether a receipt was published, and the SLURM state.
 
 Then read the logs. The terminal record carries the last 256 KiB of each stream
-inline under `detail.stdout` and `detail.stderr`. The full files stay where the
-job wrote them, named by `detail.slurm.stdout_path` and `stderr_path`, in the
-action's lane directory. The record holds a tail rather than everything because
-a build log on this fleet reaches hundreds of megabytes.
+inline under `detail.stdout` and `detail.stderr`; it holds a tail because a
+build log on this fleet reaches hundreds of megabytes. The full files stay in
+the action's lane directory, named by `detail.slurm.stdout_path` and
+`stderr_path`.
 
 ### Common refusals
 
@@ -445,9 +451,8 @@ These are refusals at submission, before anything reaches the fleet.
     identical executable contract on every eligible worker.
 *   **`direct argv or caller environment names an external path absent from the
     submitting box`** — the same rule applied to a path-shaped argument. This is
-    a conservative lexical screen, not a parser: a dependency named indirectly,
-    inside a config file or a shell string, is still yours to declare with
-    `--tag` or `--anywhere`.
+    a conservative lexical screen, not a parser: a dependency named inside a
+    config file or a shell string is still yours to declare.
 *   **`executable script bytes are outside the snapshotted repository`** — move
     each helper under the repository so its bytes are bound by the action's code
     closure.
@@ -481,11 +486,20 @@ Routing them through `pbrun` would re-seal the work as a shell command and lose
 exactly that.
 
 What they share with `pbrun` is the last step: hand the sealed action to
-whichever transport is live. That step is `tools/fleet/fleet_submit.py`, and it
-is there once. It refuses a `checkout_root`-addressed action at submit time,
-because the SLURM job materializes `params.checkout_snapshot` on the node that
-won the allocation and a submitter-chosen path may mean something else there, or
-nothing at all.
+whichever transport is live. That step is `tools/fleet/fleet_submit.py`, and
+it is there once.
+
+The SLURM lane addresses a checkout only through the action's sealed snapshot,
+because a `checkout_root` is a path the submitter chose and the scheduler may
+place the job where that path means something else. So a checkout root given
+for the lane is sealed at submit time, through `pbrun`'s own snapshot builder,
+and the action that reaches the scheduler is the snapshot-addressed one the
+node needs. Sealing moves the action key once, and only for an action that
+carried no snapshot; a producer should print `Submission.action_key`.
+
+`fleet_submit` files no endings. It returns as soon as the scheduler has the
+job, and the lane's submission record is what makes the job findable
+afterwards. Run `pbwait` on the keys to derive and file the terminal records.
 
 Any producer that builds its own actions should do the same: seal the action,
-hand it to `fleet_submit`, and read the CAS for the verdict.
+hand it to `fleet_submit`, print the key, and read the CAS for the verdict.
