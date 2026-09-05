@@ -304,7 +304,29 @@ class CASConflictError(PrismaBuildError):
 
 
 class LocalActionError(PrismaBuildError):
-    """A local action could not execute or did not produce its declared file."""
+    """A local action could not execute or did not produce its declared file.
+
+    ``returncode`` and ``signal`` carry the action's own ending when the action
+    ran and ended by itself.  Everything else this error reports -- a missing
+    result file, a changed closure, a timeout -- is the worker's verdict rather
+    than the action's, and leaves both attributes ``None``.
+
+    The message text is unchanged by either attribute.  A reader that scraped
+    "exited with status 7" out of a stderr tail keeps working, and a reader that
+    wants the number as a number no longer has to scrape anything.
+    ``returncode`` follows ``subprocess``: a signalled action carries the
+    negative signal number, and ``signal`` carries the positive one.
+    """
+
+    def __init__(
+        self,
+        *args: object,
+        returncode: int | None = None,
+        signal: int | None = None,
+    ) -> None:
+        super().__init__(*args)
+        self.returncode = returncode
+        self.signal = signal
 
 
 class InitialMissRendezvousError(LocalActionError):
@@ -4890,7 +4912,9 @@ def run_local_action(
                 raise
         if returncode != 0:
             raise LocalActionError(
-                f"action argv exited with status {returncode}"
+                f"action argv exited with status {returncode}",
+                returncode=returncode,
+                signal=-returncode if returncode < 0 else None,
             )
         if not output.exists() and not output.is_symlink():
             raise LocalActionError(

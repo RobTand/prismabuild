@@ -2579,6 +2579,61 @@ def test_initial_miss_rendezvous_does_not_mutate_manifest_source_or_paths(
     assert not list(namespace.rglob("__pycache__"))
 
 
+def test_a_failed_action_carries_its_own_exit_status(tmp_path: Path):
+    """The action's status is an attribute, not a substring of the message.
+
+    Every transport folded a non-zero action status into the text of this
+    error, exited 1 itself, and filed 1.  The number an operator wants is the
+    action's, so the error carries it.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(
+        checkout, argv=[sys.executable, "-c", "raise SystemExit(7)"]
+    )
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout
+        )
+    assert str(caught.value) == "action argv exited with status 7"
+    assert caught.value.returncode == 7
+    assert caught.value.signal is None
+
+
+def test_a_signalled_action_carries_the_signal(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(
+        checkout,
+        argv=[
+            sys.executable,
+            "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
+        ],
+    )
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout
+        )
+    assert caught.value.returncode == -9
+    assert caught.value.signal == 9
+
+
+def test_a_worker_verdict_carries_no_action_status(tmp_path: Path):
+    """An error the worker raised about the action is not the action's status."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout, argv=[sys.executable, "-c", "pass"])
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout
+        )
+    assert caught.value.returncode is None
+    assert caught.value.signal is None
+
+
 def test_local_worker_fails_closed_on_dirty_output_or_missing_result(tmp_path: Path):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
