@@ -419,3 +419,32 @@ def test_a_withdrawal_carries_the_last_liveness_sample(
     assert liveness["job_id"] == job.job_id
     assert liveness["stalled_since"] is not None
     assert liveness["latest"] == _samples(job)[-1]
+
+
+# The container smoke's real sstat 25.11.2 line (row 10, 2026-09-05), verbatim.
+_REAL_SSTAT_LINE = (
+    "10.batch|00:00:00|00:00:00|20164608|5600628|33215|1|"
+    "cpu=00:00:00,energy=0,fs/disk=5600628,mem=20094976,pages=0,vmem=0"
+)
+
+
+def test_tres_cpu_is_a_duration_and_rss_keeps_sstat_unit():
+    """Pre-fix reading of a busier line: ``cpu=00:00:45`` gave ``cpu_ms=0.0``.
+
+    The first parser matched only the leading digits of ``cpu=`` (it expected
+    a millisecond count) and labelled ``MaxRSS`` KiB; the real line printed
+    ``cpu=00:00:00`` as a duration and ``MaxRSS`` in bytes.  A job burning CPU
+    in that field alone would never have shown progress from it.
+    """
+
+    real = sl._parse_sstat("10", _REAL_SSTAT_LINE)
+    assert real["tres_cpu_s"] == 0.0
+    assert real["rss"] == 20164608.0
+    assert "cpu_ms" not in real and "rss_kib" not in real
+    busy = sl._parse_sstat(
+        "10", _REAL_SSTAT_LINE.replace("cpu=00:00:00", "cpu=00:00:45"))
+    assert busy["tres_cpu_s"] == 45.0
+    bare = sl._parse_sstat(
+        "10", _REAL_SSTAT_LINE.replace("cpu=00:00:00", "cpu=45.5"))
+    assert bare["tres_cpu_s"] == 45.5
+    assert sl._parse_tres_cpu("junk") is None

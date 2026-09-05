@@ -553,8 +553,11 @@ time of the first sample in the current run of unchanged samples, or null.
 
 - `sstat -j <jobid> -a -P -n --noconvert
   --format=JobID,AveCPU,MinCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,NTasks,TRESUsageInTot`.
-  (`TotalCPU` is an `sacct` field; `sstat` 25.11.2 refuses it. `AveCPU` is
-  whole seconds and the `cpu=` entry of `TRESUsageInTot` is milliseconds.)
+  (`TotalCPU` is an `sacct` field; `sstat` 25.11.2 refuses it. `AveCPU` and
+  the `cpu=` entry of `TRESUsageInTot` are both `[DD-]HH:MM:SS`; the smoke's
+  real line read `cpu=00:00:00`. `MaxRSS` is kept in the unit `--noconvert`
+  prints, which the smoke showed to be bytes, and the sample calls it `rss`
+  rather than asserting a unit.)
   This is the job's own cgroup accounting on the node, so an action does
   nothing to be measured and the numbers come from where the work runs.
   `sstat` reads running steps from `slurmd` and works without `slurmdbd`;

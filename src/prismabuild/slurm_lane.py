@@ -1016,10 +1016,14 @@ LIVENESS_HISTORY = int(STALL_WINDOW_S // LIVENESS_SAMPLE_S) + 2
 #: prints on 25.11.2 -- checked in the container smoke (row 10), which is how
 #: ``TotalCPU`` was found to be an ``sacct`` field that ``sstat`` refuses
 #: (``Invalid field requested: "TotalCPU"``, 2026-09-05).  ``AveCPU`` is the
-#: CPU time per task, whole seconds; ``TRESUsageInTot`` carries the same
-#: number in milliseconds as ``cpu=``, which is the one that moves for a job
-#: using little CPU.  ``MaxRSS`` and the disk counters are recorded so a
-#: reader can see *what kind* of work the job was doing.
+#: CPU time per task as ``[DD-]HH:MM:SS``; the ``cpu=`` entry of
+#: ``TRESUsageInTot`` is printed the same way (the smoke's real line was
+#: ``cpu=00:00:00`` next to ``AveCPU`` ``00:00:00``), not as a millisecond
+#: count as this comment first claimed.  ``MaxRSS`` is recorded in whatever
+#: unit ``--noconvert`` prints and not relabelled: the smoke printed
+#: ``MaxRSS`` ``20164608`` beside ``mem=20094976`` in the TRES list, which is
+#: bytes for a process that size, not KiB.  Only the change between samples
+#: is evidence, so the unit is a matter for the record, not the verdict.
 SSTAT_FORMAT = (
     "JobID,AveCPU,MinCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,NTasks,TRESUsageInTot"
 )
@@ -1028,7 +1032,7 @@ SSTAT_FORMAT = (
 #: true when any of them changed; a field that is ``None`` on either side is
 #: not evidence either way.
 PROGRESS_FIELDS = (
-    "cpu_s", "cpu_ms", "rss_kib", "disk_read", "disk_write", "out_bytes",
+    "cpu_s", "tres_cpu_s", "rss", "disk_read", "disk_write", "out_bytes",
     "err_bytes",
 )
 
@@ -1074,6 +1078,24 @@ def _parse_slurm_size(raw: str | None, *, unit_bytes: float = 1.0) -> float | No
         return None
 
 
+def _parse_tres_cpu(raw: str) -> float | None:
+    """The ``cpu=`` entry of ``TRESUsageInTot`` in seconds.
+
+    ``sstat`` 25.11.2 prints it as ``[DD-]HH:MM:SS`` (the smoke's real line
+    read ``cpu=00:00:00``); a bare number is taken as seconds so a build that
+    prints one is still read.  The first parser matched only leading digits
+    and read ``00:00:45`` as ``0``.
+    """
+
+    text = raw.strip()
+    if ":" in text:
+        return _parse_slurm_duration(text)
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def _parse_sstat(job_id: str, stdout: str) -> dict[str, object]:
     """Aggregate every step ``sstat -a`` printed for one job.
 
@@ -1083,7 +1105,7 @@ def _parse_sstat(job_id: str, stdout: str) -> dict[str, object]:
 
     steps: list[str] = []
     cpu = min_cpu = read = write = 0.0
-    cpu_ms: float | None = None
+    tres_cpu: float | None = None
     rss: float | None = None
     ntasks = 0
     seen_cpu = seen_io = False
@@ -1102,10 +1124,12 @@ def _parse_sstat(job_id: str, stdout: str) -> dict[str, object]:
         value = _parse_slurm_duration(fields[2])
         if value is not None:
             min_cpu += value
-        match = re.search(r"(?:^|,)cpu=(\d+(?:\.\d+)?)", _field(fields, 7))
+        match = re.search(r"(?:^|,)cpu=([^,]+)", _field(fields, 7))
         if match:
-            cpu_ms = (cpu_ms or 0.0) + float(match.group(1))
-        value = _parse_slurm_size(fields[3], unit_bytes=1024.0)
+            value = _parse_tres_cpu(match.group(1))
+            if value is not None:
+                tres_cpu = (tres_cpu or 0.0) + value
+        value = _parse_slurm_size(fields[3])
         if value is not None:
             rss = value if rss is None else max(rss, value)
         value = _parse_slurm_size(fields[4])
@@ -1123,9 +1147,9 @@ def _parse_sstat(job_id: str, stdout: str) -> dict[str, object]:
     return {
         "steps": steps,
         "cpu_s": cpu if seen_cpu else None,
-        "cpu_ms": cpu_ms,
+        "tres_cpu_s": tres_cpu,
         "min_cpu_s": min_cpu if seen_cpu else None,
-        "rss_kib": rss,
+        "rss": rss,
         "disk_read": read if seen_io else None,
         "disk_write": write if seen_io else None,
         "ntasks": ntasks if steps else None,
@@ -1250,9 +1274,9 @@ class LivenessMonitor:
             "node": node,
             "steps": list(accounting.get("steps") or []),
             "cpu_s": accounting.get("cpu_s"),
-            "cpu_ms": accounting.get("cpu_ms"),
+            "tres_cpu_s": accounting.get("tres_cpu_s"),
             "min_cpu_s": accounting.get("min_cpu_s"),
-            "rss_kib": accounting.get("rss_kib"),
+            "rss": accounting.get("rss"),
             "disk_read": accounting.get("disk_read"),
             "disk_write": accounting.get("disk_write"),
             "ntasks": accounting.get("ntasks"),

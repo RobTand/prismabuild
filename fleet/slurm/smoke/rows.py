@@ -583,7 +583,7 @@ def row_10_liveness() -> None:
         f"job={job_id} pbrun rc={process.returncode} status={rec.get('status')} "
         f"reports={len(said)} first={said[0] if said else None!r} "
         f"samples={len(samples)} stalled_since={liveness.get('stalled_since')} "
-        f"latest cpu_s={latest.get('cpu_s')} rss_kib={latest.get('rss_kib')} "
+        f"latest cpu_s={latest.get('cpu_s')} rss={latest.get('rss')} tres_cpu_s={latest.get('tres_cpu_s')} "
         f"sstat_error={latest.get('sstat_error')!r} "
         f"helpformat missing={missing} {gather!r} "
         f"sstat={sstat_line!r}"
