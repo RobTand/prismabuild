@@ -211,6 +211,33 @@ After a 75 that says the fate of a submission is unknown, run the `squeue` in
 the message instead. There is nothing to wait on: no submission was recorded,
 because none is known.
 
+### When the pull queue is fenced
+
+`fleet/slurm/cutover.sh` closes the pull queue to new submissions before it
+retires the queue's workers, and it does that with the filesystem rather than
+with a flag: it removes the write bit on
+`/mnt/shared/prismabuild-fleet/pb-queue/ready` and writes
+`pb-queue/cutover-fence.json` beside it saying why. Every producer on the fleet
+is still running the generation published before the cutover, and that code
+reads no marker, so the write bit is the only thing all of them obey.
+
+A submission into a fenced queue is refused rather than accepted:
+
+    pbrun: the pull queue is fenced: /mnt/shared/prismabuild-fleet/pb-queue/ready
+    is not writable. fleet/slurm/cutover.sh is retiring the pull queue's
+    execution plane; submit through SLURM, or run fleet/slurm/rollback.sh.
+
+Submit through SLURM instead with `pbrun --transport slurm`, or wait for the
+cutover to finish, after which the published generation makes SLURM the
+default and nothing has to be said. The fence stays up once the cutover has
+finished, because the queue then has no workers.
+`fleet/slurm/rollback.sh` lifts it, restoring the mode the cutover recorded in
+the marker.
+
+An unwritable `ready` with no marker is not a fence. It is a directory
+somebody tightened, and it is refused the same way, naming the directory so
+the mode can be read.
+
 ### When a record will not write
 
 The lane writes every fact it keeps after the fact is already true: the

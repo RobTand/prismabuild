@@ -17,7 +17,9 @@
 #   * fleet/slurm/verify.sh passed -- its marker, read rather than counted
 #     (the slurm.conf it verified must be this checkout's), and no later run
 #     of verify.sh recorded a failure, or --verified
-#   * pb-queue/claimed and pb-queue/ready are both empty
+#   * pb-queue/ready and pb-queue/claimed are both empty, asked in that
+#     order: an item claimed between the two listings has to be seen by one
+#     of them, and only ready-first guarantees that
 #   * publish_runtime.py --dry-run accepts this checkout, asked here rather
 #     than at step 5, which runs after every loop is already dead
 #   * no pbrun is waiting on a pull-queue action anywhere in the fleet
@@ -46,7 +48,28 @@
 # supervise._live_loops confirms them -- argv[0] is an interpreter and argv[1]
 # is the script -- and killed by pid.
 #
-# Rollback is fleet/slurm/rollback.sh, which reads the state file this writes.
+# Once the queue is confirmed empty it is FENCED, and the fence is a
+# filesystem fact rather than a flag.  During steps 1 to 4 every producer and
+# loop on the fleet is still running the currently published generation, which
+# predates the scheduler decision and reads no marker, so a marker checked
+# only by new `publish` code protects nothing.  What both old and new bytes
+# obey is `chmod a-w` on pb-queue/ready: the rename that publishes an item
+# into ready fails with EACCES and says so, instead of the item sitting in a
+# queue whose workers are being retired.  An old loop's `claim` -- a rename
+# out of ready -- and `reap_stale`'s requeue fail the same way, which is
+# acceptable only because the scan above already required the queue empty.
+#
+# The marker written beside it is the explanation, not the mechanism.  New
+# `PoolQueue.publish` reads it to turn the EACCES into a refusal that names
+# the cutover, and it records the mode ready had before the fence so rollback
+# restores that mode rather than a guessed one.
+#
+# The queue is scanned again after the fence and again once every loop is
+# stopped, because a submission that landed in the window between the first
+# scan and the fence is exactly the thing being fenced against.
+#
+# Rollback is fleet/slurm/rollback.sh, which reads the state file this writes,
+# and lifting the fence is part of what it does.
 
 set -uo pipefail
 
@@ -73,6 +96,9 @@ Environment, for the tests and for nothing else:
   PB_SSH          the ssh command (default "ssh -o BatchMode=yes")
   PB_STATE_DIR    where the state file goes (default $HOME/.prismabuild)
   PB_PUBLISH      the publish_runtime.py invocation
+
+The pull queue's ready directory is left write-protected on success; that is
+the admission fence, and fleet/slurm/rollback.sh lifts it.
 USAGE
 }
 
@@ -104,6 +130,16 @@ BOXES="${PB_BOXES:-dl380g10 sparky sparklina}"
 SPARKS="${PB_SPARKS-sparky sparklina}"
 SSH="${PB_SSH:-ssh -o BatchMode=yes}"
 STATE_DIR="${PB_STATE_DIR:-$HOME/.prismabuild}"
+READY_DIR="$QUEUE_ROOT/ready"
+#: The fence's explanation, in the queue root so anything holding a PoolQueue
+#: can read it without being told where to look.  Same spelling as
+#: `pool.PoolQueue.FENCE_NAME`; a shell script cannot import that module.
+FENCE_MARKER="$QUEUE_ROOT/cutover-fence.json"
+#: Whether this run has fenced the queue, whether an exit before the loops are
+#: stopped should lift it again, and the mode ready had before the fence.
+FENCED=0
+LIFT_ON_EXIT=1
+PRIOR_READY_MODE=""
 MARKER="$STATE_DIR/slurm-verify-passed.json"
 #: What verify.sh writes when it does not pass, removing MARKER as it does.
 #: The two never coexist: whichever verify.sh writes, it removes the other.
@@ -144,7 +180,7 @@ slurm_node_of_box() {
 #: line, so sed reads it without needing a JSON parser this script does not
 #: otherwise depend on.  An empty answer means the key is not there.
 marker_field() {
-    sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\(.*\)\$/\1/p" "$MARKER" \
+    sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\(.*\)\$/\1/p" "${2:-$MARKER}" \
         | head -n 1 \
         | sed 's/,[[:space:]]*$//; s/^"//; s/"$//'
 }
@@ -248,6 +284,119 @@ NODES
     printf '%s' "$bad"
 }
 
+#: What one queue directory is holding, up to twenty names, or nothing.  The
+#: directory not existing and the directory being empty read the same, which
+#: is what the callers want: neither is work in flight.
+queue_listing() {
+    find "$QUEUE_ROOT/$1" -maxdepth 1 -name '*.json' -printf '%f\n' 2>/dev/null \
+        | head -n 20
+}
+
+#: Everything the queue is holding, ready first and claimed second, formatted
+#: for a refusal.  Nothing when it is holding nothing.
+#:
+#: The order is the point.  Listing claimed and then ready missed an item that
+#: was in ready when claimed was listed and in claimed when ready was -- a
+#: worker claiming between the two listings hid it from both.  Ready first
+#: cannot lose one: an item still in ready is seen there, and one that moves
+#: to claimed after ready was listed is seen in claimed.
+queue_holdings() {
+    local name held out=""
+    for name in ready claimed; do
+        held="$(queue_listing "$name")"
+        [ -n "$held" ] || continue
+        out="$out
+  pb-queue/$name:
+$(printf '%s\n' "$held" | sed 's/^/    /')"
+    done
+    printf '%s' "$out"
+}
+
+#: Close the pull queue to new submissions, as a filesystem fact.
+#:
+#: `chmod a-w` on ready is what old bytes obey.  Every box writes as rob and
+#: the directory is rob's, so removing the write bit for everybody stops the
+#: rename that publishes an item -- loudly, with EACCES, in the producer that
+#: is still holding the action -- rather than letting it land in a queue whose
+#: workers are being retired.  The marker is written first and is the
+#: explanation a reader gets; it records the mode to go back to.
+#:
+#: A marker that is already there belongs to an earlier run of this cutover.
+#: Its recorded mode is the pre-cutover one, and re-reading the directory now
+#: would record the fenced mode as the mode to restore.
+fence_the_queue() {
+    local mode
+    if [ -f "$FENCE_MARKER" ]; then
+        PRIOR_READY_MODE="$(marker_field prior_ready_mode "$FENCE_MARKER")"
+        FENCED=1
+        say "# $READY_DIR is already fenced; the mode to go back to is ${PRIOR_READY_MODE:-unrecorded}"
+        return 0
+    fi
+    mode="$(stat -c %a "$READY_DIR" 2>/dev/null)"
+    if [ -z "$mode" ]; then
+        die "could not read the mode of $READY_DIR, so the fence could not
+record what to restore.  The fence is what stops a producer submitting into a
+queue whose workers this cutover is about to retire."
+    fi
+    cat > "$FENCE_MARKER" <<EOF
+{
+ "schema": "prismaquant.prismabuild.slurm_cutover_fence.v1",
+ "fenced_unix": "$STAMP",
+ "fenced_by": "$this_box",
+ "checkout": "$REPO",
+ "prior_ready_mode": "$mode",
+ "reason": "fleet/slurm/cutover.sh is retiring the pull queue's execution plane; submit through SLURM, or run fleet/slurm/rollback.sh"
+}
+EOF
+    if ! chmod a-w "$READY_DIR"; then
+        rm -f "$FENCE_MARKER"
+        die "could not remove the write bit on $READY_DIR.  Without the fence a
+producer can submit into the queue while its workers are being stopped, and
+that submission is executed by nothing."
+    fi
+    PRIOR_READY_MODE="$mode"
+    FENCED=1
+    say "# fenced $READY_DIR: mode $mode is now $(stat -c %a "$READY_DIR")"
+    say "#   and wrote $FENCE_MARKER, which says why to anybody who is refused"
+}
+
+#: Put the queue back the way it was.  Idempotent, and a no-op when this run
+#: never fenced.
+unfence_the_queue() {
+    [ "$FENCED" = 1 ] || return 0
+    if [ -n "$PRIOR_READY_MODE" ]; then
+        if chmod "$PRIOR_READY_MODE" "$READY_DIR" 2>/dev/null; then
+            say "# lifted the fence: $READY_DIR is back to mode $PRIOR_READY_MODE"
+        else
+            printf 'cutover.sh: could not restore %s to mode %s; run: chmod %s %s\n' \
+                "$READY_DIR" "$PRIOR_READY_MODE" "$PRIOR_READY_MODE" "$READY_DIR" >&2
+        fi
+    else
+        printf 'cutover.sh: no recorded mode for %s; the fence is still up\n' \
+            "$READY_DIR" >&2
+    fi
+    rm -f "$FENCE_MARKER"
+    FENCED=0
+}
+
+#: An exit before the loops are stopped lifts the fence, because the pull
+#: queue is still the fleet's execution plane and a fenced queue with live
+#: workers refuses submissions for no reason.  After step 3 the opposite is
+#: true: lifting it would reopen a queue with nothing left to drain it, which
+#: is the stranding this fence exists to prevent, so those exits leave it up
+#: and point at rollback.sh.  COMPLETED keeps the fence up on success.
+COMPLETED=0
+on_exit() {
+    [ "$COMPLETED" = 0 ] || return 0
+    [ "$LIFT_ON_EXIT" = 1 ] || return 0
+    unfence_the_queue
+}
+trap on_exit EXIT
+# So that an interrupt reaches the EXIT trap rather than leaving the queue
+# fenced with no cutover running.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 #: Run a shell snippet on one box, locally when it is this one.  Prints the
 #: command verbatim; in a dry run that is all it does.
 on_box() {
@@ -331,10 +480,15 @@ if [ "$DRY_RUN" = 1 ]; then
     say "# a live run refuses unless all six of these hold:"
     say "#   --yes was given"
     say "#   $MARKER records this checkout's slurm.conf and $FAILURE_MARKER is absent, or --verified"
-    say "#   $QUEUE_ROOT/claimed and .../ready are empty"
+    say "#   $QUEUE_ROOT/ready and .../claimed are empty"
     say "#   $PUBLISH --dry-run --default-transport slurm succeeds"
     say "#   no confirmed pbrun.py process on any of: $BOXES"
     say "#   sinfo reports every one of $BOXES idle, mixed or allocated, with no state flag"
+    say "# and a live run then fences the queue rather than trusting that scan:"
+    say "#   chmod a-w $READY_DIR, so a rename into ready fails with EACCES in"
+    say "#   the producer that is still holding the action instead of landing"
+    say "#   in a queue whose workers are being retired, plus"
+    say "#   $FENCE_MARKER saying why.  rollback.sh lifts it."
     # The last one is the only refusal a dry run can answer rather than name:
     # sinfo reads and changes nothing, and the answer is about now, so it is
     # worth having before the window is chosen.  It still refuses nothing.
@@ -421,20 +575,36 @@ Re-run fleet/slurm/verify.sh, or check out the commit it verified."
         die "no $MARKER. Run fleet/slurm/verify.sh first, or pass --verified if you ran it on another box (the marker is box-local)"
     fi
 
-    for name in claimed ready; do
-        directory="$QUEUE_ROOT/$name"
-        if [ -d "$directory" ]; then
-            held="$(find "$directory" -maxdepth 1 -name '*.json' -printf '%f\n' 2>/dev/null | head -n 20)"
-            if [ -n "$held" ]; then
-                die "pb-queue/$name is not empty:
+    # Ready first, then claimed.  An item that a worker claims between the
+    # two listings has to be seen by one of them, and only this order
+    # guarantees that: claimed-first missed an item that was in ready when
+    # claimed was listed and in claimed when ready was.
+    for name in ready claimed; do
+        held="$(queue_listing "$name")"
+        if [ -n "$held" ]; then
+            die "pb-queue/$name is not empty:
 $(printf '%s\n' "$held" | sed 's/^/  /')
 A stopped loop leaves its claim behind for a reaper that will not run again,
 and an item in ready is an action no SLURM job will ever pick up.  Wait for
 them, or withdraw them with: pbrun --withdraw <key prefix>"
-            fi
         fi
     done
-    say "# pb-queue/claimed and pb-queue/ready are both empty"
+    say "# pb-queue/ready and pb-queue/claimed are both empty"
+
+    # Fenced here, before anything else is asked, because everything asked
+    # after this takes time and a scan is only true for the instant it ran.
+    # A detached producer that publishes between that instant and the moment
+    # the loops stop had its action accepted and executed by nothing.
+    fence_the_queue
+    arrived="$(queue_holdings)"
+    if [ -n "$arrived" ]; then
+        die "work arrived in the pull queue between the scan and the fence:$arrived
+That item was accepted by a transport this cutover is about to retire, so it
+is not something to cut over on top of.  Nothing else has been changed and the
+fence is lifted, so the loops that are still running will pick it up.  Let it
+finish, then re-run."
+    fi
+    say "# and still empty with the fence up, so nothing landed in that window"
 
     # Step 5 is the only step that cannot simply be re-run: by the time it
     # fires, cron is edited and every loop on every box is dead.  So ask
@@ -526,7 +696,9 @@ write_state() {
  "sparks": "$SPARKS",
  "previous_generation": "$previous_generation",
  "new_generation": "$1",
- "crontab_backup": "$CRONTAB_BACKUP"
+ "crontab_backup": "$CRONTAB_BACKUP",
+ "queue_root": "$QUEUE_ROOT",
+ "ready_prior_mode": "$PRIOR_READY_MODE"
 }
 EOF
 }
@@ -586,6 +758,15 @@ for box in $BOXES; do
 pb_stop worker_loop.py" || die "a worker loop survived on $box"
 done
 
+# From here on an exit leaves the fence up.  Before this line the pull queue
+# was still the fleet's execution plane, so a fenced queue with live workers
+# refuses submissions for no reason and the trap lifts it.  After it there is
+# nothing left to drain the queue, and reopening it would let a producer put
+# an action somewhere no transport is reading -- which is the whole thing this
+# fence exists to prevent.  rollback.sh restores the loops and the mode
+# together.
+LIFT_ON_EXIT=0
+
 # -- 4. the legacy pqwork unit on the Sparks ---------------------------------
 #
 # A user unit, so no sudo: `systemctl --user`.  It is stopped, not disabled --
@@ -632,6 +813,32 @@ done
 say "# note: pqwork.service is left ENABLED, so a reboot starts it again."
 say "#       Stop it again after a reboot, or disable it deliberately."
 
+# -- the queue, once more, with nothing left that could drain it -------------
+#
+# The last read before the irreversible act.  The fence has been up since
+# before the publisher preflight, so nothing should have arrived; what this
+# catches is the other direction -- a worker that claimed an item just before
+# its loop died and did not unwind the claim on the way out.  Its own item is
+# then in claimed, with no reaper that will ever run again.
+#
+# The fence stays up on this refusal.  Reopening the queue here would give a
+# producer a directory that nothing reads.
+
+if [ "$DRY_RUN" = 0 ]; then
+    say ""
+    remaining="$(queue_holdings)"
+    if [ -n "$remaining" ]; then
+        die "the pull queue is not empty now that every loop is stopped:$remaining
+An item in claimed is a worker's, left behind when its loop was stopped, and
+no reaper will run again to unwind it; an item in ready got past the fence.
+Nothing has been published, so the fleet is still on $previous_generation and
+the queue is still fenced.  Run fleet/slurm/rollback.sh: it puts the loops,
+the crontab and the fence back, and these items are then executed by the
+transport that accepted them."
+    fi
+    say "# pb-queue/ready and pb-queue/claimed are still empty"
+fi
+
 # -- 5. publish the generation that makes SLURM the default ------------------
 
 say ""
@@ -654,8 +861,15 @@ if [ "$DRY_RUN" = 0 ]; then
     say "# wrote $STATE"
 fi
 
+COMPLETED=1
+
 say ""
 say "# cutover complete."
 say "# The fleet's default transport is now slurm, carried by the published"
 say "# generation rather than by anybody's environment."
-say "# Roll back with: fleet/slurm/rollback.sh"
+if [ "$DRY_RUN" = 0 ]; then
+    say "# $READY_DIR stays write-protected, which is the admission fence: a"
+    say "# producer still running old bytes is refused with EACCES rather than"
+    say "# stranding an action in a queue nothing drains."
+fi
+say "# Roll back with: fleet/slurm/rollback.sh, which lifts the fence too."

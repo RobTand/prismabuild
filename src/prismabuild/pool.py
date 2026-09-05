@@ -1245,6 +1245,59 @@ class PoolQueue:
 
     # -- producer -------------------------------------------------------
 
+    #: The fence marker ``fleet/slurm/cutover.sh`` writes in the queue root
+    #: while it retires the pull queue's execution plane.  Same spelling as
+    #: that script's ``FENCE_MARKER`` and ``rollback.sh``'s, which cannot
+    #: import this module.
+    FENCE_NAME = "cutover-fence.json"
+
+    def fence(self) -> dict[str, object] | None:
+        """What fenced this queue, or ``None`` when nothing has.
+
+        The marker is the explanation and never the mechanism: the mechanism
+        is the write bit on ``ready``, because during a cutover every producer
+        and loop on the fleet is still running the published generation, which
+        predates the fence and reads no marker.  A refusal that depended on
+        this file would protect only the callers that already know about it.
+        """
+
+        try:
+            data = json.loads(
+                (self.root / self.FENCE_NAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _refuse_if_fenced(self) -> None:
+        """Turn the fence's EACCES into a refusal that names the cutover.
+
+        Asked before ``ensure_layout``, so a queue whose ``ready`` does not
+        exist yet is not mistaken for a fenced one.  A write into a fenced
+        directory fails either way -- that is the point of doing it with the
+        filesystem -- and what this adds is a producer being told which
+        operation refused it and what to do instead, rather than a
+        ``PermissionError`` raised from inside a rename.
+        """
+
+        ready = self.dir(READY)
+        if not ready.is_dir() or os.access(ready, os.W_OK):
+            return
+        fenced = self.fence()
+        if fenced is None:
+            raise PoolContractError(
+                f"{ready} is not writable, so this submission was refused "
+                "rather than left in a queue it could not enter. No cutover "
+                "fence marker explains it, so read the directory's mode."
+            )
+        raise PoolContractError(
+            f"the pull queue is fenced: {ready} is not writable. "
+            f"{fenced.get('reason') or 'fleet/slurm/cutover.sh fenced it'}. "
+            f"Fenced at {fenced.get('fenced_unix')} from "
+            f"{fenced.get('fenced_by')}, recorded in "
+            f"{self.root / self.FENCE_NAME}. This submission was refused "
+            "rather than stranded in a queue whose workers are being retired."
+        )
+
     def publish(
         self,
         *,
@@ -1270,6 +1323,7 @@ class PoolQueue:
         placement alone, which is the pre-ledger behaviour.
         """
 
+        self._refuse_if_fenced()
         if not isinstance(action_key, str) or len(action_key) != 64:
             raise PoolContractError("action_key must be a 64-character digest")
         demand = {str(k): int(v) for k, v in dict(resources or {}).items()}

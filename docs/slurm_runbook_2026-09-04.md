@@ -612,10 +612,13 @@ It refuses unless all six of these hold:
    The marker's age, host and commit are *printed* -- `# verified 3h 12m ago
    on sparky, commit <sha>` -- and never refused on. How old is too old is
    your call, and so is whether a marker written at another commit matters.
-2. `/mnt/shared/prismabuild-fleet/pb-queue/claimed` and `.../ready` are both
-   empty. A stopped loop leaves its claim behind for a reaper that will not run
-   again, and an item in `ready` is an action no SLURM job will ever pick up.
-   Wait, or withdraw it with `pbrun --withdraw <key prefix>`.
+2. `/mnt/shared/prismabuild-fleet/pb-queue/ready` and `.../claimed` are both
+   empty, scanned in that order. A stopped loop leaves its claim behind for a
+   reaper that will not run again, and an item in `ready` is an action no SLURM
+   job will ever pick up. Wait, or withdraw it with
+   `pbrun --withdraw <key prefix>`. Ready is listed first because an item a
+   worker claims between the two listings has to be seen by one of them, and
+   only that order guarantees it.
 3. `publish_runtime.py --dry-run --default-transport slurm` succeeds from this
    checkout. Step 5 below is the only step with no cheap retry -- by the time
    it runs, cron is edited and every loop on all three boxes is dead -- and
@@ -641,6 +644,38 @@ It refuses unless all six of these hold:
 `--dry-run` refuses nothing, and it *answers* the fifth question rather than
 naming it: `sinfo` only reads, so the plan tells you whether the fleet is up
 while you are still choosing the window.
+
+### The admission fence
+
+A scan is only true for the instant it ran, and every question after it takes
+time: the publisher preflight, the fleet-wide `pbrun` census and `sinfo` all
+run before step 1, and steps 1 to 4 then edit crontabs and stop supervisors and
+loops one box at a time. A producer that submitted anywhere in that interval
+had its action accepted by a transport being retired underneath it.
+
+So once the queue is confirmed empty the cutover fences it, with the
+filesystem rather than a flag: `chmod a-w` on
+`/mnt/shared/prismabuild-fleet/pb-queue/ready`, plus
+`pb-queue/cutover-fence.json` saying why and recording the mode the directory
+had, which on this fleet is 2775. Every producer and loop is still running the
+generation published before the cutover, and that code reads no marker; the
+write bit is the only thing all of them obey. A rename into `ready` then fails
+with EACCES in the producer that is still holding the action, and
+`PoolQueue.publish` turns that into a refusal naming the cutover. An old loop's
+`claim` and a `reap_stale` requeue fail the same way, which is acceptable only
+because the queue was already empty.
+
+The queue is then scanned twice more: immediately, which catches a submission
+that landed between the first scan and the fence, and again once every loop is
+stopped, which catches a claim a dying worker did not unwind. A refusal before
+the loops stop lifts the fence and changes nothing else. A refusal after they
+stop leaves it up, because reopening a queue with nothing left to drain it is
+the stranding the fence exists to prevent; run `rollback.sh`, which restores
+the loops, the crontab and the mode together.
+
+The fence outlives a successful cutover on purpose. `rollback.sh` lifts it in
+step 1b, right after the runtime, so a producer reading the restored generation
+is never told to use the pull queue and then refused by the fence.
 
 Then, in this order, and the order is not arrangeable:
 
@@ -726,6 +761,10 @@ it in reverse order, runtime first:
    published, and publication never deletes a generation. Restoring it restores
    the previous default transport in the same atomic namespace operation that
    changed it.
+1b. lift the cutover's admission fence: put `pb-queue/ready` back to the mode
+   the fence marker recorded and remove the marker, so the pull queue accepts
+   submissions again. It goes here, right after the runtime, because a producer
+   reading the restored generation is told to use the pull queue
 2. restore each box's crontab from its verbatim backup, and read the crontab
    back: a backup that carried the supervise line has to produce a crontab
    that carries it, because that line is what keeps a supervisor alive
@@ -889,4 +928,5 @@ reads `latest.json` to find the job to cancel.
 | `~/.prismabuild/slurm-verify-passed.json` | `verify.sh` passed here, against which `slurm.conf` and when; `cutover.sh` reads all three |
 | `~/.prismabuild/slurm-verify-failed.json` | `verify.sh` did not pass here, which row failed and when; `cutover.sh` refuses while it exists |
 | `~/.prismabuild/crontab.pre-cutover` | Each box's crontab as it was, for `rollback.sh` |
-| `~/.prismabuild/cutover-<unix>.json` | What the cutover replaced, for `rollback.sh` |
+| `~/.prismabuild/cutover-<unix>.json` | What the cutover replaced, the queue root and `ready`'s prior mode, for `rollback.sh` |
+| `/mnt/shared/prismabuild-fleet/pb-queue/cutover-fence.json` | Why the pull queue is closed to new submissions, and the mode to restore |

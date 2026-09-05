@@ -14,6 +14,11 @@
 #      operation that changed it.  Nothing is re-published: that generation's
 #      bytes and receipt were proved when it was published, and rebuilding
 #      them from a checkout that has since moved would not be the same thing.
+#      Then lift the cutover's admission fence: put pb-queue/ready back to the
+#      mode the cutover recorded and remove the fence marker, so the pull
+#      queue accepts submissions again.  It goes here, right after the
+#      runtime, because a producer reading the restored generation is told to
+#      use the pull queue and must not then be refused by the fence.
 #   2. restore each box's crontab from the verbatim backup cutover took, so
 #      cron resumes keeping a supervisor alive.
 #   3. start pqwork.service again on the two Sparks.
@@ -95,13 +100,23 @@ fi
 #: written by cutover.sh a few lines at a time and every value is a plain
 #: string; a field this cannot read is a field cutover did not write.
 state_field() {
-    sed -n "s/^ \"$1\": \"\\(.*\\)\",\\{0,1\\}$/\\1/p" "$STATE_FILE" | head -n 1
+    sed -n "s/^ \"$1\": \"\\(.*\\)\",\\{0,1\\}$/\\1/p" "${2:-$STATE_FILE}" | head -n 1
 }
 
 PREVIOUS="$(state_field previous_generation)"
 BOXES="${PB_BOXES:-$(state_field boxes)}"
 SPARKS="$(state_field sparks)"
 CRONTAB_BACKUP="$(state_field crontab_backup)"
+#: The cutover's admission fence.  A state file written before the fence
+#: existed names no queue root, and there is then nothing to lift.
+QUEUE_ROOT="$(state_field queue_root)"
+READY_DIR=""
+FENCE_MARKER=""
+if [ -n "$QUEUE_ROOT" ]; then
+    READY_DIR="$QUEUE_ROOT/ready"
+    #: Same spelling as `pool.PoolQueue.FENCE_NAME` and cutover.sh's own.
+    FENCE_MARKER="$QUEUE_ROOT/cutover-fence.json"
+fi
 [ -n "$PREVIOUS" ] || die "$STATE_FILE names no previous_generation"
 [ -n "$BOXES" ] || die "$STATE_FILE names no boxes"
 
@@ -140,6 +155,43 @@ if [ "$DRY_RUN" = 1 ]; then
 else
     $PUBLISH --activate-generation "$PREVIOUS" \
         || die "could not activate $PREVIOUS. Check that it is still under $RUNTIME_DIR/runtime-generations; publication never deletes a generation, so it should be."
+fi
+
+# -- 1b. the admission fence -------------------------------------------------
+#
+# The mode is restored from what the cutover recorded rather than from a
+# guess: this fleet's ready directory is 2775, and a rollback that assumed 775
+# would drop the setgid bit that keeps new items in the queue's group.  The
+# marker is the authority because it is written beside the directory it
+# describes; the state file's copy is the fallback for a marker somebody has
+# already removed by hand.
+
+say ""
+if [ -z "$READY_DIR" ]; then
+    say "# step 1b: this state file names no queue root, so there is no fence to lift"
+elif [ "$DRY_RUN" = 1 ]; then
+    say "# step 1b: lift the fence on $READY_DIR"
+    say "chmod <recorded mode> $READY_DIR"
+    say "rm -f $FENCE_MARKER"
+else
+    say "# step 1b: lift the cutover's admission fence on $READY_DIR"
+    MODE="$(state_field prior_ready_mode "$FENCE_MARKER" 2>/dev/null)"
+    [ -n "$MODE" ] || MODE="$(state_field ready_prior_mode)"
+    if [ -z "$MODE" ]; then
+        die "step 1b: neither $FENCE_MARKER nor $STATE_FILE records the mode
+$READY_DIR had before the cutover fenced it, and guessing it would be the
+difference between 2775 and 775 -- the setgid bit that keeps new items in the
+queue's group.  Read the mode off another box's queue and run:
+  chmod <mode> $READY_DIR && rm -f $FENCE_MARKER
+then re-run this rollback."
+    fi
+    if [ -d "$READY_DIR" ] && ! chmod "$MODE" "$READY_DIR"; then
+        die "step 1b: could not restore $READY_DIR to mode $MODE.  Until it is
+writable the pull queue accepts nothing, so the transport this rollback just
+restored has no way in.  Run: chmod $MODE $READY_DIR"
+    fi
+    rm -f "$FENCE_MARKER"
+    say "# $READY_DIR is back to mode $MODE and the fence marker is gone"
 fi
 
 # -- 2. the crontab ----------------------------------------------------------
@@ -218,6 +270,7 @@ done
 
 say ""
 say "# rollback complete."
+say "# The pull queue accepts submissions again and the fence marker is gone."
 say "# The default transport is whatever $PREVIOUS was published with, which"
 say "# for every generation before the cutover is the pull queue."
 say "# SLURM jobs already running are unaffected; withdraw the ones you do not"
