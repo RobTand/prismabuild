@@ -120,6 +120,21 @@ WITHDRAWN_EXIT = 143
 #: and nothing to do) nor ``WITHDRAWN_EXIT`` (which means somebody decided),
 #: because a caller that retries on those would do the wrong thing here.
 RECORD_WRITE_FAILED_EXIT = 74
+#: The exit codes ``pbrun`` decides for itself, and therefore the codes a run's
+#: own status must never be allowed to impersonate.  A terminal record carries
+#: the far side's launcher status as a plain integer, and both report paths
+#: returned it verbatim: a launcher that exited 143 reached the caller as
+#: ``WITHDRAWN_EXIT``, which claims an operator made a decision that nothing on
+#: disk records.  That is reachable rather than theoretical --
+#: ``core._sigterm_unwinds_this_process`` raises ``SystemExit(128 + signum)``,
+#: so every SIGTERM that is not a withdrawal leaves 143 in the record -- and 2
+#: (a refusal), 74 and 75 are the same hole with different remedies attached.
+#: Zero is deliberately absent: it is ``pbrun``'s word for success, no producer
+#: files it under a status that is not one, and the SLURM site below already
+#: excludes it by truthiness.
+RESERVED_EXITS = frozenset(
+    {2, RECORD_WRITE_FAILED_EXIT, GAVE_UP_EXIT, WITHDRAWN_EXIT}
+)
 
 #: The one line ``--detach`` prints.  Versioned because ``pbcampaign`` and
 #: ``pbwait`` parse it, and a fleet runs a published runtime generation that
@@ -1969,7 +1984,7 @@ def await_outcome(
     landed = landed_outcome(q, key, wait_s=wait_s, generation=generation)
     if landed is None:
         print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
-        return 75
+        return GAVE_UP_EXIT
     outcome_path, outcome = landed
 
     summary = outcome_summary(q, outcome_path, outcome)
@@ -2013,7 +2028,7 @@ def await_outcome(
         return 0
     rc = detail.get("returncode")
     if isinstance(rc, int):
-        return rc
+        return reported_exit(rc, key=key)
     if status == "executed":
         return 0
     # A failure the worker itself raised carries no returncode -- the argv's
@@ -2047,6 +2062,39 @@ def action_status_suffix(detail: Mapping[str, object]) -> str:
     if isinstance(signal, int) and not isinstance(signal, bool):
         return f"; rc={detail.get('returncode')} (action killed by signal {signal})"
     return f"; rc={detail.get('returncode')} (action exited {action})"
+
+
+def reported_exit(returncode: int, *, key: str) -> int:
+    """One run's recorded status as ``pbrun``'s own exit status.
+
+    Every status but ``pbrun``'s own reserved words passes through unchanged,
+    which is the contract callers already have: an action that exits 7 exits
+    7.  One that lands on a reserved word is reported as 1, an ordinary
+    failure, with the real number said on a line of its own so nothing is
+    hidden.  The record keeps it under ``detail.returncode`` either way, and
+    ``pbstatus`` and ``pbwait`` print it from there.
+
+    Clamping rather than renumbering, because the codes have readers this
+    cannot see: ``pbcampaign``, the harness, and whatever an operator wrapped
+    ``pbrun`` in.  Every existing condition keeps the code it had, and the one
+    case that was ambiguous stops being ambiguous.
+
+    Args:
+        returncode: The status the terminal record recorded for the run.
+        key: The action key, for the prefix every fleet tool takes.
+
+    Returns:
+        ``returncode``, or 1 when returning it would impersonate a verdict
+        ``pbrun`` did not reach.
+    """
+
+    if returncode not in RESERVED_EXITS:
+        return returncode
+    print(f"pbrun: {key[:12]} exited {returncode}, which is one of pbrun's own "
+          f"exit codes; reporting it as 1 so it is not read as pbrun's "
+          f"verdict. The run's own status is detail.returncode in the record.",
+          file=sys.stderr)
+    return 1
 
 
 def _report_stall(key: str, report) -> None:
@@ -2582,7 +2630,7 @@ def slurm_outcome(
     print(f"pbrun: failed ({outcome.state}) after {total} attempt(s); "
           f"logs {job.stdout_path} and {job.stderr_path}", file=sys.stderr)
     if isinstance(outcome.exit_code, int) and outcome.exit_code:
-        return outcome.exit_code
+        return reported_exit(outcome.exit_code, key=key)
     return 1
 
 

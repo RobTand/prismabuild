@@ -199,6 +199,15 @@ already finished, and exited 75.
 | 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
 
+Those four codes are `pbrun`'s own, and a run never gets to speak them. A run
+whose recorded status is 2, 74, 75 or 143 is reported as 1, with its real
+number on a line of its own and under `detail.returncode` in the record. Every
+other status reaches the caller unchanged: a run that exits 7 exits 7. The case
+this exists for is 143. `core._sigterm_unwinds_this_process` raises
+`SystemExit(128 + signum)`, so any SIGTERM that is not a withdrawal leaves 143
+in the record, and a caller reading that was told an operator had made a
+decision that nothing on disk records.
+
 Exit 1 is the worker launcher's status, not the command's own exit code. A
 command that exits 7 makes the worker refuse to publish a receipt, and both
 transports report that refusal as 1. Under SLURM the terminal record also
