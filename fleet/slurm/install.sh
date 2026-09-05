@@ -173,6 +173,11 @@ DEB_GLOB="/home/rob/slurm-build/arm64-24.04/*.deb"
 #: this fleet once already.
 KEY_B64="/home/rob/.munge-key.b64"
 KEY_OWNER="rob"
+#: Where a job leaves the state file its Epilog reads.  This one path is
+#: spelled in three places -- here, `slurm_lane.DEFAULT_JOB_STATE_ROOT`, and
+#: the default in `epilog.sh` -- because a shell script cannot import the
+#: module.  They must agree: a job that writes somewhere the Epilog does not
+#: read leaks its checkout and its containers, silently.
 LANE_JOBS="/mnt/shared/prismabuild-fleet/slurm/jobs"
 CONFIGS_644="slurm.conf gres.conf cgroup.conf"
 
@@ -437,8 +442,12 @@ run install -m 755 "$CONF_SRC/epilog.sh" /etc/slurm/epilog.sh
 #
 # On the shared mount, and therefore NOT as root: dl380g10 exports
 # /storage_pool/shared without no_root_squash, so root is `nobody` there and
-# its mkdir fails.  Every write below the lane root is the job user's, which is
-# the same reason epilog.sh deletes its state file with runuser.
+# its mkdir fails.  Every write below the job-state root is the job user's,
+# which is the same reason epilog.sh deletes its state file with runuser.
+#
+# The path is the node-side default both slurm_job.py and epilog.sh resolve for
+# themselves; it is deliberately not the submitter's lane root, which a
+# submitter may move.
 
 step 7 "the SLURM lane's job-state directory on the shared mount"
 

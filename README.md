@@ -169,6 +169,9 @@ not a dependency: this package imports nothing from prismaquant.
 
 ## Submitting work
 
+`docs/operating_prismabuild.md` is the guide to using the fleet: submitting,
+waiting, campaigns, measurements, status, withdrawal, and reading a failure.
+
 One command, waiting for it:
 
     tools/fleet/pbrun.py --gpu --timeout-s 3600 -- ./stage.sh --shard 3
@@ -203,3 +206,8 @@ depend on which one carried it.
 ## Test
 
     PYTHONPATH=src python3 -m pytest -q tests/
+
+The suite never touches the fleet's live store. `tests/conftest.py` repoints
+every default that names the shared mount at the test's own temporary
+directory, and fails the session if anything it wrote still reached the mount.
+Pass a root under `tmp_path` to anything that takes one.

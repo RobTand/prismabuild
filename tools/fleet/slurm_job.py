@@ -12,8 +12,8 @@ three things and nothing else:
    does not depend on which transport delivered it;
 2. leave the node-side Epilog the two facts it will need after this process is
    gone -- the container-ownership label the Docker shim stamps, and the tree to
-   remove -- because a job killed at its time limit does not get to clean up
-   after itself;
+   remove -- and leave that state file in place on the way out, because the
+   Epilog is the single owner of node-side cleanup;
 3. exec the canonical ``run-local`` worker argv inside that tree, via
    ``pool.worker_argv``, so the launch is the pull queue's launch to the byte.
 
@@ -36,13 +36,21 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import materialize, pool  # noqa: E402
+from prismabuild import core, materialize, pool, slurm_lane  # noqa: E402
 
 #: The environment variable the Docker shim reads to label containers, and
 #: therefore the one the Epilog needs to find them again.  Read from the sealed
 #: action rather than recomputed: recomputing an identity is how two answers to
 #: one question get into a system.
 CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
+
+#: The durable marker the shim writes on first container creation, and the
+#: file the pull queue's ``cleanup_action_containers`` unlinks once an action's
+#: containers are gone.  Under SLURM nothing unlinked it, so the shared
+#: ``container-owners/`` directory grew one file per containerized action and
+#: never shrank.  The Epilog does it now, which is why the path is written down
+#: here: it is in the sealed environment, so it is read rather than rebuilt.
+CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 
 
 def _load_action(path: Path) -> dict[str, object]:
@@ -52,14 +60,22 @@ def _load_action(path: Path) -> dict[str, object]:
     return value
 
 
-def _container_owner(action: dict[str, object]) -> str:
+def _sealed_variable(action: dict[str, object], name: str) -> str:
     environment = action.get("environment")
     variables = (
         environment.get("variables") if isinstance(environment, dict) else None
     )
     if not isinstance(variables, dict):
         return ""
-    return str(variables.get(CONTAINER_OWNER_ENV) or "")
+    return str(variables.get(name) or "")
+
+
+def _container_owner(action: dict[str, object]) -> str:
+    return _sealed_variable(action, CONTAINER_OWNER_ENV)
+
+
+def _container_marker(action: dict[str, object]) -> str:
+    return _sealed_variable(action, CONTAINER_MARKER_ENV)
 
 
 def _queue_item(action: dict[str, object], *, cas_root: Path) -> dict[str, object]:
@@ -117,11 +133,39 @@ def _temporary_root(checkout: Path, base: Path) -> Path | None:
     return None
 
 
+def _worker_environment(
+    environment: dict[str, str], *, lane_dir: str, job_id: str
+) -> dict[str, str]:
+    """The worker's environment, plus where to leave the action's exit status.
+
+    The worker exits 1 for any failure, so its status cannot say what the
+    action's was, and the launch argv cannot carry the question either:
+    ``pool.worker_argv`` is pinned byte-identical across both transports so
+    that one action means one execution whichever delivered it. The request
+    travels in the environment instead, and only when this job has both a lane
+    directory to write in and an id to name the file after.
+
+    The action itself never sees this variable. ``run_local_action`` builds the
+    sealed environment the action's argv runs in, and this is not in it.
+    """
+
+    if not lane_dir or not job_id:
+        return dict(environment)
+    return {
+        **environment,
+        core.ACTION_STATUS_PATH_ENV: str(
+            slurm_lane.action_status_path(lane_dir, job_id)
+        ),
+    }
+
+
 def _write_job_state(
     path: Path,
     *,
     action_key: str,
     container_owner: str,
+    container_marker: str,
+    container_job: str,
     checkout_dir: Path | None,
     local_checkout_root: Path,
 ) -> None:
@@ -135,6 +179,8 @@ def _write_job_state(
     lines = [
         f"action_key={action_key}",
         f"container_owner={container_owner}",
+        f"container_marker={container_marker}",
+        f"container_job={container_job}",
         f"checkout_dir={checkout_dir or ''}",
         f"local_checkout_root={local_checkout_root}",
         f"host={socket.gethostname()}",
@@ -155,9 +201,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="tools/prismabuild_worker.py to exec")
     parser.add_argument("--worker-python", default="/usr/bin/python3")
     parser.add_argument("--lane-dir", default="",
-                        help="this action's lane directory (diagnostics only)")
+                        help="this action's lane directory: the job's logs and "
+                             "the action's exit status go here")
     parser.add_argument("--job-state-root", default="",
-                        help="where to leave this job's Epilog state file")
+                        help="where to leave this job's Epilog state file; "
+                             "defaults to the node-side root the Epilog reads "
+                             f"(${slurm_lane.JOB_STATE_ROOT_ENV}, else "
+                             f"{slurm_lane.DEFAULT_JOB_STATE_ROOT})")
     parser.add_argument("--checkout-root", default="",
                         help="box-local root for materialized trees")
     parser.add_argument("--job-id", default="",
@@ -168,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     cas_root = Path(args.cas_root)
     key = str(action["action_key"])
     owner = _container_owner(action)
+    marker = _container_marker(action)
     local_root = (
         Path(args.checkout_root) if args.checkout_root
         else materialize.LOCAL_CHECKOUT_ROOT
@@ -181,10 +232,14 @@ def main(argv: list[str] | None = None) -> int:
         or os.environ.get("SLURM_JOBID")
         or ""
     )
-    state_path = (
-        Path(args.job_state_root) / f"{job_id}.job"
-        if args.job_state_root and job_id else None
-    )
+    # Resolved here, on the node, and never handed down by the submitter: the
+    # Epilog reads the same variable and the same default, and it can see
+    # neither slurmd's environment nor the submitter's.  A batch script that
+    # carried the submitter's lane root pointed the job at a directory the
+    # Epilog would never look in, so a killed job leaked its checkout and its
+    # containers with nothing said.
+    state_root = slurm_lane.job_state_directory(args.job_state_root or None)
+    state_path = state_root / f"{job_id}.job" if job_id else None
 
     # Written before materialization as well as after it: a job killed while
     # git is still fetching has containers only if the action started one (it
@@ -195,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
             state_path,
             action_key=key,
             container_owner=owner,
+            container_marker=marker,
+            container_job=job_id,
             checkout_dir=None,
             local_checkout_root=local_root,
         )
@@ -208,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
                 state_path,
                 action_key=key,
                 container_owner=owner,
+                container_marker=marker,
+                container_job=job_id,
                 checkout_dir=_temporary_root(Path(checkout_root), local_root),
                 local_checkout_root=local_root,
             )
@@ -222,17 +281,29 @@ def main(argv: list[str] | None = None) -> int:
         # replace the process that owes it.  On a scheduler kill it does not:
         # SLURM's time limit signals the whole step, and Python's default
         # SIGTERM disposition ends this interpreter at once, with no finally
-        # and no __exit__.  That case is the Epilog's, which reads the state
-        # file written above and removes the checkout and any containers as
-        # root; smoke row 8 is the evidence for that path.
-        completed = subprocess.run(worker, check=False)
-    if state_path is not None:
-        # Removed last: from here on the Epilog has nothing left to do that
-        # this process has not already done.
-        try:
-            state_path.unlink()
-        except OSError:
-            pass
+        # and no __exit__.  Either way the Epilog runs afterwards, reads the
+        # state file written above, and removes the checkout and any containers
+        # as root; smoke row 8 is the evidence for that path.
+        completed = subprocess.run(
+            worker,
+            check=False,
+            env=_worker_environment(
+                dict(os.environ), lane_dir=str(args.lane_dir), job_id=job_id
+            ),
+        )
+    # The state file is deliberately NOT removed here.  It used to be, on every
+    # ending this process reached, and that made the Epilog's first check --
+    # "no state file, nothing to do" -- true for exactly the jobs whose
+    # containers were still running.  A container the action started is
+    # reparented to containerd-shim and outlives the job whether the job was
+    # killed or not; under the pull queue `finish` removed it on every ending,
+    # and under SLURM the Epilog is the only thing that can.  So the Epilog
+    # owns all of it and this process leaves it the file it needs.
+    #
+    # Nothing is cleaned twice: the materializer already removed the checkout
+    # on a normal ending, and the Epilog removes a recorded tree only if it is
+    # still a directory.  Nothing is left behind either: the Epilog deletes the
+    # state file itself, as the job's user, for the NFS reason it documents.
     return completed.returncode
 
 

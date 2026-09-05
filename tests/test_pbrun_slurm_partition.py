@@ -24,9 +24,8 @@ class _Captured(Exception):
         self.kwargs = kwargs
 
 
-def _partition_pbrun_sends(
-    monkeypatch: pytest.MonkeyPatch, *, tags, demand, anywhere: bool = False
-):
+def _lane_kwargs(monkeypatch: pytest.MonkeyPatch, *, tags, demand,
+                 exclusive: bool = False, **extra):
     def record(action, **kwargs):
         raise _Captured(kwargs)
 
@@ -34,11 +33,17 @@ def _partition_pbrun_sends(
     with pytest.raises(_Captured) as raised:
         pbrun.slurm_outcome(
             {"action_key": "0" * 64}, cas=None, request_path="request.json",
-            tags=list(tags), demand=dict(demand), exclusive=False,
+            tags=list(tags), demand=dict(demand), exclusive=exclusive,
             timeout_s=60.0, wait_s=60.0, retry_safe=False, max_attempts=1,
-            anywhere=anywhere,
+            **extra,
         )
-    return raised.value.kwargs["partition"]
+    return raised.value.kwargs
+
+
+def _partition_pbrun_sends(monkeypatch: pytest.MonkeyPatch, *, tags, demand,
+                           anywhere: bool = False):
+    return _lane_kwargs(
+        monkeypatch, tags=tags, demand=demand, anywhere=anywhere)["partition"]
 
 
 def test_gpu_work_is_sent_to_the_gpu_partition(monkeypatch) -> None:
@@ -57,6 +62,46 @@ def test_pinned_cpu_work_is_left_to_its_constraint(monkeypatch) -> None:
     assert _partition_pbrun_sends(
         monkeypatch, tags=["sparky"], demand={"cpu": 4, "mem_gb": 8}
     ) is None
+
+
+def test_the_priority_pbrun_accepted_reaches_the_lane(monkeypatch) -> None:
+    """``--priority`` was parsed, recorded in the pool's publication, and
+    dropped on the way to SLURM.  ``pool_reset`` submits its bulk resets at
+    ``--priority -10``, so dropping it put a reset alongside interactive work
+    rather than behind it."""
+
+    kwargs = _lane_kwargs(
+        monkeypatch, tags=[], demand={"cpu": 1}, priority=-10)
+    assert kwargs["priority"] == -10
+
+
+def test_an_exclusive_action_asking_for_more_than_one_device_is_refused(
+    monkeypatch,
+) -> None:
+    """``--gpu-capacity`` above one is read and then discarded under SLURM:
+    ``LaneResources.gres()`` answers ``gpu:1`` for any exclusive action.  It is
+    harmless while every box has one device and silently wrong the day a
+    two-GPU box joins, so it is refused where the caller can still read it."""
+
+    with pytest.raises(SystemExit) as refused:
+        pbrun.slurm_outcome(
+            {"action_key": "0" * 64}, cas=None, request_path="request.json",
+            tags=[], demand={"gpu": 2, "mem_gb": 16}, exclusive=True,
+            timeout_s=60.0, wait_s=60.0, retry_safe=False, max_attempts=1,
+        )
+    message = str(refused.value)
+    assert "--exclusive --gpu-capacity 2" in message
+    assert "--gres=gpu:1" in message
+
+
+def test_one_exclusive_device_is_still_accepted(monkeypatch) -> None:
+    """The shape ``--exclusive`` alone produces, which the refusal must not
+    catch."""
+
+    kwargs = _lane_kwargs(
+        monkeypatch, tags=["gb10"], demand={"gpu": 1, "mem_gb": 16},
+        exclusive=True)
+    assert kwargs["resources"].gres() == "gpu:1"
 
 
 def test_anywhere_cpu_work_is_left_to_the_default_partition(monkeypatch) -> None:

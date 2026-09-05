@@ -31,7 +31,7 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_slurm_lane import REPOSITORY, _paper_action, _submit, fleet  # noqa: E402,F401
-from test_slurm_liveness import FakeClock  # noqa: E402
+from test_slurm_liveness import FakeClock, FakeScheduler, scheduler  # noqa: E402,F401
 
 import pbrun  # noqa: E402
 
@@ -40,7 +40,7 @@ JOB_ENTRY = REPOSITORY / "tools" / "fleet" / "slurm_job.py"
 
 
 def test_an_unreachable_controller_is_not_read_as_no_such_job(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Pre-fix: ``wait`` returned ``UNKNOWN`` on the first poll of the outage
     (``assert outcome.state == "COMPLETED"`` failed with ``'UNKNOWN'``).
@@ -66,7 +66,7 @@ def test_an_unreachable_controller_is_not_read_as_no_such_job(
     notices: list[tuple[float, str]] = []
 
     outcome = sl.wait(
-        job, poll_s=5.0, sleep=clock.sleep, clock=clock,
+        job, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
         on_notice=lambda text: notices.append((clock.now - start, text)),
     )
 
@@ -84,7 +84,7 @@ def test_an_unreachable_controller_is_not_read_as_no_such_job(
 
 
 def test_the_controller_answering_no_such_job_is_still_unknown(
-    tmp_path: Path, fleet: Path
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler
 ) -> None:
     """The one answer that *does* end the wait: ``Invalid job id specified``
     is the controller saying it has no such job."""
@@ -92,17 +92,17 @@ def test_the_controller_answering_no_such_job_is_still_unknown(
     job = _submit(tmp_path, resources=sl.LaneResources())
     for record in fleet.glob("*.state"):
         record.unlink()
-    assert sl.wait(job, poll_s=0.0).state == sl.UNKNOWN_STATE
+    assert sl.wait(job, **scheduler.commands, poll_s=0.0).state == sl.UNKNOWN_STATE
 
 
 def test_the_wait_bound_still_holds_through_an_outage(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
     monkeypatch.setenv("FAKE_CONTROLLER_DOWN", "1")
     job = _submit(tmp_path, resources=sl.LaneResources())
     clock = FakeClock()
-    outcome = sl.wait(job, poll_s=5.0, wait_s=60.0, sleep=clock.sleep,
+    outcome = sl.wait(job, **scheduler.commands, poll_s=5.0, wait_s=60.0, sleep=clock.sleep,
                       clock=clock)
     assert outcome.state == sl.WAIT_TIMEOUT_STATE
     assert clock.now - 1000.0 <= 70.0
@@ -110,7 +110,7 @@ def test_the_wait_bound_still_holds_through_an_outage(
 
 @pytest.mark.parametrize("verdict", ["UNKNOWN", "WAIT_TIMEOUT"])
 def test_no_ending_files_no_terminal_record(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str], verdict: str,
 ) -> None:
     """Pre-fix: ``run`` filed ``failed/<key>.json`` with ``status=failed`` for
@@ -138,7 +138,7 @@ def test_no_ending_files_no_terminal_record(
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=None, wait_s=(None if verdict == "UNKNOWN" else 30.0),
         retry_safe=False, max_attempts=1, runtime_root=REPOSITORY,
-        queue_root=queue, poll_s=5.0, sleep=clock.sleep, clock=clock,
+        queue_root=queue, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
     )
 
     assert code == pbrun.GAVE_UP_EXIT
@@ -164,12 +164,12 @@ def test_no_ending_files_no_terminal_record(
     assert rc == 0
     assert (fleet / "cancelled").read_text().split() == ["1000"]
     assert "already has an outcome filed" not in capsys.readouterr().err
-    record = json.loads((queue / "failed" / f"{key}.json").read_text())
+    record = json.loads((queue / "withdrawn" / f"{key}.json").read_text())
     assert record["status"] == "withdrawn"
 
 
 def test_wait_s_is_one_budget_across_retries(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pre-fix: ``run`` handed the whole ``wait_s`` to every attempt's
     ``wait``, so with ``--wait-s 60`` a first attempt that failed at 40 s let
@@ -193,7 +193,7 @@ def test_wait_s_is_one_budget_across_retries(
         action, cas=cas, request_path=request,
         resources=sl.LaneResources(), timeout_s=None,
         worker_script=WORKER, job_entry=JOB_ENTRY,
-        retry_safe=True, max_attempts=3, poll_s=5.0, wait_s=60.0,
+        retry_safe=True, max_attempts=3, **scheduler.commands, poll_s=5.0, wait_s=60.0,
         sleep=clock.sleep, clock=clock,
     )
 
@@ -205,7 +205,7 @@ def test_wait_s_is_one_budget_across_retries(
 
 
 def test_a_receipt_still_wins_when_the_scheduler_has_forgotten_the_job(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Purged past MinJobAge *with* a receipt is an execution, filed as one."""
 
@@ -230,7 +230,7 @@ def test_a_receipt_still_wins_when_the_scheduler_has_forgotten_the_job(
     result = sl.run(
         action, cas=cas, request_path=request, resources=sl.LaneResources(),
         timeout_s=None, worker_script=WORKER, job_entry=JOB_ENTRY,
-        queue_root=queue, poll_s=5.0, sleep=clock.sleep, clock=clock,
+        queue_root=queue, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
     )
     assert result.last[1].state == sl.UNKNOWN_STATE
     record = json.loads((queue / "done" / f"{key}.json").read_text())
@@ -238,7 +238,7 @@ def test_a_receipt_still_wins_when_the_scheduler_has_forgotten_the_job(
 
 
 def test_a_hung_scheduler_command_does_not_end_the_wait(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, fleet: Path, scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Pre-fix: ``SlurmLaneError('scontrol failed: Command ... timed out
@@ -246,7 +246,6 @@ def test_a_hung_scheduler_command_does_not_end_the_wait(
     raised ``SystemExit('pbrun: slurm refused this action ... Fix the --tag,
     ...')`` while the job ran on.  Now the timeout is one unanswered poll."""
 
-    monkeypatch.setattr(sl, "COMMAND_TIMEOUT_S", 0.2)
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
     monkeypatch.setenv("FAKE_SACCT_DISABLED", "1")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -274,7 +273,7 @@ def test_a_hung_scheduler_command_does_not_end_the_wait(
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=None, wait_s=None, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, queue_root=tmp_path / "queue",
-        poll_s=5.0, sleep=clock.sleep, clock=clock,
+        **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
     )
 
     err = capsys.readouterr().err

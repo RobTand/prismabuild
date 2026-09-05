@@ -27,6 +27,7 @@ Ubuntu 24.04's 23.11.4). It is installed on no box: the install needs root,
 which is Rob's. `src/prismabuild/slurm.py` is the earlier durable-state SLURM
 adapter, superseded by the lane and retained until the decision record's
 Phase 3. `tools/prismabuild_worker.py` is the direct batch-script entry point.
+`docs/operating_prismabuild.md` is the usage guide for operators and agents.
 The optional asset/DAG adapter lives in `src/prismabuild/dagster.py`; it
 constructs deterministic assets from sealed action keys, binds each edge to an
 expected CAS output digest, and materializes only after re-reading that

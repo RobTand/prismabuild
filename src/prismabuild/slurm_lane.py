@@ -15,8 +15,15 @@ Four decisions are worth stating, because each had an alternative.
 publishing a receipt did not do the work, and a job that exits non-zero after
 publishing one did.  ``wait`` therefore reports the scheduler's state and log
 paths as *diagnosis*; the caller asks ``cas.lookup(action)`` for the verdict.
-That is the same rule the pull queue follows, which is what lets an action
-executed under either transport mean the same thing.
+
+The pull queue reaches the same answer by a different rule, and the difference
+is deliberate rather than incidental.  Its verdict is the launcher's exit code
+(``pool.py``: ``status = "executed" if process.returncode == 0 else "failed"``),
+and the two rules agree whenever the launcher exits, because ``core.py``
+publishes a receipt only on a clean run.  They part on one ending: a launcher
+that publishes its receipt and is then signalled.  The queue files ``failed``;
+this lane files ``executed``, because the receipt is in the CAS and the work it
+attests was done.  The lane trusts the receipt.
 
 **Submission does not use ``sbatch --wait``.**  It would hand back the job's
 exit status directly, and it costs two things this lane needs more.  The job id
@@ -101,12 +108,60 @@ DEFAULT_LANE_ROOT = "/mnt/shared/prismabuild-fleet/slurm"
 #: ``SLURM_JOB_ID`` and nothing else for certain.
 JOB_STATE_DIRNAME = "jobs"
 
+#: Where those files live, resolved on the *node* and never by the submitter.
+#:
+#: The lane root above is a submitter-side record location and it is
+#: overridable per process.  This one is not the same question.  A submitter
+#: that exported ``PRISMABUILD_SLURM_LANE_ROOT`` used to bake its own answer
+#: into the batch script, while the Epilog -- which cannot see slurmd's
+#: environment, let alone the submitter's -- kept reading its own default.  The
+#: two disagreed, the Epilog found no state file, and a killed job leaked its
+#: checkout and its containers with nothing said.
+#:
+#: So the job script carries no job-state path at all.  ``slurm_job`` resolves
+#: it on the node from ``JOB_STATE_ROOT_ENV`` or this default, and
+#: ``fleet/slurm/epilog.sh`` reads the same variable and the same default --
+#: the one place the two sides have to agree, spelled once on each side because
+#: a shell script cannot import this module.  The value is what the Epilog
+#: already hardcoded, so nothing about the deployed fleet moves.
+JOB_STATE_ROOT_ENV = "PRISMABUILD_SLURM_JOB_STATE_ROOT"
+DEFAULT_JOB_STATE_ROOT = f"{DEFAULT_LANE_ROOT}/{JOB_STATE_DIRNAME}"
+
 #: ``/usr/bin/python3`` on both architectures, deliberately.  A job may land on
 #: aarch64 or x86_64 and ``fleet_boxes.json`` names a different venv per box, so
 #: no single venv path is correct for the launcher.  It does not need to be:
 #: ``prismabuild_worker.py`` is stdlib-only by construction, and the action's
 #: own sealed argv[0] selects whatever interpreter the work requires.
 DEFAULT_JOB_PYTHON = "/usr/bin/python3"
+
+#: The nice value a ``--priority 0`` job carries, and the origin every other
+#: priority is measured from.
+#:
+#: SLURM has no submitter-settable priority *number*: ``PriorityType=priority/
+#: basic`` orders by an internal base priority, and the one lever an
+#: unprivileged submitter has over it is ``--nice``, which is SUBTRACTED from
+#: that base.  So a higher pool priority has to become a smaller nice, and the
+#: base exists because a NEGATIVE nice -- a boost -- requires SlurmUser
+#: privilege that the submitting user does not have.  A base of 2**30 leaves
+#: every realistic priority on the non-negative side of that line and inside
+#: sbatch's +-2147483645 range.
+#:
+#: The scale is what makes priority mean what it meant on the pool.  The pool
+#: sorted its ready queue on priority before age, so a ``--priority -10`` reset
+#: sat behind every interactive item however old the reset grew.  Under
+#: ``priority/basic`` the base priority steps down by one per submission and
+#: the nice is subtracted from it, so a nice one unit larger sinks a job behind
+#: exactly one later submission.  Multiplying the priority by 2**20 makes one
+#: priority step outrank a million submissions, which is the pool's order for
+#: any queue this fleet will hold.
+#:
+#: This is a queue hint and nothing more.  It is not part of the action
+#: identity, it does not reach ``seal_action``, and two submissions of one
+#: action that differ only in priority are the same action.
+NICE_BASE = 1 << 30
+
+#: Nice units per priority step; see ``NICE_BASE``.
+NICE_SCALE = 1 << 20
 
 #: How long ``wait`` leaves between polls of a job that has not finished.
 DEFAULT_POLL_S = 5.0
@@ -211,6 +266,19 @@ def lane_root(explicit: str | Path | None = None) -> Path:
     return Path(os.environ.get(LANE_ROOT_ENV) or DEFAULT_LANE_ROOT)
 
 
+def nice_for(priority: int) -> int:
+    """The ``--nice`` value that carries one pool priority.
+
+    Clamped at zero rather than refused: ``sbatch`` rejects a negative nice
+    from an unprivileged submitter, and a priority past ``NICE_BASE //
+    NICE_SCALE`` is asking for a boost this user cannot be granted.  Zero is
+    the most this lane can do for it, and it is still ordered ahead of every
+    ordinary submission.
+    """
+
+    return max(0, NICE_BASE - int(priority) * NICE_SCALE)
+
+
 def lane_directory(action_key: str, *, root: str | Path | None = None) -> Path:
     """One directory per action key: script, records, logs."""
 
@@ -220,10 +288,18 @@ def lane_directory(action_key: str, *, root: str | Path | None = None) -> Path:
     return lane_root(root) / key
 
 
-def job_state_directory(*, root: str | Path | None = None) -> Path:
-    """Where a job leaves the facts its Epilog needs after it is gone."""
+def job_state_directory(explicit: str | Path | None = None) -> Path:
+    """Where a job leaves the facts its Epilog needs after it is gone.
 
-    return lane_root(root) / JOB_STATE_DIRNAME
+    Read on the node that runs the job, not on the box that submitted it.  An
+    explicit path is for a launcher driven by hand and for the tests; the
+    environment variable is the node-side override the Epilog honours in the
+    same way; the default is what both sides fall back to.
+    """
+
+    if explicit is not None:
+        return Path(explicit)
+    return Path(os.environ.get(JOB_STATE_ROOT_ENV) or DEFAULT_JOB_STATE_ROOT)
 
 
 def submission_record_path(
@@ -253,6 +329,52 @@ def submission_record_path(
         Path(directory) / "submissions"
         / f"{float(published_unix):.6f}-{int(attempt):03d}.json"
     )
+
+
+def action_status_path(directory: str | Path, job_id: str) -> Path:
+    """Where the node leaves this job's action exit status, beside its logs.
+
+    Named for the job rather than fixed, and for the same reason the logs are:
+    one lane directory holds every attempt of one action key, a retry is a new
+    job id in that directory, and a fixed name would let attempt one's exit
+    status be read onto attempt two's record -- including onto a ``done/``
+    record, when the retry succeeded.
+
+    ``core`` writes this file only for an action that ran and ended by itself,
+    so an absent file is the normal case and means the ending was the worker's
+    verdict rather than the action's.
+    """
+
+    return Path(directory) / f"{str(job_id)}.action.json"
+
+
+def read_action_status(path: str | Path) -> dict[str, object]:
+    """The action's ending from its sidecar, or an empty mapping.
+
+    Empty covers every way there is nothing to say: no file, unreadable bytes,
+    text that is not a JSON object, or a status field that is not an integer.
+    The caller files what comes back, so a malformed sidecar leaves the record
+    exactly as it was before there were sidecars.
+    """
+
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(value, Mapping):
+        return {}
+    status: dict[str, object] = {}
+    for field in ("action_returncode", "action_signal"):
+        number = value.get(field)
+        if isinstance(number, int) and not isinstance(number, bool):
+            status[field] = number
+    if "action_returncode" not in status:
+        return {}
+    return status
 
 
 def format_time_limit(timeout_s: float) -> str:
@@ -471,10 +593,22 @@ class RunResult:
         return self.attempts[-1] if self.attempts else None
 
 
-def _run(argv: Sequence[str], *, where: str) -> subprocess.CompletedProcess[str]:
+#: A scheduler command as the lane is given it: the executable's name or path,
+#: or a callable that takes the arguments after it and returns what
+#: ``subprocess.run`` would.  The callable form exists for tests, which drive
+#: ``wait`` through hundreds of polls on a fake clock and cannot afford a
+#: process per poll; the lane treats both forms alike, so a hang (a
+#: ``TimeoutExpired`` raised by the callable) reads the same either way.
+Command = str | Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
+
+
+def _run(argv: Sequence[object], *, where: str) -> subprocess.CompletedProcess[str]:
+    head, rest = argv[0], [str(arg) for arg in argv[1:]]
     try:
+        if callable(head):
+            return head(rest)
         return subprocess.run(
-            list(argv),
+            [str(head), *rest],
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT_S,
@@ -533,7 +667,6 @@ def job_script_text(
     worker_script: str | Path,
     job_entry: str | Path,
     lane_directory_path: str | Path,
-    job_state_root: str | Path,
     job_python: str = DEFAULT_JOB_PYTHON,
     worker_python: str = DEFAULT_JOB_PYTHON,
     local_checkout_root: str | Path | None = None,
@@ -548,6 +681,13 @@ def job_script_text(
 
     Every path is absolute because ``--export=NIL`` leaves the job with only
     SLURM's own variables: there is no ``PATH`` to resolve a bare name against.
+
+    One path is deliberately absent: where the job leaves its Epilog state
+    file.  That is a node-side location, and a script that carried the
+    submitter's answer to it was how a submitter with
+    ``PRISMABUILD_SLURM_LANE_ROOT`` set silently disabled node-side cleanup.
+    ``slurm_job`` resolves it there, from the variable and default the Epilog
+    reads.
     """
 
     argv = [
@@ -558,7 +698,6 @@ def job_script_text(
         "--worker", str(worker_script),
         "--worker-python", str(worker_python),
         "--lane-dir", str(lane_directory_path),
-        "--job-state-root", str(job_state_root),
     ]
     if local_checkout_root is not None:
         argv.extend(["--checkout-root", str(local_checkout_root)])
@@ -591,6 +730,7 @@ def submit(
     worker_python: str = DEFAULT_JOB_PYTHON,
     local_checkout_root: str | Path | None = None,
     partition: str | None = None,
+    priority: int = 0,
     attempt: int = 1,
     sbatch: str = "sbatch",
     published_unix: float | None = None,
@@ -607,8 +747,6 @@ def submit(
     key = str(action["action_key"])
     directory = lane_directory(key, root=root)
     directory.mkdir(parents=True, exist_ok=True)
-    state_root = job_state_directory(root=root)
-    state_root.mkdir(parents=True, exist_ok=True)
 
     script = directory / "job.sh"
     text = job_script_text(
@@ -617,7 +755,6 @@ def submit(
         worker_script=worker_script,
         job_entry=job_entry,
         lane_directory_path=directory,
-        job_state_root=state_root,
         job_python=job_python,
         worker_python=worker_python,
         local_checkout_root=local_checkout_root,
@@ -632,6 +769,7 @@ def submit(
     tmp.chmod(0o755)
     os.replace(tmp, script)
 
+    nice = nice_for(priority)
     stdout_template = directory / "%j.out"
     stderr_template = directory / "%j.err"
     argv = [
@@ -653,6 +791,13 @@ def submit(
         f"--error={stderr_template}",
         f"--mem={resources.memory_mib}M",
         f"--cpus-per-task={resources.cpus}",
+        # The pool recorded a priority and sorted its ready queue on it.  SLURM
+        # has no submitter-settable priority number, so the same ordering is
+        # expressed as a nice the controller subtracts; see ``NICE_BASE``.
+        # Sent on every submission, including priority 0, so that the flag is
+        # not the thing that differs between an ordinary job and a deprioritized
+        # one -- only its value is.
+        f"--nice={nice}",
     ]
     if timeout_s is not None:
         # A deadline is sent only when the submitter asked for one.  Wall-clock
@@ -708,6 +853,10 @@ def submit(
         "gres": gres or "",
         # Empty means the default partition: the constraint decided.
         "partition": partition or "",
+        # What the submitter's priority became.  Recorded rather than derived
+        # again by a reader: ``NICE_BASE`` may move, and a record that says
+        # what was sent stays readable when it does.
+        "nice": nice,
         # Empty means no deadline was requested: the job runs while it runs.
         "time_limit": "" if timeout_s is None else format_time_limit(timeout_s),
         "cpus": resources.cpus,
@@ -815,7 +964,7 @@ def _field(fields: Sequence[str], index: int) -> str:
     return fields[index] if index < len(fields) else ""
 
 
-def _sacct_state(job_id: str, *, sacct: str) -> JobProvenance | None:
+def _sacct_state(job_id: str, *, sacct: Command) -> JobProvenance | None:
     completed = _run(
         [
             sacct, "-j", job_id, "--parsable2", "--noheader",
@@ -851,7 +1000,7 @@ def _sacct_state(job_id: str, *, sacct: str) -> JobProvenance | None:
 _SCONTROL_FIELD = re.compile(r"(\w+)=(\S*)")
 
 
-def _scontrol_state(job_id: str, *, scontrol: str) -> JobProvenance | None:
+def _scontrol_state(job_id: str, *, scontrol: Command) -> JobProvenance | None:
     completed = _run([scontrol, "show", "job", job_id], where="scontrol")
     if completed.returncode != 0:
         if _unreachable(completed):
@@ -877,7 +1026,7 @@ def _scontrol_state(job_id: str, *, scontrol: str) -> JobProvenance | None:
     )
 
 
-def _squeue_state(job_id: str, *, squeue: str) -> JobProvenance | None:
+def _squeue_state(job_id: str, *, squeue: Command) -> JobProvenance | None:
     completed = _run(
         [squeue, "-h", "-j", job_id, "-o", "%T"], where="squeue"
     )
@@ -897,9 +1046,9 @@ def _squeue_state(job_id: str, *, squeue: str) -> JobProvenance | None:
 def query_provenance(
     job_id: str,
     *,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
 ) -> JobProvenance | None:
     """Everything the scheduler will say, from whichever tool can say it.
 
@@ -929,9 +1078,9 @@ def query_provenance(
 def query_state(
     job_id: str,
     *,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
 ) -> tuple[str, int | None, int | None] | None:
     """The ending alone: state, exit code, signal, or ``None`` if unknown."""
 
@@ -1218,7 +1367,7 @@ class LivenessMonitor:
         self,
         job: SubmittedJob,
         *,
-        sstat: str = "sstat",
+        sstat: Command = "sstat",
         clock: Callable[[], float] = time.monotonic,
         sample_s: float = LIVENESS_SAMPLE_S,
         window_s: float = STALL_WINDOW_S,
@@ -1435,10 +1584,10 @@ def read_liveness(
 def wait(
     job: SubmittedJob,
     *,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
-    sstat: str = "sstat",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
+    sstat: Command = "sstat",
     poll_s: float = DEFAULT_POLL_S,
     wait_s: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -1559,7 +1708,7 @@ def wait(
         sleep(poll_s)
 
 
-def cancel(job_id: str, *, scancel: str = "scancel") -> bool:
+def cancel(job_id: str, *, scancel: Command = "scancel") -> bool:
     """Stop one job.  SLURM sends TERM, then KILL after ``KillWait``."""
 
     completed = _run([scancel, str(job_id)], where="scancel")
@@ -1696,6 +1845,25 @@ def detail_status_and_returncode(
     return status, outcome.exit_code
 
 
+def _submitted_gres(job: SubmittedJob | None) -> str | None:
+    """The ``--gres`` this job was submitted with, or ``None`` for no device.
+
+    Args:
+        job: The accepted submission, or ``None`` when there was none.
+
+    Returns:
+        ``"gpu:1"`` for a whole device, ``"shard:N"`` for slots, ``None``
+        when the job asked for no device or no submission is known.
+    """
+
+    if job is None:
+        return None
+    for flag in job.argv:
+        if str(flag).startswith("--gres="):
+            return str(flag).split("=", 1)[1]
+    return None
+
+
 def publish_outcome(
     *,
     queue_root: str | Path,
@@ -1719,7 +1887,7 @@ def publish_outcome(
     withdrawn_unix: float | None = None,
     reason: str | None = None,
 ) -> Path | None:
-    """File one action's ending under ``done/`` or ``failed/``.
+    """File one action's ending under ``done/``, ``failed/`` or ``withdrawn/``.
 
     Which directory is decided by the CAS, not by the exit status: a receipt
     means the work was done whatever the job said afterwards, and no receipt
@@ -1734,10 +1902,38 @@ def publish_outcome(
 
     key = str(action_key)
     provenance = outcome.provenance if outcome is not None else None
-    state = pool.DONE if status == "executed" else pool.FAILED
+    if status == "executed":
+        state = pool.DONE
+    elif status == "withdrawn":
+        # The pool's rule, from ``PoolQueue.withdraw``: a withdrawal lands in
+        # ``withdrawn/``, never ``failed/``.  A withdrawn action is a decision,
+        # and a record of it under ``failed/`` makes the failure record lie
+        # about the fleet -- every reader that counts failures counts it.
+        # The marker ``publish_withdrawal`` filed there is the decision; this
+        # record enriches it with the job's ending and keeps its fields.
+        state = pool.WITHDRAWN
+    else:
+        state = pool.FAILED
     path = _queue_dir(queue_root, state) / f"{key}.json"
-    if path.exists() and _same_generation(path, published_unix):
-        return None
+    decision: dict[str, object] = {}
+    if path.exists():
+        if state == pool.WITHDRAWN:
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = None
+            if isinstance(existing, dict):
+                if "detail" in existing and _same_generation(path, published_unix):
+                    # A full ending is already filed for this generation.
+                    return None
+                decision = {
+                    field: existing[field]
+                    for field in ("withdrawn_unix", "withdrawn_by",
+                                  "withdrawn_host", "withdrawn_from", "reason")
+                    if field in existing
+                }
+        elif _same_generation(path, published_unix):
+            return None
 
     detail_status, returncode = detail_status_and_returncode(status, outcome)
     body: dict[str, object] = {
@@ -1753,12 +1949,29 @@ def publish_outcome(
             receipt.get("result_digest") if isinstance(receipt, Mapping) else None
         ),
     }
+    if job is not None:
+        # The action's own ending, when the node left one. ``returncode`` above
+        # is the launcher's and stays that -- eleven fleet tools and Tessera's
+        # ``merge_suite`` read it as such -- so the action's goes in a field of
+        # its own, and is absent when there is nothing to say.
+        body.update(read_action_status(
+            action_status_path(job.directory, job.job_id)
+        ))
     if job is not None or outcome is not None:
         body["slurm"] = {
             "job_id": job.job_id if job is not None
             else (outcome.job_id if outcome is not None else None),
             "state": outcome.state if outcome is not None else None,
             "partition": provenance.partition if provenance is not None else None,
+            # The device request as sent, because ``resources`` cannot carry
+            # it.  ``LaneResources.demand()`` speaks the producer's vocabulary
+            # -- ``{"gpu": 1}`` -- and that same claim is ``gpu:1`` for a whole
+            # device and ``shard:1`` for one sharable slot.  ``pool_reset``
+            # rebuilds a submission out of ``resources``, so without this it
+            # re-emitted an exclusive action's demand as a shard and quietly
+            # dropped ``--exclusive``.  Read off the submitted argv rather than
+            # recomputed: what the scheduler was told is the fact worth filing.
+            "gres": _submitted_gres(job),
             "submission_record_path": str(job.record_path) if job is not None else None,
             "stdout_path": str(job.stdout_path) if job is not None else None,
             "stderr_path": str(job.stderr_path) if job is not None else None,
@@ -1803,6 +2016,11 @@ def publish_outcome(
         record["withdrawn_unix"] = float(withdrawn_unix)
     if reason is not None:
         record["reason"] = reason
+    # The marker's decision fields win over this call's: the first writer of
+    # a withdrawal is the one who decided it, and the pool's readers of this
+    # directory (``withdrawn_keys``, ``withdrawal_covers``, ``pool_reset``)
+    # read exactly those fields.
+    record.update(decision)
     _write_json_atomic(path, record)
     return path
 
@@ -1939,11 +2157,12 @@ def run(
     worker_python: str = DEFAULT_JOB_PYTHON,
     local_checkout_root: str | Path | None = None,
     partition: str | None = None,
+    priority: int = 0,
     sbatch: str = "sbatch",
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
-    sstat: str = "sstat",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
+    sstat: Command = "sstat",
     poll_s: float = DEFAULT_POLL_S,
     wait_s: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -2015,6 +2234,7 @@ def run(
             worker_python=worker_python,
             local_checkout_root=local_checkout_root,
             partition=partition,
+            priority=priority,
             attempt=attempt,
             sbatch=sbatch,
             published_unix=published_unix,
@@ -2076,10 +2296,10 @@ def resume(
     queue_root: str | Path,
     wait_s: float | None = None,
     poll_s: float = DEFAULT_POLL_S,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
-    sstat: str = "sstat",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
+    sstat: Command = "sstat",
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     on_stall: Callable[[StallReport], None] | None = None,

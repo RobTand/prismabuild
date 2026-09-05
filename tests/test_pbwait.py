@@ -402,3 +402,22 @@ def test_a_prefix_resolves_against_what_is_recorded_and_refuses_ambiguity(
     # A whole key nothing has recorded is taken as given: waiting for work that
     # is not submitted yet is the case this tool exists for.
     assert pbwait.resolve_key(queue, "9" * 64) == "9" * 64
+
+
+def test_the_table_names_the_actions_status_beside_the_runs() -> None:
+    """One column: an operator reads this table a campaign's worth of rows at
+    a time, and the run's status is the one ``pbwait`` verdicts on."""
+
+    row = pbwait._row("a" * 64, "failed", returncode=1, action_returncode=7)
+    assert pbwait._cell(row, "returncode") == "1 (action 7)"
+
+    signalled = pbwait._row(
+        "a" * 64, "failed", returncode=1, action_returncode=-9, action_signal=9
+    )
+    assert pbwait._cell(signalled, "returncode") == "1 (action signal 9)"
+
+    agreeing = pbwait._row("a" * 64, "failed", returncode=7, action_returncode=7)
+    assert pbwait._cell(agreeing, "returncode") == "7"
+
+    assert pbwait._cell(pbwait._row("a" * 64, "failed", returncode=1),
+                        "returncode") == "1"

@@ -33,6 +33,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
+from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
@@ -256,6 +257,17 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("FAKE_SLURM_STATE", str(state))
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
     monkeypatch.setenv(sl.LANE_ROOT_ENV, str(tmp_path / "lane"))
+    # The node-side job-state root, which is a different question from the
+    # lane root and is answered on the node.  Set here because the fake
+    # ``sbatch`` runs the job script in this process's environment, and the
+    # default is the fleet's real shared mount.
+    monkeypatch.setenv(sl.JOB_STATE_ROOT_ENV, str(tmp_path / "node-jobs"))
+    # And the fleet root ``pbrun`` files endings under.  Without this,
+    # ``slurm_outcome``'s default ``queue_root`` is the REAL
+    # /mnt/shared/prismabuild-fleet/pb-queue, and every test that runs a job to
+    # its ending wrote a terminal record into the live queue -- 324 of them,
+    # counted on 2026-09-05, each naming a /tmp/pytest-of-rob path.
+    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
     return state
 
 
@@ -270,7 +282,18 @@ def _submissions(state: Path) -> list[dict]:
 # Actions
 # --------------------------------------------------------------------------
 
-def _sealed_source(tmp_path: Path) -> tuple[Path, str, dict]:
+#: What the sealed source's task does unless a caller wants something else:
+#: read the payload, write the declared result, exit zero.
+_TASK_BODY = (
+    "import pathlib\n"
+    "pathlib.Path('result.txt').write_text("
+    "pathlib.Path('payload.txt').read_text())\n"
+)
+
+
+def _sealed_source(
+    tmp_path: Path, *, task_body: str = _TASK_BODY
+) -> tuple[Path, str, dict]:
     """A one-file git checkout, its stamp name, and its identity."""
 
     source = tmp_path / "source"
@@ -282,11 +305,7 @@ def _sealed_source(tmp_path: Path) -> tuple[Path, str, dict]:
     subprocess.run(
         ["git", "-C", str(source), "config", "user.email", "t@example.invalid"],
         check=True)
-    (source / "task.py").write_text(
-        "import pathlib\n"
-        "pathlib.Path('result.txt').write_text("
-        "pathlib.Path('payload.txt').read_text())\n"
-    )
+    (source / "task.py").write_text(task_body)
     (source / "payload.txt").write_text("sealed by slurm\n")
     subprocess.run(
         ["git", "-C", str(source), "add", "task.py", "payload.txt"], check=True)
@@ -326,14 +345,17 @@ def _snapshot(tmp_path: Path, source: Path, stamp_name: str,
 
 
 def _runnable_action(tmp_path: Path, cas: pb.PrismaBuildCAS,
-                     *, owner: str = "") -> dict:
+                     *, owner: str = "", marker: str = "",
+                     task_body: str = _TASK_BODY) -> dict:
     """An action a real worker can execute: sealed snapshot, real closure."""
 
-    source, stamp_name, _identity = _sealed_source(tmp_path)
+    source, stamp_name, _identity = _sealed_source(tmp_path, task_body=task_body)
     snapshot = _snapshot(tmp_path, source, stamp_name, cas)
     variables: dict[str, str] = {}
     if owner:
         variables["PRISMABUILD_CONTAINER_OWNER"] = owner
+    if marker:
+        variables["PRISMABUILD_CONTAINER_MARKER"] = marker
     return pb.seal_action({
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
@@ -438,6 +460,7 @@ def test_a_gpu_slot_action_asks_for_shards_its_tags_and_its_own_time(
         f"--error={directory}/%j.err",
         "--mem=73728M",
         "--cpus-per-task=4",
+        f"--nice={sl.NICE_BASE}",
         "--time=02:00:00",
         "--gres=shard:1",
         "--constraint=gb10&sparklina",
@@ -502,6 +525,63 @@ def test_a_requested_deadline_still_becomes_a_time_limit(
     assert "--time=00:01:30" in argv
     record = json.loads(job.record_path.read_text(encoding="utf-8"))
     assert record["time_limit"] == "00:01:30"
+
+
+@pytest.mark.parametrize(
+    ("priority", "expected"),
+    [
+        (0, f"--nice={sl.NICE_BASE}"),
+        (5, f"--nice={sl.NICE_BASE - 5 * sl.NICE_SCALE}"),
+        (-10, f"--nice={sl.NICE_BASE + 10 * sl.NICE_SCALE}"),
+    ],
+)
+def test_the_submitters_priority_becomes_the_nice_slurm_can_honour(
+    tmp_path: Path, fleet: Path, priority: int, expected: str
+) -> None:
+    """The pool sorted its ready queue on ``--priority``; SLURM subtracts a
+    nice from the base priority its own scheduler assigned.  Higher priority is
+    therefore a smaller nice, and the base keeps every one of them non-negative
+    -- a boost needs SlurmUser privilege the submitting user does not have.
+
+    ``pool_reset`` is the case that made this a defect rather than a gap: it
+    re-submits in bulk at ``--priority -10``, which under the pool sat behind
+    interactive work and under SLURM ran alongside it.
+    """
+
+    job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
+                  priority=priority, seed=f"nice{priority}")
+    record = [r for r in _submissions(fleet) if r["job_id"] == int(job.job_id)][0]
+
+    assert expected in record["argv"]
+    assert len([f for f in record["argv"] if f.startswith("--nice=")]) == 1
+
+
+def test_a_priority_past_the_base_asks_for_the_most_it_can_be_given(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """``sbatch`` refuses a negative nice from an unprivileged submitter, so a
+    priority past the base is clamped to zero rather than turned into a
+    submission the scheduler rejects."""
+
+    past = sl.NICE_BASE // sl.NICE_SCALE + 1
+    assert sl.nice_for(past) == 0
+    job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
+                  priority=past, seed="clamped")
+    record = [r for r in _submissions(fleet) if r["job_id"] == int(job.job_id)][0]
+    assert "--nice=0" in record["argv"]
+
+
+def test_the_submission_record_says_what_the_priority_became(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """Beside the partition, because both are how this submission was placed
+    and neither is part of the action's identity."""
+
+    job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
+                  priority=-10, seed="recorded")
+    record = json.loads(job.record_path.read_text(encoding="utf-8"))
+    assert record["nice"] == sl.NICE_BASE + 10 * sl.NICE_SCALE
+    assert "partition" in record
 
 
 def test_the_partition_is_read_off_the_demand_and_the_placement() -> None:
@@ -926,10 +1006,16 @@ def test_the_job_materializes_the_snapshot_and_publishes_a_real_receipt(
     receipt = cas.lookup(action)
     assert receipt is not None
     assert cas.result_path(receipt, action).read_text() == "sealed by slurm\n"
-    # The per-action tree does not survive the job, and neither does the state
-    # file the Epilog would otherwise act on.
+    # The per-action tree does not survive the job.  The state file does: the
+    # Epilog runs after every ending, and it is the only thing on the node that
+    # can remove a container the action started -- a container is reparented to
+    # containerd-shim and outlives a job that ended normally just as completely
+    # as one that was killed.  So the launcher leaves it the file it needs, and
+    # the Epilog deletes it.
     assert not list(checkouts.glob("*/checkout"))
-    assert not (state_root / "4242.job").exists()
+    survivor = state_root / "4242.job"
+    assert survivor.exists()
+    assert "container_owner=" in survivor.read_text(encoding="utf-8")
 
 
 def test_the_job_leaves_the_epilog_the_owner_and_the_tree_while_it_runs(
@@ -937,12 +1023,14 @@ def test_the_job_leaves_the_epilog_the_owner_and_the_tree_while_it_runs(
 ) -> None:
     """A job killed at its time limit cleans nothing up, so what the Epilog
     needs has to be on disk *before* the work starts: the container-ownership
-    label the Docker shim stamps, and the tree to remove."""
+    label the Docker shim stamps, the marker it writes beside it, and the tree
+    to remove."""
 
     cas_root = tmp_path / "cas"
     cas = pb.PrismaBuildCAS(cas_root)
     owner = "ab" * 32
-    action = _runnable_action(tmp_path, cas, owner=owner)
+    marker = f"/mnt/shared/pb-queue/container-owners/{owner}.used"
+    action = _runnable_action(tmp_path, cas, owner=owner, marker=marker)
     request = cas.publish_action_request(action)
     state_root = tmp_path / "jobs"
     checkouts = tmp_path / "materialized"
@@ -968,12 +1056,82 @@ def test_the_job_leaves_the_epilog_the_owner_and_the_tree_while_it_runs(
     assert code == 0
     assert len(seen) == 2
     assert all(f"container_owner={owner}" in text for text in seen)
+    # And the marker the shim writes on first container creation, so the
+    # Epilog can retire it: the pull queue's ``finish`` unlinked it, and under
+    # SLURM nothing did.  Read off the sealed environment rather than rebuilt.
+    assert all(f"container_marker={marker}" in text for text in seen)
     assert "checkout_dir=\n" in seen[0]            # nothing to remove yet
     tree = [
         line.split("=", 1)[1]
         for line in seen[1].splitlines() if line.startswith("checkout_dir=")
     ][0]
     assert tree and Path(tree).parent == checkouts
+
+
+def test_the_submitter_does_not_decide_where_the_epilog_state_file_goes(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """The batch script carries no job-state path, because that is the node's.
+
+    A submitter that exported ``PRISMABUILD_SLURM_LANE_ROOT`` -- which the
+    fixture above does -- used to bake its own answer into the script, while
+    the Epilog on the node kept reading its own default.  The two disagreed,
+    the Epilog found no state file, and a killed job leaked its checkout and
+    its containers with nothing said.
+    """
+
+    job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}))
+    script = job.script.read_text(encoding="utf-8")
+
+    assert "--job-state-root" not in script
+    assert str(tmp_path / "lane" / sl.JOB_STATE_DIRNAME) not in script
+
+
+def test_the_launcher_reads_the_job_state_root_the_epilog_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same variable, same default, resolved on the node that runs the job."""
+
+    monkeypatch.setenv(sl.LANE_ROOT_ENV, str(tmp_path / "submitter-lane"))
+    monkeypatch.setenv(sl.JOB_STATE_ROOT_ENV, str(tmp_path / "node-jobs"))
+    assert sl.job_state_directory() == tmp_path / "node-jobs"
+
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    action = _runnable_action(tmp_path, cas)
+    request = cas.publish_action_request(action)
+
+    sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
+    import slurm_job  # noqa: PLC0415
+
+    written: list[Path] = []
+    real = slurm_job._write_job_state
+
+    def record(path, **kwargs):
+        written.append(Path(path))
+        real(path, **kwargs)
+
+    monkeypatch.setattr(slurm_job, "_write_job_state", record)
+    code = slurm_job.main([
+        "--action", str(request), "--cas-root", str(cas_root),
+        "--worker", str(WORKER), "--worker-python", sys.executable,
+        "--job-id", "5150",
+        "--checkout-root", str(tmp_path / "materialized"),
+    ])
+
+    assert code == 0
+    assert written and set(written) == {tmp_path / "node-jobs" / "5150.job"}
+
+
+def test_the_job_state_root_default_is_not_the_submitters_lane_root(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unset override answers the fleet's own path, whatever the lane root
+    was set to."""
+
+    monkeypatch.setenv(sl.LANE_ROOT_ENV, "/somewhere/else")
+    monkeypatch.delenv(sl.JOB_STATE_ROOT_ENV, raising=False)
+    assert str(sl.job_state_directory()) == sl.DEFAULT_JOB_STATE_ROOT
 
 
 # --------------------------------------------------------------------------
@@ -1004,6 +1162,162 @@ def test_pbrun_reports_a_slurm_execution_the_way_it_reports_a_pool_one(
     assert cas.lookup(action) is not None
     err = capsys.readouterr().err
     assert "submitted" in err and "attempt 1/1" in err and "executed via" in err
+
+
+def test_a_priority_reaches_sbatch_through_the_whole_lane(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last link of the chain: ``slurm_outcome`` -> ``run`` -> ``submit``.
+
+    The other three are checked where they are made; this one runs the lane
+    against the fake scheduler so a retry loop that forgot to pass the value on
+    would show up as a job submitted at the wrong nice.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "priority-chain")
+    request = cas.publish_action_request(action)
+
+    pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
+        exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
+        max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0, priority=-10,
+    )
+
+    assert f"--nice={sl.NICE_BASE + 10 * sl.NICE_SCALE}" in _submissions(fleet)[0]["argv"]
+
+
+def test_the_slurm_path_prints_the_placement_notices_the_pool_path_prints(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both notices printed on the pool path only, though the pin is just as
+    real under SLURM and the GPU mask is applied before the transport branch.
+
+    A pin is a consequence of a checkout path rather than of a flag, so a
+    submitter that is not told has narrowed the fleet to one box without
+    knowing; and a slot with no device silently turns a suite's CUDA tests into
+    skips, which read as the same green.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "notices")
+    request = cas.publish_action_request(action)
+
+    pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=["x86"],
+        demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
+        timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
+        runtime_root=REPOSITORY, poll_s=0.0,
+        placement_notice="pbrun: PINNED to sparky -- test notice",
+    )
+
+    err = capsys.readouterr().err
+    assert "pbrun: PINNED to sparky -- test notice" in err
+    assert "[no GPU: CUDA_VISIBLE_DEVICES='']" in err
+
+
+def test_a_gpu_action_is_not_told_its_slot_has_no_device(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "has-a-device")
+    request = cas.publish_action_request(action)
+
+    pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=["gb10"],
+        demand={"gpu": 1, "mem_gb": 16}, exclusive=False,
+        timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
+        runtime_root=REPOSITORY, poll_s=0.0,
+    )
+
+    assert "no GPU" not in capsys.readouterr().err
+
+
+def test_an_attached_pbrun_joins_a_running_job_instead_of_submitting_again(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A key is a content hash, so asking for the same work twice is the normal
+    way to ask whether it is done.
+
+    The pull queue answered that with one ``ready/<key>.json`` and a claim, so
+    the second ask could not become a second execution.  SLURM has no claim,
+    and this path submitted unconditionally: two attached ``pbrun``s of one key
+    were two jobs of one action on the fleet, materializing the same checkout,
+    taking the same GPU twice and racing to publish one receipt.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "already-running")
+    request = cas.publish_action_request(action)
+    queue = tmp_path / "queue"
+    running = sl.submit(
+        action, cas=cas, request_path=request,
+        resources=sl.LaneResources.from_demand({"cpu": 1}), timeout_s=600.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY,
+    )
+    state = fleet / f"{running.job_id}.state"
+
+    def ends_while_we_wait(_seconds: float) -> None:
+        state.write_text("COMPLETED|0:0\n")
+
+    code = pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
+        exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
+        max_attempts=1, runtime_root=REPOSITORY, queue_root=queue,
+        poll_s=0.0, sleep=ends_while_we_wait,
+    )
+
+    # Nothing new was submitted, and the ending filed is the recorded job's.
+    assert [row["job_id"] for row in _submissions(fleet)] == [int(running.job_id)]
+    err = capsys.readouterr().err
+    assert f"already running (slurm job {running.job_id})" in err
+    assert "attaching to it rather than submitting a second copy" in err
+    ending = json.loads(
+        (queue / pool.FAILED / f"{action['action_key']}.json").read_text())
+    assert ending["detail"]["slurm"]["job_id"] == running.job_id
+    # And the same exit code a caller that had submitted this job would read
+    # for this ending: it completed and published no receipt.
+    assert code == 1
+
+
+def test_a_recorded_submission_the_controller_forgot_is_submitted_afresh(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live means recorded, no ending covering that generation, AND a job the
+    controller still knows in a non-terminal state.  A job purged past
+    ``MinJobAge`` is not live, so the work is asked for again -- which is what
+    ``--detach`` already does with the same check."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "forgotten")
+    request = cas.publish_action_request(action)
+    queue = tmp_path / "queue"
+    forgotten = sl.submit(
+        action, cas=cas, request_path=request,
+        resources=sl.LaneResources.from_demand({"cpu": 1}), timeout_s=600.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY,
+    )
+    # Completed, unaccounted for, and no receipt: the controller answers
+    # nothing about it, which is not the same as knowing what it did.
+    (fleet / f"{forgotten.job_id}.state").unlink()
+
+    code = pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
+        exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
+        max_attempts=1, runtime_root=REPOSITORY, queue_root=queue, poll_s=0.0,
+    )
+
+    submitted = [row["job_id"] for row in _submissions(fleet)]
+    assert len(submitted) == 2 and submitted[0] == int(forgotten.job_id)
+    assert code == 1
 
 
 def test_a_job_that_exits_zero_without_a_receipt_is_not_reported_as_success(
@@ -1065,12 +1379,16 @@ def test_a_cancelled_job_exits_the_way_a_withdrawal_does(
     assert code == pbrun.WITHDRAWN_EXIT
 
 
-def test_the_slurm_transport_never_touches_the_pull_queue(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Everything below the branch reads worker offers, and a retained offer
-    from a loop stopped for the cutover would refuse a submission the scheduler
-    can place perfectly well.  So the queue is not constructed at all."""
+def _slurm_main_kwargs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *argv_tail: str
+) -> dict[str, object]:
+    """Drive ``pbrun.main --transport slurm`` and return what it sent the lane.
+
+    Building a ``PoolQueue`` is an assertion failure rather than a mock:
+    everything below the branch reads worker offers, and a retained offer from
+    a loop stopped for the cutover would refuse a submission the scheduler can
+    place perfectly well.
+    """
 
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     subprocess.run(
@@ -1103,12 +1421,48 @@ def test_the_slurm_transport_never_touches_the_pull_queue(
     monkeypatch.setattr(pbrun, "slurm_outcome", capture)
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--transport", "slurm", "--cwd", str(tmp_path),
-        "--tag", "x86", "--timeout-s", "1800", "--", "/bin/true",
+        *argv_tail, "--", "/bin/true",
     ])
     assert pbrun.main() == 0
+    return seen
+
+
+def test_the_slurm_transport_never_touches_the_pull_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The helper refuses a ``PoolQueue``; this is the case it exists for."""
+
+    seen = _slurm_main_kwargs(
+        tmp_path, monkeypatch, "--tag", "x86", "--timeout-s", "1800")
     assert seen["tags"] == ["x86"]
     assert seen["timeout_s"] == 1800.0
     assert seen["exclusive"] is False
+
+
+def test_main_hands_the_slurm_path_the_pin_notice_it_would_have_printed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Built in ``main``, which is the only place that knows the checkout and
+    the flags.  The census is unavailable rather than empty: this branch builds
+    no ``PoolQueue`` on purpose, and worker offers do not describe a SLURM
+    fleet, so the notice says so instead of borrowing the queue's sentence."""
+
+    seen = _slurm_main_kwargs(tmp_path, monkeypatch, "--here")
+    notice = str(seen["placement_notice"])
+    assert "PINNED" in notice
+    assert pbrun.NO_CENSUS in notice
+    assert pbrun.UNANNOUNCED_CENSUS not in notice
+
+
+def test_the_priority_a_caller_asked_for_reaches_the_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--priority`` was parsed and then dropped on the way to SLURM, so
+    ``pool_reset``'s bulk ``--priority -10`` ran alongside interactive work
+    instead of behind it."""
+
+    seen = _slurm_main_kwargs(tmp_path, monkeypatch, "--priority", "-10")
+    assert seen["priority"] == -10
 
 
 def test_the_transport_default_is_still_the_pull_queue(

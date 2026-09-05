@@ -59,7 +59,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -487,18 +487,45 @@ def resolve_snapshot_refs(
 def build_git_checkout_snapshot(
     cwd: Path,
     *,
-    stamp_name: str,
+    stamp_name: str | None = None,
     cas: pb.PrismaBuildCAS,
     max_bytes: int = CHECKOUT_SNAPSHOT_MAX_BYTES,
     expected_identity: dict[str, str] | None = None,
     snapshot_refs: Sequence[str] = (),
 ) -> dict[str, object]:
-    """Publish the exact dirty tree as an immutable Git bundle with ancestry."""
+    """Publish the exact dirty tree as an immutable Git bundle with ancestry.
+
+    Args:
+        cwd: The directory the action runs in, inside a Git worktree.
+        stamp_name: The pbrun closure stamp to seal alongside the tree, or
+            ``None`` for a producer that seals its own action body. The stamp
+            exists so a pull-queue worker can compare the live tree against the
+            action that pinned it; a snapshot-addressed action is compared
+            against its own sealed commit instead, so a producer that never
+            writes a stamp does not need one invented for it.
+        cas: The store the bundle is ingested into.
+        max_bytes: The local-disk bound this snapshot may not exceed.
+        expected_identity: The checkout identity the caller already read, so
+            the seal refuses a tree that moved between the two observations.
+        snapshot_refs: Source branches the bundle also advertises.
+
+    Returns:
+        The validated ``params.checkout_snapshot`` record.
+    """
 
     root = git_repository_root(cwd)
     if root is None:
         raise SystemExit("pbrun: a non-Git checkout cannot be materialized")
     require_checkout_snapshot_limit(max_bytes)
+    if stamp_name is None:
+        subdirectory = cwd.relative_to(root).as_posix() or "."
+        stamp_relative = None
+        stamp_paths: tuple[str, ...] = ()
+        return _build_git_checkout_snapshot(
+            cwd, root, subdirectory, stamp_relative, stamp_paths,
+            cas=cas, max_bytes=max_bytes,
+            expected_identity=expected_identity, snapshot_refs=snapshot_refs,
+        )
     declared_stamp = cwd / stamp_name
     if declared_stamp.is_symlink():
         raise SystemExit("pbrun: checkout stamp must not be a symlink")
@@ -517,7 +544,28 @@ def build_git_checkout_snapshot(
     ).as_posix()
     if observed_stamp_relative != stamp_relative:
         raise SystemExit("pbrun: checkout stamp resolves through a symlinked path")
-    paths = snapshot_path_roster(root, extra_paths=(stamp_relative,))
+    return _build_git_checkout_snapshot(
+        cwd, root, subdirectory, stamp_relative, (stamp_relative,),
+        cas=cas, max_bytes=max_bytes,
+        expected_identity=expected_identity, snapshot_refs=snapshot_refs,
+    )
+
+
+def _build_git_checkout_snapshot(
+    cwd: Path,
+    root: Path,
+    subdirectory: str,
+    stamp_relative: str | None,
+    stamp_paths: tuple[str, ...],
+    *,
+    cas: pb.PrismaBuildCAS,
+    max_bytes: int,
+    expected_identity: dict[str, str] | None,
+    snapshot_refs: Sequence[str],
+) -> dict[str, object]:
+    """Seal the tree once the caller has settled where the stamp is, if any."""
+
+    paths = snapshot_path_roster(root, extra_paths=stamp_paths)
     require_working_tree_size(root, paths, max_bytes=max_bytes)
     require_untransformed_checkout(root, paths)
     identity = expected_identity or _git_identity(cwd)
@@ -559,11 +607,12 @@ def build_git_checkout_snapshot(
             root, ["read-tree", "HEAD"], environment=object_environment
         )
         _snapshot_git(root, ["add", "-A"], environment=object_environment)
-        _snapshot_git(
-            root,
-            ["add", "-f", "--", stamp_relative],
-            environment=object_environment,
-        )
+        if stamp_relative is not None:
+            _snapshot_git(
+                root,
+                ["add", "-f", "--", stamp_relative],
+                environment=object_environment,
+            )
         tree = _snapshot_git(root, ["write-tree"], environment=object_environment)
         require_supported_snapshot_tree(
             root,
@@ -1112,7 +1161,33 @@ def require_checkout_owned_scripts(
         )
 
 
-def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
+#: What the notice says where it has no fleet census to read.
+#:
+#: The pull queue's census is the worker-offer registry, and ``None`` from
+#: ``placeable_hosts`` means nothing has announced.  A transport that keeps no
+#: such registry is a different fact with the same shape, and printing the
+#: queue's sentence for it would be a claim about a fleet nobody asked.
+UNANNOUNCED_CENSUS = "no worker has announced"
+NO_CENSUS = "this transport keeps no worker census"
+
+
+class _NoCensus:
+    """The placement census a transport without worker offers has: none.
+
+    The SLURM branch deliberately builds no ``PoolQueue`` -- a retained offer
+    from a loop stopped for the cutover would answer wrongly -- but the pin a
+    box-local checkout imposes is just as real there, and it is the thing the
+    submitter is otherwise never told.  So the notice is printed with the
+    census unavailable, which every branch of it already handles.
+    """
+
+    @staticmethod
+    def placeable_hosts(_intent):
+        return None
+
+
+def _width_of_the_pin(queue, intent, tags: list[str], hostname: str,
+                      *, unknown: str = UNANNOUNCED_CENSUS) -> str:
     """How many boxes this action WOULD have had, with the host tag taken off.
 
     Not "how many boxes match the pinned tags" -- that is one, by
@@ -1127,7 +1202,7 @@ def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
     unpinned["tags"] = [t for t in tags if t != hostname]
     hosts = queue.placeable_hosts(unpinned)
     if hosts is None:
-        return "Fleet width unknown: no worker has announced."
+        return f"Fleet width unknown: {unknown}."
     others = [h for h in hosts if h != hostname]
     if not others:
         return "No other live box fits this demand, so the pin costs nothing now."
@@ -1144,6 +1219,7 @@ def pin_notice(
     hostname: str,
     here: bool,
     portable_checkout: bool = False,
+    unknown_census: str = UNANNOUNCED_CENSUS,
 ) -> str:
     """What the submitter is not otherwise told: this action is one box wide.
 
@@ -1212,7 +1288,9 @@ def pin_notice(
         tail = ("" if not local else
                 f"  Move the checkout under {SHARED_ROOT} to let any box claim "
                 f"it, or accept the pin knowingly.")
-        return f"{head}  {_width_of_the_pin(queue, intent, tags, hostname)}{tail}"
+        width = _width_of_the_pin(
+            queue, intent, tags, hostname, unknown=unknown_census)
+        return f"{head}  {width}{tail}"
 
     # No host tag landed.  Say what did, and what it costs.
     notes: list[str] = []
@@ -1223,7 +1301,7 @@ def pin_notice(
     if local:
         if others is None:
             notes.append(f"WARNING -- the checkout {cwd} exists only on "
-                         f"{hostname}, and no worker has announced, so tags "
+                         f"{hostname}, and {unknown_census}, so tags "
                          f"{tags} may let another box claim this action and "
                          f"fail on the missing tree.")
         elif others:
@@ -1245,8 +1323,7 @@ def pin_notice(
                      f"checkout under {SHARED_ROOT}.")
     elif here:
         if claimants is None:
-            notes.append("No worker has announced, so which box claims it is "
-                         "unknown.")
+            notes.append(f"Which box claims it is unknown: {unknown_census}.")
         elif claimants:
             notes.append(f"{len(claimants)} live "
                          f"box{'es' if len(claimants) > 1 else ''} can claim "
@@ -1473,6 +1550,11 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         "finished_host": outcome.get("finished_host"),
         "elapsed_s": detail.get("elapsed_s"),
         "returncode": detail.get("returncode"),
+        # The action's own ending, where the transport recorded one.  The
+        # launcher's status above is 1 for every failure, so an action that
+        # exited 7 reads as 1 without this.
+        "action_returncode": detail.get("action_returncode"),
+        "action_signal": detail.get("action_signal"),
         "receipt_published": detail.get("receipt_published"),
         "attempts": outcome.get("attempts"),
         "withdrawn_by": outcome.get("withdrawn_by"),
@@ -1600,7 +1682,8 @@ def await_outcome(
     # ``elapsed_s`` is present and null on a SLURM record whose scheduler
     # provenance was purged, so the key's presence must not defeat the default.
     print(f"pbrun: {status} on {outcome.get('finished_host')} "
-          f"in {(detail.get('elapsed_s') or 0):.0f}s", file=sys.stderr)
+          f"in {(detail.get('elapsed_s') or 0):.0f}s"
+          f"{action_status_suffix(detail)}", file=sys.stderr)
     if status == "cache_hit":
         return 0
     rc = detail.get("returncode")
@@ -1617,6 +1700,28 @@ def await_outcome(
     print(f"pbrun: outcome filed under {outcome_path.parent.name} after "
           f"{outcome.get('attempts', '?')} attempt(s)", file=sys.stderr)
     return 1
+
+
+def action_status_suffix(detail: Mapping[str, object]) -> str:
+    """What to add to an outcome line when the action's status is not the run's.
+
+    Nothing at all when the two agree, which is the ordinary case: an action
+    that exited 3 under a transport that reports its own launcher's status
+    would say the same number twice. When they differ -- the launcher exits 1
+    for every failure -- the run's number stays first, because that is the one
+    ``pbrun`` returns as its own exit status, and the action's is named as the
+    action's.
+    """
+
+    action = detail.get("action_returncode")
+    if not isinstance(action, int) or isinstance(action, bool):
+        return ""
+    if action == detail.get("returncode"):
+        return ""
+    signal = detail.get("action_signal")
+    if isinstance(signal, int) and not isinstance(signal, bool):
+        return f"; rc={detail.get('returncode')} (action killed by signal {signal})"
+    return f"; rc={detail.get('returncode')} (action exited {action})"
 
 
 def _report_stall(key: str, report) -> None:
@@ -1636,6 +1741,17 @@ def _report_stall(key: str, report) -> None:
           f"pbrun --withdraw {key[:12]} if it is dead.",
           file=sys.stderr, flush=True)
 
+
+#: The scheduler commands ``live_submission`` needs to ask whether a recorded
+#: job is still alive, and the keyword arguments ``slurm_lane.resume`` accepts.
+#: Named explicitly rather than passed through: ``slurm_outcome`` forwards
+#: whatever a caller gave it to ``run``, and ``run`` takes flags -- ``sbatch``,
+#: ``retry_safe`` -- that neither of these two has any use for.
+_QUERY_COMMANDS = frozenset({"sacct", "scontrol", "squeue"})
+_RESUME_COMMANDS = frozenset({
+    "poll_s", "sacct", "scontrol", "squeue", "sstat", "sleep", "clock",
+    "on_stall", "on_notice",
+})
 
 #: The interpreter pbrun's sealed argv starts with.  A nonportable action
 #: binds its exact bytes, so the name is stated once, where the scope is built.
@@ -1710,6 +1826,8 @@ def slurm_outcome(
     wait_s: float,
     retry_safe: bool,
     max_attempts: int,
+    priority: int = 0,
+    placement_notice: str = "",
     anywhere: bool = False,
     detach: bool = False,
     runtime_root: Path = RUNTIME_ROOT,
@@ -1737,43 +1855,125 @@ def slurm_outcome(
     """
 
     key = str(action["action_key"])
+    if placement_notice:
+        # How wide this action is, said before anything is submitted, exactly
+        # as the pool path says it.  The pin a box-local checkout imposes is a
+        # consequence of a path rather than of a flag, and a submitter that is
+        # not told has narrowed the fleet to one box without knowing.
+        print(placement_notice, file=sys.stderr, flush=True)
+    slots = int(demand.get("gpu", 0) or 0)
+    if exclusive and slots > 1:
+        # ``LaneResources.gres()`` answers ``gpu:1`` for an exclusive action
+        # whatever the count says, because ``gpu:N`` and ``shard:N`` are
+        # mutually exclusive requests against one device and exclusivity is the
+        # first.  On today's one-device boxes that is right and the count is
+        # redundant; on a two-GPU box it would silently hand back half of what
+        # was asked for.  Refusing is the honest answer either way -- the pool
+        # read the count off worker offers, and SLURM has no such thing here.
+        raise SystemExit(
+            f"pbrun: --exclusive --gpu-capacity {slots} is not something this "
+            f"transport can express.\n"
+            "Under SLURM, exclusivity IS the whole device: the lane sends "
+            "--gres=gpu:1, and a count above one would have to name that many "
+            "whole devices, which nothing here derives or checks.\n"
+            "Drop --gpu-capacity to take one device exclusively, or drop "
+            "--exclusive and ask for --gpu-capacity slots (shards) instead."
+        )
     resources = slurm_lane.LaneResources.from_demand(demand, exclusive=exclusive)
     lane_commands.setdefault("on_stall", lambda report: _report_stall(key, report))
     lane_commands.setdefault(
         "on_notice",
         lambda text: print(f"pbrun: {text}", file=sys.stderr, flush=True))
+    # Say that the slot has no device, every time, on the line that announces
+    # the submission.  The mask is applied before the transport branch and it
+    # is also a silent narrowing: a suite that used to run its CUDA tests now
+    # skips them, and a skip that nobody announced reads as the same green.
+    masked = "" if slots else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
+    queue = SH / "pb-queue" if queue_root is None else queue_root
+    # Attach to a run already in flight rather than start a second copy of it.
+    #
+    # A key is a content hash, so asking for the same work twice is the normal
+    # way to ask whether it is done.  The pull queue answered that with one
+    # ``ready/<key>.json`` and a claim: the second ask could not become a
+    # second execution.  SLURM has no claim, and this path submitted
+    # unconditionally -- so two attached ``pbrun``s of one key were two jobs of
+    # one action on the fleet, materializing the same checkout, taking the same
+    # GPU twice and racing to publish one receipt.
+    #
+    # ``--detach`` already made this check (it is the same
+    # ``live_submission``); it just never ran for a caller who waits.  Live
+    # means recorded, no ending covering that generation, and a job the
+    # controller still knows in a non-terminal state -- so a terminal or
+    # forgotten submission submits afresh here exactly as it does there.
+    attached = None
+    if not detach:
+        found = live_submission(
+            pool.PoolQueue(queue), key, lane_root=lane_root,
+            **{name: lane_commands[name]
+               for name in _QUERY_COMMANDS if name in lane_commands},
+        )
+        # A live *pool* item is not this transport's to wait on: it belongs to
+        # a worker, and ``resume`` reconstructs a SLURM submission record.
+        attached = found if found is not None and found[0] == "slurm" else None
     # sbatch's own refusal is this transport's capability gate: an unknown
     # Feature or an impossible GRES is rejected at submit time, which is the
     # moment the pool path's ``capability_verdict`` spoke.  So it reaches the
     # caller as the message SLURM wrote, in the shape that message had, rather
     # than as a traceback.
     try:
-        result = slurm_lane.run(
-            action,
-            cas=cas,
-            request_path=request_path,
-            placement=tags,
-            resources=resources,
-            partition=slurm_lane.partition_for(
-                resources, tags, anywhere=anywhere),
-            timeout_s=timeout_s,
-            worker_script=runtime_root / "tools" / "prismabuild_worker.py",
-            job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
-            retry_safe=retry_safe,
-            max_attempts=max_attempts,
-            root=lane_root,
-            # Eleven fleet tools and Tessera's ``merge_suite`` read one action's
-            # ending out of this directory.  The lane files it there so the
-            # cutover is a change to one dispatcher and not to every reader.
-            queue_root=SH / "pb-queue" if queue_root is None else queue_root,
-            wait_s=wait_s,
-            detach=detach,
-            on_submit=lambda job: print(
-                f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
-                f"(attempt {job.attempt}) tags={tags} demand={demand}",
-                file=sys.stderr, flush=True),
-            **lane_commands,
-        )
+        if attached is not None:
+            submission = attached[2]
+            job_id = str(submission.get("job_id") or "")
+            print(f"pbrun: {key[:12]} is already running (slurm job {job_id}); "
+                  f"attaching to it rather than submitting a second copy"
+                  f"{masked}", file=sys.stderr, flush=True)
+            # ``resume`` files the ending ``run`` would have filed, off the
+            # recorded submission alone -- the same reconstruction
+            # ``--withdraw`` builds a terminal record from.  So the caller
+            # reads the same lines and gets the same exit code whether it
+            # submitted this job or joined it.
+            result = slurm_lane.resume(
+                submission,
+                action=action,
+                cas=cas,
+                queue_root=queue,
+                wait_s=wait_s,
+                **{name: value for name, value in lane_commands.items()
+                   if name in _RESUME_COMMANDS},
+            )
+        else:
+            result = slurm_lane.run(
+                action,
+                cas=cas,
+                request_path=request_path,
+                placement=tags,
+                resources=resources,
+                partition=slurm_lane.partition_for(
+                    resources, tags, anywhere=anywhere),
+                # ``--priority`` is a queue hint on either transport: the pool
+                # sorts its ready list on it, and SLURM subtracts the derived nice
+                # from the base priority its scheduler assigned.  Dropping it here
+                # is what let ``pool_reset``'s bulk ``--priority -10`` land
+                # alongside interactive work instead of behind it.
+                priority=priority,
+                timeout_s=timeout_s,
+                worker_script=runtime_root / "tools" / "prismabuild_worker.py",
+                job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
+                retry_safe=retry_safe,
+                max_attempts=max_attempts,
+                root=lane_root,
+                # Eleven fleet tools and Tessera's ``merge_suite`` read one action's
+                # ending out of this directory.  The lane files it there so the
+                # cutover is a change to one dispatcher and not to every reader.
+                queue_root=queue,
+                wait_s=wait_s,
+                detach=detach,
+                on_submit=lambda job: print(
+                    f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
+                    f"(attempt {job.attempt}) tags={tags} demand={demand}{masked}",
+                    file=sys.stderr, flush=True),
+                **lane_commands,
+            )
     except slurm_lane.SlurmLaneError as exc:
         raise SystemExit(
             f"pbrun: slurm refused this action.\n"
@@ -1793,7 +1993,7 @@ def slurm_outcome(
             key,
             transport="slurm",
             status="submitted",
-            queue_root=SH / "pb-queue" if queue_root is None else queue_root,
+            queue_root=queue,
             published_unix=result.published_unix,
             job_id=job.job_id,
             submission=job.record_path,
@@ -1979,10 +2179,21 @@ def _file_slurm_withdrawal(
         # A submission record from before the generation stamp. Withdraw it,
         # but do not claim to know which request it belonged to.
         published_unix = float(submission.get("submitted_unix") or 0.0)
-    for state in (pool.DONE, pool.FAILED):
+    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         filed = queue_root / state / f"{key}.json"
-        if filed.exists() and slurm_lane._same_generation(filed, published_unix):
-            return None
+        if not filed.exists() or not slurm_lane._same_generation(filed, published_unix):
+            continue
+        if state == pool.WITHDRAWN:
+            # A bare marker is a withdrawal still in flight (or one whose
+            # scancel never landed); only a record carrying the job's ending
+            # says this generation is over.
+            try:
+                filed_record = json.loads(filed.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                filed_record = None
+            if not (isinstance(filed_record, dict) and "detail" in filed_record):
+                continue
+        return None
 
     _, marker = slurm_lane.publish_withdrawal(
         queue_root=queue_root, action_key=key, reason=reason, by=by,
@@ -2634,6 +2845,20 @@ def main() -> int:
             action,
             cas=cas,
             request_path=request_path,
+            # Built here because only ``main`` knows the checkout and the
+            # flags it was asked with.  The census is unavailable rather than
+            # empty: this branch builds no PoolQueue on purpose, and worker
+            # offers do not describe a SLURM fleet.
+            placement_notice=pin_notice(
+                _NoCensus(),
+                {"tags": tags, "needs_gpu": bool(demand.get("gpu")),
+                 "resources": demand},
+                cwd=cwd,
+                hostname=socket.gethostname(),
+                here=args.here,
+                portable_checkout=portable_checkout,
+                unknown_census=NO_CENSUS,
+            ),
             tags=tags,
             demand=demand,
             exclusive=args.exclusive,
@@ -2641,6 +2866,7 @@ def main() -> int:
             wait_s=args.wait_s,
             retry_safe=args.retry_safe,
             max_attempts=args.max_attempts,
+            priority=args.priority,
             anywhere=args.anywhere,
             detach=args.detach,
         )
