@@ -64,7 +64,7 @@ def _atomic_json(path: Path, record: dict) -> None:
 class ResourceScope:
     """One exact key+nonce kernel slice; sampling never signals work.
 
-    Call create before Popen, then wrap_argv. sample atomically refreshes the
+    Call create before Popen, then wrap_argv (an unprivileged stdio proxy). sample atomically refreshes the
     telemetry file. Caller owns polling and must retain a reservation until
     children and owned containers are stopped and release succeeds.
     """
@@ -119,7 +119,10 @@ class ResourceScope:
     def wrap_argv(self, argv: list[str]) -> list[str]:
         if self.token is None:
             raise RuntimeError('create the resource scope before launching')
-        helper = Path(__file__).resolve().parents[2] / 'tools/fleet/resource_exec.py'
+        root = Path(__file__).resolve().parents[2]
+        helper = root / 'tools/resource_exec.py'
+        if not helper.is_file():
+            helper = root / 'tools/fleet/resource_exec.py'
         return [sys.executable, str(helper), '--socket', str(self.socket_path),
                 '--action-key', self.action_key, '--nonce', self.nonce,
                 '--token', self.token, '--', *argv]

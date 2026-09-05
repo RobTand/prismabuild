@@ -116,8 +116,10 @@ def test_broker_refusal_and_oversized_response_fail_closed(tmp_path, response):
 
 
 @pytest.mark.parametrize('approved', [False, True])
-def test_helper_attaches_own_pid_before_any_payload(tmp_path, approved):
+def test_proxy_sends_only_stdio_fds_and_never_executes_payload(tmp_path, approved):
+    import array
     import json
+    import os
     import socket
     import struct
     import subprocess
@@ -133,20 +135,115 @@ def test_helper_attaches_own_pid_before_any_payload(tmp_path, approved):
             conn, _ = server.accept()
             with conn:
                 seen['pid'], _, _ = struct.unpack('3i', conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-                seen['request'] = json.loads(conn.recv(65536))
-                seen['ran_before_attach'] = marker.exists()
-                conn.sendall(json.dumps({'ok': approved}).encode() + b'\n')
+                message, control, flags, _ = conn.recvmsg(65536, socket.CMSG_SPACE(12))
+                assert not flags & socket.MSG_CTRUNC
+                seen['request'] = json.loads(message)
+                descriptors = array.array('i')
+                for level, kind, raw in control:
+                    assert level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS
+                    descriptors.frombytes(raw)
+                seen['fds'] = [os.readlink(f'/proc/self/fd/{fd}') for fd in descriptors]
+                try:
+                    if approved:
+                        os.write(descriptors[1], b'broker payload stdout\n')
+                    conn.sendall(json.dumps({'ok': approved, 'returncode': 7}).encode() + b'\n')
+                finally:
+                    for fd in descriptors:
+                        os.close(fd)
         worker = threading.Thread(target=serve)
         worker.start()
         helper = Path(__file__).resolve().parents[1] / 'tools/fleet/resource_exec.py'
         process = subprocess.Popen([sys.executable, str(helper), '--socket', str(path),
             '--action-key', 'a'*64, '--nonce', '1'*32, '--token', 'b'*64, '--',
             sys.executable, '-c', 'import pathlib,sys; pathlib.Path(sys.argv[1]).touch()', str(marker)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        output, error = process.communicate(timeout=10)
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+    assert seen['pid'] == process.pid
+    assert seen['request']['op'] == 'run'
+    assert seen['request']['cwd'] == os.getcwd()
+    assert seen['request']['argv'][-1] == str(marker)
+    assert len(seen['fds']) == 3
+    assert seen['fds'][0] == '/dev/null'
+    assert all(target.startswith('pipe:') for target in seen['fds'][1:])
+    assert not marker.exists(), 'the unprivileged proxy must never execute payload itself'
+    assert output == ('broker payload stdout\n' if approved else '')
+    assert process.returncode == (7 if approved else 125), error
+
+
+@pytest.mark.parametrize('published', [False, True])
+def test_wrapper_and_proxy_support_source_and_published_layouts(tmp_path, monkeypatch, published):
+    import json
+    import shutil
+    import socket
+    import subprocess
+    import sys
+    import threading
+    import prismabuild.resource_scope as module
+    source = Path(__file__).resolve().parents[1]
+    root = tmp_path / 'generation'
+    module_dir = root / 'src/prismabuild'
+    module_dir.mkdir(parents=True)
+    shutil.copyfile(source / 'src/prismabuild/resource_scope.py', module_dir / 'resource_scope.py')
+    (module_dir / '__init__.py').touch()
+    tools = root / ('tools' if published else 'tools/fleet')
+    tools.mkdir(parents=True)
+    shutil.copyfile(source / 'tools/fleet/resource_exec.py', tools / 'resource_exec.py')
+    monkeypatch.setattr(module, '__file__', str(module_dir / 'resource_scope.py'))
+    scope = ResourceScope('a'*64, '1'*32, 1024**3, tmp_path / 'sample.json')
+    scope.token = 'b'*64
+    argv = scope.wrap_argv(['/bin/true'])
+    assert argv[1] == str(tools / 'resource_exec.py')
+    # --help imports the local resource client before parsing. Running the
+    # copied helper proves its import path in the flattened published layout.
+    result = subprocess.run([sys.executable, argv[1], '--help'],
+                            env={'PATH': '/usr/bin:/bin'}, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_proxy_signal_stops_exact_scope_and_returns_signal_status(tmp_path):
+    import array
+    import json
+    import os
+    import signal
+    import socket
+    import subprocess
+    import sys
+    import threading
+    endpoint = tmp_path / 'broker.sock'
+    seen = []
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(endpoint))
+        server.listen(2)
+        def serve():
+            run, _ = server.accept()
+            with run:
+                raw, control, _, _ = run.recvmsg(65536, socket.CMSG_SPACE(12))
+                seen.append(json.loads(raw))
+                fds = array.array('i')
+                for _, _, data in control:
+                    fds.frombytes(data)
+                try:
+                    os.write(fds[1], b'running\n')
+                    stop, _ = server.accept()
+                    with stop:
+                        seen.append(json.loads(stop.recv(65536)))
+                        stop.sendall(b'{"ok":true}\n')
+                finally:
+                    for fd in fds:
+                        os.close(fd)
+        worker = threading.Thread(target=serve)
+        worker.start()
+        helper = Path(__file__).resolve().parents[1] / 'tools/fleet/resource_exec.py'
+        process = subprocess.Popen([sys.executable, str(helper), '--socket', str(endpoint),
+            '--action-key', 'a'*64, '--nonce', '1'*32, '--token', 'b'*64, '--', '/bin/true'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert process.stdout.readline() == 'running\n'
+        process.send_signal(signal.SIGTERM)
         _, error = process.communicate(timeout=10)
         worker.join(timeout=5)
-    assert seen['pid'] == process.pid
-    assert seen['request']['op'] == 'attach'
-    assert not seen['ran_before_attach']
-    assert marker.exists() is approved
-    assert process.returncode == (0 if approved else 125), error
+        assert not worker.is_alive()
+    assert process.returncode == 143, error
+    assert seen[1] == {'op': 'stop', 'action_key': 'a'*64, 'nonce': '1'*32,
+                       'token': 'b'*64, 'reason': 'launcher received signal 15'}
