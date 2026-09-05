@@ -184,7 +184,8 @@ queue the worker files the ending and `pbwait` only watches.
 |---|---|
 | 0 | The work is done. A `cache_hit` counts as done. |
 | 1 | The action failed. `pbrun` prints the worker's message and the log paths. `pbwait` also exits 1 when an ending was filed and cannot be read, and names the file: that is not 75, because waiting again only re-reads the same record. |
-| 2 | `pbrun --withdraw` matched no submission, matched more than one, or `scancel` refused the job. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
+| 2 | `pbrun --withdraw` matched no submission, matched more than one, or every `scancel` refused. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
+| 74 | SLURM took the action, but `pbrun` could not write the record of it. `sysexits.h` calls 74 `EX_IOERR`, and that is what happened: the job is real and the work may be finished, only the account of it failed. |
 | 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
 
@@ -209,6 +210,34 @@ running, and under SLURM `pbwait` is what files the ending once it stops.
 After a 75 that says the fate of a submission is unknown, run the `squeue` in
 the message instead. There is nothing to wait on: no submission was recorded,
 because none is known.
+
+### When a record will not write
+
+The lane writes every fact it keeps after the fact is already true: the
+submission record after `sbatch` returned an id, the terminal record after the
+receipt landed in the CAS. A full mount, a queue directory somebody tightened,
+or a stale NFS handle turns that write into an error at a point where the job
+is real and the work may be finished.
+
+`pbrun` reports it and exits 74:
+
+    pbrun: slurm took this action, but pbrun could not write its record.
+      slurm job: 1743
+      record:    /mnt/shared/prismabuild-fleet/pb-queue/done/<key>.json
+      reason:    Permission denied
+    The receipt is in the CAS, so the work is done and re-running costs nothing.
+    Clear what blocked the write, then run `tools/fleet/pbwait.py <key12>` to
+    file the ending.
+
+The last two lines change with what the CAS holds. With no receipt, the job may
+still be running, so the advice is to `pbwait` on it or to withdraw it. Either
+way the job id is on the line, because the record that would have carried it is
+the one that failed.
+
+A lane error raised after `sbatch` accepted the job reports the same way, with
+the same exit code. Only a refusal with no job behind it reports as a refusal,
+and only that one tells you to fix the `--tag`: a job the controller has
+already taken is not fixed by changing the submission.
 
 ### When `sbatch` stops answering
 
@@ -449,6 +478,15 @@ which filed it: the two writers use distinct schema ids, and only the lane
 writes a `transport` field. `pbstatus` labels its endings table from the schema
 for that reason.
 
+A job's node-side cleanup is the Epilog's, and it reads what to clean out of a
+state file under `.../slurm/jobs/`. When that root is unreadable, which is what
+a shared-mount outage looks like from a compute node, the Epilog logs one line
+naming the root and falls back to removing containers labelled with the SLURM
+job id alone. Materialized checkouts are not removed on that path, because the
+tree to remove is only ever the one the state file records. After an outage,
+grep `slurmd.log` for `could not be read`, then look under
+`/home/rob/tmp/prismabuild-checkouts` for trees the Epilog could not name.
+
 ### Read a terminal record
 
 A terminal record's top level carries `status`, `action_key`, `transport`,
@@ -488,6 +526,18 @@ a re-submission only on a marker or a `withdrawn_unix`, so a cancellation with
 neither would be re-submitted by the next bulk reset. If `scancel` is refused,
 run the same command again: the decision on disk is kept, and `scancel` is
 retried until it accepts the job.
+
+A withdrawal cancels every job the controller holds under the key's name, and
+names each id it cancelled. That is more than the one job `latest.json`
+records, because it has to be: two submissions of one key that raced each other
+leave a second job `PENDING` on `Dependency`, and cancelling only the recorded
+id leaves that one to run the withdrawn action when the singleton releases it.
+The listing is scoped to your own user, so a second person's job of the same
+action is not touched. A `squeue` the controller does not answer costs the
+siblings and not the cancellation: the recorded id is always cancelled. Exit
+status is 2 only when every `scancel` was refused; one refusal among several is
+reported and the withdrawal stands, because a sibling that finished between the
+listing and the cancel is the ordinary case.
 
 A withdrawal cancels the run, not the name. The marker is scoped to the
 generation it was filed against, and a later submission of the same key retires

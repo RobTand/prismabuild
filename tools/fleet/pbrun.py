@@ -113,6 +113,13 @@ CONTENT_TRANSFORM_ATTRIBUTES = frozenset(
 #: Non-zero because the command did not run; distinct from a real failure
 #: because nothing about it was a defect.
 WITHDRAWN_EXIT = 143
+#: What ``pbrun`` exits with when the fleet took the action but the record of
+#: it could not be written.  ``sysexits.h`` calls 74 ``EX_IOERR``, and that is
+#: exactly what happened: the work is unaffected, the account of it is what
+#: failed.  Deliberately neither ``GAVE_UP_EXIT`` (which means no verdict yet
+#: and nothing to do) nor ``WITHDRAWN_EXIT`` (which means somebody decided),
+#: because a caller that retries on those would do the wrong thing here.
+RECORD_WRITE_FAILED_EXIT = 74
 
 #: The one line ``--detach`` prints.  Versioned because ``pbcampaign`` and
 #: ``pbwait`` parse it, and a fleet runs a published runtime generation that
@@ -2048,6 +2055,76 @@ def cached_outcome(
     return 0
 
 
+def _unfiled_record(
+    exc: BaseException,
+    *,
+    key: str,
+    action,
+    cas,
+    record: str = "",
+) -> int:
+    """Report a record write that failed after the thing it records happened.
+
+    The lane writes every fact it keeps after the fact is already true: the
+    submission record after ``sbatch`` returned an id, the terminal record
+    after the receipt landed in the CAS. So a full mount or a queue directory
+    somebody tightened produces an ``OSError`` at a point where the job is
+    real and the work may be finished. Reported as a traceback, that told an
+    operator a temp file name and nothing else: not the job id, not whether
+    the work was done, not which command would file the ending.
+
+    Args:
+        exc: The failure the lane raised. ``exc.job_id`` names the accepted
+            job when the lane knew one; see ``slurm_lane._naming_job``.
+        key: The action key, for the prefix every fleet tool takes.
+        action: The sealed action, to ask the CAS whether the work is done.
+        cas: The CAS to ask.
+        record: The path that would not write, when the caller knows it and
+            the exception does not carry one.
+
+    Returns:
+        ``RECORD_WRITE_FAILED_EXIT``.
+    """
+
+    job_id = str(getattr(exc, "job_id", "") or "")
+    path = str(getattr(exc, "filename", "") or record or "")
+    # A ``SlurmLaneError`` carries its path inside its message and has no
+    # ``strerror``; an ``OSError`` carries both as fields.  Print whichever the
+    # failure actually has rather than a placeholder for the other.
+    reason = str(getattr(exc, "strerror", "") or exc)
+    where = f"  record:    {path}\n" if path else ""
+    try:
+        done = cas.lookup(action) is not None
+    except OSError:
+        # The mount that would not take the record may not answer this either.
+        done = False
+    if done:
+        advice = (
+            f"The receipt is in the CAS, so the work is done and re-running "
+            f"costs nothing.\n"
+            f"Clear what blocked the write, then run "
+            f"`tools/fleet/pbwait.py {key[:12]}` to file the ending."
+        )
+    else:
+        advice = (
+            f"No receipt is in the CAS, so the job may still be running.\n"
+            f"Clear what blocked the write, then run "
+            f"`tools/fleet/pbwait.py {key[:12]}` "
+            f"to wait on it and file the ending, or "
+            f"`tools/fleet/pbrun.py --transport slurm --withdraw {key[:12]}` "
+            f"to stop it."
+        )
+    print(
+        f"pbrun: slurm took this action, but pbrun could not write its "
+        f"record.\n"
+        f"  slurm job: {job_id or '(none accepted)'}\n"
+        f"{where}"
+        f"  reason:    {reason}\n"
+        f"{advice}",
+        file=sys.stderr, flush=True)
+    return RECORD_WRITE_FAILED_EXIT
+
+
 def slurm_outcome(
     action,
     *,
@@ -2240,6 +2317,12 @@ def slurm_outcome(
               file=sys.stderr, flush=True)
         return GAVE_UP_EXIT
     except slurm_lane.SlurmLaneError as exc:
+        if getattr(exc, "job_id", None):
+            # sbatch accepted this before the lane failed, so this is a record
+            # that would not write and not a refusal.  Reported as a refusal it
+            # told a submitter to fix the ``--tag`` of a job that was already
+            # queued, which is both wrong and expensive to act on.
+            return _unfiled_record(exc, key=key, action=action, cas=cas)
         raise SystemExit(
             f"pbrun: slurm refused this action.\n"
             f"  required tags: {tags or '(any box)'}\n"
@@ -2247,6 +2330,12 @@ def slurm_outcome(
             f"  {exc}\n"
             f"Fix the --tag, or read `sinfo -N -l` for a node that offers it."
         ) from exc
+    except OSError as exc:
+        # Not a scheduler failure: ``slurm_lane._run`` turns every one of those
+        # into a ``SlurmLaneError`` above.  What reaches here is a write to the
+        # lane directory or the queue that the filesystem refused, at a point
+        # where the job is real and the work may already be finished.
+        return _unfiled_record(exc, key=key, action=action, cas=cas)
 
     last = result.last
     if last is None:                       # unreachable: run always submits
@@ -2354,7 +2443,8 @@ def _echo(path, stream) -> None:
 
 def withdraw_routed(
     prefixes, *, transport: str, reason: str = "", by: str = "",
-    lane_root=None, queue_root=None, scancel: str = "scancel", queue=None,
+    lane_root=None, queue_root=None, scancel: str = "scancel",
+    squeue: str = "squeue", queue=None,
 ) -> int:
     """Send each prefix to the transport that recorded it.
 
@@ -2378,7 +2468,7 @@ def withdraw_routed(
     if lane_prefixes:
         rc = max(rc, withdraw_slurm_main(
             lane_prefixes, reason=reason, by=by, lane_root=lane_root,
-            queue_root=queue_root, scancel=scancel,
+            queue_root=queue_root, scancel=scancel, squeue=squeue,
         ))
     if pool_prefixes:
         if queue is None:
@@ -2390,9 +2480,9 @@ def withdraw_routed(
 
 def withdraw_slurm_main(
     prefixes, *, reason: str = "", by: str = "", lane_root=None,
-    queue_root=None, scancel: str = "scancel",
+    queue_root=None, scancel: str = "scancel", squeue: str = "squeue",
 ) -> int:
-    """Cancel each named action's recorded job, refusing an ambiguous prefix.
+    """Cancel every job under each named action, refusing an ambiguous prefix.
 
     Same shape as the pool's withdrawal and for the same reasons: a prefix is
     what an operator has, one bad name must not stop the other three, and a
@@ -2408,6 +2498,21 @@ def withdraw_slurm_main(
     file its own account of the same generation the moment the job reports
     ``CANCELLED``; whichever arrives first is kept, and this one knows who
     asked and why, which the other cannot.
+
+    Every job under the key's name is cancelled, not just the one
+    ``latest.json`` records.  The submitter cannot close the double-submit
+    window and ``slurm_lane.submit`` says so: two ``pbrun``s that look at the
+    same instant both find nothing in the CAS and both submit, and the
+    controller holds the second PENDING on ``Dependency``.  Cancelling the
+    recorded id alone left that sibling queued, and when the first job left the
+    singleton released it -- so it ran the action the marker on disk exists to
+    stop.  ``sibling_jobs`` is the listing, scoped to this user, and a
+    controller that will not answer it costs the enrichment rather than the
+    cancellation: the recorded id is always asked for.
+
+    A refusal is reported per job and the verb fails only when every cancel was
+    refused.  A sibling that finished between the listing and the cancel is the
+    ordinary case, and the operator still got the run stopped.
     """
 
     rc = 0
@@ -2434,16 +2539,44 @@ def withdraw_slurm_main(
             print(f"pbrun: {key[:12]} already has an outcome filed; "
                   f"nothing to withdraw", file=sys.stderr)
             continue
-        if slurm_lane.cancel(job_id, scancel=scancel):
+        accepted, refused = [], []
+        for target in _jobs_to_cancel(key, job_id, squeue=squeue):
+            if slurm_lane.cancel(target, scancel=scancel):
+                accepted.append(target)
+            else:
+                refused.append(target)
+        if accepted:
             _stamp_scancel_accepted(queue, record)
             why = f" -- {reason}" if reason else ""
-            print(f"pbrun: cancelled slurm job {job_id} for {key[:12]}"
+            jobs = ", ".join(accepted)
+            plural = "s" if len(accepted) > 1 else ""
+            print(f"pbrun: cancelled slurm job{plural} {jobs} for {key[:12]}"
                   f" by {by or 'an operator'}{why}", file=sys.stderr)
-        else:
-            print(f"pbrun: scancel refused slurm job {job_id} for {key[:12]}; "
+        for target in refused:
+            print(f"pbrun: scancel refused slurm job {target} for {key[:12]}; "
                   f"it may already have finished", file=sys.stderr)
+        if refused and not accepted:
             rc = 2
     return rc
+
+
+def _jobs_to_cancel(action_key: str, job_id: str, *, squeue: str) -> list[str]:
+    """The recorded job and every sibling the controller still holds for it.
+
+    The recorded id leads and is never dropped: it is the one fact that does
+    not depend on the controller answering.  A ``squeue`` that fails costs the
+    siblings, not the cancellation.
+    """
+
+    targets = [job_id] if job_id else []
+    try:
+        siblings = slurm_lane.sibling_jobs(action_key, squeue=squeue)
+    except slurm_lane.SlurmLaneError:
+        return targets
+    for sibling, _state in siblings:
+        if sibling not in targets:
+            targets.append(sibling)
+    return targets
 
 
 def _file_slurm_withdrawal(

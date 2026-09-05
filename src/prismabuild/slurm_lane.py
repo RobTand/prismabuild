@@ -62,7 +62,8 @@ box that must not need a package installed to talk to the scheduler.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+import contextlib
 from dataclasses import dataclass, field
 import getpass
 import json
@@ -76,6 +77,7 @@ import socket
 import subprocess
 import time
 from typing import Callable
+import uuid
 
 from . import core as pb
 from . import pool
@@ -799,6 +801,29 @@ def _run(argv: Sequence[object], *, where: str) -> subprocess.CompletedProcess[s
         raise SlurmLaneError(f"{where} failed: {exc}") from exc
 
 
+@contextlib.contextmanager
+def _naming_job(job_id: str) -> Iterator[None]:
+    """Stamp an accepted job's id on whatever this block raises.
+
+    Every record this lane writes is written *after* the thing it records: the
+    submission record after ``sbatch`` returned an id, the terminal record
+    after the receipt landed.  A write that fails there leaves a real job on
+    the fleet and nothing on disk that names it, so the id has to travel on the
+    failure or no caller can report it.  ``pbrun`` reads it back as
+    ``exc.job_id`` and prints it beside the path that would not write.
+
+    An id already on the exception is left alone: the innermost writer is the
+    one that knows which job it was writing for.
+    """
+
+    try:
+        yield
+    except BaseException as exc:
+        if getattr(exc, "job_id", None) is None:
+            exc.job_id = str(job_id)          # type: ignore[attr-defined]
+        raise
+
+
 def _publish_record(path: Path, payload: Mapping[str, object]) -> None:
     """First-writer-publish one submission record; refuse conflicting bytes."""
 
@@ -816,13 +841,36 @@ def _publish_record(path: Path, payload: Mapping[str, object]) -> None:
 
 
 def _write_latest(path: Path, payload: Mapping[str, object]) -> None:
-    """Point at the newest attempt by rename, so a reader sees one or the other."""
+    """Point at the newest attempt by rename, so a reader sees one or the other.
+
+    The temp name carries a UUID and is created ``O_EXCL``, which is the shape
+    ``materialize._write_json_atomic`` uses and for the reason this lane needs
+    it: a lane directory is on the shared mount and two boxes submitting one
+    action key write into it.  A pid is unique only within a box, so
+    ``.latest.json.<pid>.tmp`` was one file for both of them -- the first
+    writer renamed it away and the second's ``os.replace`` raised
+    ``FileNotFoundError`` after its own ``sbatch`` had been accepted, leaving a
+    queued job with nothing in ``latest.json`` for ``--withdraw`` to resolve.
+
+    Flushed and fsynced before the rename, so the bytes a reader on another box
+    sees after this returns are the whole record rather than a hole.  The temp
+    file is removed if anything goes wrong on the way, because a lane directory
+    an operator reads should not accumulate the debris of failed writes.
+    """
 
     raw = pb._canonical_file_bytes(dict(payload))
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
-    tmp.write_bytes(raw)
-    os.replace(tmp, path)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _now() -> float:
@@ -831,6 +879,9 @@ def _now() -> float:
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
     """Replace a terminal record whole, the way ``pool._write_json_atomic`` does.
+
+    Same writer as ``_write_latest`` above, which is where the uniqueness of
+    the temp name, the fsync and the cleanup live.
 
     The mutable summary is a pointer, not an audit log: the queue rewrites it on
     every retry and so must this.  First-writer-wins belongs to the *immutable*
@@ -1108,8 +1159,9 @@ def submit(
     record_path = submission_record_path(
         directory, published_unix=generation, attempt=attempt
     )
-    _publish_record(record_path, record)
-    _write_latest(directory / "latest.json", record)
+    with _naming_job(job_id):
+        _publish_record(record_path, record)
+        _write_latest(directory / "latest.json", record)
     return SubmittedJob(
         action_key=key,
         job_id=job_id,
@@ -1346,6 +1398,11 @@ def sibling_jobs(
         action_key: The action key, whose first twelve characters name the job.
         squeue: The ``squeue`` command to ask.
 
+    Scoped to this user, because the job name is.  ``--dependency=singleton``
+    holds one job per name *per user*, so a second person's job of the same
+    action is a job this listing must not report: a caller that cancels what
+    this returns would cancel somebody else's work.
+
     Returns:
         ``(job_id, state)`` pairs in the order ``squeue`` listed them, and an
         empty list when the controller answered that it holds none.
@@ -1357,7 +1414,8 @@ def sibling_jobs(
     """
 
     completed = _run(
-        [squeue, "-h", f"--name=pb-{str(action_key)[:12]}", "-o", "%i|%T"],
+        [squeue, "-h", "-u", getpass.getuser(),
+         f"--name=pb-{str(action_key)[:12]}", "-o", "%i|%T"],
         where="squeue",
     )
     if completed.returncode != 0:
@@ -2396,6 +2454,59 @@ def publish_outcome(
     return path
 
 
+def read_withdrawal_marker(
+    queue_root: str | Path, action_key: str
+) -> tuple[Path, dict[str, object] | None]:
+    """The marker filed for this key, revalidated before it is read.
+
+    ``pb-queue/withdrawn`` is on NFS with default attribute caching, and this
+    fleet already measured what that does to a lookup of a name that did not
+    exist yet: the client caches the negative entry, so ``exists()`` keeps
+    answering False and ``open()`` keeps raising ``ENOENT`` after the marker
+    has landed.  ``pbrun.terminal_record`` polls the terminal directories by
+    ``os.listdir`` for exactly that reason, and this is the same rule for the
+    same directory.
+
+    Listing the parent is what revalidates the entry, so the listing happens
+    first and the read happens only for a name the directory actually holds.
+    What that costs is one ``READDIRPLUS`` per call; what it buys is that the
+    three readers below cannot be told a decision was never made.
+
+    An operator on another box withdraws a key inside the cache window: the
+    marker is written, the terminal record is written, then ``scancel`` runs.
+    The submitter's ``wait`` returns ``CANCELLED``, ``_file_ending`` asks
+    ``withdrawal_covers``, and on a stale answer it calls
+    ``publish_withdrawal``, whose own read misses too -- so the operator's
+    marker is replaced, ``withdrawn_by`` becomes ``slurm:scancel``, the reason
+    is lost, and ``publish_outcome`` copies both into the terminal record.  The
+    same stale read in ``supersede_withdrawal`` leaves a live marker in place
+    after a submission has retired it, and the one in ``run``'s retry gate lets
+    a ``--retry-safe`` run submit attempt 2 of a withdrawn action.
+
+    Returns:
+        The marker's path, and the record it holds -- ``None`` when the
+        directory does not hold that name, or holds bytes that are not a JSON
+        object.
+    """
+
+    key = str(action_key)
+    directory = Path(queue_root) / pool.WITHDRAWN
+    path = directory / f"{key}.json"
+    try:
+        if path.name not in os.listdir(directory):
+            return path, None
+    except OSError:
+        # No directory yet, or one this box cannot list.  Either way there is
+        # nothing to read, and inventing a decision would be worse than
+        # missing one.
+        return path, None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return path, None
+    return path, record if isinstance(record, dict) else None
+
+
 def publish_withdrawal(
     *,
     queue_root: str | Path,
@@ -2418,13 +2529,10 @@ def publish_withdrawal(
     """
 
     key = str(action_key)
-    path = _queue_dir(queue_root, pool.WITHDRAWN) / f"{key}.json"
-    try:
-        existing = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(existing, dict):
-            return path, existing
-    except (OSError, ValueError):
-        pass
+    _queue_dir(queue_root, pool.WITHDRAWN)
+    path, existing = read_withdrawal_marker(queue_root, key)
+    if existing is not None:
+        return path, existing
     filed = dict(submission or {})
     filed.update({
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
@@ -2466,14 +2574,15 @@ def withdrawal_covers(
     not an attempt to defeat somebody's cancellation.
     """
 
-    marker = Path(queue_root) / pool.WITHDRAWN / f"{action_key}.json"
-    if not marker.exists() or not _same_generation(marker, published_unix):
+    _, record = read_withdrawal_marker(queue_root, action_key)
+    if record is None:
         return None
-    try:
-        record = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    # The generation is checked on the record this already read, rather than by
+    # a second open of the same path: one revalidated read is the whole point.
+    theirs = record.get("published_unix")
+    if not isinstance(theirs, (int, float)) or isinstance(theirs, bool):
         return None
-    return record if isinstance(record, dict) else None
+    return record if float(theirs) == float(published_unix) else None
 
 
 def supersede_withdrawal(
@@ -2489,12 +2598,8 @@ def supersede_withdrawal(
     """
 
     key = str(action_key)
-    live = Path(queue_root) / pool.WITHDRAWN / f"{key}.json"
-    try:
-        record = json.loads(live.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(record, dict):
+    live, record = read_withdrawal_marker(queue_root, key)
+    if record is None:
         return None
     when = _now()
     kept = dict(record)
@@ -2616,7 +2721,8 @@ def run(
             # ``supersede_withdrawal``.  After ``sbatch`` accepted, not before:
             # a refused submission has retired nothing, and an operator's
             # decision must not be moved aside by a job that never existed.
-            supersede_withdrawal(queue_root, key)
+            with _naming_job(job.job_id):
+                supersede_withdrawal(queue_root, key)
         if on_submit is not None:
             on_submit(job)
         if detach:
@@ -2649,17 +2755,19 @@ def run(
         if outcome.state not in RETRIABLE_STATES:
             break
     if queue_root is not None:
-        _file_ending(
-            result,
-            action=action,
-            queue_root=queue_root,
-            published_unix=published_unix,
-            published_by=published_by,
-            resources=resources,
-            tags=placement,
-            max_attempts=max_attempts,
-            retry_safe=retry_safe,
-        )
+        last_job = result.attempts[-1][0] if result.attempts else None
+        with _naming_job(last_job.job_id if last_job is not None else ""):
+            _file_ending(
+                result,
+                action=action,
+                queue_root=queue_root,
+                published_unix=published_unix,
+                published_by=published_by,
+                resources=resources,
+                tags=placement,
+                max_attempts=max_attempts,
+                retry_safe=retry_safe,
+            )
     return result
 
 
@@ -2751,17 +2859,18 @@ def resume(
         gpu_slots=int(count) if count.isdigit() else 0,
         exclusive_gpu=gres.startswith("gpu:"),
     )
-    _file_ending(
-        result,
-        action=action,
-        queue_root=queue_root,
-        published_unix=published_unix,
-        published_by=str(submission.get("published_by") or ""),
-        resources=resources,
-        tags=[str(tag) for tag in (submission.get("constraint") or [])],
-        max_attempts=int(submission.get("max_attempts") or 1),
-        retry_safe=bool(submission.get("retry_safe")),
-    )
+    with _naming_job(str(submission.get("job_id") or "")):
+        _file_ending(
+            result,
+            action=action,
+            queue_root=queue_root,
+            published_unix=published_unix,
+            published_by=str(submission.get("published_by") or ""),
+            resources=resources,
+            tags=[str(tag) for tag in (submission.get("constraint") or [])],
+            max_attempts=int(submission.get("max_attempts") or 1),
+            retry_safe=bool(submission.get("retry_safe")),
+        )
     return result
 
 

@@ -20,7 +20,7 @@ Stdlib only, like everything a worker node has to import.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -151,8 +151,23 @@ def _execution_checkout(
     item: Mapping[str, object],
     *,
     local_checkout_root: str | Path | None = None,
+    on_temporary: Callable[[Path], None] | None = None,
 ) -> Iterator[Path]:
-    """Yield the live path or a private checkout of the sealed snapshot."""
+    """Yield the live path or a private checkout of the sealed snapshot.
+
+    Args:
+        item: The three fields this reads, in the pool's own shape.
+        local_checkout_root: The box-local root private trees are made under.
+        on_temporary: Called once with the per-action directory, straight after
+            ``mkdtemp`` creates it and before any Git runs.  A caller that has
+            to record the tree for something outside this process needs the
+            name before the fetch, not after it: a SLURM job killed at its time
+            limit during a large fetch leaves the tree behind, and the Epilog
+            removes only what the job wrote down.  Reported rather than
+            pre-created so ``mkdtemp`` and the cleanup below stay owned by this
+            one function, and so the signature both transports share is
+            unchanged for the caller that does not need it.
+    """
 
     raw_snapshot = item.get("checkout_snapshot")
     if raw_snapshot is None:
@@ -181,6 +196,8 @@ def _execution_checkout(
             prefix=f"{str(item['action_key'])[:12]}.", dir=str(base)
         )
     )
+    if on_temporary is not None:
+        on_temporary(temporary)
     repository = temporary / "checkout"
     try:
         _run_materializer_git(

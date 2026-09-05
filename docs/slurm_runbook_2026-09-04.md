@@ -65,6 +65,24 @@ have run on the 25.11.2 rebuild only. What the eleven settle:
   (`removed state file ... as rob`), so the squash-safe path is known to be the
   one that runs -- on a bind mount, which is the part NFS still has to confirm.
   Nothing to do at install: `verify.sh` row 8 reads `jobs/` back out.
+- **A job-state root the node cannot read.** The other side of the same mount.
+  When dl380g10 reboots or the NFS mount stalls, `${JOB_STATE_ROOT}/<id>.job`
+  is absent for every job that ends inside the outage, which used to be
+  indistinguishable from a job that was never PrismaBuild's: the Epilog exited
+  0 with nothing said, and each of those jobs took its containers with it. The
+  script now logs one line naming the root when the root itself is unreadable:
+
+  ```
+  prismabuild-epilog[123]: job-state root /mnt/shared/prismabuild-fleet/slurm/jobs could not be read; cleaning up on the job label alone
+  ```
+
+  and whenever the state file is missing, for any reason, it sweeps containers
+  on `prismabuild.job=<job id>` alone. That label comes from SLURM's own id and
+  the shim's cgroup read, so the sweep cannot reach another job's container.
+  The checkout is not swept: the tree to remove is only ever the one the state
+  file records, a leaked tree is the smaller loss, and a sweep that guessed a
+  path would be an unbounded `rm -rf`. Grep `slurmd.log` for
+  `could not be read` after any shared-mount outage.
 - **`CPUs=` for the two GB10 boxes** (was item 5). Measured and written into
   `slurm.conf`: 20 CPUs as one socket of twenty, one thread per core, measured
   again on 2026-09-05 with `slurmd -C` from the fleet's own 25.11.2 build.
@@ -87,6 +105,13 @@ Two lane defects the fakes could not see were found and fixed here:
   zero, signal fifteen -- so `pbrun` announced that it "exited 0 but published
   no receipt" and pointed the operator at an empty job log instead of at
   `TIMEOUT`.  It reads `Outcome.succeeded` now.
+- A record the lane could not write reached the operator as a traceback ending
+  in a temp file name, with the job id nowhere in it -- and a lane error raised
+  after `sbatch` had accepted the job was reported as "slurm refused this
+  action ... Fix the --tag", which sends a submitter to change a submission the
+  controller already holds.  Both now print the job id, the path and the
+  `pbwait` that files the ending, and exit 74.  Grep `pb-queue` write failures
+  out of a campaign log with `could not write its record`.
 
 And one thing an operator would have assumed wrongly: the Epilog's environment
 is SLURM's own, built from its `SLURM_*` variables, so nothing a submitter
@@ -658,8 +683,9 @@ drain the queue while producers are still being told to use SLURM.
 
 SLURM jobs already running keep running. Cancel the ones you do not want with
 `pbrun --transport slurm --withdraw <key prefix>`, which reads the recorded job
-id and calls `scancel`. You can leave `slurmctld` and `slurmd` running; with no
-submissions they do nothing.
+id, asks `squeue -u $USER --name=pb-<key12>` for every other job under the same
+name, and calls `scancel` on each. You can leave `slurmctld` and `slurmd`
+running; with no submissions they do nothing.
 
 ## Liveness: a running job is reported, never killed on elapsed time
 
@@ -755,6 +781,11 @@ submission of the same work waits `PENDING` with reason `Dependency`, then
 starts, finds the receipt the first job published, and ends as a cache hit
 without materializing a checkout. It is a queue order and not a refusal: if the
 first job fails, the second runs the work itself.
+
+That last sentence is why `--withdraw` cancels every job under the name rather
+than the one `latest.json` records. A held sibling runs the work when the
+singleton releases it, and a withdrawal that left it queued was a decision the
+scheduler went on to undo.
 
 `--comment` names the invocation of `sbatch` rather than the job. The job name
 is shared by every attempt of every submission of a key; the comment carries the
