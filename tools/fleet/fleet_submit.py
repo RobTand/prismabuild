@@ -376,6 +376,9 @@ def submit(
         placement=list(tags),
         resources=lane_resources,
         partition=slurm_lane.partition_for(lane_resources, list(tags)),
+        # The same hint the pool branch above records and sorts on, expressed
+        # as the one ordering lever an unprivileged submitter has under SLURM.
+        priority=priority,
         timeout_s=timeout_s,
         worker_script=worker_script,
         job_entry=job_entry,
