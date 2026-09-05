@@ -13,7 +13,9 @@ Two dispatchers carry work: the pull queue (`pool`) and SLURM (`slurm`). The
 result does not depend on which one carried it. Examples below name the
 transport explicitly with `--transport slurm` where SLURM behaviour is the
 point. You can set `PRISMABUILD_TRANSPORT=slurm` instead, and the published
-runtime generation carries a default that applies when neither is set.
+runtime generation carries a default that applies when neither is set. See
+"Publish the runtime the fleet executes" for what a generation is and who
+may publish one.
 
 ## Actions, keys, and why a re-run is free
 
@@ -843,6 +845,98 @@ not read rather than failing.
 
 Any producer that builds its own actions should do the same: seal the action,
 hand it to `fleet_submit`, print the key, and read the CAS for the verdict.
+
+## Publish the runtime the fleet executes
+
+A worker does not run your checkout. It runs
+`/mnt/shared/prismabuild-fleet/repo`, the copy on the one filesystem every box
+mounts. A fix you commit here changes nothing on the fleet until that copy is
+republished.
+
+**Publishing a generation, and cutting the fleet over to a transport, need
+Rob's explicit word and an idle queue.** That is a standing constraint of the
+campaign freeze, not a suggestion, and it holds even when the change looks
+small. The install and the cutover are his to run
+(`fleet/slurm/install.sh`, then `fleet/slurm/cutover.sh`); see the
+[README](../README.md) and the [SLURM install
+runbook](slurm_runbook_2026-09-04.md).
+
+`tools/fleet/publish_runtime.py` is the mechanism. It does not copy over the
+live bytes. It builds a complete new generation under
+`/mnt/shared/prismabuild-fleet/runtime-generations/`, named for the commit, the
+time and a nonce, then moves `repo` onto it in one namespace operation. A
+reader therefore sees one whole generation or the previous one, never a
+half-copied mixture.
+
+    tools/fleet/publish_runtime.py --dry-run
+    tools/fleet/publish_runtime.py
+
+`--dry-run` prints the commit and every file that would be published, and
+writes nothing.
+
+Each generation carries `RUNTIME_VERSION.json`: the commit, whether the tree
+was dirty, the generation name, who published it, and a sha256 for every
+published file. The receipt is what makes a disagreement between a box and this
+checkout a fact rather than a suspicion. A worker's own attestation records the
+resolved path, the size and the sha256 of the core module it loaded and of the
+launcher script that started it, and it refuses if either changed after it was
+captured, so the two sides can be compared after the fact.
+
+Publication refuses rather than guesses:
+
+*   **A dirty tree** is refused unless you pass `--allow-dirty`, because the
+    receipt would name a commit whose bytes are not the bytes published.
+*   **A checkout that moves while the copy is staged** is refused. The commit,
+    the dirty flag and every file digest are re-proved after the copy and
+    before the receipt is written.
+*   **A generation that fails its import probe** is refused. The staged tree is
+    imported off to one side before anything is activated.
+*   **A generation store this user cannot write** is refused before the tool
+    says it is publishing anything. The live runtime is untouched either way.
+*   **A live `repo` that is still the legacy plain directory** is refused
+    without `--migrate-directory`. Replacing a directory with a symlink is
+    not one atomic operation on this NFS mount, so that one-time handoff
+    retains the old directory beside the generation store and rolls the name
+    back if the install fails. A caller can be refused in that narrow
+    interval. It can never read a mixed generation.
+*   **A live `repo` that is neither a directory nor a symlink** is refused.
+
+A published generation is sealed read-only and is never deleted. That is what
+makes rollback a namespace operation:
+
+    tools/fleet/publish_runtime.py --activate-generation <name>
+
+Rollback is deliberately not a re-publication. The old generation's bytes and
+receipt were proved when it was published, and rebuilding them from a checkout
+that has moved would not be the same thing. A name that is not a direct child
+of the generation store, a dot-name, or a directory with no receipt is refused
+before `repo` is touched. A dot-name matters: a staging tree left by an
+interrupted publish carries a receipt but was never sealed or probed.
+
+### The default transport rides in the generation
+
+`--default-transport pool|slurm` records `default_transport` in the receipt.
+`fleet_submit.default_transport` reads `PRISMABUILD_TRANSPORT` first, then that
+field, then falls back to the pull queue. The field is optional, and absent
+means the pull queue, so every generation published before the SLURM cutover
+keeps the behaviour it had.
+
+The default rides in the bytes because a fleet has no single environment to
+export into. Agents start `pbrun` from a crontab, from user units, and from
+each other on three boxes. Pointing `repo` back at the previous generation
+restores the previous default in the same atomic operation that changed it.
+
+### Who reads the generation
+
+*   `pbrun` reports the published commit, so a submission can say which bytes
+    the fleet is serving.
+*   A worker loop holds the module it imported for its whole life. It compares
+    the commit beside those bytes against the commit at the live `repo` name on
+    each idle poll, which is how it notices a successor was published.
+*   `supervise` treats the live generation and every published generation
+    behind it as legitimate, because an old generation may still be running an
+    action. A tree that is neither is not this fleet's, whatever the script
+    inside it is called.
 
 ## Smoke-test a transport
 
