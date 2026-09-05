@@ -9,7 +9,9 @@ Under SLURM they become `--cpus-per-task` and `--mem`
 (`src/prismabuild/slurm_lane.py:747`), and `fleet/slurm/cgroup.conf`'s
 `ConstrainCores=yes` and `ConstrainRAMSpace=yes` turn those into a cpuset and a
 `memory.max`. A `pytest -n 24` submitted without `--cpus` then runs on one
-core, and a build that outgrows its declaration can be killed.
+core, and a build that outgrows its declared `mem_gb` is held to it -- which,
+on this fleet's settings, means throttled into swap rather than killed. The
+rows below measure both.
 
 The deadline default was already settled the other way: `pbrun --timeout-s`
 defaults to `None`, the partitions are `MaxTime=UNLIMITED`, and an action that
@@ -146,8 +148,9 @@ difference the measurements draw: under A an under-declared job hurts only
 itself, and under B and C it hurts every co-tenant, which is what happened on
 2026-09-04.
 
-**Cores have no failure state.** An over-declared memory demand ends
-`OUT_OF_MEMORY`; an under-declared `--cpus` ends `COMPLETED`, slowly, and
+**Cores have no failure state.** An under-declared `mem_gb` at least leaves a
+mark -- `OUT_OF_MEMORY` under `ConstrainSwapSpace=yes`, swap the job did not
+ask for without it. An under-declared `--cpus` ends `COMPLETED`, slowly, and
 nothing in the record distinguishes a core-starved job from a slow one. Under
 option A, the submit line is the only place the platform says what the cpuset
 will be, which is why `demand=` carries `cpu`.
@@ -170,7 +173,7 @@ differently in a way that matters more:
 | A, B | 60 GiB `memory.max` on host memory. CUDA allocations are not charged to it, so a render whose host footprint stays under 60 GiB is unaffected however large its tensors are. A host-memory spike above 60 GiB is throttled into swap under `ConstrainSwapSpace=no`, or killed with `ConstrainSwapSpace=yes` |
 | C | No limit. The declaration is an admission claim only |
 
-Note that under A and B, `retry_safe` actions resubmit after `OUT_OF_MEMORY`
+Under A and B, `retry_safe` actions resubmit after `OUT_OF_MEMORY`
 (`slurm_lane.py:198`) with an identical `--mem`, so a retried OOM dies the same
 way, once per remaining attempt.
 
@@ -192,8 +195,9 @@ that would never notice it.
 that motivates enforcement is the under-declared job, and that is exactly the
 case B and C do not cover: admission holds an over-declared `pytest -n 24` in
 check under every option, but the four runs that took a box to load 371 declared
-nothing, and at the `--cpus` default of 1 only option A confines them. Second, the cost that would argue against A is smaller than it looks,
-because on this fleet's settings memory does not kill: an over-declared job
+nothing, and at the `--cpus` default of 1 only option A confines them.
+Second, the cost that would argue against A is smaller than it looks, because
+on this fleet's settings memory does not kill: an under-declared job
 reclaims into swap and finishes, so a wrong `mem_gb` on a host-memory spike is
 a slowdown rather than a lost build, and GPU memory -- the dominant consumer in
 every render -- is not charged to the limit at all. That leaves under-declared
@@ -216,8 +220,8 @@ Two further things follow from taking A, and neither is a reason to take B:
   parallel has to declare, and nothing at exit will tell a caller that it did
   not. Watch for the first slow suite, and treat it as a missing declaration
   before treating it as a slow suite.
-- If the swap sub-choice goes to `yes`, note that `retry_safe` actions
-  resubmit after `OUT_OF_MEMORY` with an identical `--mem`
+- If the swap sub-choice goes to `yes`, `retry_safe` actions resubmit after
+  `OUT_OF_MEMORY` with an identical `--mem`
   (`slurm_lane.py:198`), so an OOM under A burns every remaining attempt on the
   same limit before it is reported.
 
