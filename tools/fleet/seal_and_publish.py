@@ -77,13 +77,18 @@ def main(argv=None) -> int:
         cas=cas,
         request_path=request,
         transport=args.transport,
-        checkout_root=str(checkout) if args.transport == "pool" else None,
+        # Named on both transports: the pull queue carries it on the queue
+        # item, the lane seals it as the snapshot the node materializes.
+        checkout_root=str(checkout),
         worker_script=str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
         tags=["gb10"],
     )
     print(json.dumps({
         "sealed_on": socket.gethostname(),
-        "action_key": key,
+        # The submitted key: under SLURM the lane seals the checkout into
+        # the action, so the key it went under is not the one built here.
+        "action_key": submission.action_key,
+        "sealed_action_key": key,
         "request": str(request),
         "transport": submission.transport,
         "submitted": submission.describe(),

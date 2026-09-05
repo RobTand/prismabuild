@@ -470,3 +470,36 @@ def test_a_sealed_producer_action_runs_on_the_node_that_took_it(
     assert receipt is not None, Path(
         json.loads(Path(submission.where).read_text())["stderr"]
     ).read_text(encoding="utf-8")
+
+
+def test_the_smoke_publisher_names_its_checkout_on_the_lane_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """The dispatchers' defect, in the tool that smoke-tests the dispatcher.
+
+    All three producers passed ``checkout_root`` only under the pull queue, so
+    the one command an operator runs to prove the lane works was refused by
+    it.  Driven through ``main`` rather than read off the source, because the
+    property is what the tool hands the submit path.
+    """
+
+    import seal_and_publish
+
+    monkeypatch.setattr(seal_and_publish, "SH", tmp_path)
+    seen: dict[str, object] = {}
+
+    def capture(action, **kwargs):
+        seen.update(kwargs)
+        seen["sealed_key"] = str(action["action_key"])
+        return fleet_submit.Submission(
+            transport="slurm", where=tmp_path / "latest.json", job_id="7",
+            action_key="f" * 64,
+        )
+
+    monkeypatch.setattr(seal_and_publish.fleet_submit, "submit", capture)
+    assert seal_and_publish.main(["--transport", "slurm"]) == 0
+
+    assert seen["checkout_root"] == str(tmp_path / "checkout")
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["action_key"] == "f" * 64
+    assert printed["sealed_action_key"] == seen["sealed_key"]
