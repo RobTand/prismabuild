@@ -176,6 +176,13 @@ terminal record, so a detached submission has nobody to file one. `pbwait`
 resumes the recorded job, waits on it, and files that ending. Under the pull
 queue the worker files the ending and `pbwait` only watches.
 
+A full key may name work that is not submitted yet, and waiting first is
+supported: while nothing is recorded, each poll looks for a submission as well
+as for an ending, so a detached submission made after the wait began is
+discovered, resumed, and reported by that same wait. Before this, such a wait
+watched only terminal files, spent its whole `--wait-s` on a job that had
+already finished, and exited 75.
+
 ### Exit codes
 
 `pbrun` and `pbwait` use the same codes.

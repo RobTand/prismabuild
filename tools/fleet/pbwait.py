@@ -277,6 +277,14 @@ def wait_one(
     knows it -- ``pbrun --detach`` prints it -- and should pass it, because
     reading it back off the queue is a race: a worker can claim and finish the
     item before this looks, leaving nothing outstanding to read it from.
+
+    A wait that finds no submission keeps looking for one, and not only for an
+    ending.  ``resolve_key`` accepts a full key for work nothing has recorded
+    yet, so a wait legitimately starts before its submission exists -- and
+    under SLURM this waiter is the only thing that will ever file that
+    submission's ending.  Watching terminal files alone therefore spent the
+    whole of ``--wait-s`` on a job that had run and finished, and a second
+    wait started afterwards reported it at once.
     """
 
     # Said on stderr, beside the table this returns a row for: a wait that
@@ -286,8 +294,50 @@ def wait_one(
     lane_commands.setdefault(
         "on_notice",
         lambda text: print(f"pbwait: {text}", file=sys.stderr, flush=True))
+    while True:
+        row = _look_once(
+            q, key, cas=cas, deadline=deadline, generation=generation,
+            lane_root=lane_root, queue_root=queue_root, **lane_commands,
+        )
+        if row is not None:
+            return row
+        # Nothing is recorded and nothing is filed.  ``>=`` so a caller with
+        # no patience does not spend a poll interval finding that out, which
+        # is how ``pbrun.landed_outcome`` spells the same test.
+        if time.monotonic() >= deadline:
+            return _row(key, "waiting")
+        # Read on each pass rather than captured: a test that shortens the
+        # interval sets it on the module.
+        time.sleep(max(0.0, min(pbrun.POLL_S, deadline - time.monotonic())))
+
+
+def _look_once(
+    q,
+    key: str,
+    *,
+    cas,
+    deadline: float,
+    generation: float | None = None,
+    lane_root=None,
+    queue_root=None,
+    **lane_commands,
+):
+    """One pass of ``wait_one``, or ``None`` when there is nothing yet.
+
+    ``None`` is the one answer that means "look again": no submission is
+    recorded, no ending is filed, and the CAS holds no receipt.  Every other
+    answer is a row, because every other answer is about a run this can name.
+
+    Split out of ``wait_one`` so the pass reads in one screen and the loop
+    around it holds nothing but the deadline and the interval.
+    """
+
     found = outstanding(q, key, lane_root=lane_root)
     if generation is None and found is not None:
+        # A submission this pass discovered is the run the wait is about, and
+        # a caller that named a generation keeps it.  Deriving it per pass
+        # cannot drift: the only pass that asks for another one is a pass that
+        # found no submission, and so derived nothing.
         generation = found[1]
 
     landed = pbrun.landed_outcome(q, key, wait_s=0.0, generation=generation)
@@ -361,16 +411,20 @@ def wait_one(
                     job=_job_id(found),
                     host=str(found[2].get("submitted_host") or "-"))
 
+    if found is None:
+        # Nothing has been recorded under this key at all.  Say so by
+        # returning nothing, so the caller looks again for a submission as
+        # well as for an ending.
+        return None
+
+    # A pull-queue item: the worker that claims it files the ending, so this
+    # only watches, and it may watch out the whole deadline.
     landed = pbrun.landed_outcome(
         q, key, wait_s=max(0.0, deadline - time.monotonic()),
         generation=generation,
     )
     if landed is None:
-        return _row(
-            key, "waiting",
-            transport=found[0] if found is not None else "-",
-            job=_job_id(found),
-        )
+        return _row(key, "waiting", transport=found[0], job=_job_id(found))
     return _from_record(q, *landed)
 
 
