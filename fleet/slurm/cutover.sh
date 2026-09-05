@@ -89,7 +89,9 @@ PUBLISH="${PB_PUBLISH:-python3 $REPO/tools/fleet/publish_runtime.py}"
 QUEUE_ROOT="${PB_QUEUE_ROOT:-/mnt/shared/prismabuild-fleet/pb-queue}"
 RUNTIME_DIR="${PB_RUNTIME_DIR:-/mnt/shared/prismabuild-fleet}"
 BOXES="${PB_BOXES:-dl380g10 sparky sparklina}"
-SPARKS="${PB_SPARKS:-sparky sparklina}"
+# `-` rather than `:-`: an empty PB_SPARKS means no box has a pqwork unit,
+# which is what the tests set and not the same as leaving it unset.
+SPARKS="${PB_SPARKS-sparky sparklina}"
 SSH="${PB_SSH:-ssh -o BatchMode=yes}"
 STATE_DIR="${PB_STATE_DIR:-$HOME/.prismabuild}"
 MARKER="$STATE_DIR/slurm-verify-passed.json"

@@ -358,6 +358,20 @@ def test_cutover_refuses_when_verification_did_not_pass_here(tmp_path: Path) -> 
     assert "verify.sh" in result.stderr
 
 
+def test_cutover_honours_an_empty_pb_sparks(tmp_path: Path) -> None:
+    """``PB_SPARKS`` is the list of boxes with a pqwork unit, and the tests set
+    it empty so a run reaches no Spark.  Pre-fix the script read it with
+    ``:-``, which treats empty as unset, and step 4 went to both Sparks."""
+
+    environment = _cutover_environment(tmp_path)
+    assert environment["PB_SPARKS"] == ""
+    result = _cutover(environment, "--dry-run", "--yes")
+    assert result.returncode == 0, result.stderr
+    step4 = result.stdout.split("step 4:", 1)[1].split("step 5:", 1)[0]
+    assert "systemctl --user stop pqwork.service" not in step4
+    assert "sparklina" not in step4 and "sparky" not in step4
+
+
 def test_a_cutover_dry_run_names_its_refusals_and_publishes_the_transport(
     tmp_path: Path,
 ) -> None:
