@@ -99,7 +99,7 @@ nothing to the action's identity:
 
 Every job is submitted with `--no-requeue`, `--export=NIL` and
 `--dependency=singleton`, under the job name `pb-<first 12 characters of the
-key>`. Only SLURM's own variables reach the job; the action's environment is
+key>` and with `--comment=pb:<key>:<attempt>:<nonce>`. Only SLURM's own variables reach the job; the action's environment is
 the sealed one the worker builds. `--chdir`, `--output` and `--error` point at
 the action's own lane directory. Retries are new submissions with new job ids,
 never `--requeue`. The [install runbook](slurm_runbook_2026-09-04.md) shows a
@@ -183,7 +183,7 @@ queue the worker files the ending and `pbwait` only watches.
 | 0 | The work is done. A `cache_hit` counts as done. |
 | 1 | The action failed. `pbrun` prints the worker's message and the log paths. |
 | 2 | `pbrun --withdraw` matched no submission, matched more than one, or `scancel` refused the job. Also argparse's own usage error. |
-| 75 | The wait ended before the work did. Nothing was cancelled. |
+| 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
 
 Exit 1 is the worker launcher's status, not the command's own exit code. A
@@ -201,8 +201,36 @@ ending. The pull queue's authority is the launcher's exit code; the lane's is
 the receipt. A launcher that publishes its receipt and is then signalled is
 filed `failed` by the queue and `executed` by the lane.
 
-After a 75, run `pbwait` on the key. The job is still queued or running, and
-under SLURM `pbwait` is what files the ending once it stops.
+After a 75 from a wait, run `pbwait` on the key. The job is still queued or
+running, and under SLURM `pbwait` is what files the ending once it stops.
+
+After a 75 that says the fate of a submission is unknown, run the `squeue` in
+the message instead. There is nothing to wait on: no submission was recorded,
+because none is known.
+
+### When `sbatch` stops answering
+
+A scheduler command gets 60 seconds. `sbatch` is the one where that bound sits
+in the wrong place: the controller can accept a submission and the client can
+then hang, so the job runs with its id lost.
+
+Every invocation of `sbatch` therefore names itself in the job's `Comment`:
+`pb:<key>:<attempt>:<nonce>`, a fresh nonce each time, sealed into the
+submission record with the rest of the argv. The job name cannot do this --
+every attempt of every submission of one key shares it.
+
+On a timeout the lane asks the controller whether it took the job:
+
+    squeue -h -u $USER --name=pb-<key12> --states=all -o '%i|%k'
+
+`--states=all` because a job accepted and finished inside the same 60 seconds
+would not be listed otherwise; matching on the comment is what makes the wider
+listing safe. One job carrying this invocation's comment is adopted, and the
+submission record is written as if `sbatch` had printed that id. No job
+carrying it means the controller did not take the submission, and the refusal
+stands. A controller that cannot be asked leaves the fate unknown: `pbrun`
+prints the job name, the comment and that `squeue`, files nothing, and exits
+75.
 
 ### No deadline exists by default
 
@@ -548,6 +576,12 @@ These are refusals at submission, before anything reaches the fleet.
     message names the required tags and the demand. An unknown Feature is the
     usual cause: a tag that no node carries can never be scheduled. Read
     `sinfo -N -l` for a node that offers it, or fix the `--tag`.
+*   **`the fate of this submission is unknown`** — `sbatch` stopped answering
+    and the controller could not say whether it took the job. This is not a
+    refusal and it is exit 75, not 1. Run the `squeue` in the message. A job
+    listed with that `Comment` is yours and is running with no submission
+    record; withdraw it with `scancel` and submit again. No such job means
+    nothing was submitted.
 
 Two failures happen after the job ran.
 

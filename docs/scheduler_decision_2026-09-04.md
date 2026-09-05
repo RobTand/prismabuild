@@ -135,7 +135,9 @@ convention, `--withdraw` routed by the lane's own record, campaign fan-out
 moving (reported, never cancelled), the command's own exit status on the
 terminal record (`detail.action_returncode`), `pool_reset` re-submitting a
 sealed action through the lane, an attached `pbrun` joining a job already
-running for its key, one job per action key at a time
+running for its key, an `sbatch` that hangs after acceptance settled against
+the controller by the submission's own `--comment` nonce rather than reported
+as a refusal, one job per action key at a time
 (`--dependency=singleton` under the job name `pb-<key12>`, with the held job
 reading the receipt on the node before it materializes anything and filing
 `cache_hit`), the operator guide (`docs/operating_prismabuild.md`),

@@ -41,7 +41,7 @@ patched. The host's real `/mnt/shared` is never touched.
 | 14a, 14b | with `ConstrainCores=yes`, a `--cpus N` job is confined to N CPUs of a node that has more; with `ConstrainCores=no` it is placed against the count and then sees the whole node |
 | 14c | a job that writes past its declared `mem_gb` runs against a `memory.max` equal to the declaration: it is throttled into swap under `ConstrainSwapSpace=no` and killed `OUT_OF_MEMORY` under `ConstrainSwapSpace=yes`, which `pbrun` reports |
 | 14d | a job that stays under its declared `mem_gb` completes |
-| 15a | a second job of one action key, submitted while the first runs, is held `PENDING` with reason `Dependency` by `--dependency=singleton`; when the first leaves it starts, reads the receipt on the node, writes its cache-hit marker and exits 0, and the action ran exactly once |
+| 15a | a second job of one action key, submitted while the first runs, is held `PENDING` with reason `Dependency` by `--dependency=singleton`; when the first leaves it starts, reads the receipt on the node, writes its cache-hit marker and exits 0, and the action ran exactly once. The running job also answers the adoption query issue #42 uses: `squeue -h -u $USER --name=pb-<key12> --states=all -o '%i\|%k'` prints its `pb:<key>:<attempt>:<nonce>` comment, and `scontrol show job` shows the same `Comment=` |
 | 15b | two `pbrun --transport slurm` invocations of one key started together both exit 0, the action runs exactly once, and `done/` holds one `executed` record; which of the three paths the second took -- read the CAS, attached, or held by the scheduler -- is recorded rather than asserted, because it is a race |
 
 ## What it does not establish

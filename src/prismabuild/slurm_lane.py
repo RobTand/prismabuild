@@ -64,11 +64,13 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+import getpass
 import json
 import math
 import os
 from pathlib import Path
 import re
+import secrets
 import shlex
 import socket
 import subprocess
@@ -231,6 +233,26 @@ UNKNOWN_STATE = "UNKNOWN"
 
 class SlurmLaneError(pb.PrismaBuildError):
     """A scheduler command failed, or answered something unusable."""
+
+
+class CommandTimedOut(SlurmLaneError):
+    """A scheduler command did not answer within ``COMMAND_TIMEOUT_S``.
+
+    Distinct from every other failure because it is the only one that leaves
+    the question open on the *submitting* side: ``sbatch`` may have been
+    accepted and the answer lost, so a plain refusal would tell the caller a
+    job does not exist while it runs.  ``wait`` treats it exactly as it treated
+    it before -- no answer this poll -- because it is a ``SlurmLaneError``.
+    """
+
+
+class SubmissionFateUnknown(SlurmLaneError):
+    """``sbatch`` did not answer and the controller could not settle it.
+
+    Not a refusal.  Nothing is filed, because nothing is known: a job may be
+    queued under this action's name right now.  The message names the job
+    name, the submission's comment, and the ``squeue`` an operator can run.
+    """
 
 
 class ControllerUnreachable(SlurmLaneError):
@@ -454,6 +476,76 @@ def job_was_cache_hit(job: "SubmittedJob | None") -> bool:
     if job is None:
         return False
     return bool(read_cache_hit(cache_hit_path(job.directory, job.job_id)))
+
+
+def submission_comment(action_key: str, *, attempt: int, nonce: str) -> str:
+    """What one ``sbatch`` invocation calls itself, in the job's ``Comment``.
+
+    ``sbatch`` can be accepted and then hang past ``COMMAND_TIMEOUT_S``, and
+    the job id it was about to print is lost with it.  The job name is not
+    enough to find that job again: it is ``pb-<key12>``, which every attempt
+    of every submission of one action key shares.  A fresh nonce per
+    invocation is, and the controller carries it: ``squeue -o %k`` and
+    ``scontrol show job`` both read it back.
+
+    The whole key is in it rather than the twelve-character prefix, so that a
+    comment read off the controller identifies the action without a lane
+    directory to resolve a prefix against.
+    """
+
+    return f"pb:{str(action_key)}:{int(attempt)}:{str(nonce)}"
+
+
+def adoption_argv(action_key: str, *, squeue: object = "squeue") -> list[object]:
+    """The ``squeue`` that answers whether the controller took a submission.
+
+    ``--states=all`` because the answer must cover a job that was accepted and
+    finished inside the same ``COMMAND_TIMEOUT_S`` window -- a job held behind
+    a sibling and released into a cache hit is exactly that fast, and the
+    default ``squeue`` would not list it.  Matching on the comment is what
+    makes the wider listing safe.
+    """
+
+    return [
+        squeue, "-h", "-u", getpass.getuser(),
+        f"--name=pb-{str(action_key)[:12]}", "--states=all", "-o", "%i|%k",
+    ]
+
+
+def find_submitted_job(
+    action_key: str, *, comment: str, squeue: Command = "squeue"
+) -> list[str]:
+    """Job ids under this action's name whose comment is this invocation's.
+
+    Args:
+        action_key: The action key, whose first twelve characters name the job.
+        comment: The exact ``submission_comment`` sent with the submission.
+        squeue: The ``squeue`` command to ask.
+
+    Returns:
+        Every job id the controller holds with that comment.  Empty means the
+        controller answered and holds none, which is an answer: it did not take
+        the submission.
+
+    Raises:
+        ControllerUnreachable: ``squeue`` could not reach ``slurmctld``.
+        CommandTimedOut: ``squeue`` did not answer either.
+        SlurmLaneError: ``squeue`` refused for some other reason.
+    """
+
+    completed = _run(adoption_argv(action_key, squeue=squeue), where="squeue")
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        if _unreachable(completed):
+            raise ControllerUnreachable(
+                f"squeue could not reach the controller: {detail}")
+        raise SlurmLaneError(f"squeue refused the question: {detail}")
+    found = []
+    for line in completed.stdout.splitlines():
+        job_id, _, text = line.strip().partition("|")
+        if job_id.strip() and text.strip() == comment:
+            found.append(job_id.strip())
+    return found
 
 
 def format_time_limit(timeout_s: float) -> str:
@@ -697,6 +789,12 @@ def _run(argv: Sequence[object], *, where: str) -> subprocess.CompletedProcess[s
             text=True,
             timeout=COMMAND_TIMEOUT_S,
         )
+    except subprocess.TimeoutExpired as exc:
+        # Held apart from every other failure by its type and not by its words:
+        # a command that hung may have done what it was asked before it stopped
+        # answering (see ``CommandTimedOut``), and the message an operator
+        # already reads for this is the one below.
+        raise CommandTimedOut(f"{where} failed: {exc}") from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise SlurmLaneError(f"{where} failed: {exc}") from exc
 
@@ -817,6 +915,7 @@ def submit(
     priority: int = 0,
     attempt: int = 1,
     sbatch: Command = "sbatch",
+    squeue: Command = "squeue",
     published_unix: float | None = None,
     published_by: str | None = None,
     retry_safe: bool | None = None,
@@ -826,6 +925,16 @@ def submit(
 
     The record is written *after* the id is known and before anything blocks on
     the job, because a job id nobody wrote down is a job nobody can withdraw.
+
+    An ``sbatch`` that is accepted and *then* hangs past ``COMMAND_TIMEOUT_S``
+    leaves exactly that: a job on the fleet with no submission record, which
+    nothing can wait on, withdraw or report.  So every invocation names itself
+    in the job's ``Comment`` (``submission_comment``, a fresh nonce each time)
+    and a timeout asks the controller whether it took the job.  If it did, the
+    record is written as if ``sbatch`` had printed that id.  If the controller
+    answers that it did not, the refusal stands.  If the controller cannot be
+    asked, this raises ``SubmissionFateUnknown`` and files nothing: not knowing
+    is not the same as knowing it was refused.
     """
 
     key = str(action["action_key"])
@@ -861,6 +970,10 @@ def submit(
     # that a test can drive a submission without a process -- and the repr of
     # a bound method is not a thing a sealed record can say was submitted.
     program = sbatch if isinstance(sbatch, str) else "sbatch"
+    # One invocation's own name, sealed into the record with the rest of the
+    # argv, so an operator holding the record can find the job by its comment.
+    comment = submission_comment(
+        key, attempt=attempt, nonce=secrets.token_hex(8))
     argv = [
         program,
         "--parsable",
@@ -905,6 +1018,9 @@ def submit(
         # not the thing that differs between an ordinary job and a deprioritized
         # one -- only its value is.
         f"--nice={nice}",
+        # What this invocation of sbatch calls itself.  The job name is shared
+        # by every attempt of every submission of this key; this is not.
+        f"--comment={comment}",
     ]
     if timeout_s is not None:
         # A deadline is sent only when the submitter asked for one.  Wall-clock
@@ -925,21 +1041,29 @@ def submit(
         argv.append(f"--partition={partition}")
     argv.append(str(script))
 
-    completed = _run([sbatch, *argv[1:]], where="sbatch")
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()
-        raise SlurmLaneError(
-            f"sbatch refused this action: {detail or completed.returncode}"
-        )
-    output = completed.stdout.strip()
-    if not output or "\n" in output or "\r" in output:
-        raise SlurmLaneError(
-            f"sbatch --parsable returned no single job id: {completed.stdout!r}"
-        )
-    # --parsable prints "<id>" or "<id>;<cluster>" on a federated controller.
-    job_id = output.split(";", 1)[0].strip()
-    if not job_id.isdigit():
-        raise SlurmLaneError(f"sbatch returned no numeric job id: {output!r}")
+    try:
+        completed = _run([sbatch, *argv[1:]], where="sbatch")
+    except CommandTimedOut as exc:
+        job_id = _adopt_hung_submission(key, comment=comment, squeue=squeue,
+                                        timeout=exc)
+    else:
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise SlurmLaneError(
+                f"sbatch refused this action: {detail or completed.returncode}"
+            )
+        output = completed.stdout.strip()
+        if not output or "\n" in output or "\r" in output:
+            raise SlurmLaneError(
+                f"sbatch --parsable returned no single job id: "
+                f"{completed.stdout!r}"
+            )
+        # --parsable prints "<id>" or "<id>;<cluster>" on a federated
+        # controller.
+        job_id = output.split(";", 1)[0].strip()
+        if not job_id.isdigit():
+            raise SlurmLaneError(
+                f"sbatch returned no numeric job id: {output!r}")
 
     generation = (
         float(published_unix) if published_unix is not None else time.time()
@@ -997,6 +1121,60 @@ def submit(
         stderr_path=directory / f"{job_id}.err",
         record_path=record_path,
     )
+
+
+def _adopt_hung_submission(
+    action_key: str,
+    *,
+    comment: str,
+    squeue: Command,
+    timeout: CommandTimedOut,
+) -> str:
+    """The job id of a submission ``sbatch`` took but never reported.
+
+    Args:
+        action_key: The action key that was submitted.
+        comment: The comment that invocation of ``sbatch`` sent.
+        squeue: The ``squeue`` command to ask.
+        timeout: The timeout that started this.
+
+    Returns:
+        The job id the controller holds for this invocation.
+
+    Raises:
+        SlurmLaneError: The controller answered that it holds no such job, so
+            the submission was refused after all.
+        SubmissionFateUnknown: The controller could not be asked, or answered
+            with more than one job carrying this invocation's comment.  Nothing
+            is filed either way.
+    """
+
+    name = f"pb-{str(action_key)[:12]}"
+    operator = shlex.join(
+        [str(part) for part in adoption_argv(action_key, squeue="squeue")])
+    try:
+        found = find_submitted_job(action_key, comment=comment, squeue=squeue)
+    except SlurmLaneError as exc:
+        raise SubmissionFateUnknown(
+            f"{timeout}, and the controller could not be asked whether it "
+            f"took the job ({exc}). Nothing has been filed for this "
+            f"submission, and a job named {name} with Comment={comment} may "
+            f"be queued right now. Run: {operator}"
+        ) from timeout
+    if len(found) > 1:
+        raise SubmissionFateUnknown(
+            f"{timeout}, and {len(found)} jobs ({', '.join(found)}) carry "
+            f"Comment={comment}, which one submission cannot have produced. "
+            f"Nothing has been filed. Run: {operator}"
+        ) from timeout
+    if not found:
+        # An answer, and the only one that lets the refusal stand: the
+        # controller holds no job this invocation created.
+        raise SlurmLaneError(
+            f"sbatch refused this action: {timeout}, and the controller holds "
+            f"no job named {name} with Comment={comment}"
+        ) from timeout
+    return found[0]
 
 
 def _exit_fields(raw: str) -> tuple[int | None, int | None]:
@@ -2427,6 +2605,7 @@ def run(
             priority=priority,
             attempt=attempt,
             sbatch=sbatch,
+            squeue=squeue,
             published_unix=published_unix,
             published_by=published_by,
             retry_safe=retry_safe,

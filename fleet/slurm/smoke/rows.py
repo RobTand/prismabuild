@@ -1192,6 +1192,20 @@ def row_15a_singleton_holds_the_second_job(nonce: Path) -> None:
     replay = sh(["sbatch", *argv[1:]]) if len(argv) > 1 else None
     second_job = (replay.stdout or "").strip().split(";")[0] if replay else ""
 
+    # Issue #42: every invocation of sbatch names itself in the job's
+    # Comment, and the adoption query is exactly this squeue.  Read while the
+    # first job is still on the controller, because that is when a submitter
+    # whose sbatch hung would be reading it.
+    listed = sh([
+        "squeue", "-h", "-u", USER, f"--name=pb-{prefix}",
+        "--states=all", "-o", "%i|%k",
+    ])
+    commented = [
+        line for line in (listed.stdout or "").splitlines()
+        if line.startswith(f"{first_job}|pb:")
+    ]
+    shown = sh(["scontrol", "show", "job", str(first_job)]).stdout or ""
+
     held = ""
     if second_job:
         wait_for(lambda: _job_field(second_job, "%T|%r").startswith("PENDING"),
@@ -1218,6 +1232,8 @@ def row_15a_singleton_holds_the_second_job(nonce: Path) -> None:
         "the second job read the CAS instead": "already in the CAS" in said,
         "the second job filed a cache-hit marker": marker.exists(),
         "the second job exited 0": "ExitCode=0:0" in state or not ending,
+        "squeue %k prints the submission's comment": bool(commented),
+        "scontrol shows Comment=pb:": f"Comment=pb:{key}:" in shown,
     }
     failed = [name for name, ok in checks.items() if not ok]
     record(
@@ -1225,7 +1241,8 @@ def row_15a_singleton_holds_the_second_job(nonce: Path) -> None:
         not failed,
         f"job {first_job} RUNNING, job {second_job} squeue %T|%r={held!r}; "
         f"nonce lines={ran}; job {second_job} said "
-        f"{said.strip().splitlines()[-1][:80]!r}"
+        f"{((said.strip().splitlines() or ['(nothing)'])[-1])[:80]!r}; "
+        f"squeue %i|%k={(commented or ['(none)'])[0][:64]!r}"
         + ("" if not failed else f"; MISSING {failed}"),
     )
 

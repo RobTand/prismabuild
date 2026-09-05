@@ -2079,6 +2079,14 @@ def slurm_outcome(
                     file=sys.stderr, flush=True),
                 **lane_commands,
             )
+    except slurm_lane.SubmissionFateUnknown as exc:
+        # Not a refusal, so not reported as one and not filed as one.  sbatch
+        # stopped answering and the controller could not settle whether it
+        # took the job, so a job of this action may be queued right now.  The
+        # exit code is the one that already means "no verdict yet".
+        print(f"pbrun: the fate of this submission is unknown.\n  {exc}",
+              file=sys.stderr, flush=True)
+        return GAVE_UP_EXIT
     except slurm_lane.SlurmLaneError as exc:
         raise SystemExit(
             f"pbrun: slurm refused this action.\n"

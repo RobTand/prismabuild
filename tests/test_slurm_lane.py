@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import textwrap
@@ -49,7 +50,7 @@ JOB_ENTRY = REPOSITORY / "tools" / "fleet" / "slurm_job.py"
 # --------------------------------------------------------------------------
 
 _SBATCH = '''\
-import json, os, subprocess, sys
+import json, os, subprocess, sys, time
 from pathlib import Path
 
 state = Path(os.environ["FAKE_SLURM_STATE"])
@@ -71,6 +72,15 @@ script = argv[-1]
 directory = [a.split("=", 1)[1] for a in argv if a.startswith("--chdir=")][0]
 name = ([a.split("=", 1)[1] for a in argv if a.startswith("--job-name=")] + [""])[0]
 (state / f"{number}.name").write_text(name)
+comment = ([a.split("=", 1)[1] for a in argv if a.startswith("--comment=")] + [""])[0]
+(state / f"{number}.comment").write_text(comment)
+if os.environ.get("FAKE_SBATCH_HANG"):
+    # Accepted, and then no answer: the shape issue #42 is about.  The job
+    # exists on the controller with this invocation's comment on it.
+    (state / f"{number}.state").write_text(
+        os.environ.get("FAKE_SBATCH_HANG_STATE", "RUNNING") + "|0:0\\n")
+    time.sleep(float(os.environ.get("FAKE_SBATCH_HANG", "0")))
+    raise SystemExit(0)
 verdict = os.environ.get("FAKE_SBATCH_VERDICT", "run")
 if verdict == "run":
     out = Path(directory) / f"{number}.out"
@@ -197,6 +207,9 @@ if _silence:
 argv = sys.argv[1:]
 job = name = None
 fmt = "%T"
+# `--states=all` widens the listing past what the controller is still running,
+# which is what the adoption query in `find_submitted_job` needs.
+every = "--states=all" in argv or "-t" in argv
 for index, arg in enumerate(argv):
     if arg == "-j" and index + 1 < len(argv):
         job = argv[index + 1]
@@ -219,12 +232,17 @@ def _state(job_id):
     return record.read_text().strip().split("|")[0]
 
 
+def _comment(job_id):
+    path = root / f"{job_id}.comment"
+    return path.read_text().strip() if path.exists() else ""
+
+
 def _render(job_id, job_state):
     reason = "None"
     if job_state == "PENDING":
         reason = os.environ.get("FAKE_SQUEUE_REASON", "Resources")
     line = fmt.replace("%i", str(job_id)).replace("%T", job_state)
-    return line.replace("%r", reason)
+    return line.replace("%r", reason).replace("%k", _comment(job_id) or "(null)")
 
 
 # squeue lists only what the controller still holds, which is what makes it
@@ -235,7 +253,7 @@ if name is not None:
         if path.read_text().strip() != name:
             continue
         job_state = _state(path.stem)
-        if job_state is None or job_state not in _LIVE:
+        if job_state is None or (job_state not in _LIVE and not every):
             continue
         print(_render(path.stem, job_state))
     raise SystemExit(0)
@@ -495,6 +513,12 @@ def test_a_gpu_slot_action_asks_for_shards_its_tags_and_its_own_time(
     argv = _submissions(fleet)[0]["argv"]
     key = job.action_key
     directory = job.directory
+    # Every invocation names itself with a fresh nonce (issue #42), so this
+    # one flag is matched on its own and the rest stays an exact list.
+    comment = [flag for flag in argv if flag.startswith("--comment=")]
+    assert len(comment) == 1
+    assert re.fullmatch(rf"--comment=pb:{key}:1:[0-9a-f]{{16}}", comment[0])
+    argv.remove(comment[0])
     assert argv == [
         "--parsable",
         "--no-requeue",
