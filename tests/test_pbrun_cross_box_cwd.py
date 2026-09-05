@@ -1,7 +1,7 @@
 """A checkout on another box is not a typo, and must not be reported as one.
 
-``pbrun`` stamps the code closure *inside* the checkout and computes the
-closure from it, so it can only submit for a checkout that exists on the box
+``pbrun`` reads the checkout to seal its exact bytes, so it can only
+submit for a checkout that exists on the box
 it is running on.  That is a real constraint and it is not going away here.
 What was wrong was the report: ``--cwd is not a directory`` is exactly right
 for a typo and exactly wrong for the cross-box case, where the path is correct
@@ -62,7 +62,7 @@ def test_the_refusal_says_to_submit_from_the_box_that_holds_the_checkout(
     )
     assert "submit from there" in message, message
     # And say WHY, so the constraint is learnable rather than arbitrary.
-    assert "closure" in message, message
+    assert "source checkout" in message and "seal its bytes" in message, message
 
 
 def test_this_copy_of_pbrun_is_the_one_the_guard_repoints(tmp_path: Path) -> None:
