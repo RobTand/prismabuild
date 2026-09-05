@@ -209,3 +209,43 @@ def test_presentation_config_does_not_move_the_key(
     identity = pb.git_checkout_identity(root)
 
     assert identity["dirty_sha256"] == expected
+
+
+@pytest.mark.parametrize("ignored_path", ["secret.txt", "nested/"])
+def test_personal_excludes_do_not_hide_untracked_bytes(
+    tmp_path: Path, ignored_path: str
+) -> None:
+    root = _text_delta(tmp_path / "checkout")
+    (root / "nested").mkdir()
+    (root / "nested" / "data.txt").write_text("nested payload\n")
+    (root / "secret.txt").write_text("secret payload\n")
+    expected = pb.git_checkout_identity(root)
+    personal = tmp_path / "personal-ignore"
+    personal.write_text(ignored_path + "\n")
+    _git(root, "config", "core.excludesFile", str(personal))
+    assert pb.git_checkout_identity(root) == expected
+
+
+@pytest.mark.parametrize("rule_location", [".gitignore", ".git/info/exclude"])
+def test_repository_ignore_rules_still_apply(tmp_path: Path, rule_location: str) -> None:
+    root = _text_delta(tmp_path / "checkout")
+    (root / rule_location).write_text("ignored.txt\n")
+    before = pb.git_checkout_identity(root)
+    (root / "ignored.txt").write_text("ignored bytes\n")
+    assert pb.git_checkout_identity(root) == before
+
+
+@pytest.mark.parametrize("ignored_path", ["pipe", "nested/"])
+def test_personal_excludes_cannot_hide_unsupported_inodes(
+    tmp_path: Path, ignored_path: str
+) -> None:
+    import os
+
+    root = _text_delta(tmp_path / "checkout")
+    (root / "nested").mkdir()
+    os.mkfifo(root / ("nested/pipe" if ignored_path.endswith("/") else "pipe"))
+    personal = tmp_path / "personal-ignore"
+    personal.write_text(ignored_path + "\n")
+    _git(root, "config", "core.excludesFile", str(personal))
+    with pytest.raises(pb.ActionContractError, match="unsupported file type"):
+        pb.git_checkout_identity(root)
