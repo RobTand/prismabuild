@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -72,6 +73,39 @@ def fleet(tmp_path: Path) -> dict:
             "failed": failed, "tmp_path": tmp_path}
 
 
+@pytest.fixture()
+def reaped(monkeypatch: pytest.MonkeyPatch):
+    """Kill every child ``--apply`` starts, whatever the test asserted.
+
+    ``--apply`` detaches on purpose, so a child that has not returned by the
+    time the window closes is still running when the test ends. One of these
+    tests exists to drive exactly that case, and it left a ``sleep 10``
+    outliving the test by about eight seconds: a stray process on a box that
+    runs the suite with ``-n 8`` is a source of flakiness for whichever test
+    is unlucky enough to share the machine with it.
+
+    The wrapper is around ``start_resubmission`` rather than around
+    ``subprocess.Popen``, so it collects this tool's children and nothing
+    else's.
+    """
+
+    started: list[subprocess.Popen] = []
+    begin = pool_reset.start_resubmission
+
+    def _collected(*args, **kwargs):
+        process, log = begin(*args, **kwargs)
+        started.append(process)
+        return process, log
+
+    monkeypatch.setattr(pool_reset, "start_resubmission", _collected)
+    yield started
+    for process in started:
+        if process.poll() is not None:
+            continue
+        process.kill()
+        process.wait()
+
+
 def _run(fleet: dict, monkeypatch: pytest.MonkeyPatch, script: str) -> int:
     """``--apply`` against a stand-in ``pbrun`` that does what ``script`` says.
 
@@ -98,7 +132,8 @@ def _run(fleet: dict, monkeypatch: pytest.MonkeyPatch, script: str) -> int:
 
 
 def test_a_child_that_refuses_is_reported_and_the_record_stands(
-    fleet: dict, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    fleet: dict, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    reaped: list,
 ) -> None:
     """The operator hears the refusal, and the work is still resettable.
 
@@ -120,7 +155,8 @@ def test_a_child_that_refuses_is_reported_and_the_record_stands(
 
 
 def test_a_child_still_running_counts_as_submitted(
-    fleet: dict, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    fleet: dict, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    reaped: list,
 ) -> None:
     """A submission is not refused merely because it has not returned.
 
@@ -140,3 +176,8 @@ def test_a_child_still_running_counts_as_submitted(
 
     logs = sorted((fleet["queue_root"] / "resets").glob(f"{KEY}*"))
     assert len(logs) == 1
+
+    # The case this test exists for, stated rather than implied: the child is
+    # still running when the assertions are made, which is why the fixture
+    # that kills it has to exist.
+    assert [p for p in reaped if p.poll() is None]
