@@ -21,6 +21,13 @@ Three constraints shape this, and none of them are negotiable:
   different BLAS and a different FMA order, so this runs *tests*, never a
   timing or numeric arm.  ``--tag`` defaults to ``x86`` to make that explicit
   at the call site rather than in a comment.
+* **A shard reserves what it is allowed to use.**  ``--threads-per-shard``
+  sets each shard's BLAS and OMP ceiling, and the same number becomes
+  ``pbrun --cpus``, which the lane emits as ``--cpus-per-task``.  A ceiling
+  without a reservation is threads taking turns inside one core, because
+  ``ConstrainCores=yes`` makes the declared demand a cpuset.
+  ``--cpus-per-shard`` overrides the pairing, and it is required when the
+  ceiling is 0.
 
 Shards are round-robin by file, which balances only if files cost roughly the
 same.  They do not -- but the alternative is a duration model nobody has
@@ -36,10 +43,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+from runtime_paths import (  # noqa: E402
+    fleet_tool, generation_root, tool_candidates,
+)
 
 RUNTIME_ROOT = generation_root(__file__)
-PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
+#: The submitter each shard is started through, under whichever layout the
+#: runtime containing this file uses.  ``None`` when neither layout has one.
+PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
 SHARED = Path("/mnt/shared")
 
 #: ``pbrun``'s own transport vocabulary, and its own reader for the default.
@@ -84,7 +95,13 @@ def main() -> int:
                     help="placement tag; defaults to x86")
     ap.add_argument("--shards", type=int, default=20)
     ap.add_argument("--threads-per-shard", type=int, default=2,
-                    help="BLAS/OMP threads each shard may use; 0 leaves it alone")
+                    help="BLAS/OMP threads each shard may use; 0 leaves it "
+                         "alone and then --cpus-per-shard is required")
+    ap.add_argument("--cpus-per-shard", type=int, default=None,
+                    help="cores each shard reserves; the default is "
+                         "--threads-per-shard, so the ceiling a shard is given "
+                         "is the ceiling it can use. Required with "
+                         "--threads-per-shard 0, which sets no ceiling at all")
     ap.add_argument("--mem-gb", type=int, default=3,
                     help="memory each shard demands of its box")
     ap.add_argument("--timeout-s", type=float, default=None,
@@ -101,6 +118,40 @@ def main() -> int:
     # here would fail every shard at argparse rather than pin an ancestry.
     ap.add_argument("paths", nargs="*", default=["tests"])
     args = ap.parse_args()
+
+    if PBRUN is None:
+        looked = " and ".join(
+            str(candidate)
+            for candidate in tool_candidates("pbrun.py", root=RUNTIME_ROOT)
+        )
+        sys.stderr.write(
+            f"no pbrun.py to submit shards through; looked for {looked}\n")
+        return 2
+
+    # A thread ceiling is not a reservation.  Under SLURM the lane emits the
+    # sealed cpu demand as --cpus-per-task, and cgroup.conf's
+    # ConstrainCores=yes turns that into a cpuset, so eight threads inside a
+    # one-core cpuset are eight threads taking turns on one core; under the
+    # pull queue the ledger admits the shard as if it used one.  So the two
+    # travel together, and 0 threads, which asks for no ceiling at all, has
+    # no reservation to derive and must be told one.
+    if args.threads_per_shard < 0:
+        sys.stderr.write("--threads-per-shard cannot be negative\n")
+        return 2
+    if args.cpus_per_shard is None:
+        if args.threads_per_shard == 0:
+            sys.stderr.write(
+                "--threads-per-shard 0 leaves every shard's thread pool "
+                "unbounded, so nothing here can say how many cores to "
+                "reserve for it: pass --cpus-per-shard N as well, or name a "
+                "thread ceiling and let it answer both\n")
+            return 2
+        cpus_per_shard = args.threads_per_shard
+    else:
+        cpus_per_shard = args.cpus_per_shard
+    if cpus_per_shard < 1:
+        sys.stderr.write("--cpus-per-shard must be at least 1\n")
+        return 2
 
     checkout = Path(args.checkout).resolve()
     files = discover(checkout, args.paths or ["tests"])
@@ -148,6 +199,12 @@ def main() -> int:
             flags += ["--tag", tag]
         flags += [
             "--demand", f"mem_gb={args.mem_gb}",
+            # pbrun fills the cpu demand from --cpus, and its default is 1.
+            # Naming it here is what makes the reservation match the thread
+            # ceiling above; it is sealed into the action's params, so a suite
+            # re-run at a different width is a different action rather than a
+            # cache hit.
+            "--cpus", str(cpus_per_shard),
         ]
         if args.timeout_s is not None:
             flags += ["--timeout-s", str(args.timeout_s)]
