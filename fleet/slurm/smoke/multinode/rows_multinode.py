@@ -150,8 +150,10 @@ def submission(prefix: str) -> dict:
     return {}
 
 
-def flags(record: dict) -> list[str]:
-    return [str(item) for item in record.get("argv", [])]
+def flags(sealed: dict) -> list[str]:
+    """The exact argv the lane sent to `sbatch`, out of the submission record."""
+
+    return [str(item) for item in sealed.get("argv", [])]
 
 
 def wait_for(predicate, *, timeout_s: float, poll_s: float = 1.0) -> bool:
@@ -327,7 +329,7 @@ def _placement_row(name: str, node: str, command: list[str], *,
                    expect_partition: str,
                    expect_constraint: list[str],
                    expect_gres: str = "",
-                   extra_checks=None) -> tuple[str, str, dict]:
+                   extra_checks=None) -> None:
     completed = pbrun(node, command, extra=extra)
     prefix, job_id = submitted(completed)
     path, ending = outcome("done", prefix)
@@ -363,13 +365,12 @@ def _placement_row(name: str, node: str, command: list[str], *,
            f" MISSING {failed}; rc={completed.returncode}; "
            f"stderr={(completed.stderr or '')[-500:]}"),
     )
-    return prefix, job_id, ending
 
 
-def row_m2_cpu_only(nonce: str) -> tuple[str, str]:
+def row_m2_cpu_only(nonce: str) -> None:
     """Untagged CPU-only work goes to the CPU box, with no deadline."""
 
-    prefix, job_id, _ = _placement_row(
+    _placement_row(
         "M2 an untagged CPU-only pbrun lands on dl380g10 via --partition=cpu",
         "dl380g10", ["./action.sh", "run", nonce],
         expect_host=("dl380g10",),
@@ -385,13 +386,12 @@ def row_m2_cpu_only(nonce: str) -> tuple[str, str]:
                     item.startswith("--time") for item in flags(s)),
         },
     )
-    return prefix, job_id
 
 
-def row_m3_gpu(nonce: str) -> tuple[str, str]:
+def row_m3_gpu(nonce: str) -> None:
     """A --gpu action goes to a Spark, in the GPU partition, holding a shard."""
 
-    prefix, job_id, _ = _placement_row(
+    _placement_row(
         "M3 a --gpu pbrun lands on a Spark via --partition=gpu --gres=shard:1",
         "dl380g10", ["./action.sh", "run", nonce],
         extra=["--gpu"],
@@ -400,7 +400,6 @@ def row_m3_gpu(nonce: str) -> tuple[str, str]:
         expect_constraint=[],
         expect_gres="shard:1",
     )
-    return prefix, job_id
 
 
 def row_m4_tagged(nonce: str) -> None:
