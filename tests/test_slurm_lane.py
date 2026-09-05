@@ -33,6 +33,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
+from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
@@ -1130,6 +1131,88 @@ def test_a_gpu_action_is_not_told_its_slot_has_no_device(
     )
 
     assert "no GPU" not in capsys.readouterr().err
+
+
+def test_an_attached_pbrun_joins_a_running_job_instead_of_submitting_again(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A key is a content hash, so asking for the same work twice is the normal
+    way to ask whether it is done.
+
+    The pull queue answered that with one ``ready/<key>.json`` and a claim, so
+    the second ask could not become a second execution.  SLURM has no claim,
+    and this path submitted unconditionally: two attached ``pbrun``s of one key
+    were two jobs of one action on the fleet, materializing the same checkout,
+    taking the same GPU twice and racing to publish one receipt.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "already-running")
+    request = cas.publish_action_request(action)
+    queue = tmp_path / "queue"
+    running = sl.submit(
+        action, cas=cas, request_path=request,
+        resources=sl.LaneResources.from_demand({"cpu": 1}), timeout_s=600.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY,
+    )
+    state = fleet / f"{running.job_id}.state"
+
+    def ends_while_we_wait(_seconds: float) -> None:
+        state.write_text("COMPLETED|0:0\n")
+
+    code = pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
+        exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
+        max_attempts=1, runtime_root=REPOSITORY, queue_root=queue,
+        poll_s=0.0, sleep=ends_while_we_wait,
+    )
+
+    # Nothing new was submitted, and the ending filed is the recorded job's.
+    assert [row["job_id"] for row in _submissions(fleet)] == [int(running.job_id)]
+    err = capsys.readouterr().err
+    assert f"already running (slurm job {running.job_id})" in err
+    assert "attaching to it rather than submitting a second copy" in err
+    ending = json.loads(
+        (queue / pool.FAILED / f"{action['action_key']}.json").read_text())
+    assert ending["detail"]["slurm"]["job_id"] == running.job_id
+    # And the same exit code a caller that had submitted this job would read
+    # for this ending: it completed and published no receipt.
+    assert code == 1
+
+
+def test_a_recorded_submission_the_controller_forgot_is_submitted_afresh(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live means recorded, no ending covering that generation, AND a job the
+    controller still knows in a non-terminal state.  A job purged past
+    ``MinJobAge`` is not live, so the work is asked for again -- which is what
+    ``--detach`` already does with the same check."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "forgotten")
+    request = cas.publish_action_request(action)
+    queue = tmp_path / "queue"
+    forgotten = sl.submit(
+        action, cas=cas, request_path=request,
+        resources=sl.LaneResources.from_demand({"cpu": 1}), timeout_s=600.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY,
+    )
+    # Completed, unaccounted for, and no receipt: the controller answers
+    # nothing about it, which is not the same as knowing what it did.
+    (fleet / f"{forgotten.job_id}.state").unlink()
+
+    code = pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
+        exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
+        max_attempts=1, runtime_root=REPOSITORY, queue_root=queue, poll_s=0.0,
+    )
+
+    submitted = [row["job_id"] for row in _submissions(fleet)]
+    assert len(submitted) == 2 and submitted[0] == int(forgotten.job_id)
+    assert code == 1
 
 
 def test_a_job_that_exits_zero_without_a_receipt_is_not_reported_as_success(
