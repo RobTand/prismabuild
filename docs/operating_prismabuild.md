@@ -359,6 +359,19 @@ started a second time. A waiter that died, a closed laptop, or a dropped
 connection therefore costs the wait, never the work. To submit and walk away,
 use `--detach`, then `pbwait` on the keys it printed.
 
+### Campaign exit codes
+
+| Code | What it means |
+| --- | --- |
+| 0 | Every row's work is done. A cache hit counts as done. |
+| 1 | A row was refused before submission, a row's work failed, or the manifest did not load. |
+| 75 | Nothing failed, and at least one row was still running when `--wait-s` ran out. |
+
+A refusal outranks a failure and a failure outranks a wait, so 75 means the
+work is still out there and the keys are still worth waiting on. Under
+`--detach` the campaign returns 0, or 1 if any row was refused; it does not
+wait, so it never returns 75.
+
 ## Submit a measurement
 
 A measurement's numerics do not transfer across architectures, so a measurement
@@ -429,8 +442,10 @@ for jobs the controller has forgotten. Use them directly for scheduler detail
 | `.../cas/` | The content-addressed store: action requests, results, and receipts. |
 
 Both transports file their endings in the same two directories, so a SLURM
-ending and a pull-queue ending appear side by side. A record's `transport` field
-says which filed it.
+ending and a pull-queue ending appear side by side. The `schema` field says
+which filed it: the two writers use distinct schema ids, and only the lane
+writes a `transport` field. `pbstatus` labels its endings table from the schema
+for that reason.
 
 ### Read a terminal record
 

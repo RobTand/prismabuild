@@ -31,7 +31,8 @@ re-run of receipted work submits nothing on either path: `pbrun` reads the
 receipt before `sbatch`. It is installed on no box: the install needs root,
 which is Rob's. `fleet/slurm/install.sh`, `verify.sh`,
 `cutover.sh` and `rollback.sh` are the operator's four steps, in that order.
-`tools/fleet/pbwait.py` and `pbcampaign.py` fan work out over the lane, and
+`tools/fleet/pbcampaign.py` fans a manifest out over the lane and
+`pbwait.py` waits for the keys, whichever transport filed their endings;
 `pbrun --measurement --host-class` seals a class-keyed action the worker
 attests through the controller. `src/prismabuild/slurm.py` is the earlier durable-state SLURM
 adapter, superseded by the lane and retained until the decision record's
