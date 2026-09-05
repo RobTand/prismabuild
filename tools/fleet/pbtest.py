@@ -14,7 +14,9 @@ Three constraints shape this, and none of them are negotiable:
 * **The interpreter is named, not inherited.**  An action runs in a closed
   environment, so its interpreter is sealed into its command and hence its
   action key.  A shard therefore names an interpreter that exists on its target
-  and carries the matching class tag; the two must agree.
+  and carries the matching class tag; the two must agree.  The tag is also what
+  owns that dependency claim, so a shard states it with ``--tag`` alone and
+  never with ``--anywhere``, which would assert the opposite.
 * **A pass/fail here is not a measurement.**  x86 against aarch64 is a
   different BLAS and a different FMA order, so this runs *tests*, never a
   timing or numeric arm.  ``--tag`` defaults to ``x86`` to make that explicit
@@ -134,8 +136,13 @@ def main() -> int:
             "/usr/bin/python3", str(PBRUN),
             "--cwd", str(checkout),
             "--transport", args.transport,
-            "--anywhere",
         ]
+        # The class tag is the whole placement claim, and ``--anywhere``
+        # beside it is the contradiction ``pbrun`` refuses: portable, but
+        # only on x86.  It also bought nothing.  ``placement_tags`` returns
+        # the explicit tags before it reads ``--anywhere``, and
+        # ``partition_for`` answers the default partition for tagged work
+        # either way, so the shards keep their placement and their keys.
         for tag in tags:
             flags += ["--tag", tag]
         flags += [

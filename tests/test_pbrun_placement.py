@@ -1659,40 +1659,75 @@ def test_a_matching_stale_offer_outvotes_a_fresh_nonmatch_at_submit(
     assert "pbrun: queued" in err
 
 
-def test_here_overridden_by_a_tag_does_not_announce_a_pin_that_never_happened(
+def test_a_tag_and_here_are_both_constraints_the_submitter_asked_for(
     tmp_path,
 ) -> None:
-    """``placement_tags`` returns ``list(explicit)``, so ``--tag`` REPLACES ``--here``.
+    """``--here --tag x86`` asks for this box AND for an x86 box.
 
-    The notice read the ``here`` FLAG rather than the tags that actually
-    landed, so from a shared checkout on sparky ``pbrun --here --tag x86``
-    printed, verbatim: "pbrun: PINNED to sparky by --here, so no other box can
-    claim this action.  1 other live box fits this demand: dl380g10." --
-    asserting an exclusivity that does not exist and then naming, as the
-    "other" box, the only box that can actually run the action.
+    ``placement_tags`` returned ``list(explicit)`` the moment any ``--tag``
+    was given, so the host pin was discarded without a word.  From a shared
+    checkout on sparky, ``pbrun --here --tag x86`` then printed: "pbrun:
+    PINNED to sparky by --here, so no other box can claim this action.  1
+    other live box fits this demand: dl380g10." -- because the notice read
+    the flag, while the tags that landed were ``['x86']`` alone.  Both halves
+    are fixed here: the pin lands, and the notice reads the tags.
     """
 
     tags = pbrun.placement_tags(Path("/mnt/shared/tessera-x86"),
                                 explicit=["x86"], here=True, hostname=HOST)
-    assert tags == ["x86"]                     # the host tag never landed
+    assert tags == ["x86", HOST]               # both, hostname last
 
     notice = _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86", tags=tags,
                      demand={"cpu": 1}, here=True)
 
-    assert "PINNED" not in notice
-    assert "--here" in notice                  # and that the flag did nothing
-    assert "dl380g10" in notice                # the box that will really run it
+    assert "PINNED to sparky by --here" in notice
+    # And what the pin costs, measured against the tags without the hostname:
+    # dl380g10 offers x86 and would have been eligible without --here.
+    assert "1 other live box fits this demand: dl380g10" in notice
 
 
-def test_here_overridden_over_a_box_local_tree_says_both_things(tmp_path) -> None:
-    """The override and the tree that cannot travel are two separate facts."""
+def test_here_beside_the_host_tag_does_not_repeat_the_hostname(tmp_path) -> None:
+    """The two spellings of one pin are one tag, and the tag matcher is exact."""
+
+    assert pbrun.placement_tags(
+        Path("/mnt/shared/tessera-x86"),
+        explicit=[HOST, "x86"], here=True, hostname=HOST,
+    ) == ["x86", HOST]
+
+
+def test_a_pinning_tag_over_a_box_local_tree_says_both_things(tmp_path) -> None:
+    """A class tag that is not this box's leaves the local tree unreachable."""
 
     notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101", tags=["x86"],
-                     demand={"cpu": 1}, here=True)
+                     demand={"cpu": 1}, here=False)
 
     assert "PINNED" not in notice
-    assert "--here" in notice
     assert "WARNING" in notice and "exists only on sparky" in notice
+
+
+def test_anywhere_and_a_tag_are_refused_together(tmp_path, monkeypatch) -> None:
+    """Portable, but only on x86, is the submitter contradicting itself.
+
+    ``--anywhere`` reached the SLURM lane's ``partition_for`` as well as the
+    tags, so the pairing did not merely pick one: the action carried an
+    ``x86`` constraint into the partition chosen for portable work.
+    """
+
+    import socket
+    from unittest import mock
+
+    work = _git_checkout(tmp_path)
+    with mock.patch.object(pbrun, "SH", tmp_path), \
+         mock.patch.object(socket, "gethostname", return_value=HOST), \
+         mock.patch.object(pbrun, "POLL_S", 0.001), \
+         mock.patch.object(sys, "argv",
+                           ["pbrun.py", "--cwd", str(work), "--anywhere",
+                            "--tag", "x86", "--wait-s", "0.01",
+                            "--", "echo", "hi"]):
+        with pytest.raises(SystemExit) as raised:
+            pbrun.main()
+
+    assert "--anywhere and --tag contradict each other" in str(raised.value)
 
 
 def test_a_tag_no_other_box_offers_today_is_not_called_exclusive(tmp_path) -> None:

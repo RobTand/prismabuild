@@ -64,14 +64,20 @@ These flags say what the action needs and where it may run.
 | `--gpu-capacity N` | Slots to demand for `--exclusive`. | Under SLURM, only `1` is accepted: `--gres=gpu:1` is the whole device, so a larger count would be read and discarded. |
 | `--cpus N` | Cores the action will actually use. Defaults to 1. | `--cpus-per-task=N`. |
 | `--tag NAME` | Require a box offering this tag. Repeatable. | `--constraint=NAME`, ANDed with `&`. |
-| `--here` | Pin the action to this box, when you pass no `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
+| `--here` | Pin the action to this box. Combines with `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 
-`--anywhere` and `--here` contradict each other and `pbrun` refuses both
-together. An explicit `--tag` replaces the whole placement, so `--here --tag
-gb10` places the action on any `gb10` box and prints no warning. To pin the box
-and name a class, pass this box's hostname as a second `--tag`.
+`--tag` and `--here` are two constraints, and passing both applies both:
+`--here --tag gb10` places the action on this box, which must also offer the
+`gb10` tag. The tags are sorted before they are sealed, so the order you pass
+them in does not move the action key.
+
+`--anywhere` contradicts both of them, and `pbrun` refuses each pairing.
+`--anywhere --here` names one box and calls the action portable. `--anywhere
+--tag gb10` does the same with a class: the assertion is that every eligible
+worker can run the action, and the tag admits only the boxes offering it. Drop
+whichever is not true.
 
 `--priority` is a queue hint and nothing more. It is not part of the action
 identity, so two submissions that differ only in priority are the same action.
@@ -152,7 +158,13 @@ queue the worker files the ending and `pbwait` only watches.
 
 Exit 1 is the worker launcher's status, not the command's own exit code. A
 command that exits 7 makes the worker refuse to publish a receipt, and both
-transports report that refusal as 1.
+transports report that refusal as 1. Under SLURM the terminal record also
+carries the command's own status, as `detail.action_returncode`, with
+`detail.action_signal` beside it when a signal ended the command. `pbrun`,
+`pbwait`, and `pbstatus` print that number next to the launcher's. The field is
+absent when the ending was the worker's verdict rather than the command's, such
+as a missing result file or a timeout. The pull queue's records do not carry
+it.
 
 The two transports reach the verdict by different rules, and they part on one
 ending. The pull queue's authority is the launcher's exit code; the lane's is
@@ -214,11 +226,46 @@ an omitted field is not passed at all.
 | `exclusive` | `--exclusive` |
 | `gpu_capacity` | `--gpu-capacity` |
 | `priority` | `--priority` |
+| `measurement` | `--measurement` |
+| `host_class` | `--host-class`, a node Feature name such as `gb10` |
+| `retry_safe` | `--retry-safe` |
+| `max_attempts` | `--max-attempts` |
 
 An unknown field is refused when the manifest loads, before any row is sealed:
-a dropped typo would seal an action nobody asked for. A row cannot express
-`--measurement`, `--host-class`, `--retry-safe`, or `--max-attempts`; submit
-those with `pbrun` directly.
+a dropped typo would seal an action nobody asked for.
+
+Three rows are refused at load as well, each for the reason `pbrun` gives at
+submit:
+
+*   `measurement` without `host_class`. A measurement's numerics do not
+    transfer across architectures, so its result is keyed on the class that
+    produced it.
+*   `host_class` under `--transport pool`. The class is attested through the
+    SLURM controller, so a pull-queue worker refuses the action at preflight.
+    This is the one refusal that depends on the campaign's transport rather
+    than on the row.
+*   `max_attempts` greater than 1. A campaign submits every row detached,
+    which is what lets one command hold N actions open, and a retry needs
+    somebody alive to see the attempt fail.
+
+Set `retry_safe` on a row even without `max_attempts`. The retry policy is
+sealed into the action's identity, so a row that omits it is a different action
+from the hand-typed `pbrun` that passes it.
+
+A campaign of measurements therefore reads like this, and every row of it is a
+cache hit on the second run:
+
+    [
+      {
+        "argv": ["./probe.sh", "--shard", "0"],
+        "cwd": "/home/rob/mypkg",
+        "measurement": true,
+        "host_class": "gb10",
+        "retry_safe": true
+      }
+    ]
+
+Run it with `--transport slurm`, from a box of that class.
 
 `--transport` is a flag on the campaign, not a row field, because which
 dispatcher carries the work is a fact about the fleet. One caveat travels with
@@ -392,10 +439,11 @@ immediately.
 
 ### Reset a batch of failures
 
-`pool_reset` re-submits the queue's failed items as fresh actions. It resets the
-work, not the record: it recovers each action's command, working directory and
-demand from the CAS request, and submits again through `pbrun`, which re-seals
-the closure against the tree as it is now.
+`pool_reset` re-submits the queue's failed items. It resets the work, not the
+record. For an action addressed by a path, which is what the pull queue files,
+it recovers the command, working directory and demand from the CAS request and
+submits again through `pbrun`, which re-seals the closure against the tree as
+it is now.
 
     tools/fleet/pool_reset.py                 # report only
     tools/fleet/pool_reset.py --apply --limit 20
@@ -410,10 +458,15 @@ worker drains would lose it. Withdrawn actions are skipped: re-submitting them
 would undo a decision. A record `pool_reset` has already handled is filed as
 `reset` and skipped, unless you pass `--include-reset`.
 
-A lane record sealed by a producer cannot be reset here. It is addressed by a
-snapshot — a commit and a subdirectory — and names no source tree, so there is
-no working directory to re-submit against. `pool_reset` says so and skips it;
-re-dispatch that action from the producer that sealed it.
+A record addressed by a snapshot, which is what the lane files for every
+submission, is not re-sealed. Its tree is a commit in the CAS and nothing can
+have moved under it, so `pool_reset` sends the same action back through the
+lane unchanged, with the demand, tags, and exclusivity its own ending recorded,
+and detaches. It prints the key and the job id, and `pbwait` files the ending.
+Such a record goes out on the lane only: under `--transport pool` it is skipped
+with the reason. A submission the controller refuses, for an unknown Feature or
+an impossible GRES, is reported for that record, the record stays `failed`, and
+`pool_reset` exits 1 after handling the rest.
 
 ### What each terminal status means
 
