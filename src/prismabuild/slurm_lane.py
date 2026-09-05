@@ -145,6 +145,11 @@ STREAM_TAIL_BYTES = 256 * 1024
 #: is still queued or running; nothing has been cancelled.
 WAIT_TIMEOUT_STATE = "WAIT_TIMEOUT"
 
+#: What a detached submission reports in place of a scheduler state.  Nothing
+#: polled the job, so no state is known, and inventing ``PENDING`` would be an
+#: answer this process never asked the controller for.
+DETACHED_STATE = "DETACHED"
+
 #: What it reports when no scheduler command can say anything about the job --
 #: purged past ``MinJobAge`` with no accounting behind it.  The CAS still can.
 UNKNOWN_STATE = "UNKNOWN"
@@ -405,6 +410,12 @@ class RunResult:
     action_key: str
     attempts: list[tuple[SubmittedJob, Outcome]] = field(default_factory=list)
     receipt: dict[str, object] | None = None
+    #: The generation every attempt in this run was stamped with.  A detached
+    #: caller has to know it: the terminal record it will look for later is
+    #: identified by generation and not by key, because the key is a content
+    #: hash and the same key is submitted again every time somebody asks for
+    #: the same work again.
+    published_unix: float = 0.0
 
     @property
     def last(self) -> tuple[SubmittedJob, Outcome] | None:
@@ -1421,6 +1432,7 @@ def run(
     wait_s: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
     on_submit: Callable[[SubmittedJob], None] | None = None,
+    detach: bool = False,
 ) -> RunResult:
     """Submit, wait, and resubmit while the producer's contract allows it.
 
@@ -1430,6 +1442,16 @@ def run(
     nothing about that.  A receipt in the CAS ends the loop whatever the exit
     code said, and so does a cancellation -- an operator's decision is not a
     defect to retry around.
+
+    ``detach`` submits the first attempt and returns there, without waiting and
+    without filing an ending.  The caller is saying that something else reads
+    the job out later, so this must not file a verdict it has not observed: an
+    ending written now would say ``failed`` for a job that is still queued.
+    Everything up to the return is the same call, which is the point -- a
+    detached submission asks the scheduler for exactly what an attached one
+    asks for, partition and constraint and GRES included.  Retries stay with
+    the attached form: a resubmission needs somebody alive to see the attempt
+    fail, and after this returns nobody is.
     """
 
     key = str(action["action_key"])
@@ -1438,6 +1460,7 @@ def run(
     # One generation for the whole run, stamped on every submission record and
     # on the ending.  Retries are attempts within it, not new requests.
     published_unix = _now()
+    result.published_unix = published_unix
     published_by = socket.gethostname()
     if queue_root is not None:
         # A submission is what retires a withdrawal; see ``supersede_withdrawal``.
@@ -1475,6 +1498,16 @@ def run(
         )
         if on_submit is not None:
             on_submit(job)
+        if detach:
+            result.attempts.append((job, Outcome(
+                job_id=job.job_id,
+                state=DETACHED_STATE,
+                exit_code=None,
+                signal=None,
+                stdout_path=job.stdout_path,
+                stderr_path=job.stderr_path,
+            )))
+            return result
         outcome = wait(
             job,
             sacct=sacct,
@@ -1502,6 +1535,98 @@ def run(
             max_attempts=max_attempts,
             retry_safe=retry_safe,
         )
+    return result
+
+
+def resume(
+    submission: Mapping[str, object],
+    *,
+    action: Mapping[str, object],
+    cas: pb.PrismaBuildCAS,
+    queue_root: str | Path,
+    wait_s: float | None = None,
+    poll_s: float = DEFAULT_POLL_S,
+    sacct: str = "sacct",
+    scontrol: str = "scontrol",
+    squeue: str = "squeue",
+    sleep: Callable[[float], None] = time.sleep,
+) -> RunResult:
+    """Wait for a job somebody else submitted, and file the ending they did not.
+
+    ``run`` files the terminal record because it is the process holding the
+    submission open.  A detached submission has no such process, so the ending
+    has to be filed by whoever waits -- and the recorded submission is enough
+    to do it from, on any box, which ``pbrun --withdraw`` already relies on:
+    ``_file_slurm_withdrawal`` builds a complete terminal record out of
+    ``latest.json`` alone.  This is the same reconstruction with the job's own
+    outcome in it rather than an operator's decision.
+
+    A wait that runs out of patience files nothing.  The job is still queued or
+    running, and an ending written now would say ``failed`` about work nothing
+    has watched -- which is the one thing a terminal record must never do.  A
+    job the controller cannot account for at all files nothing either, for the
+    same reason: not knowing is not the same as knowing it failed.
+
+    ``wait_s=0`` is the useful non-waiting case.  It polls the controller once
+    for provenance and then files what the receipt says, which is how a waiter
+    that already holds the receipt files the missing ending without waiting on
+    a job the scheduler may have forgotten.
+    """
+
+    key = str(submission["action_key"])
+    generation = submission.get("published_unix")
+    if not isinstance(generation, (int, float)) or isinstance(generation, bool):
+        # A submission record from before the generation stamp.  Wait for it,
+        # but do not claim to know which request it belonged to.
+        generation = float(submission.get("submitted_unix") or 0.0)
+    published_unix = float(generation)
+    attempt = int(submission.get("attempt") or 1)
+    directory = Path(str(submission.get("directory") or "."))
+    job = SubmittedJob(
+        action_key=key,
+        job_id=str(submission["job_id"]),
+        attempt=attempt,
+        argv=[str(value) for value in (submission.get("argv") or [])],
+        script=Path(str(submission.get("script") or "")),
+        directory=directory,
+        stdout_path=Path(str(submission.get("stdout") or "")),
+        stderr_path=Path(str(submission.get("stderr") or "")),
+        record_path=submission_record_path(
+            directory, published_unix=published_unix, attempt=attempt
+        ),
+    )
+    result = RunResult(action_key=key, published_unix=published_unix)
+    outcome = wait(
+        job, sacct=sacct, scontrol=scontrol, squeue=squeue,
+        poll_s=poll_s, wait_s=wait_s, sleep=sleep,
+    )
+    result.attempts.append((job, outcome))
+    result.receipt = cas.lookup(action)
+    if outcome.state in (WAIT_TIMEOUT_STATE, UNKNOWN_STATE) and result.receipt is None:
+        return result
+
+    # Rebuilt from what was submitted rather than round-tripped through the
+    # pool-shaped demand: ``gres`` is where exclusivity lives, and
+    # ``LaneResources.demand`` does not carry it.
+    gres = str(submission.get("gres") or "")
+    _, _, count = gres.partition(":")
+    resources = LaneResources(
+        cpus=max(1, int(submission.get("cpus") or 1)),
+        memory_mib=max(1, int(submission.get("memory_mib") or 4096)),
+        gpu_slots=int(count) if count.isdigit() else 0,
+        exclusive_gpu=gres.startswith("gpu:"),
+    )
+    _file_ending(
+        result,
+        action=action,
+        queue_root=queue_root,
+        published_unix=published_unix,
+        published_by=str(submission.get("published_by") or ""),
+        resources=resources,
+        tags=[str(tag) for tag in (submission.get("constraint") or [])],
+        max_attempts=int(submission.get("max_attempts") or 1),
+        retry_safe=bool(submission.get("retry_safe")),
+    )
     return result
 
 
