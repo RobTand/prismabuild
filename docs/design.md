@@ -253,7 +253,12 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   canonical computation is one core function shared by submitter and worker:
   `HEAD`, the tracked delta, and the content digest of every untracked regular
   file or the literal link text of every untracked symlink (including members
-  below a newly-added directory). Git's NUL-delimited, repository-root-relative
+  below a newly-added directory). The tracked delta uses `diff-index --binary`
+  with external diff and text conversion disabled, preserving default keys
+  while excluding personal diff presentation settings. Personal global
+  excludes are disabled for both the untracked roster and special-inode screen;
+  repository `.gitignore` and `info/exclude` remain effective.
+  Git's NUL-delimited, repository-root-relative
   untracked roster owns pathname decoding, so quotes, backslashes, and newlines
   remain literal path bytes and a requested subdirectory cannot hide a
   repository sibling. Only basenames matching pbrun's exact generated
@@ -287,7 +292,10 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   under the worker's local materialization root; it never changes completed
   task work into a retry. The worker preflight requires the private tree to be
   clean at the sealed commit, to carry the recorded parent, and to resolve
-  every recorded branch to its recorded id -- so `HEAD~1` and `BASE...HEAD`
+  every recorded branch to its recorded id. This snapshot proof applies to
+  every definition carrying `params.checkout_snapshot`, including Tessera
+  producers; only the closure-stamp proof is specific to `fleet/pbrun`.
+  Thus `HEAD~1` and `BASE...HEAD`
   are facts a diff-derived gate can rely on rather than a
   `fatal: ambiguous argument`. Absolute submitter-repository paths in argv or
   environment are refused because they would escape the snapshot. New
@@ -325,7 +333,15 @@ The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
 dependency-free `ingest-input` CLI. It takes a stable regular-file snapshot,
 derives the canonical SHA-256 and byte count, optionally checks both against
 caller-supplied expectations, publishes through a read-only first-writer-wins
-hard link, and fsyncs the blob shard. A winning publisher reopens the canonical
+hard link, and fsyncs the blob shard. Each ingest holds an exclusive filesystem
+lock on `.staging/ingest.<random>/.owner.lock` for its complete staging lifetime.
+The directory is initialized under a hidden name and renamed into that namespace
+only after locking. A death during initialization can leave a hidden directory
+with at most its empty marker; no payload is written before publication. Success and ordinary refusal remove it; process death leaves
+an attributable directory whose lock is released by the kernel. A reaper must
+acquire the owner lock before removal; local PID absence cannot establish that
+a writer on another host is dead.
+A winning publisher reopens the canonical
 name and proves that it is the exact private, read-only staging inode whose
 bytes it just hashed and fsynced; it does not hash that same inode again. A
 loser never trusts the other writer's inode and hashes the canonical blob in
