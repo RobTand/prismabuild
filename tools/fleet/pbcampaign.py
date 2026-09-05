@@ -126,7 +126,6 @@ import argparse
 import contextlib
 import io
 import json
-import os
 from pathlib import Path
 import sys
 
@@ -137,6 +136,7 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import core as pb, pool  # noqa: E402
 
+import fleet_submit  # noqa: E402
 import pbrun  # noqa: E402
 import pbwait  # noqa: E402
 
@@ -388,8 +388,9 @@ def main(argv=None) -> int:
                     help="how long to wait for ALL the rows, not for each")
     ap.add_argument(
         "--transport", choices=pbrun.TRANSPORTS,
-        default=os.environ.get(pbrun.DEFAULT_TRANSPORT_ENV) or "pool",
-        help="which dispatcher carries every row (env PRISMABUILD_TRANSPORT); "
+        default=fleet_submit.default_transport(),
+        help="which dispatcher carries every row (env PRISMABUILD_TRANSPORT, "
+             "else the published runtime generation's default_transport); "
              "forwarded to pbrun unchanged. It is one flag and not a row "
              "field because the transport is a fact about the fleet, not "
              "about the work")

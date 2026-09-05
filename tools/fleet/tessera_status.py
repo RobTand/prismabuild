@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -28,8 +27,10 @@ Q = SH / "pb-queue"
 RES = SH / "checkout" / "results" / "glm53-tessera"
 PARTS = Path("/mnt/shared/models/GLM-5.3-Flash-Tessera-E2M1K2-20260901-parts")
 
-TRANSPORTS = ("pool", "slurm")
-DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
+#: One reader of the fleet's default, published beside this file.  A status
+#: screen that guessed "pool" after the cutover reported the depth of a queue
+#: nobody drains and called it the fleet.
+from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
 
 #: The pull queue's own directories, in the order a person reads them.
 POOL_STATES = ("ready", "claimed")
@@ -154,11 +155,11 @@ def width(queue_root: Path = Q) -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
-        "--transport", choices=TRANSPORTS,
-        default=os.environ.get(DEFAULT_TRANSPORT_ENV) or "pool",
+        "--transport", choices=TRANSPORTS, default=default_transport(),
         help="which dispatcher this fleet is running (env "
-             "PRISMABUILD_TRANSPORT); decides whether the depth is read from "
-             "the pull queue or from squeue")
+             "PRISMABUILD_TRANSPORT, else the published runtime generation's "
+             "default_transport); decides whether the depth is read from the "
+             "pull queue or from squeue")
     ap.add_argument("--queue-root", default=str(Q), help=argparse.SUPPRESS)
     ap.add_argument("--results-root", default=str(RES), help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
