@@ -1468,13 +1468,13 @@ def test_the_default_environment_bounds_the_thread_pools(tmp_path):
     variables = _submitted_environment(tmp_path / "defaults")
 
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
-        assert variables[name] == "4", name
+        assert variables[name] == "1", name
 
     # And it must stay overridable: --env is applied after the defaults.
     overridden = _submitted_environment(
         tmp_path / "override", "--env", "OMP_NUM_THREADS=16")
     assert overridden["OMP_NUM_THREADS"] == "16"
-    assert overridden["MKL_NUM_THREADS"] == "4"
+    assert overridden["MKL_NUM_THREADS"] == "1"
 
 
 def _fleet(tmp_path: Path):
