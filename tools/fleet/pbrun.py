@@ -2920,11 +2920,24 @@ def main() -> int:
         # with "cannot open code closure file as a regular file" for a file
         # that plainly exists a second later.  Durability before publication is
         # the ordering the queue already assumes everywhere else.
-        with scratch.open("w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(scratch, cwd / stamp_name)
+        try:
+            with scratch.open("w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(scratch, cwd / stamp_name)
+        except OSError as exc:
+            # A read-only mount, a checkout owned by another user, a full
+            # disk.  The stamp is not optional and neither is the result file
+            # the action tees into the same tree, so the tree itself is what
+            # is unfit here, and the refusal names it rather than tracing.
+            raise SystemExit(
+                f"pbrun: cannot write into the checkout {cwd}: {exc}. "
+                "The checkout must be writable: pbrun keeps the closure "
+                f"stamp {stamp_name} there, and the action tees its output "
+                f"to {log_name} in the same tree. Submit from a writable "
+                "clone or worktree of it."
+            ) from None
         directory = os.open(cwd, os.O_RDONLY)
         try:
             os.fsync(directory)

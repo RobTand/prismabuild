@@ -98,7 +98,8 @@ def _state(node: dict[str, Path], *, job_id: str, owner: str,
 
 def _run(
     node: dict[str, Path], job_id: str, *, job_user: str | None = "rob",
-    stubborn_docker: bool = False,
+    stubborn_docker: bool = False, job_uid: str | None = None,
+    checkout_root: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = {
         "PB_FAKE_DOCKER_STUBBORN": "1" if stubborn_docker else "0",
@@ -106,7 +107,16 @@ def _run(
         "PATH": f"{node['bin']}{os.pathsep}{os.environ['PATH']}",
         "SLURM_JOB_ID": job_id,
         "PRISMABUILD_SLURM_JOB_STATE_ROOT": str(node["jobs"]),
+        # The node's own bound on the `rm -rf`, which is the thing the state
+        # file no longer gets to choose.  On a node this is the default; here
+        # it has to be the fixture's own directory, and it is the only reason
+        # this variable is honoured at all.
+        "PRISMABUILD_LOCAL_CHECKOUT_ROOT": checkout_root or str(
+            node["checkouts"]),
     }
+    environment.pop("SLURM_JOB_UID", None)
+    if job_uid is not None:
+        environment["SLURM_JOB_UID"] = job_uid
     # SLURM sets this in the Epilog's environment.  ``None`` is a controller
     # that did not, which must not take the script down under ``set -u``.
     environment.pop("SLURM_JOB_USER", None)
@@ -492,3 +502,178 @@ def test_the_shim_and_the_epilog_read_the_same_cgroup_job(tmp_path: Path) -> Non
     cgroup.write_text("0::/system.slice/slurmstepd.scope/job_4242/step_batch\n",
                       encoding="utf-8")
     assert shim.CGROUP_JOB_RE.search(cgroup.read_text()).group(1) == "4242"
+
+
+def test_it_refuses_a_recorded_path_that_climbs_out_with_dot_dot(
+    node: dict[str, Path], tmp_path: Path
+) -> None:
+    """The prefix match this replaces accepted ``<root>/../../home/rob``.
+
+    ``case "$checkout_dir" in "$local_root"/?*)`` is a string test, and a
+    string that starts with the root can still name a directory anywhere on
+    the box.  The path is resolved now, and a ``.`` or ``..`` component is
+    refused before that.
+    """
+
+    node["checkouts"].mkdir(parents=True, exist_ok=True)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("mine\n")
+    _state(node, job_id="1270", owner="",
+           checkout_dir=f"{node['checkouts']}/../victim",
+           local_root=str(node["checkouts"]))
+
+    result = _run(node, "1270")
+
+    assert result.returncode == 0
+    assert (victim / "keep.txt").exists()
+    assert ".. component" in result.stderr
+
+
+def test_it_refuses_a_recorded_path_that_is_a_symlink(
+    node: dict[str, Path], tmp_path: Path
+) -> None:
+    """The job's user names the path and owns the root, so it can plant a link
+    there.  The link is refused rather than followed or unlinked: an Epilog
+    that removes a link it did not create is already acting outside its bound,
+    and the next thing under that name might not be a link.
+    """
+
+    node["checkouts"].mkdir(parents=True, exist_ok=True)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("mine\n")
+    link = node["checkouts"] / "tree"
+    link.symlink_to(victim)
+    _state(node, job_id="1271", owner="", checkout_dir=str(link),
+           local_root=str(node["checkouts"]))
+
+    result = _run(node, "1271")
+
+    assert result.returncode == 0
+    assert link.is_symlink()
+    assert (victim / "keep.txt").exists()
+    assert "is a symlink" in result.stderr
+
+
+def test_it_refuses_a_path_that_leaves_the_root_through_a_component(
+    node: dict[str, Path], tmp_path: Path
+) -> None:
+    """The exploitable form of the prefix match, and the reason resolving is
+    the fix rather than a longer pattern.
+
+    Every component of the recorded path is below the root as a string, and the
+    escape is a symlink in the middle of it.  Nothing about the recorded path
+    says so; only the kernel does, which is what ``readlink -f`` asks.
+    """
+
+    node["checkouts"].mkdir(parents=True, exist_ok=True)
+    victim_parent = tmp_path / "somebody-elses"
+    (victim_parent / "tree").mkdir(parents=True)
+    (victim_parent / "tree" / "keep.txt").write_text("mine\n")
+    (node["checkouts"] / "escape").symlink_to(victim_parent)
+    _state(node, job_id="1272", owner="",
+           checkout_dir=f"{node['checkouts']}/escape/tree",
+           local_root=str(node["checkouts"]))
+
+    result = _run(node, "1272")
+
+    assert result.returncode == 0
+    assert (victim_parent / "tree" / "keep.txt").exists()
+    assert "is not below" in result.stderr
+
+
+def test_it_refuses_a_state_file_that_names_a_different_checkout_root(
+    node: dict[str, Path], tmp_path: Path
+) -> None:
+    """The bound used to come out of the state file, which sits in a mode 1777
+    directory on the shared mount.  A bound the bounded thing writes is not a
+    bound: any root it named made any path below that root removable as root.
+
+    So the root is the node's own now, and the file's answer only has to agree
+    with it.  Both are named in the log line, because a job launched with
+    ``--checkout-root`` pointing elsewhere is a job this will not clean up
+    after, and that has to be readable rather than silent.
+    """
+
+    attacker_root = tmp_path / "attacker-root"
+    victim = attacker_root / "tree"
+    victim.mkdir(parents=True)
+    (victim / "keep.txt").write_text("mine\n")
+    _state(node, job_id="1273", owner="", checkout_dir=str(victim),
+           local_root=str(attacker_root))
+
+    result = _run(node, "1273")
+
+    assert result.returncode == 0
+    assert (victim / "keep.txt").exists()
+    assert str(attacker_root) in result.stderr
+    assert str(node["checkouts"]) in result.stderr
+    assert "left alone" in result.stderr
+
+
+def test_the_epilog_and_the_materializer_name_the_same_checkout_root() -> None:
+    """The second thing the shell script and the Python side have to agree on.
+
+    The job records the root it materialized under and the Epilog bounds its
+    ``rm -rf`` by the root it knows.  If those two spellings drift, either the
+    Epilog stops cleaning up -- every state file refused with a root mismatch
+    -- or its bound stops describing where the trees actually are.  The Epilog
+    cannot import ``materialize``, so this is what notices.
+    """
+
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from prismabuild import materialize  # noqa: PLC0415
+
+    text = EPILOG.read_text(encoding="utf-8")
+    expected = (
+        f'CHECKOUT_ROOT="${{{materialize.LOCAL_CHECKOUT_ROOT_ENV}:'
+        f'-{materialize.DEFAULT_LOCAL_CHECKOUT_ROOT}}}"'
+    )
+    assert expected in text
+
+
+def test_it_reports_the_state_files_owner_and_refuses_nothing_on_it(
+    node: dict[str, Path]
+) -> None:
+    """Measured, not enforced.
+
+    The principled bound is that the job's own user wrote the state file, and
+    SLURM hands the Epilog ``SLURM_JOB_UID`` to compare against.  Nobody has
+    measured what root reads back through this fleet's NFS export yet --
+    dl380g10 exports it with ``root_squash``, so the owner may be ``nobody`` --
+    and an Epilog that refuses on a mismatch it invented leaks exactly what it
+    exists to remove.  So both numbers are logged and the cleanup proceeds,
+    even when they disagree.
+    """
+
+    tree = node["checkouts"] / "abcdef012345.tmpdir"
+    (tree / "checkout").mkdir(parents=True)
+    state = _state(node, job_id="1274", owner="", checkout_dir=str(tree),
+                   local_root=str(node["checkouts"]))
+
+    owner_uid = state.stat().st_uid
+    result = _run(node, "1274", job_uid="4242")
+
+    assert result.returncode == 0
+    assert f"state file uid={owner_uid}" in result.stderr
+    assert "SLURM_JOB_UID=4242" in result.stderr
+    assert not tree.exists()          # a disagreement refuses nothing
+    assert not state.exists()
+
+
+def test_it_says_so_when_the_controller_names_no_job_uid(
+    node: dict[str, Path]
+) -> None:
+    """``SLURM_JOB_UID`` unset and an owner of ``nobody`` are different
+    findings, and Phase 1 has to be able to tell them apart in slurmd.log."""
+
+    _state(node, job_id="1275", owner="", checkout_dir="",
+           local_root=str(node["checkouts"]))
+
+    result = _run(node, "1275")
+
+    assert result.returncode == 0
+    assert "SLURM_JOB_UID=unset" in result.stderr
