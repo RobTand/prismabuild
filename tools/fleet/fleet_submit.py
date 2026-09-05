@@ -363,11 +363,6 @@ def submit(
             "submitting this action to SLURM."
         )
 
-    # A submission is what retires a withdrawal -- the same rule
-    # ``PoolQueue.publish`` applies, and the lane's ``run`` with it.  Leaving a
-    # live marker in place would make the re-submitted action unrunnable and
-    # the only remedy a hand edit of the queue.
-    slurm_lane.supersede_withdrawal(queue_root, key)
     lane_resources = slurm_lane.LaneResources.from_demand(dict(resources or {}))
     job = slurm_lane.submit(
         action,
@@ -387,6 +382,12 @@ def submit(
         retry_safe=retry_safe,
         max_attempts=max_attempts,
     )
+    # A submission is what retires a withdrawal -- the same rule
+    # ``PoolQueue.publish`` applies, and the lane's ``run`` with it.  Leaving a
+    # live marker in place would make the re-submitted action unrunnable and
+    # the only remedy a hand edit of the queue.  After ``sbatch`` accepted,
+    # not before: a refused submission has retired nothing.
+    slurm_lane.supersede_withdrawal(queue_root, key)
     return Submission(
         transport="slurm", where=job.record_path, job_id=job.job_id,
         action_key=key,

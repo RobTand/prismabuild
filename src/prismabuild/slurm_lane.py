@@ -2213,9 +2213,6 @@ def run(
     published_unix = _now()
     result.published_unix = published_unix
     published_by = socket.gethostname()
-    if queue_root is not None:
-        # A submission is what retires a withdrawal; see ``supersede_withdrawal``.
-        supersede_withdrawal(queue_root, key)
     for attempt in range(1, attempts + 1):
         if (
             attempt > 1
@@ -2248,6 +2245,12 @@ def run(
             retry_safe=retry_safe,
             max_attempts=max_attempts,
         )
+        if attempt == 1 and queue_root is not None:
+            # A submission is what retires a withdrawal; see
+            # ``supersede_withdrawal``.  After ``sbatch`` accepted, not before:
+            # a refused submission has retired nothing, and an operator's
+            # decision must not be moved aside by a job that never existed.
+            supersede_withdrawal(queue_root, key)
         if on_submit is not None:
             on_submit(job)
         if detach:

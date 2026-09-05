@@ -346,6 +346,43 @@ def test_a_new_submission_retires_the_withdrawal_it_supersedes(
     assert json.loads(kept[0].read_text())["reason"] == "an older decision"
 
 
+def test_a_refused_submission_leaves_the_withdrawal_it_would_have_retired(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A submission retires a withdrawal; a refusal is not a submission.
+    Pre-fix ``run`` moved the marker to ``superseded/`` before ``sbatch`` had
+    answered, so a refused re-submission left the withdrawn generation's
+    still-waiting submitter to file the cancellation as ``slurm:scancel``,
+    with the operator's decision and reason moved out of its way."""
+
+    monkeypatch.setenv("FAKE_SBATCH_REFUSE", "1")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "refused-revival")
+    request = cas.publish_action_request(action)
+    queue_root = _queue(tmp_path)
+    key = str(action["action_key"])
+    marker = queue_root / pool.WITHDRAWN / f"{key}.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({
+        "schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": key,
+        "status": "withdrawn", "withdrawn_unix": 1.0, "withdrawn_by": "rob",
+        "reason": "an older decision",
+    }), encoding="utf-8")
+
+    with pytest.raises(sl.SlurmLaneError, match="node configuration"):
+        sl.run(
+            action, cas=cas, request_path=request, placement=["nosuchbox"],
+            resources=sl.LaneResources(), timeout_s=600.0,
+            worker_script=WORKER, job_entry=JOB_ENTRY,
+            queue_root=queue_root, poll_s=0.0,
+        )
+
+    assert marker.exists()
+    assert json.loads(marker.read_text())["reason"] == "an older decision"
+    assert key in pool.PoolQueue(queue_root).withdrawn_keys()
+    assert not list((queue_root / pool.WITHDRAWN / "superseded").glob(f"{key}.*"))
+
+
 # --------------------------------------------------------------------------
 # Provenance lifted from the scheduler
 # --------------------------------------------------------------------------

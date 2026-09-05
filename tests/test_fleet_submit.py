@@ -238,6 +238,36 @@ def test_a_submission_retires_a_live_withdrawal_on_the_lane_too(
     assert json.loads(kept[0].read_text())["withdrawn_by"] == "rob@sparky"
 
 
+def test_a_refused_submission_retires_no_withdrawal_on_the_lane_either(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same rule as ``run``: the marker moves when ``sbatch`` has
+    accepted, and a refusal has submitted nothing."""
+
+    monkeypatch.setenv("FAKE_SBATCH_REFUSE", "1")
+    cas = _cas(tmp_path)
+    action = _runnable_action(tmp_path, cas)
+    request = cas.publish_action_request(action)
+    key = str(action["action_key"])
+    queue_root = tmp_path / "pb-queue"
+    marker = queue_root / pool.WITHDRAWN / f"{key}.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({
+        "action_key": key, "status": "withdrawn", "published_unix": 5.0,
+        "withdrawn_by": "rob@sparky",
+    }), encoding="utf-8")
+
+    with pytest.raises(sl.SlurmLaneError, match="node configuration"):
+        fleet_submit.submit(
+            action, cas=cas, request_path=request, transport="slurm",
+            tags=["nosuchbox"], resources={"mem_gb": 4}, queue_root=queue_root,
+            timeout_s=600.0,
+        )
+
+    assert marker.exists()
+    assert not list((queue_root / pool.WITHDRAWN / "superseded").glob("*.json"))
+
+
 def test_the_job_entry_is_a_sibling_of_this_module(tmp_path: Path) -> None:
     """Both deployed layouts, one path.
 
