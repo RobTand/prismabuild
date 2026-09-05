@@ -11,10 +11,12 @@ retains a host pin unless the caller explicitly names its worker class.
 The core, shared CAS, pull queue, and three-worker fleet are deployed, and
 `pool.py` is the execution plane for the Tessera/PrismaQuant campaigns until
 the SLURM cutover runs. It has dispatched real quantization, test, and
-measurement stages. On 2026-09-05, commit `65c316b` recorded 1075 passed and
-3 skipped in its CPU suite on sparky and the same on dl380g10; that dated
-population is evidence, not a permanent suite-count claim. It names a commit
-rather than a branch because a merged working branch is deleted.
+measurement stages. The [2026-09-05 readiness record](docs/readiness_2026-09-05.md)
+records 1,835 passed and 3 skipped on each of the three hosts at `d157067`,
+10/10 parallel test shards, GPU execution on both GB10 hosts, and 35/35
+SLURM container smoke rows. It records exact source revisions, receipts,
+subsequent CPU-tier qualification and deployment limits. All agent and subagent
+tests and GPU work now follow the [PB execution policy](docs/agent_execution_policy.md).
 
 **The pull queue is slated for replacement by SLURM.** The 2026-09-04 review
 found the memoization core worth owning and the scheduler half to be the

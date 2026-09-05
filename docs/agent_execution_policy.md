@@ -23,7 +23,11 @@ Use `pbtest.py` to split suites into independent file shards and
 `pbcampaign.py` for explicit action manifests. Declare aggregate CPU and memory
 use, bound native threads per subprocess, and specify GPU demand. Use tags for
 actual dependencies and architecture, allowing any eligible worker to claim
-portable work. A measurement must retain its host-class identity and reserve
+portable work. Reserve the CPU count the workload actually uses; do not inflate
+reservations to force access to additional cores. Physical performance cores are
+the preferred tier; SMT siblings and efficiency cores are overflow capacity.
+The pool selects CPUs, and agents must preserve its assigned affinity, including
+inside containers. A measurement must retain its host-class identity and reserve
 exclusive GPU capacity when competing work would invalidate the measurement.
 
 Check the exit status, terminal record, logs and CAS receipt. A submission
