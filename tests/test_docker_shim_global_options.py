@@ -28,13 +28,19 @@ SHIM = ROOT / "tools" / "fleet" / "docker"
 OWNER = "1" * 64
 
 
-def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None):
+def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None,
+          affinity: set[int] | None = None,
+          endpoint: str = "unix:///var/run/docker.sock", docker_env: dict | None = None):
     """Run the real shim against a recording fake CLI, under its testing gate."""
 
     real = tmp_path / "fake-docker"
     real.write_text(
         "#!/usr/bin/env python3\n"
         "import json, os, pathlib, sys\n"
+        "if 'context' in sys.argv and 'inspect' in sys.argv:\n"
+        "    pathlib.Path(os.environ['INSPECTED']).write_text(json.dumps(sys.argv[1:]))\n"
+        "    print(json.dumps(os.environ['FAKE_ENDPOINT']))\n"
+        "    sys.exit(0)\n"
         "pathlib.Path(os.environ['CALLED']).write_text(json.dumps(sys.argv[1:]))\n"
     )
     real.chmod(0o755)
@@ -43,17 +49,23 @@ def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None):
     environment = dict(os.environ)
     environment.update({
         "CALLED": str(called),
+        "INSPECTED": str(tmp_path / "inspected.json"),
+        "FAKE_ENDPOINT": endpoint,
         "PRISMABUILD_CONTAINER_OWNER": OWNER,
         "PRISMABUILD_CONTAINER_MARKER": str(marker),
         "PRISMABUILD_DOCKER_REAL": str(real),
         "PRISMABUILD_DOCKER_TESTING": "1",
     })
+    if docker_env:
+        environment.update(docker_env)
     if cgroup is not None:
         path = tmp_path / "cgroup"
         path.write_text(cgroup, encoding="utf-8")
         environment["PRISMABUILD_CGROUP_FILE"] = str(path)
     result = subprocess.run(
-        [str(SHIM), *argv], env=environment, capture_output=True, text=True,
+        (["taskset", "--cpu-list", ",".join(map(str, sorted(affinity)))]
+         if affinity is not None else []) + [str(SHIM), *argv],
+        env=environment, capture_output=True, text=True,
         check=False,
     )
     forwarded = json.loads(called.read_text()) if called.exists() else None
@@ -83,9 +95,17 @@ def test_a_creation_behind_global_options_is_still_labelled(
 
     assert result.returncode == 0, result.stderr
     assert marked, "the action's container marker was never written"
-    assert forwarded[:at] == argv[:at], "the global options must survive"
-    assert forwarded[at:at + 2] == ["--label", f"prismabuild.action={OWNER}"]
-    assert forwarded[at + 2:] == argv[at:]
+    # Docker resolves the original globals before the shim pins the selected
+    # local endpoint; unrelated options survive, while context/host selectors
+    # become one explicit --host to prevent a context-switch race.
+    relative = 2 if argv[at - 2:at - 1] == ["container"] else 1
+    global_count = at - relative
+    inspected = json.loads((tmp_path / "inspected.json").read_text())
+    assert inspected[:global_count] == argv[:global_count]
+    created = next(i for i, token in enumerate(forwarded) if token in {"run", "create"}) + 1
+    assert forwarded[created:created + 2] == ["--label", f"prismabuild.action={OWNER}"]
+    assert forwarded[created + 2] == "--cpuset-cpus"
+    assert forwarded[created + 4:] == argv[at:]
 
 
 def test_the_job_label_also_survives_a_global_option(tmp_path: Path) -> None:

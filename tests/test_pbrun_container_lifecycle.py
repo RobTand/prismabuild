@@ -91,6 +91,9 @@ def test_docker_shim_marks_and_labels_a_created_container(tmp_path: Path) -> Non
     real.write_text(
         "#!/usr/bin/env python3\n"
         "import json, os, pathlib, sys\n"
+        "if 'context' in sys.argv and 'inspect' in sys.argv:\n"
+        "    print(json.dumps('unix:///var/run/docker.sock'))\n"
+        "    sys.exit(0)\n"
         "pathlib.Path(os.environ['CALLED']).write_text(json.dumps(sys.argv[1:]))\n"
     )
     real.chmod(0o755)
@@ -116,7 +119,8 @@ def test_docker_shim_marks_and_labels_a_created_container(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     assert marker.read_text().strip() == owner
     argv = json.loads(called.read_text())
-    assert argv[:3] == ["run", "--label", f"prismabuild.action={owner}"]
+    assert argv[:2] == ["--host", "unix:///var/run/docker.sock"]
+    assert argv[2:5] == ["run", "--label", f"prismabuild.action={owner}"]
 
 
 def test_docker_shim_adds_the_job_label_inside_a_slurm_job(tmp_path: Path) -> None:
@@ -134,6 +138,9 @@ def test_docker_shim_adds_the_job_label_inside_a_slurm_job(tmp_path: Path) -> No
     real.write_text(
         "#!/usr/bin/env python3\n"
         "import json, os, pathlib, sys\n"
+        "if 'context' in sys.argv and 'inspect' in sys.argv:\n"
+        "    print(json.dumps('unix:///var/run/docker.sock'))\n"
+        "    sys.exit(0)\n"
         "pathlib.Path(os.environ['CALLED']).write_text(json.dumps(sys.argv[1:]))\n"
     )
     real.chmod(0o755)
@@ -161,7 +168,7 @@ def test_docker_shim_adds_the_job_label_inside_a_slurm_job(tmp_path: Path) -> No
 
     assert result.returncode == 0, result.stderr
     argv = json.loads(called.read_text())
-    assert argv[:5] == [
+    assert argv[2:7] == [
         "run",
         "--label", f"prismabuild.action={owner}",
         "--label", "prismabuild.job=4242",
