@@ -28,7 +28,10 @@ Three properties follow from that.
     untracked bytes included — as a Git bundle in the content-addressed store
     (CAS). The worker materializes a fresh checkout of that commit wherever the
     action lands, so `HEAD~1`, `git merge-base` and `BASE...HEAD` resolve there.
-    Edits you make after submitting cannot change what runs.
+    Edits you make after submitting cannot change what runs. A path you staged
+    with `git add -f` travels too, with the bytes it has in your worktree, even
+    though the ignore rules match it; a path your worktree no longer has does
+    not travel, whether it was committed or only staged.
 *   **A receipt is the verdict.** A worker that finishes the work publishes a
     CAS receipt. Under SLURM, a job that exits 0 without publishing a receipt
     did not do the work, and a job that ends badly after publishing one did.
@@ -275,6 +278,11 @@ prints the job name, the comment and that `squeue`, files nothing, and exits
 `pbrun` sends no `--time` unless you pass `--timeout-s`. A job that is doing
 something runs until it ends. Elapsed time is never treated as evidence that a
 worker is dead.
+
+When a `--timeout-s` you asked for does expire, the worker takes the action's
+whole process group down before it reports the timeout: SIGTERM, a grace
+period, then SIGKILL against whatever is still running. A descendant that
+ignores SIGTERM does not survive the report.
 
 What the lane does instead is measure. While a job is `RUNNING`, the waiting
 `pbrun` samples the job's own cgroup accounting and its log sizes at the
@@ -708,6 +716,17 @@ These are refusals at submission, before anything reaches the fleet.
 *   **`executable script bytes are outside the snapshotted repository`** — move
     each helper under the repository so its bytes are bound by the action's code
     closure.
+*   **`checkout snapshot symlink points outside the sealed repository`** — a
+    symlink in your checkout reads bytes the snapshot does not carry. `pbrun`
+    resolves the whole link graph, so the escape can be composed out of links
+    that each look contained: with `a -> .` in the tree, `b -> a/../outside.txt`
+    reaches the repository's parent. Point the link inside the repository, or
+    declare the external bytes as an input. A worker applies the same rule to
+    the tree it checks out and refuses with `materialized checkout symlink
+    points outside the sealed repository`, which is what an older snapshot
+    already in the queue reports. A link the worker's filesystem cannot follow
+    at all, which for an older snapshot means a loop among its links, refuses
+    with `materialized checkout symlink cannot be resolved`.
 *   **`slurm refused this action`** — `sbatch` rejected the submission. The
     message names the required tags and the demand. An unknown Feature is the
     usual cause: a tag that no node carries can never be scheduled. Read
