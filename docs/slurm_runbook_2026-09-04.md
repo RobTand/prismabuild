@@ -102,16 +102,42 @@ answer while the Epilog kept reading its own.
 
 ## Still not verified
 
-These need the real install, and the container cannot stand in for any of them:
+`fleet/slurm/smoke/multinode` settled five things that were on this list, in
+containers on sparky, against the fleet's own 25.11.2 packages and a config
+generated from `fleet/slurm/slurm.conf`, `gres.conf` and `cgroup.conf`:
 
-1. **The cgroup *plugins* as the fleet will run them.** Delegation in the
+- **Three-box RPC.** A controller on `dl380g10` schedules onto remote `slurmd`s
+  on `sparky` and `gx10-6b77` over munge, with one shared key.
+- **Cross-box placement.** A `pbrun` submitted in the `sparky` container
+  executes on `dl380g10` and its output comes back through the shared volume.
+  The submitter is not the executor.
+- **Partition and weight routing.** Untagged CPU-only work goes to
+  `--partition=cpu`; `--gpu` goes to `--partition=gpu --gres=shard:1`; a
+  hostname or class tag goes to the default partition and the `--constraint`
+  decides; `--anywhere` prefers `dl380g10` on `Weight=1` and overflows to a
+  Spark when it is full.
+- **A node leaving and returning.** A node whose `slurmd` and job processes are
+  killed under a running job ends it as `NODE_FAIL`, `pbrun` reports that state
+  with no receipt, and the node returns to idle on `ReturnToService=2` with no
+  operator action.
+- **A controller restart.** slurmctld stopped for sixty seconds under a running
+  job: the job completes and the submitting `pbrun` still receives the outcome,
+  because `StateSaveLocation` is on local disk. This is where a lane defect was
+  found and fixed -- `wait` used to report `UNKNOWN` for a job it merely could
+  not ask about.
+
+These still need the real install, and no container stands in for them:
+
+1. **The cgroup *plugins* as the fleet will run them.** Delegation in a
    container needs `--privileged`, `--cgroupns=private`, a hand-written
    `cgroup.subtree_control` and `IgnoreSystemd=yes`. The fleet's boxes have
    systemd and `slurmd` under it, which is a different arrangement; all three
    boxes are cgroup v2 (`cgroup2fs`) with `cpuset cpu io memory hugetlb pids
-   rdma misc dmem` available, measured 2026-09-04.
+   rdma misc dmem` available, measured 2026-09-04. Three containers do show
+   that this is three independent instances of one arrangement rather than
+   something that worked because there was one of it.
 2. **Device containment and real GPUs.** `ConstrainDevices` is off in the
-   container and the node's GRES binds a `mknod`'d character device nothing
+   containers and the node's GRES binds a `mknod`'d character device nothing
    opens. On cgroup v2 the containment is an eBPF program that denies exactly
    the GRES `File=` devices a job was not allocated and admits everything else,
    so what has to be shown on a real box is that a job holding `shard:1` can
@@ -123,27 +149,38 @@ These need the real install, and the container cannot stand in for any of them:
    must stay static.
 3. **NFS `root_squash` end to end.** The export is measured and the Epilog is
    fixed, but the fix has been exercised only against a fake `runuser` and a
-   local bind mount. The first killed job on the real fleet is the test.
-4. **Three-box RPC.** One node cannot show a controller talking to a remote
-   `slurmd`, a node draining and returning under `ReturnToService=2`, or an
-   action landing on a box other than the submitter's.
-5. **Whether the Sparks' rebuilt 25.11.2 interoperates with dl380g10's 25.11.2
-   from apt** (was item 6). The Sparks' packages are a rebuild of Ubuntu
-   26.04's own source package at the same patch version, and both ends have now
-   been exercised separately; they have not been exercised against each other.
-6. **The four scripts in this runbook.** None of them has run on the fleet,
-   because SLURM is installed on no box. `install.sh` has been run for real
-   through step 7 in an `ubuntu:24.04` arm64 container on sparky with a faked
-   `hostname` -- the packages install, the topology cross-check passes, the
-   munge key round-trips and is shredded, and a second run skips every
+   bind mount. Three containers share one lane root, which makes it one
+   filesystem but not a squashing one. The first killed job on the real fleet
+   is the test.
+4. **A version skew between boxes.** All three containers run one build, so
+   nothing here says what a 25.11.2 controller does with a 23.11.4 `slurmd`.
+   Both SLURMs have now been run across three nodes, separately, never against
+   each other. Related, and also open: whether the Sparks' rebuilt 25.11.2
+   interoperates with dl380g10's 25.11.2 from apt. The Sparks' packages are a
+   rebuild of Ubuntu 26.04's own source package at the same patch version.
+5. **Anything about load or wall-clock.** Three containers share one GB10's
+   twenty cores and one clock, and the harness shortens `KillWait` and
+   `SlurmdTimeout` so its rows finish. How the fleet schedules under real
+   concurrent builds is not a question a container answers.
+6. **Three of the four scripts in this runbook.** None of them has run on the
+   fleet, because SLURM is installed on no box. `install.sh` has been run for
+   real through step 7 in an `ubuntu:24.04` arm64 container on sparky with a
+   faked `hostname` -- the packages install, the topology cross-check passes,
+   the munge key round-trips and is shredded, and a second run skips every
    completed step -- and step 8 is where a container stops, having no systemd.
-   `verify.sh` has never run at all: every row of it needs a controller.
    `cutover.sh` and `rollback.sh` have been exercised only in `--dry-run` and
-   through their refusal paths against a sandbox queue.
+   through their refusal paths against a sandbox queue. `verify.sh` has now
+   run: ten of its fifteen rows pass in the three-node smoke and the other
+   five need a real box, and running it there found two defects, both fixed.
+   See the row table in `fleet/slurm/smoke/README.md`.
 7. **That the addresses in `slurm.conf` are enough.** The resolution failure in
    both directions is measured and the addresses are measured, but no SLURM
    daemon has yet dialled one of them. `NodeAddr` is the documented remedy for
-   exactly this; it has not been shown working on this fleet.
+   exactly this; it has not been shown working on this fleet. The three-node
+   harness cannot help: `genconf.py` strips `SlurmctldHost`'s address and every
+   `NodeAddr`, because inside a docker network the node names resolve and
+   192.168.1.x is a different fleet entirely. What it shows is the daemons
+   finding each other by name, which is the case `NodeAddr` exists to rescue.
 
 ## What this replaces, and what it does not
 

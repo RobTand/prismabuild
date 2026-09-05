@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Run one command through the PrismaBuild pool instead of a local flock.
 
 Why this exists: agent work was scheduled by a box-local ``flock`` semaphore,
