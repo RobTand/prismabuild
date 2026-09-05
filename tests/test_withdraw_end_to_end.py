@@ -54,6 +54,30 @@ def _await(predicate, *, timeout_s: float = 30.0) -> bool:
             return True
         time.sleep(0.02)
     return predicate()
+def _await_pid(path: Path, *, timeout_s: float = 30.0) -> int:
+    """The pid a helper wrote, once the file actually holds one.
+
+    ``write_text`` creates the file before it writes it, so waiting on
+    ``exists()`` and then calling ``int()`` can read an empty file and raise
+    ``invalid literal for int() with base 10: ''``. Waiting for a parsable pid
+    waits for the write instead.
+    """
+
+    pid = 0
+
+    def written() -> bool:
+        nonlocal pid
+        try:
+            text = path.read_text().strip()
+        except OSError:
+            return False
+        if not text.isdigit():
+            return False
+        pid = int(text)
+        return True
+
+    assert _await(written, timeout_s=timeout_s), f"nothing wrote a pid to {path}"
+    return pid
 
 
 @pytest.fixture()
@@ -118,8 +142,7 @@ def test_an_operator_stops_a_running_action_and_the_worker_carries_on(
     worker = threading.Thread(target=run_worker, daemon=True)
     worker.start()
 
-    assert _await(lambda: pidfile.exists()), "the worker never ran the action"
-    action_pid = int(pidfile.read_text())
+    action_pid = _await_pid(pidfile)
     assert _await(lambda: (queue.lease_path(KEY).exists() and json.loads(
         queue.lease_path(KEY).read_text()).get("child_pid") is not None))
     assert queue.ledger(host).available().get("cpu", 0) == 1, (
