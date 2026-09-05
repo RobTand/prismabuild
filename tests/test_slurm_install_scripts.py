@@ -16,6 +16,7 @@ is the fleet's shared secret and an NFS export is the wrong place for one).
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -370,6 +371,91 @@ def test_cutover_honours_an_empty_pb_sparks(tmp_path: Path) -> None:
     step4 = result.stdout.split("step 4:", 1)[1].split("step 5:", 1)[0]
     assert "systemctl --user stop pqwork.service" not in step4
     assert "sparklina" not in step4 and "sparky" not in step4
+
+
+def _live_cutover(tmp_path: Path, *, crontab: str, publish_exit: int) -> dict[str, str]:
+    """An environment in which a live cutover touches only fakes.
+
+    ``pgrep`` finds nothing, so the kill steps have nothing to kill and the
+    pbrun scan finds no waiter; ``crontab`` reads and writes one file under
+    ``tmp_path``; the publish stub accepts ``--dry-run`` and exits
+    ``publish_exit`` on the real publication.  The fakes log every call, and
+    the tests read the log before trusting that the real commands were never
+    reached.
+    """
+
+    environment = _cutover_environment(tmp_path)
+    (Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json").write_text("{}")
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    (fakes / "pgrep").write_text(
+        "#!/bin/sh\n"
+        f"echo \"pgrep $*\" >> '{tmp_path}/calls'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    crontab_file = tmp_path / "crontab"
+    crontab_file.write_text(crontab, encoding="utf-8")
+    (fakes / "crontab").write_text(
+        "#!/bin/sh\n"
+        f"echo \"crontab $*\" >> '{tmp_path}/calls'\n"
+        f"case \"$1\" in -l) cat '{crontab_file}' ;; -) cat > '{crontab_file}' ;; esac\n",
+        encoding="utf-8",
+    )
+    for name in ("pgrep", "crontab"):
+        (fakes / name).chmod(0o755)
+    publish = tmp_path / "publish_stub.sh"
+    publish.write_text(
+        "#!/bin/sh\n"
+        f"echo \"publish $*\" >> '{tmp_path}/calls'\n"
+        "case \"$*\" in *--dry-run*) exit 0 ;; esac\n"
+        f"echo 'publication failed' >&2; exit {publish_exit}\n",
+        encoding="utf-8",
+    )
+    publish.chmod(0o755)
+    environment["PB_PUBLISH"] = f"sh {publish}"
+    environment["PATH"] = f"{fakes}{os.pathsep}{environment['PATH']}"
+    return environment
+
+
+SUPERVISE_LINE = (
+    "*/5 * * * * /usr/bin/python3 /mnt/shared/prismabuild-fleet/repo/tools/"
+    "supervise.py --ensure >> /home/rob/tmp/pb-supervisor.log 2>&1"
+)
+
+
+def test_cutover_writes_the_state_file_rollback_needs_before_it_stops_anything(
+    tmp_path: Path,
+) -> None:
+    """Step 5's failure message says to run rollback.sh, and rollback.sh
+    refuses without a state file.  Pre-fix the state file was written after
+    step 5, so the one failure that points at rollback left it nothing to
+    read, with the crontab already edited and every loop dead."""
+
+    environment = _live_cutover(
+        tmp_path, crontab=SUPERVISE_LINE + "\n", publish_exit=1)
+    result = _cutover(environment, "--yes")
+    assert result.returncode == 1, result.stderr
+    assert "run fleet/slurm/rollback.sh" in result.stderr
+    calls = (tmp_path / "calls").read_text(encoding="utf-8")
+    assert "crontab -" in calls and "pgrep" in calls and "publish" in calls
+
+    state_files = sorted(Path(environment["PB_STATE_DIR"]).glob("cutover-*.json"))
+    assert len(state_files) == 1, state_files
+    state = json.loads(state_files[0].read_text(encoding="utf-8"))
+    assert state["previous_generation"] == "gen-old"
+    assert state["boxes"] == environment["PB_BOXES"]
+    assert state["crontab_backup"] == str(
+        Path(environment["PB_STATE_DIR"]) / "crontab.pre-cutover")
+    # The one field only the end of the run can know is empty, not guessed.
+    assert state["new_generation"] == ""
+
+    rollback = subprocess.run(
+        ["bash", str(FLEET / "rollback.sh"), "--dry-run"],
+        capture_output=True, text=True, check=False, env=environment,
+    )
+    assert rollback.returncode == 0, rollback.stderr
+    assert "--activate-generation gen-old" in rollback.stdout
 
 
 def test_a_cutover_dry_run_names_its_refusals_and_publishes_the_transport(

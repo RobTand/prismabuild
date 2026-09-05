@@ -273,6 +273,36 @@ fi
 
 mkdir -p "$STATE_DIR"
 
+# -- the state file rollback reads, before anything is changed ---------------
+#
+# Everything rollback.sh needs is known now: the generation being replaced,
+# the boxes, and where the crontab backup goes.  Written here rather than at
+# the end, because the failure that points the operator at rollback.sh is
+# step 5's, and a rollback that refuses for want of a state file leaves the
+# crontab edited and every loop dead.  new_generation is filled in once step
+# 5 has produced it.
+
+write_state() {
+    cat > "$STATE" <<EOF
+{
+ "schema": "prismaquant.prismabuild.slurm_cutover.v1",
+ "cutover_unix": $STAMP,
+ "run_from": "$this_box",
+ "checkout": "$REPO",
+ "boxes": "$BOXES",
+ "sparks": "$SPARKS",
+ "previous_generation": "$previous_generation",
+ "new_generation": "$1",
+ "crontab_backup": "$CRONTAB_BACKUP"
+}
+EOF
+}
+
+if [ "$DRY_RUN" = 0 ]; then
+    write_state "" || die "could not write $STATE"
+    say "# wrote $STATE (new_generation is filled in after step 5)"
+fi
+
 # -- 1. the crontab, first, on every box -------------------------------------
 #
 # Before any process is killed: cron re-runs `supervise.py --ensure` every five
@@ -348,25 +378,13 @@ else
         || die "publication failed; the loops are stopped and the fleet is still on the previous generation. Fix the publication and re-run, or run fleet/slurm/rollback.sh"
 fi
 
-# -- the state file rollback reads -------------------------------------------
+# -- the state file, completed ------------------------------------------------
 
 new_generation=""
 [ -L "$RUNTIME_DIR/repo" ] && new_generation="$(basename "$(readlink "$RUNTIME_DIR/repo")")"
 
 if [ "$DRY_RUN" = 0 ]; then
-    cat > "$STATE" <<EOF
-{
- "schema": "prismaquant.prismabuild.slurm_cutover.v1",
- "cutover_unix": $STAMP,
- "run_from": "$this_box",
- "checkout": "$REPO",
- "boxes": "$BOXES",
- "sparks": "$SPARKS",
- "previous_generation": "$previous_generation",
- "new_generation": "$new_generation",
- "crontab_backup": "$CRONTAB_BACKUP"
-}
-EOF
+    write_state "$new_generation" || die "could not rewrite $STATE"
     say ""
     say "# wrote $STATE"
 fi
