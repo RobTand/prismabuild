@@ -37,6 +37,43 @@ WRAPPER = "tessera_ladder_probe.py"
 LOCAL_WRAPPER = Path("/home/rob/tessera/experiments/tessera_ladder_probe.py")
 
 
+#: How many shards the ladder probe is cut into. Bound into every action's
+#: ``of_shards``, so a number outside 1..120 names no work at all.
+#: Duplicated in the other Tessera dispatcher rather than shared, the way
+#: ``closure_files`` already is: each dispatcher declares the shape of its own
+#: run, and a ladder probe that is later cut differently must not silently
+#: move the export's domain with it.
+OF_SHARDS = 120
+
+
+def shard_range(text):
+    """``N`` or ``LO-HI``, inclusive, within ``1..OF_SHARDS``.
+
+    A bare ``int()`` after ``parse_args`` raised a ``ValueError`` traceback at
+    an operator who typed a range wrong, and accepted ``0``, ``500`` and
+    ``9-4`` without complaint: the first two seal actions for shards that do
+    not exist and the third seals nothing while reporting success. argparse
+    prints an ``ArgumentTypeError`` as a usage error, so the domain is stated
+    once and every wrong value gets it.
+    """
+
+    domain = f"a shard number or an inclusive LO-HI range within 1-{OF_SHARDS}"
+    low, separator, high = text.partition("-")
+    # ``1-`` is a half-typed range, not shard 1: taking the low end as the
+    # high end would run one shard where the operator asked for many.
+    if separator and not high:
+        raise argparse.ArgumentTypeError(f"expected {domain}, got {text!r}")
+    high = high or low
+    if not (low.isdigit() and high.isdigit()):
+        raise argparse.ArgumentTypeError(f"expected {domain}, got {text!r}")
+    low, high = int(low), int(high)
+    if not 1 <= low <= high <= OF_SHARDS:
+        raise argparse.ArgumentTypeError(
+            f"expected {domain}, got {text!r}: "
+            f"{low}-{high} is empty or names a shard that does not exist")
+    return range(low, high + 1)
+
+
 def closure_files():
     files = [WRAPPER]
     for path in sorted((CHECKOUT / "tessera").rglob("*.py")):
@@ -84,7 +121,7 @@ def build_action(shard, closure, rung, calibrate_every):
             "rung": rung,
             "calibrate_every": calibrate_every,
             "shard": shard,
-            "of_shards": 120,
+            "of_shards": OF_SHARDS,
         },
         "environment": {
             "variables": {
@@ -112,7 +149,10 @@ def build_action(shard, closure, rung, calibrate_every):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shards", required=True, help="e.g. 1 or 1-120")
+    ap.add_argument(
+        "--shards", required=True, type=shard_range,
+        help=f"which shards to probe: one number, or an inclusive LO-HI range, "
+             f"within 1-{OF_SHARDS} (e.g. 1 or 1-{OF_SHARDS})")
     ap.add_argument("--rung", type=int, default=4,
                     help="body rate per code; one encode prices the whole "
                          "[rung/arity, cap/arity] bpp band, so a lower rung "
@@ -123,22 +163,49 @@ def main():
                          "than assumed")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the action key each shard would be sealed "
-                         "under and enqueue nothing; the wrapper is still "
-                         "staged into the shared checkout, because the "
-                         "closure digest being previewed is computed over it")
+                         "under, enqueue nothing, and write nothing into the "
+                         "shared checkout; the closure previewed is the one "
+                         "the checkout holds now, so it says when that is not "
+                         "what a real run would seal")
     fleet_submit.add_transport_argument(ap)
     args = ap.parse_args()
 
-    lo, _, hi = args.shards.partition("-")
-    shards = range(int(lo), int(hi or lo) + 1)
+    shards = args.shards
 
     # Stage the wrapper INTO the shared checkout, so both boxes run one tree.
     # This is a NEW file, so it does not disturb any closure an in-flight
     # action already sealed -- unlike touching tessera/**/*.py, which every
     # running export shard has bound into its key and re-verifies at its CAS
-    # commit point.  Staged even on a dry run, because the closure digest is
-    # the thing being previewed and it cannot be computed without the file.
-    shutil.copy2(LOCAL_WRAPPER, CHECKOUT / WRAPPER)
+    # commit point.
+    #
+    # Never on a dry run.  A dry run that writes is not a dry run, and this
+    # one wrote into a checkout two boxes execute.  The closure digest cannot
+    # be previewed without the file, so a dry run reads the checkout as it
+    # stands and says when that is not what ``--apply`` would seal.  It
+    # refuses rather than previewing a digest no submission would produce.
+    staged = CHECKOUT / WRAPPER
+    if args.dry_run:
+        if not staged.is_file():
+            sys.stderr.write(
+                f"dry run: {WRAPPER} is not staged in {CHECKOUT}, and a dry "
+                f"run does not stage it, so there is no closure to preview. "
+                f"Re-run without --dry-run to stage it.\n")
+            return 1
+        try:
+            staged_is_local = staged.read_bytes() == LOCAL_WRAPPER.read_bytes()
+        except OSError as exc:
+            # The local wrapper lives on one box, so on any other there is
+            # nothing to compare the staged copy against.
+            print(f"note       {LOCAL_WRAPPER} could not be read "
+                  f"({exc.strerror}), so the staged wrapper is reported as it "
+                  f"is rather than as what --apply would stage")
+        else:
+            if not staged_is_local:
+                print(f"note       {WRAPPER} in the checkout differs from "
+                      f"{LOCAL_WRAPPER}, so the digests below are the "
+                      f"checkout's, not what --apply would seal")
+    else:
+        shutil.copy2(LOCAL_WRAPPER, staged)
 
     closure = pb.build_code_closure(CHECKOUT, closure_files())
     cas = pb.PrismaBuildCAS(SH / "cas")
