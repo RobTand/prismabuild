@@ -371,7 +371,10 @@ def row_6_withdraw() -> None:
     marker_path = next(
         (p for p in (QUEUE / "withdrawn").glob(f"{prefix}*.json")), None
     ) if prefix else None
-    path, rec = outcome("failed", prefix) if prefix else (None, {})
+    # ``withdrawn/``, not ``failed/``: ``publish_outcome`` files a withdrawal
+    # where the marker already is, so that readers counting failures do not
+    # count a decision.  The enriched record replaces the marker in place.
+    path, rec = outcome("withdrawn", prefix) if prefix else (None, {})
     ok = (
         running
         and withdrawn is not None
@@ -380,9 +383,10 @@ def row_6_withdraw() -> None:
         and path is not None
         and rec.get("status") == "withdrawn"
         and bool(rec.get("withdrawn_by"))
+        and not (QUEUE / "failed" / f"{prefix}.json").exists()
     )
     record(
-        "6 --withdraw scancels, files withdrawn/ and a failed/ record",
+        "6 --withdraw scancels and files the ending under withdrawn/",
         ok,
         f"job={job_id} running={running} marker={bool(marker_path)} "
         f"status={rec.get('status')} by={rec.get('withdrawn_by')!r}"
