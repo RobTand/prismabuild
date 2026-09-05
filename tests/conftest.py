@@ -60,6 +60,32 @@ LIVE_DEFAULTS = (
     ("pool_reset", "SH", "fleet"),
     ("fleet_submit", "SH", "fleet"),
     ("worker_loop", "SH", "fleet"),
+    ("worker_loop", "RUNTIME_VERSION", "fleet/repo/RUNTIME_VERSION.json"),
+    ("worker", "SH", "fleet"),
+    # ``supervise.MIRROR`` was the gap this list was completed to close.
+    # ``_proven_roots`` lists ``MIRROR / "runtime-generations"``, so
+    # ``test_only_idle_loops_are_stopped`` read the live store on every run of
+    # the suite, on every box. It passed, which is why nothing noticed: the
+    # cost was a test that depended on the fleet's state and a suite that hung
+    # for as long as the mount was unreachable.
+    ("supervise", "MIRROR", "fleet"),
+    ("publish_runtime", "MIRROR", "fleet/repo"),
+    ("seal_and_publish", "SH", "fleet"),
+    ("pbtest", "SHARED", "mount"),
+    ("tessera_status", "SH", "fleet"),
+    ("tessera_status", "CAS", "fleet/cas"),
+    ("tessera_status", "Q", "fleet/pb-queue"),
+    ("tessera_status", "RES", "fleet/checkout/results/glm53-tessera"),
+    ("tessera_status", "PARTS", "mount/models/parts"),
+    ("dispatch_tessera_ladder", "SH", "fleet"),
+    ("dispatch_tessera_ladder", "CHECKOUT", "fleet/checkout"),
+    ("dispatch_tessera_ladder", "SOURCE", "mount/models/source"),
+    ("dispatch_tessera_shards", "SH", "fleet"),
+    ("dispatch_tessera_shards", "CHECKOUT", "fleet/checkout"),
+    ("dispatch_tessera_shards", "SOURCE", "mount/models/source"),
+    ("dispatch_tessera_shards", "PLAN", "mount/plan.json"),
+    ("dispatch_tessera_shards", "PARTS", "mount/models/parts"),
+    ("render_identity", "MODEL", "mount/models/render"),
     ("prismabuild.pool", "DEFAULT_POOL_ROOT", "pb-queue"),
     # Two spellings of one root, and each transport reads its own: the SLURM
     # job entry reads ``materialize.LOCAL_CHECKOUT_ROOT`` and the pull queue
@@ -87,8 +113,15 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setenv(name, str(root / sub))
     for module_name, attr, sub in LIVE_DEFAULTS:
         module = sys.modules.get(module_name)
-        if module is not None and hasattr(module, attr):
-            monkeypatch.setattr(module, attr, root / sub)
+        if module is None or not hasattr(module, attr):
+            continue
+        # Keep the declared type. Several of these are plain strings, and
+        # handing a module a ``Path`` where it declared a ``str`` changes
+        # behaviour the test was not asking about.
+        replacement = root / sub
+        if isinstance(getattr(module, attr), str):
+            replacement = str(replacement)
+        monkeypatch.setattr(module, attr, replacement)
     yield
 
 
