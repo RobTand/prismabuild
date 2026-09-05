@@ -416,6 +416,74 @@ def row_m4_tagged(nonce: str) -> None:
     )
 
 
+def row_m9_class_tag(nonce: str) -> None:
+    """`cpu` is a Feature, not only a partition, so a class tag is schedulable.
+
+    The pull queue announces `cpu` from a box with `--gpu-slots 0`, so
+    `pbrun --tag cpu` is a thing an agent already writes.  Under this lane a
+    tag becomes a `--constraint`, and a constraint naming a Feature no node
+    carries is refused at submit -- which would turn a working submission into
+    a refusal at the cutover.
+    """
+
+    _placement_row(
+        "M9 a --tag cpu pbrun lands on the CPU box, the tag being a Feature",
+        "dl380g10", ["./action.sh", "run", nonce],
+        extra=["--tag", "cpu"],
+        expect_host=("dl380g10",),
+        expect_partition="",
+        expect_constraint=["cpu"],
+    )
+
+
+def row_m10_anywhere_idle(nonce: str) -> None:
+    """`--anywhere` opens the whole fleet, and weight still prefers the CPU box."""
+
+    _placement_row(
+        "M10 an --anywhere pbrun on an idle fleet lands on the CPU box",
+        "dl380g10", ["./action.sh", "run", nonce],
+        extra=["--anywhere"],
+        expect_host=("dl380g10",),
+        expect_partition="",
+        expect_constraint=[],
+    )
+
+
+def row_m11_anywhere_overflow(nonce: str) -> None:
+    """With the CPU box full, `--anywhere` work overflows onto a Spark.
+
+    The point of the weight is that it is a preference and not a pin: work the
+    submitter asserted portable must not queue behind a busy dl380g10 while
+    two idle Sparks watch.  The box is filled with an `--exclusive`
+    placeholder rather than by guessing a core count, so the row holds if the
+    fleet's CPUs line changes.
+    """
+
+    blocker = ctl([
+        "sbatch", "--parsable", "--exclusive", "--nodelist=dl380g10",
+        "--mem=1024", "--time=00:05:00", "--chdir=/tmp",
+        "--output=/dev/null", "--wrap=sleep 240",
+    ])
+    job = (blocker.stdout or "").strip().split(";")[0]
+    held = wait_for(lambda: job_state(job) == "RUNNING",
+                    timeout_s=120) if job.isdigit() else False
+    try:
+        _placement_row(
+            "M11 an --anywhere pbrun overflows to a Spark when the CPU box is full",
+            "dl380g10", ["./action.sh", "run", nonce],
+            extra=["--anywhere"],
+            expect_host=GPU_NODES,
+            expect_partition="",
+            expect_constraint=[],
+            extra_checks={
+                "dl380g10 was actually full": lambda c, s, e: held,
+            },
+        )
+    finally:
+        if job.isdigit():
+            ctl(["scancel", job])
+
+
 def row_m5_cross_box(nonce: str) -> None:
     """Submitted on sparky, executed on dl380g10, read back off the volume."""
 
@@ -645,7 +713,7 @@ def main() -> int:
 
     nonces = {
         name: str(INSIDE / f"nonce-{name}.txt")
-        for name in ("m2", "m3", "m4", "m5", "m6", "m7")
+        for name in ("m2", "m3", "m4", "m5", "m6", "m7", "m9", "m10", "m11")
     }
     for value in nonces.values():
         (VOL / Path(value).name).write_text("")
@@ -654,6 +722,9 @@ def main() -> int:
     row_m2_cpu_only(nonces["m2"])
     row_m3_gpu(nonces["m3"])
     row_m4_tagged(nonces["m4"])
+    row_m9_class_tag(nonces["m9"])
+    row_m10_anywhere_idle(nonces["m10"])
+    row_m11_anywhere_overflow(nonces["m11"])
     row_m5_cross_box(nonces["m5"])
     row_m6_node_fail(nonces["m6"])
     row_m7_controller_restart(nonces["m7"])
