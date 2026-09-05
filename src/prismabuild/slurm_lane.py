@@ -724,6 +724,12 @@ class SubmittedJob:
     stdout_path: Path
     stderr_path: Path
     record_path: Path
+    #: The run this submission belongs to, as ``published_unix`` in its
+    #: record.  Carried on the job because the generation is what every
+    #: withdrawal question is scoped to, and a caller holding the job should
+    #: not have to re-read the record to ask one.  ``None`` only on a job a
+    #: caller built without naming a generation.
+    published_unix: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1210,6 +1216,7 @@ def submit(
         stdout_path=directory / f"{job_id}.out",
         stderr_path=directory / f"{job_id}.err",
         record_path=record_path,
+        published_unix=generation,
     )
 
 
@@ -2263,6 +2270,46 @@ def _queue_dir(queue_root: str | Path, state: str) -> Path:
     return directory
 
 
+def _record_generation(record: Mapping[str, object] | None) -> float | None:
+    """The run one record belongs to, or ``None`` when it names none.
+
+    ``published_unix`` is the generation in both transports, and a record that
+    carries no readable one cannot be placed in time.  Every caller here reads
+    that as "cannot be proved older", which is the direction that keeps a
+    decision: ``pool.withdrawal_covers`` reads a record with no generation as
+    covered for the same reason.
+    """
+
+    if not isinstance(record, Mapping):
+        return None
+    theirs = record.get("published_unix")
+    if isinstance(theirs, bool) or not isinstance(theirs, (int, float)):
+        return None
+    return float(theirs)
+
+
+def _read_json_object(path: Path) -> dict[str, object] | None:
+    """The JSON object at ``path``, revalidated first, or ``None``.
+
+    Listing the parent before the read is the rule ``read_withdrawal_marker``
+    and ``pbrun.terminal_record`` already follow on these directories: they are
+    on NFS with default attribute caching, where a lookup of a name that did
+    not exist yet is negatively cached and keeps answering ENOENT after the
+    file has landed.
+    """
+
+    try:
+        if path.name not in os.listdir(path.parent):
+            return None
+    except OSError:
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
 def _same_generation(path: Path, published_unix: float) -> bool:
     """Is the record already there this submission's own, or an older one?
 
@@ -2277,8 +2324,8 @@ def _same_generation(path: Path, published_unix: float) -> bool:
         existing = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    theirs = existing.get("published_unix") if isinstance(existing, dict) else None
-    return isinstance(theirs, (int, float)) and float(theirs) == float(published_unix)
+    theirs = _record_generation(existing if isinstance(existing, dict) else None)
+    return theirs is not None and theirs == float(published_unix)
 
 
 def detail_status_and_returncode(
@@ -2634,33 +2681,94 @@ def withdrawal_covers(
 
 
 def supersede_withdrawal(
-    queue_root: str | Path, action_key: str
+    queue_root: str | Path, action_key: str, published_unix: float | None
 ) -> dict[str, object] | None:
-    """Retire a live withdrawal, because a submission is what retires one.
+    """Retire a withdrawal of an EARLIER run, because a submission retires one.
 
     ``PoolQueue.publish`` does this and says at length why: the marker stops a
     claim, so leaving it in place makes the re-submitted action unrunnable and
     the only remedy a hand edit of the live queue.  This lane submits without
     going through ``publish``, so it does the same thing itself or inherits the
     bug the queue already fixed.  The decision is kept, not deleted.
+
+    Only an *earlier* generation is retired.  ``submit`` makes ``latest.json``
+    visible before it returns, so an operator on another box can resolve that
+    record and withdraw the run while the submitting process is still between
+    ``sbatch`` and its own next step.  Retiring whatever marker happened to be
+    there then erased that decision: the retry gate found no marker and a
+    ``--retry-safe`` run submitted attempt 2 of the action somebody had just
+    cancelled, and the ending was filed as a failure rather than as the
+    withdrawal it was.  A withdrawal of the generation being submitted is left
+    exactly where it is, and it is what stops the remaining attempts (``run``)
+    and what decides the ending (``_file_ending``).
+
+    A marker naming no generation *is* retired.  Every writer in this tree
+    stamps the generation on the marker it files -- ``publish_withdrawal``
+    takes it from the submission and ``pbrun._file_slurm_withdrawal`` from
+    ``latest.json`` -- so a marker without one belongs to a run older than the
+    generation stamp itself, and leaving it in place is exactly the
+    unrunnable-action state the pool fixed.
+
+    ``published_unix`` is the generation being submitted, or ``None`` from a
+    caller that cannot name one.  A caller that cannot name its own generation
+    cannot compare, so it retires nothing.
+
+    The claim on the marker is one ``rename``, which is what makes the
+    comparison safe against a publication that crosses it.  The old shape read
+    the marker, wrote an archive copy and then unlinked the live name, so a
+    withdrawal filed inside that window was unlinked unread.  Now the rename
+    takes whichever marker is at the name at that instant, the archived bytes
+    are re-read, and a marker this call had no right to retire is linked back.
+    A crash between the rename and the decision leaves the marker under
+    ``superseded/`` instead of at the live name, which is a state a reader can
+    see and repair; the window it replaces lost the bytes.
+
+    Returns the withdrawal that was retired, or ``None`` when none was.
     """
 
     key = str(action_key)
     live, record = read_withdrawal_marker(queue_root, key)
     if record is None:
         return None
+    if published_unix is None:
+        return None
+    theirs = _record_generation(record)
+    if theirs is not None and theirs >= float(published_unix):
+        return None
     when = _now()
-    kept = dict(record)
+    archive_directory = _queue_dir(queue_root, pool.WITHDRAWN) / "superseded"
+    archive_directory.mkdir(parents=True, exist_ok=True)
+    archive = archive_directory / f"{key}.{when:.6f}.withdrawal.json"
+    try:
+        os.rename(live, archive)
+    except OSError:
+        # Gone between the read and the claim: another submission of a later
+        # generation retired it, and archiving it is that call's business.
+        return None
+    claimed = _read_json_object(archive)
+    generation = _record_generation(claimed)
+    if claimed is None or (generation is not None
+                           and generation >= float(published_unix)):
+        # A withdrawal landed at the live name between the read and the
+        # rename, and this call has no right to retire it.  Put it back.
+        try:
+            os.link(archive, live)
+        except FileExistsError:
+            # A third writer already filed a marker there.  These bytes stay
+            # under ``superseded/`` as history rather than being deleted.
+            return None
+        except OSError:
+            return None
+        archive.unlink(missing_ok=True)
+        return None
+    kept = dict(claimed or {})
     kept.update({
         "action_key": key,
         "superseded_unix": when,
         "superseded_host": socket.gethostname(),
     })
-    archive = _queue_dir(queue_root, pool.WITHDRAWN) / "superseded"
-    archive.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(archive / f"{key}.{when:.6f}.withdrawal.json", kept)
-    live.unlink(missing_ok=True)
-    return record
+    _write_json_atomic(archive, kept)
+    return claimed
 
 
 def run(
@@ -2770,7 +2878,7 @@ def run(
             # a refused submission has retired nothing, and an operator's
             # decision must not be moved aside by a job that never existed.
             with _naming_job(job.job_id):
-                supersede_withdrawal(queue_root, key)
+                supersede_withdrawal(queue_root, key, published_unix)
         if on_submit is not None:
             on_submit(job)
         if detach:
@@ -2879,6 +2987,7 @@ def resume(
         record_path=submission_record_path(
             directory, published_unix=published_unix, attempt=attempt
         ),
+        published_unix=published_unix,
     )
     result = RunResult(action_key=key, published_unix=published_unix)
     outcome = wait(
