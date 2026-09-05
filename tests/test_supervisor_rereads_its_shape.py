@@ -84,7 +84,7 @@ def test_only_idle_loops_are_stopped(monkeypatch):
     assert 22 not in killed
 
 
-def test_a_loops_own_argv_is_what_gets_compared(tmp_path):
+def test_a_loops_own_argv_is_what_gets_compared(tmp_path, monkeypatch):
     """The authority is the file; the question is what the process carries.
 
     Comparing the file to the previous read of the file looks equivalent and
@@ -97,19 +97,38 @@ def test_a_loops_own_argv_is_what_gets_compared(tmp_path):
     assert supervise.loop_args_of(0) is None          # unreadable, not "empty"
     argv = ["/usr/bin/python3", "/mnt/x/worker_loop.py",
             "--tag", "boxa", "--gpu-slots", "2"]
-    src = tmp_path / "cmdline"
-    src.write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
-    # loop_args_of reads /proc/<pid>/cmdline; the parse is what is pinned here.
-    parsed = [p.decode() for p in src.read_bytes().split(b"\0") if p][2:]
-    assert parsed == ["--tag", "boxa", "--gpu-slots", "2"]
-    assert parsed != ["--tag", "boxa", "--gpu-slots", "3"], (
-        "a loop carrying the old slot count must not compare equal to the new")
+    proc = tmp_path / "proc" / "4242"
+    proc.mkdir(parents=True)
+    (proc / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+    # ``loop_args_of`` reads /proc/<pid>/cmdline, so the fake tree is bound in
+    # by redirecting that one prefix.  Restating the parse here instead would
+    # let the same mistake pass on both sides of the comparison.
+    real_path = supervise.Path
+    monkeypatch.setattr(supervise, "Path", lambda where: real_path(
+        str(where).replace("/proc/", str(tmp_path / "proc") + "/", 1)))
+
+    assert supervise.loop_args_of(4242) == ["--tag", "boxa", "--gpu-slots", "2"]
+
+    # A cmdline too short to carry an interpreter and a script is unreadable
+    # too, and answering "no arguments" there would make it a shape mismatch.
+    short = tmp_path / "proc" / "4243"
+    short.mkdir()
+    (short / "cmdline").write_bytes(b"/usr/bin/python3\0")
+    assert supervise.loop_args_of(4243) is None
 
 
-def test_only_the_mismatched_loops_are_candidates(monkeypatch):
+def test_only_the_mismatched_loops_are_candidates(tmp_path, monkeypatch):
     """A loop already on the declared shape is never stopped for it."""
     shape = ["--gpu-slots", "3"]
     carried = {11: ["--gpu-slots", "2"], 22: shape, 33: None}
+    config = tmp_path / "fleet_boxes.json"
+    config.write_text(json.dumps({"boxes": {"boxa": {"loops": 3, "args": shape}}}))
+    monkeypatch.setattr(supervise, "CONFIG", config)
+    monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
+    monkeypatch.setattr(supervise, "CLAIM", tmp_path / "supervisor.claim")
+    monkeypatch.setattr(supervise.socket, "gethostname", lambda: "boxa")
+    monkeypatch.setattr(sys, "argv", ["supervise", "--once"])
+    monkeypatch.setattr(supervise.time, "sleep", lambda _s: None)
     monkeypatch.setattr(supervise, "_live_loops", lambda *_a, **_k: [11, 22, 33])
     # As above: the rule under test is the shape mismatch, not the ownership
     # proof these fake pids cannot satisfy.
@@ -118,9 +137,13 @@ def test_only_the_mismatched_loops_are_candidates(monkeypatch):
     monkeypatch.setattr(supervise, "_is_idle", lambda pid: True)
     killed = []
     monkeypatch.setattr(supervise.os, "kill", lambda pid, sig: killed.append(pid))
+    spawned = []
+    monkeypatch.setattr(supervise, "_spawn",
+                        lambda args, index: spawned.append(list(args)) or 900 + index)
 
-    wrong = [p for p in supervise._live_loops()
-             if supervise.loop_args_of(p) not in (None, shape)]
-    assert wrong == [11], "22 matches the shape; 33 is unreadable, not wrong"
-    assert supervise._stop_idle_loops(wrong) == [11]
+    assert supervise.main() == 0
+    # Which loops are stale is the supervisor's judgement, so the tick has to
+    # make it.  Recomputing the selection here instead passed a supervisor
+    # that stopped the unreadable loop too, and passed one that stopped none.
     assert killed == [11]
+    assert spawned == [shape], "the stopped loop comes back on the declared shape"
