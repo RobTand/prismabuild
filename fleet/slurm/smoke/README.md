@@ -37,6 +37,7 @@ patched. The host's real `/mnt/shared` is never touched.
 | 10 | from inside a batch step, `scontrol show job` and `scontrol show node` return `Features=` and `ActiveFeatures=` to the job's owner, and `SLURM_JOB_CONSTRAINTS` is unset |
 | 11 | `pbrun --measurement --host-class gb10` executes, and the receipt's producer carries `host_class="gb10"` with the controller's `job_features` and `node_active_features` |
 | 12 | `--host-class` for a Feature no node has is refused at submit by `sbatch` |
+| 13 | `sstat` answers without `slurmdbd` and lists the fields the lane asks for; a job that sleeps with no output is reported by `pbrun` as stalled ("still running"), is not cancelled, and files `done/<key>.json` with `status=executed` and its samples under `detail.liveness`; `liveness.jsonl` in the lane directory holds them |
 
 ## What it does not establish
 
@@ -62,9 +63,12 @@ The container is not the fleet, and four things stay open for the install:
 
 ## The two SLURMs behave differently, and the differences are recorded
 
-Both pass rows 1 to 9. The campaign rows (10a, 10b) and the host-class rows
-(10 to 12) were added afterwards and have run on 25.11.2 only
-(run-20260905T010019, 13/13, and run-20260905T010156, 14/14). Two things had
+Both pass rows 1 to 9. The campaign rows (10a, 10b), the host-class rows
+(10 to 12) and the liveness row (13) were added afterwards and have run on
+25.11.2 only (run-20260905T010019, 13/13; run-20260905T010156, 14/14; row 13
+in run-20260905T010418, before the renumbering). Row 13 adds about five
+minutes: a job has to sleep through the lane's 120 s stall window and then
+finish on its own. Two things had
 to be worked around for 23.11.4, and neither is a lane defect:
 
 - Its `cgroup/v2` plugin creates its stepd scope under `/sys/fs/cgroup/system.slice`
