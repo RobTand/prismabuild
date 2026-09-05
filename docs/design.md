@@ -112,7 +112,7 @@ partitions/reservations, or attested any machine through a SLURM allocation.
 | `gb10` | sparky, sparklina (GB10, 128 GB unified, sm_121) | live pull-queue workers for probes, validated KL, ship gates, and big renders; no SLURM reservation is installed |
 | `rocm-16g` | Rob's + son's 9800X3D/9070 XT desktops | 0.6B screen tier; brute-force search/encode (trellis Viterbi, permutation/gauge searches, CB training) |
 | `strix-32g` | son's AI Max laptop (32 GB unified, opportunistic) | 4B screen tier (the size 16 GB cards can't hold) |
-| `cpu-x86-large` | dl380g10 (80 cores, 300 GB, NFS server) | live pull-queue CPU worker and shared CAS/NFS host; page-cache, hashing, repacking, shard merges, references, bootstraps, and CPU encode work |
+| `cpu-x86-large` | dl380g10 (40 physical cores, 80 SMT threads, 300 GB, NFS server) | live pull-queue CPU worker and shared CAS/NFS host; page-cache, hashing, repacking, shard merges, references, bootstraps, and CPU encode work |
 | — | M5 Mac mini | below the value line; not a tier |
 
 The live data plane is `/mnt/shared` (NFS from dl380), including the deployed
@@ -1076,8 +1076,46 @@ whereas a sweep only files an authoritative ending. Sweep before re-running a
 SLURM campaign to preserve its execution record. An unknown job without a CAS
 receipt remains unresolved; neither recovery path invents success.
 
-The fleet shape passes `--all-cores` on both GB10 hosts as well as dl380g10,
-so admission exposes all inherited CPU affinity rather than permanently
-excluding fallback cores. Logical CPU counts are capacity units, not a claim
-of equal throughput across heterogeneous cores or SMT siblings. Measurements
-must still declare architecture and isolation.
+## Preferred and overflow CPU admission
+
+The fleet retains `--all-cores` so all usable CPU capacity remains available.
+Within each worker's inherited affinity, physical performance cores form the
+preferred tier. SMT siblings and efficiency cores form the lower tier and are
+allocated last. Kernel online state, sibling topology and ARM `cpu_capacity`
+determine the split; Intel hybrid `cpu_atom` PMU metadata identifies efficiency
+cores where available. Missing class metadata cannot prove a heterogeneous
+split and is treated as uniform capacity. No core numbering is hardcoded into
+the scheduler.
+
+Each host's immutable `reservations/<host>/cpu-map.json` maps CPU token ordinals
+to preferred CPU IDs followed by fallback IDs. Admission acquires those ordered
+tokens, and the canonical worker launches through `taskset` with exactly its
+held CPU set. The launcher checks the reservation, CPU count and inherited
+mask before execution. Concurrent reservations therefore select disjoint CPU
+IDs; children inherit the assigned affinity. The action's Docker shim carries
+that kernel mask into local `run`/`create` containers with `--cpuset-cpus`,
+intersects an explicit requested mask, and refuses an empty intersection.
+It resolves and pins the selected Unix daemon endpoint; remote or unresolved
+contexts refuse because CPU identities belong to the admitted host. Agents
+must retain this shim and must not widen their assigned affinity. These are
+cooperative execution controls, not hostile-process containment.
+Offers advertise `cpu_tiers`, and
+claims and endings retain `cpu_allocation`. Already-running overflow actions
+are not migrated when preferred cores become free; subsequent actions reuse
+the released preferred capacity.
+
+Before accepting a local allocation containing fallback CPUs, a worker gives
+another fresh compatible offer up to 20 seconds to claim the action if that
+host can fit the entire CPU, memory and GPU demand using free preferred CPU
+tokens. This is bounded advisory deferral over distributed observations, not
+an atomic global scheduling order. An incompatible host, an undersized host,
+or a stale offer does not strand host-specific or wide work. Local ordered
+allocation remains effective after the deferral expires.
+
+Initial activation requires drained legacy reservations. Changing an existing
+host's topology map requires draining reservations, stopping that host's worker
+loops and supervisor, and then removing only its `cpu-map.json` before restart;
+never reinterpret held tokens under a changed map. New hosts receive their own
+maps. Logical CPU counts are capacity units, not equal-throughput claims across
+cores or hosts. Performance measurements still require declared architecture,
+resource demand and isolation, with measured evidence for any speedup claim.

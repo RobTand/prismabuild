@@ -1161,3 +1161,30 @@ store layout exit 2. These safeguards complement the maintenance prerequisite.
 Use `core.repair_local_result` for occupied result namespaces: it takes the
 output lock and validates the result's ownership before clearing a crash-left
 publication.
+
+
+## CPU tiers and container affinity
+
+The live pool reserves physical performance cores before using SMT siblings
+or efficiency cores. `--cpus` (or `--demand cpu=N`) declares the total CPU demand,
+not a core-class preference. Small jobs use free preferred CPUs; wide jobs and
+concurrent overflow can use the lower tier. Compatible free preferred capacity
+on another host gets a bounded opportunity to claim work first. Constraints
+still determine eligibility. Do not overdeclare CPU demand to force overflow.
+
+Worker offers expose `cpu_tiers`; a claimed or terminal record's
+`cpu_allocation` names its preferred and fallback CPU IDs. Children inherit the
+reservation through `taskset`. The published Docker shim transfers it into
+`docker run` and `docker create`; an explicit `--cpuset-cpus` is intersected
+with the reservation. A disjoint mask or remote Docker context refuses with an
+explanation. Use the action's ordinary `docker` command so the shim can preserve
+CPU affinity and ownership labels. Directly choosing another Docker executable
+or widening a child mask violates the agent execution policy.
+
+The CPU map is immutable while a host serves work. To change an existing host's
+usable topology or CPU cap: drain its reservations, stop its supervisor and
+worker loops, preserve the old `reservations/<host>/cpu-map.json` as recovery
+evidence, remove that map, then restart with the new shape. Never delete a map
+while claims or loops can still use its CPU-token interpretation. Adding a new
+host creates a separate map. Ordinary runtime publication with an unchanged
+map uses the existing idle-queue procedure.
