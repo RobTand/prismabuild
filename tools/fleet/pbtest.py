@@ -93,7 +93,10 @@ def main() -> int:
                     help="interpreter on the TARGET box, not this one")
     ap.add_argument("--tag", action="append", default=[],
                     help="placement tag; defaults to x86")
-    ap.add_argument("--shards", type=int, default=20)
+    ap.add_argument("--shards", type=int, default=20,
+                    help="how many actions the suite is split into, "
+                         "round-robin over the discovered files; more than "
+                         "there are files is lowered to one shard per file")
     ap.add_argument("--threads-per-shard", type=int, default=2,
                     help="BLAS/OMP threads each shard may use; 0 leaves it "
                          "alone and then --cpus-per-shard is required")
@@ -106,17 +109,23 @@ def main() -> int:
                     help="memory each shard demands of its box")
     ap.add_argument("--timeout-s", type=float, default=None,
                     help="an explicit deadline for each shard; unset means none")
-    ap.add_argument("--wait-s", type=float, default=10800.0)
+    ap.add_argument("--wait-s", type=float, default=10800.0,
+                    help="how long each shard waits for the fleet to run it, "
+                         "queueing included; forwarded to pbrun")
     ap.add_argument("--json", default="", help="write the per-shard result here")
     ap.add_argument(
         "--transport", choices=TRANSPORTS, default=default_transport(),
         help="which dispatcher carries the shards (env PRISMABUILD_TRANSPORT, "
              "else the published runtime generation's default_transport); "
              "forwarded to pbrun unchanged")
-    # TODO(claude/pb-35-snapshot-ancestry): forward --snapshot-ref once that
-    # branch lands.  pbrun in this tree does not know the flag, and adding it
-    # here would fail every shard at argparse rather than pin an ancestry.
-    ap.add_argument("paths", nargs="*", default=["tests"])
+    # pbrun does know --snapshot-ref, and this tool deliberately does not
+    # forward it.  An advertised ref exists so an action can spell a branch
+    # name, and a shard's command is pytest over repository-relative paths,
+    # which spells none.  Forward it when a shard has something to spell.
+    ap.add_argument("paths", nargs="*", default=["tests"],
+                    help="test files or directories to shard, relative to "
+                         "--checkout; a directory contributes every "
+                         "test_*.py under it")
     args = ap.parse_args()
 
     if PBRUN is None:
