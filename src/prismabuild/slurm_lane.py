@@ -91,6 +91,25 @@ DEFAULT_LANE_ROOT = "/mnt/shared/prismabuild-fleet/slurm"
 #: ``SLURM_JOB_ID`` and nothing else for certain.
 JOB_STATE_DIRNAME = "jobs"
 
+#: Where those files live, resolved on the *node* and never by the submitter.
+#:
+#: The lane root above is a submitter-side record location and it is
+#: overridable per process.  This one is not the same question.  A submitter
+#: that exported ``PRISMABUILD_SLURM_LANE_ROOT`` used to bake its own answer
+#: into the batch script, while the Epilog -- which cannot see slurmd's
+#: environment, let alone the submitter's -- kept reading its own default.  The
+#: two disagreed, the Epilog found no state file, and a killed job leaked its
+#: checkout and its containers with nothing said.
+#:
+#: So the job script carries no job-state path at all.  ``slurm_job`` resolves
+#: it on the node from ``JOB_STATE_ROOT_ENV`` or this default, and
+#: ``fleet/slurm/epilog.sh`` reads the same variable and the same default --
+#: the one place the two sides have to agree, spelled once on each side because
+#: a shell script cannot import this module.  The value is what the Epilog
+#: already hardcoded, so nothing about the deployed fleet moves.
+JOB_STATE_ROOT_ENV = "PRISMABUILD_SLURM_JOB_STATE_ROOT"
+DEFAULT_JOB_STATE_ROOT = f"{DEFAULT_LANE_ROOT}/{JOB_STATE_DIRNAME}"
+
 #: ``/usr/bin/python3`` on both architectures, deliberately.  A job may land on
 #: aarch64 or x86_64 and ``fleet_boxes.json`` names a different venv per box, so
 #: no single venv path is correct for the launcher.  It does not need to be:
@@ -170,10 +189,18 @@ def lane_directory(action_key: str, *, root: str | Path | None = None) -> Path:
     return lane_root(root) / key
 
 
-def job_state_directory(*, root: str | Path | None = None) -> Path:
-    """Where a job leaves the facts its Epilog needs after it is gone."""
+def job_state_directory(explicit: str | Path | None = None) -> Path:
+    """Where a job leaves the facts its Epilog needs after it is gone.
 
-    return lane_root(root) / JOB_STATE_DIRNAME
+    Read on the node that runs the job, not on the box that submitted it.  An
+    explicit path is for a launcher driven by hand and for the tests; the
+    environment variable is the node-side override the Epilog honours in the
+    same way; the default is what both sides fall back to.
+    """
+
+    if explicit is not None:
+        return Path(explicit)
+    return Path(os.environ.get(JOB_STATE_ROOT_ENV) or DEFAULT_JOB_STATE_ROOT)
 
 
 def submission_record_path(
@@ -464,7 +491,6 @@ def job_script_text(
     worker_script: str | Path,
     job_entry: str | Path,
     lane_directory_path: str | Path,
-    job_state_root: str | Path,
     job_python: str = DEFAULT_JOB_PYTHON,
     worker_python: str = DEFAULT_JOB_PYTHON,
     local_checkout_root: str | Path | None = None,
@@ -479,6 +505,13 @@ def job_script_text(
 
     Every path is absolute because ``--export=NIL`` leaves the job with only
     SLURM's own variables: there is no ``PATH`` to resolve a bare name against.
+
+    One path is deliberately absent: where the job leaves its Epilog state
+    file.  That is a node-side location, and a script that carried the
+    submitter's answer to it was how a submitter with
+    ``PRISMABUILD_SLURM_LANE_ROOT`` set silently disabled node-side cleanup.
+    ``slurm_job`` resolves it there, from the variable and default the Epilog
+    reads.
     """
 
     argv = [
@@ -489,7 +522,6 @@ def job_script_text(
         "--worker", str(worker_script),
         "--worker-python", str(worker_python),
         "--lane-dir", str(lane_directory_path),
-        "--job-state-root", str(job_state_root),
     ]
     if local_checkout_root is not None:
         argv.extend(["--checkout-root", str(local_checkout_root)])
@@ -538,8 +570,6 @@ def submit(
     key = str(action["action_key"])
     directory = lane_directory(key, root=root)
     directory.mkdir(parents=True, exist_ok=True)
-    state_root = job_state_directory(root=root)
-    state_root.mkdir(parents=True, exist_ok=True)
 
     script = directory / "job.sh"
     text = job_script_text(
@@ -548,7 +578,6 @@ def submit(
         worker_script=worker_script,
         job_entry=job_entry,
         lane_directory_path=directory,
-        job_state_root=state_root,
         job_python=job_python,
         worker_python=worker_python,
         local_checkout_root=local_checkout_root,

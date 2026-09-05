@@ -28,7 +28,7 @@ OWNER = "ab" * 32
 
 @pytest.fixture()
 def node(tmp_path: Path) -> dict[str, Path]:
-    """A fake compute node: a docker that records, and a lane root."""
+    """A fake compute node: a docker that records, and a job-state root."""
 
     binaries = tmp_path / "bin"
     binaries.mkdir()
@@ -64,13 +64,14 @@ def node(tmp_path: Path) -> dict[str, Path]:
     return {
         "bin": binaries, "calls": calls, "listed": listed,
         "runuser": runuser_calls,
-        "lane": tmp_path / "lane", "checkouts": tmp_path / "checkouts",
+        "jobs": tmp_path / "lane" / "jobs",
+        "checkouts": tmp_path / "checkouts",
     }
 
 
 def _state(node: dict[str, Path], *, job_id: str, owner: str,
            checkout_dir: str, local_root: str) -> Path:
-    jobs = node["lane"] / "jobs"
+    jobs = node["jobs"]
     jobs.mkdir(parents=True, exist_ok=True)
     path = jobs / f"{job_id}.job"
     path.write_text(
@@ -92,7 +93,7 @@ def _run(
         **os.environ,
         "PATH": f"{node['bin']}{os.pathsep}{os.environ['PATH']}",
         "SLURM_JOB_ID": job_id,
-        "PRISMABUILD_SLURM_LANE_ROOT": str(node["lane"]),
+        "PRISMABUILD_SLURM_JOB_STATE_ROOT": str(node["jobs"]),
     }
     # SLURM sets this in the Epilog's environment.  ``None`` is a controller
     # that did not, which must not take the script down under ``set -u``.
@@ -178,7 +179,7 @@ def test_a_job_that_cleaned_up_after_itself_leaves_nothing_to_do(
     """The normal ending: the state file is gone because the job removed it,
     and the Epilog must not go looking for work that is not there."""
 
-    (node["lane"] / "jobs").mkdir(parents=True)
+    (node["jobs"]).mkdir(parents=True)
     result = _run(node, "9999")
     assert result.returncode == 0
     assert not node["calls"].exists()
@@ -189,7 +190,7 @@ def test_it_never_drains_the_node(node: dict[str, Path]) -> None:
     a container must not take a box out of the fleet, so every path exits 0 --
     including the one where the state file names nothing usable at all."""
 
-    jobs = node["lane"] / "jobs"
+    jobs = node["jobs"]
     jobs.mkdir(parents=True)
     (jobs / "1238.job").write_text("garbage\n", encoding="utf-8")
     assert _run(node, "1238").returncode == 0
@@ -253,3 +254,25 @@ def test_a_controller_that_names_no_job_user_still_cleans_up(
     assert result.returncode == 0
     assert not state.exists()
     assert not node["runuser"].exists()
+
+
+def test_the_epilog_and_the_lane_name_the_same_job_state_root() -> None:
+    """The one thing the shell script and the Python launcher must agree on.
+
+    The Epilog cannot import ``slurm_lane``, so the variable name and the
+    default are spelled once on each side.  If they ever drift, a killed job
+    leaks its checkout and its containers and nothing says so; this is the only
+    thing that would notice.
+    """
+
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from prismabuild import slurm_lane  # noqa: PLC0415
+
+    text = EPILOG.read_text(encoding="utf-8")
+    expected = (
+        f'JOB_STATE_ROOT="${{{slurm_lane.JOB_STATE_ROOT_ENV}:'
+        f'-{slurm_lane.DEFAULT_JOB_STATE_ROOT}}}"'
+    )
+    assert expected in text

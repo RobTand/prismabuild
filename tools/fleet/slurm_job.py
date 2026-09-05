@@ -36,7 +36,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import materialize, pool  # noqa: E402
+from prismabuild import materialize, pool, slurm_lane  # noqa: E402
 
 #: The environment variable the Docker shim reads to label containers, and
 #: therefore the one the Epilog needs to find them again.  Read from the sealed
@@ -157,7 +157,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lane-dir", default="",
                         help="this action's lane directory (diagnostics only)")
     parser.add_argument("--job-state-root", default="",
-                        help="where to leave this job's Epilog state file")
+                        help="where to leave this job's Epilog state file; "
+                             "defaults to the node-side root the Epilog reads "
+                             f"(${slurm_lane.JOB_STATE_ROOT_ENV}, else "
+                             f"{slurm_lane.DEFAULT_JOB_STATE_ROOT})")
     parser.add_argument("--checkout-root", default="",
                         help="box-local root for materialized trees")
     parser.add_argument("--job-id", default="",
@@ -181,10 +184,14 @@ def main(argv: list[str] | None = None) -> int:
         or os.environ.get("SLURM_JOBID")
         or ""
     )
-    state_path = (
-        Path(args.job_state_root) / f"{job_id}.job"
-        if args.job_state_root and job_id else None
-    )
+    # Resolved here, on the node, and never handed down by the submitter: the
+    # Epilog reads the same variable and the same default, and it can see
+    # neither slurmd's environment nor the submitter's.  A batch script that
+    # carried the submitter's lane root pointed the job at a directory the
+    # Epilog would never look in, so a killed job leaked its checkout and its
+    # containers with nothing said.
+    state_root = slurm_lane.job_state_directory(args.job_state_root or None)
+    state_path = state_root / f"{job_id}.job" if job_id else None
 
     # Written before materialization as well as after it: a job killed while
     # git is still fetching has containers only if the action started one (it

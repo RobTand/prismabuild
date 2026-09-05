@@ -177,6 +177,11 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("FAKE_SLURM_STATE", str(state))
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
     monkeypatch.setenv(sl.LANE_ROOT_ENV, str(tmp_path / "lane"))
+    # The node-side job-state root, which is a different question from the
+    # lane root and is answered on the node.  Set here because the fake
+    # ``sbatch`` runs the job script in this process's environment, and the
+    # default is the fleet's real shared mount.
+    monkeypatch.setenv(sl.JOB_STATE_ROOT_ENV, str(tmp_path / "node-jobs"))
     return state
 
 
@@ -830,6 +835,72 @@ def test_the_job_leaves_the_epilog_the_owner_and_the_tree_while_it_runs(
         for line in seen[1].splitlines() if line.startswith("checkout_dir=")
     ][0]
     assert tree and Path(tree).parent == checkouts
+
+
+def test_the_submitter_does_not_decide_where_the_epilog_state_file_goes(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """The batch script carries no job-state path, because that is the node's.
+
+    A submitter that exported ``PRISMABUILD_SLURM_LANE_ROOT`` -- which the
+    fixture above does -- used to bake its own answer into the script, while
+    the Epilog on the node kept reading its own default.  The two disagreed,
+    the Epilog found no state file, and a killed job leaked its checkout and
+    its containers with nothing said.
+    """
+
+    job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}))
+    script = job.script.read_text(encoding="utf-8")
+
+    assert "--job-state-root" not in script
+    assert str(tmp_path / "lane" / sl.JOB_STATE_DIRNAME) not in script
+
+
+def test_the_launcher_reads_the_job_state_root_the_epilog_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same variable, same default, resolved on the node that runs the job."""
+
+    monkeypatch.setenv(sl.LANE_ROOT_ENV, str(tmp_path / "submitter-lane"))
+    monkeypatch.setenv(sl.JOB_STATE_ROOT_ENV, str(tmp_path / "node-jobs"))
+    assert sl.job_state_directory() == tmp_path / "node-jobs"
+
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    action = _runnable_action(tmp_path, cas)
+    request = cas.publish_action_request(action)
+
+    sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
+    import slurm_job  # noqa: PLC0415
+
+    written: list[Path] = []
+    real = slurm_job._write_job_state
+
+    def record(path, **kwargs):
+        written.append(Path(path))
+        real(path, **kwargs)
+
+    monkeypatch.setattr(slurm_job, "_write_job_state", record)
+    code = slurm_job.main([
+        "--action", str(request), "--cas-root", str(cas_root),
+        "--worker", str(WORKER), "--worker-python", sys.executable,
+        "--job-id", "5150",
+        "--checkout-root", str(tmp_path / "materialized"),
+    ])
+
+    assert code == 0
+    assert written and set(written) == {tmp_path / "node-jobs" / "5150.job"}
+
+
+def test_the_job_state_root_default_is_not_the_submitters_lane_root(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unset override answers the fleet's own path, whatever the lane root
+    was set to."""
+
+    monkeypatch.setenv(sl.LANE_ROOT_ENV, "/somewhere/else")
+    monkeypatch.delenv(sl.JOB_STATE_ROOT_ENV, raising=False)
+    assert str(sl.job_state_directory()) == sl.DEFAULT_JOB_STATE_ROOT
 
 
 # --------------------------------------------------------------------------

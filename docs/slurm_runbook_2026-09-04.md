@@ -75,9 +75,13 @@ Two lane defects the fakes could not see were found and fixed here:
 
 And one thing an operator would have assumed wrongly: the Epilog's environment
 is SLURM's own, built from its `SLURM_*` variables, so
-`PRISMABUILD_EPILOG_DOCKER` and `PRISMABUILD_SLURM_LANE_ROOT` are test-only
+`PRISMABUILD_EPILOG_DOCKER` and `PRISMABUILD_SLURM_JOB_STATE_ROOT` are test-only
 levers and not something to set at install time.  The Epilog finds `docker` on
-`PATH`.
+`PATH`, and it reads job-state files from
+`/mnt/shared/prismabuild-fleet/slurm/jobs` -- the node-side path `slurm_job.py`
+resolves for itself.  `PRISMABUILD_SLURM_LANE_ROOT` moves the submitter's
+record location only; it no longer reaches the node, because a submitter that
+set it used to disable node-side cleanup without saying so.
 
 ## Still not verified
 
