@@ -120,3 +120,20 @@ def test_the_environment_can_carry_the_whole_suite_onto_the_lane(
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "slurm")
     command = _dispatch(tmp_path, monkeypatch, [])
     assert command[command.index("--transport") + 1] == "slurm"
+
+
+def test_a_shard_states_its_placement_once(tmp_path: Path, monkeypatch) -> None:
+    """Every shard carried ``--anywhere`` beside its class tag.
+
+    ``pbrun`` refuses that pair: ``--anywhere`` asserts every eligible worker
+    can run the action and ``--tag x86`` admits only the boxes offering the
+    tag, so a suite fanned out this way would refuse at submission, shard by
+    shard.  The tag is the claim that survives -- it owns the dependency the
+    named interpreter is -- and dropping ``--anywhere`` moves neither the
+    placement nor the action key.
+    """
+
+    command = _dispatch(tmp_path, monkeypatch, [])
+
+    assert command[command.index("--tag") + 1] == "x86"
+    assert "--anywhere" not in command
