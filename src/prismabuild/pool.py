@@ -669,6 +669,28 @@ class _Insufficient(Exception):
 ACQUIRING_PREFIX = "claiming."
 
 
+#: What makes two readings of ``claimed/<key>.json`` the same claim.  The owner
+#: alone would be enough for two different workers, but not for one worker's
+#: two attempts at the same action, which is the case the reaper creates.
+_CLAIM_IDENTITY = ("claimed_by", "claimed_unix", "published_unix", "attempts")
+
+
+def _same_claim(
+    live: Mapping[str, object], snapshot: Mapping[str, object]
+) -> bool:
+    """Whether a live claimed record is the claim a worker actually ran.
+
+    Only fields the queue writes once per claim, so the guards that rewrite a
+    claimed record in place -- a container-cleanup retry, a withdrawal's
+    ``max_attempts`` poison, a pending stop -- do not read as a different
+    claim.
+    """
+
+    return all(
+        live.get(field) == snapshot.get(field) for field in _CLAIM_IDENTITY
+    )
+
+
 def _is_acquisition(name: str) -> bool:
     """Whether a holder directory belongs to a claimant rather than an action.
 
@@ -2908,6 +2930,76 @@ class PoolQueue:
             "detail": detail,
         }
 
+    def _finish_late(
+        self,
+        action_key: str,
+        *,
+        status: str,
+        detail: Mapping[str, object] | None,
+        snapshot: Mapping[str, object],
+        live: Mapping[str, object],
+    ) -> Path:
+        """File the result of an attempt that a newer one has already replaced.
+
+        ``finish`` used to read whichever record occupied
+        ``claimed/<key>.json`` and prefer it over ``claim_snapshot`` without
+        comparing identity.  When a lease expired while its launcher was still
+        alive, the reaper requeued the action and a second worker claimed the
+        retry, the first worker's ``finish`` then advanced *that* record's
+        attempt counter, archived its own result under the second worker's
+        identity, filed the generation terminal, released the second worker's
+        tokens and removed its claim.  A ``done`` record and an immutable
+        attempt both described a result the named attempt never produced, and
+        the running retry lost its reservation.
+
+        A worker may conclude only the attempt it executed.  The live claim,
+        its lease and its reservation are left exactly as they are, and this
+        attempt's result goes where it belongs: its own numbered attempt under
+        its own generation, first-writer-wins like every other immutable
+        outcome, so a reaper that already filed a lease loss for this attempt
+        keeps that record and this one does not overwrite it.
+
+        Containers are deliberately not cleaned up here.  ``container_owner``
+        is a property of the action, not of one attempt, so the census cannot
+        tell this attempt's payloads from the live attempt's, and removing
+        them would stop work that is legitimately running.  The live attempt's
+        own conclusion cleans up both.
+        """
+
+        attempt = int(snapshot.get("attempts", 0)) + 1
+        archived = dict(snapshot)
+        archived["action_key"] = action_key
+        archived["finished_unix"] = _now()
+        archived["finished_host"] = socket.gethostname()
+        succeeded = status in {"executed", "cache_hit"}
+        limit = int(snapshot.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
+        # The same rule ``adopted_attempt_summary`` applies, so this outcome can
+        # never be the one that makes a reader refuse the record.
+        disposition = (
+            DONE if succeeded else FAILED if attempt >= limit else "requeued"
+        )
+        self.archive_attempt(
+            archived,
+            attempt=attempt,
+            status=status,
+            disposition=disposition,
+            detail={
+                **dict(detail or {}),
+                "late_finisher": {
+                    "reason": "this claim was requeued and re-claimed while "
+                              "this worker was still running it, so its "
+                              "result is filed under its own attempt and the "
+                              "live claim, lease and reservation were left "
+                              "untouched",
+                    "live_claimed_by": live.get("claimed_by"),
+                    "live_claimed_unix": live.get("claimed_unix"),
+                    "live_attempts": live.get("attempts"),
+                    "live_published_unix": live.get("published_unix"),
+                },
+            },
+        )
+        return self.attempt_path(archived, attempt)
+
     def finish(
         self,
         action_key: str,
@@ -2928,6 +3020,14 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
         record = _read_json(src)
+        if (record is not None and claim_snapshot is not None
+                and not _same_claim(record, claim_snapshot)):
+            # Whatever is at ``claimed/<key>.json`` now is not the claim this
+            # worker executed, so none of the code below may touch it.
+            return self._finish_late(
+                action_key, status=status, detail=detail,
+                snapshot=claim_snapshot, live=record,
+            )
         effective_record = record or claim_snapshot or {}
         container_cleanup = self.cleanup_action_containers(effective_record)
         if not container_cleanup["complete"]:
