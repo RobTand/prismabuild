@@ -503,3 +503,48 @@ def test_the_smoke_publisher_names_its_checkout_on_the_lane_too(
     printed = json.loads(capsys.readouterr().out)
     assert printed["action_key"] == "f" * 64
     assert printed["sealed_action_key"] == seen["sealed_key"]
+
+
+def test_a_producers_submission_is_findable_by_the_key_it_went_under(
+    tmp_path: Path, fleet: Path,
+) -> None:
+    """What makes a producer's job accountable after the producer has exited.
+
+    ``submit`` returns as soon as the scheduler has the job, so nothing here
+    ever sees the ending and no terminal record is filed: ``tessera_status``
+    reads ``done/`` and ``failed/`` and would see nothing at all.  ``pbwait``
+    closes that, and the only thing it has to work from is the lane's
+    submission record -- so the record has to be there, under the key the
+    action was actually submitted with, and resolvable from the twelve
+    characters an operator's log line prints.
+    """
+
+    cas = _cas(tmp_path)
+    checkout = _producer_checkout(tmp_path)
+    action = _producer_action(checkout)
+    request = cas.publish_action_request(action)
+
+    submission = fleet_submit.submit(
+        action, cas=cas, request_path=request, transport="slurm",
+        tags=["gb10"], resources={"gpu": 1, "mem_gb": 16},
+        checkout_root=checkout, queue_root=tmp_path / "pb-queue",
+    )
+
+    found = sl.resolve_recorded(submission.action_key[:12])
+    assert len(found) == 1
+    record = found[0]
+    assert record["action_key"] == submission.action_key
+    assert record["job_id"] == submission.job_id
+    assert record["request"] == str(
+        cas.root / "requests" / submission.action_key[:2]
+        / f"{submission.action_key}.json")
+    # The generation and the retry policy, which is what lets `pbwait` build a
+    # complete terminal record from this file alone.
+    assert record["published_unix"] > 0
+    assert record["max_attempts"] == 1
+    assert record["resources"] == {"cpu": 1, "gpu": 1, "mem_gb": 16}
+
+    # And nothing files an ending: that is `pbwait`'s, and both directories
+    # are still absent.
+    assert not (tmp_path / "pb-queue" / "done").exists()
+    assert not (tmp_path / "pb-queue" / "failed").exists()
