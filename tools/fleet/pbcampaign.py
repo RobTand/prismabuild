@@ -282,7 +282,7 @@ def rows_for(submissions, waited) -> list[dict]:
     for published in submissions:
         key = str(published.get("action_key") or "")
         status = str(published.get("status") or "refused")
-        if status == "submitted" and key in by_key:
+        if status in {"submitted", "attached"} and key in by_key:
             table.append(by_key[key])
         elif status == "cache_hit":
             table.append({
@@ -341,7 +341,10 @@ def main(argv=None) -> int:
                 print(json.dumps(payload, sort_keys=True), flush=True)
         return 1 if refused else 0
 
-    submitted = [one for one in submissions if one.get("status") == "submitted"]
+    # ``attached`` is a row that was already running when the campaign was
+    # re-run: there is a job to wait for, it is just not this run's job.
+    submitted = [one for one in submissions
+                 if one.get("status") in {"submitted", "attached"}]
     keys = [str(one["action_key"]) for one in submitted]
     # The generation each row was submitted under, taken from what pbrun
     # printed rather than read back off the queue.  Reading it back is a race

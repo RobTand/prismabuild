@@ -114,33 +114,10 @@ def resolve_key(q, name: str, *, lane_root=None) -> str:
     return found.pop()
 
 
-def outstanding(q, key: str, *, lane_root=None):
-    """The newest submission of this key anybody recorded, or ``None``.
-
-    Returns ``(transport, generation, submission)``.  Newest wins because a key
-    can legitimately have been carried by both transports -- the pull queue
-    last week, SLURM today -- and the run being waited for is the one somebody
-    just asked for.
-    """
-
-    candidates = []
-    lane = slurm_lane.recorded_submission(key, root=lane_root)
-    if isinstance(lane, dict):
-        generation = lane.get("published_unix")
-        if isinstance(generation, (int, float)) and not isinstance(generation, bool):
-            candidates.append(("slurm", float(generation), lane))
-    for state in (pool.READY, pool.CLAIMED):
-        try:
-            item = json.loads(
-                q.item_path(state, key).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        generation = item.get("published_unix") if isinstance(item, dict) else None
-        if isinstance(generation, (int, float)) and not isinstance(generation, bool):
-            candidates.append(("pool", float(generation), item))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda entry: entry[1])
+#: ``pbrun`` reads the same submissions to decide whether to attach to a run
+#: instead of starting a second copy of it, so the reading lives there and this
+#: is the waiter's name for it.
+outstanding = pbrun.outstanding_submission
 
 
 def recorded_action(cas, key: str):
@@ -209,6 +186,10 @@ def wait_one(
     ``deadline`` is a monotonic instant shared by every key in one call, so
     ``--wait-s`` bounds the whole wait rather than each key in turn.
 
+    The order is: an ending already filed for this generation, then the CAS
+    receipt, then the scheduler.  The receipt outranks the scheduler because
+    it is the only one of the two that survives ``MinJobAge``.
+
     ``generation`` says which run is meant.  A caller that submitted the work
     knows it -- ``pbrun --detach`` prints it -- and should pass it, because
     reading it back off the queue is a race: a worker can claim and finish the
@@ -223,8 +204,37 @@ def wait_one(
     if landed is not None:
         return _from_record(q, *landed)
 
-    if found is not None and found[0] == "slurm" and found[1] == generation:
-        action = recorded_action(cas, key)
+    action = recorded_action(cas, key)
+    receipt = None if action is None else cas.lookup(action)
+    slurm_run = (found is not None and found[0] == "slurm"
+                 and found[1] == generation)
+
+    if receipt is not None and not (found is not None and found[0] == "pool"):
+        # The CAS is asked before the controller, and it outranks it.  A
+        # receipt says the work was done whatever the scheduler goes on to
+        # say -- and after ``MinJobAge`` the scheduler says nothing at all,
+        # having forgotten a job that ran perfectly well.  Waiting on a
+        # forgotten job for a verdict already in hand is the whole of
+        # ``--wait-s`` spent to learn nothing.
+        if slurm_run:
+            # The ending is still missing, and every reader of ``pb-queue``
+            # expects one.  ``resume`` with no patience polls the controller
+            # once for provenance, then files from the receipt either way.
+            slurm_lane.resume(
+                found[2], action=action, cas=cas,
+                queue_root=q.root if queue_root is None else queue_root,
+                wait_s=0.0, **lane_commands,
+            )
+            landed = pbrun.landed_outcome(
+                q, key, wait_s=0.0, generation=generation)
+            if landed is not None:
+                return _from_record(q, *landed)
+        # Nothing outstanding, or nothing that could file: the work is done
+        # and was memoized.  Which transport delivered it does not enter into
+        # it, which is the property the CAS exists to give.
+        return _row(key, "cache_hit", transport="cas", receipt_published=True)
+
+    if slurm_run:
         if action is None:
             return _row(
                 key, "unreadable", transport="slurm",
@@ -246,15 +256,6 @@ def wait_one(
             return _from_record(q, *landed)
         return _row(key, "waiting", transport="slurm",
                     host=str(found[2].get("submitted_host") or "-"))
-
-    if found is None:
-        action = recorded_action(cas, key)
-        if action is not None and cas.lookup(action) is not None:
-            # Nothing outstanding and a receipt in hand: this work is done and
-            # was memoized.  Which transport delivered it does not enter into
-            # it, which is the property the CAS exists to give.
-            return _row(key, "cache_hit", transport="cas",
-                        receipt_published=True)
 
     landed = pbrun.landed_outcome(
         q, key, wait_s=max(0.0, deadline - time.monotonic()),

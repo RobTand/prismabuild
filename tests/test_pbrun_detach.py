@@ -175,6 +175,52 @@ def test_a_detached_submission_asks_for_the_partition_an_attached_one_asks_for(
 # Work already in the CAS
 # --------------------------------------------------------------------------
 
+def test_a_re_run_attaches_to_the_job_that_is_still_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fleet: Path, capsys
+) -> None:
+    """A campaign whose waiter died is re-run to find out where it got to.
+
+    Every row still on a node has to be attached to, not submitted again: two
+    copies of one action materialize the same checkout twice, take the GPU
+    twice, and race to publish one receipt.  The CAS cannot prevent it -- there
+    is no receipt until the first copy finishes.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    assert _run_pbrun(
+        tmp_path, monkeypatch, work, "--detach", "--transport", "slurm"
+    ) == 0
+    first = _one_json_line(capsys.readouterr())
+    assert first["status"] == "submitted"
+
+    assert _run_pbrun(
+        tmp_path, monkeypatch, work, "--detach", "--transport", "slurm"
+    ) == 0
+    second = _one_json_line(capsys.readouterr())
+    assert second["status"] == "attached"
+    assert second["action_key"] == first["action_key"]
+    assert second["job_id"] == first["job_id"]
+    assert second["published_unix"] == first["published_unix"]
+    # The submission it attached to is the one a later pbwait resumes from.
+    assert Path(second["submission"]).exists()
+    assert len(_submissions(fleet)) == 1, "a second job was submitted"
+
+    # Live is not the same as recorded.  Once the job has ended without an
+    # ending filed, asking again is asking for the work to be done -- and
+    # nothing is running to do it.
+    (fleet / f"{first['job_id']}.state").write_text("FAILED|1:0\n",
+                                                    encoding="utf-8")
+    assert _run_pbrun(
+        tmp_path, monkeypatch, work, "--detach", "--transport", "slurm"
+    ) == 0
+    third = _one_json_line(capsys.readouterr())
+    assert third["status"] == "submitted"
+    assert third["job_id"] != first["job_id"]
+    assert len(_submissions(fleet)) == 2
+
+
 def test_a_detached_submission_of_finished_work_submits_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fleet: Path, capsys
 ) -> None:

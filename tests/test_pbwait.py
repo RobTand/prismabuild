@@ -27,6 +27,7 @@ from prismabuild import pool  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 import pbwait  # noqa: E402
+from prismabuild import slurm_lane  # noqa: E402
 
 from test_slurm_lane import fleet, _runnable_action  # noqa: E402,F401
 from test_pbrun_detach import _checkout, _queue, _run_pbrun, _one_json_line  # noqa: E402
@@ -238,6 +239,58 @@ def test_a_detached_slurm_action_has_its_ending_filed_by_the_waiter(
     # sacct and scontrol when they want more than the record holds.
     assert rows[0]["job"] == record["detail"]["slurm"]["job_id"]
     assert rows[0]["job"] in pbwait.render(rows)
+
+
+def test_the_receipt_outranks_the_controller_when_the_ending_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fleet: Path
+) -> None:
+    """The CAS is asked before the scheduler, and it wins.
+
+    A receipt says the work was done whatever the controller goes on to say --
+    and what it says is unreliable in both directions here: after ``MinJobAge``
+    it has forgotten the job entirely, and before its own bookkeeping catches
+    up it can still call a finished job RUNNING.  Waiting on either for a
+    verdict already in hand spends the whole of ``--wait-s`` to learn nothing,
+    and the ending still has to be filed for the eleven tools that read it.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "run")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _runnable_action(tmp_path, cas)
+    request = cas.publish_action_request(action)
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    key = str(action["action_key"])
+
+    assert pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[],
+        demand={"cpu": 1, "mem_gb": 1}, exclusive=False, timeout_s=600.0,
+        wait_s=60.0, retry_safe=False, max_attempts=1, detach=True,
+        queue_root=queue.root,
+        worker_python=sys.executable, job_python=sys.executable,
+        local_checkout_root=tmp_path / "checkouts",
+    ) == 0
+    assert cas.lookup(action) is not None, "the job ran; the receipt is real"
+    assert not queue.item_path(pool.DONE, key).exists()
+
+    # The controller has not caught up: it still calls the finished job
+    # RUNNING, which a waiter that trusted it would poll until its patience
+    # ran out.
+    job_id = str(slurm_lane.recorded_submission(key)["job_id"])
+    (fleet / f"{job_id}.state").write_text("RUNNING|0:0\n", encoding="utf-8")
+
+    started = time.monotonic()
+    rows = pbwait.wait_for_keys(
+        queue, [key], cas=cas, wait_s=30.0, queue_root=queue.root, poll_s=0.0
+    )
+    elapsed = time.monotonic() - started
+    assert rows[0]["succeeded"] is True, rows
+    assert elapsed < 5.0, f"waited {elapsed:.1f}s on a verdict already in hand"
+
+    record = json.loads(
+        queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
+    assert record["status"] == "executed"
+    assert record["detail"]["receipt_published"] is True
 
 
 def test_a_detached_slurm_job_that_failed_is_filed_and_reported(

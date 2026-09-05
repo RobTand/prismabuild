@@ -1445,7 +1445,14 @@ def resume(
 
     A wait that runs out of patience files nothing.  The job is still queued or
     running, and an ending written now would say ``failed`` about work nothing
-    has watched -- which is the one thing a terminal record must never do.
+    has watched -- which is the one thing a terminal record must never do.  A
+    job the controller cannot account for at all files nothing either, for the
+    same reason: not knowing is not the same as knowing it failed.
+
+    ``wait_s=0`` is the useful non-waiting case.  It polls the controller once
+    for provenance and then files what the receipt says, which is how a waiter
+    that already holds the receipt files the missing ending without waiting on
+    a job the scheduler may have forgotten.
     """
 
     key = str(submission["action_key"])
@@ -1477,7 +1484,7 @@ def resume(
     )
     result.attempts.append((job, outcome))
     result.receipt = cas.lookup(action)
-    if outcome.state == WAIT_TIMEOUT_STATE and result.receipt is None:
+    if outcome.state in (WAIT_TIMEOUT_STATE, UNKNOWN_STATE) and result.receipt is None:
         return result
 
     # Rebuilt from what was submitted rather than round-tripped through the

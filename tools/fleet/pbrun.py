@@ -1270,6 +1270,12 @@ def detach_line(
     this and nothing else: a caller reads one line of JSON instead of parsing
     prose written to be read aloud.
 
+    ``status`` is one of ``submitted`` (this call put the work somewhere),
+    ``cache_hit`` (it was already in the CAS, so nothing was submitted) or
+    ``attached`` (it was already running under an earlier submission, which
+    this call joined rather than duplicated).  All three exit 0, and the last
+    two name a run this process did not start.
+
     The generation travels in it because the terminal record a later wait looks
     for is identified by generation and not by key.  An action key is a content
     hash, so one key accumulates the records of every earlier run of the same
@@ -1467,6 +1473,74 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         "withdrawn_by": outcome.get("withdrawn_by"),
         "reason": outcome.get("reason"),
     }
+
+
+def outstanding_submission(q, key: str, *, lane_root=None):
+    """The newest submission of this key anybody recorded, or ``None``.
+
+    Returns ``(transport, generation, submission)``.  Newest wins because a key
+    can legitimately have been carried by both transports -- the pull queue
+    last week, SLURM today -- and the run being asked about is the one somebody
+    just asked for.
+    """
+
+    candidates = []
+    lane = slurm_lane.recorded_submission(key, root=lane_root)
+    if isinstance(lane, dict):
+        generation = lane.get("published_unix")
+        if isinstance(generation, (int, float)) and not isinstance(generation, bool):
+            candidates.append(("slurm", float(generation), lane))
+    for state in (pool.READY, pool.CLAIMED):
+        try:
+            item = json.loads(
+                q.item_path(state, key).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        generation = item.get("published_unix") if isinstance(item, dict) else None
+        if isinstance(generation, (int, float)) and not isinstance(generation, bool):
+            candidates.append(("pool", float(generation), item))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda entry: entry[1])
+
+
+def live_submission(q, key: str, *, lane_root=None, **lane_commands):
+    """The submission this key is still running under, or ``None``.
+
+    A key is a content hash, so asking for the same work twice is the normal
+    way to ask whether it is done -- and while the first ask is still running,
+    the second must attach to it rather than start a second copy of it.  Two
+    copies is not merely waste: they materialize the same checkout, take the
+    same GPU twice and race to publish one receipt.
+
+    Live means three things together: something was recorded, no ending covers
+    that generation, and the thing that carries it still exists -- a job the
+    controller still knows in a non-terminal state, an item nobody has claimed,
+    or a claim whose lease is still being refreshed.  A forgotten job or a dead
+    lease is not live, and the caller submits afresh, which is what the pull
+    queue's own reaper would arrange for anyway.
+    """
+
+    found = outstanding_submission(q, key, lane_root=lane_root)
+    if found is None:
+        return None
+    transport, generation, submission = found
+    if landed_outcome(q, key, wait_s=0.0, generation=generation) is not None:
+        return None
+    if transport == "slurm":
+        job_id = str(submission.get("job_id") or "")
+        if not job_id:
+            return None
+        state = slurm_lane.query_state(job_id, **lane_commands)
+        if state is None or state[0] in slurm_lane.TERMINAL_STATES:
+            return None
+        return found
+    if q.item_path(pool.READY, key).exists():
+        return found
+    age = q.lease_age(key)
+    if age is not None and age < pool.LEASE_TIMEOUT_S:
+        return found
+    return None
 
 
 def await_outcome(
@@ -2008,7 +2082,9 @@ def main() -> int:
         help="seal and submit exactly as usual, print one JSON line naming the "
              "action key, the transport, the job id or queue record and the "
              "terminal-record paths, and exit 0 without waiting; an action "
-             "already in the CAS prints status=cache_hit and submits nothing. "
+             "already in the CAS prints status=cache_hit and submits nothing, "
+             "and one already running prints status=attached and joins that "
+             "run rather than starting a second copy of it. "
              "Wait for it later with pbwait.py. Incompatible with "
              "--max-attempts greater than 1: a retry needs somebody alive to "
              "see the attempt fail",
@@ -2383,6 +2459,40 @@ def main() -> int:
             queue_root=SH / "pb-queue",
         ), flush=True)
         return 0
+
+    if args.detach:
+        # Not in the CAS, but perhaps already running: a campaign whose waiter
+        # died is re-run to find out where it got to, and every row still on a
+        # node must be attached to rather than submitted again.
+        live = live_submission(pool.PoolQueue(SH / "pb-queue"), key)
+        if live is not None:
+            transport, generation, submission = live
+            if transport == "slurm":
+                directory = Path(str(submission.get("directory") or "."))
+                record = slurm_lane.submission_record_path(
+                    directory, published_unix=generation,
+                    attempt=int(submission.get("attempt") or 1),
+                )
+                job_id = str(submission.get("job_id") or "")
+            else:
+                ready = (SH / "pb-queue" / pool.READY / f"{key}.json")
+                record = ready if ready.exists() else (
+                    SH / "pb-queue" / pool.CLAIMED / f"{key}.json")
+                job_id = ""
+            print(f"pbrun: {key[:12]} is already running "
+                  f"({transport}{' job ' + job_id if job_id else ''}); "
+                  f"attaching to it rather than submitting a second copy",
+                  file=sys.stderr, flush=True)
+            print(detach_line(
+                key,
+                transport=transport,
+                status="attached",
+                queue_root=SH / "pb-queue",
+                published_unix=generation,
+                job_id=job_id or None,
+                submission=record,
+            ), flush=True)
+            return 0
 
     if args.transport == "slurm":
         # Everything below this point reads the pull queue -- worker offers,
