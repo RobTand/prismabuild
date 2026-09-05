@@ -28,7 +28,10 @@ Three properties follow from that.
     untracked bytes included — as a Git bundle in the content-addressed store
     (CAS). The worker materializes a fresh checkout of that commit wherever the
     action lands, so `HEAD~1`, `git merge-base` and `BASE...HEAD` resolve there.
-    Edits you make after submitting cannot change what runs.
+    Edits you make after submitting cannot change what runs. A path you staged
+    with `git add -f` travels too, with the bytes it has in your worktree, even
+    though the ignore rules match it; a path your worktree no longer has does
+    not travel, whether it was committed or only staged.
 *   **A receipt is the verdict.** A worker that finishes the work publishes a
     CAS receipt. Under SLURM, a job that exits 0 without publishing a receipt
     did not do the work, and a job that ends badly after publishing one did.
@@ -176,6 +179,13 @@ terminal record, so a detached submission has nobody to file one. `pbwait`
 resumes the recorded job, waits on it, and files that ending. Under the pull
 queue the worker files the ending and `pbwait` only watches.
 
+A full key may name work that is not submitted yet, and waiting first is
+supported: while nothing is recorded, each poll looks for a submission as well
+as for an ending, so a detached submission made after the wait began is
+discovered, resumed, and reported by that same wait. Before this, such a wait
+watched only terminal files, spent its whole `--wait-s` on a job that had
+already finished, and exited 75.
+
 ### Exit codes
 
 `pbrun` and `pbwait` use the same codes.
@@ -210,6 +220,33 @@ running, and under SLURM `pbwait` is what files the ending once it stops.
 After a 75 that says the fate of a submission is unknown, run the `squeue` in
 the message instead. There is nothing to wait on: no submission was recorded,
 because none is known.
+
+### When the pull queue is fenced
+
+`fleet/slurm/cutover.sh` closes the pull queue to new submissions before it
+retires the queue's workers, and it does that with the filesystem rather than
+with a flag: it removes the write bit on
+`/mnt/shared/prismabuild-fleet/pb-queue/ready` and writes
+`pb-queue/cutover-fence.json` beside it saying why. Every producer on the fleet
+is still running the generation published before the cutover, and that code
+reads no marker, so the write bit is the only thing all of them obey.
+
+A submission into a fenced queue is refused rather than accepted:
+
+    pbrun: the pull queue is fenced: /mnt/shared/prismabuild-fleet/pb-queue/ready
+    is not writable. fleet/slurm/cutover.sh is retiring the pull queue's
+    execution plane; submit through SLURM, or run fleet/slurm/rollback.sh.
+
+Submit through SLURM instead with `pbrun --transport slurm`, or wait for the
+cutover to finish, after which the published generation makes SLURM the
+default and nothing has to be said. The fence stays up once the cutover has
+finished, because the queue then has no workers.
+`fleet/slurm/rollback.sh` lifts it, restoring the mode the cutover recorded in
+the marker.
+
+An unwritable `ready` with no marker is not a fence. It is a directory
+somebody tightened, and it is refused the same way, naming the directory so
+the mode can be read.
 
 ### When a record will not write
 
@@ -269,6 +306,11 @@ prints the job name, the comment and that `squeue`, files nothing, and exits
 something runs until it ends. Elapsed time is never treated as evidence that a
 worker is dead.
 
+When a `--timeout-s` you asked for does expire, the worker takes the action's
+whole process group down before it reports the timeout: SIGTERM, a grace
+period, then SIGKILL against whatever is still running. A descendant that
+ignores SIGTERM does not survive the report.
+
 What the lane does instead is measure. While a job is `RUNNING`, the waiting
 `pbrun` samples the job's own cgroup accounting and its log sizes at the
 accounting interval. A sample is progressing when CPU time, RSS, disk bytes, or
@@ -322,6 +364,18 @@ an omitted field is not passed at all.
 
 An unknown field is refused when the manifest loads, before any row is sealed:
 a dropped typo would seal an action nobody asked for.
+
+Every field's value shape is refused at load too, and for the same reason: a
+value that cannot become its flag used to raise while a later row was being
+prepared, after the rows before it had been submitted, and their keys went with
+the traceback. A count in `demand` is an integer or a string holding one, a
+name in `demand` and `env` is a string, an `env` value is a string or a number,
+`tags` and `snapshot_ref` are lists of non-empty strings, `timeout_s` is a
+number, `cwd` and `host_class` are strings, and every switch field is `true` or
+`false` rather than anything truthy. Two of those refusals were silent before:
+`"tags": "x86"` sealed three tags, one per character, and `"deterministic":
+"no"` sealed the opposite of what it said. Each refusal names the row index,
+the field, and the value.
 
 Three rows are refused at load as well, each for the reason `pbrun` gives at
 submit:
@@ -401,6 +455,29 @@ work is still out there and the keys are still worth waiting on. Under
 `--detach` the campaign returns 0, or 1 if any row was refused; it does not
 wait, so it never returns 75.
 
+## Fan a test suite out
+
+`pbtest` shards a test suite across the fleet instead of running it on one box:
+
+    tools/fleet/pbtest.py --checkout /home/rob/prismabuild \
+        --python /home/rob/venvs/pb-cpu/bin/python --shards 20 tests
+
+Each shard is one `pbrun` action, so the checkout travels through the CAS and
+the interpreter is the target box's, not this one's. `--tag` defaults to `x86`,
+which is also the claim that owns the named interpreter.
+
+`--threads-per-shard` sets each shard's BLAS and OMP ceiling, and the same
+number becomes that shard's `pbrun --cpus`, which the lane emits as
+`--cpus-per-task`. The two travel together on purpose: a ceiling without a
+reservation is threads taking turns inside one core, because `ConstrainCores`
+makes the declared demand a cpuset. `--cpus-per-shard N` reserves a different
+number, and it is required with `--threads-per-shard 0`, which sets no ceiling
+and so gives nothing to derive a reservation from. A negative ceiling, a reservation below one core, and a missing
+pairing are all refused with exit 2 before any shard is submitted.
+
+The CPU demand is sealed into each shard's action, so a suite fanned out at a
+different width is a different action rather than a cache hit of the last run.
+
 ## Submit a measurement
 
 A measurement's numerics do not transfer across architectures, so a measurement
@@ -469,7 +546,7 @@ for jobs the controller has forgotten. Use them directly for scheduler detail
 | `/mnt/shared/prismabuild-fleet/pb-queue/done/<key>.json` | The ending of an action whose work was done. |
 | `.../pb-queue/failed/<key>.json` | The ending of an action with no receipt. |
 | `.../pb-queue/withdrawn/<key>.json` | The marker for an action somebody cancelled. |
-| `.../slurm/<key>/` | The lane directory: `job.sh`, `submissions/`, `latest.json`, `liveness.jsonl`, and `<jobid>.out` and `.err`. |
+| `.../slurm/<key>/` | The lane directory: `scripts/<sha256>.sh`, the immutable script each submission sent, plus `job.sh` as a pointer to the newest, `submissions/`, `latest.json`, `liveness.jsonl`, and `<jobid>.out` and `.err`. |
 | `.../cas/` | The content-addressed store: action requests, results, and receipts. |
 
 Both transports file their endings in the same two directories, so a SLURM
@@ -540,11 +617,13 @@ reported and the withdrawal stands, because a sibling that finished between the
 listing and the cancel is the ordinary case.
 
 A withdrawal cancels the run, not the name. The marker is scoped to the
-generation it was filed against, and a later submission of the same key retires
-it into `withdrawn/superseded/`: the action key is a content hash, so
-re-submitting it is how anybody asks for the same work again. If the action
-finished a moment before you asked, `pbrun` says an outcome is already filed and
-withdraws nothing.
+generation it was filed against, and a submission of a *later* generation
+retires it into `withdrawn/superseded/`: the action key is a content hash, so
+re-submitting it is how anybody asks for the same work again. A withdrawal of
+the run being submitted is left where it is, whenever it lands: it stops the
+remaining attempts of that run and it is the ending that gets filed. If the
+action finished a moment before you asked, `pbrun` says an outcome is already
+filed and withdraws nothing.
 
 ### Retry
 
@@ -577,6 +656,13 @@ it is now.
 
     tools/fleet/pool_reset.py                 # report only
     tools/fleet/pool_reset.py --apply --limit 20
+
+Either invocation works from a checkout and from a published runtime
+generation: the child `pbrun.py` is looked up under both layouts, `tools/fleet`
+first and then the published flat `tools`, which hold the same bytes. A runtime
+with neither is refused by name before anything is submitted. Before this,
+every path-addressed reset run from a checkout exited 2 with the interpreter's
+"can't open file" and left its record failed.
 
 The default only reports, and it sends no deadline unless you pass
 `--timeout-s`. It submits at `--priority -10` by default, behind everything
@@ -657,6 +743,17 @@ These are refusals at submission, before anything reaches the fleet.
 *   **`executable script bytes are outside the snapshotted repository`** — move
     each helper under the repository so its bytes are bound by the action's code
     closure.
+*   **`checkout snapshot symlink points outside the sealed repository`** — a
+    symlink in your checkout reads bytes the snapshot does not carry. `pbrun`
+    resolves the whole link graph, so the escape can be composed out of links
+    that each look contained: with `a -> .` in the tree, `b -> a/../outside.txt`
+    reaches the repository's parent. Point the link inside the repository, or
+    declare the external bytes as an input. A worker applies the same rule to
+    the tree it checks out and refuses with `materialized checkout symlink
+    points outside the sealed repository`, which is what an older snapshot
+    already in the queue reports. A link the worker's filesystem cannot follow
+    at all, which for an older snapshot means a loop among its links, refuses
+    with `materialized checkout symlink cannot be resolved`.
 *   **`slurm refused this action`** — `sbatch` rejected the submission. The
     message names the required tags and the demand. An unknown Feature is the
     usual cause: a tag that no node carries can never be scheduled. Read
@@ -702,9 +799,66 @@ and the action that reaches the scheduler is the snapshot-addressed one the
 node needs. Sealing moves the action key once, and only for an action that
 carried no snapshot; a producer should print `Submission.action_key`.
 
+A producer addresses its own code relative to the tree the action runs in.
+`fleet_submit` runs `pbrun`'s relocation guard over the action's argv and
+environment while it seals, so an absolute path into the submitter's checkout
+is refused before anything is queued. A sealed snapshot the executing process
+never imports is not provenance: the worker verifies the sealed bytes and the
+interpreter loads the shared ones. Both Tessera dispatchers therefore set
+`PYTHONPATH` to `tessera/src`. That is a different action key from the absolute
+spelling they used before 2026-09-05, so receipts published under the old keys
+are misses and those shards re-encode.
+
 `fleet_submit` files no endings. It returns as soon as the scheduler has the
 job, and the lane's submission record is what makes the job findable
 afterwards. Run `pbwait` on the keys to derive and file the terminal records.
 
+`tools/fleet/tessera_status.py` reads the export's progress from the CAS
+receipts of the export it names, not from files in the shared checkout. Under
+SLURM a shard writes its manifest inside a private checkout the job removes
+when it ends, so the receipt is the record. The export is identified by the
+digest of the allocation plan the dispatcher hands the exporter, so a receipt
+from a previous plan is counted on its own line instead of deciding the shard
+count. The screen reads the shared results directory only under the pull
+queue, which is the transport that wrote those files. It reports what it could
+not read rather than failing.
+
 Any producer that builds its own actions should do the same: seal the action,
 hand it to `fleet_submit`, print the key, and read the CAS for the verdict.
+
+## Smoke-test a transport
+
+`tools/fleet/seal_and_publish.py --transport pool|slurm` seals one trivial
+action and hands it to the named transport. It prints the submitted key, the
+key it sealed, and where the submission went, so a `ready/` item under the
+pull queue and a submission record under the lane are told apart.
+
+The SLURM lane addresses a checkout only through a sealed snapshot, so this
+command makes its smoke checkout sealable: if
+`/mnt/shared/prismabuild-fleet/checkout` has no commit, the first run
+initializes a Git repository there and commits `task_code.py`, and nothing
+else. A checkout that already has a commit is left as it is. Before
+2026-09-05 the command wrote a plain directory, and `--transport slurm`
+refused every run with `a non-Git checkout cannot be materialized` without
+reaching a scheduler command.
+
+A refused submission now prints the transport's reason on stderr and exits 2.
+
+Initializing the checkout is necessary but not sufficient, and this part
+applies to both transports. `run_local_action` refuses an action whose
+declared result already exists in the execution tree with no recovery claim,
+and a claim is keyed by action key, so a result left by an older key is not a
+claim for the current one. `/mnt/shared/prismabuild-fleet/checkout` currently
+holds `fleet_result.txt`, `pbrun_result.*`, `.pbrun-closure.*` and 120 files
+under `results/glm53-tessera/`. The pull queue executes in that tree itself,
+so a re-dispatch under a moved key refuses on every shard that has a file
+there rather than re-encoding. The SLURM lane reaches the same files by a
+different route: the snapshot roster is tracked plus nonignored-untracked
+paths and the checkout has no `.gitignore`, so those files ride into every
+snapshot and the node refuses there too.
+
+Move them out of the checkout before the next dispatch from that tree on
+either transport. Ignoring them is the SLURM half only, because the pull queue
+never snapshots. This applies to the smoke action, whose result is
+`fleet_result.txt`, and to every export shard, whose result is
+`results/glm53-tessera/shard-NNNNN.json`.

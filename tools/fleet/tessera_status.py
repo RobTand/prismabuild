@@ -10,6 +10,16 @@ do".  So SLURM's depth is asked of ``squeue``, which is where it is.
 
 The terminal counts are the same under both, because both transports file
 their endings in the same two directories on purpose.
+
+The shard count moved for the same kind of reason.  A shard's manifest is the
+action's declared result, and under SLURM the action runs in a private
+checkout the job removes when it ends, so the manifest exists exactly where it
+always did -- in the CAS, as the receipt's verified result -- and nowhere under
+the shared checkout.  Counting files in ``results/glm53-tessera`` therefore
+reported ``0/120 encoded`` for an export that had encoded shards, while a
+manifest left over from a previous plan could still decide the screen.  So the
+count comes from the CAS receipts of the export this screen names, and the
+shared directory is read only under the transport that wrote it.
 """
 from __future__ import annotations
 
@@ -32,6 +42,13 @@ PARTS = Path("/mnt/shared/models/GLM-5.3-Flash-Tessera-E2M1K2-20260901-parts")
 #: nobody drains and called it the fleet.
 from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
 
+CAS = SH / "cas"
+
+#: The action kind this screen counts.  A shard receipt is addressed by the
+#: action key, and nothing indexes keys by export, so the requests the CAS
+#: already publishes are what names them.
+EXPORT_DEFINITION_ID = "tessera/glm53-export-shard"
+
 #: The pull queue's own directories, in the order a person reads them.
 POOL_STATES = ("ready", "claimed")
 TERMINAL_STATES = ("done", "failed", "withdrawn")
@@ -53,7 +70,7 @@ def _keys(directory: Path) -> set[str]:
     return {path.stem for path in directory.glob("*.json")}
 
 
-def queue_counts(queue_root: Path = Q, *, transport: str = "pool") -> dict:
+def queue_counts(queue_root: Path | None = None, *, transport: str = "pool") -> dict:
     """What the queue directories hold, counted once per action.
 
     A withdrawal is filed twice by design -- the marker under ``withdrawn/``
@@ -62,6 +79,11 @@ def queue_counts(queue_root: Path = Q, *, transport: str = "pool") -> dict:
     counting both makes one cancellation read as a cancellation plus a
     failure.  It is one action ending one way.
     """
+
+    if queue_root is None:
+        # Resolved on the call, not bound at definition; see
+        # ``fleet_submit.submit``.
+        queue_root = Q
 
     root = Path(queue_root)
     states = TERMINAL_STATES if transport == "slurm" else (
@@ -130,7 +152,126 @@ def describe_squeue_depth(*, squeue: str = "squeue") -> str:
     )
 
 
-def width(queue_root: Path = Q) -> str:
+def _core():
+    """``prismabuild.core``, imported the way ``width`` imports the pool."""
+
+    sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+    from prismabuild import core as pb
+    return pb
+
+
+def cas_shard_manifests(
+    cas_root: Path | None = None,
+    *,
+    plan_sha256: str,
+    definition_id: str = EXPORT_DEFINITION_ID,
+) -> tuple[dict[int, dict], int, int]:
+    """Every completed shard of one export, from verified CAS receipts.
+
+    An export is identified by the action kind, the digest of the allocation
+    plan it encodes, and the shard count it was cut into.  The plan digest is
+    what separates this export from a previous one: it is bound into every
+    shard's action key on purpose, so a re-allocated plan is different work
+    rather than a silent overwrite, and a receipt carrying another digest is
+    another export's result no matter which directory its manifest reached.
+
+    Only requests are enumerated, because only requests name the keys.  The
+    lane's re-seal publishes a second request for the same shard, carrying the
+    checkout snapshot, so one shard can have two keys and two receipts of
+    identical bytes; the shard number deduplicates them.
+
+    Args:
+        cas_root: The store the fleet publishes into.
+        plan_sha256: The digest of the plan this export encodes.
+        definition_id: The action kind to count.
+
+    Returns:
+        The manifests by shard number, how many receipts belonged to another
+        plan, and how many entries could not be read.
+    """
+
+    if cas_root is None:
+        # Resolved on the call, not bound at definition; see
+        # ``fleet_submit.submit``.
+        cas_root = SH / "cas"
+
+    pb = _core()
+    requests = Path(cas_root) / "requests"
+    if not requests.is_dir():
+        return {}, 0, 0
+    cas = pb.PrismaBuildCAS(cas_root)
+    manifests: dict[int, dict] = {}
+    other_plans = 0
+    unreadable = 0
+    for path in sorted(requests.glob("*/*.json")):
+        try:
+            raw = path.read_text(encoding="utf-8")
+            # Cheap first: a store holds every action the fleet ever sealed,
+            # and most of them are not export shards.
+            if definition_id not in raw:
+                continue
+            body = json.loads(raw)
+            task = body.get("task") or {}
+            params = body.get("params") or {}
+            if task.get("definition_id") != definition_id:
+                continue
+            if params.get("of_shards") != 120:
+                continue
+            if params.get("plan_sha256") != plan_sha256:
+                # Counted, not silently dropped: a screen that reports 0/120
+                # while the store holds a previous export's results should say
+                # that is what it is looking at.
+                if cas.lookup(body) is not None:
+                    other_plans += 1
+                continue
+            shard = params.get("shard")
+            if not isinstance(shard, int) or shard in manifests:
+                continue
+            receipt = cas.lookup(body)
+            if receipt is None:
+                continue
+            manifest = json.loads(
+                Path(cas.result_path(receipt, body)).read_text(encoding="utf-8"))
+            if manifest.get("shard") != shard:
+                unreadable += 1
+                continue
+            manifests[shard] = manifest
+        except Exception:                          # noqa: BLE001 - diagnostic
+            # A status script must never be the thing that fails.  One
+            # unreadable entry is reported as a count and costs no other
+            # shard its line.
+            unreadable += 1
+    return manifests, other_plans, unreadable
+
+
+def shared_shard_manifests(results_root: Path | None = None) -> tuple[dict[int, dict], int]:
+    """The manifests the pull queue's workers wrote into the shared checkout.
+
+    Kept for the transport that wrote them.  These files carry no plan digest,
+    so a leftover from a previous export cannot be told from a current one,
+    which is the second half of why the count moved to the CAS.
+    """
+
+    if results_root is None:
+        # Resolved on the call, not bound at definition; see
+        # ``fleet_submit.submit``.
+        results_root = RES
+
+    results = Path(results_root)
+    if not results.is_dir():
+        return {}, 0
+    manifests: dict[int, dict] = {}
+    unreadable = 0
+    for path in sorted(results.glob("shard-*.json")):
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifests[int(manifest["shard"])] = manifest
+        except Exception:                          # noqa: BLE001 - diagnostic
+            unreadable += 1
+    return manifests, unreadable
+
+
+def width(queue_root: Path | None = None) -> str:
     """How much of ``ready`` only one box can take.
 
     ``queue {'ready': 18}`` reads the same whether those items are spread
@@ -142,6 +283,11 @@ def width(queue_root: Path = Q) -> str:
     A status script must never be the thing that fails, so an unreadable
     fleet is reported as unknown rather than raised.
     """
+
+    if queue_root is None:
+        # Resolved on the call, not bound at definition; see
+        # ``fleet_submit.submit``.
+        queue_root = Q
 
     try:
         sys.path.insert(0, str(RUNTIME_ROOT / "src"))
@@ -162,20 +308,44 @@ def main(argv: list[str] | None = None) -> int:
              "pull queue or from squeue")
     ap.add_argument("--queue-root", default=str(Q), help=argparse.SUPPRESS)
     ap.add_argument("--results-root", default=str(RES), help=argparse.SUPPRESS)
+    ap.add_argument("--cas-root", default=str(CAS), help=argparse.SUPPRESS)
+    ap.add_argument("--plan", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     queue_root = Path(args.queue_root)
     results = Path(args.results_root)
 
-    manifests = sorted(results.glob("shard-*.json")) if results.is_dir() else []
-    done_shards, total_bytes, qbytes, qparams = [], 0, 0, 0
-    for m in manifests:
-        d = json.loads(m.read_text())
-        done_shards.append(d["shard"])
-        total_bytes += d["total_bytes"]
-        qbytes += d["quantized_bytes"]
-        qparams += d["quantized_params"]
-    missing = [n for n in range(1, 121) if n not in set(done_shards)]
+    # The plan digest names the export, so it is read from the same file the
+    # dispatcher hands the exporter.  Imported here rather than at module
+    # scope so a status screen costs nothing until it needs the constant.
+    import dispatch_tessera_shards as dispatcher
+    plan = args.plan if args.plan is not None else dispatcher.PLAN
+    try:
+        plan_sha256 = dispatcher.sha256_file(plan)
+    except OSError:
+        plan_sha256 = None
+
+    if plan_sha256 is None:
+        manifests, other_plans, unreadable = {}, 0, 0
+    else:
+        manifests, other_plans, unreadable = cas_shard_manifests(
+            Path(args.cas_root), plan_sha256=plan_sha256)
+    from_cas = len(manifests)
+    # Only under the transport that wrote them.  Under SLURM the manifest is
+    # written inside a private checkout the job removes, so a file here is a
+    # previous export's and carries no digest to say so.
+    from_shared = 0
+    if args.transport != "slurm":
+        shared, shared_unreadable = shared_shard_manifests(results)
+        unreadable += shared_unreadable
+        from_shared = len([n for n in shared if n not in manifests])
+        manifests = {**shared, **manifests}
+
+    done_shards = sorted(manifests)
+    total_bytes = sum(m["total_bytes"] for m in manifests.values())
+    qbytes = sum(m["quantized_bytes"] for m in manifests.values())
+    qparams = sum(m["quantized_params"] for m in manifests.values())
+    missing = [n for n in range(1, 121) if n not in manifests]
     def gib(b):
         return b / 2 ** 30
 
@@ -187,6 +357,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"width      {width(queue_root)}")
     print(f"shards     {len(done_shards)}/120 encoded   missing {len(missing)}")
+    if plan_sha256 is None:
+        print(f"  plan     unreadable, so no receipt could be matched: {plan}")
+    else:
+        # The shared directory appears only under the transport that reads it,
+        # so the line never reports a count for a place it did not consult.
+        source = f"  read     {from_cas} from CAS receipts"
+        if args.transport != "slurm":
+            source += f", {from_shared} from {results}"
+        print(f"{source}   plan {plan_sha256[:16]}")
+    if other_plans:
+        print(f"  stale    receipts encoding a different plan: {other_plans}")
+    if unreadable:
+        print(f"  skipped  entries that could not be read: {unreadable}")
     if missing[:12]:
         print(f"  next     {missing[:12]}{'...' if len(missing) > 12 else ''}")
     if qparams:

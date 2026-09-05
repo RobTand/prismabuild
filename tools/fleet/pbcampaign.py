@@ -176,6 +176,124 @@ class ManifestError(Exception):
     """The manifest says something this cannot turn into a submission."""
 
 
+#: Fields whose value reaches ``pbrun`` as a whole number, and the smallest
+#: value each one can carry.  ``max_attempts`` is checked in
+#: ``_require_submittable_row``, beside the refusal that reads it.
+_INTEGER_FIELDS = (
+    ("gpu_capacity", 0),
+    ("priority", None),
+)
+
+#: Fields whose value reaches ``pbrun`` as text.
+_TEXT_FIELDS = ("cwd", "host_class")
+
+
+def _refuse(index: int, field: str, wanted: str, value) -> ManifestError:
+    """One refusal, naming the row, the field and the value that failed.
+
+    A manifest is edited by hand, so the row index and the field name are the
+    whole of what the author needs to find the typo.  The value is quoted
+    because the common case is a number that arrived as text.
+    """
+
+    return ManifestError(f"row {index}: {field} {wanted}, got {value!r}")
+
+
+def _require_integer(value, *, index: int, field: str, minimum=None) -> None:
+    """Refuse a value ``pbrun`` cannot read as a whole number.
+
+    ``pbrun`` parses its own ``--demand`` with ``int()``, so a string of
+    digits is as good as an integer and is accepted here for the same reason.
+    A boolean is refused: Python reads ``true`` as 1, so a field that was
+    meant to be a count and arrived as a flag would seal a demand for one of
+    something nobody asked for.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise _refuse(index, field, "must be an integer", value)
+    try:
+        number = int(value)
+    except ValueError:
+        raise _refuse(index, field, "must be an integer", value) from None
+    if minimum is not None and number < minimum:
+        raise _refuse(index, field, f"must be at least {minimum}", value)
+
+
+def _require_row_shape(row, *, index: int) -> None:
+    """Refuse a field whose value cannot become the flag it stands for.
+
+    Every check here is a conversion ``pbrun_argv`` performs later, moved to
+    load time.  Performed later, the first bad row aborts a campaign that has
+    already submitted the rows before it, and their keys are lost with the
+    traceback: the work is queued and nobody holds its names.
+
+    A truthiness field is held to a JSON boolean rather than to whatever is
+    truthy.  ``"deterministic": "no"`` reads as true and seals the opposite of
+    what it says, which is the same fault as a field that is silently ignored.
+    """
+
+    for field in _TEXT_FIELDS:
+        value = row.get(field)
+        if value is not None and not isinstance(value, str):
+            raise _refuse(index, field, "must be a string", value)
+    for field, minimum in _INTEGER_FIELDS:
+        if row.get(field) is not None:
+            _require_integer(row[field], index=index, field=field,
+                             minimum=minimum)
+    timeout = row.get("timeout_s")
+    if timeout is not None and (
+        isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+    ):
+        raise _refuse(index, "timeout_s", "must be a number of seconds",
+                      timeout)
+    for field, _flag in _SWITCH_FIELDS:
+        value = row.get(field)
+        if value is not None and not isinstance(value, bool):
+            raise _refuse(index, field, "must be true or false", value)
+    for field, _flag in _REPEATED_FIELDS:
+        value = row.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, list):
+            # A bare string is the shape to name: it iterates one character at
+            # a time, so ``"tags": "x86"`` would seal three tags.
+            raise _refuse(index, field, "must be a list of strings", value)
+        for entry in value:
+            if not isinstance(entry, str) or not entry:
+                raise _refuse(index, field,
+                              "must hold non-empty strings", entry)
+    demand = row.get("demand")
+    if demand is not None:
+        if not isinstance(demand, dict):
+            raise _refuse(index, "demand",
+                          "must be an object of name to count", demand)
+        for name, count in demand.items():
+            if not isinstance(name, str) or not name:
+                raise _refuse(index, "demand",
+                              "must name each resource with a string", name)
+            _require_integer(count, index=index, field=f"demand[{name!r}]",
+                             minimum=0)
+    environment = row.get("env")
+    if environment is not None:
+        if not isinstance(environment, dict):
+            raise _refuse(index, "env",
+                          "must be an object of name to value", environment)
+        for name, value in environment.items():
+            if not isinstance(name, str) or not name or "=" in name:
+                raise _refuse(
+                    index, "env",
+                    "must name each variable with a string holding no '='",
+                    name)
+            if isinstance(value, bool) or not isinstance(
+                value, (str, int, float)
+            ):
+                # ``--env K=V`` carries text.  A list or an object would be
+                # sealed as its Python repr, which is not what the row says
+                # and is not a value any shell would have produced.
+                raise _refuse(index, f"env[{name!r}]",
+                              "must be a string or a number", value)
+
+
 def _require_submittable_row(row, *, index: int, transport: str) -> None:
     """Refuse a row ``pbrun`` would refuse, in ``pbrun``'s own words.
 
@@ -221,6 +339,11 @@ def load_manifest(path, *, transport: str = "slurm") -> list[dict]:
     submits forty rows and then discovers the forty-first is malformed has
     already spent the fleet on a manifest its author has to edit.
 
+    "Anything it cannot mean" includes every value conversion, not only the
+    fields ``pbrun`` itself would refuse.  A count that arrived as a word used
+    to convert while the row was being turned into a command line, which is
+    after the rows before it had been submitted.
+
     ``transport`` is the campaign's, and only the host-class rule reads it.
     The default is the lane, where a class is honoured, so a caller checking a
     manifest without a fleet in mind is told about the row and not about the
@@ -256,6 +379,7 @@ def load_manifest(path, *, transport: str = "slurm") -> list[dict]:
             raise ManifestError(
                 f"row {index} needs argv: a non-empty list of strings"
             )
+        _require_row_shape(row, index=index)
         _require_submittable_row(row, index=index, transport=transport)
         rows.append(row)
     return rows
@@ -305,7 +429,18 @@ def submit_row(row, *, transport: str = "") -> dict:
     flags = ["--detach"]
     if transport:
         flags += ["--transport", transport]
-    flags += pbrun_argv(row)
+    try:
+        flags += pbrun_argv(row)
+    except Exception as exc:                                     # noqa: BLE001
+        # ``load_manifest`` refuses every shape this converts, so reaching
+        # here means a conversion nothing validates yet.  It is still one
+        # row's refusal: aborting would strand the keys of the rows already
+        # submitted, which is the whole of what a detached campaign hands
+        # back.
+        return {"status": "refused",
+                "error": f"this row cannot be turned into a pbrun command "
+                         f"line: {type(exc).__name__}: {exc}",
+                "flags": flags}
     saved = sys.argv
     captured = io.StringIO()
     sys.argv = ["pbrun.py", *flags]
@@ -340,7 +475,15 @@ def submit(rows, *, transport: str = "") -> list[dict]:
 
     submissions = []
     for index, row in enumerate(rows):
-        published = submit_row(row, transport=transport)
+        try:
+            published = submit_row(row, transport=transport)
+        except Exception as exc:                                 # noqa: BLE001
+            # The loop is where the records live, so it is the last place that
+            # can keep them.  Every row already submitted is in
+            # ``submissions``, and a caller that raised out of here would
+            # return none of them.
+            published = {"status": "refused", "flags": [],
+                         "error": f"row {index}: {type(exc).__name__}: {exc}"}
         key = str(published.get("action_key") or "")
         print(f"pbcampaign: row {index} {published['status']} "
               f"{key[:pbwait.KEY_WIDTH] or '-'}", file=sys.stderr, flush=True)

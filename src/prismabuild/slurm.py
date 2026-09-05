@@ -2836,7 +2836,12 @@ class SlurmAdapter:
         return _normalize_state(raw_state)
 
     def resolve(self, action: object, job_id: SlurmJobId | str) -> SlurmResolution:
-        """Resolve an allocation, treating a valid CAS receipt as sole success."""
+        """Resolve an allocation, treating a valid CAS receipt as sole success.
+
+        The CAS is read twice on purpose: once at entry, and once at the
+        terminal decision boundary, because the receipt can land while the
+        scheduler query is in flight.
+        """
 
         normalized = pb.validate_action(action)
         job = parse_job_id(job_id) if isinstance(job_id, str) else job_id
@@ -2908,6 +2913,27 @@ class SlurmAdapter:
         # result.  Re-audit every append-only retry record at that boundary;
         # a process-local snapshot is intentionally insufficient.
         self._retry_state(normalized, job)
+        # And re-read the CAS there, for the same reason the audit is redone:
+        # the lookup at entry is a snapshot from before the scheduler query,
+        # and ordinary job completion publishes the receipt while that query
+        # is in flight.  A COMPLETED job whose verified receipt landed inside
+        # that window was reported ``failed`` with "no valid CAS receipt
+        # exists" while ``cas.lookup`` already answered, so
+        # ``DagsterActionRunner`` failed a materialization whose result was
+        # available and an immediate second ``resolve`` said ``succeeded``.
+        # A verified receipt published before terminal resolution wins,
+        # whatever the scheduler went on to say.
+        receipt = _validated_receipt(cas, normalized)
+        if receipt is not None:
+            return SlurmResolution(
+                status="succeeded",
+                action_key=str(normalized["action_key"]),
+                job_id=job,
+                slurm_state=raw_state,
+                reason="verified CAS receipt exists",
+                receipt=receipt,
+                payload_path=cas.result_path(receipt, normalized),
+            )
         return SlurmResolution(
             status=status,
             action_key=str(normalized["action_key"]),

@@ -147,6 +147,58 @@ def _cleanup_execution_checkout(
 
 
 @contextmanager
+def _require_contained_materialized_links(repository: Path) -> None:
+    """Refuse a materialized checkout whose symlinks reach outside it.
+
+    The seal-time gate reasons about the tree it is about to bundle, and this
+    one reasons about the tree that actually landed.  Both legs are needed: a
+    bundle sealed by an older ``pbrun`` carries whatever that version accepted,
+    including two links that each normalize inside the tree but compose into an
+    escape, and the record and the digest of such a bundle look exactly like
+    any other.  Resolving each link against the real filesystem after checkout
+    settles the question with the resolver the action itself will use.
+
+    A link that dangles inside the tree stays acceptable: the snapshot seals a
+    link text, not a target.  Only a resolution that leaves the tree, or one
+    the filesystem refuses to resolve, is refused.
+    """
+
+    root = repository.resolve()
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as exc:
+            raise MaterializationContractError(
+                f"cannot inspect materialized checkout path: {directory}"
+            ) from exc
+        for entry in entries:
+            candidate = Path(entry.path)
+            if entry.is_symlink():
+                try:
+                    resolved = candidate.resolve()
+                except (OSError, RuntimeError) as exc:
+                    # A link the filesystem cannot follow, a loop among them
+                    # included, is a contract refusal and not a crash.  The
+                    # resolver reports a loop as ``OSError`` on some Python
+                    # versions and as ``RuntimeError`` on others, so both are
+                    # caught here.
+                    raise MaterializationContractError(
+                        "materialized checkout symlink cannot be resolved: "
+                        f"{candidate.relative_to(root)}"
+                    ) from exc
+                if not resolved.is_relative_to(root):
+                    raise MaterializationContractError(
+                        "materialized checkout symlink points outside the "
+                        f"sealed repository: {candidate.relative_to(root)}"
+                    )
+                continue
+            if entry.is_dir(follow_symlinks=False) and candidate != root / ".git":
+                pending.append(candidate)
+
+
+@contextmanager
 def _execution_checkout(
     item: Mapping[str, object],
     *,
@@ -267,6 +319,7 @@ def _execution_checkout(
             where="check out sealed commit",
             environment={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
         )
+        _require_contained_materialized_links(repository)
         subdirectory = repository / str(snapshot["subdirectory"])
         if not subdirectory.is_dir():
             raise MaterializationContractError(

@@ -39,9 +39,16 @@ from pathlib import Path
 
 FLAG = Path("/home/rob/tmp/arb/require_pool.on")
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+from runtime_paths import fleet_tool, generation_root  # noqa: E402
 
-PBRUN = str(generation_root(__file__) / "tools" / "pbrun.py")
+_RUNTIME_ROOT = generation_root(__file__)
+#: The submitter the refusals below tell an operator to run.  Resolved under
+#: both layouts, because a hook running from a checkout would otherwise print
+#: the published runtime's flat path, which a checkout does not have.
+PBRUN = str(
+    fleet_tool("pbrun.py", root=_RUNTIME_ROOT)
+    or _RUNTIME_ROOT / "tools" / "pbrun.py"
+)
 
 # The CUDA interpreter, the flock wrappers, and a bare flock on the GPU lock.
 # That last one is not hypothetical: the wrappers were only ever a convenience,

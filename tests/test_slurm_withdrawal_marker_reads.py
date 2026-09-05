@@ -172,7 +172,7 @@ def test_supersede_withdrawal_retires_a_marker_a_stale_lookup_denies(
     marker = _operators_marker(queue_root, published_unix=100.0)
     _NegativelyCachedDirectory(monkeypatch, queue_root / pool.WITHDRAWN)
 
-    retired = sl.supersede_withdrawal(queue_root, KEY)
+    retired = sl.supersede_withdrawal(queue_root, KEY, 200.0)
     assert retired is not None and retired["withdrawn_by"] == "rob@dl380g10"
     assert not os.path.isfile(marker)
     archived = list(
@@ -187,7 +187,7 @@ def test_an_absent_marker_is_still_absent(tmp_path: Path) -> None:
 
     queue_root = tmp_path / "pb-queue"
     assert sl.withdrawal_covers(queue_root, KEY, 100.0) is None
-    assert sl.supersede_withdrawal(queue_root, KEY) is None
+    assert sl.supersede_withdrawal(queue_root, KEY, 200.0) is None
     _, filed = sl.publish_withdrawal(
         queue_root=queue_root, action_key=KEY, reason="mine", by="rob@sparky",
     )

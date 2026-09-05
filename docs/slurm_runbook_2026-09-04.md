@@ -482,6 +482,13 @@ verification ran against, and `cutover.sh` refuses a marker whose hash is not
 the one in the checkout it is about to publish -- so re-run `verify.sh` after
 any change to `slurm.conf`.
 
+A run that does not pass does the reverse: it removes the success marker and
+writes `~/.prismabuild/slurm-verify-failed.json` in its place, carrying the
+first failing row, the time and the commit. `cutover.sh` refuses while that
+file is there, and the next passing run removes it. The early exits invalidate
+the same way, so a box whose `sinfo` has gone missing does not keep last
+week's pass. Use `--verified` if you have verified the fleet from another box.
+
 The rows, and what each one is really asking:
 
 | Row | Claim |
@@ -552,6 +559,16 @@ is safe to delete by hand:
 rm /mnt/shared/prismabuild-fleet/slurm/jobs/<job id>.job
 ```
 
+One more kind of orphan is deliberate: the Epilog keeps the state file when a
+`docker ps` census exits non-zero, because a census nobody could take is not a
+census that found nothing. The slurmd log carries a `docker census failed;
+keeping <path>` line for each one, and the retained file is what names the
+owner label, the job, the marker and the checkout, so it is where a sweep of
+whatever the daemon was hiding starts. The ownership marker under
+`pb-queue/container-owners/` is kept with it. Reconcile with `docker ps -a
+--filter label=prismabuild.action=<owner>` once the daemon is back, then delete
+both files.
+
 Anything else -- a job that ended while the node stayed up -- is the export.
 
 One check `verify.sh` does not do, because it leaves a container behind if it
@@ -592,7 +609,12 @@ options, the container measurements for each, and a recommendation.
 It refuses unless all six of these hold:
 
 1. `verify.sh` passed -- its marker, or `--verified` if you ran it on another
-   box, because the marker is box-local. The marker is read, not counted: its
+   box, because the marker is box-local. No
+   `~/.prismabuild/slurm-verify-failed.json` may be present: `verify.sh`
+   writes that file whenever it does not pass and removes it when it next
+   passes, so its presence means the last verification run on this box failed
+   whatever an older success said about the same `slurm.conf`. The refusal
+   quotes the recorded row. The marker is read, not counted: its
    `slurm_conf_sha256` must be the sha256 of this checkout's
    `fleet/slurm/slurm.conf`, and a marker with no readable
    `slurm_conf_sha256` or `verified_unix` is refused. A verification against a
@@ -603,10 +625,13 @@ It refuses unless all six of these hold:
    The marker's age, host and commit are *printed* -- `# verified 3h 12m ago
    on sparky, commit <sha>` -- and never refused on. How old is too old is
    your call, and so is whether a marker written at another commit matters.
-2. `/mnt/shared/prismabuild-fleet/pb-queue/claimed` and `.../ready` are both
-   empty. A stopped loop leaves its claim behind for a reaper that will not run
-   again, and an item in `ready` is an action no SLURM job will ever pick up.
-   Wait, or withdraw it with `pbrun --withdraw <key prefix>`.
+2. `/mnt/shared/prismabuild-fleet/pb-queue/ready` and `.../claimed` are both
+   empty, scanned in that order. A stopped loop leaves its claim behind for a
+   reaper that will not run again, and an item in `ready` is an action no SLURM
+   job will ever pick up. Wait, or withdraw it with
+   `pbrun --withdraw <key prefix>`. Ready is listed first because an item a
+   worker claims between the two listings has to be seen by one of them, and
+   only that order guarantees it.
 3. `publish_runtime.py --dry-run --default-transport slurm` succeeds from this
    checkout. Step 5 below is the only step with no cheap retry -- by the time
    it runs, cron is edited and every loop on all three boxes is dead -- and
@@ -616,9 +641,11 @@ It refuses unless all six of these hold:
    for a result the loops are about to stop producing.
 5. `sinfo -h -N -o '%N %T'` reports every box -- `dl380g10`, `sparky` and
    `gx10-6b77`, which is sparklina's `NodeName` -- under `idle`, `mixed` or
-   `allocated`. Trailing state flags (`idle*`, `mixed~`) are stripped before
-   the word is read, and a node absent from `sinfo -N` is as bad as one that
-   is `down`. This is the last question asked before anything is written, and
+   `allocated`, carrying no state flag. A trailing flag is classified, not
+   stripped: `idle*` is a node the controller is getting no response from and
+   `idle~` one that is powered off, so any flag refuses and the refusal quotes
+   the state as `sinfo` reported it, flag included. A node absent from
+   `sinfo -N` is as bad as one that is `down`. This is the last question asked before anything is written, and
    `--verified` does not skip it: the marker says a fleet passed once, this
    asks whether it is up now. Step 3 stops the loops that are the only
    execution plane until SLURM takes over, so a node the controller will not
@@ -630,6 +657,38 @@ It refuses unless all six of these hold:
 `--dry-run` refuses nothing, and it *answers* the fifth question rather than
 naming it: `sinfo` only reads, so the plan tells you whether the fleet is up
 while you are still choosing the window.
+
+### The admission fence
+
+A scan is only true for the instant it ran, and every question after it takes
+time: the publisher preflight, the fleet-wide `pbrun` census and `sinfo` all
+run before step 1, and steps 1 to 4 then edit crontabs and stop supervisors and
+loops one box at a time. A producer that submitted anywhere in that interval
+had its action accepted by a transport being retired underneath it.
+
+So once the queue is confirmed empty the cutover fences it, with the
+filesystem rather than a flag: `chmod a-w` on
+`/mnt/shared/prismabuild-fleet/pb-queue/ready`, plus
+`pb-queue/cutover-fence.json` saying why and recording the mode the directory
+had, which on this fleet is 2775. Every producer and loop is still running the
+generation published before the cutover, and that code reads no marker; the
+write bit is the only thing all of them obey. A rename into `ready` then fails
+with EACCES in the producer that is still holding the action, and
+`PoolQueue.publish` turns that into a refusal naming the cutover. An old loop's
+`claim` and a `reap_stale` requeue fail the same way, which is acceptable only
+because the queue was already empty.
+
+The queue is then scanned twice more: immediately, which catches a submission
+that landed between the first scan and the fence, and again once every loop is
+stopped, which catches a claim a dying worker did not unwind. A refusal before
+the loops stop lifts the fence and changes nothing else. A refusal after they
+stop leaves it up, because reopening a queue with nothing left to drain it is
+the stranding the fence exists to prevent; run `rollback.sh`, which restores
+the loops, the crontab and the mode together.
+
+The fence outlives a successful cutover on purpose. `rollback.sh` lifts it in
+step 1b, right after the runtime, so a producer reading the restored generation
+is never told to use the pull queue and then refused by the fence.
 
 Then, in this order, and the order is not arrangeable:
 
@@ -651,6 +710,9 @@ Then, in this order, and the order is not arrangeable:
 4. **`pqwork.service` on both Sparks**, with `systemctl --user stop`. It is a
    *user* unit and takes no sudo. It is stopped, not disabled, so a reboot
    starts it again; stop it again after a reboot, or disable it deliberately.
+   The step reads `systemctl --user is-active` back and refuses if the unit is
+   still up, so step 5 cannot publish the SLURM generation behind a legacy
+   executor that is still draining the pull queue.
 5. **The runtime generation**, published with
    `publish_runtime.py --default-transport slurm`.
 
@@ -742,10 +804,22 @@ it in reverse order, runtime first:
    published, and publication never deletes a generation. Restoring it restores
    the previous default transport in the same atomic namespace operation that
    changed it.
-2. restore each box's crontab from its verbatim backup
-3. start `pqwork.service` again on both Sparks
+1b. lift the cutover's admission fence: put `pb-queue/ready` back to the mode
+   the fence marker recorded and remove the marker, so the pull queue accepts
+   submissions again. It goes here, right after the runtime, because a producer
+   reading the restored generation is told to use the pull queue
+2. restore each box's crontab from its verbatim backup, and read the crontab
+   back: a backup that carried the supervise line has to produce a crontab
+   that carries it, because that line is what keeps a supervisor alive
+3. start `pqwork.service` again on both Sparks, and read
+   `systemctl --user is-active` back
 4. start one supervisor per box now, rather than waiting up to five minutes for
    cron
+
+Steps 2 and 3 stop the rollback when they fail, naming the step. Neither is
+optional: a rollback that printed `rollback complete` over a fleet with no
+crontab entry and no `pqwork` had restored the transport and not the plane that
+executes on it.
 
 The runtime goes first deliberately. Between step 1 and step 4 the fleet has no
 workers and the default is the pull queue, so submissions queue and wait --
@@ -837,8 +911,15 @@ sbatch --parsable --no-requeue --export=NIL \
     --mem=16384M --cpus-per-task=1 --nice=1073741824 \
     --comment=pb:<action key>:<attempt>:<16 hex digits> \
     --time=02:00:00 --gres=shard:1 --constraint=gb10&sparklina \
-    /mnt/shared/prismabuild-fleet/slurm/<action key>/job.sh
+    /mnt/shared/prismabuild-fleet/slurm/<action key>/scripts/<sha256>.sh
 ```
+
+The script named there is immutable and is named by the sha256 of its own
+bytes, which the submission record carries as `script_sha256`. Two callers of
+one action key can submit across a runtime publication, so a single mutable
+script in the action directory was one caller's job reading the other's bytes.
+`job.sh` beside `scripts/` is a pointer to the newest submission's script and
+is not what any job executes.
 
 For a CPU action, the `--gres` flag is absent entirely, and `--constraint`
 carries whatever tags the checkout's location produced. `--time` is sent only
@@ -895,5 +976,7 @@ reads `latest.json` to find the job to cancel.
 | `/mnt/shared/prismabuild-fleet/slurm/jobs/` | One state file per running job, for the Epilog |
 | `/home/rob/.munge-key.b64` | The key in transit, created on dl380g10 and shredded on each Spark |
 | `~/.prismabuild/slurm-verify-passed.json` | `verify.sh` passed here, against which `slurm.conf` and when; `cutover.sh` reads all three |
+| `~/.prismabuild/slurm-verify-failed.json` | `verify.sh` did not pass here, which row failed and when; `cutover.sh` refuses while it exists |
 | `~/.prismabuild/crontab.pre-cutover` | Each box's crontab as it was, for `rollback.sh` |
-| `~/.prismabuild/cutover-<unix>.json` | What the cutover replaced, for `rollback.sh` |
+| `~/.prismabuild/cutover-<unix>.json` | What the cutover replaced, the queue root and `ready`'s prior mode, for `rollback.sh` |
+| `/mnt/shared/prismabuild-fleet/pb-queue/cutover-fence.json` | Why the pull queue is closed to new submissions, and the mode to restore |

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import errno
 import fcntl
 import hashlib
@@ -264,6 +264,9 @@ _TASK_CLASSES = frozenset({"generation", "measurement"})
 _DETERMINISM = frozenset({"deterministic", "stochastic"})
 _ARTIFACT_FAMILIES = frozenset({"generic", "codebook"})
 _PROCESS_GROUP_GRACE_SECONDS = 5.0
+
+#: How often the bounded group-exit wait re-probes group membership.
+_PROCESS_GROUP_POLL_SECONDS = 0.01
 _MAX_LOCAL_RESULT_STAGING_FILES = 64
 _MAX_INITIAL_MISS_RENDEZVOUS_BYTES = 64 * 1024
 _MAX_INITIAL_MISS_RENDEZVOUS_DIRECTORY_ENTRIES = 8
@@ -2637,7 +2640,11 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
         before = os.fstat(source_fd)
         if not stat.S_ISREG(before.st_mode):
             raise LocalActionError(f"result is not a regular file: {source}")
-        with os.fdopen(descriptor, "wb") as destination:
+        handle = os.fdopen(descriptor, "wb")
+        # ``os.fdopen`` owns the descriptor from here; the ``finally`` below
+        # must not close it a second time.
+        descriptor = -1
+        with handle as destination:
             while True:
                 chunk = os.read(source_fd, 4 * 1024 * 1024)
                 if not chunk:
@@ -2676,6 +2683,13 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
             pass
         raise
     finally:
+        # Every rejection between ``mkstemp`` and ``os.fdopen`` used to leave
+        # this descriptor open on an unlinked staging file.  A directory or a
+        # FIFO source is refused there, so a caller that kept refusing invalid
+        # inputs ran out of descriptors and could no longer do valid work.
+        if descriptor >= 0:
+            with suppress(OSError):
+                os.close(descriptor)
         os.close(source_fd)
         os.close(staging_fd)
 
@@ -4667,10 +4681,20 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
     processes inherit it explicitly so abrupt worker death cannot release the
     lock while the task (or an inherited descendant) can still write the
     declared output.
+
+    The identity is the canonical physical output path and nothing else.  It
+    used to hash the resolved checkout root as well, which made one file two
+    locks: ``checkout_root=/repo`` with ``working_directory=sub`` and
+    ``checkout_root=/repo/sub`` with ``working_directory=.`` both resolve to
+    ``/repo/sub/result.bin``, so two concurrent actions each passed the
+    absent-result check and one published the other's bytes under its own
+    deterministic key.  ``checkout`` is still taken, because the caller's root
+    is what names the output, but it is deliberately not part of the
+    exclusion identity: what has to be exclusive is the file.
     """
 
     identity = hashlib.sha256(
-        f"{checkout.resolve(strict=True)}\0{output}".encode("utf-8")
+        os.path.normpath(str(output)).encode("utf-8")
     ).hexdigest()
     directory = cas.root / ".worker-locks"
     path = directory / f"{identity}.lock"
@@ -4702,6 +4726,85 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
         os.close(directory_fd)
 
 
+def _process_group_has_live_members(pgid: int) -> bool:
+    """Whether any process that has not exited still belongs to ``pgid``.
+
+    ``os.killpg(pgid, 0)`` answers "is this group non-empty", and a zombie
+    counts: a process that has exited stays a member of its group until its
+    parent reaps it.  A worker that happens to be the nearest subreaper
+    inherits an orphaned descendant's zombie and would then see a group that
+    never empties.  So ``killpg`` is used only for the cheap "definitely
+    empty" answer, and ``/proc`` decides the rest, skipping the exited states.
+    """
+
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        # Without a process table to read, the non-empty answer above stands.
+        return True
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue
+        # The command name is parenthesized and may itself contain spaces and
+        # parentheses, so the fields are read from after its final ``)``:
+        # state, then ppid, then the process group id.
+        _, _, tail = raw.rpartition(b")")
+        fields = tail.split()
+        if len(fields) < 3 or fields[0] in {b"Z", b"X", b"x"}:
+            continue
+        try:
+            if int(fields[2]) == pgid:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _process_group_settled(
+    process: subprocess.Popen[bytes] | subprocess.Popen[str], pgid: int
+) -> bool:
+    """Whether the leader is reaped and nothing else in its group is left."""
+
+    if process.poll() is None:
+        return False
+    return not _process_group_has_live_members(pgid)
+
+
+def _await_process_group_exit(
+    process: subprocess.Popen[bytes] | subprocess.Popen[str],
+    pgid: int,
+    grace_s: float,
+) -> bool:
+    """Wait up to ``grace_s`` for the whole group to go, leader included."""
+
+    deadline = time.monotonic() + grace_s
+    while True:
+        if _process_group_settled(process, pgid):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        interval = min(remaining, _PROCESS_GROUP_POLL_SECONDS)
+        if process.poll() is None:
+            try:
+                process.wait(timeout=interval)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            time.sleep(interval)
+
+
 def _terminate_process_group(
     process: subprocess.Popen[bytes] | subprocess.Popen[str],
     *,
@@ -4714,27 +4817,34 @@ def _terminate_process_group(
     action of its own before exiting, and a caller reaping *that* group has to
     outlast the relay or it SIGKILLs the launcher mid-reap and orphans the
     action -- see ``pool.PoolQueue.execute``.
+
+    The protocol runs against the live group, not against the leader.  Leader
+    exit is not proof the group is gone: a descendant only has to ignore
+    SIGTERM while the leader accepts it, and the old early return then skipped
+    SIGKILL and handed the caller a timeout while that descendant kept the
+    compute and its inherited copy of the output lock.  Every branch, the
+    leader-already-exited one included, now drives TERM, grace and KILL until
+    the group has no live member or the bounded grace runs out.
     """
 
-    if process.poll() is not None:
+    pgid = process.pid
+    if _process_group_settled(process, pgid):
         return
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
+        # Nothing in the group is signallable; the leader may still need
+        # reaping so it does not linger as a zombie of this worker.
+        process.poll()
+        return
+    if _await_process_group_exit(process, pgid, grace_s):
         return
     try:
-        process.wait(timeout=grace_s)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
+        process.poll()
         return
-    try:
-        process.wait(timeout=grace_s)
-    except subprocess.TimeoutExpired:
-        pass
+    _await_process_group_exit(process, pgid, grace_s)
 
 
 @contextmanager

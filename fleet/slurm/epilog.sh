@@ -24,6 +24,16 @@
 # THIS SCRIPT ALWAYS EXITS 0.  A non-zero Epilog drains the node, and a cleanup
 # that could not find a container must not take a box out of the fleet.  Every
 # failure is reported to the slurmd log and swallowed.
+#
+# Swallowed is not the same as settled.  A `docker ps` that could not reach the
+# daemon prints nothing and exits non-zero, and an empty census that succeeded
+# prints nothing and exits zero; the two used to be indistinguishable here, so
+# a job that ended while the daemon or its socket was down was treated as a
+# job whose containers were gone.  The ownership marker and the state file were
+# both deleted, and the container -- which runs under dockerd's cgroup and
+# survives every kill below the job -- was left with nothing recording it.  So
+# the census status is read, reported, and kept: a failed census retains both
+# records for later reconciliation, and the exit is still 0.
 
 set -u
 
@@ -117,7 +127,14 @@ if [ ! -f "$state_file" ]; then
     # an unbounded `rm -rf` with extra steps.  A leaked tree is the smaller
     # loss and `du` finds it later; a container holds a GPU.
     orphans="$("$DOCKER" ps -aq --filter "label=${JOB_LABEL}=${job_id}" 2>/dev/null)"
-    if [ -n "$orphans" ]; then
+    orphans_status=$?
+    if [ "$orphans_status" -ne 0 ]; then
+        # Nothing to retain on this path -- the state file is what records an
+        # action's containers and there is none -- so this is a log line and
+        # not a decision.  It is still the difference between "this job left
+        # nothing" and "nobody could ask".
+        log "no state file; docker ps for ${JOB_LABEL}=${job_id} exited $orphans_status; whether this job left containers is unknown"
+    elif [ -n "$orphans" ]; then
         # shellcheck disable=SC2086
         if "$DOCKER" rm -f $orphans >/dev/null 2>&1; then
             log "no state file; removed containers labelled ${JOB_LABEL}=${job_id}: $(echo "$orphans" | tr '\n' ' ')"
@@ -153,6 +170,12 @@ local_root="$(field local_checkout_root)"
 # an action that started none is as clean as one whose containers were removed,
 # and both are allowed to retire the marker below.
 owner_settled=1
+# Whether a census could not be taken at all, which is a different answer from
+# "the label has nothing behind it".  It keeps the state file as well as the
+# marker: the file is the only record of which containers and which checkout
+# this job had, and verify.sh row 8 reads leftovers in `jobs/` back out, so a
+# retained file is where reconciliation starts rather than a leak.
+census_failed=0
 
 # -- containers --------------------------------------------------------------
 # Matched by label, never by name or by image: the labels are the action's
@@ -191,6 +214,15 @@ case "$owner" in
             fi
             # shellcheck disable=SC2086
             containers="$("$DOCKER" ps -aq $filters 2>/dev/null)"
+            census_status=$?
+            if [ "$census_status" -ne 0 ]; then
+                # stderr is dropped rather than captured: the text would land
+                # in $containers and from there in `docker rm`.  The status is
+                # what says the question went unanswered.
+                log "docker ps for ${owner:0:12} exited $census_status; the daemon could not be asked whether this action left containers"
+                census_failed=1
+                owner_settled=0
+            fi
             if [ -n "$containers" ]; then
                 # shellcheck disable=SC2086
                 if "$DOCKER" rm -f $containers >/dev/null 2>&1; then
@@ -207,7 +239,12 @@ case "$owner" in
             # job's container has to keep it alive, and this job may have
             # started none at all while that sibling did.
             remaining="$("$DOCKER" ps -aq --filter "label=${LABEL}=${owner}" 2>/dev/null)"
-            if [ -n "$remaining" ]; then
+            remaining_status=$?
+            if [ "$remaining_status" -ne 0 ]; then
+                log "docker ps for ${owner:0:12} exited $remaining_status; whether containers remain is unknown"
+                census_failed=1
+                owner_settled=0
+            elif [ -n "$remaining" ]; then
                 owner_settled=0
                 log "containers for ${owner:0:12} remain: $(echo "$remaining" | tr '\n' ' ')"
             fi
@@ -354,11 +391,20 @@ if [ "$owner_settled" -eq 1 ] && [ -n "$marker" ] && [ "${#owner}" -eq 64 ]; the
     esac
 fi
 
-lane_delete "$state_file" "state file"
-if [ -e "$state_file" ]; then
-    # Say it rather than exit non-zero: a non-zero Epilog drains the node, and
-    # a state file nobody could delete is not a reason to take a box out of the
-    # fleet.  It IS a reason for somebody to read this line.
-    log "state file $state_file survived cleanup; check the NFS export"
+if [ "$census_failed" -eq 1 ]; then
+    # Kept on purpose, and this is the one path that does.  The file names the
+    # owner label, the job, the marker and the checkout, which is everything a
+    # later sweep needs; deleting it would leave a container whose label
+    # matches nothing anybody still has written down.  verify.sh row 8 reports
+    # leftovers in `jobs/`, so this is where reconciliation starts.
+    log "docker census failed; keeping $state_file for reconciliation"
+else
+    lane_delete "$state_file" "state file"
+    if [ -e "$state_file" ]; then
+        # Say it rather than exit non-zero: a non-zero Epilog drains the node,
+        # and a state file nobody could delete is not a reason to take a box
+        # out of the fleet.  It IS a reason for somebody to read this line.
+        log "state file $state_file survived cleanup; check the NFS export"
+    fi
 fi
 exit 0

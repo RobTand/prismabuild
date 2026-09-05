@@ -20,6 +20,7 @@ queue would have performed -- and only an end-to-end run can support it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -534,8 +535,14 @@ def test_a_gpu_slot_action_asks_for_shards_its_tags_and_its_own_time(
         "--time=02:00:00",
         "--gres=shard:1",
         "--constraint=gb10&sparklina",
-        str(directory / "job.sh"),
+        # The immutable script this submission published, named by the digest
+        # of its own bytes (issue #68).  ``job.sh`` beside it is a pointer and
+        # is not what ``sbatch`` is handed.
+        str(job.script),
     ]
+    assert job.script == (
+        directory / sl.SCRIPT_DIRNAME
+        / f"{hashlib.sha256(job.script.read_bytes()).hexdigest()}.sh")
 
 
 def test_a_cpu_action_asks_for_no_device_at_all(

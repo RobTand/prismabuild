@@ -256,6 +256,51 @@ def snapshot_path_roster(
     ))
 
 
+def _seed_index_roster(root: Path, environment: dict[str, str]) -> None:
+    """Force every source-index path into the alternate index.
+
+    ``git add -A`` honours the ignore rules for a path the alternate index
+    does not already carry, and an index seeded from ``HEAD`` does not carry a
+    path the submitter staged with ``git add -f``.  That path is in the roster
+    the snapshot identity hashes, so omitting it seals a tree the identity
+    does not describe.  Force-add the source index roster instead, with the
+    working-tree bytes each path has now.
+
+    Paths whose working-tree entry is absent are left out: a staged addition
+    that was then removed from the worktree has nothing to force-add, and the
+    ``git add -A`` that follows records the removal, which is what a tracked
+    deletion already did.
+    """
+
+    raw_paths = _snapshot_git(root, ["ls-files", "-z"], strip=False)
+    staged = []
+    for relative in raw_paths.split("\0"):
+        if not relative:
+            continue
+        try:
+            (root / relative).lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SystemExit(
+                f"pbrun: cannot inspect checkout path {relative!r}: {exc}"
+            ) from exc
+        staged.append(relative)
+    if not staged:
+        return
+    # ``GIT_LITERAL_PATHSPECS`` keeps a pathname that looks like pathspec
+    # magic or a glob from being read as one; these are exact paths Git just
+    # reported, never patterns.
+    literal_environment = dict(environment)
+    literal_environment["GIT_LITERAL_PATHSPECS"] = "1"
+    _snapshot_git(
+        root,
+        ["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        environment=literal_environment,
+        input_text="\0".join(staged) + "\0",
+    )
+
+
 def require_working_tree_size(
     root: Path, paths: list[str], *, max_bytes: int
 ) -> int:
@@ -341,6 +386,94 @@ def require_untransformed_checkout(root: Path, paths: list[str]) -> None:
             )
 
 
+SNAPSHOT_LINK_RESOLUTION_LIMIT = 64
+
+
+def require_contained_snapshot_links(symlinks: dict[str, str]) -> None:
+    """Refuse a sealed tree whose link graph reaches outside the repository.
+
+    Normalizing one target string at a time is not enough, because the escape
+    can be composed out of links that each normalize inside the tree.  With
+    ``a -> .`` in the tree, ``b -> a/../outside.txt`` normalizes to
+    ``outside.txt``, yet the filesystem resolves ``a`` to the repository root
+    first and then applies ``..``, so ``b`` names the repository's parent.  The
+    snapshot record, the bundle digest and the link texts all stay the same
+    while what the action reads through ``b`` is an unsealed host file.
+
+    Resolve every sealed link the way the kernel does instead: component by
+    component, following any component that is itself a sealed link, and refuse
+    a traversal that leaves the tree, enters ``.git`` or exceeds the resolution
+    budget.  A dangling link whose resolution stays inside the tree is still
+    accepted: it seals a link text, not a target.
+    """
+
+    for path in sorted(symlinks):
+        budget = [SNAPSHOT_LINK_RESOLUTION_LIMIT]
+        _resolve_snapshot_link(path, symlinks, budget, {path})
+
+
+def _resolve_snapshot_link(
+    path: str,
+    symlinks: dict[str, str],
+    budget: list[int],
+    active: set[str],
+) -> list[str]:
+    """Return the in-tree components a sealed link resolves to."""
+
+    base = [part for part in posixpath.dirname(path).split("/") if part]
+    return _resolve_snapshot_components(
+        symlinks[path].split("/"), base, symlinks, budget, active, path
+    )
+
+
+def _resolve_snapshot_components(
+    components: list[str],
+    base: list[str],
+    symlinks: dict[str, str],
+    budget: list[int],
+    active: set[str],
+    origin: str,
+) -> list[str]:
+    """Walk one target's components through the sealed tree's link graph."""
+
+    def refuse(detail: str) -> None:
+        raise SystemExit(
+            "pbrun: checkout snapshot symlink points outside the sealed "
+            f"repository: {origin!r} -> {symlinks[origin]!r} ({detail})"
+        )
+
+    current = list(base)
+    for component in components:
+        if component in {"", "."}:
+            continue
+        if component == "..":
+            if not current:
+                refuse("resolution leaves the repository root")
+            current.pop()
+            continue
+        candidate = current + [component]
+        key = "/".join(candidate)
+        if key in symlinks:
+            if key in active:
+                refuse(f"resolution cycles through {key!r}")
+            budget[0] -= 1
+            if budget[0] < 0:
+                refuse("resolution exceeds the sealed link depth limit")
+            target = symlinks[key]
+            if target.startswith("/"):
+                refuse(f"resolution reaches the absolute target of {key!r}")
+            active.add(key)
+            current = _resolve_snapshot_components(
+                target.split("/"), current, symlinks, budget, active, origin
+            )
+            active.discard(key)
+        else:
+            current = candidate
+        if current[:1] == [".git"]:
+            refuse("resolution enters the repository's own Git directory")
+    return current
+
+
 def require_supported_snapshot_tree(
     root: Path,
     tree: str,
@@ -357,6 +490,7 @@ def require_supported_snapshot_tree(
         strip=False,
     )
     logical_bytes = 0
+    symlinks: dict[str, str] = {}
     for row in listing.split("\0"):
         if not row:
             continue
@@ -397,9 +531,11 @@ def require_supported_snapshot_tree(
                     "pbrun: checkout snapshot symlink points outside the "
                     f"sealed repository: {path!r} -> {target!r}"
                 )
+            symlinks[path] = target
         # Count each materialized pathname, not unique object ids: two paths
         # naming one blob occupy two files in the worker checkout.
         logical_bytes += int(size)
+    require_contained_snapshot_links(symlinks)
     if logical_bytes > max_bytes:
         raise SystemExit(
             "pbrun: logical checkout tree is "
@@ -755,11 +891,16 @@ def _build_git_checkout_snapshot(
         )
         # An alternate index begins empty. Overlaying the worktree directly
         # would therefore treat a HEAD-tracked file that now matches an ignore
-        # rule as untracked and omit it. Seed the exact tracked roster first;
-        # ``git add -A`` then applies deletions and live-byte changes on top.
+        # rule as untracked and omit it, and ``git add -A`` would drop a path
+        # that the submitter staged with ``git add -f`` but that HEAD has never
+        # carried. Seed the sealed roster from the source index, which is the
+        # roster the snapshot identity hashes, so the roster hashed and the
+        # roster sealed are the same roster. ``git add -A`` then applies
+        # deletions and live-byte changes on top.
         _snapshot_git(
             root, ["read-tree", "HEAD"], environment=object_environment
         )
+        _seed_index_roster(root, object_environment)
         _snapshot_git(root, ["add", "-A"], environment=object_environment)
         if stamp_relative is not None:
             _snapshot_git(
@@ -1755,6 +1896,24 @@ def outstanding_submission(q, key: str, *, lane_root=None):
     if not candidates:
         return None
     return max(candidates, key=lambda entry: entry[1])
+
+
+def publish_or_refuse(q, publication: Mapping[str, object]):
+    """Enqueue one submission, or say why the queue would not take it.
+
+    ``PoolQueue.publish`` refuses a fenced queue: ``fleet/slurm/cutover.sh``
+    removes the write bit on ``pb-queue/ready`` while it retires the pull
+    queue's execution plane, so a rename into that directory fails with
+    EACCES rather than leaving an accepted action in a queue whose workers are
+    being stopped.  That refusal is the caller's to read -- the submitter is
+    the one who can resubmit through SLURM or wait -- so it arrives as a line
+    rather than as a traceback.
+    """
+
+    try:
+        return q.publish(**publication)
+    except pool.PoolContractError as exc:
+        raise SystemExit(f"pbrun: {exc}") from exc
 
 
 def live_submission(q, key: str, *, lane_root=None, **lane_commands):
@@ -3462,7 +3621,7 @@ def main() -> int:
     # contract in both cases.
     if "retry_safe" in inspect.signature(q.publish).parameters:
         publication["retry_safe"] = args.retry_safe
-    queued_path = q.publish(**publication)
+    queued_path = publish_or_refuse(q, publication)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.

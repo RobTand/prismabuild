@@ -160,13 +160,20 @@ def add_transport_argument(parser: argparse.ArgumentParser) -> None:
              "default until the fleet has cut over to SLURM")
 
 
-#: One bundle per (checkout, working-tree state) per process, not one per
-#: action.  A dispatcher seals 120 shards out of one tree in one loop, and
+#: One bundle per (store, checkout, working-tree state) per process, not one
+#: per action.  A dispatcher seals 120 shards out of one tree in one loop, and
 #: ``git bundle create`` over that tree 120 times is 119 bundles of identical
 #: bytes.  Caching also narrows the window the seal refuses on: the roster is
 #: read once, so a tree that moves mid-loop is caught by the identity check
 #: rather than producing a hundred subtly different snapshots.
-_SNAPSHOT_CACHE: dict[tuple[str, str, str], dict[str, object]] = {}
+#:
+#: The store is part of the key because ingestion is part of the work.  A
+#: snapshot record is a reference into one CAS, so returning the first store's
+#: record for a second store hands the caller an input whose blob was never
+#: written there: the submission succeeds and the node cannot materialize the
+#: tree.  Keying on the store root makes the second call do the ingest the
+#: caller asked for.
+_SNAPSHOT_CACHE: dict[tuple[str, str, str, str], dict[str, object]] = {}
 
 
 def seal_checkout_snapshot(
@@ -188,7 +195,8 @@ def seal_checkout_snapshot(
         max_bytes: A lowered local-disk bound, or ``None`` for pbrun's own.
 
     Returns:
-        The ``params.checkout_snapshot`` record, cached per working-tree state.
+        The ``params.checkout_snapshot`` record, cached per store and
+        working-tree state.
 
     Raises:
         SubmitRefused: The tree cannot be sealed, with pbrun's own reason.
@@ -208,7 +216,12 @@ def seal_checkout_snapshot(
             f"snapshot, and this one cannot be identified: {exc}"
         ) from None
     cached = _SNAPSHOT_CACHE.get(
-        key := (str(root), str(identity["head"]), str(identity["dirty_sha256"]))
+        key := (
+            str(cas.root),
+            str(root),
+            str(identity["head"]),
+            str(identity["dirty_sha256"]),
+        )
     )
     if cached is not None:
         return cached
@@ -245,12 +258,46 @@ def seal_checkout_into_action(
         from the caller's, because the snapshot is part of what will run.
 
     Raises:
-        SubmitRefused: The tree cannot be sealed.
+        SubmitRefused: The tree cannot be sealed, or the action addresses the
+            submitter's checkout by an absolute path the snapshot cannot
+            carry.
     """
+
+    import pbrun  # deferred: only the SLURM lane relocates a checkout
 
     snapshot = seal_checkout_snapshot(
         checkout_root, cas=cas, max_bytes=max_bytes
     )
+    # Sealing a tree makes the action portable, and only sealing does not make
+    # it relocatable: an argv token or an environment variable holding an
+    # absolute path into the submitter's checkout still reads the submitter's
+    # bytes on whichever node the scheduler picked.  Both Tessera producers
+    # shipped exactly that as ``PYTHONPATH``, so a worker verified the sealed
+    # encoder in its private checkout, imported the shared one, and published
+    # the result under the sealed key.  ``pbrun`` already refuses this for an
+    # interactive submission; the same guard, not a second one, decides it
+    # here, and it decides before anything is queued.
+    task = action.get("task")
+    environment = action.get("environment")
+    argv = list(task.get("argv") or ()) if isinstance(task, Mapping) else []
+    variables = (
+        environment.get("variables") if isinstance(environment, Mapping) else None
+    )
+    try:
+        pbrun.require_relocatable_checkout(
+            [str(token) for token in argv],
+            {
+                str(name): str(value)
+                for name, value in (
+                    variables.items() if isinstance(variables, Mapping) else ()
+                )
+            },
+            Path(checkout_root),
+        )
+    except SystemExit as exc:
+        raise SubmitRefused(
+            f"{str(action['action_key'])[:12]}: {exc}"
+        ) from None
     body = {name: value for name, value in action.items() if name != "action_key"}
     params = dict(body.get("params") or {})
     params["checkout_snapshot"] = snapshot
@@ -274,7 +321,7 @@ def submit(
     timeout_s: float | None = DEFAULT_TIMEOUT_S,
     max_attempts: int = 1,
     retry_safe: bool | None = None,
-    queue_root: str | Path = SH / "pb-queue",
+    queue_root: str | Path | None = None,
     lane_root: str | Path | None = None,
     job_entry: str | Path = JOB_ENTRY,
     sbatch: str = "sbatch",
@@ -309,7 +356,8 @@ def submit(
         timeout_s: A deadline to enforce, or ``None`` for none.
         max_attempts: How many runs this action may have.
         retry_safe: Whether the producer declared the command idempotent.
-        queue_root: The pull queue root, also where withdrawals live.
+        queue_root: The pull queue root, also where withdrawals live, or
+            ``None`` for ``SH / "pb-queue"`` as it stands when this runs.
         lane_root: The SLURM lane root, or ``None`` for the configured one.
         job_entry: The batch job's entry point.
         sbatch: The submit binary, for tests.
@@ -326,6 +374,14 @@ def submit(
     if transport not in TRANSPORTS:
         raise SubmitRefused(f"unknown transport {transport!r}")
     key = str(action["action_key"])
+    if queue_root is None:
+        # Read when this runs, not when the module loaded.  A default built
+        # from ``SH`` at definition time was bound to the live queue for good,
+        # so repointing ``SH``, which every test does through
+        # ``tests/conftest.py``, never reached it: a test that called this on
+        # the pool transport without a ``queue_root`` published into the
+        # fleet's queue, and a worker on another box claimed the item.
+        queue_root = SH / "pb-queue"
 
     if transport == "pool":
         queue = pool.PoolQueue(queue_root)
@@ -397,8 +453,10 @@ def submit(
     # ``PoolQueue.publish`` applies, and the lane's ``run`` with it.  Leaving a
     # live marker in place would make the re-submitted action unrunnable and
     # the only remedy a hand edit of the queue.  After ``sbatch`` accepted,
-    # not before: a refused submission has retired nothing.
-    slurm_lane.supersede_withdrawal(queue_root, key)
+    # not before: a refused submission has retired nothing.  Scoped to this
+    # submission's own generation: a withdrawal of the run being submitted is
+    # a decision about this work, not a stale marker to move aside.
+    slurm_lane.supersede_withdrawal(queue_root, key, job.published_unix)
     return Submission(
         transport="slurm", where=job.record_path, job_id=job.job_id,
         action_key=key,
