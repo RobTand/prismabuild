@@ -15,6 +15,8 @@ import sys
 OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 LABEL = "prismabuild.action"
+SCOPE_LABEL = "prismabuild.scope"
+SCOPE_RE = re.compile(r"prismabuild-job[a-f0-9]{32}\.slice")
 
 #: A second label naming the SLURM job this container was created inside.
 #:
@@ -196,7 +198,7 @@ def _label_values(argv: list[str]):
 
 def _has_reserved_label(argv: list[str]) -> bool:
     for value in _label_values(argv):
-        if value.split("=", 1)[0] in {LABEL, JOB_LABEL}:
+        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL}:
             return True
     return False
 
@@ -228,7 +230,7 @@ CONTAINER_FLAGS = frozenset("""
 """.split())
 
 
-def _container_options(argv: list[str]) -> tuple[list[str], list[str], str | None]:
+def _container_options(argv: list[str], *, memory_limit: int | None = None) -> tuple[list[str], list[str], str | None]:
     """Retain argv verbatim except cpuset options before IMAGE.
 
     Return retained argv, normalized label options for ownership checks, and the
@@ -278,6 +280,19 @@ def _container_options(argv: list[str]) -> tuple[list[str], list[str], str | Non
                     break  # Explicit short boolean value, left for Docker to validate.
         if name in {"--label", "-l"}:
             options.extend(["--label", value])
+        if memory_limit is not None and name in {"--cgroup-parent", "--oom-kill-disable"}:
+            raise Refused(f"{name} cannot override the PB aggregate memory boundary")
+        if memory_limit is not None and name in {"--memory", "-m", "--memory-swap"}:
+            # A PB parent provides the aggregate hard limit. Preserve any
+            # stricter container limit, but never permit unlimited swap.
+            if name in {"--memory", "-m"}:
+                requested_bytes = _memory_bytes(value)
+                options.extend(["--memory", str(min(memory_limit, requested_bytes)
+                                                if requested_bytes else memory_limit)])
+            if name == "-m" and offset > 2:
+                kept.append(token[:offset - 1])
+            index = end
+            continue
         if name == "--cpuset-cpus":
             cpuset = value
         else:
@@ -355,6 +370,38 @@ def _local_daemon(real: str, global_options: list[str]) -> tuple[list[str], dict
     return [*retained, "--host", endpoint], environment
 
 
+def _memory_bytes(value: str) -> int:
+    match = re.fullmatch(r"([0-9]+)([bkmgBKMG]?)", value)
+    if match is None:
+        raise Refused(f"invalid Docker memory value: {value!r}")
+    return int(match[1]) * {"": 1, "b": 1, "k": 1024, "m": 1024**2,
+                           "g": 1024**3}[match[2].lower()]
+
+
+def _resource_scope() -> tuple[str, int] | None:
+    """Use kernel ancestry, never caller env, for the PB attempt boundary."""
+    proc = Path("/proc/self/cgroup")
+    root = Path("/sys/fs/cgroup")
+    if os.environ.get("PRISMABUILD_DOCKER_TESTING") == "1":
+        proc = Path(os.environ.get("PRISMABUILD_CGROUP_FILE") or proc)
+        root = Path(os.environ.get("PRISMABUILD_CGROUP_ROOT") or root)
+    try:
+        raw = proc.read_text()
+        for line in raw.splitlines():
+            if not line.startswith("0::"):
+                continue
+            relative = Path(line[3:].lstrip("/"))
+            for parent in (relative, *relative.parents):
+                if SCOPE_RE.fullmatch(parent.name):
+                    limit = int((root / parent / "memory.max").read_text())
+                    if limit <= 0:
+                        raise ValueError("memory.max is not a positive limit")
+                    return parent.name, limit
+    except (OSError, ValueError) as exc:
+        raise Refused(f"cannot establish the PB cgroup memory boundary: {exc}") from exc
+    return None
+
+
 def main() -> int:
     argv = sys.argv[1:]
     owner = os.environ.get(OWNER_ENV, "")
@@ -387,7 +434,9 @@ def main() -> int:
         os.execv(real, [real, *argv])
     insertion = command + relative
     try:
-        creation, options, requested = _container_options(argv[insertion:])
+        scope = _resource_scope()
+        creation, options, requested = _container_options(
+            argv[insertion:], memory_limit=scope[1] if scope else None)
         cpuset = _reserved_cpuset(requested)
     except Refused as refusal:
         sys.stderr.write(f"docker shim: {refusal}\n")
@@ -400,6 +449,8 @@ def main() -> int:
 
     try:
         global_options, environment = _local_daemon(real, argv[:command])
+        if scope and global_options[-1] not in {"unix:///var/run/docker.sock", "unix:///run/docker.sock"}:
+            raise Refused("PB resource scopes require the local system Docker daemon")
     except Refused as refusal:
         sys.stderr.write(f"docker shim: {refusal}\n")
         return 125
@@ -419,7 +470,16 @@ def main() -> int:
         job = _slurm_job_id()
         if job:
             labels += ["--label", f"{JOB_LABEL}={job}"]
-        labelled = [*global_options, *sub[:relative], *labels,
+        containment = []
+        if scope:
+            unit, limit = scope
+            labels += ["--label", f"{SCOPE_LABEL}={unit}"]
+            memory_options = [value for index, value in enumerate(options)
+                              if index and options[index - 1] == "--memory"]
+            limit = int(memory_options[-1]) if memory_options else limit
+            containment = ["--cgroup-parent", unit, "--memory", str(limit),
+                           "--memory-swap", str(limit)]
+        labelled = [*global_options, *sub[:relative], *labels, *containment,
                     "--cpuset-cpus", cpuset, *creation]
         return subprocess.run([real, *labelled], env=environment,
                               check=False).returncode
