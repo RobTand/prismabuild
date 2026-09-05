@@ -3229,8 +3229,31 @@ class PoolQueue:
                 str(snapshot_host) if isinstance(snapshot_host, str) else None
             ).release(action_key)
             self.lease_path(action_key).unlink(missing_ok=True)
-            covered = self.terminal_outcome_covers(
-                snapshot, action_key=action_key)
+            try:
+                covered = self.terminal_outcome_covers(
+                    snapshot, action_key=action_key)
+            except PoolContractError:
+                # A terminal for this key exists and cannot be read.  Raising
+                # here ends the whole ``serve_once`` call over one bad file,
+                # and PR #52 introduced that on a branch which used to write
+                # unconditionally, so ask what is actually left to do.
+                #
+                # Nothing, is the answer.  This branch is reached only because
+                # a reaper already concluded the claim, so the key HAS an
+                # ending; the unreadable record is it.  Writing a second one
+                # beside it is the two-terminals defect PR #52 removed, and a
+                # generation this read cannot supply is no basis for deciding
+                # that this is a different run.  So report the terminal that
+                # is there and write nothing: the submitter's own reader
+                # reports an unreadable record at once (PR #50), which is
+                # where a corrupted queue record has to surface, and repairing
+                # it from here would be inventing an ending for an attempt
+                # this worker did not archive.
+                for state in (DONE, FAILED):
+                    unreadable = self.item_path(state, action_key)
+                    if unreadable.exists():
+                        return unreadable
+                raise
             if covered is not None:
                 return self.item_path(str(covered[0]), action_key)
             lost = self.item_path(
