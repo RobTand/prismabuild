@@ -373,10 +373,30 @@ def test_an_empty_ledger_total_caps_nothing() -> None:
 
 # -- the readers --------------------------------------------------------
 
-def test_the_memory_reading_is_the_one_the_kernel_publishes() -> None:
-    value = bc.mem_available_gb()
+def test_the_memory_reading_is_the_one_the_kernel_publishes(
+    tmp_path, monkeypatch,
+) -> None:
+    """MemAvailable, in whole GiB, and nothing else on the page.
 
-    assert value is None or 0 <= value < 1_000_000
+    Read against the live ``/proc/meminfo`` this could only ask whether the
+    answer was a plausible number, which is true of ``None``, of ``MemFree``
+    and of a kB count divided once instead of twice.  A synthetic page with
+    three distinct values names the field and the scale.
+    """
+
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        "MemTotal:       131072000 kB\n"
+        "MemFree:          1048576 kB\n"
+        "MemAvailable:    41943040 kB\n"
+        "Buffers:           524288 kB\n"
+    )
+    monkeypatch.setattr(bc, "MEMINFO", meminfo)
+
+    assert bc.mem_available_gb() == 40           # 41943040 kB, not 40960 MiB
+
+    monkeypatch.setattr(bc, "MEMINFO", tmp_path / "absent")
+    assert bc.mem_available_gb() is None         # unreadable is not zero
 
 
 def test_a_gpu_app_with_no_readable_memory_still_holds_the_device(
