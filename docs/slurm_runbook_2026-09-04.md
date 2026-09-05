@@ -228,7 +228,20 @@ These still need the real install, and no container stands in for them:
    run: ten of its fifteen rows pass in the three-node smoke and the other
    five need a real box, and running it there found two defects, both fixed.
    See the row table in `fleet/slurm/smoke/README.md`.
-7. **That the addresses in `slurm.conf` are enough.** The resolution failure in
+7. **What a hand-run `sbatch` is actually charged.** `slurm.conf` now sets
+   `DefMemPerCPU=768`, the largest per-core default every node can honour at
+   full occupancy (61440 MiB / 80 CPUs on dl380g10, against 3686 and 4096 on
+   the Sparks). Before it, `CR_Core_Memory` charged a job that named no memory
+   the whole `RealMemory` of the node it landed on, so one `sbatch` without
+   `--mem` held a box. The lane always sends `--mem`, so nothing the fleet
+   submits exercises this line, and the fleet's controller has never read it.
+   The multinode smoke will be the first thing that does: `genconf.py` passes
+   every global through unchanged, and 768 fits every node it generates. Two
+   things to check on a real controller: that a job with no `--mem` is
+   admitted alongside others rather than alone, and that a job which exceeds
+   768 MiB per core is OOM-killed by `ConstrainRAMSpace` with a message an
+   operator can read. Pass `--mem` or `--mem-per-cpu` for anything larger.
+8. **That the addresses in `slurm.conf` are enough.** The resolution failure in
    both directions is measured and the addresses are measured, but no SLURM
    daemon has yet dialled one of them. `NodeAddr` is the documented remedy for
    exactly this; it has not been shown working on this fleet. The three-node
