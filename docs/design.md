@@ -64,9 +64,11 @@ root before either can
 reach the output lock and publish. It is inert when unset, is not entered on an
 initial cache hit, and is incompatible with `--recompute`. This proves worker/
 miss contention; it makes no task-argv timing claim. The output lock serializes
-only workers sharing the same live checkout/output-lock identity. Workers in
-distinct validated checkouts may execute task argv concurrently and converge
-through ordinary CAS publication.
+workers by the canonical physical path of the declared output, whatever
+checkout root and working directory the caller spelled it with, so nested
+roots naming one file share one lock. Workers whose declared outputs are
+distinct files may execute task argv concurrently and converge through
+ordinary CAS publication.
 
 ## Problem
 

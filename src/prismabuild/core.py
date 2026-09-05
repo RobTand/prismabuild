@@ -4670,10 +4670,20 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
     processes inherit it explicitly so abrupt worker death cannot release the
     lock while the task (or an inherited descendant) can still write the
     declared output.
+
+    The identity is the canonical physical output path and nothing else.  It
+    used to hash the resolved checkout root as well, which made one file two
+    locks: ``checkout_root=/repo`` with ``working_directory=sub`` and
+    ``checkout_root=/repo/sub`` with ``working_directory=.`` both resolve to
+    ``/repo/sub/result.bin``, so two concurrent actions each passed the
+    absent-result check and one published the other's bytes under its own
+    deterministic key.  ``checkout`` is still taken, because the caller's root
+    is what names the output, but it is deliberately not part of the
+    exclusion identity: what has to be exclusive is the file.
     """
 
     identity = hashlib.sha256(
-        f"{checkout.resolve(strict=True)}\0{output}".encode("utf-8")
+        os.path.normpath(str(output)).encode("utf-8")
     ).hexdigest()
     directory = cas.root / ".worker-locks"
     path = directory / f"{identity}.lock"
