@@ -53,7 +53,7 @@ Ubuntu 24.04's own 23.11.4 (secondary). What that settles:
   one that runs -- on a bind mount, which is the part NFS still has to confirm.
   Nothing to do at install except read `jobs/` once after the validation runs.
 - **`CPUs=` for the two GB10 boxes** (was item 5). Measured and written into
-  `slurm.conf`: 20 CPUs as two clusters of ten, one thread per core. Step 5's
+  `slurm.conf`: 20 CPUs as one socket of twenty, one thread per core. Step 5's
   `slurmd -C` is now a cross-check, not the source.
 - **`--timeout-s` enforcement, withdrawal, and the terminal records.** Also
   covered: `--timeout-s` becomes `--time` and SLURM kills the job (arriving as
