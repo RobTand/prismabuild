@@ -796,14 +796,21 @@ reaching a scheduler command.
 
 A refused submission now prints the transport's reason on stderr and exits 2.
 
-Initializing the checkout is necessary but not sufficient. The snapshot roster
-is tracked plus nonignored-untracked paths, and `run_local_action` refuses an
-action whose declared result already exists in the execution tree with no
-recovery claim. `/mnt/shared/prismabuild-fleet/checkout` currently holds
-`fleet_result.txt`, `pbrun_result.*`, `.pbrun-closure.*` and 120 files under
-`results/glm53-tessera/`, and it has no `.gitignore`, so those files would ride
-into every snapshot and a node would refuse the action that declares one of
-them. Move them out of the checkout, or ignore them there, before the first
-SLURM dispatch from that tree. This applies to the smoke action, whose result
-is `fleet_result.txt`, and to every export shard, whose result is
+Initializing the checkout is necessary but not sufficient, and this part
+applies to both transports. `run_local_action` refuses an action whose
+declared result already exists in the execution tree with no recovery claim,
+and a claim is keyed by action key, so a result left by an older key is not a
+claim for the current one. `/mnt/shared/prismabuild-fleet/checkout` currently
+holds `fleet_result.txt`, `pbrun_result.*`, `.pbrun-closure.*` and 120 files
+under `results/glm53-tessera/`. The pull queue executes in that tree itself,
+so a re-dispatch under a moved key refuses on every shard that has a file
+there rather than re-encoding. The SLURM lane reaches the same files by a
+different route: the snapshot roster is tracked plus nonignored-untracked
+paths and the checkout has no `.gitignore`, so those files ride into every
+snapshot and the node refuses there too.
+
+Move them out of the checkout before the next dispatch from that tree on
+either transport. Ignoring them is the SLURM half only, because the pull queue
+never snapshots. This applies to the smoke action, whose result is
+`fleet_result.txt`, and to every export shard, whose result is
 `results/glm53-tessera/shard-NNNNN.json`.
