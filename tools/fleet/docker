@@ -280,6 +280,8 @@ def _container_options(argv: list[str], *, memory_limit: int | None = None) -> t
                     break  # Explicit short boolean value, left for Docker to validate.
         if name in {"--label", "-l"}:
             options.extend(["--label", value])
+        if memory_limit is not None and name == "--restart" and value != "no":
+            raise Refused("container restart policies cannot resurrect a completed PB job")
         if memory_limit is not None and name in {"--cgroup-parent", "--oom-kill-disable"}:
             raise Refused(f"{name} cannot override the PB aggregate memory boundary")
         if memory_limit is not None and name in {"--memory", "-m", "--memory-swap"}:
@@ -402,6 +404,30 @@ def _resource_scope() -> tuple[str, int] | None:
     return None
 
 
+def _refuse_unaccounted_work(sub: list[str], *, scope: tuple[str, int] | None) -> None:
+    if scope is None or not sub:
+        return
+    verb = sub[0]
+    active = verb in {"build", "exec", "restart", "unpause", "update"}
+    if verb == "container" and len(sub) > 1:
+        active = sub[1] in {"exec", "restart", "unpause", "update"}
+    if verb == "builder" and len(sub) > 1:
+        active = sub[1] == "build"
+    if verb == "buildx":
+        active = not (len(sub) > 1 and sub[1] in {"version", "ls", "inspect"}
+                      and not any(token.split("=", 1)[0] == "--bootstrap" for token in sub))
+    if verb == "service" and len(sub) > 1:
+        active = sub[1] in {"create", "update", "scale", "rollback"}
+    if verb == "stack" and len(sub) > 1:
+        active = sub[1] in {"deploy", "up"}
+    if verb == "compose":
+        index = _verb_index(sub[1:], COMPOSE_VALUE_OPTIONS, COMPOSE_FLAGS, what="compose")
+        active = index is not None and sub[index + 1] in {"build", "exec", "restart", "unpause", "watch"}
+    if active:
+        raise Refused("this Docker command can start work outside the PB job's memory slice; "
+                      "use docker run/create, including an owned container for a builder")
+
+
 def main() -> int:
     argv = sys.argv[1:]
     owner = os.environ.get(OWNER_ENV, "")
@@ -429,12 +455,17 @@ def main() -> int:
             "label; use docker run/create inside this action\n")
         return 125
 
+    try:
+        scope = _resource_scope()
+        _refuse_unaccounted_work(sub, scope=scope)
+    except Refused as refusal:
+        sys.stderr.write(f"docker shim: {refusal}\n")
+        return 125
     relative = _creation_index(sub)
     if relative is None:
         os.execv(real, [real, *argv])
     insertion = command + relative
     try:
-        scope = _resource_scope()
         creation, options, requested = _container_options(
             argv[insertion:], memory_limit=scope[1] if scope else None)
         cpuset = _reserved_cpuset(requested)

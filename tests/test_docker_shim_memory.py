@@ -55,3 +55,33 @@ def test_stricter_memory_preserved_and_image_argv_opaque(tmp_path):
     assert forwarded[forwarded.index('--memory')+1] == str(32 * 1024**2)
     assert '-it' in forwarded
     assert forwarded[-len(tail):] == tail
+
+
+def test_restart_policy_cannot_resurrect_oom_killed_job(tmp_path):
+    environment, cgroup = _environment(tmp_path)
+    result, _, _ = _shim(tmp_path, ['run', '--restart=always', 'image'], cgroup=cgroup, docker_env=environment)
+    assert result.returncode == 125
+
+
+import pytest
+
+
+@pytest.mark.parametrize('command', [
+    ['build', '.'], ['buildx', 'build', '.'], ['buildx', 'inspect', '--bootstrap'],
+    ['exec', 'another-container', 'sh'], ['container', 'restart', 'another-container'],
+    ['compose', '-f', 'compose.yml', 'build'], ['service', 'create', 'image'],
+    ['stack', 'deploy', 'stack'], ['update', '--restart=always', 'container'],
+])
+def test_daemon_work_cannot_escape_accounted_creation(tmp_path, command):
+    environment, cgroup = _environment(tmp_path)
+    result, _, _ = _shim(tmp_path, command, cgroup=cgroup, docker_env=environment)
+    assert result.returncode == 125
+    assert 'docker run/create' in result.stderr
+
+
+@pytest.mark.parametrize('command', [['buildx', 'inspect'], ['buildx', 'ls'], ['images'], ['inspect', 'container']])
+def test_scope_preserves_read_only_docker_commands(tmp_path, command):
+    environment, cgroup = _environment(tmp_path)
+    result, _, forwarded = _shim(tmp_path, command, cgroup=cgroup, docker_env=environment)
+    assert result.returncode == 0, result.stderr
+    assert forwarded == command
