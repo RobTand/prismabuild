@@ -48,6 +48,7 @@ def _cas_request(cas_root: Path, key: str, argv: list[str]) -> None:
 def _failed(
     queue_root: Path, key: str, *, checkout: Path, transport: str | None,
     state: str = "FAILED", published_unix: float = 1000.0,
+    resources: dict | None = None, gres: str | None = None,
 ) -> Path:
     record: dict[str, object] = {
         "action_key": key,
@@ -55,14 +56,16 @@ def _failed(
         "status": "failed",
         "attempts": 1,
         "checkout_root": str(checkout),
-        "resources": {"cpu": 2, "mem_gb": 4},
+        "resources": {"cpu": 2, "mem_gb": 4} if resources is None else resources,
         "tags": ["x86"],
         "detail": {"status": "failed", "returncode": 1},
     }
     if transport is not None:
         record["transport"] = transport
         record["schema"] = "prismaquant.prismabuild.slurm_outcome.v1"
-        record["detail"]["slurm"] = {"job_id": "1001", "state": state}
+        record["detail"]["slurm"] = {
+            "job_id": "1001", "state": state, "gres": gres,
+        }
     path = queue_root / pool.FAILED / f"{key}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record), encoding="utf-8")
@@ -178,3 +181,90 @@ def test_a_withdrawal_of_another_generation_does_not_blacklist_the_key(
     plans, _ = pool_reset.plan_resets(
         fleet["queue"], cas_root=fleet["cas_root"])
     assert KEY_SLURM in {plan["key"] for plan in plans}
+
+
+KEY_EXCLUSIVE = "c" * 64
+
+
+def _exclusive_failure(fleet: dict, *, gres: str) -> dict:
+    """One lane-filed failure whose job asked for the device by that GRES."""
+
+    _cas_request(fleet["cas_root"], KEY_EXCLUSIVE, ["/usr/bin/python3", "bench.py"])
+    _failed(
+        fleet["queue_root"], KEY_EXCLUSIVE, checkout=fleet["checkout"],
+        transport="slurm", resources={"cpu": 8, "gpu": 1, "mem_gb": 16},
+        gres=gres,
+    )
+    plans, _ = pool_reset.plan_resets(fleet["queue"], cas_root=fleet["cas_root"])
+    return _plan_for(plans, KEY_EXCLUSIVE)
+
+
+def test_an_exclusive_failure_is_resubmitted_exclusive(fleet) -> None:
+    """The demand alone cannot say it, so the reset would quietly downgrade it.
+
+    ``LaneResources.demand()`` records ``{"gpu": 1}`` for an action that had
+    the whole device, which is byte for byte what a one-slot action records.
+    Rebuilt as ``--demand gpu=1`` with no ``--exclusive``, that becomes
+    ``shard:1`` -- a sharable slot -- so a timing run that failed while it
+    owned the GPU is retried beside other work.
+    """
+
+    plan = _exclusive_failure(fleet, gres="gpu:1")
+    assert plan["exclusive"] is True
+    command = pool_reset.submit_command(plan, transport="slurm")
+    assert "--exclusive" in command
+    # The demand still travels: pbrun reads both, and the demand carries the
+    # CPU and memory the exclusive flag says nothing about.
+    assert command[command.index("--demand") + 1] == "cpu=8,gpu=1,mem_gb=16"
+
+
+def test_a_shard_failure_is_not_promoted_to_the_whole_device(fleet) -> None:
+    """The other half of the same distinction, and the more expensive mistake.
+
+    Re-submitting a one-slot action as exclusive takes a GB10 away from
+    everything else on it, for work that never asked for that.
+    """
+
+    plan = _exclusive_failure(fleet, gres="shard:1")
+    assert plan["exclusive"] is False
+    assert "--exclusive" not in pool_reset.submit_command(plan, transport="slurm")
+
+
+def test_a_pull_queue_failure_names_no_gres_and_is_not_exclusive(fleet) -> None:
+    """A record with no ``detail.slurm`` at all reads as not exclusive."""
+
+    plans, _ = pool_reset.plan_resets(fleet["queue"], cas_root=fleet["cas_root"])
+    plan = _plan_for(plans, KEY_POOL)
+    assert plan["exclusive"] is False
+    assert "--exclusive" not in pool_reset.submit_command(plan, transport="pool")
+
+
+def test_a_reset_imposes_no_deadline_unless_the_operator_asks(fleet) -> None:
+    """Elapsed time is not evidence that a worker is dead.
+
+    The tool hardcoded ``--timeout-s 5400``, which the pull queue never
+    enforced and which SLURM turns into ``--time`` and an enforced kill at
+    ninety minutes.  A reset of a long export would therefore have killed
+    every re-submission at the same wall-clock the original never had.
+    """
+
+    plans, _ = pool_reset.plan_resets(fleet["queue"], cas_root=fleet["cas_root"])
+    plan = _plan_for(plans, KEY_SLURM)
+    assert "--timeout-s" not in pool_reset.submit_command(plan, transport="slurm")
+    asked = pool_reset.submit_command(plan, transport="slurm", timeout_s=600.0)
+    assert asked[asked.index("--timeout-s") + 1] == "600.0"
+
+
+def test_the_command_line_default_sends_no_deadline_either(fleet, capsys) -> None:
+    """Read through ``main``, because the default an operator meets is the
+    parser's, and a test that recomputed the expression would only agree with
+    itself."""
+
+    code = pool_reset.main([
+        "--queue-root", str(fleet["queue_root"]),
+        "--cas-root", str(fleet["cas_root"]),
+    ])
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "would submit" in printed
+    assert "--timeout-s" not in printed
