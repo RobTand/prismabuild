@@ -474,6 +474,19 @@ def test_the_partition_is_read_off_the_demand_and_the_placement() -> None:
     assert sl.partition_for(cpu, [""]) == "cpu"
 
 
+def test_anywhere_sends_cpu_work_to_every_box_and_gpu_work_to_the_gpu_partition() -> None:
+    """``--anywhere`` is the one opt-in to a GPU box's cores for CPU-only work.
+
+    It goes to the default partition, where node weight prefers the CPU box;
+    GPU work is unaffected because shards exist only in the GPU partition.
+    """
+    gpu = sl.LaneResources.from_demand({"gpu": 1, "mem_gb": 16})
+    cpu = sl.LaneResources.from_demand({"cpu": 4, "mem_gb": 8})
+    assert sl.partition_for(cpu, [], anywhere=True) is None
+    assert sl.partition_for(gpu, [], anywhere=True) == "gpu"
+    assert sl.partition_for(cpu, [], anywhere=False) == "cpu"
+
+
 def test_a_pinned_cpu_action_is_not_forced_into_the_cpu_partition() -> None:
     """The case that bites: a CPU-only action whose argv[0] is a GPU box's
     venv.  Placement pins it to that box by hostname; sending it to the CPU

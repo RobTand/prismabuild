@@ -348,7 +348,7 @@ CPU_PARTITION = "cpu"
 
 
 def partition_for(
-    resources: LaneResources, placement: Sequence[str]
+    resources: LaneResources, placement: Sequence[str], *, anywhere: bool = False
 ) -> str | None:
     """Which partition carries an action, read off what it already declares.
 
@@ -356,7 +356,13 @@ def partition_for(
     here without naming a box, so it holds on a fleet that grows:
 
     * a GPU demand goes to the GPU partition, the only place shards exist;
-    * no GPU demand and no placement tag goes to the CPU partition;
+    * work the submitter asserted portable with ``--anywhere`` goes to the
+      default partition, every box, where node weight prefers the CPU box
+      and a GPU box takes it only when the CPU box is full.  This is the
+      one opt-in to a GPU box's cores, because its memory is one pool
+      shared with its GPU;
+    * otherwise no GPU demand and no placement tag goes to the CPU
+      partition;
     * anything tagged goes to the default partition, where the sealed
       ``--constraint`` picks the node.  The tag is a hostname pin from a
       box-local executable or a class the submitter named, and forcing a
@@ -370,6 +376,8 @@ def partition_for(
 
     if resources.gpu_slots:
         return GPU_PARTITION
+    if anywhere:
+        return None
     if not [tag for tag in placement if str(tag)]:
         return CPU_PARTITION
     return None
