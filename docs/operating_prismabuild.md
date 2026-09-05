@@ -588,6 +588,22 @@ distinct from 1, the code every fleet tool keeps for work that failed. `--json`
 prints one object with a row per key and the counts. Name keys as arguments to
 reconcile only those.
 
+A malformed submission is reported as `unrecorded` without stopping the other
+keys. A missing, invalid, or mismatched sealed request is `no-sealed-action`.
+Withdrawal markers are enriched even when the controller still reports a live
+job or has forgotten it. If the verdict disappears between the report and the
+filing poll, `--apply` reports `no-verdict` and exits 3; it never reports an
+unfiled prediction as the terminal status.
+
+Terminal summary writers use permanent per-key POSIX lock files under
+`pb-queue/.summary-locks/`. The supported shared filesystem is NFSv4 with
+remote locking enabled (`local_lock=none`), including access through the
+server's local filesystem. Do not delete these lock files while writers may
+be active. The lock covers generation comparison and publication and is
+released automatically when a process exits. An unreadable summary encountered
+by a filer is preserved under its state directory's `unreadable/` subdirectory
+before the known terminal record is written.
+
 ### Where the records live
 
 | Location | What is there |

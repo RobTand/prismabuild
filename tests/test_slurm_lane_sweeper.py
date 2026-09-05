@@ -376,3 +376,98 @@ def test_the_tool_says_which_keys_it_could_not_resolve(
 
     assert code == pbsweep.UNRESOLVED_EXIT
     assert _terminal(queue_root, job.action_key) is None
+
+
+@pytest.mark.parametrize("state", ["PENDING", "forgotten"])
+def test_withdrawal_without_receipt_is_enriched_even_before_scheduler_acknowledges(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    queue_root = tmp_path / "pb-queue"
+    action = _runnable_action(tmp_path, cas)
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "PENDING")
+    job = _detach(tmp_path, queue_root=queue_root, cas=cas, action=action)
+    if state == "forgotten":
+        (fleet / f"{job.job_id}.state").unlink()
+    sl.publish_withdrawal(
+        queue_root=queue_root, action_key=job.action_key,
+        submission=sl.recorded_submission(job.action_key), reason="operator stop")
+
+    rows = sl.sweep(cas=cas, queue_root=queue_root, apply=True)
+
+    assert rows[0]["disposition"] == sl.SWEPT
+    _, record = _terminal(queue_root, job.action_key)
+    assert record["status"] == "withdrawn"
+    assert record["detail"]["slurm"]["job_id"] == job.job_id
+    assert record["reason"] == "operator stop"
+    assert sl.sweep(cas=cas, queue_root=queue_root)[0]["disposition"] == sl.ALREADY_FILED
+
+
+def test_apply_reports_unresolved_when_verdict_disappears_between_polls(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import pbsweep
+
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    queue_root = tmp_path / "pb-queue"
+    action = _runnable_action(tmp_path, cas)
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "FAILED")
+    job = _detach(tmp_path, queue_root=queue_root, cas=cas, action=action)
+    real_resume = sl.resume
+
+    def forgotten_before_resume(*args, **kwargs):
+        (fleet / f"{job.job_id}.state").unlink()
+        return real_resume(*args, **kwargs)
+
+    monkeypatch.setattr(sl, "resume", forgotten_before_resume)
+    code = pbsweep.main([
+        "--lane-root", str(sl.lane_root(None)), "--queue-root", str(queue_root),
+        "--cas-root", str(cas.root), "--apply", "--json"])
+
+    assert code == pbsweep.UNRESOLVED_EXIT
+    row = json.loads(capsys.readouterr().out)["rows"][0]
+    assert row["disposition"] == sl.NO_VERDICT
+    assert row["status"] is None
+    assert _terminal(queue_root, job.action_key) is None
+
+
+def test_bad_submission_does_not_prevent_other_keys_from_being_reconciled(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    queue_root = tmp_path / "pb-queue"
+    action = _runnable_action(tmp_path, cas)
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "run")
+    job = _detach(tmp_path, queue_root=queue_root, cas=cas, action=action)
+    bad_key = "0" * 64
+    bad_directory = sl.lane_root(None) / bad_key
+    bad_directory.mkdir()
+    (bad_directory / "latest.json").write_text(json.dumps({"job_id": "broken"}))
+
+    rows = sl.sweep(cas=cas, queue_root=queue_root, apply=True)
+
+    assert [(r["action_key"], r["disposition"]) for r in rows] == [
+        (bad_key, sl.UNRECORDED), (job.action_key, sl.SWEPT)]
+    assert _terminal(queue_root, job.action_key)[1]["status"] == "executed"
+
+
+def test_request_for_another_key_cannot_supply_the_swept_verdict(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    queue_root = tmp_path / "pb-queue"
+    action = _runnable_action(tmp_path, cas)
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "PENDING")
+    job = _detach(tmp_path, queue_root=queue_root, cas=cas, action=action)
+    # A misplaced but valid request belongs to a different content key.
+    other = pb.seal_action({k: v for k, v in action.items() if k != "action_key"} | {
+        "environment": {"variables": {"DIFFERENT": "1"}, "toolchain": {}}})
+    request = cas.publish_action_request(action)
+    request.chmod(0o644)
+    request.write_text(json.dumps(other))
+
+    rows = sl.sweep(cas=cas, queue_root=queue_root, apply=True)
+
+    assert rows[0]["disposition"] == sl.NO_ACTION
+    assert _terminal(queue_root, job.action_key) is None

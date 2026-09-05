@@ -65,6 +65,7 @@ from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
 import contextlib
 from dataclasses import dataclass, field
+import fcntl
 import getpass
 import hashlib
 import json
@@ -76,6 +77,7 @@ import secrets
 import shlex
 import socket
 import subprocess
+import threading
 import time
 from typing import Callable
 import uuid
@@ -2308,9 +2310,10 @@ def recorded_action(
     path = Path(cas.root) / "requests" / key[:2] / f"{key}.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
+        value = pb.validate_action(value)
     except (OSError, ValueError):
         return None
-    return value if isinstance(value, dict) else None
+    return value if value["action_key"] == key else None
 
 
 def recorded_submission(
@@ -2504,7 +2507,7 @@ def detail_status_and_returncode(
     ``failed/``, that zero reads as a pass to any reader that takes zero as
     success, and Tessera's ``merge_suite`` does.  The pool filed a timeout as
     ``status="timeout"`` with ``returncode=None`` (status is the authority;
-    ``pbrun`` returns any integer returncode as its own exit status), so that
+    ``pbrun`` separately maps the record to its public CLI exit codes), so that
     is what a ``TIMEOUT`` job files here.  A job that died by any other signal
     carries the negative signal number, which is how ``subprocess`` reports a
     signalled child and therefore what the pool's records carried.  The raw
@@ -2564,7 +2567,69 @@ def _newer_ending_stands(
     return str(existing.get("status") or "") != "cache_hit"
 
 
+# POSIX locks are process-scoped. Serialize threads before opening the file,
+# and close it before releasing the thread lock: closing another descriptor
+# for the same inode would release this process's POSIX lock too.
+_SUMMARY_THREAD_LOCKS = tuple(threading.Lock() for _ in range(64))
+
+
+@contextlib.contextmanager
+def _summary_lock(path: Path) -> Iterator[None]:
+    """Serialize summary writers on local filesystems and NFSv4.
+
+    The lock inode is permanent. Unlinking it would let a waiting writer lock
+    the old inode while a new writer locks its replacement. POSIX byte locks
+    interoperate between the NFSv4 mount and a server-local filesystem path;
+    flock does not necessarily do so. NFS mounts with local-only locking are
+    not supported. Kernel locks are released if the writer exits or crashes.
+    """
+
+    directory = path.parent.parent / ".summary-locks"
+    lock_path = directory / f"{path.stem}.lock"
+    thread_lock = _SUMMARY_THREAD_LOCKS[hash(str(lock_path.resolve())) % 64]
+    with thread_lock:
+        directory.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as stream:
+            fcntl.lockf(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.lockf(stream.fileno(), fcntl.LOCK_UN)
+
+
 def _land_summary(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    published_unix: float,
+    refuse_same_generation: bool,
+) -> bool:
+    """Compare and publish while holding the key's shared POSIX lock."""
+
+    with _summary_lock(path):
+        # A delayed waiter may choose a different terminal state than the
+        # newer run. Comparing only the target filename would let its old
+        # failure land alongside that newer run's success (or withdrawal).
+        for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+            sibling = path.parent.parent / state / path.name
+            try:
+                present = sibling.name in os.listdir(sibling.parent)
+            except FileNotFoundError:
+                present = False
+            if not present or sibling == path:
+                continue
+            existing = _read_json_object(sibling)
+            if existing is not None and _newer_ending_stands(
+                existing, published_unix
+            ):
+                return False
+        return _land_summary_locked(
+            path, payload, published_unix=published_unix,
+            refuse_same_generation=refuse_same_generation,
+        )
+
+
+def _land_summary_locked(
     path: Path,
     payload: Mapping[str, object],
     *,
@@ -2583,12 +2648,11 @@ def _land_summary(
     and a generation-specific waiter timed out with an ending on disk saying
     the older run.
 
-    Read-then-rename cannot state that rule, because the comparison and the
-    write are two steps and two writers cross inside them.  This is the
-    re-read form: the write lands, then the bytes that stand are read back,
-    and a record older than this one is written over again.  A writer that
-    crossed us and lost sees a *newer* record on its own re-read and stops, so
-    the fixed point is the highest generation whichever order the two ran in.
+    The per-key lock covers the comparison and the write. A reread alone
+    cannot enforce ordering: an older writer can replace the newer record
+    after the newer writer has finished its reread and returned. The reread
+    below remains a repair for an uncoordinated writer crossing this call,
+    but all current summary writers must take the lock for ordering to hold.
     The absent case is link-first (``_publish_json_if_absent``), so two
     writers arriving at an empty name cannot both think they were first.
 
@@ -2598,10 +2662,8 @@ def _land_summary(
     marker, and a repair loop that re-published one would revive a decision a
     later submission had already retired.
 
-    The residual window is a crash: a writer that replaces a newer record and
-    dies before its re-read leaves the older ending standing.  That is a
-    reporting error an operator can see and re-file, where the shape it
-    replaces was a silent loss on every crossing.
+    A crash releases the lock; the atomic rename leaves either the previous
+    summary or the new summary standing.
 
     Args:
         path: The terminal summary, ``<state>/<key>.json``.
@@ -2624,12 +2686,21 @@ def _land_summary(
         if existing is None:
             if not _publish_json_if_absent(path, payload):
                 # A record landed between the read and the link.  Compare
-                # against it rather than replacing it unseen.
+                # against it rather than replacing it unseen. If the name
+                # contains unreadable JSON, repeating this loop cannot make
+                # progress. Preserve its bytes before filing the known ending.
+                if (path.name in os.listdir(path.parent)
+                        and _read_json_object(path) is None):
+                    archive = path.parent / "unreadable"
+                    archive.mkdir(parents=True, exist_ok=True)
+                    os.rename(path, archive / (
+                        f"{path.stem}.{time.time_ns()}.{secrets.token_hex(4)}.json"
+                    ))
                 continue
         else:
             if _newer_ending_stands(existing, floor) or (
-                refuse_same_generation
-                and _record_generation(existing) == floor
+                _record_generation(existing) == floor
+                and (refuse_same_generation or "detail" in existing)
             ):
                 return False
             _write_json_atomic(path, payload)
@@ -3257,7 +3328,10 @@ def resume(
     )
     result.attempts.append((job, outcome))
     result.receipt = cas.lookup(action)
-    if outcome.state in (WAIT_TIMEOUT_STATE, UNKNOWN_STATE) and result.receipt is None:
+    if ending_status(
+        job, outcome, receipt=result.receipt,
+        marker=withdrawal_covers(queue_root, key, published_unix),
+    ) is None:
         # A fast path only: ``_file_ending`` holds the rule (it files nothing
         # for these two states after the marker and receipt checks), and
         # ``run`` reaches it through the same function.  Returning here saves
@@ -3639,7 +3713,14 @@ def sweep(
                 key, UNRECORDED,
                 note="no readable latest.json in the lane directory"))
             continue
-        job = submitted_job(submission)
+        try:
+            job = submitted_job(submission)
+            if job.action_key != key or not math.isfinite(job.published_unix):
+                raise ValueError("submission key or generation is invalid")
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            rows.append(_sweep_row(
+                key, UNRECORDED, note=f"invalid latest.json: {exc}"))
+            continue
         generation = float(job.published_unix or 0.0)
         standing = _ending_on_disk(filed.get(key, ()), generation)
         if standing is not None:
@@ -3687,7 +3768,7 @@ def sweep(
                 status=status))
             continue
         with _naming_job(job.job_id):
-            resume(
+            result = resume(
                 submission, action=action, cas=cas, queue_root=queue_root,
                 wait_s=0.0, sacct=sacct, scontrol=scontrol, squeue=squeue,
                 sstat=sstat,
@@ -3697,11 +3778,16 @@ def sweep(
         # verdict this sweep predicted rather than the one it filed would be
         # exactly the divergence the shared ladder exists to prevent.
         landed = _filed_ending(queue_root, key, generation)
+        last = result.last
+        waiting = (
+            last is not None and last[1].state == WAIT_TIMEOUT_STATE
+            and last[1].provenance is not None
+        )
         rows.append(_sweep_row(
             key,
-            SWEPT if landed is not None else MISSING,
+            SWEPT if landed is not None else (WAITING if waiting else NO_VERDICT),
             job_id=job.job_id, generation=generation,
-            status=landed if landed is not None else status,
+            status=landed,
             note=None if landed is not None else (
                 "the job's state moved while this ran; nothing was filed"
             ),
@@ -3719,6 +3805,8 @@ def _filed_ending(
         record = _read_json_object(
             Path(queue_root) / state / f"{action_key}.json")
         if record is not None and _record_generation(record) == floor:
+            if state == pool.WITHDRAWN and "detail" not in record:
+                continue
             return str(record.get("status") or "")
     return None
 
