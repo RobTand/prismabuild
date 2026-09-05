@@ -249,3 +249,28 @@ def test_a_damaged_receipt_is_a_refusal_and_not_a_traceback(
 
     with pytest.raises(SystemExit, match="receipt is not readable"):
         publish_runtime._activate_existing(generation.name, dry_run=True)
+
+
+def test_a_generation_store_that_cannot_be_written_is_a_refusal(
+    tmp_path, monkeypatch
+) -> None:
+    """Not a PermissionError traceback after "publishing N files"."""
+
+    commit = "a" * 40
+    checkout = _checkout(tmp_path / "checkout", "new")
+    fleet = tmp_path / "fleet"
+    fleet.mkdir()
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", fleet / "repo")
+    monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
+    monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
+    monkeypatch.setattr(
+        publish_runtime.subprocess, "run", _fake_git_and_probe(commit)
+    )
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    fleet.chmod(0o555)
+    try:
+        with pytest.raises(SystemExit, match="cannot write the generation store"):
+            publish_runtime.main()
+    finally:
+        fleet.chmod(0o755)

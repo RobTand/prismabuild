@@ -411,12 +411,23 @@ def main() -> int:
         return 0
 
     store = MIRROR.parent / "runtime-generations"
-    store.mkdir(parents=True, exist_ok=True)
     nonce = uuid.uuid4().hex[:12]
     generation_name = f"{commit[:12]}-{int(time.time())}-{nonce}"
     stage = store / f".{generation_name}.staging"
     generation = store / generation_name
-    stage.mkdir()
+    # The same refusal shape as the dirty-tree refusal above, and for the same
+    # reason: these two directories are the first bytes written, so a store
+    # this user cannot write is a fact to state before "publishing N files"
+    # rather than a PermissionError traceback after it.  The live runtime is
+    # untouched either way.
+    try:
+        store.mkdir(parents=True, exist_ok=True)
+        stage.mkdir()
+    except OSError as exc:
+        raise SystemExit(
+            f"cannot write the generation store {store}: {exc}.  Nothing was "
+            "published and the live runtime still points where it did."
+        ) from exc
     activated = False
     try:
         for name, expected in sorted(published.items()):
