@@ -18,7 +18,9 @@ and portable, and PrismaBuild reserves ``measurement`` for claims about a
 machine (which it requires be keyed to one).
 """
 import argparse
-import shutil
+import hashlib
+import os
+import tempfile
 import sys
 from pathlib import Path
 
@@ -34,7 +36,6 @@ CHECKOUT = SH / "checkout"
 SOURCE = "/mnt/shared/models/GLM-5.3-Flash-BF16"
 PYTHON = "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python"
 WRAPPER = "tessera_ladder_probe.py"
-LOCAL_WRAPPER = Path("/home/rob/tessera/experiments/tessera_ladder_probe.py")
 
 
 #: How many shards the ladder probe is cut into. Bound into every action's
@@ -74,14 +75,14 @@ def shard_range(text):
     return range(low, high + 1)
 
 
-def closure_files():
-    files = [WRAPPER]
+def closure_files(wrapper=WRAPPER):
+    files = [wrapper]
     for path in sorted((CHECKOUT / "tessera").rglob("*.py")):
         files.append(str(path.relative_to(CHECKOUT)))
     return files
 
 
-def build_action(shard, closure, rung, calibrate_every):
+def build_action(shard, closure, rung, calibrate_every, *, wrapper=None):
     result_path = f"results/glm53-tessera-ladder/rung{rung}/shard-{shard:05d}.json"
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
@@ -103,7 +104,7 @@ def build_action(shard, closure, rung, calibrate_every):
             "artifact_family": "generic",
             "artifact_kind": "tessera-rate-band",
             "argv": [
-                PYTHON, WRAPPER,
+                PYTHON, wrapper["staged_path"] if wrapper else WRAPPER,
                 "--shard", str(shard),
                 "--source", SOURCE,
                 "--rung", str(rung),
@@ -144,7 +145,50 @@ def build_action(shard, closure, rung, calibrate_every):
             "host_class": None,
         },
     }
+    if wrapper is not None:
+        body["params"]["wrapper_source"] = wrapper
     return pb.seal_action(body)
+
+
+def prepare_wrapper(source: Path, *, dry_run: bool):
+    """Read once, record provenance, and never replace another dispatch's bytes."""
+    source = source.resolve(strict=True)
+    payload = source.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    relative = f"prismabuild-wrappers/{digest}/{WRAPPER}"
+    provenance = {"source_path": str(source), "sha256": digest,
+                  "staged_path": relative}
+    # Construct the same manifest for previews and submissions from the bytes
+    # read above. A dry run needs no staged file, even on a new submitting box.
+    encoder_files = closure_files(relative)[1:]
+    entries = (pb.build_code_closure(CHECKOUT, encoder_files)["files"]
+               if encoder_files else [])
+    entries.append({"path": relative, "sha256": digest, "bytes": len(payload)})
+    body = {"schema": pb.CODE_CLOSURE_SCHEMA_V1,
+            "files": sorted(entries, key=lambda entry: entry["path"])}
+    closure = pb.validate_code_closure(
+        {**body, "closure_sha256": pb.canonical_sha256(body)})
+    if not dry_run:
+        destination = CHECKOUT / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if not destination.parent.resolve().is_relative_to(CHECKOUT.resolve()):
+            raise ValueError("wrapper staging directory escapes the checkout")
+        # Link a complete file into its final name exclusively. Concurrent
+        # identical submissions converge; a different source gets another path.
+        with tempfile.NamedTemporaryFile(dir=destination.parent) as scratch:
+            scratch.write(payload)
+            scratch.flush()
+            os.fsync(scratch.fileno())
+            try:
+                os.link(scratch.name, destination)
+            except FileExistsError:
+                pass
+        if destination.is_symlink() or destination.read_bytes() != payload:
+            raise ValueError(f"staged wrapper digest mismatch: {destination}")
+        # Re-read the staged bytes through the ordinary closure builder too.
+        if pb.build_code_closure(CHECKOUT, closure_files(relative)) != closure:
+            raise ValueError("wrapper or encoder changed while staging")
+    return provenance, closure
 
 
 def main():
@@ -161,53 +205,25 @@ def main():
                     help="every Nth unit also gets native encodes, so the "
                          "truncation bias in the band is measured rather "
                          "than assumed")
+    ap.add_argument("--wrapper", type=Path,
+                    help="probe source file; defaults to tessera_ladder_probe.py "
+                         "in the shared checkout; bytes and source path are sealed "
+                         "into the action, with a content-addressed staged copy")
     ap.add_argument("--dry-run", action="store_true",
-                    help="print the action key each shard would be sealed "
-                         "under, enqueue nothing, and write nothing into the "
-                         "shared checkout; the closure previewed is the one "
-                         "the checkout holds now, so it says when that is not "
-                         "what a real run would seal")
+                    help="preview the chosen wrapper and action keys without "
+                         "staging files or enqueueing work")
     fleet_submit.add_transport_argument(ap)
     args = ap.parse_args()
 
     shards = args.shards
 
-    # Stage the wrapper INTO the shared checkout, so both boxes run one tree.
-    # This is a NEW file, so it does not disturb any closure an in-flight
-    # action already sealed -- unlike touching tessera/**/*.py, which every
-    # running export shard has bound into its key and re-verifies at its CAS
-    # commit point.
-    #
-    # Never on a dry run.  A dry run that writes is not a dry run, and this
-    # one wrote into a checkout two boxes execute.  The closure digest cannot
-    # be previewed without the file, so a dry run reads the checkout as it
-    # stands and says when that is not what ``--apply`` would seal.  It
-    # refuses rather than previewing a digest no submission would produce.
-    staged = CHECKOUT / WRAPPER
-    if args.dry_run:
-        if not staged.is_file():
-            sys.stderr.write(
-                f"dry run: {WRAPPER} is not staged in {CHECKOUT}, and a dry "
-                f"run does not stage it, so there is no closure to preview. "
-                f"Re-run without --dry-run to stage it.\n")
-            return 1
-        try:
-            staged_is_local = staged.read_bytes() == LOCAL_WRAPPER.read_bytes()
-        except OSError as exc:
-            # The local wrapper lives on one box, so on any other there is
-            # nothing to compare the staged copy against.
-            print(f"note       {LOCAL_WRAPPER} could not be read "
-                  f"({exc.strerror}), so the staged wrapper is reported as it "
-                  f"is rather than as what --apply would stage")
-        else:
-            if not staged_is_local:
-                print(f"note       {WRAPPER} in the checkout differs from "
-                      f"{LOCAL_WRAPPER}, so the digests below are the "
-                      f"checkout's, not what --apply would seal")
-    else:
-        shutil.copy2(LOCAL_WRAPPER, staged)
+    try:
+        wrapper, closure = prepare_wrapper(args.wrapper or CHECKOUT / WRAPPER,
+                                           dry_run=args.dry_run)
+    except (OSError, ValueError, pb.ActionContractError) as exc:
+        sys.stderr.write(f"ladder wrapper: {exc}\n")
+        return 1
 
-    closure = pb.build_code_closure(CHECKOUT, closure_files())
     cas = pb.PrismaBuildCAS(SH / "cas")
 
     print(f"closure {closure['closure_sha256'][:16]} over "
@@ -215,7 +231,8 @@ def main():
           f"transport {args.transport}")
     published = 0
     for shard in shards:
-        action = build_action(shard, closure, args.rung, args.calibrate_every)
+        action = build_action(shard, closure, args.rung, args.calibrate_every,
+                              wrapper=wrapper)
         key = str(action["action_key"])
         if args.dry_run:
             print(f"  shard {shard:>3}  {key[:16]}  (dry run)")

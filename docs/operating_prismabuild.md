@@ -846,6 +846,18 @@ own closures, environments and result paths — one action per input shard.
 Routing them through `pbrun` would re-seal the work as a shell command and lose
 exactly that.
 
+The ladder dispatcher accepts `--wrapper /path/to/tessera_ladder_probe.py`.
+Without it, the source is `tessera_ladder_probe.py` in the shared checkout;
+there is no dependency on a submitting box's private Tessera tree. Each
+submission records the resolved source path, SHA256, and staged relative path
+in `params.wrapper_source`. The source bytes are staged under
+`prismabuild-wrappers/<sha256>/tessera_ladder_probe.py`, included in the code
+closure, and invoked at that relative path. Concurrent dispatches with different
+wrappers keep separate copies. A conflicting existing digest path is refused.
+The source path is provenance bound into the action key, so changing either
+the source path or its bytes changes the key. `--dry-run --wrapper ...` previews
+that same closure without staging files or publishing work.
+
 What they share with `pbrun` is the last step: hand the sealed action to
 whichever transport is live. That step is `tools/fleet/fleet_submit.py`, and
 it is there once.
