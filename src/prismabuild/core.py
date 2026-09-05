@@ -1682,7 +1682,38 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
             raise ActionContractError(
                 f"cannot hash untracked path {relative!r}: {exc}"
             ) from exc
-    dirty = bytearray(os.fsencode(_git("diff", "--binary", "HEAD")))
+    # Bind the key to the tree's bytes rather than to Git's rendering of
+    # them. ``git diff`` is porcelain: it applies the submitter's diff
+    # driver, ``diff.noprefix``, ``core.abbrev`` and ``GIT_EXTERNAL_DIFF``,
+    # none of which the tree contains. Two submitters with identical trees
+    # then derive two action keys and the store runs the work twice, and
+    # ``GIT_EXTERNAL_DIFF`` is worse than that: it empties the patch, so a
+    # dirty tree derives the clean tree's key and the store answers with a
+    # result the dirty code never produced.
+    #
+    # ``diff-index`` is plumbing and reads none of the presentation config.
+    # ``-M`` restores porcelain's default rename detection and
+    # ``core.abbrev=auto`` its default abbreviation, so under default config
+    # these are byte for byte the bytes ``git diff --binary HEAD`` produced
+    # and every key already in the store still resolves. ``--no-ext-diff``
+    # and ``--no-textconv`` are already the plumbing defaults; they are
+    # spelled out because the porcelain and plumbing defaults differ here,
+    # which is the whole reason this line moved.
+    dirty = bytearray(
+        os.fsencode(
+            _git(
+                "-c",
+                "core.abbrev=auto",
+                "diff-index",
+                "-p",
+                "--binary",
+                "-M",
+                "--no-ext-diff",
+                "--no-textconv",
+                "HEAD",
+            )
+        )
+    )
     for relative, digest in sorted(untracked, key=lambda item: os.fsencode(item[0])):
         dirty.extend(b"\0untracked\0")
         dirty.extend(os.fsencode(relative))
