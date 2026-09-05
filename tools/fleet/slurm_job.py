@@ -112,27 +112,6 @@ def _queue_item(action: dict[str, object], *, cas_root: Path) -> dict[str, objec
     )
 
 
-def _temporary_root(checkout: Path, base: Path) -> Path | None:
-    """The per-action tree the materializer made, from the path it yielded.
-
-    ``mkdtemp`` created one directory directly under ``base`` and everything
-    else hangs below it, so the tree to remove is the ancestor whose parent is
-    the root.  Derived rather than reported so the materializer keeps the
-    signature both transports share.
-    """
-
-    try:
-        resolved_base = base.resolve()
-        current = checkout.resolve()
-    except OSError:
-        return None
-    while current != current.parent:
-        if current.parent == resolved_base:
-            return current
-        current = current.parent
-    return None
-
-
 def _worker_environment(
     environment: dict[str, str], *, lane_dir: str, job_id: str
 ) -> dict[str, str]:
@@ -189,6 +168,13 @@ def _write_job_state(
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Mode stated rather than inherited from the submitter's umask.  The reader
+    # is the Epilog, and it reaches this file as a root-squashed user over NFS:
+    # under ``umask 077`` the file is 0600, every ``sed`` reads nothing, and the
+    # containers and the checkout leak while the state file itself is still
+    # deleted.  Nothing here is a secret -- an action key, a container label,
+    # and a path under a root every job's user can already list.
+    os.chmod(tmp, 0o644)
     os.replace(tmp, path)
 
 
@@ -279,35 +265,41 @@ def main(argv: list[str] | None = None) -> int:
               flush=True)
         return 0
 
-    # Written before materialization as well as after it: a job killed while
-    # git is still fetching has containers only if the action started one (it
-    # has not), but it may already own a partial tree, and the Epilog can only
-    # remove what somebody wrote down.
-    if state_path is not None:
+    def leave_epilog_state(checkout_dir: Path | None) -> None:
+        if state_path is None:
+            return
         _write_job_state(
             state_path,
             action_key=key,
             container_owner=owner,
             container_marker=marker,
             container_job=job_id,
-            checkout_dir=None,
+            checkout_dir=checkout_dir,
             local_checkout_root=local_root,
         )
 
+    # Written before materialization: a job killed while git is still fetching
+    # has containers only if the action started one (it has not), but the
+    # ownership label has to be on disk before anything can create one.
+    leave_epilog_state(None)
+
     item = _queue_item(action, cas_root=cas_root)
     with materialize._execution_checkout(
-        item, local_checkout_root=local_root
+        item,
+        local_checkout_root=local_root,
+        # The tree is named the instant ``mkdtemp`` makes it, before the fetch
+        # that fills it runs.  ``epilog.sh`` removes a checkout only when
+        # ``checkout_dir`` is non-empty, and the real path used to be written
+        # only after the fetch finished -- which for a large snapshot is
+        # minutes of git.  A job killed by a time limit or a ``scancel`` in
+        # that window left its tree under the local checkout root forever,
+        # because nothing that ran afterwards knew the name ``mkdtemp`` chose.
+        #
+        # An action addressed by a live checkout root materializes nothing, so
+        # this is never called for one and the Epilog is never handed a path
+        # to a tree it must not delete.
+        on_temporary=leave_epilog_state,
     ) as checkout_root:
-        if state_path is not None:
-            _write_job_state(
-                state_path,
-                action_key=key,
-                container_owner=owner,
-                container_marker=marker,
-                container_job=job_id,
-                checkout_dir=_temporary_root(Path(checkout_root), local_root),
-                local_checkout_root=local_root,
-            )
         worker = [str(args.worker_python)] + pool.worker_argv(
             worker_script=args.worker,
             action_key=key,
