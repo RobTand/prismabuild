@@ -9,5 +9,13 @@ __pycache__/
 # to the digest unfiltered, so a tracked stamp moves the key on every submit,
 # which is the "cache miss dressed up as a different action" that filter
 # exists to prevent.  One `git add -A` from a shared checkout re-opens it.
-.pbrun-closure.*
-pbrun_result.*
+#
+# The patterns are the exact grammar `core.pbrun_git_exclude_patterns` defines
+# -- a fixed prefix, sixteen hex characters, a fixed suffix -- and not the
+# broad globs that used to stand in for them.  `pbrun` writes these same two
+# lines into every checkout's `.git/info/exclude`, and replaces the broad ones
+# when it finds them, because `pbrun_result.*` also matches a repository file
+# somebody named `pbrun_result.notes.py`.  A tracked file dropped by an ignore
+# rule is a bundle that does not rebuild the tree the action ran in.
+.pbrun-closure.[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
+pbrun_result.[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].txt
