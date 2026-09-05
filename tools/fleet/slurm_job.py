@@ -182,10 +182,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--action", required=True,
                         help="the published CAS action request to execute")
-    parser.add_argument("--cas-root", required=True)
+    parser.add_argument("--cas-root", required=True,
+                        help="the CAS root holding the action request and "
+                             "receiving its result")
     parser.add_argument("--worker", required=True,
                         help="tools/prismabuild_worker.py to exec")
-    parser.add_argument("--worker-python", default="/usr/bin/python3")
+    parser.add_argument("--worker-python", default="/usr/bin/python3",
+                        help="interpreter that launches the worker on the "
+                             "node that won the allocation, not on the "
+                             "submitter")
     parser.add_argument("--lane-dir", default="",
                         help="this action's lane directory: the job's logs and "
                              "the action's exit status go here")

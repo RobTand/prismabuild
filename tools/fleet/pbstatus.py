@@ -761,11 +761,45 @@ def job_lines(jobs: Sequence[Mapping[str, object]]) -> list[str]:
     return render_table(headers, rows)
 
 
-def ending_lines(endings: Sequence[Mapping[str, object]]) -> list[str]:
-    """The endings table: how the newest actions finished, under either transport."""
+def queue_root_note(queue_root: str | Path) -> str | None:
+    """Why this root can file no endings, or ``None`` if it could file some.
+
+    An empty table used to answer three questions with one sentence: a fleet
+    that has filed nothing, a path that does not exist, and a path that is not
+    a queue.  Only the first means wait.  A mistyped ``--queue-root`` read as
+    the first, so an operator waited on a screen that could never fill.
+
+    Never raises, for the same reason nothing else here does: a status screen
+    that fails is a screen nobody can use to find out why.
+    """
+
+    root = Path(queue_root)
+    try:
+        if not root.exists():
+            return f"no queue root at {root}: the path does not exist"
+        if not root.is_dir():
+            return f"no queue root at {root}: the path is not a directory"
+        filed_in = [state for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
+                    if (root / state).is_dir()]
+    except OSError as exc:
+        reason = str(exc.strerror or type(exc).__name__).lower()
+        return f"queue root {root} cannot be read: {reason}"
+    if not filed_in:
+        return (f"{root} is not a queue root: it holds no done/, failed/ or "
+                "withdrawn/ directory")
+    return None
+
+
+def ending_lines(endings: Sequence[Mapping[str, object]],
+                 *, note: str | None = None) -> list[str]:
+    """The endings table: how the newest actions finished, under either transport.
+
+    ``note`` replaces the empty-table line, so a root that can file nothing
+    says which kind of empty it is rather than the one kind that means wait.
+    """
 
     if not endings:
-        return ["no endings filed under done/, failed/ or withdrawn/"]
+        return [note or "no endings filed under done/, failed/ or withdrawn/"]
     headers = (
         "KEY", "STATUS", "VIA", "HOST", "ELAPSED", "RC", "ACTION RC",
         "RECEIPT", "SLURM", "NOTE",
@@ -847,6 +881,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:                       # noqa: BLE001 - diagnostic
         ending_note = f"endings: unavailable ({type(exc).__name__})"
         notes.append(ending_note)
+    # Asked only when the table came back empty, and asked then because an
+    # empty table is three different answers.  A wrapper reads the `--json`
+    # screen, so the diagnosis travels with the notes as well as under the
+    # table.
+    empty_note = None
+    if ending_note is None and not endings:
+        empty_note = queue_root_note(args.queue_root)
+        if empty_note:
+            notes.append(empty_note)
 
     if args.json:
         print(json.dumps({
@@ -869,7 +912,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("\n".join([job_note] if job_note else job_lines(jobs)))
     print()
     print(f"== endings (newest {args.recent})")
-    print("\n".join([ending_note] if ending_note else ending_lines(endings)))
+    print("\n".join([ending_note] if ending_note
+                     else ending_lines(endings, note=empty_note)))
     return 0
 
 
