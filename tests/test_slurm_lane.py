@@ -142,6 +142,28 @@ if state in {"PENDING", "RUNNING"}:
     print(state)
 '''
 
+_SSTAT = '''\
+import os, sys
+from pathlib import Path
+
+# Modes: progress (TotalCPU grows every call), frozen (constant), fail (exit 1).
+mode = os.environ.get("FAKE_SSTAT_MODE", "progress")
+if mode == "fail":
+    sys.stderr.write("sstat: error: no steps running for job\\n")
+    raise SystemExit(1)
+job = sys.argv[sys.argv.index("-j") + 1]
+state = Path(os.environ["FAKE_SLURM_STATE"])
+with (state / "sstat.argv").open("a") as handle:
+    handle.write(" ".join(sys.argv[1:]) + "\\n")
+counter = state / f"{job}.sstat"
+calls = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(calls))
+cpu = calls if mode == "progress" else 1
+# --noconvert shapes: KB without a suffix for RSS, bytes for the disk counters.
+print(f"{job}.batch|00:00:{cpu:02d}|00:{cpu:02d}.500|4096|102400|0|1")
+print(f"{job}.extern|00:00:00|00:00.000|100|0|0|1")
+'''
+
 _SCANCEL = '''\
 import os, sys
 from pathlib import Path
@@ -161,7 +183,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     binaries.mkdir()
     for name, body in (
         ("sbatch", _SBATCH), ("sacct", _SACCT), ("scontrol", _SCONTROL),
-        ("squeue", _SQUEUE), ("scancel", _SCANCEL),
+        ("squeue", _SQUEUE), ("scancel", _SCANCEL), ("sstat", _SSTAT),
     ):
         script = binaries / name
         script.write_text(

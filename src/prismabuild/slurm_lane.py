@@ -9,7 +9,7 @@ submitted it is gone", and an interactive ``pbrun --wait`` has no such question
 ``scancel``, not adoption.  So this module is a transport and nothing else:
 write a script, ``sbatch`` it, record what was submitted, poll, report.
 
-Three decisions are worth stating, because each had an alternative.
+Four decisions are worth stating, because each had an alternative.
 
 **The truth is the CAS, not the exit code.**  A job that exits 0 without
 publishing a receipt did not do the work, and a job that exits non-zero after
@@ -33,6 +33,15 @@ job ends (the fleet config raises that deliberately, and says why), and
 ``squeue`` answers while it is alive.  ``sacct`` is tried first anyway, so that
 deploying ``slurmdbd`` later is a configuration change and not a code change.
 
+**A running job is never killed on elapsed time.**  ``wait`` samples what the
+scheduler's accounting says the job is doing (``sstat``: CPU time, RSS, I/O)
+and how its logs grow, appends each sample to ``liveness.jsonl`` in the lane
+directory, and *reports* a job whose samples have not moved for
+``STALL_WINDOW_S``.  It cancels nothing.  A stall ends by an operator's
+``pbrun --withdraw`` or by a ``--time`` the submitter asked for, and both are
+the same thing: a person's decision, recorded as one.  The liveness section
+below states the policy and derives the window.
+
 Retries are resubmissions, never ``--requeue``.  SLURM uses one flag for
 operator requeue and automatic restart, so a requeued job cannot be
 distinguished from a rescheduled one after the fact; ``--no-requeue`` is set and
@@ -45,6 +54,7 @@ box that must not need a package installed to talk to the scheduler.
 """
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import json
@@ -379,6 +389,11 @@ class Outcome:
     stdout_path: Path | None
     stderr_path: Path | None
     provenance: JobProvenance | None = None
+    #: ``LivenessMonitor.summary()`` for the wait that produced this outcome:
+    #: the latest sample and ``stalled_since``.  ``None`` only for an outcome
+    #: built somewhere other than ``wait`` (a withdrawal filed from another
+    #: box, a test).
+    liveness: dict[str, object] | None = None
 
     @property
     def terminal(self) -> bool:
@@ -857,25 +872,486 @@ def query_state(
     return (answer.state, answer.exit_code, answer.signal)
 
 
+# --------------------------------------------------------------------------
+# Liveness: sampled evidence that a running job is doing something
+# --------------------------------------------------------------------------
+#
+# The policy this implements (Rob, 2026-09-04): a worker that is actively doing
+# something and not visibly dead is never killed on elapsed time.  Wall-clock
+# is evidence of wall-clock, not of death.  So ``wait`` samples what the
+# scheduler's own accounting says the job is doing, derives ``progressing``
+# from whether any of it moved since the previous sample, records every sample
+# on the lane directory, and *reports* a job that has not moved for a window.
+# Nothing here cancels anything.  A stall ends only by an operator's deliberate
+# ``pbrun --withdraw`` or by a deadline the submitter asked for (``--time``,
+# which ``submit`` sends only when ``timeout_s`` is given).
+#
+# What is read, and why it is the job's and not the action's:
+#
+# * ``sstat`` -- CPU time, RSS and I/O bytes of the job's steps, gathered by
+#   ``jobacct_gather/cgroup`` on the node from the job's own cgroup.  The action
+#   does nothing to produce it, so an action that never heard of this lane is
+#   measured exactly as well as one that did, and the numbers are taken where
+#   the work runs rather than on the submitter.  ``sstat`` reads running steps
+#   from ``slurmd`` and needs no ``slurmdbd``; the container smoke (row 10)
+#   confirms it answers on this fleet's configuration.
+# * the growth of the job's ``<jobid>.out`` and ``<jobid>.err`` under the lane
+#   directory -- the only evidence left when ``sstat`` is absent or refuses.
+#
+# What is *not* read: GPU residency.  On GB10 every per-process GPU figure
+# reads null (``nvidia-smi`` per-process memory is empty; ``utilization.memory``
+# is a hard 0; ``gpu_utilization`` reads 96% for stalled and saturated kernels
+# alike), so claiming GPU evidence would be claiming a measurement nobody can
+# take.  The one honest GPU load signal the fleet has is board power against
+# its envelope (``nvidia-smi --query-gpu=power.draw``), and ``gpu_power_sample``
+# below is the named seam for it.  It returns ``None`` today: it would need to
+# run on the node rather than on the submitter, and the container the smoke
+# runs in has no GPU to verify it against.
+
+LIVENESS_SCHEMA_V1 = "prismaquant.prismabuild.slurm_liveness.v1"
+
+#: One append-only file per lane directory, one JSON line per sample.  Never
+#: rewritten: issue #16 measured a 69 s NFS stall on a queue file rewritten
+#: every heartbeat, and an appended file is the access pattern NFS serves well.
+#: Nothing on a hot path reads it; ``read_liveness`` reads its last line on an
+#: operator's request.
+LIVENESS_FILENAME = "liveness.jsonl"
+
+#: The floor for "no output bytes" evidence: the longest a client was measured
+#: to see stale state from the shared mount (issue #16, 69 s).  A ``stat`` of
+#: the job's log can therefore report an unchanged size for that long while
+#: the job is writing.
+NFS_STALL_FLOOR_S = 69.0
+
+#: The floor for CPU-time evidence: ``JobAcctGatherFrequency``, the interval at
+#: which ``jobacct_gather/cgroup`` refreshes what ``sstat`` reports.  The
+#: fleet's ``slurm.conf`` does not set it, so it is SLURM's default of 30 s
+#: (``scontrol show config`` in the smoke quotes the effective value).  Two
+#: ``sstat`` calls inside one interval read the same gather, so a sample
+#: cadence faster than this reads nothing new.
+ACCT_GATHER_S = 30.0
+
+#: How often ``wait`` takes a sample while the job is RUNNING.  Equal to the
+#: accounting interval, for the reason above; the poll (``DEFAULT_POLL_S``) is
+#: faster, and most polls take no sample.
+LIVENESS_SAMPLE_S = ACCT_GATHER_S
+
+#: How long a job must show no progress before ``wait`` reports it.
+#:
+#: Derived, not chosen.  The binding floor is the NFS one: a sample taken
+#: inside a 69 s stall can read an unchanged log size for a job that is
+#: writing, so a window has to be long enough that the samples across it
+#: cannot all sit inside one such stall.  ``ceil(69 / 30) = 3`` cadences cover
+#: the stall itself; one more cadence is the sample that establishes the
+#: baseline the others are compared against.  That is 4 cadences, 120 s.
+#: The same span straddles at least three accounting gathers, so an unchanged
+#: ``TotalCPU`` across it is at least two full gather intervals of zero CPU and
+#: not a phase artifact of sampling at the gather's own period.
+STALL_WINDOW_S = (
+    (math.ceil(NFS_STALL_FLOOR_S / LIVENESS_SAMPLE_S) + 1) * LIVENESS_SAMPLE_S
+)
+
+#: How often the report is repeated while the stall continues.  This one is a
+#: chattiness bound with no measurement behind it: five windows, ten minutes,
+#: so a stall that lasts an hour prints six lines and not sixty.
+STALL_REPORT_EVERY_S = 5 * STALL_WINDOW_S
+
+#: How many samples ``wait`` keeps in memory: enough to hold one window plus
+#: the baseline and the sample that ends it.  The file holds all of them.
+LIVENESS_HISTORY = int(STALL_WINDOW_S // LIVENESS_SAMPLE_S) + 2
+
+#: What ``sstat`` is asked for.  Every name is one ``sstat --helpformat``
+#: prints; row 10 of the container smoke quotes that list beside the answer.
+#: ``TotalCPU`` is the evidence; ``AveCPU``, ``MaxRSS`` and the disk counters
+#: are recorded so a reader can see *what kind* of work the job was doing.
+SSTAT_FORMAT = "JobID,AveCPU,TotalCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,NTasks"
+
+#: The sample fields compared between consecutive samples.  ``progressing`` is
+#: true when any of them changed; a field that is ``None`` on either side is
+#: not evidence either way.
+PROGRESS_FIELDS = (
+    "cpu_s", "rss_kib", "disk_read", "disk_write", "out_bytes", "err_bytes",
+)
+
+
+def gpu_power_sample(node: str | None) -> dict[str, object] | None:
+    """The seam for the fleet's one honest GPU load signal: board power.
+
+    Not implemented, and the docstring says why rather than the code guessing.
+    Per-process GPU telemetry on GB10 reads null, so the only signal worth
+    sampling is ``nvidia-smi --query-gpu=power.draw,power.limit`` read against
+    the envelope on the node the job runs on.  That is a node-side read the
+    submitter cannot take, and the container smoke has no GPU to verify it in.
+    Until it exists, every sample records ``"gpu": null`` and no reader may
+    treat the absence as idleness.
+    """
+
+    del node
+    return None
+
+
+def _parse_slurm_size(raw: str | None, *, unit_bytes: float = 1.0) -> float | None:
+    """``1234``, ``1234K``, ``0.05M``, ``2G`` to a number in ``unit_bytes``.
+
+    An unsuffixed value is taken in ``unit_bytes``; a suffixed one is scaled
+    from the suffix.  Only the *change* between two samples is evidence, so
+    the unit matters for the record and not for the verdict.
+    """
+
+    text = (raw or "").strip()
+    if text.lower() in _ABSENT:
+        return None
+    scale = {"K": 1024.0, "M": 1024.0 ** 2, "G": 1024.0 ** 3,
+             "T": 1024.0 ** 4, "P": 1024.0 ** 5}
+    suffix = text[-1].upper()
+    if suffix in scale:
+        try:
+            return float(text[:-1]) * scale[suffix] / unit_bytes
+        except ValueError:
+            return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_sstat(job_id: str, stdout: str) -> dict[str, object]:
+    """Aggregate every step ``sstat -a`` printed for one job.
+
+    CPU time and disk bytes are summed across steps and RSS is the maximum,
+    because the question is whether the *job* moved and not which step did.
+    """
+
+    steps: list[str] = []
+    cpu = ave_cpu = read = write = 0.0
+    rss: float | None = None
+    ntasks = 0
+    seen_cpu = seen_io = False
+    for line in stdout.splitlines():
+        fields = line.split("|")
+        if len(fields) < 7:
+            continue
+        step = fields[0].strip()
+        if step != job_id and not step.startswith(f"{job_id}."):
+            continue
+        steps.append(step)
+        value = _parse_slurm_duration(fields[2])
+        if value is not None:
+            cpu += value
+            seen_cpu = True
+        value = _parse_slurm_duration(fields[1])
+        if value is not None:
+            ave_cpu += value
+        value = _parse_slurm_size(fields[3], unit_bytes=1024.0)
+        if value is not None:
+            rss = value if rss is None else max(rss, value)
+        value = _parse_slurm_size(fields[4])
+        if value is not None:
+            read += value
+            seen_io = True
+        value = _parse_slurm_size(fields[5])
+        if value is not None:
+            write += value
+            seen_io = True
+        try:
+            ntasks += int(fields[6].strip() or 0)
+        except ValueError:
+            pass
+    return {
+        "steps": steps,
+        "cpu_s": cpu if seen_cpu else None,
+        "ave_cpu_s": ave_cpu if seen_cpu else None,
+        "rss_kib": rss,
+        "disk_read": read if seen_io else None,
+        "disk_write": write if seen_io else None,
+        "ntasks": ntasks if steps else None,
+    }
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def liveness_path(directory: str | Path) -> Path:
+    """Where one lane directory keeps its samples."""
+
+    return Path(directory) / LIVENESS_FILENAME
+
+
+@dataclass(frozen=True)
+class StallReport:
+    """What ``wait`` hands its caller when a running job has not moved.
+
+    A report, not a verdict: the job is still running and nothing has been
+    done to it.  The caller prints it; an operator decides.
+    """
+
+    action_key: str
+    job_id: str
+    node: str | None
+    stalled_since: float
+    stalled_for_s: float
+    samples_without_progress: int
+    evidence: tuple[str, ...]
+    path: Path
+
+
+class LivenessMonitor:
+    """The sampler ``wait`` owns for one job: cadence, history, verdict, file.
+
+    ``sample`` never raises.  Liveness is evidence about a job and a failure
+    to gather it is recorded on the sample as ``sstat_error``; it must never
+    end a ``wait`` that the scheduler's own answers would have continued.
+    """
+
+    def __init__(
+        self,
+        job: SubmittedJob,
+        *,
+        sstat: str = "sstat",
+        clock: Callable[[], float] = time.monotonic,
+        sample_s: float = LIVENESS_SAMPLE_S,
+        window_s: float = STALL_WINDOW_S,
+        report_every_s: float = STALL_REPORT_EVERY_S,
+        history: int = LIVENESS_HISTORY,
+    ) -> None:
+        self.job = job
+        self.sstat = sstat
+        self.clock = clock
+        self.sample_s = float(sample_s)
+        self.window_s = float(window_s)
+        self.report_every_s = float(report_every_s)
+        self.samples: deque[dict[str, object]] = deque(maxlen=max(2, int(history)))
+        self.count = 0
+        self.path = liveness_path(job.directory)
+        self.record_error: str | None = None
+        self._last_sample_mono: float | None = None
+        self._stalled_since_unix: float | None = None
+        self._stalled_since_mono: float | None = None
+        self._without_progress = 0
+        self._last_report_mono: float | None = None
+
+    @property
+    def latest(self) -> dict[str, object] | None:
+        return self.samples[-1] if self.samples else None
+
+    @property
+    def stalled_since(self) -> float | None:
+        """Unix time of the first sample that showed no progress, or ``None``
+        when the latest sample moved (or nothing has been compared yet)."""
+
+        return self._stalled_since_unix
+
+    def due(self) -> bool:
+        """Is it time for another sample?  Bounded by the cadence, never by
+        the poll."""
+
+        if self._last_sample_mono is None:
+            return True
+        return self.clock() - self._last_sample_mono >= self.sample_s
+
+    def _read_sstat(self) -> tuple[dict[str, object], str | None]:
+        argv = [
+            self.sstat, "-j", self.job.job_id, "-a", "-P", "-n", "--noconvert",
+            f"--format={SSTAT_FORMAT}",
+        ]
+        try:
+            completed = _run(argv, where="sstat")
+        except SlurmLaneError as exc:
+            return {}, str(exc)
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            return {}, f"sstat exited {completed.returncode}: {detail}"
+        parsed = _parse_sstat(self.job.job_id, completed.stdout)
+        if not parsed["steps"]:
+            return parsed, "sstat printed no step for this job"
+        return parsed, None
+
+    def sample(self, provenance: JobProvenance | None = None) -> dict[str, object]:
+        """Take one sample, compare it with the previous, append it to the file."""
+
+        now_mono = self.clock()
+        self._last_sample_mono = now_mono
+        accounting, error = self._read_sstat()
+        node = provenance.node if provenance is not None else None
+        current: dict[str, object] = {
+            "schema": LIVENESS_SCHEMA_V1,
+            "unix": _now(),
+            "action_key": self.job.action_key,
+            "job_id": self.job.job_id,
+            "attempt": self.job.attempt,
+            "node": node,
+            "steps": list(accounting.get("steps") or []),
+            "cpu_s": accounting.get("cpu_s"),
+            "ave_cpu_s": accounting.get("ave_cpu_s"),
+            "rss_kib": accounting.get("rss_kib"),
+            "disk_read": accounting.get("disk_read"),
+            "disk_write": accounting.get("disk_write"),
+            "ntasks": accounting.get("ntasks"),
+            "out_bytes": _file_size(self.job.stdout_path),
+            "err_bytes": _file_size(self.job.stderr_path),
+            "gpu": gpu_power_sample(node),
+            "sstat_error": error,
+            "evidence": (
+                ["output"] if error is not None else ["sstat", "output"]
+            ),
+        }
+        previous = self.latest
+        if previous is None:
+            progressing: bool | None = None
+        else:
+            progressing = any(
+                previous.get(name) is not None
+                and current.get(name) is not None
+                and previous.get(name) != current.get(name)
+                for name in PROGRESS_FIELDS
+            )
+        if progressing is False:
+            if self._stalled_since_unix is None:
+                self._stalled_since_unix = float(current["unix"])
+                self._stalled_since_mono = now_mono
+            self._without_progress += 1
+        elif progressing is True:
+            self._stalled_since_unix = None
+            self._stalled_since_mono = None
+            self._without_progress = 0
+            self._last_report_mono = None
+        current["progressing"] = progressing
+        current["stalled_since"] = self._stalled_since_unix
+        self.samples.append(current)
+        self.count += 1
+        self._append(current)
+        return current
+
+    def _append(self, sample: Mapping[str, object]) -> None:
+        line = json.dumps(dict(sample), sort_keys=True, separators=(",", ":"))
+        try:
+            with open(self.path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError as exc:
+            # The evidence is still in memory and reaches the outcome record.
+            self.record_error = f"{type(exc).__name__}: {exc}"
+
+    def stall_report(self) -> StallReport | None:
+        """A report when the stall has lasted the window and none was issued
+        in the last ``report_every_s``; otherwise ``None``."""
+
+        if self._stalled_since_mono is None or self._stalled_since_unix is None:
+            return None
+        now_mono = self.clock()
+        stalled_for = now_mono - self._stalled_since_mono
+        if stalled_for < self.window_s:
+            return None
+        if (
+            self._last_report_mono is not None
+            and now_mono - self._last_report_mono < self.report_every_s
+        ):
+            return None
+        self._last_report_mono = now_mono
+        latest = self.latest or {}
+        return StallReport(
+            action_key=self.job.action_key,
+            job_id=self.job.job_id,
+            node=latest.get("node") if isinstance(latest.get("node"), str) else None,
+            stalled_since=self._stalled_since_unix,
+            stalled_for_s=stalled_for,
+            samples_without_progress=self._without_progress,
+            evidence=tuple(str(e) for e in (latest.get("evidence") or ())),
+            path=self.path,
+        )
+
+    def summary(self) -> dict[str, object]:
+        """What the outcome record carries under ``detail.liveness``."""
+
+        return {
+            "schema": LIVENESS_SCHEMA_V1,
+            "samples": self.count,
+            "sample_s": self.sample_s,
+            "window_s": self.window_s,
+            "latest": self.latest,
+            "stalled_since": self._stalled_since_unix,
+            "samples_without_progress": self._without_progress,
+            "path": str(self.path),
+            "record_error": self.record_error,
+        }
+
+
+def read_liveness(
+    action_key: str, *, root: str | Path | None = None
+) -> dict[str, object] | None:
+    """The newest liveness sample recorded for an action key, or ``None``.
+
+    For a reader that wants "stalled since" without re-implementing the file:
+    every line carries its own ``stalled_since``, so the last line is the
+    whole answer.  Reads a bounded tail, never the file.  Returns
+    ``{"latest": <sample>, "stalled_since": ..., "job_id": ..., "path": ...}``.
+    """
+
+    try:
+        directory = lane_directory(action_key, root=root)
+    except SlurmLaneError:
+        return None
+    path = liveness_path(directory)
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as handle:
+            bound = 64 * 1024
+            if size > bound:
+                handle.seek(size - bound)
+            raw = handle.read()
+    except OSError:
+        return None
+    lines = [line for line in raw.decode("utf-8", errors="replace").splitlines()
+             if line.strip()]
+    if not lines:
+        return None
+    try:
+        sample = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(sample, dict):
+        return None
+    return {
+        "latest": sample,
+        "stalled_since": sample.get("stalled_since"),
+        "progressing": sample.get("progressing"),
+        "job_id": sample.get("job_id"),
+        "unix": sample.get("unix"),
+        "path": str(path),
+    }
+
+
 def wait(
     job: SubmittedJob,
     *,
     sacct: str = "sacct",
     scontrol: str = "scontrol",
     squeue: str = "squeue",
+    sstat: str = "sstat",
     poll_s: float = DEFAULT_POLL_S,
     wait_s: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    on_stall: Callable[[StallReport], None] | None = None,
 ) -> Outcome:
     """Poll until the job reaches a terminal state, the caller's patience ends,
     or the scheduler stops knowing about it.
 
     None of the three is a verdict on the work.  The caller reads the CAS for
     that; this says which job to read the logs of, and why it stopped.
+
+    While the job is RUNNING, a ``LivenessMonitor`` samples it at its own
+    cadence and ``on_stall`` is called when the samples have not moved for
+    ``STALL_WINDOW_S``.  That call is a report and only a report: nothing in
+    this loop cancels a job, on any evidence.
     """
 
-    deadline = None if wait_s is None else time.monotonic() + float(wait_s)
+    deadline = None if wait_s is None else clock() + float(wait_s)
     last: JobProvenance | None = None
+    monitor = LivenessMonitor(job, sstat=sstat, clock=clock)
     while True:
         answer = query_provenance(
             job.job_id, sacct=sacct, scontrol=scontrol, squeue=squeue
@@ -892,6 +1368,7 @@ def wait(
                 # account of where this job ran, and it is the only one left
                 # once the controller has forgotten the job.
                 provenance=last,
+                liveness=monitor.summary(),
             )
         last = answer
         if answer.state in TERMINAL_STATES:
@@ -903,8 +1380,14 @@ def wait(
                 stdout_path=job.stdout_path,
                 stderr_path=job.stderr_path,
                 provenance=answer,
+                liveness=monitor.summary(),
             )
-        if deadline is not None and time.monotonic() > deadline:
+        if answer.state == "RUNNING" and monitor.due():
+            monitor.sample(answer)
+            report = monitor.stall_report()
+            if report is not None and on_stall is not None:
+                on_stall(report)
+        if deadline is not None and clock() > deadline:
             return Outcome(
                 job_id=job.job_id,
                 state=WAIT_TIMEOUT_STATE,
@@ -913,6 +1396,7 @@ def wait(
                 stdout_path=job.stdout_path,
                 stderr_path=job.stderr_path,
                 provenance=answer,
+                liveness=monitor.summary(),
             )
         sleep(poll_s)
 
@@ -1092,6 +1576,8 @@ def publish_outcome(
             "stdout_path": str(job.stdout_path) if job is not None else None,
             "stderr_path": str(job.stderr_path) if job is not None else None,
         }
+    if outcome is not None and outcome.liveness is not None:
+        body["liveness"] = dict(outcome.liveness)
     body.update(dict(detail or {}))
 
     finished_unix = provenance.end_unix if provenance is not None else None
@@ -1270,10 +1756,13 @@ def run(
     sacct: str = "sacct",
     scontrol: str = "scontrol",
     squeue: str = "squeue",
+    sstat: str = "sstat",
     poll_s: float = DEFAULT_POLL_S,
     wait_s: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
     on_submit: Callable[[SubmittedJob], None] | None = None,
+    on_stall: Callable[[StallReport], None] | None = None,
 ) -> RunResult:
     """Submit, wait, and resubmit while the producer's contract allows it.
 
@@ -1333,9 +1822,12 @@ def run(
             sacct=sacct,
             scontrol=scontrol,
             squeue=squeue,
+            sstat=sstat,
             poll_s=poll_s,
             wait_s=wait_s,
             sleep=sleep,
+            clock=clock,
+            on_stall=on_stall,
         )
         result.attempts.append((job, outcome))
         result.receipt = cas.lookup(action)
