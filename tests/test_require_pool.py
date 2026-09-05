@@ -17,7 +17,7 @@ def _run(command, *, flag: Path):
     event = json.dumps({"tool_input": {"command": command}})
     proc = subprocess.run(
         [sys.executable, str(HOOK)], input=event, text=True,
-        capture_output=True,
+        capture_output=True, timeout=30,
         env={"PATH": "/usr/bin:/bin", "REQUIRE_POOL_FLAG": str(flag)},
     )
     return proc.returncode, proc.stderr
@@ -176,3 +176,30 @@ def test_a_chain_after_a_pool_command_with_no_payload_is_still_scanned(tmp_path,
     module = _armed(tmp_path, monkeypatch)
     cuda = "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python"
     assert _verdict(module, f"pbrun.py --help && {cuda} train.py") != 0
+
+
+def test_hook_process_reads_stdin_flag_and_reports_refusal(tmp_path):
+    flag = tmp_path / "armed"
+    flag.write_text("")
+    code, stderr = _run(f"{CUDA} train.py", flag=flag)
+    assert code == 2
+    assert "Refused: GPU work goes through" in stderr
+    assert "pbrun.py" in stderr
+    code, stderr = _run("nvidia-smi", flag=flag)
+    assert (code, stderr) == (0, "")
+
+
+def test_hook_process_with_absent_flag_allows_work(tmp_path):
+    assert _run(f"{CUDA} train.py", flag=tmp_path / "absent") == (0, "")
+
+
+def test_hook_process_ignores_malformed_event(tmp_path):
+    flag = tmp_path / "armed"
+    flag.write_text("")
+    proc = subprocess.run(
+        [sys.executable, str(HOOK)], input="{broken", text=True,
+        capture_output=True,
+        env={"PATH": "/usr/bin:/bin", "REQUIRE_POOL_FLAG": str(flag)},
+        timeout=30,
+    )
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, "", "")
