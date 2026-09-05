@@ -286,6 +286,7 @@ def test_the_command_line_default_sends_no_deadline_either(fleet, capsys) -> Non
 
 def _sealed_failure(
     tmp_path: Path, *, gres: str = "gpu:1", tags: tuple[str, ...] = ("gb10",),
+    seed: str = "",
 ) -> dict:
     """A lane-filed failure whose action carries a real sealed snapshot.
 
@@ -295,7 +296,12 @@ def _sealed_failure(
     """
 
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    action = _runnable_action(tmp_path, cas)
+    # ``seed`` gives a second failure its own source tree and its own
+    # environment, so it is a distinct action key, while both records share
+    # one queue and one store.
+    source_root = tmp_path / seed if seed else tmp_path
+    source_root.mkdir(parents=True, exist_ok=True)
+    action = _runnable_action(source_root, cas, owner=seed)
     cas.publish_action_request(action)
     key = str(action["action_key"])
     queue_root = tmp_path / "pb-queue"
@@ -482,3 +488,39 @@ def test_a_sealed_failure_is_never_carried_onto_the_pull_queue(
         sealed["queue"], cas_root=sealed["cas_root"])
     assert plans == []
     assert any("only the SLURM lane does" in why for _, why in skipped)
+
+
+def test_a_refused_submission_does_not_abort_the_rest_of_the_reset(
+    tmp_path: Path, slurm_fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """``sbatch`` refusing is a capability answer, not a crash.
+
+    An unknown Feature or an impossible GRES is rejected at submit time, and
+    the lane raises that in this process -- unlike the ``pbrun`` half, whose
+    detached child takes its stderr to ``DEVNULL``.  Unhandled, one bad record
+    would end a 120-shard reset with a traceback and leave every later plan
+    untouched.  Each refusal is reported against its own record, the record
+    stays ``failed`` so the next run can try it again, and the exit status
+    tells a wrapping script that something was refused.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_REFUSE", "1")
+    first = _sealed_failure(tmp_path, seed="one")
+    second = _sealed_failure(tmp_path, seed="two")
+    assert first["key"] != second["key"]
+
+    code = pool_reset.main([
+        "--apply",
+        "--queue-root", str(first["queue_root"]),
+        "--cas-root", str(first["cas_root"]),
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    for failure in (first, second):
+        assert f"refused {failure['key'][:12]}" in out
+        assert json.loads(
+            failure["record_path"].read_text())["status"] == "failed"
+    assert "Requested node configuration is not available" in out
+    assert _submissions(slurm_fleet) == []

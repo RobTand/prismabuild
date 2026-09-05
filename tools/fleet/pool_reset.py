@@ -377,6 +377,11 @@ def resubmit_sealed(
 
     Returns:
         The accepted ``slurm_lane.SubmittedJob``, or ``None`` if none was.
+
+    Raises:
+        slurm_lane.SlurmLaneError: The controller refused the submission --
+            an unknown Feature, an impossible GRES.  The caller reports it
+            and moves on to the next plan; this record stays ``failed``.
     """
 
     action = plan["action"]
@@ -516,6 +521,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.limit:
         ordered = ordered[: args.limit]
+    refused: list[str] = []
     for plan in ordered:
         label = (f"{plan['key'][:12]} x{len(plan['paths'])} "
                  f"{plan['transport']} {plan['cwd'] or 'sealed checkout'}")
@@ -524,9 +530,19 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  would resubmit {label}\n    "
                       f"the sealed action itself, unchanged")
                 continue
-            job = resubmit_sealed(
-                plan, cas_root=cas_root, queue_root=Path(args.queue_root),
-                priority=args.priority, timeout_s=args.timeout_s)
+            try:
+                job = resubmit_sealed(
+                    plan, cas_root=cas_root, queue_root=Path(args.queue_root),
+                    priority=args.priority, timeout_s=args.timeout_s)
+            except slurm_lane.SlurmLaneError as exc:
+                # ``sbatch`` refusing is this transport's capability gate --
+                # an unknown Feature, an impossible GRES -- and it is the
+                # moment the pull queue's own matcher would have spoken.  One
+                # such record must not end a 120-shard reset, and the record
+                # stays ``failed`` so the next run can try it again.
+                print(f"  refused {label}\n    {exc}")
+                refused.append(plan["key"])
+                continue
             if job is None:                     # unreachable: run submits once
                 print(f"  nothing submitted for {label}")
                 continue
@@ -561,6 +577,9 @@ def main(argv: list[str] | None = None) -> int:
         _file_reset(plan, reason="re-submitted as a fresh action by pool_reset")
     if not args.apply:
         print("\nnothing submitted; re-run with --apply")
+    if refused:
+        print(f"\n{len(refused)} refused by the scheduler and left failed")
+        return 1
     return 0
 
 
