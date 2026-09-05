@@ -364,6 +364,7 @@ def test_a_gpu_slot_action_asks_for_shards_its_tags_and_its_own_time(
         f"--error={directory}/%j.err",
         "--mem=73728M",
         "--cpus-per-task=4",
+        "--nice=10000",
         "--time=02:00:00",
         "--gres=shard:1",
         "--constraint=gb10&sparklina",
@@ -428,6 +429,58 @@ def test_a_requested_deadline_still_becomes_a_time_limit(
     assert "--time=00:01:30" in argv
     record = json.loads(job.record_path.read_text(encoding="utf-8"))
     assert record["time_limit"] == "00:01:30"
+
+
+@pytest.mark.parametrize(
+    ("priority", "expected"),
+    [(0, "--nice=10000"), (5, "--nice=9995"), (-10, "--nice=10010")],
+)
+def test_the_submitters_priority_becomes_the_nice_slurm_can_honour(
+    tmp_path: Path, fleet: Path, priority: int, expected: str
+) -> None:
+    """The pool sorted its ready queue on ``--priority``; SLURM subtracts a
+    nice from the base priority its own scheduler assigned.  Higher priority is
+    therefore a smaller nice, and the base keeps every one of them non-negative
+    -- a boost needs SlurmUser privilege the submitting user does not have.
+
+    ``pool_reset`` is the case that made this a defect rather than a gap: it
+    re-submits in bulk at ``--priority -10``, which under the pool sat behind
+    interactive work and under SLURM ran alongside it.
+    """
+
+    job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
+                  priority=priority, seed=f"nice{priority}")
+    record = [r for r in _submissions(fleet) if r["job_id"] == int(job.job_id)][0]
+
+    assert expected in record["argv"]
+    assert len([f for f in record["argv"] if f.startswith("--nice=")]) == 1
+
+
+def test_a_priority_past_the_base_asks_for_the_most_it_can_be_given(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """``sbatch`` refuses a negative nice from an unprivileged submitter, so a
+    priority past the base is clamped to zero rather than turned into a
+    submission the scheduler rejects."""
+
+    assert sl.nice_for(sl.NICE_BASE + 1) == 0
+    job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
+                  priority=sl.NICE_BASE + 1, seed="clamped")
+    record = [r for r in _submissions(fleet) if r["job_id"] == int(job.job_id)][0]
+    assert "--nice=0" in record["argv"]
+
+
+def test_the_submission_record_says_what_the_priority_became(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """Beside the partition, because both are how this submission was placed
+    and neither is part of the action's identity."""
+
+    job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
+                  priority=-10, seed="recorded")
+    record = json.loads(job.record_path.read_text(encoding="utf-8"))
+    assert record["nice"] == 10010
+    assert "partition" in record
 
 
 def test_the_partition_is_read_off_the_demand_and_the_placement() -> None:
@@ -998,12 +1051,16 @@ def test_a_cancelled_job_exits_the_way_a_withdrawal_does(
     assert code == pbrun.WITHDRAWN_EXIT
 
 
-def test_the_slurm_transport_never_touches_the_pull_queue(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Everything below the branch reads worker offers, and a retained offer
-    from a loop stopped for the cutover would refuse a submission the scheduler
-    can place perfectly well.  So the queue is not constructed at all."""
+def _slurm_main_kwargs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *argv_tail: str
+) -> dict[str, object]:
+    """Drive ``pbrun.main --transport slurm`` and return what it sent the lane.
+
+    Building a ``PoolQueue`` is an assertion failure rather than a mock:
+    everything below the branch reads worker offers, and a retained offer from
+    a loop stopped for the cutover would refuse a submission the scheduler can
+    place perfectly well.
+    """
 
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     subprocess.run(
@@ -1036,12 +1093,33 @@ def test_the_slurm_transport_never_touches_the_pull_queue(
     monkeypatch.setattr(pbrun, "slurm_outcome", capture)
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--transport", "slurm", "--cwd", str(tmp_path),
-        "--tag", "x86", "--timeout-s", "1800", "--", "/bin/true",
+        *argv_tail, "--", "/bin/true",
     ])
     assert pbrun.main() == 0
+    return seen
+
+
+def test_the_slurm_transport_never_touches_the_pull_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The helper refuses a ``PoolQueue``; this is the case it exists for."""
+
+    seen = _slurm_main_kwargs(
+        tmp_path, monkeypatch, "--tag", "x86", "--timeout-s", "1800")
     assert seen["tags"] == ["x86"]
     assert seen["timeout_s"] == 1800.0
     assert seen["exclusive"] is False
+
+
+def test_the_priority_a_caller_asked_for_reaches_the_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--priority`` was parsed and then dropped on the way to SLURM, so
+    ``pool_reset``'s bulk ``--priority -10`` ran alongside interactive work
+    instead of behind it."""
+
+    seen = _slurm_main_kwargs(tmp_path, monkeypatch, "--priority", "-10")
+    assert seen["priority"] == -10
 
 
 def test_the_transport_default_is_still_the_pull_queue(

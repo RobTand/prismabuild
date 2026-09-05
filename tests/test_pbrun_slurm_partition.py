@@ -23,7 +23,7 @@ class _Captured(Exception):
         self.kwargs = kwargs
 
 
-def _partition_pbrun_sends(monkeypatch: pytest.MonkeyPatch, *, tags, demand):
+def _lane_kwargs(monkeypatch: pytest.MonkeyPatch, *, tags, demand, **extra):
     def record(action, **kwargs):
         raise _Captured(kwargs)
 
@@ -33,8 +33,13 @@ def _partition_pbrun_sends(monkeypatch: pytest.MonkeyPatch, *, tags, demand):
             {"action_key": "0" * 64}, cas=None, request_path="request.json",
             tags=list(tags), demand=dict(demand), exclusive=False,
             timeout_s=60.0, wait_s=60.0, retry_safe=False, max_attempts=1,
+            **extra,
         )
-    return raised.value.kwargs["partition"]
+    return raised.value.kwargs
+
+
+def _partition_pbrun_sends(monkeypatch: pytest.MonkeyPatch, *, tags, demand):
+    return _lane_kwargs(monkeypatch, tags=tags, demand=demand)["partition"]
 
 
 def test_gpu_work_is_sent_to_the_gpu_partition(monkeypatch) -> None:
@@ -53,3 +58,14 @@ def test_pinned_cpu_work_is_left_to_its_constraint(monkeypatch) -> None:
     assert _partition_pbrun_sends(
         monkeypatch, tags=["sparky"], demand={"cpu": 4, "mem_gb": 8}
     ) is None
+
+
+def test_the_priority_pbrun_accepted_reaches_the_lane(monkeypatch) -> None:
+    """``--priority`` was parsed, recorded in the pool's publication, and
+    dropped on the way to SLURM.  ``pool_reset`` submits its bulk resets at
+    ``--priority -10``, so dropping it put a reset alongside interactive work
+    rather than behind it."""
+
+    kwargs = _lane_kwargs(
+        monkeypatch, tags=[], demand={"cpu": 1}, priority=-10)
+    assert kwargs["priority"] == -10

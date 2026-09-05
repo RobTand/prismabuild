@@ -117,6 +117,23 @@ DEFAULT_JOB_STATE_ROOT = f"{DEFAULT_LANE_ROOT}/{JOB_STATE_DIRNAME}"
 #: own sealed argv[0] selects whatever interpreter the work requires.
 DEFAULT_JOB_PYTHON = "/usr/bin/python3"
 
+#: The nice value a ``--priority 0`` job carries, and the origin every other
+#: priority is measured from.
+#:
+#: SLURM has no submitter-settable priority *number*: ``PriorityType=priority/
+#: basic`` orders by an internal base priority, and the one lever an
+#: unprivileged submitter has over it is ``--nice``, which is SUBTRACTED from
+#: that base.  So a higher pool priority has to become a smaller nice, and the
+#: base exists because a NEGATIVE nice -- a boost -- requires SlurmUser
+#: privilege that the submitting user does not have.  Starting at 10000 leaves
+#: every realistic priority on the non-negative side of that line while keeping
+#: the relative order the pool's sort produced.
+#:
+#: This is a queue hint and nothing more.  It is not part of the action
+#: identity, it does not reach ``seal_action``, and two submissions of one
+#: action that differ only in priority are the same action.
+NICE_BASE = 10000
+
 #: How long ``wait`` leaves between polls of a job that has not finished.
 DEFAULT_POLL_S = 5.0
 
@@ -178,6 +195,18 @@ def lane_root(explicit: str | Path | None = None) -> Path:
     if explicit is not None:
         return Path(explicit)
     return Path(os.environ.get(LANE_ROOT_ENV) or DEFAULT_LANE_ROOT)
+
+
+def nice_for(priority: int) -> int:
+    """The ``--nice`` value that carries one pool priority.
+
+    Clamped at zero rather than refused: ``sbatch`` rejects a negative nice
+    from an unprivileged submitter, and a priority past the base is asking for
+    a boost this user cannot be granted.  Zero is the most this lane can do for
+    it, and it is still ordered ahead of every ordinary submission.
+    """
+
+    return max(0, NICE_BASE - int(priority))
 
 
 def lane_directory(action_key: str, *, root: str | Path | None = None) -> Path:
@@ -554,6 +583,7 @@ def submit(
     worker_python: str = DEFAULT_JOB_PYTHON,
     local_checkout_root: str | Path | None = None,
     partition: str | None = None,
+    priority: int = 0,
     attempt: int = 1,
     sbatch: str = "sbatch",
     published_unix: float | None = None,
@@ -592,6 +622,7 @@ def submit(
     tmp.chmod(0o755)
     os.replace(tmp, script)
 
+    nice = nice_for(priority)
     stdout_template = directory / "%j.out"
     stderr_template = directory / "%j.err"
     argv = [
@@ -613,6 +644,13 @@ def submit(
         f"--error={stderr_template}",
         f"--mem={resources.memory_mib}M",
         f"--cpus-per-task={resources.cpus}",
+        # The pool recorded a priority and sorted its ready queue on it.  SLURM
+        # has no submitter-settable priority number, so the same ordering is
+        # expressed as a nice the controller subtracts; see ``NICE_BASE``.
+        # Sent on every submission, including priority 0, so that the flag is
+        # not the thing that differs between an ordinary job and a deprioritized
+        # one -- only its value is.
+        f"--nice={nice}",
     ]
     if timeout_s is not None:
         # A deadline is sent only when the submitter asked for one.  Wall-clock
@@ -668,6 +706,10 @@ def submit(
         "gres": gres or "",
         # Empty means the default partition: the constraint decided.
         "partition": partition or "",
+        # What the submitter's priority became.  Recorded rather than derived
+        # again by a reader: ``NICE_BASE`` may move, and a record that says
+        # what was sent stays readable when it does.
+        "nice": nice,
         # Empty means no deadline was requested: the job runs while it runs.
         "time_limit": "" if timeout_s is None else format_time_limit(timeout_s),
         "cpus": resources.cpus,
@@ -1324,6 +1366,7 @@ def run(
     worker_python: str = DEFAULT_JOB_PYTHON,
     local_checkout_root: str | Path | None = None,
     partition: str | None = None,
+    priority: int = 0,
     sbatch: str = "sbatch",
     sacct: str = "sacct",
     scontrol: str = "scontrol",
@@ -1377,6 +1420,7 @@ def run(
             worker_python=worker_python,
             local_checkout_root=local_checkout_root,
             partition=partition,
+            priority=priority,
             attempt=attempt,
             sbatch=sbatch,
             published_unix=published_unix,

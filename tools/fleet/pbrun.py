@@ -1391,6 +1391,7 @@ def slurm_outcome(
     wait_s: float,
     retry_safe: bool,
     max_attempts: int,
+    priority: int = 0,
     runtime_root: Path = RUNTIME_ROOT,
     lane_root=None,
     queue_root=None,
@@ -1425,6 +1426,12 @@ def slurm_outcome(
             placement=tags,
             resources=resources,
             partition=slurm_lane.partition_for(resources, tags),
+            # ``--priority`` is a queue hint on either transport: the pool
+            # sorts its ready list on it, and SLURM subtracts the derived nice
+            # from the base priority its scheduler assigned.  Dropping it here
+            # is what let ``pool_reset``'s bulk ``--priority -10`` land
+            # alongside interactive work instead of behind it.
+            priority=priority,
             timeout_s=timeout_s,
             worker_script=runtime_root / "tools" / "prismabuild_worker.py",
             job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
@@ -2188,6 +2195,7 @@ def main() -> int:
             wait_s=args.wait_s,
             retry_safe=args.retry_safe,
             max_attempts=args.max_attempts,
+            priority=args.priority,
         )
 
     q = pool.PoolQueue(SH / "pb-queue")
