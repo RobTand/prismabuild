@@ -618,6 +618,7 @@ an impossible GRES, is reported for that record, the record stays `failed`, and
 | `failed` | No receipt. Something refused, or the command exited non-zero. Filed under `failed/`. |
 | `timeout` | SLURM killed the job at a `--timeout-s` you asked for. `returncode` is null. Retriable. |
 | `withdrawn` | Somebody cancelled the run. Not a defect, and not retried. |
+| `reset` | A `failed` ending that `pool_reset --apply` re-submitted. The record stays under `failed/` with its `detail` intact and a `reset` object beside it (host, time, and the attempt history it inherited), so the next run plans the action again. See "Reset a batch of failures". |
 
 ## Read a failure
 
