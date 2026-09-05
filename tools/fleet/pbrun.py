@@ -63,6 +63,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root
+# The transport default is read in one place for the whole fleet.  pbrun used
+# to spell it itself, which was the same expression until the published
+# generation became able to carry a default and then was silently not.
+from fleet_submit import default_transport
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 #: Every box mounts this at the same path, so a checkout underneath it is
@@ -2174,10 +2178,11 @@ def main() -> int:
                     help="why, recorded on the withdrawal record")
     ap.add_argument(
         "--transport", choices=TRANSPORTS,
-        default=os.environ.get(DEFAULT_TRANSPORT_ENV) or "pool",
+        default=default_transport(),
         help="which dispatcher carries this submission (env "
-             "PRISMABUILD_TRANSPORT); the pull queue stays the default until "
-             "the fleet has cut over to SLURM")
+             "PRISMABUILD_TRANSPORT, else the published runtime generation's "
+             "default_transport); the pull queue stays the default until the "
+             "fleet has cut over to SLURM")
     ap.add_argument("command", nargs=argparse.REMAINDER)
     args = ap.parse_args()
 

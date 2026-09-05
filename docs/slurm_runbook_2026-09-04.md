@@ -1,12 +1,23 @@
 # SLURM runbook, 2026-09-04
 
-This runbook installs SLURM across the three fleet boxes and cuts `pbrun` over to
-it. Every command that needs root is marked `sudo`. Run the commands in the
-order given; each section ends with a check that has to pass before you move on.
+This runbook installs SLURM across the three fleet boxes and cuts `pbrun` over
+to it. It is four scripts and the order to run them in:
 
-The code this configures is already merged and tested: `prismabuild.slurm_lane`
+| Script | Who runs it | What it does |
+|---|---|---|
+| `fleet/slurm/install.sh` | root, on each box | Phase 1: the user, munge, the packages, the configuration, the daemons |
+| `fleet/slurm/verify.sh` | rob, from any box | the validation checks, PASS or FAIL per row |
+| `fleet/slurm/cutover.sh` | rob, from a checkout | Phase 2: stop the pull queue's plane, publish SLURM as the default |
+| `fleet/slurm/rollback.sh` | rob, from a checkout | reverse the cutover |
+
+Every one of them takes `--dry-run` except `verify.sh`, which changes nothing.
+A dry run prints the commands verbatim and runs none of them, so read one
+before you run the real thing.
+
+The code they configure is already merged and tested: `prismabuild.slurm_lane`
 (submit, wait, cancel), `tools/fleet/slurm_job.py` (what a batch job runs), and
-`pbrun --transport slurm`. The pull queue is untouched and remains the default.
+`pbrun --transport slurm`. The pull queue is untouched and remains the default
+until `cutover.sh` publishes a generation that says otherwise.
 
 ## Verified in a container, 2026-09-04
 
@@ -51,10 +62,12 @@ Ubuntu 24.04's own 23.11.4 (secondary). What that settles:
   anyway. Smoke row 8 reads that delete back out of `slurmd.log`
   (`removed state file ... as rob`), so the squash-safe path is known to be the
   one that runs -- on a bind mount, which is the part NFS still has to confirm.
-  Nothing to do at install except read `jobs/` once after the validation runs.
+  Nothing to do at install: `verify.sh` row 8 reads `jobs/` back out.
 - **`CPUs=` for the two GB10 boxes** (was item 5). Measured and written into
-  `slurm.conf`: 20 CPUs as two clusters of ten, one thread per core. Step 5's
-  `slurmd -C` is now a cross-check, not the source.
+  `slurm.conf`: 20 CPUs as one socket of twenty, one thread per core, measured
+  again on 2026-09-05 with `slurmd -C` from the fleet's own 25.11.2 build.
+  `install.sh` cross-checks that against each box's stanza and refuses on a
+  mismatch, so the box is the authority and the file is the claim.
 - **`--timeout-s` enforcement, withdrawal, and the terminal records.** Also
   covered: `--timeout-s` becomes `--time` and SLURM kills the job (arriving as
   `detail.slurm.state=TIMEOUT`, not as a `pbrun` timeout); `--withdraw` on a
@@ -74,10 +87,16 @@ Two lane defects the fakes could not see were found and fixed here:
   `TIMEOUT`.  It reads `Outcome.succeeded` now.
 
 And one thing an operator would have assumed wrongly: the Epilog's environment
-is SLURM's own, built from its `SLURM_*` variables, so
-`PRISMABUILD_EPILOG_DOCKER` and `PRISMABUILD_SLURM_LANE_ROOT` are test-only
-levers and not something to set at install time.  The Epilog finds `docker` on
-`PATH`.
+is SLURM's own, built from its `SLURM_*` variables, so nothing a submitter
+exports reaches it. `PRISMABUILD_EPILOG_DOCKER` and
+`PRISMABUILD_SLURM_LANE_ROOT` are test-only levers, not install-time settings,
+and in particular do not set `PRISMABUILD_SLURM_LANE_ROOT` on a submitter
+expecting the Epilog to honour it: the Epilog reads its job-state root from its
+own hardcoded default and cannot see that variable, so the two would point at
+different directories and the state file would never be cleaned up. Another
+worker is making the node-side path independent of the submitter's
+environment; until that lands, leave the lane root alone. The Epilog finds
+`docker` on `PATH`.
 
 ## Still not verified
 
@@ -91,23 +110,38 @@ These need the real install, and the container cannot stand in for any of them:
    rdma misc dmem` available, measured 2026-09-04.
 2. **Device containment and real GPUs.** `ConstrainDevices` is off in the
    container and the node's GRES binds a `mknod`'d character device nothing
-   opens. Whether `cgroup_allowed_devices_file.conf` admits exactly the right
-   NVIDIA control interfaces -- `/dev/nvidiactl`, the UVM pair,
-   `nvidia-modeset` and `nvidia-caps/nvidia-cap1,2`, all measured present on
-   both GB10 boxes -- is answerable only on a box with a GPU. If a GPU job
-   fails at CUDA init while a non-GPU job runs, that list is the first place to
-   look. Note also that the fleet's 25.11.2 build ships no `gpu_nvml.so`, so
-   `AutoDetect=nvml` is not available at all and `gres.conf` must stay static.
+   opens. On cgroup v2 the containment is an eBPF program that denies exactly
+   the GRES `File=` devices a job was not allocated and admits everything else,
+   so what has to be shown on a real box is that a job holding `shard:1` can
+   still initialize CUDA while a job holding nothing cannot open
+   `/dev/nvidia0`. `verify.sh` rows 3 and 4 are that pair. If a GPU job fails
+   at CUDA init while a non-GPU job runs, the `File=` paths in `gres.conf` are
+   the first place to look. Note also that the fleet's 25.11.2 build ships no
+   `gpu_nvml.so`, so `AutoDetect=nvml` is not available at all and `gres.conf`
+   must stay static.
 3. **NFS `root_squash` end to end.** The export is measured and the Epilog is
    fixed, but the fix has been exercised only against a fake `runuser` and a
    local bind mount. The first killed job on the real fleet is the test.
 4. **Three-box RPC.** One node cannot show a controller talking to a remote
    `slurmd`, a node draining and returning under `ReturnToService=2`, or an
    action landing on a box other than the submitter's.
-5. **Whether 25.11 built from source interoperates with 25.11.2 from apt** (was
-   item 6). The Sparks' packages are a rebuild of Ubuntu 26.04's own source
-   package at the same patch version, and both ends have now been exercised
-   separately; they have not been exercised against each other.
+5. **Whether the Sparks' rebuilt 25.11.2 interoperates with dl380g10's 25.11.2
+   from apt** (was item 6). The Sparks' packages are a rebuild of Ubuntu
+   26.04's own source package at the same patch version, and both ends have now
+   been exercised separately; they have not been exercised against each other.
+6. **The four scripts in this runbook.** None of them has run on the fleet,
+   because SLURM is installed on no box. `install.sh` has been run for real
+   through step 7 in an `ubuntu:24.04` arm64 container on sparky with a faked
+   `hostname` -- the packages install, the topology cross-check passes, the
+   munge key round-trips and is shredded, and a second run skips every
+   completed step -- and step 8 is where a container stops, having no systemd.
+   `verify.sh` has never run at all: every row of it needs a controller.
+   `cutover.sh` and `rollback.sh` have been exercised only in `--dry-run` and
+   through their refusal paths against a sandbox queue.
+7. **That the addresses in `slurm.conf` are enough.** The resolution failure in
+   both directions is measured and the addresses are measured, but no SLURM
+   daemon has yet dialled one of them. `NodeAddr` is the documented remedy for
+   exactly this; it has not been shown working on this fleet.
 
 ## What this replaces, and what it does not
 
@@ -145,8 +179,8 @@ Two capabilities of the pull queue have no equivalent yet:
 
 - **Aging.** `pool.py` counts denials in `passes` and lets a starved item
   withhold a host past `STARVATION_FLOOR`. Age-based priority in SLURM needs
-  `priority/multifactor`, which needs `slurmdbd`, which this install defers. Until
-  then the fleet runs FIFO within a priority, plus backfill.
+  `priority/multifactor`, which needs `slurmdbd`, which this install defers.
+  Until then the fleet runs FIFO within a priority, plus backfill.
 - **`sacct`.** With `AccountingStorageType=accounting_storage/none`, `sacct`
   fails for every job. The lane tries it first anyway and falls back to
   `scontrol` and `squeue`, so deploying `slurmdbd` later is a configuration
@@ -160,379 +194,400 @@ Two capabilities of the pull queue have no equivalent yet:
 | Box | Role | Architecture | SLURM source |
 |---|---|---|---|
 | dl380g10 | Controller and CPU node | x86_64, Ubuntu 26.04.1 | `apt install slurm-wlm` (25.11.2) |
-| sparky | GPU node | aarch64, Ubuntu 24.04 | Built from source, 25.11.x |
-| gx10-6b77 (sparklina) | GPU node | aarch64, Ubuntu 24.04 | Built from source, 25.11.x |
-
-The Sparks need a source build because Ubuntu 24.04 ships slurm-wlm 23.11.4, and
-a 25.11 controller accepts nodes running 25.05, 24.11, or 24.05 only.
-
-## Step 1: create the `slurm` user on all three boxes
-
-The user and group must have the same numeric IDs everywhere, because the
-controller and the nodes exchange state as that user.
-
-Run on each of dl380g10, sparky, and gx10-6b77:
-
-```bash
-sudo groupadd -g 64030 slurm
-sudo useradd -u 64030 -g slurm -s /usr/sbin/nologin -M -d /var/spool/slurm slurm
-sudo mkdir -p /var/spool/slurm/ctld /var/spool/slurm/d /var/log/slurm
-sudo chown -R slurm:slurm /var/spool/slurm /var/log/slurm
-sudo chmod 755 /var/spool/slurm
-```
-
-Check that `id slurm` reports `uid=64030` on all three boxes. If a box already
-has a `slurm` user at a different ID, stop and reconcile it before continuing.
-
-## Step 2: install munge and share one key
-
-Every box authenticates to every other box with the same munge key.
-
-Install munge on all three boxes:
-
-```bash
-sudo apt update
-sudo apt install -y munge libmunge-dev
-```
-
-On dl380g10, create the key and read it back:
-
-```bash
-sudo /usr/sbin/mungekey --create --force
-sudo chown munge:munge /etc/munge/munge.key
-sudo chmod 400 /etc/munge/munge.key
-sudo base64 /etc/munge/munge.key
-```
-
-Copy that base64 text to each Spark and install it there:
-
-```bash
-mkdir -p /home/rob/tmp
-cat > /home/rob/tmp/munge.key.b64 <<'EOF'
-<paste the base64 text here>
-EOF
-sudo base64 -d /home/rob/tmp/munge.key.b64 | sudo tee /etc/munge/munge.key >/dev/null
-rm -f /home/rob/tmp/munge.key.b64
-sudo chown munge:munge /etc/munge/munge.key
-sudo chmod 400 /etc/munge/munge.key
-```
-
-Two paths to avoid. Do not copy the key through `/mnt/shared`: the key is the
-fleet's shared secret and an NFS export is the wrong place for it. Do not stage
-it in `/tmp`, which an out-of-memory event cleared on this fleet once already.
-
-Start munge on all three boxes and check it:
-
-```bash
-sudo systemctl enable --now munge
-munge -n | unmunge | head -n 5
-```
-
-Then check cross-box authentication from dl380g10:
-
-```bash
-munge -n | ssh sparky unmunge | grep STATUS
-munge -n | ssh gx10-6b77 unmunge | grep STATUS
-```
-
-Both must report `STATUS: Success (0)`. A failure here is a wrong key or a clock
-skew larger than munge's window; fix it before installing SLURM.
-
-## Step 3: install SLURM on dl380g10
-
-```bash
-sudo apt install -y slurm-wlm slurmctld slurmd
-apt-cache policy slurm-wlm | sed -n 2p
-```
-
-Record the exact installed version. The Sparks must build that same version.
-
-## Step 4: build SLURM 25.11 on each Spark
-
-Run this on sparky, then on gx10-6b77. Substitute the version that dl380g10
-reported in step 3 for `25.11.2` throughout.
-
-Install the build tooling:
-
-```bash
-sudo apt install -y build-essential fakeroot devscripts equivs wget
-```
-
-Fetch and unpack the release:
-
-```bash
-mkdir -p /home/rob/tmp/slurm-build && cd /home/rob/tmp/slurm-build
-wget https://download.schedmd.com/slurm/slurm-25.11.2.tar.bz2
-tar -xaf slurm-25.11.2.tar.bz2
-cd slurm-25.11.2
-```
-
-SchedMD has shipped an in-tree `debian/` directory since 23.11.0, so the release
-tarball builds Debian packages directly. Install its declared build dependencies,
-then build:
-
-```bash
-sudo mk-build-deps -i -t "apt-get -y" debian/control
-debuild -b -uc -us
-```
-
-The build takes a while on a GB10 and writes `.deb` files to the parent
-directory. Install them:
-
-```bash
-cd /home/rob/tmp/slurm-build
-sudo apt install -y ./slurm-smd_*.deb ./slurm-smd-client_*.deb \
-    ./slurm-smd-slurmd_*.deb ./slurm-smd-libslurm-perl_*.deb
-```
-
-Check the version, and check it against the controller:
-
-```bash
-slurmd -V
-```
-
-Do not write `/mnt/shared` during any of this. The build stays under
-`/home/rob/tmp`.
-
-## Step 5: read each node's real topology
-
-`slurm.conf` in this repository carries `CPUs=20` for the two GB10 boxes as a
-placeholder. Guessing a socket and core layout is how a node comes up `DRAINED`
-with `Low socket*core*thread count` and no obvious cause.
-
-On each of the three boxes:
-
-```bash
-sudo slurmd -C
-```
-
-Copy the `NodeName=` line it prints. In the next step, replace the `CPUs=` value
-in that box's stanza with what `slurmd -C` reported, and add its
-`Sockets=`/`CoresPerSocket=`/`ThreadsPerCore=` values if they differ from a flat
-20 cores. Leave `RealMemory` alone: it is the fleet's admission budget from
-`fleet_boxes.json`, deliberately well under physical memory, and not the number
-`slurmd -C` reports.
-
-## Step 6: install the configuration on all three boxes
-
-The configuration lives in this repository at `fleet/slurm/`. Copy it to every
-box; all three run identical `slurm.conf`, `gres.conf`, and `cgroup.conf`.
-
-From a checkout on each box:
-
-```bash
-sudo install -m 644 fleet/slurm/slurm.conf  /etc/slurm/slurm.conf
-sudo install -m 644 fleet/slurm/gres.conf   /etc/slurm/gres.conf
-sudo install -m 644 fleet/slurm/cgroup.conf /etc/slurm/cgroup.conf
-sudo install -m 644 fleet/slurm/cgroup_allowed_devices_file.conf \
-    /etc/slurm/cgroup_allowed_devices_file.conf
-sudo install -m 755 fleet/slurm/epilog.sh   /etc/slurm/epilog.sh
-```
-
-Apply the `CPUs=` correction from step 5 to `/etc/slurm/slurm.conf` on every box,
-so that all three copies stay identical. A controller and a node that disagree
-about `slurm.conf` produce errors that name neither file.
-
-Create the lane's directories on the shared mount, once, from any box:
-
-```bash
-mkdir -p /mnt/shared/prismabuild-fleet/slurm/jobs
-chmod 1777 /mnt/shared/prismabuild-fleet/slurm/jobs
-```
-
-The `jobs` directory holds one small state file per running job. The Epilog runs
-as root on the node and reads that file to find the containers and the checkout a
-killed job left behind.
-
-## Step 7: start the daemons
-
-On dl380g10:
-
-```bash
-sudo systemctl enable --now slurmctld
-sudo systemctl enable --now slurmd
-sudo systemctl status slurmctld --no-pager | head -n 5
-```
-
-On each Spark:
-
-```bash
-sudo systemctl enable --now slurmd
-sudo systemctl status slurmd --no-pager | head -n 5
-```
-
-If a node stays down, read `/var/log/slurm/slurmd.log` on that node first. The
-two failures to expect are a `gres.conf` line the version rejects, and a
-topology mismatch from step 5.
-
-## Step 8: validate
-
-Run these from dl380g10 unless a step says otherwise.
-
-Check that all three nodes registered and are idle:
-
-```bash
-sinfo -N -l
-scontrol show node sparky
-scontrol show node gx10-6b77
-scontrol show node dl380g10
-```
-
-Each Spark must report `Gres=gpu:1,shard:2` (sparky) or `Gres=gpu:1,shard:3`
-(gx10-6b77), and `AvailableFeatures` must include its hostname. The hostname
-matters: `pbrun --here` and a box-local checkout both produce a hostname tag, and
-the lane turns tags into `--constraint`. Without the hostname as a feature, every
-pinned action is unschedulable.
-
-Run a hello-world job on each partition:
-
-```bash
-sbatch --wait --partition=cpu --wrap='hostname; echo $SLURM_JOB_PARTITION'
-sbatch --wait --partition=gpu --constraint=gb10 --wrap='hostname'
-echo "exit status: $?"
-```
-
-`sbatch --wait` exits with the job's exit code, so a zero here means the job ran
-and succeeded.
-
-Check that a shard allocation reaches the GPU:
-
-```bash
-srun --partition=gpu --gres=shard:1 nvidia-smi -L
-```
-
-Check that a job with no GRES cannot reach the GPU. This is the rule
-`ConstrainDevices=yes` enforces, and the one `pbrun` enforces from the other side
-by masking `CUDA_VISIBLE_DEVICES`:
-
-```bash
-srun --partition=gpu nvidia-smi -L
-```
-
-That command should fail or list nothing.
-
-Check the cgroup attestation that the PrismaBuild worker performs. This is item 2
-of the unverified list, and it is the check most likely to fail:
-
-```bash
-srun --partition=gpu --gres=shard:1 bash -c 'grep -c "job_$SLURM_JOB_ID" /proc/self/cgroup'
-```
-
-The result must be `1`. Anything else means `core._collect_worker_evidence`
-refuses every action, and `ProctrackType` is what to look at.
-
-Finally, run one real action through the lane. Run it with `--here`, and from
-the box you are standing on:
+| sparky | GPU node | aarch64, Ubuntu 24.04 | prebuilt debs at `/home/rob/slurm-build/arm64-24.04` (25.11.2) |
+| gx10-6b77 (sparklina) | GPU node | aarch64, Ubuntu 24.04 | the same debs, already present on the box |
+
+The Sparks cannot use Ubuntu 24.04's own `slurm-wlm`: the archive carries
+23.11.4, and a 25.11 controller accepts nodes running 25.05, 24.11 or 24.05
+only. **The packages they need are already built.** They are a rebuild of
+Ubuntu 26.04's own 25.11.2 source package on 24.04 arm64, they are present on
+both Sparks under `/home/rob/slurm-build/arm64-24.04`, and `SHA256SUMS` there
+verifies clean. `/home/rob/slurm-build/BUILD.md` is the build record, including
+the one packaging change it needed and what was and was not verified. There is
+nothing to build during this install.
+
+## Phase 1: install SLURM, one script per box
+
+`fleet/slurm/install.sh` is steps 1 to 7 of the original runbook. It switches on
+`hostname -s`, so the same script installs a controller on dl380g10 and a node
+on each Spark, and a box it does not recognize is refused rather than guessed
+at. It is idempotent: every step asks whether it is already done, says so, and
+moves on.
+
+Read a dry run first. It needs no root and changes nothing:
 
 ```bash
 cd /home/rob/prismabuild
-tools/fleet/pbrun.py --transport slurm --here --timeout-s 600 \
-    -- /bin/echo hello from slurm
+fleet/slurm/install.sh --dry-run
 ```
 
-`--here` is load-bearing at this point in the install, and the reason is worth
-stating. `pbrun` builds the job script around its own location: `RUNTIME_ROOT =
+### Getting the scripts onto each box
+
+Only sparky has a `prismabuild` checkout (measured 2026-09-05: dl380g10 and
+sparklina do not), and `fleet/` is not among the files `publish_runtime`
+mirrors to `/mnt/shared`, so the scripts do not arrive on their own. Copy the
+one directory. `install.sh` reads its configuration files from beside itself,
+so a flat copy is enough:
+
+```bash
+cd /home/rob/prismabuild
+for box in dl380g10 sparklina; do
+    ssh "$box" mkdir -p /home/rob/pb-slurm
+    scp fleet/slurm/*.sh fleet/slurm/*.conf "$box":/home/rob/pb-slurm/
+done
+```
+
+Copy again after any change to `slurm.conf`: `verify.sh` row 0b compares all
+three boxes against the checkout and fails on drift.
+
+Run every one of these from sparky. It is the only box that can reach the other
+two by name.
+
+### The names do not resolve, so the addresses are in the file
+
+Measured 2026-09-05, and it is the reason `slurm.conf` carries
+`SlurmctldHost=dl380g10(192.168.1.107)` and a `NodeAddr=` on every node:
+
+- dl380g10 resolves neither Spark. `getent hosts sparky` and `getent hosts
+  gx10-6b77` both return nothing, and `ssh sparky` from that box fails on the
+  name. Its nsswitch is `files dns mymachines`, avahi is inactive, and neither
+  Spark is in DNS or in its `/etc/hosts`. slurmctld would have had no address
+  to contact a node on, and the message for that names a node, not a resolver.
+- The Sparks resolve dl380g10, wrong answers first. `getent hosts dl380g10`
+  gives `::`, and `getent ahostsv4 dl380g10` gives 192.168.1.165, a host that
+  does not answer ping, before the live 192.168.1.107 on `bond0`. Both come
+  from the router at 192.168.1.1, which serves the `.lan` zone and holds two A
+  records for `dl380g10.lan`: `dig +short @192.168.1.1 dl380g10.lan A` returns
+  .165 then .107. It is a stale DHCP record on the router, not avahi --
+  `mdns4_minimal` answers `.local` only, and `dl380g10.local` times out. Ask
+  whoever administers the router to delete the .165 record; a controller
+  address that is right on the third try is a fleet that works intermittently.
+
+Ports were measured open the same day: 6817 and 6818 answer "connection
+refused" rather than timing out, in both directions, so `ufw` (active on all
+three boxes) is not in the way and there is nothing to open.
+
+The three addresses are DHCP leases rather than reservations, so they can move.
+`install.sh` refuses to install a `slurm.conf` whose `NodeAddr` for this box is
+not one of this box's own addresses, so a lease that moved is a refusal naming
+the step rather than a node that quietly never registers. The same addresses
+are already pinned in the NFS export `fleet/slurm/epilog.sh` records, so a move
+breaks `/mnt/shared` before it breaks the scheduler.
+
+### Order, and the one thing you carry between boxes
+
+Run dl380g10 first. It creates the fleet's munge key and leaves a base64 copy
+at `/home/rob/.munge-key.b64`, mode 0600, owned by rob. Every box must
+authenticate with that same key.
+
+```bash
+# 1. on dl380g10, from the copy you made above
+ssh -t dl380g10 sudo bash /home/rob/pb-slurm/install.sh
+
+# 2. as rob, from sparky, pull the key and hand it on.  dl380g10 cannot push
+#    it: that box resolves neither Spark, so ssh from there fails on the name.
+scp dl380g10:/home/rob/.munge-key.b64 /home/rob/.munge-key.b64
+scp /home/rob/.munge-key.b64 sparklina:/home/rob/.munge-key.b64
+
+# 3. on each Spark
+ssh -t sparky     sudo bash /home/rob/prismabuild/fleet/slurm/install.sh
+ssh -t sparklina  sudo bash /home/rob/pb-slurm/install.sh
+```
+
+A Spark's run installs that key, stamps its sha256 beside it, and shreds the
+copy. Do not carry the key through `/mnt/shared`: it is the fleet's shared
+secret and an NFS export is the wrong place for one. Do not stage it in `/tmp`,
+which an out-of-memory event cleared on this fleet once already.
+
+The controller's own copy is not shredded by anything, because dl380g10 is
+where it is created. Once both Sparks are installed, remove it yourself:
+
+```bash
+ssh dl380g10 shred -u /home/rob/.munge-key.b64
+```
+
+**Installing the `munge` package puts a key on the box by itself.** Measured
+2026-09-05 in an `ubuntu:24.04` container: after `apt install munge`,
+`/etc/munge/munge.key` exists, 128 bytes, `munge:munge`, generated by the
+package's postinst. It is a good key and it is the wrong one, because it is
+that box's alone. So "a key is present" is not evidence the fleet's key is
+installed, and on a Spark `install.sh` treats a key without its stamp as a
+refusal rather than as a step already done.
+
+### What it refuses, and why each refusal is worth having
+
+- **A `slurm` user at any uid but 64030.** The controller and the nodes
+  exchange state as that user; a mismatch fails later, elsewhere, in a message
+  that names neither box.
+- **A SLURM that is not 25.11.x.** A 25.11 controller accepts slurmd from
+  25.05, 24.11 and 24.05 only. `slurmd -V` is read after the packages install
+  and needs no `slurm.conf` to answer.
+- **A box whose `slurmd -C` disagrees with its own `NodeName=` stanza** on
+  `CPUs`, `SocketsPerBoard`, `CoresPerSocket` or `ThreadsPerCore`. This is the
+  original runbook's step 5 turned into a gate. Guessing a socket and core
+  layout is how a node comes up `DRAINED` with `Low socket*core*thread count`
+  and no obvious cause, and `task/affinity` binds against the declared
+  layout. `RealMemory` is
+  deliberately not compared: it is the fleet's admission budget from
+  `fleet_boxes.json`, well under physical memory, and not the number
+  `slurmd -C` reports.
+- **A Spark with no packages at `/home/rob/slurm-build/arm64-24.04`.**
+
+The topology check runs before anything is written under `/etc/slurm`, so a box
+that does not match its stanza is refused rather than configured and then
+refused. If it fires, fix `fleet/slurm/slurm.conf` in the repository, not the
+copy on the box: all three boxes run an identical file, and a controller and a
+node that disagree about `slurm.conf` produce errors that name neither.
+
+### What it leaves behind
+
+- the `slurm` user and group at uid/gid 64030, and
+  `/var/spool/slurm/{ctld,d}` plus `/var/log/slurm` owned by them
+- munge installed, the fleet's key at `/etc/munge/munge.key` mode 0400, and
+  `/etc/munge/prismabuild-fleet-key.sha256` recording which key that is
+- SLURM 25.11.2 from apt on dl380g10, from the prebuilt debs on the Sparks
+- four configuration files in `/etc/slurm/`: `slurm.conf`, `gres.conf`,
+  `cgroup.conf` and `epilog.sh`. Device containment needs no allow-list file:
+  `ConstrainDevices=yes` in `cgroup.conf` does the work, and on cgroup v2 that
+  is an eBPF program which denies exactly the GRES `File=` devices a job was
+  not allocated and admits everything else
+- `/mnt/shared/prismabuild-fleet/slurm/jobs`, mode 1777, created **as rob**:
+  dl380g10 exports that dataset without `no_root_squash`, so root is `nobody`
+  there and its `mkdir` would fail silently
+- `munge` enabled and running, `slurmd` on every box, `slurmctld` on dl380g10
+
+If a node stays down, read `/var/log/slurm/slurmd.log` on that node first.
+
+## Phase 1 check: run `verify.sh`
+
+Run it as rob from sparky, once all three installs are done. No sudo. It needs
+a checkout (row 7 runs a real `pbrun`) and it reads `/etc/slurm/slurm.conf` on
+the other two boxes over ssh, so sparky is the box that can do both:
+
+```bash
+cd /home/rob/prismabuild
+fleet/slurm/verify.sh
+```
+
+It prints PASS or FAIL per row and stops at the first failure, because the rows
+after a failure are being run against a fleet in a state nobody described. On
+success it writes `~/.prismabuild/slurm-verify-passed.json`, which
+`cutover.sh` looks for.
+
+The rows, and what each one is really asking:
+
+| Row | Claim |
+|---|---|
+| 0 | this box's `/etc/slurm/slurm.conf` is the file in the checkout |
+| 0b | so does every other box, read over ssh; a controller and a node running different files produce errors that name neither |
+| 1a | all three nodes registered and idle |
+| 1b | each node offers exactly the `Gres` `slurm.conf` declares |
+| 1c | each node advertises exactly the `Feature`s it declares, its own hostname among them |
+| 2 | `sbatch --wait` runs a job on partition `cpu` and on partition `gpu` |
+| 3 | a `--gres=shard:1` job sees the GPU |
+| 4 | a job with no GRES runs on a Spark and cannot see or open the GPU |
+| 5 | a job's processes are in a `job_<id>` cgroup |
+| 6 | a shard job lands on a Spark; an untagged CPU job lands on dl380g10; `--constraint=x86` lands there too |
+| 7 | `pbrun --transport slurm --here` runs one real action end to end |
+| 8 | the lane's `jobs/` directory holds no orphaned state file |
+
+Row 1c matters more than it looks: `pbrun --here` and a box-local checkout both
+produce a hostname tag, and the lane turns tags into `--constraint`. Without the
+hostname as a Feature, every pinned action is unschedulable.
+
+Row 4 is the claim no container could test, and it is written to discriminate
+rather than to assert. A job that failed to launch also sees no GPU, and that is
+a broken lane, not device containment -- so the row checks that the job ran, and
+that it ran on a Spark, before reading anything into the absence. It asks twice,
+through `nvidia-smi -L` and by opening `/dev/nvidia0` directly. `nvidia-smi -L`
+opens that device itself, so it does exercise the eBPF deny; the bare open is
+the same question with nothing between it and the kernel, and a disagreement
+between the two would be worth knowing about.
+
+Row 5 is the check most likely to fail. `core._collect_worker_evidence` attests
+`SLURM_JOB_ID` against this process's cgroup membership before it will run
+anything, so a job whose processes are not in a `job_<id>` cgroup is refused by
+the worker rather than by SLURM. `ProctrackType` is what to look at.
+
+Row 7 uses `--here`, and that is load-bearing at this point in the install.
+`pbrun` builds the job script around its own location: `RUNTIME_ROOT =
 generation_root(__file__)`, so a job submitted from `/home/rob/prismabuild`
 execs `/home/rob/prismabuild/tools/fleet/slurm_job.py` on whichever node the
-scheduler picks. That path is one box's local checkout. `--here` adds the
+scheduler picks, and that path is one box's local checkout. `--here` adds the
 submitting box's hostname as a required tag, the tag matches that node's
 `Feature`, and the job lands where the path exists. A cross-box submission such
 as `--tag x86` from a Spark would land on dl380g10 and die with `No such file or
-directory` — which reads like a broken lane and is not one.
+directory`, which reads like a broken lane and is not one.
 
 The pull queue has the same property and lives with it, because agents run the
 *published* `pbrun` under `/mnt/shared/prismabuild-fleet/runtime/<generation>/`,
 a path every box mounts at the same place. So the cross-box check is meaningful
-only after step 9.4 publishes the runtime, and it belongs there:
+only after the cutover has published the runtime, and it belongs there:
 
 ```bash
-# after the runtime is published, from the published path
-/mnt/shared/prismabuild-fleet/runtime/repo/tools/fleet/pbrun.py \
+# after the cutover, from the published path
+/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbrun.py \
     --transport slurm --tag x86 --timeout-s 600 -- /bin/echo hello from slurm
 ```
 
-Either way, expect `pbrun: submitted <key> as slurm job <id>`, then the job's
-output, then `pbrun: executed via slurm job <id> (COMPLETED)` and exit status 0.
-If the job runs and exits 0 but `pbrun` reports `published no receipt`, the work
-did not reach the CAS: read the `.out` and `.err` files in
-`/mnt/shared/prismabuild-fleet/slurm/<action key>/`.
+Row 8 is the other half of the Epilog's job, the half that fails silently. A
+`<job id>.job` file left behind for a job that has finished usually means the
+Epilog could not delete it, which on this fleet means `root_squash` on the NFS
+export. The row skips files whose jobs are still in `squeue`, so only an orphan
+fails it, and it prints each orphan's `JobState` because one kind of orphan is
+not a defect: **a node power-cycled mid-job runs no Epilog at all**, so its
+state file survives. A file whose job is `COMPLETED` or `NODE_FAIL`, or which
+the controller has forgotten because `MinJobAge` expired, is a reboot leak; it
+is safe to delete by hand:
 
-Check the Epilog by cancelling a job that started a container:
+```bash
+rm /mnt/shared/prismabuild-fleet/slurm/jobs/<job id>.job
+```
+
+Anything else -- a job that ended while the node stayed up -- is the export.
+
+One check `verify.sh` does not do, because it leaves a container behind if it
+goes wrong: cancelling a job that started a container, to watch the Epilog
+remove it. Do that by hand once, when you have a minute:
 
 ```bash
 tools/fleet/pbrun.py --transport slurm --here --timeout-s 600 \
     -- docker run -d --rm alpine sleep 300 &
 sleep 20
 tools/fleet/pbrun.py --transport slurm --withdraw <key prefix>
-docker ps --filter label=prismabuild.action
+docker ps --filter label=prismabuild.action     # must list nothing
 ```
 
-The last command must list nothing. Then check the other half of the Epilog's
-job, the one that fails silently:
+## Phase 2: cut over
+
+Do this only after `verify.sh` passes, and in a campaign-quiet window. It is
+Rob's call and Rob's to run.
 
 ```bash
-ls -l /mnt/shared/prismabuild-fleet/slurm/jobs/
+cd /home/rob/prismabuild
+fleet/slurm/cutover.sh --dry-run --yes     # read the plan
+fleet/slurm/cutover.sh --yes               # do it
 ```
 
-That directory must be empty. A `<job id>.job` file left behind for a job that
-has finished means the Epilog could not delete it, which on this fleet means
-`root_squash` on the NFS export — item 7 of the unverified list.
+Run it from sparky. It reaches every box by ssh, and sparky is the only box
+that can resolve the other two by name.
 
-## Step 9: cut over
+Nothing in it needs root. The loops are rob's processes, the crontab is rob's,
+`pqwork.service` is rob's user unit, and the runtime generation is rob's to
+publish.
 
-Do this only after step 8 passes on all three boxes.
+It refuses unless all five of these hold:
 
-1. Check that the pull queue is idle. No action may be in flight when the loops
-   stop, because a stopped loop leaves its claim behind for the reaper:
+1. `verify.sh` passed -- its marker, or `--verified` if you ran it on another
+   box, because the marker is box-local.
+2. `/mnt/shared/prismabuild-fleet/pb-queue/claimed` and `.../ready` are both
+   empty. A stopped loop leaves its claim behind for a reaper that will not run
+   again, and an item in `ready` is an action no SLURM job will ever pick up.
+   Wait, or withdraw it with `pbrun --withdraw <key prefix>`.
+3. `publish_runtime.py --dry-run --default-transport slurm` succeeds from this
+   checkout. Step 5 below is the only step with no cheap retry -- by the time
+   it runs, cron is edited and every loop on all three boxes is dead -- and
+   `publish_runtime.py` refuses a dirty tree. Commit or stash first;
+   `git status` must be clean where you run this.
+4. No `pbrun` is waiting anywhere in the fleet. Each one is somebody watching
+   for a result the loops are about to stop producing.
+5. `--yes`.
 
-   ```bash
-   ls /mnt/shared/pb-queue/ready /mnt/shared/pb-queue/claimed
+Then, in this order, and the order is not arrangeable:
+
+1. **The crontab, on all three boxes.** The supervisors are kept alive by a
+   per-user crontab entry:
+
+   ```
+   */5 * * * * /usr/bin/python3 \
+       /mnt/shared/prismabuild-fleet/repo/tools/supervise.py --ensure \
+       >> /home/rob/tmp/pb-supervisor.log 2>&1
    ```
 
-   Both must be empty. If `claimed` is not empty, wait, or withdraw the action
-   with `pbrun --withdraw`.
+   Killing a supervisor without removing that line buys five minutes. The whole
+   crontab is backed up verbatim to `~/.prismabuild/crontab.pre-cutover` on each
+   box, so rollback restores what was there rather than reconstructing it.
+2. **The supervisors.** Killing worker loops while a supervisor lives buys
+   thirty seconds; it respawns them to the count `fleet_boxes.json` declares.
+3. **The worker loops.** SIGTERM, a bounded wait, then SIGKILL.
+4. **`pqwork.service` on both Sparks**, with `systemctl --user stop`. It is a
+   *user* unit and takes no sudo. It is stopped, not disabled, so a reboot
+   starts it again; stop it again after a reboot, or disable it deliberately.
+5. **The runtime generation**, published with
+   `publish_runtime.py --default-transport slurm`.
 
-2. Stop the supervisors and worker loops on both Sparks and on dl380g10:
+Processes are found the way `supervise._live_loops` finds them -- argv[0] is an
+interpreter and argv[1] is the script -- and killed by pid. A `pkill -f
+supervise.py` would match the ssh command carrying it, and a
+`pkill -f tools/fleet/supervise.py` matches nothing at all: the live processes
+run the published path, `.../repo/tools/supervise.py`, and on dl380g10 the
+relative `repo/tools/supervise.py`.
 
-   ```bash
-   sudo systemctl stop pqwork.service
-   pkill -f tools/fleet/supervise.py
-   pkill -f tools/fleet/worker_loop.py
-   ```
+### What the cutover retires and does not replace
 
-   Run `tools/fleet/runtime_process_census.py` afterwards to confirm that no loop
-   survived.
+The pull queue's worker loops carry a per-box `--timeout-s` budget from
+`fleet_boxes.json` -- 7200 s on each Spark, 3600 s on dl380g10 -- and it bounds
+every action, including actions whose submitter asked for no limit. Under SLURM
+there is no equivalent. `--time` is sent only when the submitter passes
+`--timeout-s`, and every partition is `MaxTime=UNLIMITED`, so an action
+submitted with no limit runs until it finishes or somebody cancels it.
 
-3. Switch the default transport. `pbrun` reads `PRISMABUILD_TRANSPORT`, so this
-   belongs wherever the fleet's shell environment is set, for every agent and
-   every user:
+That is Rob's decision rather than a gap to close: elapsed time is not evidence
+that a worker is dead, and a job making progress is never killed for taking
+long. A stalled job is meant to be *reported*, by the liveness work, not
+punished by a clock. Say it out loud here because the budgets disappear
+silently otherwise: nothing in the SLURM lane inherits them.
 
-   ```bash
-   export PRISMABUILD_TRANSPORT=slurm
-   ```
+### The default transport is a property of the published bytes
 
-4. Publish the runtime so that every box serves the same bytes. **This step is
-   Rob's to run.** `tools/fleet/publish_runtime.py` rolls the atomic runtime
-   generation, and publishing is a decision, not a deployment detail.
+Cutover used to be described as `export PRISMABUILD_TRANSPORT=slurm`. That
+describes one shell and no part of this fleet: agents start `pbrun` from a
+crontab, from user units and from each other on three boxes, and there is no
+single environment to export into.
+
+So the default rides in the runtime generation instead.
+`publish_runtime.py --default-transport slurm` records `default_transport` in
+`RUNTIME_VERSION.json`, and `fleet_submit.default_transport()` reads the
+environment first, then that field, then falls back to `pool`. The field is
+optional and absent means the pull queue, so every generation published before
+the cutover keeps the behaviour it had. `PRISMABUILD_TRANSPORT` still overrules
+it for one process, which is what you want when you are testing.
 
 ## Rollback
 
-Rollback is two commands and no code change. The pull queue's code is untouched
-by this work; only `pbrun` gained a branch, and its default is still `pool`.
+```bash
+cd /home/rob/prismabuild
+fleet/slurm/rollback.sh --dry-run
+fleet/slurm/rollback.sh
+```
 
-1. Unset the transport:
+Run it from sparky, for the same reason as the cutover: it reaches every box by
+ssh, and sparky is the only box that can resolve the other two by name.
 
-   ```bash
-   unset PRISMABUILD_TRANSPORT
-   ```
+It reads the state file `cutover.sh` wrote -- the newest
+`~/.prismabuild/cutover-*.json` unless `--state` names another -- and reverses
+it in reverse order, runtime first:
 
-2. Restart the worker loops from `tools/fleet/fleet_boxes.json`, the same way
-   they were started before.
+1. point the live runtime back at the generation the cutover replaced, with
+   `publish_runtime.py --activate-generation <name>`. This is not a
+   re-publication: that generation's bytes and receipt were proved when it was
+   published, and publication never deletes a generation. Restoring it restores
+   the previous default transport in the same atomic namespace operation that
+   changed it.
+2. restore each box's crontab from its verbatim backup
+3. start `pqwork.service` again on both Sparks
+4. start one supervisor per box now, rather than waiting up to five minutes for
+   cron
 
-Any SLURM job still running keeps running. Cancel the ones you do not want with
+The runtime goes first deliberately. Between step 1 and step 4 the fleet has no
+workers and the default is the pull queue, so submissions queue and wait --
+which is a fleet that is idle. The other order gives a window where workers
+drain the queue while producers are still being told to use SLURM.
+
+SLURM jobs already running keep running. Cancel the ones you do not want with
 `pbrun --transport slurm --withdraw <key prefix>`, which reads the recorded job
-id and calls `scancel`. You can leave `slurmctld` and `slurmd` running during a
-rollback; with no submissions, they do nothing.
+id and calls `scancel`. You can leave `slurmctld` and `slurmd` running; with no
+submissions they do nothing.
 
 ## Reference: what the lane sends
 
@@ -558,8 +613,13 @@ the whole device and asking for shards of it are mutually exclusive requests
 against one GPU, so exclusivity is a different GRES name, not a bigger number.
 
 Each submission seals a record next to the script at
-`<action key>/submissions/<attempt>.json`, with the job id and the exact argv,
-and points `<action key>/latest.json` at the newest attempt. `pbrun --withdraw`
+`<lane root>/<action key>/submissions/<published unix>-<attempt>.json`, with
+the job id and the exact argv, and points `<action key>/latest.json` at the
+newest attempt. The generation is part of the name because the action key is a
+content hash: asking for the same work twice is the same key and the same
+directory, and a record named by the attempt alone collided across runs, which
+refused every re-submission -- including the CAS hit that is the point of a
+content-addressed build. `pbrun --withdraw`
 reads `latest.json` to find the job to cancel.
 
 ## Reference: files this install touches
@@ -569,9 +629,14 @@ reads `latest.json` to find the job to cancel.
 | `/etc/slurm/slurm.conf` | Nodes, partitions, scheduling, `MinJobAge`, `Epilog` |
 | `/etc/slurm/gres.conf` | The GPU and its shards, per node, no autodetection |
 | `/etc/slurm/cgroup.conf` | Core, memory, and device containment |
-| `/etc/slurm/cgroup_allowed_devices_file.conf` | NVIDIA control devices CUDA needs |
 | `/etc/slurm/epilog.sh` | Node-side cleanup of containers and checkouts |
 | `/etc/munge/munge.key` | The fleet's shared authentication secret |
+| `/etc/munge/prismabuild-fleet-key.sha256` | Which key that is, so a package-generated one is not mistaken for it |
+| `/home/rob/pb-slurm/` | The copy of `fleet/slurm/` on dl380g10 and sparklina, which have no checkout |
 | `/var/spool/slurm/` | Controller state and slurmd spool, local disks only |
 | `/mnt/shared/prismabuild-fleet/slurm/` | Job scripts, submission records, job logs |
 | `/mnt/shared/prismabuild-fleet/slurm/jobs/` | One state file per running job, for the Epilog |
+| `/home/rob/.munge-key.b64` | The key in transit, created on dl380g10 and shredded on each Spark |
+| `~/.prismabuild/slurm-verify-passed.json` | `verify.sh` passed here; `cutover.sh` looks for it |
+| `~/.prismabuild/crontab.pre-cutover` | Each box's crontab as it was, for `rollback.sh` |
+| `~/.prismabuild/cutover-<unix>.json` | What the cutover replaced, for `rollback.sh` |

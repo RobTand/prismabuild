@@ -135,14 +135,29 @@ Phase 1, Rob with sudo, any time: install munge and SLURM per the runbook
 `/home/rob/slurm-build/arm64-24.04`, rebuilt from the 26.04 source package so
 the version line agrees by construction), start `slurmctld` on
 dl380g10 and `slurmd` on all three, prove `sinfo`, a `sbatch --wait` hello on
-each partition, and `srun --gres=shard:1 nvidia-smi` on a Spark. The pool keeps
-running throughout; nothing changes for campaigns.
+each partition, and `srun --gres=shard:1 nvidia-smi` on a Spark. That is
+`fleet/slurm/install.sh` on each box and then `fleet/slurm/verify.sh` from any
+of them. The pool keeps running throughout; nothing changes for campaigns.
 
-Phase 2, campaign-quiet window, Rob's call: publish a runtime generation whose
-`pbrun` default transport is `slurm`, stop `supervise.py` and the worker loops,
-stop the legacy `pqwork.service` on both Sparks, and drain
-`pb-queue/claimed`. Rollback is `--transport pool` and restarting the loops;
-the pool code is untouched by the lane.
+Phase 2, campaign-quiet window, Rob's call: `fleet/slurm/cutover.sh --yes`. It
+drains nothing -- it refuses unless `pb-queue/claimed` and `pb-queue/ready` are
+already empty and no `pbrun` is waiting -- then removes the supervise line from
+each box's crontab, stops `supervise.py` and the worker loops, stops the legacy
+`pqwork.service` on both Sparks, and last publishes a runtime generation whose
+default transport is `slurm`.
+
+The publication goes last rather than first, which is the reverse of how this
+paragraph originally read. A generation published while the loops are still
+alive makes every supervisor cycle its idle loops onto it, which is churn in
+the middle of the one operation that wants the fleet still. And a publication
+that fails after the loops are stopped leaves an idle fleet on the previous
+generation, which is the recoverable direction.
+
+Rollback is `fleet/slurm/rollback.sh`: it points the live runtime back at the
+generation the cutover replaced -- which restores the previous default
+transport in the same atomic operation -- restores each box's crontab from the
+verbatim backup, and starts `pqwork` and the supervisors again. The pool code
+is untouched by the lane.
 
 Phase 3, after two quiet weeks on SLURM: delete `pool.py`, `worker_loop.py`,
 `supervise.py`, `box_capacity.py`, their tests, and the scheduler-only
