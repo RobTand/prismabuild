@@ -127,6 +127,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
     _write_json_atomic,
 )
 from . import materialize, cpu_topology
+from . import adaptive_cpu as cpu_admission
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -839,6 +840,9 @@ class ResourceLedger:
 
     def cpu_allocation(self, holder: str, tiers: Mapping) -> dict:
         """The actual CPUs represented by this claimant's held tokens."""
+        metadata = _read_json(self.held_dir / holder / cpu_admission.METADATA)
+        if metadata is not None and "allocation" in metadata:
+            return metadata["allocation"]
         ordered = list(tiers["preferred"]) + list(tiers["fallback"])
         cpus = []
         for token in _glob(self.held_dir / holder, "cpu-*"):
@@ -1070,7 +1074,8 @@ class ResourceLedger:
         return counts
 
     def begin_acquire(
-        self, action_key: str, demand: Mapping[str, int]
+        self, action_key: str, demand: Mapping[str, int], *,
+        adaptive: dict | None = None, cpu_tiers: Mapping | None = None,
     ) -> str | None:
         """Take the whole demand into a directory only this claimant owns.
 
@@ -1106,6 +1111,8 @@ class ResourceLedger:
         destination.mkdir(parents=True, exist_ok=True)
         try:
             for kind, need in sorted(wanted.items()):
+                if kind == "cpu" and adaptive is not None:
+                    need -= int(adaptive.get("preferred_borrow", 0))
                 taken = 0
                 for token in _glob(self.free_dir, f"{kind}-*"):
                     if taken >= need:
@@ -1115,8 +1122,31 @@ class ResourceLedger:
                     except (FileNotFoundError, NotADirectoryError):
                         continue      # another worker took it first
                     taken += 1
-                if taken < need:
+                if taken < need and not (kind == "cpu" and adaptive is not None
+                                          and adaptive.get("borrowing")):
                     raise _Insufficient(kind)
+            if adaptive is not None and cpu_tiers is not None:
+                allocation = self.cpu_allocation(handle, cpu_tiers)
+                assigned = set(allocation["preferred"] + allocation["fallback"])
+                # Proven idle preferred reservations may be shared before
+                # consuming free SMT/efficiency tokens. Unknown donors retain
+                # ordinary disjoint physical-token admission.
+                for tier in ("preferred", "fallback"):
+                    for cpu in adaptive.get("borrowable_cpus", []):
+                        if cpu not in cpu_tiers[tier]:
+                            continue
+                        if len(assigned) >= wanted.get("cpu", 0):
+                            break
+                        if cpu not in assigned:
+                            allocation[tier].append(cpu)
+                            assigned.add(cpu)
+                if len(assigned) != wanted.get("cpu", 0):
+                    raise _Insufficient("cpu")
+                for tier in allocation:
+                    allocation[tier] = [c for c in cpu_tiers[tier] if c in assigned]
+                metadata = dict(adaptive, allocation=allocation,
+                                borrowed_cpu=max(0, len(assigned) - len(_glob(destination, "cpu-*"))))
+                _write_json_atomic(destination / cpu_admission.METADATA, metadata)
         except _Insufficient:
             self._empty_into_free(destination)
             return None
@@ -1164,7 +1194,10 @@ class ResourceLedger:
                 os.rename(token, landing)
             except OSError:
                 continue
-            moved += 1
+            if token.name == cpu_admission.METADATA:
+                moved += int((_read_json(landing) or {}).get("borrowed_cpu", 0))
+            else:
+                moved += 1
         try:
             source.rmdir()
         except OSError:
@@ -1256,6 +1289,9 @@ class ResourceLedger:
         released = 0
         self.free_dir.mkdir(parents=True, exist_ok=True)
         for token in _scan(holder):
+            if token.name == cpu_admission.METADATA:
+                token.unlink(missing_ok=True)
+                continue
             try:
                 os.rename(token, self.free_dir / token.name)
             except OSError:
@@ -2206,6 +2242,23 @@ class PoolQueue:
         return False
 
     def claim(
+        self, *, tags: Iterable[str] = (), has_gpu: bool = False,
+        owner: str | None = None, capacity: Mapping[str, int] | None = None,
+        cpu_tiers: Mapping[str, Sequence[int]] | None = None,
+        adaptive_cpu: bool = False,
+    ) -> dict[str, object] | None:
+        ledger = self.ledger()
+        tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
+        if adaptive_cpu and capacity is not None and tiers is not None:
+            controller = cpu_admission.Controller(ledger, tiers)
+            with controller.locked():
+                return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
+                                   capacity=capacity, cpu_tiers=tiers,
+                                   controller=controller)
+        return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
+                           capacity=capacity, cpu_tiers=cpu_tiers)
+
+    def _claim(
         self,
         *,
         tags: Iterable[str] = (),
@@ -2213,6 +2266,7 @@ class PoolQueue:
         owner: str | None = None,
         capacity: Mapping[str, int] | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
+        controller: cpu_admission.Controller | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -2297,10 +2351,18 @@ class PoolQueue:
                 continue
             demand = self.demand_of(item)
             handle: str | None = None
+            adaptive = None
             if ledger is not None and demand:
                 if any(total.get(kind, 0) < need for kind, need in demand.items()):
                     continue      # never fits this box; not this box's to hold
-                handle = ledger.begin_acquire(key, demand)
+                if controller is not None and demand.get("cpu", 0):
+                    adaptive = controller.decision(item, demand)
+                    if adaptive is None:
+                        self.record_pass(key)
+                        continue
+                handle = (ledger.begin_acquire(key, demand) if adaptive is None else
+                          ledger.begin_acquire(key, demand, adaptive=adaptive,
+                                               cpu_tiers=cpu_tiers))
                 if handle is None:
                     denials = self.record_pass(key)
                     if (denials >= STARVATION_FLOOR
@@ -2353,7 +2415,9 @@ class PoolQueue:
                 # claimant and starts belonging to the action.  Every branch
                 # below releases by action key, which is correct only once the
                 # tokens are filed under it.
-                if ledger.commit_acquire(key, handle) < sum(demand.values()):
+                if (ledger.commit_acquire(key, handle) < sum(demand.values())
+                        or (adaptive is not None and _read_json(
+                            ledger.held_dir / key / cpu_admission.METADATA) is None)):
                     # A stale-acquisition sweep took part of the reservation,
                     # or tokens of an earlier incarnation are filed under this
                     # key.  Fail closed rather than run unreserved: ``dst`` is
@@ -2446,6 +2510,8 @@ class PoolQueue:
                                  if claimed.get("container_owner") else None),
             )
             self.passes_path(key).unlink(missing_ok=True)
+            if controller is not None and adaptive is not None:
+                controller.admitted(adaptive)
             return claimed
         return None
 
@@ -4483,6 +4549,7 @@ class PoolQueue:
         timeout_s: float | None = None,
         capacity: Mapping[str, int] | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
+        adaptive_cpu: bool = False,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -4494,7 +4561,7 @@ class PoolQueue:
 
         self.reap_stale()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
-                          cpu_tiers=cpu_tiers)
+                          cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu)
         if item is None:
             return None
         key = str(item["action_key"])

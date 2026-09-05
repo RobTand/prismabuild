@@ -361,6 +361,7 @@ def _run_loop(stop_requested):
             outcome = queue.serve_once(
                 tags=offered, has_gpu=args.gpu_slots > 0, python=args.python,
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
+                adaptive_cpu=not args.assume_idle,
             )
         except Exception as exc:                                 # noqa: BLE001
             # The raise may have come two hours into an action, so this loop
