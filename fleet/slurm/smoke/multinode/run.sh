@@ -119,8 +119,10 @@ echo
 # that is not a Git checkout.  Mounting the common git directory at its own
 # path makes /repo a checkout again.  Read-only, like /repo; nothing here may
 # write to the tree it is testing.  A normal clone needs none of this and the
-# variable stays empty.
-GITDIR="$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null || true)"
+# variable stays empty.  Absolute, because for a normal clone git answers
+# the bare name `.git`, and docker refuses a relative mount target: measured
+# 2026-09-05, a run from a clone died at `docker run` before any row.
+GITDIR="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 case "$GITDIR" in
     "" | "$REPO"/*) GITDIR="" ;;
     *) echo "smoke3: mounting $GITDIR read-only so /repo is a git checkout" ;;
