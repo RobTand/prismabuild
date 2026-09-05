@@ -911,6 +911,11 @@ def row_13c_over_declared_memory() -> None:
     killed = state not in ("", "COMPLETED")
     declared_bytes = OVER_DECLARED_GB * 1024 ** 3
     said = f"pbrun: failed ({state})" in (completed.stderr or "")
+    # And that `pbrun` named the declaration, not only the state.  A job the
+    # kernel kills writes nothing to its own log, so the number that decided
+    # the ending is in the submission and nowhere the operator was sent.
+    named = (f"exceeded the {OVER_DECLARED_GB} GiB it declared"
+             in (completed.stderr or ""))
     # Evidence that the limit did something, not merely that it exists.  A
     # `max` event is the direct form; pages in swap are the form it takes
     # under `ConstrainSwapSpace=no`, where reclaim succeeds and the counter
@@ -920,7 +925,7 @@ def row_13c_over_declared_memory() -> None:
     acted = (bool(hit) and int(hit.group(1)) > 0) or (
         swap_used.isdigit() and int(swap_used) > 0
     )
-    ok = (killed and said) or (
+    ok = (killed and said and named) or (
         acted and limit.isdigit() and int(limit) == declared_bytes
     )
     record(
@@ -929,7 +934,8 @@ def row_13c_over_declared_memory() -> None:
         f"job={job_id} declared mem_gb={OVER_DECLARED_GB}, wrote "
         f"{OVER_GROW_MIB} MiB -> filed {where or 'nothing'}/ state={state!r} "
         f"rc={detail.get('returncode')} signal={detail.get('signal')} "
-        f"pbrun said failed({state})={said}; binding cgroup "
+        f"pbrun said failed({state})={said} and named the declaration"
+        f"={named}; binding cgroup "
         f"{binding.get('path', '(none reported)')} "
         f"memory.max={limit or '-'} "
         f"(declared {declared_bytes}) "
