@@ -272,6 +272,35 @@ def action_status_path(directory: str | Path, job_id: str) -> Path:
     return Path(directory) / f"{str(job_id)}.action.json"
 
 
+def read_action_status(path: str | Path) -> dict[str, object]:
+    """The action's ending from its sidecar, or an empty mapping.
+
+    Empty covers every way there is nothing to say: no file, unreadable bytes,
+    text that is not a JSON object, or a status field that is not an integer.
+    The caller files what comes back, so a malformed sidecar leaves the record
+    exactly as it was before there were sidecars.
+    """
+
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(value, Mapping):
+        return {}
+    status: dict[str, object] = {}
+    for field in ("action_returncode", "action_signal"):
+        number = value.get(field)
+        if isinstance(number, int) and not isinstance(number, bool):
+            status[field] = number
+    if "action_returncode" not in status:
+        return {}
+    return status
+
+
 def format_time_limit(timeout_s: float) -> str:
     """Seconds to what ``--time`` accepts, rounded up, never rounded to zero.
 
@@ -1770,6 +1799,14 @@ def publish_outcome(
             receipt.get("result_digest") if isinstance(receipt, Mapping) else None
         ),
     }
+    if job is not None:
+        # The action's own ending, when the node left one. ``returncode`` above
+        # is the launcher's and stays that -- eleven fleet tools and Tessera's
+        # ``merge_suite`` read it as such -- so the action's goes in a field of
+        # its own, and is absent when there is nothing to say.
+        body.update(read_action_status(
+            action_status_path(job.directory, job.job_id)
+        ))
     if job is not None or outcome is not None:
         body["slurm"] = {
             "job_id": job.job_id if job is not None

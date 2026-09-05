@@ -225,7 +225,18 @@ def _submissions(state: Path) -> list[dict]:
 # Actions
 # --------------------------------------------------------------------------
 
-def _sealed_source(tmp_path: Path) -> tuple[Path, str, dict]:
+#: What the sealed source's task does unless a caller wants something else:
+#: read the payload, write the declared result, exit zero.
+_TASK_BODY = (
+    "import pathlib\n"
+    "pathlib.Path('result.txt').write_text("
+    "pathlib.Path('payload.txt').read_text())\n"
+)
+
+
+def _sealed_source(
+    tmp_path: Path, *, task_body: str = _TASK_BODY
+) -> tuple[Path, str, dict]:
     """A one-file git checkout, its stamp name, and its identity."""
 
     source = tmp_path / "source"
@@ -237,11 +248,7 @@ def _sealed_source(tmp_path: Path) -> tuple[Path, str, dict]:
     subprocess.run(
         ["git", "-C", str(source), "config", "user.email", "t@example.invalid"],
         check=True)
-    (source / "task.py").write_text(
-        "import pathlib\n"
-        "pathlib.Path('result.txt').write_text("
-        "pathlib.Path('payload.txt').read_text())\n"
-    )
+    (source / "task.py").write_text(task_body)
     (source / "payload.txt").write_text("sealed by slurm\n")
     subprocess.run(
         ["git", "-C", str(source), "add", "task.py", "payload.txt"], check=True)
@@ -281,10 +288,10 @@ def _snapshot(tmp_path: Path, source: Path, stamp_name: str,
 
 
 def _runnable_action(tmp_path: Path, cas: pb.PrismaBuildCAS,
-                     *, owner: str = "") -> dict:
+                     *, owner: str = "", task_body: str = _TASK_BODY) -> dict:
     """An action a real worker can execute: sealed snapshot, real closure."""
 
-    source, stamp_name, _identity = _sealed_source(tmp_path)
+    source, stamp_name, _identity = _sealed_source(tmp_path, task_body=task_body)
     snapshot = _snapshot(tmp_path, source, stamp_name, cas)
     variables: dict[str, str] = {}
     if owner:
