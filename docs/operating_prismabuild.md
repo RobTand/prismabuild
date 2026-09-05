@@ -482,14 +482,22 @@ Each shard is one `pbrun` action, so the checkout travels through the CAS and
 the interpreter is the target box's, not this one's. `--tag` defaults to `x86`,
 which is also the claim that owns the named interpreter.
 
-`--threads-per-shard` sets each shard's BLAS and OMP ceiling, and the same
-number becomes that shard's `pbrun --cpus`, which the lane emits as
-`--cpus-per-task`. The two travel together on purpose: a ceiling without a
-reservation is threads taking turns inside one core, because `ConstrainCores`
-makes the declared demand a cpuset. `--cpus-per-shard N` reserves a different
-number, and it is required with `--threads-per-shard 0`, which sets no ceiling
-and so gives nothing to derive a reservation from. A negative ceiling, a reservation below one core, and a missing
-pairing are all refused with exit 2 before any shard is submitted.
+`--workers-per-shard N` runs N pytest workers in each action with `pytest -n N`.
+The default is 1 and needs no plugin; higher values require `pytest-xdist` in
+the target interpreter. The coordinator still uses only the standard library.
+For example, `--shards 16 --workers-per-shard 5 --threads-per-shard 1` can
+use 80 CPU cores across 16 concurrent actions, subject to available fleet
+capacity and sufficient memory per shard. `--mem-gb` reserves memory for the
+whole action, including all of its pytest workers.
+
+`--threads-per-shard` sets each pytest worker's BLAS and OMP ceiling. The
+CPU reservation defaults to workers times threads; `pbrun --cpus` carries it
+into the lane's `--cpus-per-task`. `--cpus-per-shard N` can reserve more, but
+cannot reserve fewer than this product. With `--threads-per-shard 0`, no
+native thread ceiling is set, so an explicit CPU reservation is required and
+must allow at least one core per pytest worker. Invalid worker counts,
+negative thread ceilings, and insufficient reservations are refused with
+exit 2 before any action is submitted.
 
 The CPU demand is sealed into each shard's action, so a suite fanned out at a
 different width is a different action rather than a cache hit of the last run.
