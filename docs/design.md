@@ -23,8 +23,13 @@ partition too, where node weight prefers dl380g10 and a GB10 box takes it
 only when dl380g10 is full. The lane has run
 against a real `slurmctld` and `slurmd` in a privileged container on sparky
 (`fleet/slurm/smoke/`, 21 rows on the fleet's 25.11.2 rebuild; the first
-eleven also on Ubuntu 24.04's 23.11.4). It is installed on no box: the install
-needs root, which is Rob's. `fleet/slurm/install.sh`, `verify.sh`,
+eleven also on Ubuntu 24.04's 23.11.4), and across three container nodes built
+from the fleet's own `slurm.conf` (`fleet/slurm/smoke/multinode/`, 12 rows on
+both versions: placement per partition, tag and weight, a node killed under a
+job, a controller restart under a job, and the runbook's `verify.sh`). A
+re-run of receipted work submits nothing on either path: `pbrun` reads the
+receipt before `sbatch`. It is installed on no box: the install needs root,
+which is Rob's. `fleet/slurm/install.sh`, `verify.sh`,
 `cutover.sh` and `rollback.sh` are the operator's four steps, in that order.
 `tools/fleet/pbwait.py` and `pbcampaign.py` fan work out over the lane, and
 `pbrun --measurement --host-class` seals a class-keyed action the worker

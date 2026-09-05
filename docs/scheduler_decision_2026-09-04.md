@@ -139,8 +139,12 @@ running for its key, the operator guide (`docs/operating_prismabuild.md`),
 the measured resource-enforcement record
 (`docs/resource_enforcement_2026-09-05.md`), a test-suite guard against the
 fleet's live store (`tests/conftest.py`), and the four operator scripts under
-`fleet/slurm/`. The lane has run against a real 25.11.2 controller in a
-container on sparky (`fleet/slurm/smoke/`, 21 rows). Merging any of this to
+`fleet/slurm/`, with `pbrun` reading the CAS before `sbatch` on the attached
+path as it always did detached. The lane has run against a real 25.11.2
+controller in a container on sparky (`fleet/slurm/smoke/`, 21 rows) and
+across three container nodes built from the fleet's own configuration
+(`fleet/slurm/smoke/multinode/`, 12 rows on both SLURM versions, including
+the runbook's `verify.sh`). Merging any of this to
 `main` deploys nothing: the fleet executes the published runtime generation,
 not `main`.
 
@@ -238,10 +242,16 @@ run, branch refs never rewritten). `main` = `44b9f8f`.
   refused, Epilog cleanup, `scontrol` provenance, a campaign and its free
   re-run, host-class attestation, a stalled job reported and completed, and
   cores and memory enforced to the declaration).
-  What the container cannot show is listed in the runbook under "Still not
-  verified": device containment on a real GPU, the fleet's systemd cgroup
-  arrangement, `root_squash` end to end, and three-box RPC. Phase 1 verifies
-  those.
+  The three-node harness (`fleet/slurm/smoke/multinode/`) adds a controller
+  and three `slurmd`s from the fleet's own `slurm.conf`: placement per
+  partition, tag and weight, `--anywhere` overflow, a submission on one box
+  executed on another, a node killed under a job, a controller restart under
+  a job, and `verify.sh`. What the containers cannot show is listed in the
+  runbook under "Still not verified": device containment on a real GPU, the
+  fleet's systemd cgroup arrangement, `root_squash` end to end, and the
+  pinned `NodeAddr` lines themselves, which the three-node harness strips
+  because Docker's DNS resolves its node names and the LAN addresses bind
+  nothing there. Phase 1 verifies those.
 - The sealed environment under `--export=NIL` is shown by the container smoke
   (row 2 and the three-node run), not by the suite: the fakes never run a job
   under `--export=NIL`, so the claim that only SLURM's own variables reach a
