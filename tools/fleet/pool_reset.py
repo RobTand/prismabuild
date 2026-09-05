@@ -101,6 +101,34 @@ def record_transport(record: Mapping, *, requested: str = "pool") -> str:
     return "slurm" if requested == "slurm" else "pool"
 
 
+#: The GRES that means the whole device rather than a sharable slot.  ``gpu:1``
+#: and ``shard:N`` are two requests against one GPU: asking for the device is
+#: what ``--exclusive`` means, and asking for shards is what a slot means.
+EXCLUSIVE_GRES = "gpu:1"
+
+
+def record_exclusive(record: Mapping) -> bool:
+    """Whether this ending's action had the whole device to itself.
+
+    ``resources`` cannot answer it: the lane records the producer's own demand
+    vocabulary there, and ``{"gpu": 1}`` is the same claim for an exclusive
+    action and a one-slot one.  The lane files the GRES it actually submitted
+    beside it, and that is the distinction.
+
+    Args:
+        record: One terminal record read out of ``failed/``.
+
+    Returns:
+        True when the lane submitted this action with ``--gres=gpu:1``.
+    """
+
+    detail = record.get("detail")
+    detail = detail if isinstance(detail, Mapping) else {}
+    slurm = detail.get("slurm")
+    slurm = slurm if isinstance(slurm, Mapping) else {}
+    return str(slurm.get("gres") or "") == EXCLUSIVE_GRES
+
+
 def _recover(record: dict, *, cas_root: Path) -> tuple[dict | None, str]:
     """Rebuild what a submission needs, or say what is missing."""
 
@@ -121,6 +149,19 @@ def _recover(record: dict, *, cas_root: Path) -> tuple[dict | None, str]:
     cwd = record.get("checkout_root") or (request.get("task") or {}).get(
         "working_directory")
     if not cwd or not str(cwd).startswith("/"):
+        if str(record.get("transport") or "") == "slurm":
+            # Not the same gap.  A lane record is addressed by a sealed
+            # snapshot, and a snapshot names a commit and a subdirectory --
+            # never the absolute source tree, deliberately, because the path
+            # exists on the submitting box and nowhere the scheduler may place
+            # the job.  So there is no ``--cwd`` to recover, and reporting the
+            # pull queue's missing-field message would send an operator
+            # looking for a field that was never meant to be there.
+            return None, (
+                "a snapshot-addressed lane record seals no source tree, so "
+                "there is no working directory to re-submit against; "
+                "re-dispatch this action from the producer that sealed it"
+            )
         return None, "no absolute working directory on the item or the action"
     if not Path(cwd).is_dir():
         return None, f"working directory is gone: {cwd}"
@@ -131,6 +172,7 @@ def _recover(record: dict, *, cas_root: Path) -> tuple[dict | None, str]:
         "cwd": str(cwd),
         "demand": dict(record.get("resources") or {}),
         "tags": [str(t) for t in (record.get("tags") or [])],
+        "exclusive": record_exclusive(record),
     }, ""
 
 
@@ -223,7 +265,7 @@ def submit_command(
     *,
     transport: str,
     priority: int = -10,
-    timeout_s: float = 5400.0,
+    timeout_s: float | None = None,
     python: str = sys.executable,
     pbrun: Path = PBRUN,
 ) -> list[str]:
@@ -234,6 +276,22 @@ def submit_command(
     operator happens to be in, and a bulk reset that re-routes half the queue
     because of an exported variable is exactly the surprise this tool exists
     to remove.
+
+    ``--exclusive`` is restored from the GRES the lane recorded, because the
+    demand alone cannot say it: ``{"gpu": 1}`` re-emitted on its own becomes
+    ``shard:1``, a sharable slot, and an action that failed while it had the
+    device to itself would be retried beside other work.
+
+    Args:
+        plan: One recovered piece of work.
+        transport: The dispatcher this re-submission rides.
+        priority: How far behind interactive work to queue it.
+        timeout_s: A deadline to enforce, or ``None`` for none.
+        python: The interpreter that runs ``pbrun``.
+        pbrun: The submitter to run.
+
+    Returns:
+        The argv to run.
     """
 
     command = [
@@ -241,8 +299,15 @@ def submit_command(
         "--transport", str(transport),
         "--cwd", plan["cwd"],
         "--priority", str(priority),
-        "--timeout-s", str(timeout_s),
     ]
+    if timeout_s is not None:
+        # Only when an operator asked for one.  Under SLURM a deadline is an
+        # enforced kill, and elapsed time is not evidence that a worker is
+        # dead: a job still making progress at 90 minutes is a job to leave
+        # running.  The pull queue never enforced one either.
+        command += ["--timeout-s", str(timeout_s)]
+    if plan.get("exclusive"):
+        command.append("--exclusive")
     for tag in plan["tags"]:
         command += ["--tag", tag]
     if plan["demand"]:
@@ -257,7 +322,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="actually submit; the default only reports")
     ap.add_argument("--priority", type=int, default=-10,
                     help="submit behind everything interactive (default -10)")
-    ap.add_argument("--timeout-s", type=float, default=5400.0)
+    ap.add_argument("--timeout-s", type=float, default=None,
+                    help="enforce this deadline on each re-submission; the "
+                         "default sends none, because elapsed time is not "
+                         "evidence that a worker is dead and under SLURM a "
+                         "deadline is an enforced kill")
     ap.add_argument("--limit", type=int, default=0,
                     help="submit at most this many (0 = all)")
     ap.add_argument("--include-reset", action="store_true",

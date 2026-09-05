@@ -56,6 +56,8 @@ prints PASS or FAIL per row.  Exits non-zero on the first failure.
 
 Environment, for the tests and for nothing else:
   PRISMABUILD_SLURM_LANE_ROOT  the lane root (default /mnt/shared/prismabuild-fleet/slurm)
+  PRISMABUILD_SLURM_JOB_STATE_ROOT  the node-side job-state root
+                               (default /mnt/shared/prismabuild-fleet/slurm/jobs)
   PB_VERIFY_TIMEOUT_S          wall-clock bound per job-running row (default 900)
 
 On success it writes ~/.prismabuild/slurm-verify-passed.json.  That marker is
@@ -77,6 +79,12 @@ done
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONF="$REPO/fleet/slurm/slurm.conf"
 LANE_ROOT="${PRISMABUILD_SLURM_LANE_ROOT:-/mnt/shared/prismabuild-fleet/slurm}"
+# The node-side job-state root, which is a different question from the lane
+# root above: the job and the Epilog each resolve it for themselves, from this
+# variable and this default, so a submitter that moved its lane root does not
+# move it.  Same spelling as `slurm_lane.DEFAULT_JOB_STATE_ROOT`,
+# `epilog.sh` and install.sh's LANE_JOBS.
+JOB_STATE_ROOT="${PRISMABUILD_SLURM_JOB_STATE_ROOT:-/mnt/shared/prismabuild-fleet/slurm/jobs}"
 NODES="dl380g10 sparky gx10-6b77"
 #: Reading /etc/slurm/slurm.conf on the other boxes needs no sudo; this is
 #: the only thing in this script that leaves the box it runs on.
@@ -176,7 +184,7 @@ srun_here() {
 printf 'prismabuild SLURM verification\n'
 printf 'run from : %s as %s\n' "$(hostname -s)" "$(id -un)"
 printf 'checkout : %s\n' "$REPO"
-printf 'lane root: %s\n\n' "$LANE_ROOT"
+printf 'lane root: %s\njob state: %s\n\n' "$LANE_ROOT" "$JOB_STATE_ROOT"
 
 if ! command -v sinfo >/dev/null 2>&1; then
     printf 'verify.sh: sinfo is not on PATH; run fleet/slurm/install.sh on this box first\n' >&2
@@ -421,10 +429,18 @@ runtime generation is published, from the published path."
 fi
 
 # -- row 8: the Epilog left nothing behind -----------------------------------
+#
+# Retried rather than read once.  The Epilog owns node-side cleanup on every
+# ending, killed or not, so row 7's own job leaves its state file behind until
+# the Epilog runs -- and the Epilog runs after the job's processes are gone,
+# which is after pbrun has already been told the job reached a terminal state.
+# A file for a job that ended seconds ago is therefore not yet an orphan, and
+# reading the directory once would have made row 8 a race against row 7.
 
-leftovers=""
-if [ -d "$LANE_ROOT/jobs" ]; then
-    for state in "$LANE_ROOT/jobs"/*.job; do
+scan_leftovers() {
+    leftovers=""
+    [ -d "$JOB_STATE_ROOT" ] || return 0
+    for state in "$JOB_STATE_ROOT"/*.job; do
         [ -e "$state" ] || continue
         id="$(basename "$state" .job)"
         # A job still in the queue owns its state file; it is not a leftover.
@@ -438,7 +454,14 @@ if [ -d "$LANE_ROOT/jobs" ]; then
             | tr ' ' '\n' | sed -n 's/^JobState=//p' | head -n 1)"
         leftovers="$leftovers $id(${ended:-forgotten})"
     done
-fi
+}
+
+leftovers=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    scan_leftovers
+    [ -n "$leftovers" ] || break
+    sleep 2
+done
 if [ -n "$leftovers" ]; then
     fail 8 "the lane's jobs/ directory holds no orphaned state file" \
         "left behind for finished jobs:$leftovers
@@ -448,12 +471,12 @@ exactly that reason, and 'state file ... survived cleanup' in
 /var/log/slurm/slurmd.log on the node says it tried.
 A node power-cycled mid-job runs no Epilog at all, so a file whose job is
 COMPLETED, NODE_FAIL, or forgotten past MinJobAge is a reboot leak rather than
-a failure, and is safe to delete: rm \"$LANE_ROOT/jobs/<id>.job\""
-elif [ -d "$LANE_ROOT/jobs" ]; then
+a failure, and is safe to delete: rm \"$JOB_STATE_ROOT/<id>.job\""
+elif [ -d "$JOB_STATE_ROOT" ]; then
     pass 8 "the lane's jobs/ directory holds no orphaned state file"
 else
     fail 8 "the lane's jobs/ directory holds no orphaned state file" \
-        "$LANE_ROOT/jobs does not exist; install.sh step 7 creates it"
+        "$JOB_STATE_ROOT does not exist; install.sh step 7 creates it"
 fi
 
 finish

@@ -520,3 +520,52 @@ def test_it_runs_as_a_command_with_no_arguments_beyond_the_roots(fleet):
     )
     assert completed.returncode == 0, completed.stderr
     assert "== nodes" in completed.stdout
+
+
+def _purged_slurm_ending(fleet: dict, key: str) -> None:
+    """A record for a job the controller no longer remembers.
+
+    ``sacct`` is dead without ``slurmdbd`` and ``scontrol`` forgets a job after
+    ``MinJobAge``, so a ``pbrun`` that files an ending late gets no provenance
+    at all: no node, no elapsed time, no end time.  Every one of those is
+    ``None`` on the record, which is the shape the pull queue could never
+    produce and therefore the one a pool-record reader was never written for.
+    """
+
+    job = sl.SubmittedJob(
+        action_key=key, job_id="4242", attempt=1, argv=["sbatch"],
+        script=Path("/nonexistent/job.sh"), directory=Path("/nonexistent"),
+        stdout_path=Path("/nonexistent/4242.out"),
+        stderr_path=Path("/nonexistent/4242.err"),
+        record_path=Path("/nonexistent/rec.json"))
+    outcome = sl.Outcome(
+        job_id="4242", state="FAILED", exit_code=None, signal=None,
+        stdout_path=None, stderr_path=None, provenance=None)
+    sl.publish_outcome(
+        queue_root=fleet["queue"], action_key=key, published_unix=1.0,
+        published_by="sparky", status="failed", attempts=1, max_attempts=1,
+        retry_safe=False, job=job, outcome=outcome)
+
+
+def test_a_purged_job_reads_as_unknown_rather_than_none(fleet, capsys) -> None:
+    """The host is the field that matters, and ``None`` is not a hostname.
+
+    Under the pull queue ``finish`` runs on the box doing the work, so
+    ``finished_host`` is always a name.  Under SLURM the node comes from the
+    scheduler, and a purged job has no answer -- so the row has to say it does
+    not know, in the same word every other missing cell uses, rather than
+    print the word ``None`` where an operator reads a box name.
+    """
+
+    _purged_slurm_ending(fleet, "f6" * 32)
+    row = _run_json(fleet, capsys)["endings"][0]
+    assert row["transport"] == "slurm"
+    assert row["host"] is None
+    assert row["elapsed_s"] is None
+    # `claimed_by` is the job id under SLURM, not a worker name, and the
+    # endings table does not offer it as a host.
+    assert row["status"] == "failed"
+
+    lines = pbstatus.ending_lines(_run_json(fleet, capsys)["endings"])
+    assert "None" not in "\n".join(lines)
+    assert pbstatus.UNKNOWN in lines[1]
