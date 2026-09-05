@@ -420,6 +420,29 @@ work is still out there and the keys are still worth waiting on. Under
 `--detach` the campaign returns 0, or 1 if any row was refused; it does not
 wait, so it never returns 75.
 
+## Fan a test suite out
+
+`pbtest` shards a test suite across the fleet instead of running it on one box:
+
+    tools/fleet/pbtest.py --checkout /home/rob/prismabuild \
+        --python /home/rob/venvs/pb-cpu/bin/python --shards 20 tests
+
+Each shard is one `pbrun` action, so the checkout travels through the CAS and
+the interpreter is the target box's, not this one's. `--tag` defaults to `x86`,
+which is also the claim that owns the named interpreter.
+
+`--threads-per-shard` sets each shard's BLAS and OMP ceiling, and the same
+number becomes that shard's `pbrun --cpus`, which the lane emits as
+`--cpus-per-task`. The two travel together on purpose: a ceiling without a
+reservation is threads taking turns inside one core, because `ConstrainCores`
+makes the declared demand a cpuset. `--cpus-per-shard N` reserves a different
+number, and it is required with `--threads-per-shard 0`, which sets no ceiling
+and so gives nothing to derive a reservation from. A negative ceiling, a reservation below one core, and a missing
+pairing are all refused with exit 2 before any shard is submitted.
+
+The CPU demand is sealed into each shard's action, so a suite fanned out at a
+different width is a different action rather than a cache hit of the last run.
+
 ## Submit a measurement
 
 A measurement's numerics do not transfer across architectures, so a measurement
