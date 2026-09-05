@@ -469,6 +469,7 @@ for jobs the controller has forgotten. Use them directly for scheduler detail
 | `/mnt/shared/prismabuild-fleet/pb-queue/done/<key>.json` | The ending of an action whose work was done. |
 | `.../pb-queue/failed/<key>.json` | The ending of an action with no receipt. |
 | `.../pb-queue/withdrawn/<key>.json` | The marker for an action somebody cancelled. |
+| `.../pb-queue/claimed/<key>.<unix>.<host>.<pid>.<id>.tombstone` | A claim moved aside while its finisher publishes the action's next home. It exists for one write, and the finisher deletes it. One that outlives the lease timeout means the finisher was interrupted: the next reaper puts the record back as a claim, or, if the key already has a live or terminal record, files it under `withdrawn/superseded/` as evidence. No reader of `claimed/` counts it as a claim. |
 | `.../slurm/<key>/` | The lane directory: `job.sh`, `submissions/`, `latest.json`, `liveness.jsonl`, and `<jobid>.out` and `.err`. |
 | `.../cas/` | The content-addressed store: action requests, results, and receipts. |
 

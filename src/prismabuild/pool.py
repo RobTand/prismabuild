@@ -150,6 +150,13 @@ INTENT = "intent"
 #: the live ``failed/`` for exactly that reason.
 WITHDRAWN = "withdrawn"
 _STATES = (READY, CLAIMED, DONE, FAILED, INTENT, WITHDRAWN)
+
+#: Suffix of a claim that has been moved out of the way while its finisher
+#: publishes the item's next home.  Every reader of ``claimed/`` addresses it
+#: as ``<key>.json`` or ``<key>.lease`` -- ``reap_stale`` and
+#: ``sweep_widowed_leases`` by glob, ``item_path`` and ``find_key`` by name --
+#: so a suffix that is neither is invisible to all of them, which is the point.
+TOMBSTONE_SUFFIX = ".tombstone"
 CONTAINER_OWNERS = "container-owners"
 CONTAINER_OWNER_LABEL = "prismabuild.action"
 DOCKER = "/usr/bin/docker"
@@ -1227,6 +1234,35 @@ class PoolQueue:
     def lease_path(self, action_key: str) -> Path:
         return self.dir(CLAIMED) / f"{action_key}.lease"
 
+    def _entomb_claim(self, action_key: str) -> Path | None:
+        """Move a claim aside so its own cleanup cannot delete its successor.
+
+        ``finish`` and ``reap_stale`` both used to publish the item's next home
+        and only afterwards unlink ``claimed/<key>.json`` and its lease.  A
+        worker polling inside that window claims the newly published retry --
+        its rename lands on the same claimed filename -- and the old finisher
+        then deletes the *new* claim and the *new* lease on its way out.  The
+        retry disappears from the live queue, and because no claimed record and
+        no lease survive it, a crash of that second worker leaves a reservation
+        no reaper can find.
+
+        So the claim moves out of the way first, atomically, to a name no
+        reader of ``claimed/`` treats as a claim, and only the tombstone is
+        deleted afterwards.  A crash inside the window leaves the tombstone,
+        which :meth:`sweep_finish_tombstones` recovers.  ``None`` when there
+        was no claim to move, which is the ordinary lost-race case.
+        """
+
+        tombstone = self.dir(CLAIMED) / (
+            f"{action_key}.{int(_now() * 1_000_000)}.{socket.gethostname()}"
+            f".{os.getpid()}.{uuid.uuid4().hex[:8]}{TOMBSTONE_SUFFIX}"
+        )
+        try:
+            os.rename(self.item_path(CLAIMED, action_key), tombstone)
+        except OSError:
+            return None
+        return tombstone
+
     def attempt_generation(self, record: Mapping[str, object]) -> str:
         """Stable directory name for one submission of a content-addressed key."""
 
@@ -2287,26 +2323,147 @@ class PoolQueue:
                 # File the exact transition it proved rather than the local
                 # lease observation that lost the first-writer race.
                 record["schema"] = POOL_OUTCOME_SCHEMA_V1
-                _write_json_atomic(self.item_path(str(disposition), key), record)
-                path.unlink(missing_ok=True)
+                destination = self.item_path(str(disposition), key)
             else:
                 record["requeued_unix"] = _now()
                 for transient in ("claimed_by", "claimed_unix", "claimed_host"):
                     record.pop(transient, None)
-                try:
-                    _write_json_atomic(self.item_path(READY, key), record)
-                except OSError:
-                    continue
-                path.unlink(missing_ok=True)
+                destination = self.item_path(READY, key)
+            # Same ordering as ``finish``, and for the same reason: this loop
+            # published the requeue and only then unlinked the claim and lease,
+            # so a worker that claimed the requeue inside that window had its
+            # claim and lease deleted by this reaper.
+            tombstone = self._entomb_claim(key)
+            self.lease_path(key).unlink(missing_ok=True)
             # Whatever the outcome, the dead claimant's capacity goes back.  A
             # reservation outliving its holder is the starvation bug's shape.
             self.ledger(holder if isinstance(holder, str) else None).release(key)
-            self.lease_path(key).unlink(missing_ok=True)
+            try:
+                _write_json_atomic(destination, record)
+            except OSError:
+                # Put the claim back rather than leave the key with no record
+                # anywhere.  Link first: the tombstone must not replace a claim
+                # that appeared while this was in flight.
+                if tombstone is not None:
+                    try:
+                        os.link(tombstone, path)
+                    except OSError:
+                        pass
+                    else:
+                        tombstone.unlink(missing_ok=True)
+                continue
+            if tombstone is None:
+                path.unlink(missing_ok=True)
+            else:
+                tombstone.unlink(missing_ok=True)
             requeued.append(key)
         self.sweep_widowed_leases(timeout_s=timeout_s)
         self.sweep_stale_acquisitions()
+        self.sweep_finish_tombstones()
         self.quarantine_orphans()
         return requeued
+
+    def sweep_finish_tombstones(
+        self, *, grace_s: float = LEASE_TIMEOUT_S
+    ) -> list[str]:
+        """Recover a claim whose finisher died with it moved out of the way.
+
+        ``finish`` and ``reap_stale`` move a claim to a tombstone, publish the
+        item's next home, then delete the tombstone.  A process killed inside
+        that window leaves a record that no consumer addresses: the key is in
+        neither ``ready`` nor ``claimed``, so nothing claims it, nothing reaps
+        it, and its waiter never sees an outcome.  This is the only thing that
+        looks.
+
+        Three dispositions, and which one applies is decided by what else the
+        key has, never by what the tombstone says about itself:
+
+        *   A record in ``ready`` or ``claimed``, **of any generation**, means
+            the key has moved on.  Re-injecting these bytes could only start a
+            fight with a live record, so the tombstone is filed as evidence and
+            removed.  Any generation, not just this one: a crash in this window
+            leaves the key addressable nowhere, so a submitter re-publishes it,
+            and restoring the old generation over that would have the reaper
+            requeue it straight over the new one.
+        *   A terminal record of the *same* generation means the publish landed
+            and the tombstone is redundant cleanup.  Filed and removed.
+        *   Otherwise the publish did not land: link the record back to
+            ``claimed/<key>.json`` and let the ordinary reaper conclude it.
+            Its lease is already gone, so the missing-lease path applies one
+            grace later, and it charges the same attempt number the finisher
+            archived -- ``archive_attempt`` is first-writer-wins, so the
+            finisher's real outcome is what the record adopts, not this
+            reaper's lease observation.
+
+        A record whose attempt links no longer verify is filed rather than
+        restored.  Restoring it would hand ``reap_stale`` a record that raises
+        from ``archive_attempt``, and that exception stops reaping on every box
+        for as long as the record exists.
+
+        The grace is the lease timeout: nothing is blocked behind this except
+        the action's own visibility, and a sweep that fires while a finisher is
+        mid-publish would put a claim beside a ready record of the same
+        generation.
+        """
+
+        swept: list[str] = []
+        claimed = self.dir(CLAIMED)
+        if not claimed.is_dir():
+            return swept
+        now = _now()
+        for tombstone in sorted(claimed.glob(f"*{TOMBSTONE_SUFFIX}")):
+            parts = tombstone.name.split(".", 2)
+            key = parts[0]
+            if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+                continue
+            when: float | None = None
+            if len(parts) >= 2:
+                try:
+                    when = int(parts[1]) / 1_000_000.0
+                except ValueError:
+                    when = None
+            if when is None:
+                try:
+                    when = tombstone.stat().st_mtime
+                except OSError:
+                    continue
+            if now - when <= grace_s:
+                continue
+            record = _read_json(tombstone)
+            live = any(
+                self.item_path(state, key).exists()
+                for state in (READY, CLAIMED)
+            )
+            covered = (
+                self.terminal_outcome_covers(record, action_key=key) is not None
+                or self.withdrawal_covers(record, action_key=key) is not None
+            )
+            restorable = record is not None and not live and not covered
+            if restorable and "attempt_history" in record:
+                try:
+                    self.attempt_outcomes(record)
+                except PoolContractError:
+                    restorable = False
+            if restorable:
+                try:
+                    os.link(tombstone, self.item_path(CLAIMED, key))
+                except OSError:
+                    pass
+                else:
+                    tombstone.unlink(missing_ok=True)
+                    swept.append(key)
+                    continue
+            self._file_superseded(
+                record, key=key, kind="finish-tombstone", status="dropped",
+                dropped_unix=_now(), dropped_host=socket.gethostname(),
+                reason="a finisher was interrupted between moving its claim "
+                       "aside and publishing the item's next home; the key "
+                       "already has a live or terminal record, so these bytes "
+                       "are evidence rather than work",
+            )
+            tombstone.unlink(missing_ok=True)
+            swept.append(key)
+        return swept
 
     def sweep_stale_acquisitions(
         self, *, grace_s: float = LEASE_TIMEOUT_S
@@ -2920,9 +3077,6 @@ class PoolQueue:
             }
         )
         disposition = adopted["disposition"]
-        # Capacity is released before the item is filed, so the next worker to
-        # look sees the tokens free rather than racing this rename.
-        self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
         if disposition in {DONE, FAILED}:
             dst = self.item_path(str(disposition), action_key)
         else:
@@ -2935,9 +3089,20 @@ class PoolQueue:
             for transient in ("claimed_by", "claimed_unix", "claimed_host"):
                 record.pop(transient, None)
             dst = self.item_path(READY, action_key)
-        _write_json_atomic(dst, record)
-        src.unlink(missing_ok=True)
+        # Everything this worker owns goes before the item's next home becomes
+        # visible: the claim to a tombstone, then its own lease.  A retry
+        # published while either still stood was claimed by the next poll, and
+        # the unlinks below then deleted that new claim and its lease.
+        tombstone = self._entomb_claim(action_key)
         self.lease_path(action_key).unlink(missing_ok=True)
+        # Capacity is released before the item is filed, so the next worker to
+        # look sees the tokens free rather than racing this rename.
+        self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
+        _write_json_atomic(dst, record)
+        if tombstone is None:
+            src.unlink(missing_ok=True)
+        else:
+            tombstone.unlink(missing_ok=True)
         return dst
 
     def reclaim_terminal_reservation(self, action_key: str) -> dict[str, object]:
