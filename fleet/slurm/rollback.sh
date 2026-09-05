@@ -1,0 +1,186 @@
+#!/bin/bash
+# Undo fleet/slurm/cutover.sh: put the pull queue back in charge.
+#
+# Run it as rob, from a checkout, with no sudo:
+#
+#     fleet/slurm/rollback.sh --dry-run
+#     fleet/slurm/rollback.sh
+#
+# It reads the state file cutover.sh wrote -- the newest one in the state
+# directory unless --state names another -- and reverses it in reverse order:
+#
+#   1. point the live runtime back at the generation cutover replaced, which
+#      restores the previous default transport in the same atomic namespace
+#      operation that changed it.  Nothing is re-published: that generation's
+#      bytes and receipt were proved when it was published, and rebuilding
+#      them from a checkout that has since moved would not be the same thing.
+#   2. restore each box's crontab from the verbatim backup cutover took, so
+#      cron resumes keeping a supervisor alive.
+#   3. start pqwork.service again on the two Sparks.
+#   4. start one supervisor per box now, rather than waiting up to five
+#      minutes for cron to notice.
+#
+# The runtime first, deliberately.  Between step 1 and step 4 the fleet has no
+# workers and the default transport is the pull queue, so new submissions
+# queue and wait -- which is a fleet that is idle.  The other order gives a
+# window where workers are draining the queue while producers are still being
+# told to use SLURM.
+#
+# SLURM jobs already running keep running; the decision record says so and this
+# does not change it.  Cancel the ones you do not want with
+# `pbrun --transport slurm --withdraw <key prefix>`.  slurmctld and slurmd can
+# stay up: with no submissions they do nothing.
+
+set -uo pipefail
+
+DRY_RUN=0
+STATE_FILE=""
+
+usage() {
+    cat <<'USAGE'
+usage: rollback.sh [--dry-run] [--state FILE]
+
+Reverses fleet/slurm/cutover.sh: restores the previous runtime generation (and
+with it the pull queue as the default transport), the supervise crontab line,
+pqwork.service on the Sparks, and one supervisor per box.
+
+  --state FILE  a cutover state file; default is the newest in the state dir
+  --dry-run     print every command and run none of them
+
+Environment, for the tests and for nothing else:
+  PB_RUNTIME_DIR  the fleet runtime directory (default /mnt/shared/prismabuild-fleet)
+  PB_BOXES        ssh names, in order (default: from the state file)
+  PB_SSH          the ssh command (default "ssh -o BatchMode=yes")
+  PB_STATE_DIR    where the state file lives (default $HOME/.prismabuild)
+  PB_PUBLISH      the publish_runtime.py invocation
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) DRY_RUN=1 ;;
+        --state) shift; STATE_FILE="${1:-}" ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'rollback.sh: unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Mode 644 in the checkout, so it runs through the interpreter.
+PUBLISH="${PB_PUBLISH:-python3 $REPO/tools/fleet/publish_runtime.py}"
+RUNTIME_DIR="${PB_RUNTIME_DIR:-/mnt/shared/prismabuild-fleet}"
+SSH="${PB_SSH:-ssh -o BatchMode=yes}"
+STATE_DIR="${PB_STATE_DIR:-$HOME/.prismabuild}"
+
+exec 3>&1
+say() { printf '%s\n' "$*" >&3; }
+die() { printf 'rollback.sh: %s\n' "$*" >&2; exit 1; }
+
+if [ -z "$STATE_FILE" ]; then
+    STATE_FILE="$(find "$STATE_DIR" -maxdepth 1 -name 'cutover-*.json' 2>/dev/null \
+        | LC_ALL=C sort | tail -n 1)"
+fi
+[ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ] \
+    || die "no cutover state file in $STATE_DIR. Pass --state, or roll back by hand: the two things cutover changed are the live runtime symlink and one crontab line per box."
+
+#: One string field out of the state file, without a JSON parser.  The file is
+#: written by cutover.sh a few lines at a time and every value is a plain
+#: string; a field this cannot read is a field cutover did not write.
+state_field() {
+    sed -n "s/^ \"$1\": \"\\(.*\\)\",\\{0,1\\}$/\\1/p" "$STATE_FILE" | head -n 1
+}
+
+PREVIOUS="$(state_field previous_generation)"
+BOXES="${PB_BOXES:-$(state_field boxes)}"
+SPARKS="$(state_field sparks)"
+CRONTAB_BACKUP="$(state_field crontab_backup)"
+[ -n "$PREVIOUS" ] || die "$STATE_FILE names no previous_generation"
+[ -n "$BOXES" ] || die "$STATE_FILE names no boxes"
+
+this_box="$(hostname -s)"
+case "$this_box" in
+    gx10-6b77) LOCAL=sparklina ;;
+    *) LOCAL="$this_box" ;;
+esac
+
+on_box() {
+    local box="$1" snippet="$2"
+    if [ "$box" = "$LOCAL" ]; then
+        printf '# on %s (this box)\n%s\n' "$box" "$snippet" >&3
+        [ "$DRY_RUN" = 0 ] || return 0
+        bash -c "$snippet"
+    else
+        printf '# on %s\n%s %s <<%s\n%s\n%s\n' \
+            "$box" "$SSH" "$box" "'PBEOF'" "$snippet" "PBEOF" >&3
+        [ "$DRY_RUN" = 0 ] || return 0
+        printf '%s\n' "$snippet" | $SSH "$box" bash -s
+    fi
+}
+
+say "prismabuild SLURM rollback"
+say "state    : $STATE_FILE"
+say "restoring: $PREVIOUS"
+say "boxes    : $BOXES"
+say "mode     : $([ "$DRY_RUN" = 1 ] && echo 'dry run, nothing is executed' || echo 'live')"
+
+# -- 1. the runtime ----------------------------------------------------------
+
+say ""
+say "# step 1: point the live runtime back at $PREVIOUS"
+if [ "$DRY_RUN" = 1 ]; then
+    say "$PUBLISH --activate-generation $PREVIOUS"
+else
+    $PUBLISH --activate-generation "$PREVIOUS" \
+        || die "could not activate $PREVIOUS. Check that it is still under $RUNTIME_DIR/runtime-generations; publication never deletes a generation, so it should be."
+fi
+
+# -- 2. the crontab ----------------------------------------------------------
+
+say ""
+say "# step 2: restore each box's crontab from the backup cutover took"
+for box in $BOXES; do
+    on_box "$box" "if [ -f '$CRONTAB_BACKUP' ]; then
+    crontab '$CRONTAB_BACKUP'
+    echo \"\$(hostname -s): crontab restored from $CRONTAB_BACKUP\"
+else
+    echo \"\$(hostname -s): NO BACKUP at $CRONTAB_BACKUP; restore the supervise line by hand\"
+    exit 1
+fi" || die "could not restore the crontab on $box; the supervise line is what keeps a supervisor alive"
+done
+
+# -- 3. pqwork on the Sparks -------------------------------------------------
+
+say ""
+say "# step 3: start pqwork.service again on the Sparks"
+for box in $SPARKS; do
+    on_box "$box" "if systemctl --user list-unit-files pqwork.service >/dev/null 2>&1; then
+    systemctl --user start pqwork.service
+    echo \"\$(hostname -s): pqwork.service \$(systemctl --user is-active pqwork.service 2>&1)\"
+else
+    echo \"\$(hostname -s): no pqwork.service\"
+fi" || die "could not start pqwork.service on $box"
+done
+
+# -- 4. a supervisor now, rather than in five minutes ------------------------
+#
+# --ensure is a no-op when a supervisor already owns the box, which is what
+# makes running it here safe alongside the cron entry restored above.  Detached
+# with setsid, because a supervisor is a long-lived process and this ssh is not.
+
+say ""
+say "# step 4: start one supervisor per box now"
+for box in $BOXES; do
+    on_box "$box" "setsid /usr/bin/python3 $RUNTIME_DIR/repo/tools/supervise.py --ensure \\
+    >> /home/rob/tmp/pb-supervisor.log 2>&1 < /dev/null &
+sleep 2
+echo \"\$(hostname -s): supervisors now: \$(pgrep -fc 'python.*supervise.py' 2>/dev/null || echo 0)\"" \
+        || die "could not start a supervisor on $box"
+done
+
+say ""
+say "# rollback complete."
+say "# The default transport is whatever $PREVIOUS was published with, which"
+say "# for every generation before the cutover is the pull queue."
+say "# SLURM jobs already running are unaffected; withdraw the ones you do not"
+say "# want with: pbrun --transport slurm --withdraw <key prefix>"

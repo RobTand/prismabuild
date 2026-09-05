@@ -31,7 +31,7 @@ RUN = Path(__file__).resolve().parents[1] / "fleet" / "slurm" / "smoke" / "run.s
 #: Long enough for the whole table, including the row that waits for SLURM to
 #: enforce a one-minute time limit, and short enough that a wedged controller
 #: is a failure rather than a hang.
-BUDGET_S = 900.0
+BUDGET_S = 1200.0
 
 
 def _reason() -> str | None:

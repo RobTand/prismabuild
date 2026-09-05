@@ -32,15 +32,22 @@ patched. The host's real `/mnt/shared` is never touched.
 | 7b | `--constraint` for a Feature no node has is refused at submit and reported by `pbrun` |
 | 8 | the Epilog ran for a killed job, matched containers by the action's ownership label, and removed its state file as the job's user rather than as root |
 | 9 | with no `slurmdbd`, `sacct` answers nothing and the lane's provenance comes from `scontrol` |
+| 10a | a three-row `pbcampaign` manifest with mixed demand -- two `shard:1` rows and one no-GPU row -- runs on the fleet and reports one table with each row's job id and node |
+| 10b | the same manifest re-run is three CAS hits: no new job id, no new submission record, and no action ran again |
+| 10 | from inside a batch step, `scontrol show job` and `scontrol show node` return `Features=` and `ActiveFeatures=` to the job's owner, and `SLURM_JOB_CONSTRAINTS` is unset |
+| 11 | `pbrun --measurement --host-class gb10` executes, and the receipt's producer carries `host_class="gb10"` with the controller's `job_features` and `node_active_features` |
+| 12 | `--host-class` for a Feature no node has is refused at submit by `sbatch` |
 
 ## What it does not establish
 
 The container is not the fleet, and four things stay open for the install:
 
 - **Device containment.** `ConstrainDevices` is off here and the node's GRES is
-  bound to a character device nothing opens. Whether
-  `cgroup_allowed_devices_file.conf` admits exactly the right NVIDIA control
-  interfaces is answerable only on a box with a GPU.
+  bound to a character device nothing opens. On cgroup v2 the containment is an
+  eBPF program that denies exactly the GRES `File=` devices a job was not
+  allocated and admits everything else, and whether it lets a job holding
+  `shard:1` initialize CUDA while a job holding nothing cannot open
+  `/dev/nvidia0` is answerable only on a box with a GPU.
 - **The fleet's cgroup arrangement.** Delegation here needs `--privileged`,
   `--cgroupns=private`, a manual `cgroup.subtree_control` and
   `IgnoreSystemd=yes`; the fleet's boxes have systemd and slurmd under it.
@@ -55,8 +62,10 @@ The container is not the fleet, and four things stay open for the install:
 
 ## The two SLURMs behave differently, and the differences are recorded
 
-Both pass all eleven rows. Two things had to be worked around for 23.11.4, and
-neither is a lane defect:
+Both pass rows 1 to 9. The campaign rows (10a, 10b) and the host-class rows
+(10 to 12) were added afterwards and have run on 25.11.2 only
+(run-20260905T010019, 13/13, and run-20260905T010156, 14/14). Two things had
+to be worked around for 23.11.4, and neither is a lane defect:
 
 - Its `cgroup/v2` plugin creates its stepd scope under `/sys/fs/cgroup/system.slice`
   and refuses to initialize when that directory is absent (`Could not create

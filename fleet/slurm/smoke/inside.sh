@@ -124,12 +124,14 @@ EpilogMsgTime=30000
 AccountingStorageType=accounting_storage/none
 GresTypes=gpu,shard
 
-# One node, and it is this container.  \`gb10\` and \`smoke\` are Features so a
-# --constraint can be aimed at them; the hostname is a Feature for the same
+# One node, and it is this container.  \`gb10\`, \`smoke\`, \`gpu\` and \`cpu\`
+# are Features so a --constraint can be aimed at them (the fleet carries
+# \`gpu\`/\`cpu\` because the pool workers announce them as tags); the
+# hostname is a Feature for the same
 # reason it is one on the fleet -- pbrun turns a box-local checkout into a
 # hostname tag and this lane turns tags into --constraint.
 NodeName=$NODE CPUs=$CPUS RealMemory=16384 Gres=gpu:1,shard:2 \\
-    Feature=gb10,smoke,$NODE State=UNKNOWN
+    Feature=gb10,smoke,gpu,cpu,$NODE State=UNKNOWN
 
 PartitionName=all Nodes=ALL Default=YES MaxTime=UNLIMITED State=UP
 PartitionName=gpu Nodes=$NODE MaxTime=UNLIMITED State=UP

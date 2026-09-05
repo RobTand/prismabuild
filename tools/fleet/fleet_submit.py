@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import sys
@@ -94,9 +95,47 @@ class Submission:
 
 
 def default_transport() -> str:
-    """The transport this box is cut over to, or the pull queue."""
+    """The transport this box is cut over to, or the pull queue.
 
-    return os.environ.get(DEFAULT_TRANSPORT_ENV) or "pool"
+    Three answers, in order, and the order is the point.
+
+    ``PRISMABUILD_TRANSPORT`` in the environment wins, because a person or a
+    test saying "this submission goes to SLURM" is never overruled by a file.
+
+    Otherwise the *published runtime generation* answers.  Cutover used to be
+    described as one environment variable, which is a fine description of one
+    shell and no description at all of a fleet: agents on three boxes start
+    ``pbrun`` from cron, from systemd user units and from each other, and there
+    is no single environment to export into.  What every one of them does share
+    is the generation they execute -- ``/mnt/shared/prismabuild-fleet/repo``,
+    an immutable directory with a receipt beside it -- so the default travels
+    in the receipt.  It is optional and absent means ``pool``, so every
+    generation published before the cutover keeps the behaviour it had.
+
+    That also makes rollback exactly as atomic as publication was: pointing
+    ``repo`` back at the previous generation restores the previous default in
+    the same namespace operation, with no environment to unset on three boxes.
+
+    A checkout has no receipt, so a checkout defaults to the pull queue until
+    somebody says otherwise on the command line.
+    """
+
+    from_environment = os.environ.get(DEFAULT_TRANSPORT_ENV)
+    if from_environment:
+        return from_environment
+    try:
+        receipt = json.loads(
+            (RUNTIME_ROOT / "RUNTIME_VERSION.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return "pool"
+    declared = receipt.get("default_transport")
+    # A receipt that names a transport this code does not have is a receipt
+    # from the future.  Refusing to guess is cheap; guessing is a submission
+    # into a queue nobody drains.
+    if isinstance(declared, str) and declared in TRANSPORTS:
+        return declared
+    return "pool"
 
 
 def add_transport_argument(parser: argparse.ArgumentParser) -> None:
@@ -105,8 +144,9 @@ def add_transport_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--transport", choices=TRANSPORTS, default=default_transport(),
         help="which dispatcher carries these submissions (env "
-             "PRISMABUILD_TRANSPORT); the pull queue stays the default until "
-             "the fleet has cut over to SLURM")
+             "PRISMABUILD_TRANSPORT, else the published runtime "
+             "generation's default_transport); the pull queue stays the "
+             "default until the fleet has cut over to SLURM")
 
 
 #: One bundle per (checkout, working-tree state) per process, not one per

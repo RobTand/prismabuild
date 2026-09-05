@@ -15,6 +15,34 @@ from prismabuild import dagster as pd
 from prismabuild import slurm as ps
 
 
+
+def _fake_slurm_controller(monkeypatch, *, job_id: str = "123",
+                           node: str = "sparky", host_class: str = "gb10") -> None:
+    """Stand in for the kernel cgroup and the controller of a class-keyed job.
+
+    A host class is attested through ``scontrol``, not through ``SLURM_*``
+    variables, so a test that wants a receipt from inside a ``gb10`` job has
+    to answer for the controller as well as for ``/proc/self/cgroup``.
+    """
+
+    monkeypatch.setattr(
+        pb, "_slurm_job_from_cgroup",
+        lambda: (job_id, f"/slurm/job_{job_id}/step_batch"),
+    )
+    monkeypatch.setattr(pb, "SCONTROL_RETRY_DELAYS_S", ())
+
+    def scontrol(argv):
+        kind = argv[2]
+        line = (
+            f"JobId={job_id} JobState=RUNNING Partition=gpu BatchHost={node} "
+            f"Features={host_class}"
+            if kind == "job" else
+            f"NodeName={node} ActiveFeatures={host_class},{node} State=IDLE"
+        )
+        return subprocess.CompletedProcess(list(argv), 0, line + "\n", "")
+
+    monkeypatch.setattr(pb, "_run_scontrol", scontrol)
+
 def _action(
     checkout: Path,
     name: str,
@@ -589,11 +617,7 @@ def test_wrong_scope_receipt_fails_closed_before_adapter(
     monkeypatch.setenv("SLURM_JOB_ID", "123")
     monkeypatch.setenv("SLURMD_NODENAME", "sparky")
     monkeypatch.setenv("SLURM_JOB_PARTITION", "gb10")
-    monkeypatch.setattr(
-        pb,
-        "_verify_slurm_process_membership",
-        lambda job_id: f"/slurm/job_{job_id}/step_batch",
-    )
+    _fake_slurm_controller(monkeypatch)
     attestation = pb.preflight_action(
         spec.action, cas_root=cas_root, checkout_root=spec.checkout_root
     )
