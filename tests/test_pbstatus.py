@@ -417,6 +417,20 @@ def test_endings_name_their_transport_and_their_slurm_state(fleet, capsys):
     assert "TIMEOUT" in out and "dl380g10" in out
 
 
+def test_a_withdrawal_is_an_ending_and_is_listed_from_withdrawn(fleet, capsys):
+    """The pool files a withdrawal under ``withdrawn/`` and never under
+    ``failed/``, and the lane follows that rule, so the endings table reads
+    that directory too or a cancelled job vanishes from it."""
+
+    _slurm_ending(fleet, "f6" * 32, status="withdrawn", state="CANCELLED")
+    ending = _run_json(fleet, capsys)["endings"][0]
+    assert ending["status"] == "withdrawn"
+    assert ending["transport"] == "slurm"
+    assert ending["slurm_state"] == "CANCELLED"
+    assert ending["path"].endswith(f"/{pool.WITHDRAWN}/{'f6' * 32}.json")
+    assert not (fleet["queue"] / pool.FAILED / f"{'f6' * 32}.json").exists()
+
+
 def test_a_receipt_puts_the_ending_under_done(fleet, capsys):
     _slurm_ending(fleet, "e5" * 32, status="executed", state="COMPLETED")
     ending = _run_json(fleet, capsys)["endings"][0]

@@ -18,7 +18,7 @@ vocabulary, so the tables join rather than transcribe:
     resources the action asked for, the constraint it was placed under, and the
     box that submitted it.
 *   The scheduler forgets a job, and the endings table does not.  It reads the
-    same two directories the pull queue files its endings in, so a SLURM ending
+    same three directories the pull queue files its endings in, so a SLURM ending
     and a pull-queue ending appear side by side, each labelled with the
     transport that produced it.
 
@@ -452,7 +452,7 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
     """
 
     entries: list[tuple[float, os.DirEntry]] = []
-    for state in (pool.DONE, pool.FAILED):
+    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         directory = Path(queue_root) / state
         try:
             with os.scandir(directory) as scan:
@@ -491,7 +491,7 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
     """Describe how the newest actions ended, under either transport.
 
     Args:
-        queue_root: The queue root holding ``done`` and ``failed``.
+        queue_root: The queue root holding ``done``, ``failed`` and ``withdrawn``.
         limit: How many records to read, newest by modification time first.
 
     Returns:
@@ -662,7 +662,7 @@ def ending_lines(endings: Sequence[Mapping[str, object]]) -> list[str]:
     """The endings table: how the newest actions finished, under either transport."""
 
     if not endings:
-        return ["no endings filed under done/ or failed/"]
+        return ["no endings filed under done/, failed/ or withdrawn/"]
     headers = (
         "KEY", "STATUS", "VIA", "HOST", "ELAPSED", "RC", "RECEIPT", "SLURM",
     )
