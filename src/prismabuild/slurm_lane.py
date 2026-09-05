@@ -243,8 +243,10 @@ class CommandTimedOut(SlurmLaneError):
     Distinct from every other failure because it is the only one that leaves
     the question open on the *submitting* side: ``sbatch`` may have been
     accepted and the answer lost, so a plain refusal would tell the caller a
-    job does not exist while it runs.  ``wait`` treats it exactly as it treated
-    it before -- no answer this poll -- because it is a ``SlurmLaneError``.
+    job does not exist while it runs.  A read that hangs is one reader out of
+    three: ``query_provenance`` tries the others before this reaches ``wait``,
+    which treats it as no answer this poll -- because it is a
+    ``SlurmLaneError`` -- and keeps polling.
     """
 
 
@@ -1518,16 +1520,42 @@ def query_provenance(
     of being read as "no such job": before that distinction existed, a
     ``systemctl restart slurmctld`` turned every running job's wait into
     ``UNKNOWN`` on the next poll, and ``run`` filed it as failed.
+
+    The three readers are independent programs against independent daemons,
+    so one that cannot be *run* does not stop the others.  ``sacct`` talks to
+    slurmdbd and ``scontrol`` and ``squeue`` talk to slurmctld: accounting can
+    hang while the controller is healthy and holds the job's ending, and a
+    ``sacct`` that hung used to escape this loop before ``scontrol`` was ever
+    asked.  Every poll then started again at the same hung call, so a job that
+    had completed stayed unobserved until the caller's wait expired, or
+    forever when there was no wait budget.
+
+    A failure is therefore carried rather than raised, and raised only when no
+    reader could establish the state.  The first one is what raises, because it
+    is the failure that started the outage.  An answer of ``None`` from a
+    reader that *did* answer is not enough on its own when another could not
+    be asked: ``squeue`` legitimately knows nothing about a finished job, so
+    treating that as "no such job" would turn an accounting outage into an
+    ``UNKNOWN`` ending.  The distinction ``wait`` reads is preserved: ``None``
+    only when all three answered and none knew the job.
     """
 
+    failure: SlurmLaneError | None = None
     for reader in (
         lambda: _sacct_state(job_id, sacct=sacct),
         lambda: _scontrol_state(job_id, scontrol=scontrol),
         lambda: _squeue_state(job_id, squeue=squeue),
     ):
-        answer = reader()
+        try:
+            answer = reader()
+        except SlurmLaneError as exc:
+            if failure is None:
+                failure = exc
+            continue
         if answer is not None:
             return answer
+    if failure is not None:
+        raise failure
     return None
 
 
