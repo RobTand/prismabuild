@@ -64,12 +64,14 @@ These flags say what the action needs and where it may run.
 | `--gpu-capacity N` | Slots to demand for `--exclusive`. | Under SLURM, only `1` is accepted: `--gres=gpu:1` is the whole device, so a larger count would be read and discarded. |
 | `--cpus N` | Cores the action will actually use. Defaults to 1. | `--cpus-per-task=N`. |
 | `--tag NAME` | Require a box offering this tag. Repeatable. | `--constraint=NAME`, ANDed with `&`. |
-| `--here` | Pin the action to this box. | The box's hostname joins the constraint. Every hostname is a node Feature. |
+| `--here` | Pin the action to this box, when you pass no `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 
 `--anywhere` and `--here` contradict each other and `pbrun` refuses both
-together.
+together. An explicit `--tag` replaces the whole placement, so `--here --tag
+gb10` places the action on any `gb10` box and prints no warning. To pin the box
+and name a class, pass this box's hostname as a second `--tag`.
 
 `--priority` is a queue hint and nothing more. It is not part of the action
 identity, so two submissions that differ only in priority are the same action.
@@ -418,7 +420,7 @@ re-dispatch that action from the producer that sealed it.
 | Status | Meaning |
 |---|---|
 | `executed` | The work ran and published a receipt. Filed under `done/`. |
-| `cache_hit` | The receipt was already there. Filed under `done/`. Counts as done. |
+| `cache_hit` | The receipt was already there. Counts as done. The pull queue files it under `done/`; the SLURM lane sees only that a receipt exists and files `executed`. |
 | `failed` | No receipt. Something refused, or the command exited non-zero. Filed under `failed/`. |
 | `timeout` | SLURM killed the job at a `--timeout-s` you asked for. `returncode` is null. Retriable. |
 | `withdrawn` | Somebody cancelled the run. Not a defect, and not retried. |
@@ -465,9 +467,7 @@ Two failures happen after the job ran.
 
 *   **`slurm job <id> exited 0 but published no receipt`** — the job ended
     cleanly and did no work. Read the job's `.out` and `.err`; the worker's own
-    refusal is there. Common causes are a code closure that moved between
-    sealing and running, and a declared result path that a previous attempt left
-    behind.
+    refusal is there.
 *   **`no scheduler command can describe slurm job <id> ... and it has published
     no receipt`** — the controller knows no such job. It may still be running,
     or it may have been purged past `MinJobAge`. This is exit 75, not a failure:
