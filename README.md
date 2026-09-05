@@ -169,6 +169,9 @@ not a dependency: this package imports nothing from prismaquant.
 
 ## Submitting work
 
+`docs/operating_prismabuild.md` is the guide to using the fleet: submitting,
+waiting, campaigns, measurements, status, withdrawal, and reading a failure.
+
 One command, waiting for it:
 
     tools/fleet/pbrun.py --gpu --timeout-s 3600 -- ./stage.sh --shard 3
