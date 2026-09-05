@@ -2270,6 +2270,49 @@ def cancel(job_id: str, *, scancel: Command = "scancel") -> bool:
     return completed.returncode == 0
 
 
+def recorded_keys(root: str | Path | None = None) -> list[str]:
+    """Every action key this lane root holds a directory for, sorted.
+
+    One listing, and the only one: a caller with a question per key would
+    otherwise list the root once per key, and on the shared mount that listing
+    is the expensive part.  ``pbstatus``'s jobs table and the sweeper both ask
+    this, and ``resolve_recorded`` stays separate because it answers about a
+    prefix an operator typed rather than about the root as a whole.
+
+    A name that is not a full key is skipped rather than reported: the job
+    state directory lives here, and so would anything an operator left behind.
+    """
+
+    try:
+        names = sorted(os.listdir(lane_root(root)))
+    except OSError:
+        return []
+    return [
+        name for name in names
+        if name != JOB_STATE_DIRNAME and len(name) == 64
+    ]
+
+
+def recorded_action(
+    cas: pb.PrismaBuildCAS, action_key: str
+) -> dict[str, object] | None:
+    """The sealed action published for this key, or ``None``.
+
+    The CAS request is the only copy of the action a box that did not submit
+    it can read, and reading it is what lets ``cas.lookup`` be asked at all.
+    Absent means the CAS was cleared or the key was never submitted from this
+    fleet: a missing lookup, not a failure.
+    """
+
+    key = str(action_key)
+    path = Path(cas.root) / "requests" / key[:2] / f"{key}.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def recorded_submission(
     action_key: str, *, root: str | Path | None = None
 ) -> dict[str, object] | None:
@@ -2288,6 +2331,40 @@ def recorded_submission(
     except json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
+
+
+def submitted_job(submission: Mapping[str, object]) -> SubmittedJob:
+    """Rebuild the accepted submission from the record it wrote.
+
+    ``latest.json`` is enough to describe a job to anyone on any box, which is
+    what lets an ending be filed by a process that did not submit it.
+    ``resume`` and ``sweep`` both start here, so they describe the same job in
+    the same terms and a swept ending names what a resumed one names.
+    """
+
+    key = str(submission["action_key"])
+    generation = submission.get("published_unix")
+    if not isinstance(generation, (int, float)) or isinstance(generation, bool):
+        # A submission record from before the generation stamp.  Wait for it,
+        # but do not claim to know which request it belonged to.
+        generation = float(submission.get("submitted_unix") or 0.0)
+    published_unix = float(generation)
+    attempt = int(submission.get("attempt") or 1)
+    directory = Path(str(submission.get("directory") or "."))
+    return SubmittedJob(
+        action_key=key,
+        job_id=str(submission["job_id"]),
+        attempt=attempt,
+        argv=[str(value) for value in (submission.get("argv") or [])],
+        script=Path(str(submission.get("script") or "")),
+        directory=directory,
+        stdout_path=Path(str(submission.get("stdout") or "")),
+        stderr_path=Path(str(submission.get("stderr") or "")),
+        record_path=submission_record_path(
+            directory, published_unix=published_unix, attempt=attempt
+        ),
+        published_unix=published_unix,
+    )
 
 
 def resolve_recorded(
@@ -3169,29 +3246,9 @@ def resume(
     a job the scheduler may have forgotten.
     """
 
-    key = str(submission["action_key"])
-    generation = submission.get("published_unix")
-    if not isinstance(generation, (int, float)) or isinstance(generation, bool):
-        # A submission record from before the generation stamp.  Wait for it,
-        # but do not claim to know which request it belonged to.
-        generation = float(submission.get("submitted_unix") or 0.0)
-    published_unix = float(generation)
-    attempt = int(submission.get("attempt") or 1)
-    directory = Path(str(submission.get("directory") or "."))
-    job = SubmittedJob(
-        action_key=key,
-        job_id=str(submission["job_id"]),
-        attempt=attempt,
-        argv=[str(value) for value in (submission.get("argv") or [])],
-        script=Path(str(submission.get("script") or "")),
-        directory=directory,
-        stdout_path=Path(str(submission.get("stdout") or "")),
-        stderr_path=Path(str(submission.get("stderr") or "")),
-        record_path=submission_record_path(
-            directory, published_unix=published_unix, attempt=attempt
-        ),
-        published_unix=published_unix,
-    )
+    job = submitted_job(submission)
+    key = job.action_key
+    published_unix = float(job.published_unix or 0.0)
     result = RunResult(action_key=key, published_unix=published_unix)
     outcome = wait(
         job, sacct=sacct, scontrol=scontrol, squeue=squeue, sstat=sstat,
@@ -3234,6 +3291,61 @@ def resume(
     return result
 
 
+def ending_status(
+    job: SubmittedJob,
+    outcome: Outcome,
+    *,
+    receipt: Mapping[str, object] | None,
+    marker: Mapping[str, object] | None,
+) -> str | None:
+    """Which ending this job has, or ``None`` when it has not ended.
+
+    The whole verdict, and the only place it is decided.  ``_file_ending``
+    calls this and then writes what it says; ``sweep`` calls it to report what
+    would be written without writing anything.  Two spellings of this ladder
+    would let a reconcile report and the record it files disagree, and a
+    reconcile that files a different ending from the one it reported is the
+    defect ``PoolQueue.finish`` and ``reap_stale`` had between them.
+
+    The order is an order of authority.  An operator's decision outranks
+    everything: a job that finished inside the window between the marker
+    landing and ``scancel`` reaching it is still a withdrawal, and filing it
+    under ``done`` would leave one generation with two terminal records.  The
+    CAS outranks the scheduler, because a receipt says the work was done
+    whatever the scheduler goes on to say, and after ``MinJobAge`` it says
+    nothing at all.  Only then is the job's own state read.
+
+    ``None`` is the two states that are not endings: the caller stopped
+    watching, or the controller answered that it knows no such job.  Neither
+    is evidence the work failed, and ``publish_outcome`` is first-writer-wins
+    per generation, so a ``failed`` filed on either would stand over the
+    receipt the job publishes a minute later.
+
+    Args:
+        job: The submission this would be the ending of.
+        outcome: What the scheduler last said about it.
+        receipt: The CAS receipt for the action, or ``None``.
+        marker: The withdrawal marker covering this generation, or ``None``.
+
+    Returns:
+        ``"withdrawn"``, ``"cache_hit"``, ``"executed"``, ``"failed"``, or
+        ``None`` when nothing has ended.
+    """
+
+    if marker is not None:
+        return "withdrawn"
+    if receipt is not None:
+        # Told apart by the node, not here.  All a submitter can see is that a
+        # receipt exists, and one exists whether this job published it or read
+        # it; ``write_cache_hit`` beside the logs is the node saying which.
+        return "cache_hit" if job_was_cache_hit(job) else "executed"
+    if outcome.state in (UNKNOWN_STATE, WAIT_TIMEOUT_STATE):
+        return None
+    if outcome.state == "CANCELLED":
+        return "withdrawn"
+    return "failed"
+
+
 def _file_ending(
     result: RunResult,
     *,
@@ -3248,12 +3360,9 @@ def _file_ending(
 ) -> None:
     """Write the terminal record the pull queue's readers expect.
 
-    ``cache_hit`` and ``executed`` are told apart by the node, not here.  All
-    a submitter can see is that a receipt exists, and a receipt exists whether
-    this job published it or read it -- so a hit used to be filed as
-    ``executed``, with the node's elapsed time attached to work it never did.
-    The node writes ``write_cache_hit`` beside its logs when it finds the
-    result already in the CAS, and that marker is what this reads.
+    ``ending_status`` decides *what* the ending is and states why; this writes
+    it.  The split is what lets ``sweep`` report the same verdict without
+    filing anything.
 
     A ``cache_hit`` never overwrites an ending already filed for this key.
     That is ``pbrun.cached_outcome``'s rule and the reason is the same: the
@@ -3266,30 +3375,13 @@ def _file_ending(
     if last is None:                 # unreachable: run always submits once
         return
     job, outcome = last
-    # The marker outranks whatever the job went on to do.  A job that finished
-    # inside the window between the marker landing and ``scancel`` reaching it
-    # is still a withdrawal, and filing it under ``done`` would leave one
-    # generation with two terminal records -- which ``merge_suite`` refuses to
-    # resolve and ``reclaim_terminal_reservation`` refuses to act on.
     marker = withdrawal_covers(queue_root, result.action_key, published_unix)
-    if marker is not None:
-        status = "withdrawn"
-    elif result.receipt is not None:
-        status = "cache_hit" if job_was_cache_hit(job) else "executed"
-    elif outcome.state in (UNKNOWN_STATE, WAIT_TIMEOUT_STATE):
-        # No ending has happened.  The submitter stopped watching, or the
-        # controller answered that it knows no such job (purged past
-        # MinJobAge with no accounting behind it, and no receipt yet).  A
-        # terminal record here is a lie with consequences: ``publish_outcome``
-        # is first-writer-wins per generation, so a ``failed/`` record filed
-        # now would stand even when the job publishes its receipt minutes
-        # later, and ``done/`` would never be written.  Before this branch
-        # existed, that is exactly what a controller restart produced.
+    status = ending_status(
+        job, outcome, receipt=result.receipt, marker=marker)
+    if status is None:
+        # Nothing has ended.  Before this branch existed, a controller restart
+        # filed ``failed`` for jobs that were still running.
         return
-    elif outcome.state == "CANCELLED":
-        status = "withdrawn"
-    else:
-        status = "failed"
 
     if status == "cache_hit" and (
         _queue_dir(queue_root, pool.DONE) / f"{result.action_key}.json"
@@ -3340,3 +3432,320 @@ def _file_ending(
             str(marker.get("reason") or "") if status == "withdrawn" else None
         ),
     )
+
+
+# --------------------------------------------------------------------------
+# The sweeper: reconciling endings nobody asked about
+# --------------------------------------------------------------------------
+#
+# Every ending this lane files is filed by somebody who asked about that one
+# key.  ``run`` asks because it is holding the submission open, ``resume``
+# because a waiter named the key, ``pbwait`` because an operator typed it.  A
+# job that ends while nothing is watching therefore leaves its verdict in the
+# controller's accounting and never becomes a record: ``pbrun --detach``
+# followed by a waiter that died is the ordinary way to produce one, and
+# ``pool_reset``'s re-submission of a sealed action is another, because it
+# detaches on purpose and leaves the ending to whoever waits.
+#
+# ``sweep`` is the process that asks about all of them.  It is not a second
+# filing path: it reconciles what the lane root records against what the queue
+# holds, and hands every gap to ``resume``, which is the same call ``pbwait``
+# makes.  A swept ending is byte-identical to a polled one because it is
+# written by the same function from the same inputs.
+#
+# What it will not do is invent a verdict.  A job the controller cannot
+# account for, and whose action has no receipt in the CAS, is reported as
+# unknown and files nothing -- ``ending_status`` returns ``None`` for exactly
+# that, and the sweeper reads the same answer the filer would.
+
+#: What a sweep says about one key.  ``ALREADY_FILED``, ``SUPERSEDED``,
+#: ``UNRECORDED`` and ``NO_ACTION`` are settled from disk alone; the rest cost
+#: one poll of the controller each, which is why the disk checks come first.
+SWEPT = "swept"                #: an ending was missing and this filed it
+MISSING = "missing"            #: an ending is missing and ``--apply`` would file it
+ALREADY_FILED = "filed"        #: this generation's ending is already on disk
+SUPERSEDED = "superseded"      #: a later run of this key has already ended
+UNRECORDED = "unrecorded"      #: the lane directory has no readable submission
+NO_ACTION = "no-sealed-action"  #: the CAS holds no request to resolve the key with
+WAITING = "waiting"            #: the job is still queued or running
+NO_VERDICT = "no-verdict"      #: the controller knows no such job and there is no receipt
+UNREACHABLE = "unreachable"    #: the controller could not be asked
+
+
+def _filed_index(queue_root: str | Path) -> dict[str, list[tuple[str, Path]]]:
+    """Every terminal record on disk, keyed by action key.
+
+    One ``listdir`` per state directory rather than one ``stat`` per key.  The
+    live lane root holds a directory per action this fleet has ever submitted,
+    and asking the shared mount about each of them separately is the slow path
+    a sweep would otherwise spend all its time in.
+
+    Read by ``listdir`` for the reason ``pbrun.terminal_record`` gives: a
+    ``stat`` of a path that did not exist yet is negatively cached on NFS, so
+    a record filed by another box can stay invisible for ``acdirmax``.
+    """
+
+    index: dict[str, list[tuple[str, Path]]] = {}
+    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+        directory = Path(queue_root) / state
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            index.setdefault(name[: -len(".json")], []).append(
+                (state, directory / name)
+            )
+    return index
+
+
+def _ending_on_disk(
+    filed: Sequence[tuple[str, Path]], published_unix: float
+) -> str | None:
+    """Whether this generation's ending is already filed, and if not, why not.
+
+    Returns ``ALREADY_FILED`` when a record this run may not replace stands,
+    ``SUPERSEDED`` when a later run's ending stands, and ``None`` when the
+    ending is still missing.
+
+    The two comparisons are ``publish_outcome``'s own, reused rather than
+    restated: ``_newer_ending_stands`` for a later generation, equality for
+    this one.  A ``withdrawn/`` record of this generation carrying no
+    ``detail`` is the marker ``publish_withdrawal`` filed and not an ending,
+    and it is deliberately not counted as one -- the withdrawal enrichment is
+    the one write that legitimately lands on a record of its own generation.
+    """
+
+    floor = float(published_unix)
+    superseded = False
+    for state, path in filed:
+        record = _read_json_object(path)
+        if record is None:
+            # Filed and unreadable.  Not this sweeper's to replace: a rewrite
+            # would destroy the evidence an operator needs to repair it.
+            return ALREADY_FILED
+        if _newer_ending_stands(record, floor):
+            superseded = True
+            continue
+        if _record_generation(record) != floor:
+            continue
+        if state == pool.WITHDRAWN and "detail" not in record:
+            continue
+        return ALREADY_FILED
+    return SUPERSEDED if superseded else None
+
+
+def _reported_outcome(
+    job: SubmittedJob,
+    *,
+    sacct: Command,
+    scontrol: Command,
+    squeue: Command,
+) -> Outcome:
+    """What ``wait`` would return for this job, without waiting and without writing.
+
+    ``wait`` is the wrong call for a report: while a job is RUNNING it samples
+    liveness, and a sample is appended to ``liveness.jsonl`` in the lane
+    directory.  A read-only reconcile must leave the lane exactly as it found
+    it, so this asks the controller once and builds the outcome from the
+    answer, in the three shapes ``wait``'s own return sites use.
+
+    Raises:
+        SlurmLaneError: the controller could not be asked.  Not an answer
+            about the job, and the caller reports it as such rather than as
+            an ending.
+    """
+
+    answer = query_provenance(
+        job.job_id, sacct=sacct, scontrol=scontrol, squeue=squeue)
+    if answer is None:
+        state, exit_code, signal = UNKNOWN_STATE, None, None
+    elif answer.state in TERMINAL_STATES:
+        state, exit_code, signal = answer.state, answer.exit_code, answer.signal
+    else:
+        # Alive.  A caller with no patience left is exactly what ``wait``
+        # reports as a wait timeout, and ``ending_status`` files nothing for it.
+        state, exit_code, signal = WAIT_TIMEOUT_STATE, None, None
+    return Outcome(
+        job_id=job.job_id,
+        state=state,
+        exit_code=exit_code,
+        signal=signal,
+        stdout_path=job.stdout_path,
+        stderr_path=job.stderr_path,
+        provenance=answer,
+    )
+
+
+def sweep(
+    *,
+    cas: pb.PrismaBuildCAS,
+    queue_root: str | Path,
+    root: str | Path | None = None,
+    apply: bool = False,
+    keys: Sequence[str] | None = None,
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
+    sstat: Command = "sstat",
+) -> list[dict[str, object]]:
+    """Reconcile the lane's submissions against the endings filed for them.
+
+    Every key with a recorded submission and no ending for that submission's
+    generation is classified, and under ``apply`` the missing ending is filed
+    through ``resume`` -- the same call ``pbwait`` makes for one key, so the
+    record is the one a waiter would have written.
+
+    The classification is read-only in both modes and is done before anything
+    is filed, so the report and the filing take the same decision from the
+    same ladder.  ``apply`` then costs a second poll of the controller for the
+    keys it files, which is the price of not having two spellings of the
+    verdict.
+
+    Safe beside a live waiter.  Two writers of one key reach
+    ``publish_outcome`` and ``_land_summary``, which links first at an empty
+    name and refuses a record of its own generation, so a sweeper and a poller
+    racing on one key leave exactly one record and neither raises.
+
+    Args:
+        cas: The CAS the receipts and the sealed requests live in.
+        queue_root: The queue root holding ``done``, ``failed`` and ``withdrawn``.
+        root: The lane root to reconcile.  ``None`` uses the lane's default.
+        apply: File the missing endings.  The default only reports.
+        keys: Reconcile only these action keys.  ``None`` is every key the
+            lane root records.
+        sacct: The ``sacct`` executable.
+        scontrol: The ``scontrol`` executable.
+        squeue: The ``squeue`` executable.
+        sstat: The ``sstat`` executable, used only by ``resume``.
+
+    Returns:
+        One row per key, in key order, each carrying ``action_key``,
+        ``job_id``, ``generation``, ``disposition``, ``status`` and ``note``.
+        ``status`` is the ending's own word (``executed``, ``failed``,
+        ``cache_hit``, ``withdrawn``) on a row that has one and ``None``
+        otherwise.
+    """
+
+    wanted = recorded_keys(root) if keys is None else [str(key) for key in keys]
+    filed = _filed_index(queue_root)
+    rows: list[dict[str, object]] = []
+    for key in wanted:
+        submission = recorded_submission(key, root=root)
+        if submission is None or not submission.get("job_id"):
+            rows.append(_sweep_row(
+                key, UNRECORDED,
+                note="no readable latest.json in the lane directory"))
+            continue
+        job = submitted_job(submission)
+        generation = float(job.published_unix or 0.0)
+        standing = _ending_on_disk(filed.get(key, ()), generation)
+        if standing is not None:
+            rows.append(_sweep_row(
+                key, standing, job_id=job.job_id, generation=generation))
+            continue
+        action = recorded_action(cas, key)
+        if action is None:
+            rows.append(_sweep_row(
+                key, NO_ACTION, job_id=job.job_id, generation=generation,
+                note="no sealed action in the CAS to resolve the receipt with"))
+            continue
+        try:
+            outcome = _reported_outcome(
+                job, sacct=sacct, scontrol=scontrol, squeue=squeue)
+        except SlurmLaneError as exc:
+            rows.append(_sweep_row(
+                key, UNREACHABLE, job_id=job.job_id, generation=generation,
+                note=str(exc)))
+            continue
+        status = ending_status(
+            job, outcome,
+            receipt=cas.lookup(action),
+            marker=withdrawal_covers(queue_root, key, generation),
+        )
+        if status is None:
+            # Not an ending.  ``UNKNOWN`` is the controller saying it knows no
+            # such job, and with no receipt behind it there is no verdict to
+            # file; anything else is a job still queued or running.
+            rows.append(_sweep_row(
+                key,
+                NO_VERDICT if outcome.state == UNKNOWN_STATE else WAITING,
+                job_id=job.job_id, generation=generation,
+                note=(
+                    "the controller knows no such job and the CAS holds no "
+                    "receipt; nothing filed"
+                    if outcome.state == UNKNOWN_STATE
+                    else f"slurm says {_scheduler_says(outcome)}"
+                ),
+            ))
+            continue
+        if not apply:
+            rows.append(_sweep_row(
+                key, MISSING, job_id=job.job_id, generation=generation,
+                status=status))
+            continue
+        with _naming_job(job.job_id):
+            resume(
+                submission, action=action, cas=cas, queue_root=queue_root,
+                wait_s=0.0, sacct=sacct, scontrol=scontrol, squeue=squeue,
+                sstat=sstat,
+            )
+        # Read back, rather than repeated from the classification above.  The
+        # controller can move between the two polls, and a row naming the
+        # verdict this sweep predicted rather than the one it filed would be
+        # exactly the divergence the shared ladder exists to prevent.
+        landed = _filed_ending(queue_root, key, generation)
+        rows.append(_sweep_row(
+            key,
+            SWEPT if landed is not None else MISSING,
+            job_id=job.job_id, generation=generation,
+            status=landed if landed is not None else status,
+            note=None if landed is not None else (
+                "the job's state moved while this ran; nothing was filed"
+            ),
+        ))
+    return rows
+
+
+def _filed_ending(
+    queue_root: str | Path, action_key: str, published_unix: float
+) -> str | None:
+    """The status of this generation's ending, or ``None`` when none stands."""
+
+    floor = float(published_unix)
+    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+        record = _read_json_object(
+            Path(queue_root) / state / f"{action_key}.json")
+        if record is not None and _record_generation(record) == floor:
+            return str(record.get("status") or "")
+    return None
+
+
+def _scheduler_says(outcome: Outcome) -> str:
+    """The scheduler's own word for a job that has not ended."""
+
+    provenance = outcome.provenance
+    return str(provenance.state if provenance is not None else outcome.state)
+
+
+def _sweep_row(
+    action_key: str,
+    disposition: str,
+    *,
+    job_id: str | None = None,
+    generation: float | None = None,
+    status: str | None = None,
+    note: str | None = None,
+) -> dict[str, object]:
+    """One row of a sweep, with every field present on every row."""
+
+    return {
+        "action_key": action_key,
+        "job_id": job_id,
+        "generation": generation,
+        "disposition": disposition,
+        "status": status,
+        "note": note,
+    }

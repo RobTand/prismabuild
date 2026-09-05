@@ -539,6 +539,39 @@ The underlying commands are `sinfo` for nodes, `squeue` for jobs, and `sacct`
 for jobs the controller has forgotten. Use them directly for scheduler detail
 `pbstatus` does not join in.
 
+### File the endings nobody asked for
+
+Under SLURM the ending is filed by whoever polls for the key. A job that ends
+while nothing is watching leaves its verdict in the controller's accounting and
+never becomes a record. Nothing else fills the gap: `pbwait` would file it, but
+only for a key somebody names, and the keys that need it are the ones nobody is
+holding. A detached submission whose waiter died is the ordinary way to produce
+one, and so is a `pool_reset` re-submission, which detaches on purpose.
+
+`pbsweep` reconciles the lane against the queue and files what is missing:
+
+    tools/fleet/pbsweep.py            # what is missing, and what would be filed
+    tools/fleet/pbsweep.py --apply    # file it
+
+Reporting is the default and writes nothing at all, so it is safe to run at any
+time. `--apply` files each missing ending through the same call `pbwait` makes
+for one key, so a swept record is the record a waiter would have written.
+
+Three things it will not do. It does not invent a verdict: an ending is filed
+only from the controller's terminal state, an operator's withdrawal marker, or
+a receipt in the CAS. A job the controller knows nothing about with no receipt
+behind it is reported `no-verdict` and files nothing, because a `failed` filed
+on ignorance would stand for good. It does not replace an ending already filed,
+for this generation or a later one. And it does not disturb a live `pbrun`
+polling the same key: the two produce one record between them and neither
+fails.
+
+The table lists only keys that need attention. Its exit status is 0 when
+everything was reconciled and 3 when some key could not be resolved, which is
+distinct from 1, the code every fleet tool keeps for work that failed. `--json`
+prints one object with a row per key and the counts. Name keys as arguments to
+reconcile only those.
+
 ### Where the records live
 
 | Location | What is there |

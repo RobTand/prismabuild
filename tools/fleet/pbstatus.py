@@ -331,17 +331,15 @@ def _lane_index(*, root: str | Path | None) -> dict[str, list[str]]:
 
     ``slurm_lane.resolve_recorded`` answers the same question, and it lists the
     lane root once per call.  A jobs table asks it once per queued job, so the
-    listing is done here instead and the per-key record read stays in the lane.
+    listing is done once and the per-key record read stays in the lane.
+
+    The listing is ``slurm_lane.recorded_keys``, which ``pbsweep`` reads too:
+    one answer to "which keys does this lane root hold", so a job this table
+    can name is a job the sweeper can reconcile.
     """
 
     index: dict[str, list[str]] = {}
-    try:
-        names = sorted(os.listdir(sl.lane_root(root)))
-    except OSError:
-        return index
-    for name in names:
-        if name == sl.JOB_STATE_DIRNAME or len(name) != 64:
-            continue
+    for name in sl.recorded_keys(root):
         index.setdefault(name[:12], []).append(name)
     return index
 

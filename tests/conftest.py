@@ -68,6 +68,7 @@ WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm"
 LIVE_DEFAULTS = (
     ("pbrun", "SH", "fleet"),
     ("pbstatus", "SHARED_ROOT", "fleet"),
+    ("pbsweep", "SH", "fleet"),
     ("pbstatus", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("pool_reset", "SH", "fleet"),
     ("fleet_submit", "SH", "fleet"),
