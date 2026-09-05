@@ -337,7 +337,7 @@ def _read_json(path: Path) -> dict[str, object] | None:
         return None
     try:
         value = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise PoolContractError(f"queue record is not valid JSON: {path}") from exc
     if not isinstance(value, dict):
         raise PoolContractError(f"queue record is not an object: {path}")
@@ -2214,6 +2214,24 @@ class PoolQueue:
                     # on top of it.
                     ledger.abandon_acquire(handle)
                 continue
+            moved = _read_json(dst) or item
+            if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
+                    or self.demand_of(moved) != demand):
+                # Admission described the scanned generation. A replacement
+                # may need a different host or more tokens; put it back for a
+                # fresh admission before committing this claimant's tokens.
+                if ledger is not None and handle is not None:
+                    ledger.abandon_acquire(handle)
+                try:
+                    os.link(dst, src)
+                except OSError:
+                    # A still newer submission may own ready already. Leave
+                    # the moved record for the reaper, as below.
+                    pass
+                else:
+                    dst.unlink(missing_ok=True)
+                    self.item_path(INTENT, key).unlink(missing_ok=True)
+                continue
             if ledger is not None and handle is not None:
                 # Won the rename, so the reservation stops belonging to this
                 # claimant and starts belonging to the action.  Every branch
@@ -2243,7 +2261,6 @@ class PoolQueue:
                         dst.unlink(missing_ok=True)
                         self.item_path(INTENT, key).unlink(missing_ok=True)
                     continue
-            moved = _read_json(dst) or item
             terminal = self.terminal_outcome_covers(moved, action_key=key)
             if terminal is not None:
                 # A stale reaper can put a generation back in ``ready`` after
@@ -2732,11 +2749,11 @@ class PoolQueue:
             swept.append(key)
         return swept
 
-    def _file_unreadable(self, path: Path, *, reason: str) -> str:
+    def _file_unreadable(self, path: Path, *, reason: str) -> str | None:
         """Take one unparseable queue record out of the live queue, loudly.
 
-        Two files, because they answer two different questions.  The bytes go
-        to ``superseded/`` so whoever has to find the writer still can; a
+        The original bytes and a bounded diagnostic go to ``superseded/``
+        so whoever has to find the writer still can; a
         record with the file's own name goes to ``failed/`` because that is
         what ``pbstatus`` and ``pbwait`` read, and a defect nobody counts is
         the silence this sweep exists to end.
@@ -2747,22 +2764,44 @@ class PoolQueue:
         """
 
         key = path.stem
+        # Take the bytes out of the live namespace before diagnosing or filing
+        # them. A later publish must not be unlinked by this sweep. Preserve the
+        # complete original alongside the bounded inline diagnostic.
+        evidence = self.superseded_dir() / f"{key}.{uuid.uuid4().hex}.unreadable.raw"
+        evidence.parent.mkdir(parents=True, exist_ok=True)
         try:
-            raw = path.read_bytes()
-        except OSError:
-            raw = b""
+            os.rename(path, evidence)
+        except FileNotFoundError:
+            return None
+        try:
+            repaired = _read_json(evidence)
+        except PoolContractError:
+            repaired = None
+        else:
+            if repaired is not None:
+                # The producer repaired/replaced the record after the scan.
+                # Restore without overwriting another concurrent publication.
+                try:
+                    os.link(evidence, path)
+                except FileExistsError:
+                    pass  # the replacement remains available as evidence
+                else:
+                    evidence.unlink()
+                return None
+        raw = evidence.read_bytes()
         self._file_superseded(
             None, key=key, kind="unreadable", state=READY,
             status="unreadable_record",
             filed_unix=_now(), filed_host=socket.gethostname(),
             reason=reason, raw_bytes=len(raw),
+            raw_path=str(evidence.relative_to(self.root)),
             raw_head=raw[:UNREADABLE_HEAD_BYTES].decode("utf-8", "replace"),
         )
         if not any(self.item_path(state, key).exists()
                    for state in (DONE, FAILED)):
-            _write_json_atomic(
+            pb._atomic_publish(
                 self.item_path(FAILED, key),
-                {
+                pb._canonical_bytes({
                     "schema": POOL_OUTCOME_SCHEMA_V1,
                     "action_key": key,
                     "status": "unreadable_record",
@@ -2775,9 +2814,8 @@ class PoolQueue:
                         "parse_error": reason,
                         "bytes": len(raw),
                     },
-                },
+                }),
             )
-        path.unlink(missing_ok=True)
         return key
 
     def quarantine_orphans(self) -> list[str]:
@@ -2808,7 +2846,9 @@ class PoolQueue:
             try:
                 record = _read_json(path)
             except PoolContractError as exc:
-                filed.append(self._file_unreadable(path, reason=str(exc)))
+                key = self._file_unreadable(path, reason=str(exc))
+                if key is not None:
+                    filed.append(key)
                 continue
             if record is None:
                 # ``None`` covers two different things.  The file vanishing
@@ -2817,9 +2857,9 @@ class PoolQueue:
                 # there and holds zero bytes is a torn write no consumer will
                 # ever address, which is exactly what this sweep is for.
                 if path.exists():
-                    filed.append(
-                        self._file_unreadable(path, reason="queue record is empty")
-                    )
+                    key = self._file_unreadable(path, reason="queue record is empty")
+                    if key is not None:
+                        filed.append(key)
                 continue
             # Two ways to be unaddressable, and both belong here.  A record
             # with the wrong (or no) ``action_key`` is skipped by ``claim()``

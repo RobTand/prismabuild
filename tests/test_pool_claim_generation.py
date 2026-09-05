@@ -78,3 +78,33 @@ def test_the_claim_records_the_bytes_the_rename_moved(
     # The caller executes what the queue recorded, so the two must agree.
     assert claimed["priority"] == 7
     assert claimed["published_unix"] == on_disk["published_unix"]
+
+
+@pytest.mark.parametrize("replacement", [
+    {"resources": {"cpu": 2}},
+    {"needs_gpu": True},
+    {"tags": ["other-host"]},
+])
+def test_replacement_is_admitted_against_its_own_requirements(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
+    replacement: dict[str, object],
+) -> None:
+    _publish(queue, KEY_A, resources={"cpu": 1})
+    real_rename = os.rename
+
+    def resubmit_then_rename(src: object, dst: object) -> None:
+        if str(src).endswith(f"{pool.READY}/{KEY_A}.json"):
+            _publish(queue, KEY_A, **replacement)
+        return real_rename(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pool.os, "rename", resubmit_then_rename)
+        assert queue.claim(capacity={"cpu": 2}) is None
+    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert not queue.lease_path(KEY_A).exists()
+    assert queue.ledger().held() == {}
+    ready = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    for name, value in replacement.items():
+        assert ready[name] == value
+    assert queue.claim(tags=["other-host"], has_gpu=True,
+                       capacity={"cpu": 2}) is not None

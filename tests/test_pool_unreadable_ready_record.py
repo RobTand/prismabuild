@@ -117,6 +117,7 @@ def test_the_bytes_are_kept_so_the_writer_can_be_found(
     evidence = json.loads(kept[0].read_text(encoding="utf-8"))
     assert evidence["raw_head"] == "not json at all\n"
     assert evidence["state"] == pool.READY
+    assert (queue.root / evidence["raw_path"]).read_bytes() == b"not json at all\n"
 
 
 def test_an_empty_ready_record_is_filed_too(queue: pool.PoolQueue) -> None:
@@ -149,3 +150,71 @@ def test_a_filed_outcome_is_never_replaced_by_the_quarantine(
     assert not queue.item_path(pool.FAILED, KEY_INVALID).exists()
     # Kept as evidence even when it may not be filed as an ending.
     assert list(queue.superseded_dir().glob(f"{KEY_INVALID}.*.unreadable.json"))
+
+
+def test_invalid_utf8_does_not_stop_consumers(queue: pool.PoolQueue) -> None:
+    _publish(queue, KEY_GOOD)
+    queue.item_path(pool.READY, KEY_INVALID).write_bytes(b'\xff\xfe\xfa')
+    assert [item["action_key"] for item in queue.ready_items()] == [KEY_GOOD]
+    assert queue.quarantine_orphans() == [KEY_INVALID]
+    assert queue.claim()["action_key"] == KEY_GOOD
+
+
+def test_repair_between_scan_and_quarantine_survives(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _foreign_writes_a_broken_record(queue)
+    real_file = queue._file_unreadable
+
+    def repair_then_file(path: Path, *, reason: str) -> str | None:
+        _publish(queue, path.stem)
+        return real_file(path, reason=reason)
+
+    monkeypatch.setattr(queue, "_file_unreadable", repair_then_file)
+    assert queue.quarantine_orphans() == []
+    assert {item["action_key"] for item in queue.ready_items()} == {
+        KEY_INVALID, KEY_TRUNCATED,
+    }
+    assert not list(queue.dir(pool.FAILED).glob("*.json"))
+
+
+def test_publication_during_quarantine_is_not_unlinked(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue.item_path(pool.READY, KEY_INVALID).write_bytes(b"not json")
+    real_file = queue._file_superseded
+
+    def publish_then_file(*args: object, **kwargs: object) -> object:
+        _publish(queue, KEY_INVALID)
+        return real_file(*args, **kwargs)
+
+    monkeypatch.setattr(queue, "_file_superseded", publish_then_file)
+    assert queue.quarantine_orphans() == [KEY_INVALID]
+    assert queue.item_path(pool.READY, KEY_INVALID).exists()
+    assert queue.claim()["action_key"] == KEY_INVALID
+
+
+def test_concurrent_failed_outcome_wins_over_quarantine(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue.item_path(pool.READY, KEY_INVALID).write_bytes(b"not json")
+    destination = queue.item_path(pool.FAILED, KEY_INVALID)
+    outcome = {"action_key": KEY_INVALID, "status": "worker_failed",
+               "published_unix": 1.0}
+    real_write = pool._write_json_atomic
+    real_publish = pool.pb._atomic_publish
+
+    def race_write(path: Path, payload: object) -> object:
+        if path == destination:
+            real_write(destination, outcome)
+        return real_write(path, payload)
+
+    def race_publish(path: Path, payload: bytes) -> bool:
+        if path == destination:
+            real_write(destination, outcome)
+        return real_publish(path, payload)
+
+    monkeypatch.setattr(pool, "_write_json_atomic", race_write)
+    monkeypatch.setattr(pool.pb, "_atomic_publish", race_publish)
+    assert queue.quarantine_orphans() == [KEY_INVALID]
+    assert json.loads(destination.read_text()) == outcome
