@@ -117,6 +117,13 @@ import os, sys
 from pathlib import Path
 
 job = sys.argv[-1]
+if os.environ.get("FAKE_CONTROLLER_DOWN") == "1":
+    sys.stderr.write(
+        "slurm_load_jobs error: Unable to contact slurm controller (connect failure)\\n")
+    raise SystemExit(1)
+if os.environ.get("FAKE_SCONTROL_HANG"):
+    import time
+    time.sleep(float(os.environ["FAKE_SCONTROL_HANG"]))
 record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
 if not record.exists():
     sys.stderr.write(f"slurm_load_jobs error: Invalid job id specified\\n")
@@ -137,12 +144,39 @@ import os, sys
 from pathlib import Path
 
 job = sys.argv[sys.argv.index("-j") + 1]
+if os.environ.get("FAKE_CONTROLLER_DOWN") == "1":
+    sys.stderr.write("squeue: error: slurm_load_jobs: Unable to contact slurm controller (connect failure)\\n")
+    raise SystemExit(1)
 record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
 if not record.exists():
     raise SystemExit(0)
 state, _ = record.read_text().strip().split("|")
 if state in {"PENDING", "RUNNING"}:
     print(state)
+'''
+
+_SSTAT = '''\
+import os, sys
+from pathlib import Path
+
+# Modes: progress (TotalCPU grows every call), frozen (constant), fail (exit 1).
+mode = os.environ.get("FAKE_SSTAT_MODE", "progress")
+if mode == "fail":
+    sys.stderr.write("sstat: error: no steps running for job\\n")
+    raise SystemExit(1)
+job = sys.argv[sys.argv.index("-j") + 1]
+state = Path(os.environ["FAKE_SLURM_STATE"])
+with (state / "sstat.argv").open("a") as handle:
+    handle.write(" ".join(sys.argv[1:]) + "\\n")
+counter = state / f"{job}.sstat"
+calls = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(calls))
+cpu = calls if mode == "progress" else 1
+# The shape sstat 25.11.2 printed in the container smoke under -P --noconvert:
+# durations as HH:MM:SS (cpu= included), RSS and disk counters as bare numbers.
+print(f"{job}.batch|00:00:{cpu:02d}|00:00:{cpu:02d}|4194304|102400|0|1|"
+      f"cpu=00:00:{cpu:02d},energy=0,fs/disk=102400,mem=4194304,pages=0,vmem=0")
+print(f"{job}.extern|00:00:00|00:00:00|102400|0|0|1|cpu=00:00:00,energy=0,fs/disk=0,mem=102400,pages=0,vmem=0")
 '''
 
 _SCANCEL = '''\
@@ -164,7 +198,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     binaries.mkdir()
     for name, body in (
         ("sbatch", _SBATCH), ("sacct", _SACCT), ("scontrol", _SCONTROL),
-        ("squeue", _SQUEUE), ("scancel", _SCANCEL),
+        ("squeue", _SQUEUE), ("scancel", _SCANCEL), ("sstat", _SSTAT),
     ):
         script = binaries / name
         script.write_text(

@@ -122,13 +122,21 @@ announcement; nativelink README). Everything else is judgment.
 
 ## 6. Migration plan
 
-Phase 0, done on the fixes branch: the decision-independent fixes (#21, #25,
-#34, the reap half of #36, README line counts) and, on their own branches, the
-#35 snapshot-ancestry fix and the thin SLURM lane (`pbrun --transport slurm`:
-seal, publish request, `sbatch --wait`, CAS lookup; fleet configs under
-`fleet/slurm/`; runbook `docs/slurm_runbook_2026-09-04.md`). Merging any of
-this to `main` deploys nothing: the fleet executes the published runtime
-generation, not `main`.
+Phase 0, done, on `claude/pb-slurm-unified` (PR #41): the decision-independent
+fixes (#21, #25, #34, the reap half of #36, README line counts), the #35
+snapshot-ancestry fix, and the thin SLURM lane (`pbrun --transport slurm`:
+seal, publish request, `sbatch`, wait, CAS lookup, terminal record) with the
+fleet adoption on top: partition routing (GPU work to the Sparks, untagged
+CPU-only work to dl380g10, `--anywhere` to every box with dl380g10 preferred
+by node weight), no default deadline, the timeout and signal record
+convention, `--withdraw` routed by the lane's own record, campaign fan-out
+(`pbrun --detach`, `pbwait`, `pbcampaign`), controller-attested host classes
+(`pbrun --measurement --host-class`), liveness reporting for a job that stops
+moving (reported, never cancelled), and the four operator scripts under
+`fleet/slurm/`. The lane has run against a real 25.11.2 controller in a
+container on sparky (`fleet/slurm/smoke/`, 17 rows). Merging any of this to
+`main` deploys nothing: the fleet executes the published runtime generation,
+not `main`.
 
 Phase 1, Rob with sudo, any time: install munge and SLURM per the runbook
 (dl380g10 from apt, Sparks from the prebuilt 25.11.2 debs in
@@ -136,8 +144,9 @@ Phase 1, Rob with sudo, any time: install munge and SLURM per the runbook
 the version line agrees by construction), start `slurmctld` on
 dl380g10 and `slurmd` on all three, prove `sinfo`, a `sbatch --wait` hello on
 each partition, and `srun --gres=shard:1 nvidia-smi` on a Spark. That is
-`fleet/slurm/install.sh` on each box and then `fleet/slurm/verify.sh` from any
-of them. The pool keeps running throughout; nothing changes for campaigns.
+`fleet/slurm/install.sh` on each box and then `fleet/slurm/verify.sh` from
+sparky, the one box with a checkout that can reach the other two by name. The
+pool keeps running throughout; nothing changes for campaigns.
 
 Phase 2, campaign-quiet window, Rob's call: `fleet/slurm/cutover.sh --yes`. It
 drains nothing -- it refuses unless `pb-queue/claimed` and `pb-queue/ready` are

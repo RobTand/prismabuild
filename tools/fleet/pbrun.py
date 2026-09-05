@@ -1667,6 +1667,24 @@ def await_outcome(
     return 1
 
 
+def _report_stall(key: str, report) -> None:
+    """Say that a running job has not moved.  Say it; do nothing about it.
+
+    The lane decides *when* (``STALL_WINDOW_S`` of unchanged samples, repeated
+    at ``STALL_REPORT_EVERY_S``); this decides the words.  The job is still
+    running and keeps running: a stall is evidence for a person, and the only
+    thing that ends it is that person's ``--withdraw`` or a ``--timeout-s``
+    they asked for.  Wall-clock is never evidence of death.
+    """
+
+    minutes = int(report.stalled_for_s // 60)
+    where = report.node or "an unknown node"
+    print(f"pbrun: {key[:12]} slurm job {report.job_id} has shown no progress "
+          f"for {minutes} min on {where}; it is still running. Withdraw with "
+          f"pbrun --withdraw {key[:12]} if it is dead.",
+          file=sys.stderr, flush=True)
+
+
 #: The interpreter pbrun's sealed argv starts with.  A nonportable action
 #: binds its exact bytes, so the name is stated once, where the scope is built.
 SEALED_ARGV0 = "/bin/bash"
@@ -1768,6 +1786,10 @@ def slurm_outcome(
 
     key = str(action["action_key"])
     resources = slurm_lane.LaneResources.from_demand(demand, exclusive=exclusive)
+    lane_commands.setdefault("on_stall", lambda report: _report_stall(key, report))
+    lane_commands.setdefault(
+        "on_notice",
+        lambda text: print(f"pbrun: {text}", file=sys.stderr, flush=True))
     # sbatch's own refusal is this transport's capability gate: an unknown
     # Feature or an impossible GRES is rejected at submit time, which is the
     # moment the pool path's ``capability_verdict`` spoke.  So it reaches the
@@ -1844,6 +1866,18 @@ def slurm_outcome(
         print(f"pbrun: gave up waiting for {key[:12]}; slurm job "
               f"{job.job_id} is still queued or running "
               f"(pbrun --transport slurm --withdraw {key[:12]} stops it)",
+              file=sys.stderr)
+        return GAVE_UP_EXIT
+    if outcome.state == slurm_lane.UNKNOWN_STATE:
+        # The controller answered that it knows no such job and there is no
+        # receipt.  That is not a failure and it is not filed as one: the job
+        # may have been purged past MinJobAge, or the controller's memory of
+        # it went with a restart while it runs on.  Same exit as giving up,
+        # because the truth is the same -- no verdict yet.
+        print(f"pbrun: no scheduler command can describe slurm job "
+              f"{job.job_id} for {key[:12]} and it has published no receipt; "
+              f"it may still be running as slurm job {job.job_id}, or have "
+              f"been purged past MinJobAge; look under {job.directory}",
               file=sys.stderr)
         return GAVE_UP_EXIT
     # Say the thing that is actually wrong.  A job that exits zero without
@@ -2034,6 +2068,11 @@ def _file_slurm_withdrawal(
                 "stderr_path": str(submission.get("stderr") or ""),
             },
             "cancelled_with": scancel_command,
+            # The last sample the submitter's wait recorded, so the record of
+            # a withdrawal says what the job was (not) doing when the operator
+            # decided.  None when no wait ever sampled it.
+            "liveness": slurm_lane.read_liveness(
+                key, root=directory.parent if directory.name == key else None),
         },
         # No ``SubmittedJob`` here -- this runs from the operator's box, off the
         # recorded submission -- so the job id the readers use as ``claimed_by``
