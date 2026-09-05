@@ -1208,8 +1208,15 @@ def row_15a_singleton_holds_the_second_job(nonce: Path) -> None:
 
     held = ""
     if second_job:
-        wait_for(lambda: _job_field(second_job, "%T|%r").startswith("PENDING"),
-                 timeout_s=60.0)
+        # The whole string, not just the PENDING half.  A job can be pending
+        # for a moment on Priority or None before the controller stamps the
+        # dependency, and reading one poll after "it is pending" would record
+        # whichever of those the first poll happened to catch.  The bound is
+        # shorter than the first job's sleep, so the answer is read while the
+        # dependency is still the reason the second job is not running.
+        wait_for(
+            lambda: _job_field(second_job, "%T|%r") == "PENDING|Dependency",
+            timeout_s=30.0)
         held = _job_field(second_job, "%T|%r")
 
     # Both jobs gone from the queue: the first finished its sleep, the second
@@ -1221,8 +1228,9 @@ def row_15a_singleton_holds_the_second_job(nonce: Path) -> None:
     said = second_out.read_text() if second_out.exists() else ""
     ran = nonce.read_text().count("\n") if nonce.exists() else 0
     marker = lane / f"{second_job}.cache-hit.json"
-    ending = _job_field(second_job, "%T")
     state = sh(["scontrol", "show", "job", str(second_job)]).stdout or ""
+    finish = " ".join(word for word in state.split()
+                      if word.startswith(("JobState=", "ExitCode=")))
 
     checks = {
         "the first job ran": running,
@@ -1231,7 +1239,8 @@ def row_15a_singleton_holds_the_second_job(nonce: Path) -> None:
         "the action ran exactly once": ran == 1,
         "the second job read the CAS instead": "already in the CAS" in said,
         "the second job filed a cache-hit marker": marker.exists(),
-        "the second job exited 0": "ExitCode=0:0" in state or not ending,
+        "the second job exited 0": "JobState=COMPLETED" in state
+                                   and "ExitCode=0:0" in state,
         "squeue %k prints the submission's comment": bool(commented),
         "scontrol shows Comment=pb:": f"Comment=pb:{key}:" in shown,
     }
@@ -1241,8 +1250,9 @@ def row_15a_singleton_holds_the_second_job(nonce: Path) -> None:
         not failed,
         f"job {first_job} RUNNING, job {second_job} squeue %T|%r={held!r}; "
         f"nonce lines={ran}; job {second_job} said "
-        f"{((said.strip().splitlines() or ['(nothing)'])[-1])[:80]!r}; "
-        f"squeue %i|%k={(commented or ['(none)'])[0][:64]!r}"
+        f"{((said.strip().splitlines() or ['(nothing)'])[-1])[:80]!r} and "
+        f"ended {finish or '(scontrol said nothing)'}; "
+        f"squeue %i|%k={(commented or ['(none)'])[0][:100]!r}"
         + ("" if not failed else f"; MISSING {failed}"),
     )
 
