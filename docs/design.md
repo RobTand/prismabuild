@@ -1060,3 +1060,9 @@ re-run recovery: it also resubmits unfinished work and supports the pool,
 whereas a sweep only files an authoritative ending. Sweep before re-running a
 SLURM campaign to preserve its execution record. An unknown job without a CAS
 receipt remains unresolved; neither recovery path invents success.
+
+The fleet shape passes `--all-cores` on both GB10 hosts as well as dl380g10,
+so admission exposes all inherited CPU affinity rather than permanently
+excluding fallback cores. Logical CPU counts are capacity units, not a claim
+of equal throughput across heterogeneous cores or SMT siblings. Measurements
+must still declare architecture and isolation.
