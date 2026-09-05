@@ -746,3 +746,15 @@ refused every run with `a non-Git checkout cannot be materialized` without
 reaching a scheduler command.
 
 A refused submission now prints the transport's reason on stderr and exits 2.
+
+Initializing the checkout is necessary but not sufficient. The snapshot roster
+is tracked plus nonignored-untracked paths, and `run_local_action` refuses an
+action whose declared result already exists in the execution tree with no
+recovery claim. `/mnt/shared/prismabuild-fleet/checkout` currently holds
+`fleet_result.txt`, `pbrun_result.*`, `.pbrun-closure.*` and 120 files under
+`results/glm53-tessera/`, and it has no `.gitignore`, so those files would ride
+into every snapshot and a node would refuse the action that declares one of
+them. Move them out of the checkout, or ignore them there, before the first
+SLURM dispatch from that tree. This applies to the smoke action, whose result
+is `fleet_result.txt`, and to every export shard, whose result is
+`results/glm53-tessera/shard-NNNNN.json`.
