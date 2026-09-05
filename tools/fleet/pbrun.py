@@ -1379,6 +1379,67 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
     return 1
 
 
+#: The interpreter pbrun's sealed argv starts with.  A nonportable action
+#: binds its exact bytes, so the name is stated once, where the scope is built.
+SEALED_ARGV0 = "/bin/bash"
+
+
+def require_host_class_scope(
+    *, measurement: bool, host_class: str | None, transport: str
+) -> None:
+    """Refuse a scope the design cannot honour, before anything is sealed."""
+
+    if measurement and host_class is None:
+        raise SystemExit(
+            "pbrun: --measurement requires --host-class CLASS.\n"
+            "A measurement's numerics do not transfer across architectures, "
+            "so its result is keyed on the host class that produced it "
+            "(docs/design.md, \"Cache/action-key semantics\"); a portable "
+            "measurement would let any box's KL stand in for another's."
+        )
+    if host_class is not None and transport != "slurm":
+        raise SystemExit(
+            "pbrun: --host-class needs --transport slurm.\n"
+            "A host_class_keyed action is attested through the SLURM "
+            "controller (docs/design.md, \"Worker preflight and execution "
+            "attestation\"); a pull-queue worker refuses it at preflight, so "
+            "submitting it there queues work that cannot run."
+        )
+
+
+def host_class_scope(
+    host_class: str | None,
+) -> tuple[dict[str, object], dict[str, str]]:
+    """The execution scope and the toolchain a submission seals.
+
+    A portable action declares no toolchain.  A host-class-keyed one is
+    nonportable, and the core requires a nonportable action to bind the
+    executable behind argv[0] and the ABI and accelerator facts of the box
+    that runs it -- facts pbrun can read only from the box it runs on.  So a
+    class-keyed submission carries this box's facts, and a worker of the
+    class verifies each of them at preflight; a submission from a box of
+    another class is refused there, naming the field that differs.
+    """
+
+    if host_class is None:
+        return (
+            {"portability": "portable", "platform_key": None, "host_class": None},
+            {},
+        )
+    toolchain = {
+        **pb.executable_toolchain_contract(SEALED_ARGV0),
+        **pb.live_platform_toolchain_contract(),
+    }
+    return (
+        {
+            "portability": "host_class_keyed",
+            "platform_key": None,
+            "host_class": host_class,
+        },
+        toolchain,
+    )
+
+
 def slurm_outcome(
     action,
     *,
@@ -1775,6 +1836,16 @@ def main() -> int:
                          "a matching box actually offers")
     ap.add_argument("--tag", action="append", default=[],
                     help="require a box offering this tag (e.g. a hardware class)")
+    ap.add_argument("--measurement", action="store_true",
+                    help="seal task_class=measurement: the result is numerics "
+                         "that do not transfer across architectures, so it "
+                         "requires --host-class")
+    ap.add_argument("--host-class", default=None, metavar="CLASS",
+                    help="key the action on a host class, a node Feature name "
+                         "(e.g. gb10): seals execution_scope host_class_keyed, "
+                         "adds CLASS to the placement, and the SLURM lane "
+                         "sends it as --constraint; the worker attests it "
+                         "through the controller before running")
     ap.add_argument("--anywhere", action="store_true",
                     help="assert that command/tool/data dependencies outside "
                          "the snapshot are identical on every eligible worker")
@@ -1966,6 +2037,10 @@ def main() -> int:
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")
+    require_host_class_scope(
+        measurement=args.measurement, host_class=args.host_class,
+        transport=args.transport,
+    )
     tags = pool.normalize_placement_tags(
         placement_tags(
             cwd,
@@ -1980,6 +2055,12 @@ def main() -> int:
             anywhere=args.anywhere,
         )
     )
+    if args.host_class is not None:
+        # The class rides the placement axis, the same way --tag does, so the
+        # action key moves with it and the SLURM lane seals it as
+        # --constraint.  A union rather than a replacement: a hostname pin a
+        # box-local executable earned stays, and the class narrows it further.
+        tags = pool.normalize_placement_tags([*tags, args.host_class])
     placement = {"required_tags": tags}
     if args.exclusive and args.transport == "slurm":
         # SLURM already has a word for the whole device.  ``gpu:1`` and
@@ -2123,19 +2204,20 @@ def main() -> int:
         expected_identity=identity,
         snapshot_refs=list(args.snapshot_ref),
     )
+    execution_scope, toolchain = host_class_scope(args.host_class)
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
             "definition_id": "fleet/pbrun",
             "definition_version": "v1",
-            "task_class": "generation",
+            "task_class": "measurement" if args.measurement else "generation",
             # A pytest or a timing run is not byte-reproducible and must not
             # claim to be: the CAS only enforces canonical equality on
             # "deterministic", so mislabelling one would be a false receipt.
             "determinism": determinism,
             "artifact_family": "generic",
             "artifact_kind": "generic",
-            "argv": ["/bin/bash", "-lc",
+            "argv": [SEALED_ARGV0, "-lc",
                      f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
                      f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
                      f"exit ${{PIPESTATUS[0]}}"],
@@ -2152,10 +2234,8 @@ def main() -> int:
             "checkout_snapshot": checkout_snapshot,
             "retry_policy": retry_policy,
         },
-        "environment": {"variables": variables, "toolchain": {}},
-        "execution_scope": {
-            "portability": "portable", "platform_key": None, "host_class": None,
-        },
+        "environment": {"variables": variables, "toolchain": toolchain},
+        "execution_scope": execution_scope,
     }
     try:
         action = pb.seal_action(body)
