@@ -471,10 +471,22 @@ class RunResult:
         return self.attempts[-1] if self.attempts else None
 
 
-def _run(argv: Sequence[str], *, where: str) -> subprocess.CompletedProcess[str]:
+#: A scheduler command as the lane is given it: the executable's name or path,
+#: or a callable that takes the arguments after it and returns what
+#: ``subprocess.run`` would.  The callable form exists for tests, which drive
+#: ``wait`` through hundreds of polls on a fake clock and cannot afford a
+#: process per poll; the lane treats both forms alike, so a hang (a
+#: ``TimeoutExpired`` raised by the callable) reads the same either way.
+Command = str | Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
+
+
+def _run(argv: Sequence[object], *, where: str) -> subprocess.CompletedProcess[str]:
+    head, rest = argv[0], [str(arg) for arg in argv[1:]]
     try:
+        if callable(head):
+            return head(rest)
         return subprocess.run(
-            list(argv),
+            [str(head), *rest],
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT_S,
@@ -815,7 +827,7 @@ def _field(fields: Sequence[str], index: int) -> str:
     return fields[index] if index < len(fields) else ""
 
 
-def _sacct_state(job_id: str, *, sacct: str) -> JobProvenance | None:
+def _sacct_state(job_id: str, *, sacct: Command) -> JobProvenance | None:
     completed = _run(
         [
             sacct, "-j", job_id, "--parsable2", "--noheader",
@@ -851,7 +863,7 @@ def _sacct_state(job_id: str, *, sacct: str) -> JobProvenance | None:
 _SCONTROL_FIELD = re.compile(r"(\w+)=(\S*)")
 
 
-def _scontrol_state(job_id: str, *, scontrol: str) -> JobProvenance | None:
+def _scontrol_state(job_id: str, *, scontrol: Command) -> JobProvenance | None:
     completed = _run([scontrol, "show", "job", job_id], where="scontrol")
     if completed.returncode != 0:
         if _unreachable(completed):
@@ -877,7 +889,7 @@ def _scontrol_state(job_id: str, *, scontrol: str) -> JobProvenance | None:
     )
 
 
-def _squeue_state(job_id: str, *, squeue: str) -> JobProvenance | None:
+def _squeue_state(job_id: str, *, squeue: Command) -> JobProvenance | None:
     completed = _run(
         [squeue, "-h", "-j", job_id, "-o", "%T"], where="squeue"
     )
@@ -897,9 +909,9 @@ def _squeue_state(job_id: str, *, squeue: str) -> JobProvenance | None:
 def query_provenance(
     job_id: str,
     *,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
 ) -> JobProvenance | None:
     """Everything the scheduler will say, from whichever tool can say it.
 
@@ -929,9 +941,9 @@ def query_provenance(
 def query_state(
     job_id: str,
     *,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
 ) -> tuple[str, int | None, int | None] | None:
     """The ending alone: state, exit code, signal, or ``None`` if unknown."""
 
@@ -1218,7 +1230,7 @@ class LivenessMonitor:
         self,
         job: SubmittedJob,
         *,
-        sstat: str = "sstat",
+        sstat: Command = "sstat",
         clock: Callable[[], float] = time.monotonic,
         sample_s: float = LIVENESS_SAMPLE_S,
         window_s: float = STALL_WINDOW_S,
@@ -1435,10 +1447,10 @@ def read_liveness(
 def wait(
     job: SubmittedJob,
     *,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
-    sstat: str = "sstat",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
+    sstat: Command = "sstat",
     poll_s: float = DEFAULT_POLL_S,
     wait_s: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -1559,7 +1571,7 @@ def wait(
         sleep(poll_s)
 
 
-def cancel(job_id: str, *, scancel: str = "scancel") -> bool:
+def cancel(job_id: str, *, scancel: Command = "scancel") -> bool:
     """Stop one job.  SLURM sends TERM, then KILL after ``KillWait``."""
 
     completed = _run([scancel, str(job_id)], where="scancel")
@@ -1940,10 +1952,10 @@ def run(
     local_checkout_root: str | Path | None = None,
     partition: str | None = None,
     sbatch: str = "sbatch",
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
-    sstat: str = "sstat",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
+    sstat: Command = "sstat",
     poll_s: float = DEFAULT_POLL_S,
     wait_s: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -2076,10 +2088,10 @@ def resume(
     queue_root: str | Path,
     wait_s: float | None = None,
     poll_s: float = DEFAULT_POLL_S,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
-    sstat: str = "sstat",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
+    sstat: Command = "sstat",
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     on_stall: Callable[[StallReport], None] | None = None,
