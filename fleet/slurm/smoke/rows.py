@@ -483,6 +483,94 @@ def row_9_no_slurmdbd(job_id: str) -> None:
     del path
 
 
+def row_10_scontrol_answers_the_job(nonce_dir: Path) -> None:
+    """From inside a batch step, the controller shows the job's constraint and
+    the node's Features to the job's owner -- the two facts the worker's
+    host-class attestation reads.  Quoted, because the docs said what SLURM
+    sets in a job's environment and were wrong once already."""
+
+    out = WORK / "attest-%j.out"
+    completed = sh([
+        "sbatch", "--wait", "--constraint=gb10", f"--chdir={WORK}",
+        f"--output={out}",
+        "--wrap=scontrol show job $SLURM_JOB_ID; "
+        "scontrol show node $SLURMD_NODENAME; "
+        "echo env-constraints=${SLURM_JOB_CONSTRAINTS-unset}",
+    ], timeout=180)
+    text = ""
+    for candidate in sorted(WORK.glob("attest-*.out")):
+        text = candidate.read_text(errors="replace")
+    features = [line.strip() for line in text.splitlines()
+                if "Features=" in line or line.startswith("env-constraints=")]
+    job_features = [line for line in features if line.startswith("Features=")
+                    or " Features=" in line]
+    node_features = [line for line in features if "ActiveFeatures=" in line]
+    ok = (
+        completed.returncode == 0
+        and any(re.search(r"(^|\s)Features=gb10(\s|$)", line) for line in job_features)
+        and any(re.search(r"ActiveFeatures=[^ ]*\bgb10\b", line) for line in node_features)
+        and "env-constraints=unset" in text
+    )
+    record(
+        "10 scontrol inside a job shows Features= and ActiveFeatures=",
+        ok,
+        f"rc={completed.returncode} " + " | ".join(features)[:400],
+    )
+    del nonce_dir
+
+
+def row_11_host_class_measurement(nonce: Path) -> None:
+    completed = pbrun(
+        ["bash", "action.sh", "run", str(nonce)],
+        extra=["--measurement", "--host-class", "gb10"],
+    )
+    prefix, job_id = submitted(completed)
+    path, rec = outcome("done", prefix) if prefix else (None, {})
+    producer: dict = {}
+    if prefix:
+        for candidate in sorted((SH / "cas" / "actions" / "v3" / prefix[:2]).glob(
+                f"{prefix}*.json")):
+            try:
+                producer = json.loads(candidate.read_text()).get("producer", {})
+            except (OSError, ValueError):
+                producer = {}
+    slurm = (producer.get("evidence") or {}).get("slurm") or {}
+    controller = slurm.get("controller") or {}
+    checks = {
+        "pbrun rc==0": completed.returncode == 0,
+        "done record": path is not None and rec.get("status") == "executed",
+        "producer.host_class==gb10": producer.get("host_class") == "gb10",
+        "controller.job_features has gb10": "gb10" in (controller.get("job_features") or []),
+        "controller.node_active_features has gb10":
+            "gb10" in (controller.get("node_active_features") or []),
+        f"controller.batch_host=={NODE}": controller.get("batch_host") == NODE,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    record(
+        "11 --measurement --host-class gb10 executes with an attested receipt",
+        not failed,
+        f"job={job_id} host_class={producer.get('host_class')!r} "
+        f"partition={slurm.get('partition')!r} controller={controller}"
+        + (f" missing: {failed}; rc={completed.returncode}; "
+           f"stderr={(completed.stderr or '')[-600:]}" if failed else ""),
+    )
+
+
+def row_12_unknown_host_class_is_refused() -> None:
+    refused = pbrun(
+        ["bash", "action.sh", "run", ""],
+        extra=["--measurement", "--host-class", "smoke-nonexistent", "--wait-s", "30"],
+        timeout=180,
+    )
+    said = (refused.stderr or "") + (refused.stdout or "")
+    record(
+        "12 --host-class for a Feature no node has is refused at submit",
+        refused.returncode != 0 and "slurm refused this action" in said
+        and "submitted" not in (refused.stderr or ""),
+        f"rc={refused.returncode} {said.strip().splitlines()[-1][:120] if said.strip() else ''}",
+    )
+
+
 def main() -> int:
     for argv in (
         ["git", "config", "--global", "user.name", "PrismaBuild smoke"],
@@ -507,6 +595,9 @@ def main() -> int:
     row_7_gres_and_constraint()
     row_8_epilog(timeout_job)
     row_9_no_slurmdbd(timeout_job or first_job)
+    row_10_scontrol_answers_the_job(WORK)
+    row_11_host_class_measurement(VOL / "nonce-measurement.txt")
+    row_12_unknown_host_class_is_refused()
     del prefix, timeout_prefix
 
     width = max(len(name) for name, _, _ in results)
