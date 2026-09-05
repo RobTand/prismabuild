@@ -2354,7 +2354,8 @@ def _echo(path, stream) -> None:
 
 def withdraw_routed(
     prefixes, *, transport: str, reason: str = "", by: str = "",
-    lane_root=None, queue_root=None, scancel: str = "scancel", queue=None,
+    lane_root=None, queue_root=None, scancel: str = "scancel",
+    squeue: str = "squeue", queue=None,
 ) -> int:
     """Send each prefix to the transport that recorded it.
 
@@ -2378,7 +2379,7 @@ def withdraw_routed(
     if lane_prefixes:
         rc = max(rc, withdraw_slurm_main(
             lane_prefixes, reason=reason, by=by, lane_root=lane_root,
-            queue_root=queue_root, scancel=scancel,
+            queue_root=queue_root, scancel=scancel, squeue=squeue,
         ))
     if pool_prefixes:
         if queue is None:
@@ -2390,9 +2391,9 @@ def withdraw_routed(
 
 def withdraw_slurm_main(
     prefixes, *, reason: str = "", by: str = "", lane_root=None,
-    queue_root=None, scancel: str = "scancel",
+    queue_root=None, scancel: str = "scancel", squeue: str = "squeue",
 ) -> int:
-    """Cancel each named action's recorded job, refusing an ambiguous prefix.
+    """Cancel every job under each named action, refusing an ambiguous prefix.
 
     Same shape as the pool's withdrawal and for the same reasons: a prefix is
     what an operator has, one bad name must not stop the other three, and a
@@ -2408,6 +2409,21 @@ def withdraw_slurm_main(
     file its own account of the same generation the moment the job reports
     ``CANCELLED``; whichever arrives first is kept, and this one knows who
     asked and why, which the other cannot.
+
+    Every job under the key's name is cancelled, not just the one
+    ``latest.json`` records.  The submitter cannot close the double-submit
+    window and ``slurm_lane.submit`` says so: two ``pbrun``s that look at the
+    same instant both find nothing in the CAS and both submit, and the
+    controller holds the second PENDING on ``Dependency``.  Cancelling the
+    recorded id alone left that sibling queued, and when the first job left the
+    singleton released it -- so it ran the action the marker on disk exists to
+    stop.  ``sibling_jobs`` is the listing, scoped to this user, and a
+    controller that will not answer it costs the enrichment rather than the
+    cancellation: the recorded id is always asked for.
+
+    A refusal is reported per job and the verb fails only when every cancel was
+    refused.  A sibling that finished between the listing and the cancel is the
+    ordinary case, and the operator still got the run stopped.
     """
 
     rc = 0
@@ -2434,16 +2450,44 @@ def withdraw_slurm_main(
             print(f"pbrun: {key[:12]} already has an outcome filed; "
                   f"nothing to withdraw", file=sys.stderr)
             continue
-        if slurm_lane.cancel(job_id, scancel=scancel):
+        accepted, refused = [], []
+        for target in _jobs_to_cancel(key, job_id, squeue=squeue):
+            if slurm_lane.cancel(target, scancel=scancel):
+                accepted.append(target)
+            else:
+                refused.append(target)
+        if accepted:
             _stamp_scancel_accepted(queue, record)
             why = f" -- {reason}" if reason else ""
-            print(f"pbrun: cancelled slurm job {job_id} for {key[:12]}"
+            jobs = ", ".join(accepted)
+            plural = "s" if len(accepted) > 1 else ""
+            print(f"pbrun: cancelled slurm job{plural} {jobs} for {key[:12]}"
                   f" by {by or 'an operator'}{why}", file=sys.stderr)
-        else:
-            print(f"pbrun: scancel refused slurm job {job_id} for {key[:12]}; "
+        for target in refused:
+            print(f"pbrun: scancel refused slurm job {target} for {key[:12]}; "
                   f"it may already have finished", file=sys.stderr)
+        if refused and not accepted:
             rc = 2
     return rc
+
+
+def _jobs_to_cancel(action_key: str, job_id: str, *, squeue: str) -> list[str]:
+    """The recorded job and every sibling the controller still holds for it.
+
+    The recorded id leads and is never dropped: it is the one fact that does
+    not depend on the controller answering.  A ``squeue`` that fails costs the
+    siblings, not the cancellation.
+    """
+
+    targets = [job_id] if job_id else []
+    try:
+        siblings = slurm_lane.sibling_jobs(action_key, squeue=squeue)
+    except slurm_lane.SlurmLaneError:
+        return targets
+    for sibling, _state in siblings:
+        if sibling not in targets:
+            targets.append(sibling)
+    return targets
 
 
 def _file_slurm_withdrawal(

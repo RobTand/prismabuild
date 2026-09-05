@@ -1373,6 +1373,11 @@ def sibling_jobs(
         action_key: The action key, whose first twelve characters name the job.
         squeue: The ``squeue`` command to ask.
 
+    Scoped to this user, because the job name is.  ``--dependency=singleton``
+    holds one job per name *per user*, so a second person's job of the same
+    action is a job this listing must not report: a caller that cancels what
+    this returns would cancel somebody else's work.
+
     Returns:
         ``(job_id, state)`` pairs in the order ``squeue`` listed them, and an
         empty list when the controller answered that it holds none.
@@ -1384,7 +1389,8 @@ def sibling_jobs(
     """
 
     completed = _run(
-        [squeue, "-h", f"--name=pb-{str(action_key)[:12]}", "-o", "%i|%T"],
+        [squeue, "-h", "-u", getpass.getuser(),
+         f"--name=pb-{str(action_key)[:12]}", "-o", "%i|%T"],
         where="squeue",
     )
     if completed.returncode != 0:

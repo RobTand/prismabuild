@@ -658,8 +658,9 @@ drain the queue while producers are still being told to use SLURM.
 
 SLURM jobs already running keep running. Cancel the ones you do not want with
 `pbrun --transport slurm --withdraw <key prefix>`, which reads the recorded job
-id and calls `scancel`. You can leave `slurmctld` and `slurmd` running; with no
-submissions they do nothing.
+id, asks `squeue -u $USER --name=pb-<key12>` for every other job under the same
+name, and calls `scancel` on each. You can leave `slurmctld` and `slurmd`
+running; with no submissions they do nothing.
 
 ## Liveness: a running job is reported, never killed on elapsed time
 
@@ -755,6 +756,11 @@ submission of the same work waits `PENDING` with reason `Dependency`, then
 starts, finds the receipt the first job published, and ends as a cache hit
 without materializing a checkout. It is a queue order and not a refusal: if the
 first job fails, the second runs the work itself.
+
+That last sentence is why `--withdraw` cancels every job under the name rather
+than the one `latest.json` records. A held sibling runs the work when the
+singleton releases it, and a withdrawal that left it queued was a decision the
+scheduler went on to undo.
 
 `--comment` names the invocation of `sbatch` rather than the job. The job name
 is shared by every attempt of every submission of a key; the comment carries the

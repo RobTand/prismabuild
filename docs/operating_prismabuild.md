@@ -489,6 +489,18 @@ neither would be re-submitted by the next bulk reset. If `scancel` is refused,
 run the same command again: the decision on disk is kept, and `scancel` is
 retried until it accepts the job.
 
+A withdrawal cancels every job the controller holds under the key's name, and
+names each id it cancelled. That is more than the one job `latest.json`
+records, because it has to be: two submissions of one key that raced each other
+leave a second job `PENDING` on `Dependency`, and cancelling only the recorded
+id leaves that one to run the withdrawn action when the singleton releases it.
+The listing is scoped to your own user, so a second person's job of the same
+action is not touched. A `squeue` the controller does not answer costs the
+siblings and not the cancellation: the recorded id is always cancelled. Exit
+status is 2 only when every `scancel` was refused; one refusal among several is
+reported and the withdrawal stands, because a sibling that finished between the
+listing and the cancel is the ordinary case.
+
 A withdrawal cancels the run, not the name. The marker is scoped to the
 generation it was filed against, and a later submission of the same key retires
 it into `withdrawn/superseded/`: the action key is a content hash, so
