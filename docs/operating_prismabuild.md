@@ -272,6 +272,11 @@ prints the job name, the comment and that `squeue`, files nothing, and exits
 something runs until it ends. Elapsed time is never treated as evidence that a
 worker is dead.
 
+When a `--timeout-s` you asked for does expire, the worker takes the action's
+whole process group down before it reports the timeout: SIGTERM, a grace
+period, then SIGKILL against whatever is still running. A descendant that
+ignores SIGTERM does not survive the report.
+
 What the lane does instead is measure. While a job is `RUNNING`, the waiting
 `pbrun` samples the job's own cgroup accounting and its log sizes at the
 accounting interval. A sample is progressing when CPU time, RSS, disk bytes, or
@@ -660,6 +665,17 @@ These are refusals at submission, before anything reaches the fleet.
 *   **`executable script bytes are outside the snapshotted repository`** — move
     each helper under the repository so its bytes are bound by the action's code
     closure.
+*   **`checkout snapshot symlink points outside the sealed repository`** — a
+    symlink in your checkout reads bytes the snapshot does not carry. `pbrun`
+    resolves the whole link graph, so the escape can be composed out of links
+    that each look contained: with `a -> .` in the tree, `b -> a/../outside.txt`
+    reaches the repository's parent. Point the link inside the repository, or
+    declare the external bytes as an input. A worker applies the same rule to
+    the tree it checks out and refuses with `materialized checkout symlink
+    points outside the sealed repository`, which is what an older snapshot
+    already in the queue reports. A link the worker's filesystem cannot follow
+    at all, which for an older snapshot means a loop among its links, refuses
+    with `materialized checkout symlink cannot be resolved`.
 *   **`slurm refused this action`** — `sbatch` rejected the submission. The
     message names the required tags and the demand. An unknown Feature is the
     usual cause: a tag that no node carries can never be scheduled. Read

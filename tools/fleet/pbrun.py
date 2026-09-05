@@ -386,6 +386,94 @@ def require_untransformed_checkout(root: Path, paths: list[str]) -> None:
             )
 
 
+SNAPSHOT_LINK_RESOLUTION_LIMIT = 64
+
+
+def require_contained_snapshot_links(symlinks: dict[str, str]) -> None:
+    """Refuse a sealed tree whose link graph reaches outside the repository.
+
+    Normalizing one target string at a time is not enough, because the escape
+    can be composed out of links that each normalize inside the tree.  With
+    ``a -> .`` in the tree, ``b -> a/../outside.txt`` normalizes to
+    ``outside.txt``, yet the filesystem resolves ``a`` to the repository root
+    first and then applies ``..``, so ``b`` names the repository's parent.  The
+    snapshot record, the bundle digest and the link texts all stay the same
+    while what the action reads through ``b`` is an unsealed host file.
+
+    Resolve every sealed link the way the kernel does instead: component by
+    component, following any component that is itself a sealed link, and refuse
+    a traversal that leaves the tree, enters ``.git`` or exceeds the resolution
+    budget.  A dangling link whose resolution stays inside the tree is still
+    accepted: it seals a link text, not a target.
+    """
+
+    for path in sorted(symlinks):
+        budget = [SNAPSHOT_LINK_RESOLUTION_LIMIT]
+        _resolve_snapshot_link(path, symlinks, budget, {path})
+
+
+def _resolve_snapshot_link(
+    path: str,
+    symlinks: dict[str, str],
+    budget: list[int],
+    active: set[str],
+) -> list[str]:
+    """Return the in-tree components a sealed link resolves to."""
+
+    base = [part for part in posixpath.dirname(path).split("/") if part]
+    return _resolve_snapshot_components(
+        symlinks[path].split("/"), base, symlinks, budget, active, path
+    )
+
+
+def _resolve_snapshot_components(
+    components: list[str],
+    base: list[str],
+    symlinks: dict[str, str],
+    budget: list[int],
+    active: set[str],
+    origin: str,
+) -> list[str]:
+    """Walk one target's components through the sealed tree's link graph."""
+
+    def refuse(detail: str) -> None:
+        raise SystemExit(
+            "pbrun: checkout snapshot symlink points outside the sealed "
+            f"repository: {origin!r} -> {symlinks[origin]!r} ({detail})"
+        )
+
+    current = list(base)
+    for component in components:
+        if component in {"", "."}:
+            continue
+        if component == "..":
+            if not current:
+                refuse("resolution leaves the repository root")
+            current.pop()
+            continue
+        candidate = current + [component]
+        key = "/".join(candidate)
+        if key in symlinks:
+            if key in active:
+                refuse(f"resolution cycles through {key!r}")
+            budget[0] -= 1
+            if budget[0] < 0:
+                refuse("resolution exceeds the sealed link depth limit")
+            target = symlinks[key]
+            if target.startswith("/"):
+                refuse(f"resolution reaches the absolute target of {key!r}")
+            active.add(key)
+            current = _resolve_snapshot_components(
+                target.split("/"), current, symlinks, budget, active, origin
+            )
+            active.discard(key)
+        else:
+            current = candidate
+        if current[:1] == [".git"]:
+            refuse("resolution enters the repository's own Git directory")
+    return current
+
+
 def require_supported_snapshot_tree(
     root: Path,
     tree: str,
@@ -402,6 +490,7 @@ def require_supported_snapshot_tree(
         strip=False,
     )
     logical_bytes = 0
+    symlinks: dict[str, str] = {}
     for row in listing.split("\0"):
         if not row:
             continue
@@ -442,9 +531,11 @@ def require_supported_snapshot_tree(
                     "pbrun: checkout snapshot symlink points outside the "
                     f"sealed repository: {path!r} -> {target!r}"
                 )
+            symlinks[path] = target
         # Count each materialized pathname, not unique object ids: two paths
         # naming one blob occupy two files in the worker checkout.
         logical_bytes += int(size)
+    require_contained_snapshot_links(symlinks)
     if logical_bytes > max_bytes:
         raise SystemExit(
             "pbrun: logical checkout tree is "
