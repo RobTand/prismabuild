@@ -64,14 +64,20 @@ These flags say what the action needs and where it may run.
 | `--gpu-capacity N` | Slots to demand for `--exclusive`. | Under SLURM, only `1` is accepted: `--gres=gpu:1` is the whole device, so a larger count would be read and discarded. |
 | `--cpus N` | Cores the action will actually use. Defaults to 1. | `--cpus-per-task=N`. |
 | `--tag NAME` | Require a box offering this tag. Repeatable. | `--constraint=NAME`, ANDed with `&`. |
-| `--here` | Pin the action to this box, when you pass no `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
+| `--here` | Pin the action to this box. Combines with `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 
-`--anywhere` and `--here` contradict each other and `pbrun` refuses both
-together. An explicit `--tag` replaces the whole placement, so `--here --tag
-gb10` places the action on any `gb10` box and prints no warning. To pin the box
-and name a class, pass this box's hostname as a second `--tag`.
+`--tag` and `--here` are two constraints, and passing both applies both:
+`--here --tag gb10` places the action on this box, which must also offer the
+`gb10` tag. The tags are sorted before they are sealed, so the order you pass
+them in does not move the action key.
+
+`--anywhere` contradicts both of them, and `pbrun` refuses each pairing.
+`--anywhere --here` names one box and calls the action portable. `--anywhere
+--tag gb10` does the same with a class: the assertion is that every eligible
+worker can run the action, and the tag admits only the boxes offering it. Drop
+whichever is not true.
 
 `--priority` is a queue hint and nothing more. It is not part of the action
 identity, so two submissions that differ only in priority are the same action.

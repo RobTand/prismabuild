@@ -963,12 +963,23 @@ def placement_tags(
       mutable bytes. ``--here`` still forces a host pin for work genuinely
       about *this* machine.
 
+    ``--tag`` and ``--here`` are two constraints, not two spellings of one.
+    A submitter who passes both asks for a box of that class *and* for this
+    box, so both land: the explicit tags, then ``hostname``, deduplicated and
+    with the hostname last.  Returning ``list(explicit)`` instead dropped the
+    host pin without saying so, which is a narrowing the submitter asked for
+    and did not get.  (The order is for a reader: the conjunction is sorted
+    by ``pool.normalize_placement_tags`` before it is sealed.)
+
     Nothing here decides *which* free box runs a shared-checkout action; the
     queue does, from the demand and what each worker offers.  That separation
     is the point.
     """
 
     if explicit:
+        if here:
+            return [*dict.fromkeys(t for t in explicit if t != hostname),
+                    hostname]
         return list(explicit)
     if here:
         return [hostname]
@@ -1232,13 +1243,13 @@ def pin_notice(
     other two boxes idled.
 
     **Everything below is read off the tags that LANDED, never off the flags
-    that asked for them.**  ``placement_tags`` returns ``list(explicit)`` the
-    moment any ``--tag`` is given, so ``--here`` and a box-local checkout are
-    both silently overridden by it.  A first version asked the ``here`` flag
-    instead, and so announced "PINNED to sparky by --here, so no other box can
-    claim this action" for a submission whose tags were ``['x86']`` -- naming,
-    as the *other* box, the only box that could actually run it.  A notice
-    about a pin has one job and that was it.
+    that asked for them.**  A first version asked the ``here`` flag instead,
+    and so announced "PINNED to sparky by --here, so no other box can claim
+    this action" for a submission whose tags were ``['x86']`` -- naming, as
+    the *other* box, the only box that could actually run it.  A notice about
+    a pin has one job and that was it.  ``placement_tags`` no longer drops the
+    host pin that way, but the reading rule is what keeps this correct
+    whatever it returns.
 
     Exclusivity is claimed only where it is provable.  A tag naming this host
     cannot be claimed elsewhere; a tag that merely happens to match one live
@@ -1293,10 +1304,6 @@ def pin_notice(
 
     # No host tag landed.  Say what did, and what it costs.
     notes: list[str] = []
-    if here:
-        notes.append(f"--here did NOT pin this action: an explicit --tag "
-                     f"REPLACES the host tag rather than adding to it, so "
-                     f"tags {tags} alone place it.")
     if local:
         if others is None:
             notes.append(f"WARNING -- the checkout {cwd} exists only on "
@@ -2472,6 +2479,19 @@ def main() -> int:
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")
+    if args.anywhere and args.tag:
+        # The same contradiction with the second constraint spelled as a
+        # class rather than as a hostname: --anywhere asserts that every
+        # eligible worker can run this action, and --tag says only the boxes
+        # offering that tag may.  Both landed before, and --anywhere won the
+        # part the SLURM lane reads -- an action tagged x86 went to the
+        # default partition as portable work.
+        raise SystemExit(
+            "--anywhere and --tag contradict each other: --anywhere asserts "
+            "every eligible worker can run this action, and --tag admits only "
+            "the boxes offering "
+            f"{', '.join(sorted(set(args.tag)))}.  Drop whichever is not true."
+        )
     require_host_class_scope(
         measurement=args.measurement, host_class=args.host_class,
         transport=args.transport,
