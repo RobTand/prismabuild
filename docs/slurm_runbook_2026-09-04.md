@@ -152,6 +152,23 @@ These still need the real install, and no container stands in for them:
    bind mount. Three containers share one lane root, which makes it one
    filesystem but not a squashing one. The first killed job on the real fleet
    is the test.
+
+   Read one more thing out of that first killed job. The Epilog logs a line
+   like this to `slurmd.log` on every run that finds a state file, before it
+   touches anything:
+
+   ```
+   prismabuild-epilog[123]: state file uid=1000 SLURM_JOB_UID=1000 SLURM_JOB_USER=rob
+   ```
+
+   `uid` is `stat -c %u` on the job's state file, as root reads it through the
+   export. `SLURM_JOB_UID` is what SLURM says owned the job. The two should
+   agree, and under `root_squash` they may not: root may read the owner back as
+   `nobody`. The Epilog refuses nothing on a mismatch today, because an Epilog
+   that wrongly refuses leaks exactly what it exists to remove. Compare the two
+   numbers on the real fleet, then decide whether the ownership check can
+   become a refusal. `verify.sh` row 7 submits through the lane, so the line is
+   in `slurmd.log` on whichever node ran it.
 4. **A version skew between boxes.** All three containers run one build, so
    nothing here says what a 25.11.2 controller does with a 23.11.4 `slurmd`.
    Both SLURMs have now been run across three nodes, separately, never against

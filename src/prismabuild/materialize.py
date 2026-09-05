@@ -36,11 +36,17 @@ from . import core as pb
 
 # The snapshot bundle travels through the shared CAS, but execution trees stay
 # on each worker's local disk. Same spelling on every box, different storage.
+#
+# The variable name and the default are named constants because a second reader
+# has to agree with them: ``fleet/slurm/epilog.sh`` bounds its ``rm -rf`` by
+# this root, and a shell script cannot import this module. It spells the same
+# variable and the same default, and
+# ``test_the_epilog_and_the_materializer_name_the_same_checkout_root`` is what
+# notices when the two drift.
+LOCAL_CHECKOUT_ROOT_ENV = "PRISMABUILD_LOCAL_CHECKOUT_ROOT"
+DEFAULT_LOCAL_CHECKOUT_ROOT = "/home/rob/tmp/prismabuild-checkouts"
 LOCAL_CHECKOUT_ROOT = Path(
-    os.environ.get(
-        "PRISMABUILD_LOCAL_CHECKOUT_ROOT",
-        "/home/rob/tmp/prismabuild-checkouts",
-    )
+    os.environ.get(LOCAL_CHECKOUT_ROOT_ENV, DEFAULT_LOCAL_CHECKOUT_ROOT)
 )
 
 

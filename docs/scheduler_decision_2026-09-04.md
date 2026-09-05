@@ -252,6 +252,15 @@ run, branch refs never rewritten). `main` = `44b9f8f`.
   pinned `NodeAddr` lines themselves, which the three-node harness strips
   because Docker's DNS resolves its node names and the LAN addresses bind
   nothing there. Phase 1 verifies those.
+- What the Epilog reads as the owner of a job's state file. The Epilog bounds
+  its `rm -rf` by the checkout root it knows for itself, and the state file's
+  own `local_checkout_root` now only has to agree with that root. The
+  principled bound underneath is that the job's own user wrote the file, and
+  the Epilog has `SLURM_JOB_UID` to compare against. It logs both numbers and
+  refuses on neither, because nobody has measured what root reads back through
+  a `root_squash` export and an Epilog that wrongly refuses leaks exactly what
+  it exists to remove. Phase 1 reads the line; the runbook's "Still not
+  verified" item 3 says where.
 - The sealed environment under `--export=NIL` is shown by the container smoke
   (row 2 and the three-node run), not by the suite: the fakes never run a job
   under `--export=NIL`, so the claim that only SLURM's own variables reach a

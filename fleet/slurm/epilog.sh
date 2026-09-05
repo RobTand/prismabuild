@@ -27,7 +27,8 @@
 
 set -u
 
-# Both variables below are overridable for the tests, and for nothing else.
+# The three variables below are overridable for the tests, and for nothing
+# else.
 # SLURM builds this script's environment out of its own SLURM_* variables, so
 # nothing exported to slurmd -- or to the job -- is visible here.  Measured in
 # the container smoke on 2026-09-04: an Epilog run with
@@ -43,6 +44,19 @@ set -u
 # its own answer into the batch script while this script kept reading its
 # default, the two disagreed, and node-side cleanup silently stopped happening.
 JOB_STATE_ROOT="${PRISMABUILD_SLURM_JOB_STATE_ROOT:-/mnt/shared/prismabuild-fleet/slurm/jobs}"
+# Where materialized trees live on this node, and the only bound on the
+# `rm -rf` below.  It is spelled here the way the job-state root is, and for
+# the same reason: `materialize.LOCAL_CHECKOUT_ROOT_ENV` and
+# `materialize.DEFAULT_LOCAL_CHECKOUT_ROOT`, spelled again because a shell
+# script cannot import that module, and checked by
+# `test_the_epilog_and_the_materializer_name_the_same_checkout_root`.
+#
+# The bound used to come from the state file's own `local_checkout_root`.  That
+# file sits in a mode 1777 directory on the shared mount, so every job's user
+# could write the bound that was supposed to contain it, and this script runs
+# as root.  The root below is the one thing this script knows without asking
+# the file, and the file's answer now has to match it.
+CHECKOUT_ROOT="${PRISMABUILD_LOCAL_CHECKOUT_ROOT:-/home/rob/tmp/prismabuild-checkouts}"
 DOCKER="${PRISMABUILD_EPILOG_DOCKER:-docker}"
 LABEL="prismabuild.action"
 # The second label the shim stamps, naming the SLURM job the container was
@@ -79,6 +93,19 @@ if [ ! -f "$state_file" ]; then
     # its state file.  Either way there is nothing recorded to clean up.
     exit 0
 fi
+
+# Who owns the state file, measured and printed and acted on by nothing.
+#
+# The principled bound on everything below is that the file was written by the
+# user SLURM says owned the job.  That check is not here yet, because nobody
+# has measured what root sees through this fleet's NFS export: dl380g10 exports
+# the shared dataset with root_squash, so the owner may read back as `nobody`,
+# and an Epilog that refuses on a mismatch it invented leaks exactly what it
+# exists to remove.  So this line reports the two numbers and refuses nothing.
+# Phase 1 reads it out of slurmd.log on the real fleet; the runbook's "Still
+# not verified" item 3 says so.
+state_uid="$(stat -c %u -- "$state_file" 2>/dev/null || true)"
+log "state file uid=${state_uid:-unknown} SLURM_JOB_UID=${SLURM_JOB_UID:-unset} SLURM_JOB_USER=${JOB_USER:-unset}"
 
 field() { sed -n "s/^$1=//p" "$state_file" | head -n 1; }
 
@@ -155,24 +182,89 @@ case "$owner" in
 esac
 
 # -- materialized checkout ---------------------------------------------------
-# Bounded three ways before anything is removed: absolute, strictly below the
-# recorded local checkout root, and not that root itself.  A cleanup that can be
-# talked into an unbounded path is worse than a leaked directory.
-if [ -n "$checkout_dir" ] && [ -n "$local_root" ]; then
-    case "$checkout_dir" in
-        "$local_root"/?*)
-            if [ "$checkout_dir" != "$local_root" ] && [ -d "$checkout_dir" ]; then
-                if rm -rf -- "$checkout_dir"; then
-                    log "removed materialized checkout $checkout_dir"
-                else
-                    log "could not remove materialized checkout $checkout_dir"
-                fi
-            fi
-            ;;
-        *)
-            log "recorded checkout $checkout_dir is not below $local_root; left alone"
-            ;;
-    esac
+# The one place this script removes a tree as root, so the bound on it is the
+# whole design.  A cleanup that can be talked into an unbounded path is worse
+# than a leaked directory.
+#
+# The bound is CHECKOUT_ROOT above, which this script knows without asking the
+# state file.  The file's own `local_checkout_root` is now only a claim to be
+# agreed with: it has to name the same root, or the tree is left alone.  A job
+# launched with `--checkout-root` pointing somewhere else is therefore a job
+# this script will not clean up after, which is the right trade -- a bound the
+# thing being bounded gets to choose is not a bound.
+#
+# Then the recorded path is resolved with `readlink -f` and the resolved path
+# has to be strictly below the resolved root.  `readlink -f` and not `realpath`
+# because both boxes' coreutils agree on it and neither implementation is GNU
+# on both: sparky has GNU coreutils 9.4, dl380g10 on Ubuntu 26.04 has uutils
+# 0.8.0, and the two behave identically here (a missing last component
+# resolves, a missing intermediate one fails, symlinks and `..` collapse).
+#
+# Resolving is what closes the hole a prefix match left open.  `case` against
+# the root prefix accepted `<root>/../../home/rob`, and it accepted a path
+# whose intermediate component was a symlink out of the root, which every job's
+# user could plant because the state file names the path and the job owns the
+# root.  Belt and braces, the recorded path may not itself be a symlink and may
+# not contain a `.` or `..` component at all, and the removal runs on the
+# resolved path rather than the recorded one.
+#
+# What this does not close: the window between resolving the path and removing
+# it.  A shell has no way to hold a directory open across `rm`, so somebody who
+# can write inside the root can still swap a component in that window.  The
+# job's own processes are gone before an Epilog runs, so the writer would have
+# to be another job on the same node -- which on this fleet is the same user
+# whose tree is being removed.  Closing it properly means moving this cleanup
+# into a program that can `openat` its way down, and that is not this script.
+if [ -n "$checkout_dir" ]; then
+    checkout_refusal=""
+    # Trailing slashes are stripped first: `[ -L a/link/ ]` is false because
+    # the slash forces the kernel to resolve the link, and this file is written
+    # by the job's user, so a trailing slash is something to expect.
+    recorded="$checkout_dir"
+    while [ "$recorded" != "/" ] && [ "${recorded%/}" != "$recorded" ]; do
+        recorded="${recorded%/}"
+    done
+    resolved_root="$(readlink -f -- "$CHECKOUT_ROOT" 2>/dev/null || true)"
+    resolved="$(readlink -f -- "$recorded" 2>/dev/null || true)"
+    if [ "$local_root" != "$CHECKOUT_ROOT" ]; then
+        checkout_refusal="state file names checkout root '$local_root' but this node's is '$CHECKOUT_ROOT'"
+    elif [ "${recorded#/}" = "$recorded" ]; then
+        # `readlink -f` would resolve a relative path against whatever
+        # directory slurmd happened to leave this script in.
+        checkout_refusal="recorded checkout $recorded is not an absolute path"
+    elif [ -L "$recorded" ]; then
+        checkout_refusal="recorded checkout $recorded is a symlink"
+    else
+        case "/$recorded/" in
+            */./* | */../*)
+                checkout_refusal="recorded checkout $recorded has a . or .. component"
+                ;;
+        esac
+    fi
+    if [ -z "$checkout_refusal" ] && { [ -z "$resolved" ] || [ -z "$resolved_root" ]; }; then
+        checkout_refusal="recorded checkout $recorded or root $CHECKOUT_ROOT does not resolve"
+    fi
+    if [ -z "$checkout_refusal" ]; then
+        case "$resolved" in
+            "$resolved_root"/?*)
+                ;;
+            *)
+                checkout_refusal="recorded checkout $recorded is not below $CHECKOUT_ROOT"
+                ;;
+        esac
+    fi
+    if [ -n "$checkout_refusal" ]; then
+        log "$checkout_refusal; left alone"
+    elif [ -d "$resolved" ]; then
+        # Asked after the bound, not before it, so a refusal is logged whether
+        # or not the tree is still there.  A tree the job already removed on
+        # its own way out is the normal ending and is not an error.
+        if rm -rf -- "$resolved"; then
+            log "removed materialized checkout $resolved"
+        else
+            log "could not remove materialized checkout $resolved"
+        fi
+    fi
 fi
 
 # -- the state file ----------------------------------------------------------
