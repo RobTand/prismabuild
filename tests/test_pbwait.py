@@ -379,7 +379,7 @@ def test_a_receipt_with_nothing_outstanding_is_reported_as_a_cache_hit(
 # --------------------------------------------------------------------------
 
 def test_a_prefix_resolves_against_what_is_recorded_and_refuses_ambiguity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     """Twelve characters is what every fleet log line prints, so twelve
     characters is what an operator has.  Two matches is refused rather than
@@ -397,11 +397,41 @@ def test_a_prefix_resolves_against_what_is_recorded_and_refuses_ambiguity(
     assert pbwait.resolve_key(queue, first[:12]) == first
     with pytest.raises(SystemExit) as raised:
         pbwait.resolve_key(queue, "f0")
-    assert "matches 2 actions" in str(raised.value)
+    assert raised.value.code == pbwait.MISNAMED_EXIT
+    assert "matches 2 actions" in capsys.readouterr().err
 
     # A whole key nothing has recorded is taken as given: waiting for work that
     # is not submitted yet is the case this tool exists for.
     assert pbwait.resolve_key(queue, "9" * 64) == "9" * 64
+
+
+def test_a_key_nobody_can_resolve_exits_two_not_one(
+    tmp_path: Path, capsys
+) -> None:
+    """Exit 2 is the code the operating guide gives a key that names nothing.
+
+    ``pbrun --withdraw`` already exits 2 for the same two refusals, and the
+    guide's table says ``pbrun`` and ``pbwait`` use the same codes.  Exit 1 is
+    "the action failed", so a mistyped key read to a wrapper as a build that
+    ran and lost, which is the one answer that provokes the wrong response.
+    """
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    for key in ("ab" + "0" * 62, "ab" + "1" * 62):
+        _file(queue, pool.DONE, _outcome(key, 1.0, status="executed",
+                                         returncode=0))
+
+    for name, expected in (
+        ("", "empty key resolves to nothing"),
+        ("   ", "empty key resolves to nothing"),
+        ("cc", "nothing recorded matches"),
+        ("ab", "matches 2 actions"),
+    ):
+        with pytest.raises(SystemExit) as raised:
+            pbwait.resolve_key(queue, name)
+        assert raised.value.code == 2, name
+        assert expected in capsys.readouterr().err, name
 
 
 def test_the_table_names_the_actions_status_beside_the_runs() -> None:

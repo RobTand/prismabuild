@@ -51,6 +51,13 @@ import pbrun  # noqa: E402
 #: still running.
 GAVE_UP_EXIT = pbrun.GAVE_UP_EXIT
 
+#: What this exits with when the key an operator typed names nothing this can
+#: wait on.  ``pbrun --withdraw`` exits 2 for the same two refusals, and the
+#: operating guide's exit-code table says ``pbrun`` and ``pbwait`` use the same
+#: codes.  Exit 1 is reserved for "the action failed", so a wrapper that reads
+#: a 1 here mistakes a typo for a build that ran and lost.
+MISNAMED_EXIT = 2
+
 #: How wide a key prints.  Twelve characters is what every fleet log line
 #: shows, so it is what an operator has to compare against.
 KEY_WIDTH = 12
@@ -71,6 +78,19 @@ _COLUMNS = (
 # Finding the run
 # --------------------------------------------------------------------------
 
+def _misnamed(message: str) -> SystemExit:
+    """Refuse a key with the code the exit-code table gives a misnamed one.
+
+    The message goes to stderr rather than to ``SystemExit``, because a
+    ``SystemExit`` carrying a string exits 1 and prints the string, and 1 is
+    the code for an action that failed.  Both halves are needed: the operator
+    reads the message, and the wrapper reads the 2.
+    """
+
+    print(message, file=sys.stderr)
+    return SystemExit(MISNAMED_EXIT)
+
+
 def resolve_key(q, name: str, *, lane_root=None) -> str:
     """Turn what an operator has into the key the records are filed under.
 
@@ -84,7 +104,7 @@ def resolve_key(q, name: str, *, lane_root=None) -> str:
     if len(text) == 64:
         return text
     if not text:
-        raise SystemExit("pbwait: an empty key resolves to nothing")
+        raise _misnamed("pbwait: an empty key resolves to nothing")
     found = {
         str(record["action_key"])
         for record in slurm_lane.resolve_recorded(text, root=lane_root)
@@ -100,14 +120,14 @@ def resolve_key(q, name: str, *, lane_root=None) -> str:
             if entry.startswith(text) and entry.endswith(".json")
         )
     if not found:
-        raise SystemExit(
+        raise _misnamed(
             f"pbwait: nothing recorded matches {name!r}; a prefix can only be "
             "resolved against a submission or an ending that already exists, "
             "so name the whole key for work that may not be submitted yet"
         )
     if len(found) > 1:
         listed = ", ".join(sorted(key[:KEY_WIDTH] for key in found))
-        raise SystemExit(
+        raise _misnamed(
             f"pbwait: {name!r} matches {len(found)} actions ({listed}); "
             "name more characters"
         )
