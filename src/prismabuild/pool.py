@@ -1833,6 +1833,46 @@ class PoolQueue:
         _write_json_atomic(path, item)
         return path
 
+    #: Everything that describes the claim that has just ended.  A ready item
+    #: is claimed by nobody and holds no tokens, so none of it may survive a
+    #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
+    _CLAIM_SCOPED_FIELDS = (
+        "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes",
+        "container_cleanup_pending", "container_cleanup_checked_unix",
+        "stop_pending",
+    )
+
+    def _shape_as_ready_item(
+        self, record: dict[str, object], *, action_key: str
+    ) -> Path:
+        """Turn a concluded claim back into a ready item; say where it goes.
+
+        Three producers write into ``ready``: ``publish`` above, ``finish``'s
+        retry branch and ``reap_stale``'s.  The two requeues each spelled the
+        shape out for themselves and had drifted apart -- one stamped the
+        outcome schema onto a queue item, the other left ``action_key`` to
+        whatever the claim happened to carry -- so one directory held records
+        a consumer could tell apart by which writer produced them.  Teaching
+        the readers to accept both is the fix that drifts again; one writer is
+        the fix that cannot.
+
+        The rules are the ones ``publish`` already keeps.  ``schema`` says what
+        kind of record this is, and a record in ``ready`` is an item, not an
+        outcome.  The filename is the identity, because every consumer
+        addresses an item by key.  Nothing claim-scoped survives.
+
+        What does survive is the item's own history: ``attempts`` is what the
+        next try is counted against, and ``status``, ``detail`` and
+        ``attempt_history`` are how the last one went.
+        """
+
+        record["schema"] = POOL_ITEM_SCHEMA_V1
+        record["action_key"] = action_key
+        record["requeued_unix"] = _now()
+        for field in self._CLAIM_SCOPED_FIELDS:
+            record.pop(field, None)
+        return self.item_path(READY, action_key)
+
     # -- consumer -------------------------------------------------------
 
     def _placement_matches(
@@ -2471,10 +2511,7 @@ class PoolQueue:
                 record["schema"] = POOL_OUTCOME_SCHEMA_V1
                 destination = self.item_path(str(disposition), key)
             else:
-                record["requeued_unix"] = _now()
-                for transient in ("claimed_by", "claimed_unix", "claimed_host"):
-                    record.pop(transient, None)
-                destination = self.item_path(READY, key)
+                destination = self._shape_as_ready_item(record, action_key=key)
             # Same ordering as ``finish``, and for the same reason: this loop
             # published the requeue and only then unlinked the claim and lease,
             # so a worker that claimed the requeue inside that window had its
@@ -3383,10 +3420,7 @@ class PoolQueue:
             # external state before failing even when its CAS result would be
             # reproducible.  ``fleet/pbrun`` reaches it only with
             # ``--retry-safe`` and a bound above one.
-            record["requeued_unix"] = _now()
-            for transient in ("claimed_by", "claimed_unix", "claimed_host"):
-                record.pop(transient, None)
-            dst = self.item_path(READY, action_key)
+            dst = self._shape_as_ready_item(record, action_key=action_key)
         # Everything this worker owns goes before the item's next home becomes
         # visible: the claim to a tombstone, then its own lease.  A retry
         # published while either still stood was claimed by the next poll, and
