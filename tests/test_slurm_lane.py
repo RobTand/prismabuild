@@ -1005,6 +1005,30 @@ def test_pbrun_reports_a_slurm_execution_the_way_it_reports_a_pool_one(
     assert "submitted" in err and "attempt 1/1" in err and "executed via" in err
 
 
+def test_a_priority_reaches_sbatch_through_the_whole_lane(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last link of the chain: ``slurm_outcome`` -> ``run`` -> ``submit``.
+
+    The other three are checked where they are made; this one runs the lane
+    against the fake scheduler so a retry loop that forgot to pass the value on
+    would show up as a job submitted at the wrong nice.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "priority-chain")
+    request = cas.publish_action_request(action)
+
+    pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
+        exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
+        max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0, priority=-10,
+    )
+
+    assert f"--nice={sl.NICE_BASE + 10}" in _submissions(fleet)[0]["argv"]
+
+
 def test_the_slurm_path_prints_the_placement_notices_the_pool_path_prints(
     tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
