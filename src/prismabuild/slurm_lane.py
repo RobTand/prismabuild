@@ -115,6 +115,10 @@ DEFAULT_POLL_S = 5.0
 #: A hung ``squeue`` against a busy controller must not become a hung ``pbrun``.
 COMMAND_TIMEOUT_S = 60.0
 
+#: How often ``wait`` repeats that it cannot reach the scheduler.  A bound on
+#: chatter, not evidence of anything.
+NOTICE_EVERY_S = 300.0
+
 #: States after which SLURM has nothing further to say about a job.
 TERMINAL_STATES = frozenset({
     "BOOT_FAIL", "CANCELLED", "COMPLETED", "DEADLINE", "FAILED", "NODE_FAIL",
@@ -161,6 +165,35 @@ UNKNOWN_STATE = "UNKNOWN"
 
 class SlurmLaneError(pb.PrismaBuildError):
     """A scheduler command failed, or answered something unusable."""
+
+
+class ControllerUnreachable(SlurmLaneError):
+    """A scheduler command could not reach ``slurmctld`` at all.
+
+    Not an answer about the job.  ``systemctl restart slurmctld`` on the
+    controller box, or any recovery window, makes every ``scontrol`` and
+    ``squeue`` fail with this for a while; the job on its node neither knows
+    nor cares.  ``wait`` keeps polling through it.
+    """
+
+
+#: What ``scontrol``/``squeue`` print when the controller is not there to ask,
+#: as opposed to when it answered that there is no such job.  Matched against
+#: stderr, case-insensitively.  ``Invalid job id specified`` is deliberately
+#: not here: that is an answer.
+_UNREACHABLE_MARKERS = (
+    "unable to contact slurm controller",
+    "connection refused",
+    "connect failure",
+    "socket timed out",
+    "zero bytes were transmitted",
+    "protocol authentication error",
+)
+
+
+def _unreachable(completed: subprocess.CompletedProcess[str]) -> bool:
+    text = f"{completed.stderr or ''}\n{completed.stdout or ''}".lower()
+    return any(marker in text for marker in _UNREACHABLE_MARKERS)
 
 
 def lane_root(explicit: str | Path | None = None) -> Path:
@@ -800,6 +833,11 @@ _SCONTROL_FIELD = re.compile(r"(\w+)=(\S*)")
 def _scontrol_state(job_id: str, *, scontrol: str) -> JobProvenance | None:
     completed = _run([scontrol, "show", "job", job_id], where="scontrol")
     if completed.returncode != 0:
+        if _unreachable(completed):
+            raise ControllerUnreachable(
+                f"scontrol could not reach the controller: "
+                f"{(completed.stderr or completed.stdout).strip()}"
+            )
         return None
     fields = dict(_SCONTROL_FIELD.findall(completed.stdout))
     state = fields.get("JobState", "").strip()
@@ -823,6 +861,11 @@ def _squeue_state(job_id: str, *, squeue: str) -> JobProvenance | None:
         [squeue, "-h", "-j", job_id, "-o", "%T"], where="squeue"
     )
     if completed.returncode != 0:
+        if _unreachable(completed):
+            raise ControllerUnreachable(
+                f"squeue could not reach the controller: "
+                f"{(completed.stderr or completed.stdout).strip()}"
+            )
         return None
     state = completed.stdout.strip().splitlines()
     if not state or not state[0].strip():
@@ -843,6 +886,12 @@ def query_provenance(
     older than ``MinJobAge`` -- and the only one that is inert until slurmdbd
     exists, which is why it is not the only one asked.  The fallbacks answer
     fewer fields, and the missing ones stay null rather than being invented.
+
+    ``None`` means the controller *answered* and knows no such job.  A
+    controller that cannot be reached raises ``ControllerUnreachable`` instead
+    of being read as "no such job": before that distinction existed, a
+    ``systemctl restart slurmctld`` turned every running job's wait into
+    ``UNKNOWN`` on the next poll, and ``run`` filed it as failed.
     """
 
     for reader in (
@@ -1350,9 +1399,10 @@ def wait(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     on_stall: Callable[[StallReport], None] | None = None,
+    on_notice: Callable[[str], None] | None = None,
 ) -> Outcome:
     """Poll until the job reaches a terminal state, the caller's patience ends,
-    or the scheduler stops knowing about it.
+    or the scheduler answers that it knows no such job.
 
     None of the three is a verdict on the work.  The caller reads the CAS for
     that; this says which job to read the logs of, and why it stopped.
@@ -1361,15 +1411,60 @@ def wait(
     cadence and ``on_stall`` is called when the samples have not moved for
     ``STALL_WINDOW_S``.  That call is a report and only a report: nothing in
     this loop cancels a job, on any evidence.
+
+    A poll that cannot be answered -- the controller unreachable -- is not an
+    answer about the job either.  The loop says so through ``on_notice`` (once, then at most every
+    ``NOTICE_EVERY_S``, and once more when polling recovers) and keeps
+    polling.  The caller's own ``wait_s`` still bounds how long it waits.
     """
 
     deadline = None if wait_s is None else clock() + float(wait_s)
     last: JobProvenance | None = None
     monitor = LivenessMonitor(job, sstat=sstat, clock=clock)
+    trouble: str | None = None
+    trouble_since: float | None = None
+    last_notice: float | None = None
     while True:
-        answer = query_provenance(
-            job.job_id, sacct=sacct, scontrol=scontrol, squeue=squeue
-        )
+        try:
+            answer = query_provenance(
+                job.job_id, sacct=sacct, scontrol=scontrol, squeue=squeue
+            )
+        except ControllerUnreachable as exc:
+            # Says nothing about the job, so it does not end the wait.
+            # Before this, an unreachable controller was read as "no such
+            # job" -- with the job running on.
+            now = clock()
+            if trouble_since is None:
+                trouble_since = now
+            trouble = str(exc)
+            if last_notice is None or now - last_notice >= NOTICE_EVERY_S:
+                last_notice = now
+                if on_notice is not None:
+                    on_notice(
+                        f"slurm job {job.job_id}: the scheduler could not be "
+                        f"asked ({trouble}); still waiting, the job is not "
+                        f"affected"
+                    )
+            if deadline is not None and now > deadline:
+                return Outcome(
+                    job_id=job.job_id,
+                    state=WAIT_TIMEOUT_STATE,
+                    exit_code=None,
+                    signal=None,
+                    stdout_path=job.stdout_path,
+                    stderr_path=job.stderr_path,
+                    provenance=last,
+                    liveness=monitor.summary(),
+                )
+            sleep(poll_s)
+            continue
+        if trouble is not None:
+            if on_notice is not None:
+                on_notice(
+                    f"slurm job {job.job_id}: the scheduler answers again "
+                    f"after {clock() - (trouble_since or clock()):.0f} s"
+                )
+            trouble = trouble_since = last_notice = None
         if answer is None:
             return Outcome(
                 job_id=job.job_id,
@@ -1806,6 +1901,7 @@ def run(
     clock: Callable[[], float] = time.monotonic,
     on_submit: Callable[[SubmittedJob], None] | None = None,
     on_stall: Callable[[StallReport], None] | None = None,
+    on_notice: Callable[[str], None] | None = None,
 ) -> RunResult:
     """Submit, wait, and resubmit while the producer's contract allows it.
 
@@ -1871,6 +1967,7 @@ def run(
             sleep=sleep,
             clock=clock,
             on_stall=on_stall,
+            on_notice=on_notice,
         )
         result.attempts.append((job, outcome))
         result.receipt = cas.lookup(action)
@@ -1928,6 +2025,16 @@ def _file_ending(
         status = "withdrawn"
     elif result.receipt is not None:
         status = "executed"
+    elif outcome.state in (UNKNOWN_STATE, WAIT_TIMEOUT_STATE):
+        # No ending has happened.  The submitter stopped watching, or the
+        # controller answered that it knows no such job (purged past
+        # MinJobAge with no accounting behind it, and no receipt yet).  A
+        # terminal record here is a lie with consequences: ``publish_outcome``
+        # is first-writer-wins per generation, so a ``failed/`` record filed
+        # now would stand even when the job publishes its receipt minutes
+        # later, and ``done/`` would never be written.  Before this branch
+        # existed, that is exactly what a controller restart produced.
+        return
     elif outcome.state == "CANCELLED":
         status = "withdrawn"
     else:

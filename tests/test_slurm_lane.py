@@ -117,6 +117,10 @@ import os, sys
 from pathlib import Path
 
 job = sys.argv[-1]
+if os.environ.get("FAKE_CONTROLLER_DOWN") == "1":
+    sys.stderr.write(
+        "slurm_load_jobs error: Unable to contact slurm controller (connect failure)\\n")
+    raise SystemExit(1)
 record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
 if not record.exists():
     sys.stderr.write(f"slurm_load_jobs error: Invalid job id specified\\n")
@@ -137,6 +141,9 @@ import os, sys
 from pathlib import Path
 
 job = sys.argv[sys.argv.index("-j") + 1]
+if os.environ.get("FAKE_CONTROLLER_DOWN") == "1":
+    sys.stderr.write("squeue: error: slurm_load_jobs: Unable to contact slurm controller (connect failure)\\n")
+    raise SystemExit(1)
 record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
 if not record.exists():
     raise SystemExit(0)

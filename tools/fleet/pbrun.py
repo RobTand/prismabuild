@@ -1431,6 +1431,9 @@ def slurm_outcome(
     key = str(action["action_key"])
     resources = slurm_lane.LaneResources.from_demand(demand, exclusive=exclusive)
     lane_commands.setdefault("on_stall", lambda report: _report_stall(key, report))
+    lane_commands.setdefault(
+        "on_notice",
+        lambda text: print(f"pbrun: {text}", file=sys.stderr, flush=True))
     # sbatch's own refusal is this transport's capability gate: an unknown
     # Feature or an impossible GRES is rejected at submit time, which is the
     # moment the pool path's ``capability_verdict`` spoke.  So it reaches the
@@ -1494,6 +1497,18 @@ def slurm_outcome(
         print(f"pbrun: gave up waiting for {key[:12]}; slurm job "
               f"{job.job_id} is still queued or running "
               f"(pbrun --transport slurm --withdraw {key[:12]} stops it)",
+              file=sys.stderr)
+        return GAVE_UP_EXIT
+    if outcome.state == slurm_lane.UNKNOWN_STATE:
+        # The controller answered that it knows no such job and there is no
+        # receipt.  That is not a failure and it is not filed as one: the job
+        # may have been purged past MinJobAge, or the controller's memory of
+        # it went with a restart while it runs on.  Same exit as giving up,
+        # because the truth is the same -- no verdict yet.
+        print(f"pbrun: no scheduler command can describe slurm job "
+              f"{job.job_id} for {key[:12]} and it has published no receipt; "
+              f"it may still be running as slurm job {job.job_id}, or have "
+              f"been purged past MinJobAge; look under {job.directory}",
               file=sys.stderr)
         return GAVE_UP_EXIT
     # Say the thing that is actually wrong.  A job that exits zero without
