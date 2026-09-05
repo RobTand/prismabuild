@@ -331,10 +331,18 @@ fi
 
 # Every expansion below happens on the compute node, which is the whole
 # question this row asks; nothing here may expand in this shell.
+#
+# `nvidia-smi` is run into a variable rather than into a pipe: after
+# `nvidia-smi | sed`, `$?` is sed's status, so the printed `smi-rc` was 0
+# whatever nvidia-smi did.  The verdict never read it -- it reads the `smi:`
+# lines and the open probe -- but an operator reading a failure does, and it
+# was telling them nvidia-smi had succeeded while the line above said
+# `command not found`.  Measured in fleet/slurm/smoke/multinode, 2026-09-05.
 # shellcheck disable=SC2016
 probe='echo "node=$(hostname -s)"
-nvidia-smi -L 2>&1 | sed "s/^/smi: /"
-echo "smi-rc=$?"
+smi="$(nvidia-smi -L 2>&1)"; rc=$?
+printf "%s\n" "$smi" | sed "s/^/smi: /"
+echo "smi-rc=$rc"
 if : < /dev/nvidia0 2>/dev/null; then echo "open=/dev/nvidia0 OPENED"; else echo "open=/dev/nvidia0 denied"; fi
 exit 0'
 out="$(srun_here --partition=gpu bash -c "$probe")"

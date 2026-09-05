@@ -480,3 +480,23 @@ def test_every_tool_the_scripts_run_directly_is_executable() -> None:
         if not tool.read_text(encoding="utf-8").startswith("#!"):
             wrong.append(f"{tool}: no shebang")
     assert not wrong, "\n".join(wrong)
+
+
+def test_verify_row_4_reports_nvidia_smis_own_status() -> None:
+    """`$?` after a pipeline is the last command's, and the last command was
+    `sed`.
+
+    The verdict never read `smi-rc` -- it reads the `smi:` lines and the open
+    probe -- but the operator reading a failure does. Measured on 2026-09-05 in
+    `fleet/slurm/smoke/multinode`, where row 4's own evidence read:
+
+        smi: /usr/bin/bash: line 2: nvidia-smi: command not found
+        smi-rc=0
+    """
+
+    text = (FLEET / "verify.sh").read_text(encoding="utf-8")
+    assert 'nvidia-smi -L 2>&1 | sed' not in text, (
+        "row 4 pipes nvidia-smi into sed and then reads $?, which is sed's"
+    )
+    assert 'smi="$(nvidia-smi -L 2>&1)"; rc=$?' in text
+    assert 'echo "smi-rc=$rc"' in text

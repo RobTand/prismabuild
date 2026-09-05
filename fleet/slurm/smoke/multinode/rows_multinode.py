@@ -288,6 +288,77 @@ def build_source_repo() -> None:
 # Rows
 # ---------------------------------------------------------------------------
 
+#: What `fleet/slurm/verify.sh` can and cannot answer in containers.
+#:
+#: Every row of that script is expected to PASS here except these, and each
+#: exception is a fact about the containers rather than about the script.  A
+#: row that changes verdict in either direction fails M0, which is the point:
+#: the script has never run anywhere else, so this is the only thing standing
+#: between it and the first time an operator types it on the real fleet.
+VERIFY_EXPECTED_FAILURES = {
+    "0": "the installed slurm.conf is genconf.py's, which deviates from the "
+         "checkout's on purpose; on the fleet install.sh copies the checkout",
+    "0b": "the same deviation, read off the other two boxes; what this row "
+          "does establish here is that its ssh read reached them",
+    "3": "no NVIDIA driver in a container, so nvidia-smi is not installed and "
+         "there is no GPU for a shard job to see",
+    "4": "genconf.py sets ConstrainDevices=no, there being no real device to "
+         "constrain, so the job opens the mknod'd /dev/nvidia0 and the row "
+         "correctly says so; this is the row that needs a box with a driver",
+}
+
+_VERIFY_ROW = re.compile(r"^\[(PASS|FAIL)\]\s+(\S+)\s")
+
+
+def row_m0_verify_script() -> None:
+    """Run the runbook's own post-install check, which has never run.
+
+    `fleet/slurm/verify.sh` is step 8 of `docs/slurm_runbook_2026-09-04.md` as
+    an executable, and every one of its rows needs a live controller, three
+    registered nodes and an ssh route between the boxes.  This harness is the
+    only place all three exist before the install.
+    """
+
+    completed = dexec(
+        "dl380g10",
+        ["bash", "/repo/fleet/slurm/verify.sh", "--keep-going"],
+        cwd="/repo", timeout=1200.0,
+    )
+    text = (completed.stdout or "") + (completed.stderr or "")
+    seen: dict[str, set[str]] = {}
+    for line in text.splitlines():
+        found = _VERIFY_ROW.match(line.strip())
+        if found:
+            seen.setdefault(found.group(2), set()).add(found.group(1))
+    unexpected: list[str] = []
+    for row, marks in sorted(seen.items()):
+        wanted = {"FAIL"} if row in VERIFY_EXPECTED_FAILURES else {"PASS"}
+        if marks != wanted:
+            unexpected.append(f"{row}={'/'.join(sorted(marks))}")
+    # And it must not have declared the fleet ready.  The marker is what
+    # cutover.sh looks for, and a harness that wrote one would be handing a
+    # container's verdict to the real cutover.
+    marker = dexec("dl380g10", [
+        "test", "-e", "/home/rob/.prismabuild/slurm-verify-passed.json",
+    ])
+    checks = {
+        "verify.sh produced a table": bool(seen),
+        "every row is PASS but the three a container cannot answer":
+            not unexpected,
+        "it refused to write the ready marker": marker.returncode != 0,
+    }
+    failed = [key for key, ok in checks.items() if not ok]
+    print(text.rstrip(), flush=True)
+    record(
+        "M0 fleet/slurm/verify.sh runs, for the first time anywhere",
+        not failed,
+        f"{sum(1 for m in seen.values() if m == {'PASS'})} rows PASS, "
+        f"{len(VERIFY_EXPECTED_FAILURES)} expected FAIL "
+        f"({', '.join(sorted(VERIFY_EXPECTED_FAILURES))})"
+        + ("" if not failed else f" MISSING {failed}; unexpected={unexpected}"),
+    )
+
+
 def row_m1_three_nodes() -> None:
     """All three nodes idle, offering exactly what the fleet's file declares."""
 
@@ -706,7 +777,7 @@ def row_m8_cas_hit(cpu_nonce: str, gpu_nonce: str) -> None:
 
 
 def main() -> int:
-    for directory in (QUEUE, LANE, WORK):
+    for directory in (QUEUE, LANE, LANE / "jobs", WORK):
         directory.mkdir(parents=True, exist_ok=True)
     build_source_repo()
 
@@ -717,6 +788,10 @@ def main() -> int:
     for value in nonces.values():
         (VOL / Path(value).name).write_text("")
 
+    # First, on an otherwise idle fleet: verify.sh row 8 reads the lane's
+    # jobs/ directory for orphans, and M6 deliberately leaves one behind by
+    # killing a node before its Epilog can run.
+    row_m0_verify_script()
     row_m1_three_nodes()
     row_m2_cpu_only(nonces["m2"])
     row_m3_gpu(nonces["m3"])
