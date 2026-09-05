@@ -13,17 +13,15 @@ queue in which the cancelled work exists in exactly one place and it is not
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 from pathlib import Path
 import socket
 import signal
 import sys
-import threading
+import subprocess
 import time
 import uuid
-from unittest import mock
 
 import pytest
 
@@ -38,13 +36,6 @@ import pbrun  # noqa: E402
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
 # Unique per process; see the note in ``test_pool_withdraw``.
 KEY = uuid.uuid4().hex + uuid.uuid4().hex
-
-
-def _worker_loop():
-    spec = importlib.util.spec_from_file_location("wl_withdraw", WORKER_LOOP)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _await(predicate, *, timeout_s: float = 30.0) -> bool:
@@ -125,52 +116,60 @@ def test_an_operator_stops_a_running_action_and_the_worker_carries_on(
     )
 
     host = socket.gethostname()
-    wl = _worker_loop()
-    exit_code: list[int] = []
+    # main owns process signals. Run it in a process, as the supervisor does,
+    # so withdrawal exercises the real SIGTERM handler as well as the queue.
+    bootstrap = tmp_path / "run_worker.py"
+    bootstrap.write_text(f"""
+import sys
+from pathlib import Path
+sys.path.insert(0, {str(WORKER_LOOP.parents[2] / 'src')!r})
+sys.path.insert(0, {str(WORKER_LOOP.parent)!r})
+import worker_loop as wl
+wl.SH = Path({str(tmp_path)!r})
+wl.loaded_runtime_commit = lambda: 'deadbeef'
+wl.published_commit = lambda: 'deadbeef'
+raise SystemExit(wl.main())
+""")
+    worker = subprocess.Popen([
+        sys.executable, str(bootstrap), "--once", "--all-cores", "--class", "x86",
+        "--gpu-slots", "0", "--mem-gb", "4", "--cpu-slots", "2",
+        "--poll-s", "0.05", "--python", sys.executable,
+    ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        action_pid = _await_pid(pidfile)
+        assert _await(lambda: (queue.lease_path(KEY).exists() and json.loads(
+            queue.lease_path(KEY).read_text()).get("child_pid") is not None))
+        assert queue.ledger(host).available().get("cpu", 0) == 1, (
+            "one of two cpu tokens is held while the action runs")
 
-    def run_worker() -> None:
-        with mock.patch.object(wl, "SH", tmp_path), \
-             mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
-             mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
-             mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
-             mock.patch.object(sys, "argv", [
-                 "worker_loop.py", "--once", "--all-cores", "--class", "x86",
-                 "--gpu-slots", "0", "--mem-gb", "4", "--cpu-slots", "2",
-                 "--poll-s", "0.05", "--python", sys.executable]):
-            exit_code.append(wl.main())
+        assert pbrun.withdraw_main(
+            queue, [KEY[:12]], reason="ten merges stale", by=f"rob@{host}") == 0
 
-    worker = threading.Thread(target=run_worker, daemon=True)
-    worker.start()
+        output, _ = worker.communicate(timeout=60.0)
+        assert worker.returncode == 0, output
 
-    action_pid = _await_pid(pidfile)
-    assert _await(lambda: (queue.lease_path(KEY).exists() and json.loads(
-        queue.lease_path(KEY).read_text()).get("child_pid") is not None))
-    assert queue.ledger(host).available().get("cpu", 0) == 1, (
-        "one of two cpu tokens is held while the action runs")
+        assert _await(lambda: not pool._process_alive(action_pid)), (
+            "the action outlived the operator's decision")
 
-    assert pbrun.withdraw_main(
-        queue, [KEY[:12]], reason="ten merges stale", by=f"rob@{host}") == 0
+        # One place, and it is not the failure record.
+        filed = json.loads(queue.item_path(pool.WITHDRAWN, KEY).read_text())
+        assert filed["status"] == "withdrawn"
+        assert filed["reason"] == "ten merges stale"
+        for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED):
+            assert list(queue.dir(state).glob("*.json")) == [], state
+        assert not queue.lease_path(KEY).exists()
 
-    worker.join(timeout=60.0)
-    assert not worker.is_alive(), "the worker hung inside the withdrawal"
-    assert exit_code == [0], "a withdrawal is not a reason to lose the worker"
+        # And the box is whole again: every token back, nothing widowed.
+        ledger = queue.ledger(host)
+        assert ledger.held_keys() == []
+        assert ledger.available() == ledger.capacity()
 
-    assert _await(lambda: not pool._process_alive(action_pid)), (
-        "the action outlived the operator's decision")
-
-    # One place, and it is not the failure record.
-    filed = json.loads(queue.item_path(pool.WITHDRAWN, KEY).read_text())
-    assert filed["status"] == "withdrawn"
-    assert filed["reason"] == "ten merges stale"
-    for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED):
-        assert list(queue.dir(state).glob("*.json")) == [], state
-    assert not queue.lease_path(KEY).exists()
-
-    # And the box is whole again: every token back, nothing widowed.
-    ledger = queue.ledger(host)
-    assert ledger.held_keys() == []
-    assert ledger.available() == ledger.capacity()
-
-    # The submitter is told, rather than waiting out ``--wait-s``.
-    rc = pbrun.await_outcome(queue, KEY, wait_s=1.0)
-    assert rc == pbrun.WITHDRAWN_EXIT
+        # The submitter is told, rather than waiting out ``--wait-s``.
+        rc = pbrun.await_outcome(queue, KEY, wait_s=1.0)
+        assert rc == pbrun.WITHDRAWN_EXIT
+    finally:
+        if worker.poll() is None:
+            # This child belongs to the test. Do not leak it on an assertion;
+            # the pidfile fixture separately tears down the action session.
+            worker.kill()
+        worker.communicate()
