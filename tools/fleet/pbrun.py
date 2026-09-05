@@ -2763,6 +2763,18 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
             if error:
                 note.append(error)
             rc = 2
+        stop_pending = result.get("stop_pending")
+        if stop_pending:
+            # Say that the reservation is still out, and whose it is to return.
+            # A caller told "withdrawn, released 0" without this would read the
+            # zero as "there was nothing to release".
+            note.append(
+                "release pending on "
+                f"{stop_pending.get('holder_host') or result.get('host') or 'the holder'}"
+                "; its worker returns the tokens when it stops the action")
+            detail = str(stop_pending.get("reason") or "").strip()
+            if detail:
+                note.append(detail)
         signalled = result.get("signalled") or {}
         if signalled.get("signals"):
             note.append("signalled " + ", ".join(signalled["signals"]))

@@ -455,8 +455,22 @@ def test_capacity_goes_back_to_the_claiming_host_not_the_operators(
     queue.item_path(pool.READY, KEY_A).unlink()
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
     result = queue.withdraw(KEY_A)
-    assert result["host"] == ELSEWHERE and result["released"] == 2
+    # The operator's box cannot signal the holder, so the release is the
+    # holder's to make and this reports where it is pending. Releasing here
+    # would hand back a token the action is still running on.
+    assert result["host"] == ELSEWHERE and result["released"] == 0
+    assert result["stop_pending"]["holder_host"] == ELSEWHERE
+    assert foreign.available() == {}
+    # The holder's own conclusion, or the reaper once its lease stops beating,
+    # returns the tokens -- and to the claiming host's ledger, not this one.
+    # The claim has no lease, so age it past the reaper's grace for a fresh
+    # claim; on the fleet a holder that never acknowledged is long past it.
+    pending = json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text())
+    pending["claimed_unix"] = time.time() - 2 * pool.HEARTBEAT_S
+    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(pending))
+    assert queue.reap_stale(timeout_s=-1) == []
     assert foreign.available() == {"gpu": 2}
+    assert foreign.held_keys() == []
     assert queue.ledger().available() == {}, "nothing was invented locally"
 
 

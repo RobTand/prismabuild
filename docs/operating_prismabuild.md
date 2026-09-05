@@ -547,6 +547,21 @@ re-submitting it is how anybody asks for the same work again. If the action
 finished a moment before you asked, `pbrun` says an outcome is already filed and
 withdraws nothing.
 
+On the pull queue, a withdrawal returns the action's capacity only once the
+action is known to have stopped. That is one of three things: the signal ladder
+on the holder's own box reported the process group dead, the holder is the box
+you ran the command on and no process there owns the action, or the holder's
+lease stopped beating and the reaper concluded the claim. Otherwise `pbrun` says
+`release pending on <host>` and reports `released 0`, and the claim, lease and
+reservation stay where they are with a `stop_pending` object stamped on the
+claimed record. The holder's worker sees the marker within a heartbeat, stops
+the action, files it under `withdrawn/` and returns the tokens then. Read
+`released 0` as "not yet", not as "there was nothing to release": a cross-box
+withdrawal is the ordinary case and it always reads that way. Waiting is the
+point. Releasing on the operator's word alone let a replacement action be
+admitted on the holder's only CPU token while the original payload was still
+running.
+
 ### Retry
 
 An arbitrary command gets one attempt. Numerical determinism says the result

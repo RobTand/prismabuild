@@ -3537,10 +3537,27 @@ class PoolQueue:
         *faster* from the one running the work.
 
         Tokens go back through the same ``ledger(host).release(key)`` path
-        ``finish`` uses, but only after the action-owned container census is
-        empty.  A cross-box withdrawal cannot inspect the holder's Docker
-        daemon, so it keeps the claim and reservation until that worker sees
-        the marker, stops the action and performs the local verification.
+        ``finish`` uses, but only once the action is known to have **stopped**,
+        and only after the action-owned container census is empty.  Those are
+        two different questions and the verb used to ask only the second: an
+        action with no Docker marker reports an empty census immediately, so a
+        withdrawal from another box released the holder's tokens and removed
+        its claim and lease while the payload was still running, and a
+        replacement action was admitted on the holder's only CPU token.  The
+        census proves no owned container remains; it says nothing about a
+        non-container payload.
+
+        Three things confirm a stop, and nothing else does: the local signal
+        ladder reporting ``still_alive`` false; the holder being this host with
+        no process owning the action, so there is nothing here to stop; and the
+        dead-holder case, which is the reaper's, not this verb's -- once the
+        lease stops beating, ``reap_stale``'s withdrawal branch concludes the
+        claim and releases the tokens from the holder's own ledger.  Otherwise
+        the claim, lease and reservation stay exactly where they are, a
+        ``stop_pending`` object is stamped on the claimed record the way
+        ``container_cleanup_pending`` is, and the result reports ``released:
+        0`` and the holder's host.  The holder's own launcher checkpoint then
+        stops the action, files it as withdrawn, and releases the tokens.
         Releasing twice is free, because tokens are filed under the action key
         and the second release finds nothing to return.
 
@@ -3643,16 +3660,16 @@ class PoolQueue:
         # instead of being requeued and re-run.  That is the race the operator
         # used to have to win by hand, and it is the last of it that new bytes
         # can reach.
-        if origin == CLAIMED and isinstance(record, Mapping):
-            poisoned = dict(record)
-            poisoned["max_attempts"] = 1
-            poisoned["withdrawn_unix"] = filed.get("withdrawn_unix")
-            poisoned["withdrawn_by"] = str(filed.get("withdrawn_by") or by)
-            poisoned["withdrawn_note"] = (
+        live = dict(record) if isinstance(record, Mapping) else None
+        if origin == CLAIMED and live is not None:
+            live["max_attempts"] = 1
+            live["withdrawn_unix"] = filed.get("withdrawn_unix")
+            live["withdrawn_by"] = str(filed.get("withdrawn_by") or by)
+            live["withdrawn_note"] = (
                 "withdrawn by an operator; the retry is closed so a worker "
                 "that cannot see withdrawn/ files this terminally"
             )
-            _write_json_atomic(claimed_path, poisoned)
+            _write_json_atomic(claimed_path, live)
 
         # The ready record goes NOW, not after the ladder.  The ladder can run
         # for seconds; a re-submission landing inside it would otherwise be
@@ -3688,7 +3705,37 @@ class PoolQueue:
             }
 
         container_cleanup = self.cleanup_action_containers(record or lease)
-        if container_cleanup["complete"]:
+        # Why the action is known to have stopped, or why it is not.  A claim
+        # is the only state with a payload to stop; ``ready`` never started.
+        stop_pending: dict[str, object] | None = None
+        if origin == CLAIMED:
+            local = socket.gethostname()
+            if signalled is not None:
+                if signalled["still_alive"]:
+                    stop_pending = {"reason": "the action's process group "
+                                              "survived the signal ladder"}
+            elif host is not None and host != local:
+                stop_pending = {
+                    "reason": f"the action is held on {host}, which this box "
+                              "cannot signal; its own worker stops it at the "
+                              "next heartbeat and releases the reservation "
+                              "then, and the reaper concludes it if that box "
+                              "is gone",
+                }
+            elif targets:
+                stop_pending = {
+                    "reason": "a local process owns the action and no signal "
+                              "was sent",
+                }
+            # Otherwise the holder is this host and nothing here is running
+            # the action, so there is nothing left to stop.
+            if stop_pending is not None:
+                stop_pending.update({
+                    "holder_host": host,
+                    "checked_unix": _now(),
+                    "checked_host": local,
+                })
+        if container_cleanup["complete"] and stop_pending is None:
             released = self.ledger(host).release(key)
             claimed_path.unlink(missing_ok=True)
             self.lease_path(key).unlink(missing_ok=True)
@@ -3696,12 +3743,20 @@ class PoolQueue:
         else:
             # The decision is already durable in withdrawn/, but the run is
             # not gone yet.  Preserve the claim, lease and reservation as its
-            # ownership record; the holder's worker/reaper retries cleanup.
+            # ownership record; the holder's worker/reaper concludes it.
             released = 0
-            if origin == CLAIMED and isinstance(record, Mapping):
-                pending = dict(record)
-                pending["container_cleanup_pending"] = container_cleanup
-                pending["container_cleanup_checked_unix"] = _now()
+            if origin == CLAIMED and live is not None:
+                # From the poisoned copy, not from the record as it was read.
+                # Rebuilding this from ``record`` wrote the pre-poison bytes
+                # back over the ``max_attempts: 1`` above, which is the one
+                # thing that stops a worker running older bytes from requeueing
+                # a cancelled action.
+                pending = dict(live)
+                if not container_cleanup["complete"]:
+                    pending["container_cleanup_pending"] = container_cleanup
+                    pending["container_cleanup_checked_unix"] = _now()
+                if stop_pending is not None:
+                    pending["stop_pending"] = stop_pending
                 _write_json_atomic(claimed_path, pending)
         return {
             "action_key": key,
@@ -3716,6 +3771,9 @@ class PoolQueue:
             "released": released,
             "signalled": signalled,
             "container_cleanup": container_cleanup,
+            # ``None`` when the action is known to have stopped.  Otherwise
+            # why the reservation is still held, and on which box.
+            "stop_pending": stop_pending,
             "path": str(withdrawn_path),
             "reason": str(filed.get("reason") or ""),
         }
