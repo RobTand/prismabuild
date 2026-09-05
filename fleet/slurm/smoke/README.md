@@ -27,7 +27,7 @@ patched. The host's real `/mnt/shared` is never touched.
 | 3 | the same action submitted again re-executes nothing |
 | 4 | a failing command files `failed/<key>.json` with a non-zero `detail.returncode` and a stderr tail |
 | 5 | `--timeout-s` becomes `--time`, and SLURM -- not `pbrun` -- kills the job, which arrives as `detail.slurm.state=TIMEOUT` with `signal=15`, and which `pbrun` reports as `failed (TIMEOUT)` |
-| 6 | `--withdraw` on a running job `scancel`s it and files the ending under `withdrawn/` carrying `withdrawn_by`, with nothing under `failed/` 
+| 6 | `--withdraw` on a running job `scancel`s it and files the ending under `withdrawn/` carrying `withdrawn_by`, with nothing under `failed/`  |
 | 7a | `--gres=shard:1` schedules two jobs on a two-shard node and holds the third |
 | 7b | `--constraint` for a Feature no node has is refused at submit and reported by `pbrun` |
 | 8 | the Epilog ran for a killed job, matched containers by the action's ownership label, and removed its state file as the job's user rather than as root |
