@@ -1493,6 +1493,16 @@ def slurm_outcome(
               f"receipt for {key[:12]}; see {job.stdout_path} and "
               f"{job.stderr_path}", file=sys.stderr)
         return 1
+    if outcome.state == "OUT_OF_MEMORY":
+        # The state alone sends an operator to a job log that a SIGKILLed
+        # process never got to write.  What decided the ending is the number
+        # this submission declared, which the log does not carry and the
+        # caller may not have typed at all -- `mem_gb` defaults to 4.
+        declared = int(demand.get("mem_gb", 0) or 0)
+        print(f"pbrun: slurm job {job.job_id} exceeded the "
+              f"{declared} GiB it declared; raise it with "
+              f"--demand mem_gb={max(declared * 2, 8)} (or whatever the "
+              f"action really needs)", file=sys.stderr)
     print(f"pbrun: failed ({outcome.state}) after {total} attempt(s); "
           f"logs {job.stdout_path} and {job.stderr_path}", file=sys.stderr)
     if isinstance(outcome.exit_code, int) and outcome.exit_code:
