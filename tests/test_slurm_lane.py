@@ -511,6 +511,23 @@ def test_the_submitters_priority_becomes_the_nice_slurm_can_honour(
     assert len([f for f in record["argv"] if f.startswith("--nice=")]) == 1
 
 
+def test_a_priority_far_below_zero_stays_inside_the_nice_sbatch_accepts(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """``sbatch`` accepts a nice of at most 2147483645.  A priority of -1024
+    or lower asks for more, and pre-fix the submission was refused with an
+    argument error rather than queued behind everything."""
+
+    assert sl.nice_for(-1023) == sl.NICE_BASE + 1023 * sl.NICE_SCALE
+    assert sl.nice_for(-1023) <= sl.NICE_MAX
+    assert sl.nice_for(-1024) == sl.NICE_MAX
+    assert sl.nice_for(-(1 << 20)) == sl.NICE_MAX
+    job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
+                  priority=-1024, seed="sunk")
+    record = [r for r in _submissions(fleet) if r["job_id"] == int(job.job_id)][0]
+    assert f"--nice={sl.NICE_MAX}" in record["argv"]
+
+
 def test_a_priority_past_the_base_asks_for_the_most_it_can_be_given(
     tmp_path: Path, fleet: Path
 ) -> None:
