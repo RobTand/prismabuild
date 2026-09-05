@@ -342,12 +342,13 @@ fi
 #
 # Asked before anything is written to /etc/slurm, so a box that does not match
 # its stanza is refused rather than configured and then refused.  The four
-# numbers are the ones task/affinity binds against; RealMemory and Gres are
+# numbers are the ones task/affinity binds against, and the address is the one
+# the controller will dial; RealMemory and Gres are
 # deliberately not compared, because RealMemory here is the fleet's admission
 # budget rather than the box's physical memory, and Gres is declared in
 # gres.conf rather than detected.
 
-step 5 "cross-check slurmd -C against this box's NodeName= stanza"
+step 5 "cross-check slurmd -C and this box's addresses against its NodeName= stanza"
 
 #: One NodeName stanza with its backslash continuations joined.
 node_stanza() {
@@ -386,6 +387,29 @@ if [ "$DRY_RUN" = 0 ]; then
         [ "$want" = "$got" ] || die "$key: slurm.conf says $want, this box reports $got. Fix fleet/slurm/slurm.conf and republish it to every box; a node whose stanza and hardware disagree comes up DRAINED with 'Low socket*core*thread count'"
     done
     say "# CPUs, SocketsPerBoard, CoresPerSocket and ThreadsPerCore all agree"
+fi
+
+# The address half of the same question.  slurm.conf carries an explicit
+# NodeAddr for every node and an address on SlurmctldHost, because on this
+# fleet the names do not resolve to what SLURM needs -- see that file's
+# Addresses note for the measurement.  They are DHCP leases rather than
+# reservations, so this is the place where a lease that moved becomes a
+# refusal naming the step, instead of a node that quietly never registers.
+
+declared_address="$(stanza_field "$declared" NodeAddr)"
+[ -n "$declared_address" ] || die "slurm.conf's NodeName=$NODE declares no NodeAddr. The controller cannot resolve either Spark by name, so an address is not optional here"
+
+box_addresses="$(capture ip -4 -o addr show scope global)"
+if [ "$DRY_RUN" = 0 ]; then
+    if ! printf '%s\n' "$box_addresses" \
+        | awk '{print $4}' | cut -d/ -f1 | grep -qx "$declared_address"; then
+        die "slurm.conf gives NodeName=$NODE the address $declared_address, and this box does not hold it:
+$(printf '%s\n' "$box_addresses" | awk '{printf "  %s %s\n", $2, $4}')
+A DHCP lease probably moved.  Fix NodeAddr in fleet/slurm/slurm.conf and
+install it on all three boxes; the NFS export in fleet/slurm/epilog.sh pins
+the same addresses, so check that too."
+    fi
+    say "# NodeAddr $declared_address is one of this box's addresses"
 fi
 
 # -- step 6: the configuration -----------------------------------------------

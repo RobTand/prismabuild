@@ -84,3 +84,54 @@ def test_the_declared_layout_multiplies_out_to_the_declared_cpu_count() -> None:
         assert product == int(fields["CPUs"]), (
             f"{node}: {product} != CPUs={fields['CPUs']}"
         )
+
+
+# -- addresses ---------------------------------------------------------------
+#
+# Measured 2026-09-05 on all three boxes.  These are the LAN addresses; the
+# 10.100.96.0/24 fabric carries only the two Sparks, and the controller is not
+# on it.
+ADDRESSES = {
+    "sparky": "192.168.1.180",
+    "gx10-6b77": "192.168.1.110",
+    "dl380g10": "192.168.1.107",
+}
+
+
+def test_every_node_carries_its_address_because_the_names_do_not_resolve() -> None:
+    """Name resolution on this fleet does not answer SLURM's question.
+
+    Measured 2026-09-05.  On dl380g10, the controller, ``getent hosts sparky``
+    and ``getent hosts gx10-6b77`` both return nothing: nsswitch is
+    ``files dns mymachines``, avahi is inactive, and neither Spark is in DNS or
+    in ``/etc/hosts``.  slurmctld would have had no address for either node.
+
+    In the other direction the Sparks do resolve ``dl380g10``, to two
+    addresses, wrong one first: ``getent ahostsv4 dl380g10`` answers
+    192.168.1.165 (mDNS, stale, silent to ping) before 192.168.1.107.
+
+    So the addresses live in the file.  Ports were measured open the same day
+    -- 6817 and 6818 answer "connection refused" rather than timing out, in
+    both directions -- so nothing else was in the way.
+    """
+
+    text = CONF.read_text(encoding="utf-8")
+    for node, address in ADDRESSES.items():
+        assert node_stanzas(text)[node].get("NodeAddr") == address, node
+    assert "SlurmctldHost=dl380g10(192.168.1.107)" in text
+
+
+def test_the_install_script_refuses_an_address_the_box_does_not_hold() -> None:
+    """The addresses are DHCP leases, so they can move.
+
+    That has to be a refusal rather than a node which never registers, and the
+    box running the install is the only one that can answer the question about
+    itself.
+    """
+
+    script = (
+        Path(__file__).resolve().parents[1] / "fleet" / "slurm" / "install.sh"
+    ).read_text(encoding="utf-8")
+    assert 'declared_address="$(stanza_field "$declared" NodeAddr)"' in script
+    assert "ip -4 -o addr show scope global" in script
+    assert "declares no NodeAddr" in script
