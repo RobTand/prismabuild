@@ -341,6 +341,15 @@ with at most its empty marker; no payload is written before publication. Success
 an attributable directory whose lock is released by the kernel. A reaper must
 acquire the owner lock before removal; local PID absence cannot establish that
 a writer on another host is dead.
+The `pb_gc` operator command also collects legacy root staging copies, claims,
+worker locks, and empty result staging namespaces. Applying any sweep requires
+an explicitly acknowledged maintenance window with every CAS producer paused
+on every host and candidate checkout roots verified absent on all hosts.
+Neither file age nor local process inspection proves remote abandonment.
+This is an operator prerequisite, not an automatically acquired fleet lock.
+GC retains records, unknown entries, occupied result namespaces, and private
+ingest directories whose owner lock cannot be acquired. Rechecks compare inode
+identity and removal traverses directory descriptors without following symlinks.
 A winning publisher reopens the canonical
 name and proves that it is the exact private, read-only staging inode whose
 bytes it just hashed and fsynced; it does not hash that same inode again. A

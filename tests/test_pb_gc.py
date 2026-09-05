@@ -540,3 +540,68 @@ def test_a_replaced_candidate_is_preserved(tmp_path: Path):
     staged.write_bytes(b"new publication")
     assert "replaced" in pb_gc._remove(row)
     assert staged.read_bytes() == b"new publication"
+
+
+def _killed_ingest(tmp_path: Path, *, check_live: bool = False) -> tuple[Path, Path]:
+    """Crash the actual staging owner, retaining precisely its durable litter."""
+    import select
+
+    cas_root = tmp_path / "cas"
+    source = tmp_path / "bundle.pack"
+    source.write_bytes(b"bundle bytes")
+    child = subprocess.Popen([
+        sys.executable, "-c",
+        "import sys, time; from pathlib import Path; "
+        "from prismabuild import core as pb\n"
+        "with pb._private_staging_directory(Path(sys.argv[1]) / '.staging') as private:\n"
+        "    pb._copy_to_staging(Path(sys.argv[2]), private)\n"
+        "    print(private, flush=True)\n"
+        "    time.sleep(120)\n",
+        str(cas_root), str(source),
+    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+       env={**os.environ, "PYTHONPATH": str(REPOSITORY / "src")})
+    try:
+        assert select.select([child.stdout], [], [], 10)[0], "ingest did not initialize"
+        line = child.stdout.readline().strip()
+        assert line, child.stderr.read()
+        private = Path(line)
+        assert private.name.startswith(pb.PRIVATE_STAGING_PREFIX)
+        assert (private / pb.PRIVATE_STAGING_OWNER).is_file()
+        if check_live:
+            # Deliberately omit /proc: the producer's ownership lock must
+            # protect it even when another host cannot see its descriptors.
+            plan = pb_gc.survey(cas_root, min_age_s=0, held_inodes=set())
+            assert not plan["sections"][pb_gc.KIND_PRIVATE_INGEST]["remove"]
+            assert any("held" in row["why"] for row in plan["keep"])
+            _run("--cas-root", str(cas_root), "--apply", "--min-age-hours", "0")
+            assert private.is_dir()
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+        child.stdout.close()
+        child.stderr.close()
+    assert child.returncode == -9
+    return cas_root, private
+
+
+def test_private_ingest_lock_protects_live_copy_and_killed_copy_is_swept(tmp_path: Path):
+    cas_root, private = _killed_ingest(tmp_path, check_live=True)
+    assert len(list(private.glob(".payload.*.tmp"))) == 1
+    screen = _run("--cas-root", str(cas_root), "--apply", "--min-age-hours", "0")
+    assert "private ingest staging: 1 scanned, 1 to remove" in screen
+    assert "removed 1 entries, 12 B" in screen
+    assert not private.exists()
+
+
+@pytest.mark.parametrize("unexpected", ["missing-owner", "symlink", "extra-file"])
+def test_private_ingest_with_uncertain_ownership_is_retained(tmp_path: Path, unexpected: str):
+    cas_root, private = _killed_ingest(tmp_path)
+    if unexpected == "missing-owner":
+        (private / pb.PRIVATE_STAGING_OWNER).unlink()
+    elif unexpected == "symlink":
+        (private / ".payload.link.tmp").symlink_to(tmp_path / "bundle.pack")
+    else:
+        (private / "notes").write_text("preserve")
+    before = _snapshot(cas_root)
+    _run("--cas-root", str(cas_root), "--apply", "--min-age-hours", "0")
+    assert _snapshot(cas_root) == before

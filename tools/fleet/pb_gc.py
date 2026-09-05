@@ -44,7 +44,7 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Iterable, Mapping  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 
-#: The four litter classes, in the order the report prints them.
+#: The litter classes, in the order the report prints them.
 KIND_CLAIM = "claim"
 KIND_LOCK = "lock"
 KIND_NAMESPACE = "staging namespace"
@@ -125,7 +125,7 @@ def _path_state(path: Path) -> str:
         os.lstat(path)
     except (FileNotFoundError, NotADirectoryError):
         return "absent"
-    except OSError:
+    except (OSError, ValueError):
         return "undecidable"
     return "present"
 
@@ -317,12 +317,14 @@ def _probe_lock(path: Path) -> str:
     once, so a producer that arrives during the probe waits microseconds.
     """
 
-    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
         return f"cannot open: {exc}"
     try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return "not a regular ownership lock"
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -483,11 +485,19 @@ def _survey_private_ingests(
         if not entry.is_dir(follow_symlinks=False):
             keep.append(_retain(KIND_PRIVATE_INGEST, path, "not a real directory"))
             continue
-        info = path.lstat()
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            keep.append(_retain(KIND_PRIVATE_INGEST, path, f"cannot inspect: {exc}"))
+            continue
         members = {}
         reason = ""
         for member in _entries(path):
-            member_info = member.stat(follow_symlinks=False)
+            try:
+                member_info = member.stat(follow_symlinks=False)
+            except OSError:
+                reason = "ingest contents changed while surveying"
+                break
             if (not stat.S_ISREG(member_info.st_mode)
                     or member_info.st_uid != os.geteuid()
                     or not (member.name == PRIVATE_STAGING_OWNER
@@ -564,6 +574,8 @@ def survey(
     a fresh one immediately before it removes anything.
     """
 
+    if not math.isfinite(min_age_s) or min_age_s < 0:
+        raise SweepError("minimum age must be finite and nonnegative")
     cas_root = Path(cas_root)
     if not cas_root.is_dir():
         raise SweepError(f"not a CAS root: {cas_root}")
@@ -622,7 +634,7 @@ def _remove_lock(path: Path, identity: tuple) -> str:
     except (OSError, pb.PrismaBuildError) as exc:
         return f"cannot open {path.parent}: {exc}"
     try:
-        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
         try:
             descriptor = os.open(path.name, flags, dir_fd=directory_fd)
         except FileNotFoundError:
