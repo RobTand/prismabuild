@@ -517,7 +517,9 @@ interactive. Duplicates are collapsed by working directory and argv. An
 action that had the whole device to itself keeps `--exclusive`, restored from
 the GRES the lane recorded, because `{"gpu": 1}` alone cannot say it. A record filed by the SLURM lane always goes back out on the lane whatever
 `--transport` says, because re-submitting a lane-filed failure into a queue no
-worker drains would lose it. Withdrawn actions are skipped: re-submitting them
+worker drains would lose it. A record that names no transport follows the same
+default every producer follows: `PRISMABUILD_TRANSPORT`, then the published
+generation's `default_transport`, then the pull queue. Withdrawn actions are skipped: re-submitting them
 would undo a decision. A record `pool_reset` has already handled is filed as
 `reset` and skipped, unless you pass `--include-reset`. That record keeps the
 failure it recorded: the returncode, the output tails, and the job the lane

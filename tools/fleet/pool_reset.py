@@ -33,7 +33,9 @@ into the pull queue puts it in a queue no worker drains once the fleet has cut
 over.  So each record's own ``transport`` field decides, ``--transport slurm``
 forces the whole reset onto the lane, and the child ``pbrun`` is always told
 explicitly -- an ambient ``PRISMABUILD_TRANSPORT`` must not silently re-route
-work whose ending the other transport filed.
+work whose ending the other transport filed.  For a record that names no
+transport the answer comes from ``fleet_submit.default_transport``: the
+environment, then the published generation's receipt, then the pull queue.
 
 **A sealed action is reset as itself, not re-sealed.**  Everything above is
 about a *path-addressed* action, whose pins go stale because a live tree moves
@@ -71,7 +73,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import socket
 import subprocess
@@ -84,6 +85,7 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Mapping, Sequence  # noqa: E402
+import fleet_submit  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
@@ -102,10 +104,10 @@ PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
 RESULT_PREFIX = "pbrun_result."
 
 
-#: Which dispatcher carries a re-submission.  ``pbrun`` owns the vocabulary;
-#: this tool only decides which word to hand it, per record.
-TRANSPORTS = ("pool", "slurm")
-DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
+#: Which dispatcher carries a re-submission is ``fleet_submit``'s vocabulary,
+#: read from there rather than restated here: the cutover travels in the
+#: published generation's receipt, and a second copy of the list is a second
+#: place for it to go stale.
 
 
 def _request_path(action_key: str, *, cas_root: Path) -> Path:
@@ -626,7 +628,21 @@ def _file_reset(plan: Mapping, *, reason: str) -> None:
         pool._write_json_atomic(path, record)
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """This tool's flags, with ``--transport`` spelled the shared way.
+
+    The default used to be ``PRISMABUILD_TRANSPORT`` or ``pool``, which is a
+    description of one shell and no description of a fleet. Once a generation
+    publishes ``default_transport: slurm``, a reset reading only the
+    environment would re-submit every recovered action into the pull queue no
+    worker drains. ``fleet_submit.add_transport_argument`` is the one place
+    that order is decided -- environment, then the published generation's
+    receipt, then the pull queue -- and every producer reads it there.
+
+    The default is evaluated when the parser is built, so a caller that
+    changes the generation builds a new one.
+    """
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--apply", action="store_true",
                     help="actually submit; the default only reports")
@@ -642,17 +658,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--include-reset", action="store_true",
                     help="re-include items a previous run already marked reset "
                          "(use when that run's submissions did not survive)")
-    ap.add_argument(
-        "--transport", choices=TRANSPORTS,
-        default=os.environ.get(DEFAULT_TRANSPORT_ENV) or "pool",
-        help="dispatcher for records that do not name one (env "
-             "PRISMABUILD_TRANSPORT); a record filed by the SLURM lane always "
-             "goes back out on the lane whatever this says")
+    # A record filed by the SLURM lane always goes back out on the lane
+    # whatever this says; this only answers for records that name no transport.
+    fleet_submit.add_transport_argument(ap)
     ap.add_argument("--queue-root", default=str(SH / "pb-queue"),
                     help=argparse.SUPPRESS)
     ap.add_argument("--cas-root", default=str(SH / "cas"),
                     help=argparse.SUPPRESS)
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     queue = pool.PoolQueue(Path(args.queue_root))
     cas_root = Path(args.cas_root)
