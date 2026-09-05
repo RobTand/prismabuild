@@ -32,6 +32,8 @@ patched. The host's real `/mnt/shared` is never touched.
 | 7b | `--constraint` for a Feature no node has is refused at submit and reported by `pbrun` |
 | 8 | the Epilog ran for a killed job, matched containers by the action's ownership label, and removed its state file as the job's user rather than as root |
 | 9 | with no `slurmdbd`, `sacct` answers nothing and the lane's provenance comes from `scontrol` |
+| 10a | a three-row `pbcampaign` manifest with mixed demand -- two `shard:1` rows and one no-GPU row -- runs on the fleet and reports one table with each row's job id and node |
+| 10b | the same manifest re-run is three CAS hits: no new job id, no new submission record, and no action ran again |
 
 ## What it does not establish
 
@@ -55,8 +57,9 @@ The container is not the fleet, and four things stay open for the install:
 
 ## The two SLURMs behave differently, and the differences are recorded
 
-Both pass all eleven rows. Two things had to be worked around for 23.11.4, and
-neither is a lane defect:
+Both pass all eleven scheduler rows. The two campaign rows (10a, 10b) were
+added afterwards and have run on 25.11.2 only. Two things had to be worked
+around for 23.11.4, and neither is a lane defect:
 
 - Its `cgroup/v2` plugin creates its stepd scope under `/sys/fs/cgroup/system.slice`
   and refuses to initialize when that directory is absent (`Could not create

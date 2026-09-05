@@ -35,6 +35,7 @@ LANE = SH / "slurm"
 WORK = VOL / "work"
 SRC = WORK / "src"
 PBRUN = REPO / "tools" / "fleet" / "pbrun.py"
+PBCAMPAIGN = REPO / "tools" / "fleet" / "pbcampaign.py"
 
 #: Job submission through this lane costs a git materialization and a poll
 #: interval, so a row that expects an ending waits minutes, not seconds.
@@ -70,6 +71,50 @@ def pbrun(command: list[str], *, extra: list[str] = [],
         "--", *command,
     ]
     return sh(argv, timeout=timeout)
+
+
+def campaign(manifest: Path, *, extra: list[str] = [],
+             timeout: float = 900.0) -> subprocess.CompletedProcess:
+    argv = [
+        sys.executable, str(PBCAMPAIGN),
+        "--transport", "slurm",
+        "--wait-s", str(WAIT_S),
+        *extra,
+        str(manifest),
+    ]
+    return sh(argv, timeout=timeout)
+
+
+def table_rows(completed: subprocess.CompletedProcess) -> list[dict[str, str]]:
+    """The campaign's table, as one dict per row keyed by its column name."""
+
+    lines = [line for line in (completed.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return []
+    header = lines[0].split()
+    if header[:2] != ["key", "status"]:
+        return []
+    return [dict(zip(header, line.split())) for line in lines[1:]]
+
+
+def lane_latest(prefix: str) -> dict:
+    """The newest submission recorded for a key, found by its printed prefix."""
+
+    if not prefix or not LANE.is_dir():
+        return {}
+    for directory in sorted(LANE.iterdir()):
+        if directory.is_dir() and directory.name.startswith(prefix):
+            try:
+                return json.loads((directory / "latest.json").read_text())
+            except (OSError, ValueError):
+                return {}
+    return {}
+
+
+def lane_submissions() -> int:
+    """Every submission record the lane holds, across every action."""
+
+    return len(list(LANE.glob("*/submissions/*.json"))) if LANE.is_dir() else 0
 
 
 def submitted(completed: subprocess.CompletedProcess) -> tuple[str, str]:
@@ -483,6 +528,97 @@ def row_9_no_slurmdbd(job_id: str) -> None:
     del path
 
 
+def row_10_campaign(nonces: list[Path]) -> None:
+    """One manifest, three rows, mixed demand, one table.
+
+    This is the fan-out claim: an agent submits N actions with one command and
+    waits for all of them with one command, and each one is a CAS-memoized
+    action sealed by ``pbrun`` itself.  Two rows ask for a shard so the node's
+    ``shard:2`` admits them together; the third asks for no GPU at all, which
+    is the shape that goes to the CPU partition on the fleet.
+    """
+
+    manifest = WORK / "campaign.json"
+    manifest.write_text(json.dumps([
+        {"argv": ["bash", "action.sh", "run", str(nonces[0])],
+         "cwd": str(SRC), "demand": {"gpu": 1, "mem_gb": 2},
+         "timeout_s": 600},
+        {"argv": ["bash", "action.sh", "run", str(nonces[1])],
+         "cwd": str(SRC), "demand": {"gpu": 1, "mem_gb": 2},
+         "timeout_s": 600},
+        {"argv": ["bash", "action.sh", "run", str(nonces[2])],
+         "cwd": str(SRC), "demand": {"cpu": 2, "mem_gb": 2},
+         "timeout_s": 600},
+    ], indent=1), encoding="utf-8")
+
+    completed = campaign(manifest)
+    rows = table_rows(completed)
+    for line in (completed.stdout or "").splitlines():
+        if line.strip():
+            print(f"    | {line}", flush=True)
+    jobs = [row.get("job", "") for row in rows]
+    checks = {
+        "campaign rc==0": completed.returncode == 0,
+        "three rows": len(rows) == 3,
+        "all executed": all(row.get("status") == "executed" for row in rows),
+        "all via slurm": all(row.get("transport") == "slurm" for row in rows),
+        "distinct job ids": len(set(jobs)) == 3 and all(j.isdigit() for j in jobs),
+        f"all on {NODE}": all(row.get("host") == NODE for row in rows),
+        "each ran once": all(
+            nonce.exists() and nonce.read_text().count("\n") == 1
+            for nonce in nonces
+        ),
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    record(
+        "10a a three-row campaign runs on the fleet and reports one table",
+        not failed,
+        f"jobs={jobs} " + (
+            f"missing: {failed}; rc={completed.returncode}; "
+            f"stderr={(completed.stderr or '')[-600:]}" if failed else
+            f"hosts={[row.get('host') for row in rows]}"
+        ),
+    )
+
+
+def row_11_campaign_rerun(nonces: list[Path]) -> None:
+    """The same manifest again: every row a cache hit, and no new job ids.
+
+    A detached submission of work already in the CAS would be a node occupied
+    and a checkout materialized to discover what the submitter already knew,
+    so the campaign does not submit one.  The lane's own record is the witness:
+    the newest submission for each key is still the job that ran it.
+    """
+
+    manifest = WORK / "campaign.json"
+    lines_before = [nonce.read_text().count("\n") for nonce in nonces]
+    submissions_before = lane_submissions()
+    completed = campaign(manifest)
+    rows = table_rows(completed)
+    for line in (completed.stdout or "").splitlines():
+        if line.strip():
+            print(f"    | {line}", flush=True)
+    lines_after = [nonce.read_text().count("\n") for nonce in nonces]
+    checks = {
+        "campaign rc==0": completed.returncode == 0,
+        "three rows": len(rows) == 3,
+        "all cache_hit": all(row.get("status") == "cache_hit" for row in rows),
+        "no job ids": all(row.get("job") == "-" for row in rows),
+        "nothing re-ran": lines_before == lines_after,
+        "no new submissions": lane_submissions() == submissions_before,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    record(
+        "10b the same manifest re-run costs no job at all",
+        not failed,
+        f"nonce lines {lines_before}->{lines_after} "
+        f"lane submissions {submissions_before}->{lane_submissions()} "
+        + (f"missing: {failed}; rc={completed.returncode}; "
+           f"stderr={(completed.stderr or '')[-600:]}" if failed else
+           f"statuses={[row.get('status') for row in rows]}"),
+    )
+
+
 def main() -> int:
     for argv in (
         ["git", "config", "--global", "user.name", "PrismaBuild smoke"],
@@ -507,6 +643,13 @@ def main() -> int:
     row_7_gres_and_constraint()
     row_8_epilog(timeout_job)
     row_9_no_slurmdbd(timeout_job or first_job)
+    # Last, and after row 8: the Epilog row asserts that no job state file is
+    # left in the lane, and a campaign in flight would legitimately hold three.
+    campaign_nonces = [VOL / f"campaign-{name}.txt" for name in "abc"]
+    for nonce in campaign_nonces:
+        nonce.write_text("")
+    row_10_campaign(campaign_nonces)
+    row_11_campaign_rerun(campaign_nonces)
     del prefix, timeout_prefix
 
     width = max(len(name) for name, _, _ in results)
