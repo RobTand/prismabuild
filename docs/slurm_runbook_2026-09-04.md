@@ -561,7 +561,7 @@ time of the first sample in the current run of unchanged samples, or null.
   This is the job's own cgroup accounting on the node, so an action does
   nothing to be measured and the numbers come from where the work runs.
   `sstat` reads running steps from `slurmd` and works without `slurmdbd`;
-  smoke row 10 confirms it on this configuration.
+  smoke row 13 confirms it on this configuration.
 - `stat` of `<lane root>/<action key>/<jobid>.out` and `.err`. This is the
   only evidence left when `sstat` is absent or refuses, and the sample says
   so in `sstat_error` and `evidence`.

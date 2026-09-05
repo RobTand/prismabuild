@@ -421,7 +421,7 @@ def test_a_withdrawal_carries_the_last_liveness_sample(
     assert liveness["latest"] == _samples(job)[-1]
 
 
-# The container smoke's real sstat 25.11.2 line (row 10, 2026-09-05), verbatim.
+# The container smoke's real sstat 25.11.2 line (row 13, 2026-09-05; numbered 10 in that run), verbatim.
 _REAL_SSTAT_LINE = (
     "10.batch|00:00:00|00:00:00|20164608|5600628|33215|1|"
     "cpu=00:00:00,energy=0,fs/disk=5600628,mem=20094976,pages=0,vmem=0"
