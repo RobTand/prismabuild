@@ -61,6 +61,10 @@ FLEET_SCRIPTS = (
     # runtime_process_census.py is here for the same reason and is only
     # useful there: it reads /proc on the box it runs on.
     "pbstatus.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
+    # pb_gc.py is the same case: it sweeps a store from whichever box is
+    # holding the mount, and it reads /proc on the box it runs on to find out
+    # what is still live there.
+    "pb_gc.py",
 )
 #: Fleet tools deliberately left out of the generation, each with the reason.
 #: Empty: every tool under ``tools/fleet`` is something a box with no checkout

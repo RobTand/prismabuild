@@ -1013,3 +1013,52 @@ either transport. Ignoring them is the SLURM half only, because the pull queue
 never snapshots. This applies to the smoke action, whose result is
 `fleet_result.txt`, and to every export shard, whose result is
 `results/glm53-tessera/shard-NNNNN.json`.
+
+## Sweep the store's per-execution litter
+
+`pb_gc` inventories per-execution claims under `local-results/v1/`, worker lock
+files, empty local-result staging namespaces, legacy root staging payloads,
+and private `ingest.*` staging directories left by killed ingests. Requests,
+receipts, unrecognized entries, and nonempty result staging namespaces are
+retained. Normal ingest completion removes its private directory; SIGKILL can
+leave payload bytes behind for this maintenance command to reclaim.
+
+    tools/fleet/pb_gc.py --cas-root /mnt/shared/prismabuild-fleet/cas
+
+The default only reports, including candidate paths, bytes, ages, reasons for
+retention, and record counts. `--summary` omits individual paths. No default
+CAS root is supplied. Candidate status describes local observations; it does
+not establish that a remote execution is dead.
+
+Before applying a sweep, stop new submissions and drain or stop **all CAS
+producers on every host**, including direct clients outside the worker pool.
+Review the dry-run paths and verify candidate checkout roots are absent on all
+hosts where they could reside. Keep any claim needed to repair a persistent
+checkout. Maintain this quiescence until the command exits. Only then run:
+
+    tools/fleet/pb_gc.py --cas-root /mnt/shared/prismabuild-fleet/cas --apply --quiescent-store
+
+Both flags are required for removal. `--quiescent-store` records the operator's
+assertion; the tool does not acquire a distributed maintenance lock or stop
+workers itself. A root missing on this host can exist on another host, and a
+local `/proc` scan cannot see remote file users. Removing an unlocked worker
+lock while producers may open it can leave a waiter on an orphan inode. The
+maintenance requirement prevents relying on those incomplete local checks.
+
+`--min-age-hours` is a finite, nonnegative retention threshold (default 24),
+never proof of abandonment. Raising it does not make an online sweep safe.
+The tool retains claims whose checkout roots exist or cannot be inspected,
+locks protected by those claims or a local holder, occupied result staging
+namespaces, open local staging files, and private ingest directories whose
+ownership lock is held, missing, or contains unrecognized files. A private
+ingest lock is held throughout copying and publication; the reaper also holds
+it while deleting that directory. Incomplete hidden `.ingest.*` initialization
+directories are retained for manual inspection.
+
+A fresh survey and inode identity checks protect against entries that changed
+since the report. Parent directories are opened without following symlinks.
+A skipped removal exits 1 and reports the path; invalid arguments or an unsafe
+store layout exit 2. These safeguards complement the maintenance prerequisite.
+Use `core.repair_local_result` for occupied result namespaces: it takes the
+output lock and validates the result's ownership before clearing a crash-left
+publication.
