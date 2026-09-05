@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import errno
 import fcntl
 import hashlib
@@ -2640,7 +2640,11 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
         before = os.fstat(source_fd)
         if not stat.S_ISREG(before.st_mode):
             raise LocalActionError(f"result is not a regular file: {source}")
-        with os.fdopen(descriptor, "wb") as destination:
+        handle = os.fdopen(descriptor, "wb")
+        # ``os.fdopen`` owns the descriptor from here; the ``finally`` below
+        # must not close it a second time.
+        descriptor = -1
+        with handle as destination:
             while True:
                 chunk = os.read(source_fd, 4 * 1024 * 1024)
                 if not chunk:
@@ -2679,6 +2683,13 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
             pass
         raise
     finally:
+        # Every rejection between ``mkstemp`` and ``os.fdopen`` used to leave
+        # this descriptor open on an unlinked staging file.  A directory or a
+        # FIFO source is refused there, so a caller that kept refusing invalid
+        # inputs ran out of descriptors and could no longer do valid work.
+        if descriptor >= 0:
+            with suppress(OSError):
+                os.close(descriptor)
         os.close(source_fd)
         os.close(staging_fd)
 
