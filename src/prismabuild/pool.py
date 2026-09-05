@@ -3757,10 +3757,22 @@ class PoolQueue:
             # decision reached nobody.  Keep the evidence under a name of its
             # own: the links still resolve, and no reader mistakes them for
             # this record's own ending.
+            #
+            # ``detail`` is the same fact one field over.  A record a requeue
+            # has touched carries the returncode, stdout and stderr of the
+            # attempt that failed, and under ``status: withdrawn`` that
+            # describes an ending this record does not have: ``pbrun`` wrote
+            # the failed attempt's stderr to the operator's terminal and only
+            # then said who withdrew the action, and ``pbstatus`` showed its
+            # returncode on the withdrawn row.  A cancellation has no detail of
+            # its own -- ``withdrawn_by`` and ``reason`` are what it has to say
+            # -- so the field is kept as evidence rather than left where every
+            # reader takes it for this record's ending.
             for field, kept in (
                 ("attempt_history", "attempt_history_before_withdrawal"),
                 ("attempt_history_missing_before",
                  "attempt_history_missing_before_withdrawal"),
+                ("detail", "detail_before_withdrawal"),
             ):
                 if field in filed:
                     filed[kept] = filed.pop(field)
