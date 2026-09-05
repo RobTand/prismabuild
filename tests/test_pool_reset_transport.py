@@ -30,6 +30,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
 
+import fleet_submit  # noqa: E402
 import pool_reset  # noqa: E402
 
 from test_slurm_lane import (  # noqa: E402
@@ -126,20 +127,70 @@ def test_a_lane_filed_timeout_is_resubmitted_through_the_lane(fleet) -> None:
     assert command[command.index("--transport") + 1] == "slurm"
 
 
-def test_a_pull_queue_failure_stays_on_the_pull_queue(fleet, monkeypatch) -> None:
-    """Even when the operator's shell has already been cut over.
+def _generation(root: Path, **receipt: object) -> Path:
+    """A published runtime generation, with the receipt a producer reads."""
 
-    The transport is a property of the record, not of the environment: an
-    ambient ``PRISMABUILD_TRANSPORT`` must not silently re-route work whose
-    ending the pull queue filed, so the child's transport is always stated.
+    root.mkdir(parents=True, exist_ok=True)
+    body = {
+        "schema": "prismaquant.prismabuild.runtime_version.v1",
+        "commit": "b" * 40,
+        "dirty": False,
+        "generation": root.name,
+        "files": {},
+        **receipt,
+    }
+    (root / "RUNTIME_VERSION.json").write_text(json.dumps(body), encoding="utf-8")
+    return root
+
+
+def test_a_reset_reads_the_cutover_out_of_the_published_generation(
+    fleet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """The cutover is a property of the published bytes, not of a shell.
+
+    ``pool_reset`` read ``PRISMABUILD_TRANSPORT`` and fell back to ``pool``,
+    so once a generation published ``default_transport: slurm`` a reset would
+    have sent work back into the pull queue no worker drains.
+
+    main: a record the pull queue filed goes back out on the lane the
+    generation names.
+    branch: an operator's own environment still wins over the receipt.
     """
 
-    monkeypatch.setenv("PRISMABUILD_TRANSPORT", "")
-    plans, _ = pool_reset.plan_resets(fleet["queue"], cas_root=fleet["cas_root"])
-    plan = _plan_for(plans, KEY_POOL)
-    assert plan["transport"] == "pool"
-    command = pool_reset.submit_command(plan, transport=plan["transport"])
-    assert command[command.index("--transport") + 1] == "pool"
+    monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
+    monkeypatch.setattr(
+        fleet_submit, "RUNTIME_ROOT",
+        _generation(tmp_path / "gen", default_transport="slurm"),
+    )
+    where = ["--queue-root", str(fleet["queue_root"]),
+             "--cas-root", str(fleet["cas_root"])]
+
+    assert pool_reset.main(where) == 0
+    assert f"{KEY_POOL[:12]} x1 slurm" in capsys.readouterr().out
+
+    monkeypatch.setenv(fleet_submit.DEFAULT_TRANSPORT_ENV, "pool")
+    assert pool_reset.main(where) == 0
+    assert f"{KEY_POOL[:12]} x1 pool" in capsys.readouterr().out
+
+
+def test_the_transport_flag_is_spelled_the_way_every_producer_spells_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One parser default, shared with ``fleet_submit``.
+
+    main: the parser's default is the generation's, evaluated where every
+    other producer evaluates it.
+    branch: an explicit flag still wins over both.
+    """
+
+    monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
+    monkeypatch.setattr(
+        fleet_submit, "RUNTIME_ROOT",
+        _generation(tmp_path / "gen", default_transport="slurm"),
+    )
+    assert pool_reset.build_parser().parse_args([]).transport == "slurm"
+    assert pool_reset.build_parser().parse_args(
+        ["--transport", "pool"]).transport == "pool"
 
 
 def test_asking_for_slurm_carries_every_reset_onto_the_lane(fleet) -> None:

@@ -2425,15 +2425,31 @@ class PoolQueue:
             # of the same window; that fix's own comment names ``finish()``
             # and only the loop was repaired.  File the outcome terminally so
             # it is countable, and never route it back to ``ready``.
-            snapshot_host = (claim_snapshot or {}).get("claimed_host")
+            #
+            # Ask what this generation has already been filed as before
+            # choosing a directory.  The winner's conclusion is the terminal:
+            # a reaper that filed ``failed/`` and a launcher that then
+            # succeeded are one attempt with one ending, and writing the
+            # launcher's opinion into ``done/`` beside it gives one key two
+            # terminals.  ``pbrun`` then answers with whichever record scores
+            # higher, ``pool_reset`` offers to re-run work whose receipt is in
+            # the CAS, and ``reclaim_terminal_reservation`` refuses the key as
+            # ambiguous.  The snapshot carries ``published_unix``, which is
+            # what makes the question askable here at all.
+            snapshot = dict(claim_snapshot or {})
+            snapshot_host = snapshot.get("claimed_host")
             self.ledger(
                 str(snapshot_host) if isinstance(snapshot_host, str) else None
             ).release(action_key)
+            self.lease_path(action_key).unlink(missing_ok=True)
+            covered = self.terminal_outcome_covers(
+                snapshot, action_key=action_key)
+            if covered is not None:
+                return self.item_path(str(covered[0]), action_key)
             lost = self.item_path(
-                FAILED, action_key) if not succeeded else self.item_path(
-                DONE, action_key)
+                DONE if succeeded else FAILED, action_key)
             if not lost.exists():
-                _write_json_atomic(lost, {
+                filed = {
                     "schema": POOL_OUTCOME_SCHEMA_V1,
                     "action_key": action_key,
                     "status": status if succeeded else "finish_lost_race",
@@ -2446,8 +2462,18 @@ class PoolQueue:
                                   "carry forward",
                         "worker_detail": dict(detail or {}),
                     },
-                })
-            self.lease_path(action_key).unlink(missing_ok=True)
+                }
+                # Generation-scoped like every other terminal, from the only
+                # copy of the item this branch has.  Identity fields only: the
+                # snapshot's ``attempts`` predates this attempt, and its
+                # ``attempt_history`` links an attempt somebody else archived,
+                # which a reader would adopt against the wrong disposition.
+                for field in ("published_unix", "published_by", "claimed_by",
+                              "claimed_unix", "claimed_host", "max_attempts",
+                              "retry_safe"):
+                    if field in snapshot:
+                        filed[field] = snapshot[field]
+                _write_json_atomic(lost, filed)
             return lost
         host = record.get("claimed_host")
         prior_attempts = int(record.get("attempts", 0))
@@ -2908,6 +2934,22 @@ class PoolQueue:
 
         if existing is None:
             filed = dict(record or {})
+            # A withdrawal is an operator's verb, not an attempt, and the
+            # copied record can carry links a requeue wrote.  Every reader of a
+            # terminal record adopts the immutable attempt whenever
+            # ``attempt_history`` is present, and the attempt it adopts says
+            # ``requeued`` while the directory says ``withdrawn``, so
+            # ``outcome_summary`` refused the record and the operator's
+            # decision reached nobody.  Keep the evidence under a name of its
+            # own: the links still resolve, and no reader mistakes them for
+            # this record's own ending.
+            for field, kept in (
+                ("attempt_history", "attempt_history_before_withdrawal"),
+                ("attempt_history_missing_before",
+                 "attempt_history_missing_before_withdrawal"),
+            ):
+                if field in filed:
+                    filed[kept] = filed.pop(field)
             filed.update(
                 {
                     "schema": POOL_OUTCOME_SCHEMA_V1,

@@ -534,9 +534,20 @@ interactive. Duplicates are collapsed by working directory and argv. An
 action that had the whole device to itself keeps `--exclusive`, restored from
 the GRES the lane recorded, because `{"gpu": 1}` alone cannot say it. A record filed by the SLURM lane always goes back out on the lane whatever
 `--transport` says, because re-submitting a lane-filed failure into a queue no
-worker drains would lose it. Withdrawn actions are skipped: re-submitting them
+worker drains would lose it. A record that names no transport follows the same
+default every producer follows: `PRISMABUILD_TRANSPORT`, then the published
+generation's `default_transport`, then the pull queue. Withdrawn actions are skipped: re-submitting them
 would undo a decision. A record `pool_reset` has already handled is filed as
-`reset` and skipped, unless you pass `--include-reset`.
+`reset` and skipped, unless you pass `--include-reset`. That record keeps the
+failure it recorded: the returncode, the output tails, and the job the lane
+submitted stay in `detail`, and the reset is stamped beside them under `reset`.
+
+`--apply` keeps each re-submission's output under `<queue root>/resets/` and
+waits a few seconds, once for the whole batch, before it stamps anything. A
+child `pbrun` that refuses does so at once, and a refusal is printed with the
+tail of what it said, leaves its record `failed` so the next run plans it
+again, and makes the command exit non-zero. A child still running at the end
+of that wait has been admitted and is left alone.
 
 A record addressed by a snapshot, which is what the lane files for every
 submission, is not re-sealed. Its tree is a commit in the CAS and nothing can

@@ -33,7 +33,9 @@ into the pull queue puts it in a queue no worker drains once the fleet has cut
 over.  So each record's own ``transport`` field decides, ``--transport slurm``
 forces the whole reset onto the lane, and the child ``pbrun`` is always told
 explicitly -- an ambient ``PRISMABUILD_TRANSPORT`` must not silently re-route
-work whose ending the other transport filed.
+work whose ending the other transport filed.  For a record that names no
+transport the answer comes from ``fleet_submit.default_transport``: the
+environment, then the published generation's receipt, then the pull queue.
 
 **A sealed action is reset as itself, not re-sealed.**  Everything above is
 about a *path-addressed* action, whose pins go stale because a live tree moves
@@ -48,7 +50,12 @@ constraint and exclusivity its own ending recorded.
 
 **A reset detaches, and files no ending.**  ``--apply`` starts every
 re-submission and returns; nothing here stays alive to watch a job, and an
-ending written now would say ``failed`` about work that is still queued.  A
+ending written now would say ``failed`` about work that is still queued.  It
+does wait one shared ``REFUSAL_WINDOW_S`` before stamping the records, because
+a child that refuses does so at once and a run that reported it as submitted
+was reporting work that does not exist.  Nothing is signalled at the end of
+that window: a child still running has been admitted, and its output is kept
+under ``<queue root>/resets/`` either way.  A
 re-sealed action goes out through a detached ``pbrun``, and a sealed one
 through ``slurm_lane.run(detach=True)``, which records the submission under
 ``<lane root>/<key>/latest.json``.  Either way the ending is ``pbwait``'s to
@@ -66,7 +73,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import socket
 import subprocess
@@ -78,7 +84,8 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from collections.abc import Mapping  # noqa: E402
+from collections.abc import Mapping, Sequence  # noqa: E402
+import fleet_submit  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
@@ -97,10 +104,10 @@ PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
 RESULT_PREFIX = "pbrun_result."
 
 
-#: Which dispatcher carries a re-submission.  ``pbrun`` owns the vocabulary;
-#: this tool only decides which word to hand it, per record.
-TRANSPORTS = ("pool", "slurm")
-DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
+#: Which dispatcher carries a re-submission is ``fleet_submit``'s vocabulary,
+#: read from there rather than restated here: the cutover travels in the
+#: published generation's receipt, and a second copy of the list is a second
+#: place for it to go stale.
 
 
 def _request_path(action_key: str, *, cas_root: Path) -> Path:
@@ -495,21 +502,147 @@ def submit_command(
     return command + ["--"] + list(plan["argv"])
 
 
+#: How long ``--apply`` watches its re-submissions before calling them in
+#: flight.  One window is shared by every child, so a large reset costs it
+#: once rather than once per action.  It is not a deadline on the work:
+#: nothing is signalled at the end of it, and a child still running is a
+#: submission that landed and is now waiting for its outcome.
+REFUSAL_WINDOW_S = 10.0
+
+#: Where a re-submission's own output is kept, under the queue root.  A
+#: directory of its own, because every reader of this queue addresses the
+#: state directories by ``<key>.json`` and none of them looks here.
+RESETS = "resets"
+
+
+def resubmission_log(queue_root: Path, key: str) -> Path:
+    """Where one re-submission's output goes.
+
+    Named by key and start time, so a second reset of the same action does not
+    overwrite the evidence from the first.
+    """
+
+    return Path(queue_root) / RESETS / f"{key}.{time.time():.6f}.log"
+
+
+def start_resubmission(
+    command: Sequence[str], *, queue_root: Path, key: str
+) -> tuple[subprocess.Popen, Path]:
+    """Start one detached re-submission, keeping what it says.
+
+    Its output used to go to ``/dev/null``, which is the whole of why a
+    refusal was invisible: the child said why it would not run and nobody
+    could read it.
+    """
+
+    log = resubmission_log(queue_root, key)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("wb") as handle:
+        process = subprocess.Popen(
+            list(command), stdout=handle, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    return process, log
+
+
+def refusal_of(
+    process: subprocess.Popen, log: Path, *, deadline: float
+) -> str | None:
+    """Why this child refused, or ``None`` if it did not.
+
+    ``pbrun`` refuses early and exits non-zero: a closure that no longer
+    matches the tree, a checkout that is gone, a demand no box can meet. A
+    child still running at the deadline has been admitted and is waiting for
+    its outcome, and one that exited zero was answered from the CAS. Neither
+    is a refusal, and neither is waited out: this window only decides what to
+    print and what to stamp.
+
+    Args:
+        process: The child started by ``start_resubmission``.
+        log: Where its output is being written.
+        deadline: A ``time.monotonic`` reading to stop waiting at.
+
+    Returns:
+        The child's status and the tail of what it said, or ``None``.
+    """
+
+    try:
+        returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        return None
+    if returncode == 0:
+        return None
+    try:
+        said = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        said = ""
+    tail = [line for line in said.splitlines() if line.strip()][-3:]
+    return "\n    ".join(
+        [f"the re-submission exited {returncode}; its output is {log}"] + tail
+    )
+
+
 def _file_reset(plan: Mapping, *, reason: str) -> None:
-    """Mark this plan's endings ``reset`` so the failure count means something."""
+    """Mark this plan's endings ``reset`` so the failure count means something.
+
+    Three things this rewrite is careful about, because the tool resets the
+    work and not the record.
+
+    **It publishes by rename.**  ``path.write_text`` truncates and then writes,
+    and these records are read from three boxes over NFS: a reader taking
+    ``claim``'s path through ``terminal_outcome_covers`` could see the half of
+    the file that had landed and raise with the item already moved into
+    ``claimed/``.  ``pool._write_json_atomic`` is what every other writer in
+    the queue uses, and it is what this uses now.
+
+    **The rewritten record stays readable.**  Changing ``status`` while leaving
+    ``attempt_history`` in place made ``pbrun.outcome_summary`` refuse the
+    record: it adopts the immutable attempt whenever those links are present,
+    and the attempt still says ``failed``.  The links are kept under a name of
+    their own, exactly as ``pool.withdraw`` keeps them.
+
+    **The evidence stays.**  Replacing ``detail`` with the reason destroyed the
+    returncode and the output tails, which are the whole reason somebody reads
+    a failed record afterwards, and on a lane-filed record it destroyed the
+    GRES a later reset needs to restore ``--exclusive``.  The reset is recorded
+    beside ``detail``, not on top of it.
+    """
 
     for path in plan["paths"]:
-        record = json.loads(path.read_text())
+        record = pool._read_json(path)
+        if record is None:
+            continue
         record["status"] = "reset"
-        record["detail"] = {
+        record["reset"] = {
             "reason": reason,
             "reset_unix": time.time(),
             "reset_host": socket.gethostname(),
         }
-        path.write_text(json.dumps(record, indent=1))
+        for field, kept in (
+            ("attempt_history", "attempt_history_before_reset"),
+            ("attempt_history_missing_before",
+             "attempt_history_missing_before_reset"),
+        ):
+            if field in record:
+                record[kept] = record.pop(field)
+        pool._write_json_atomic(path, record)
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """This tool's flags, with ``--transport`` spelled the shared way.
+
+    The default used to be ``PRISMABUILD_TRANSPORT`` or ``pool``, which is a
+    description of one shell and no description of a fleet. Once a generation
+    publishes ``default_transport: slurm``, a reset reading only the
+    environment would re-submit every recovered action into the pull queue no
+    worker drains. ``fleet_submit.add_transport_argument`` is the one place
+    that order is decided -- environment, then the published generation's
+    receipt, then the pull queue -- and every producer reads it there.
+
+    The default is evaluated when the parser is built, so a caller that
+    changes the generation builds a new one.
+    """
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--apply", action="store_true",
                     help="actually submit; the default only reports")
@@ -525,17 +658,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--include-reset", action="store_true",
                     help="re-include items a previous run already marked reset "
                          "(use when that run's submissions did not survive)")
-    ap.add_argument(
-        "--transport", choices=TRANSPORTS,
-        default=os.environ.get(DEFAULT_TRANSPORT_ENV) or "pool",
-        help="dispatcher for records that do not name one (env "
-             "PRISMABUILD_TRANSPORT); a record filed by the SLURM lane always "
-             "goes back out on the lane whatever this says")
+    # A record filed by the SLURM lane always goes back out on the lane
+    # whatever this says; this only answers for records that name no transport.
+    fleet_submit.add_transport_argument(ap)
     ap.add_argument("--queue-root", default=str(SH / "pb-queue"),
                     help=argparse.SUPPRESS)
     ap.add_argument("--cas-root", default=str(SH / "cas"),
                     help=argparse.SUPPRESS)
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     queue = pool.PoolQueue(Path(args.queue_root))
     cas_root = Path(args.cas_root)
@@ -551,6 +685,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit:
         ordered = ordered[: args.limit]
     refused: list[str] = []
+    started: list[tuple[dict, str, subprocess.Popen, Path]] = []
     for plan in ordered:
         label = (f"{plan['key'][:12]} x{len(plan['paths'])} "
                  f"{plan['transport']} {plan['cwd'] or 'sealed checkout'}")
@@ -598,16 +733,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  cleared this action's stale result: {cleared[0]}")
         elif note:
             print(f"  no result to clear ({note})")
-        proc = subprocess.Popen(
-            command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        print(f"  submitted {label} (pid {proc.pid})")
+        process, log = start_resubmission(
+            command, queue_root=Path(args.queue_root), key=plan["key"])
+        print(f"  submitted {label} (pid {process.pid})\n    output: {log}")
+        started.append((plan, label, process, log))
+    # The record is stamped after the child has had its moment to refuse, not
+    # from the fact that a process was created.  A refusal used to leave the
+    # operator with a green run, a record saying the work had been
+    # re-submitted, and nothing in flight anywhere.  One deadline is shared by
+    # every child, so a reset of a hundred actions spends the window once.
+    deadline = time.monotonic() + REFUSAL_WINDOW_S
+    for plan, label, process, log in started:
+        refusal = refusal_of(process, log, deadline=deadline)
+        if refusal is not None:
+            print(f"  refused {label}\n    {refusal}")
+            refused.append(plan["key"])
+            continue
         _file_reset(plan, reason="re-submitted as a fresh action by pool_reset")
     if not args.apply:
         print("\nnothing submitted; re-run with --apply")
     if refused:
-        print(f"\n{len(refused)} refused by the scheduler and left failed")
+        print(f"\n{len(refused)} refused and left failed")
         return 1
     return 0
 
