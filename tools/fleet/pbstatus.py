@@ -439,7 +439,35 @@ def read_jobs(*, squeue: str = "squeue", lane_root: str | Path | None = None,
                         f"the lane's latest record is job {recorded_id}"
                     )
         jobs.append(row)
+    _name_the_job_ahead(jobs)
     return jobs
+
+
+def _name_the_job_ahead(jobs: list[dict]) -> None:
+    """Say which job a singleton-held job is waiting for.
+
+    Every PrismaBuild submission carries ``--dependency=singleton`` under the
+    job name ``pb-<key12>``, so a job PENDING with reason ``Dependency`` is
+    queued behind another job of the same action key -- the design working,
+    not something an operator has to fix.  The job it waits for is already in
+    this listing, so naming it costs no second call to the controller.
+    """
+
+    ahead: dict[str, str] = {}
+    for job in jobs:
+        if job.get("action_key_prefix") and job["state"] != "PENDING":
+            ahead.setdefault(str(job["name"]), str(job["job_id"]))
+    for job in jobs:
+        if job["state"] != "PENDING":
+            continue
+        if str(job.get("reason") or "") != "Dependency":
+            continue
+        running = ahead.get(str(job["name"]))
+        note = (
+            f"waiting for job {running} of the same action" if running
+            else "waiting for another job of the same action"
+        )
+        job["note"] = f"{job['note']}; {note}" if job.get("note") else note
 
 
 def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:

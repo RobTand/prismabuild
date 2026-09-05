@@ -733,16 +733,35 @@ slurm --gpu --tag gb10 --tag sparklina --timeout-s 7200 -- <command>` submits:
 ```text
 sbatch --parsable --no-requeue --export=NIL \
     --job-name=pb-<first 12 of the action key> \
+    --dependency=singleton \
     --chdir=/mnt/shared/prismabuild-fleet/slurm/<action key> \
     --output=/mnt/shared/prismabuild-fleet/slurm/<action key>/%j.out \
     --error=/mnt/shared/prismabuild-fleet/slurm/<action key>/%j.err \
-    --time=02:00:00 --mem=16384M --cpus-per-task=1 \
-    --gres=shard:1 --constraint=gb10&sparklina \
+    --mem=16384M --cpus-per-task=1 --nice=1073741824 \
+    --comment=pb:<action key>:<attempt>:<16 hex digits> \
+    --time=02:00:00 --gres=shard:1 --constraint=gb10&sparklina \
     /mnt/shared/prismabuild-fleet/slurm/<action key>/job.sh
 ```
 
 For a CPU action, the `--gres` flag is absent entirely, and `--constraint`
-carries whatever tags the checkout's location produced.
+carries whatever tags the checkout's location produced. `--time` is sent only
+when the submitter asked for a timeout. `--nice` carries the submitter's
+priority, which is 1073741824 at the default priority 0 and smaller as the
+priority rises.
+
+`--dependency=singleton` holds one job of a key at a time. SLURM scopes a
+singleton by job name and user, and the job name is the action key, so a second
+submission of the same work waits `PENDING` with reason `Dependency`, then
+starts, finds the receipt the first job published, and ends as a cache hit
+without materializing a checkout. It is a queue order and not a refusal: if the
+first job fails, the second runs the work itself.
+
+`--comment` names the invocation of `sbatch` rather than the job. The job name
+is shared by every attempt of every submission of a key; the comment carries the
+key, the attempt and a nonce drawn fresh for each call. A submitter whose
+`sbatch` stops answering reads it back with `squeue -h -u <user>
+--name=pb-<first 12> --states=all -o '%i|%k'` to find out whether the controller
+took the job before the command hung.
 
 `--exclusive` sends `--gres=gpu:1` rather than a larger shard count. Asking for
 the whole device and asking for shards of it are mutually exclusive requests

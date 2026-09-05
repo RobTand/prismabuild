@@ -2079,6 +2079,14 @@ def slurm_outcome(
                     file=sys.stderr, flush=True),
                 **lane_commands,
             )
+    except slurm_lane.SubmissionFateUnknown as exc:
+        # Not a refusal, so not reported as one and not filed as one.  sbatch
+        # stopped answering and the controller could not settle whether it
+        # took the job, so a job of this action may be queued right now.  The
+        # exit code is the one that already means "no verdict yet".
+        print(f"pbrun: the fate of this submission is unknown.\n  {exc}",
+              file=sys.stderr, flush=True)
+        return GAVE_UP_EXIT
     except slurm_lane.SlurmLaneError as exc:
         raise SystemExit(
             f"pbrun: slurm refused this action.\n"
@@ -2112,6 +2120,14 @@ def slurm_outcome(
         _echo(attempted.stderr_path, sys.stderr)
 
     if result.receipt is not None:
+        if slurm_lane.job_was_cache_hit(job):
+            # The job started, read the receipt somebody else published, and
+            # ran nothing.  Saying "executed" here would attribute that
+            # somebody else's work to this job, with this job's elapsed time.
+            print(f"pbrun: cache_hit -- slurm job {job.job_id} found "
+                  f"{key[:12]} already in the CAS and ran nothing",
+                  file=sys.stderr)
+            return 0
         print(f"pbrun: executed via slurm job {job.job_id} ({outcome.state})",
               file=sys.stderr)
         return 0

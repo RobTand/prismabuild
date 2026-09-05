@@ -99,11 +99,38 @@ nothing to the action's identity:
 
 ### What every submission sends
 
-Every job is submitted with `--no-requeue` and `--export=NIL`. Only SLURM's own
-variables reach the job; the action's environment is the sealed one the worker
-builds. `--chdir`, `--output` and `--error` point at the action's own lane
-directory. Retries are new submissions with new job ids, never `--requeue`. The
-[install runbook](slurm_runbook_2026-09-04.md) shows a full `sbatch` line.
+Every job is submitted with `--no-requeue`, `--export=NIL` and
+`--dependency=singleton`, under the job name `pb-<first 12 characters of the
+key>` and with `--comment=pb:<key>:<attempt>:<nonce>`. Only SLURM's own variables reach the job; the action's environment is
+the sealed one the worker builds. `--chdir`, `--output` and `--error` point at
+the action's own lane directory. Retries are new submissions with new job ids,
+never `--requeue`. The [install runbook](slurm_runbook_2026-09-04.md) shows a
+full `sbatch` line.
+
+### One job per action key at a time
+
+SLURM scopes `--dependency=singleton` by job name and user, and the job name is
+the action key. So the controller runs one job of a key at a time and holds the
+rest.
+
+That is what closes a window the submitter cannot. `pbrun` asks the CAS before
+it submits, and it attaches to a submission that is still running rather than
+starting a second copy. Two `pbrun`s that look at the same instant both see
+nothing and both submit. The scheduler orders them.
+
+A held job is `PENDING` with reason `Dependency`. Nothing is stuck, nothing is
+refused, and nothing is cancelled.
+
+*   `pbstatus` prints the reason and names the job ahead: `waiting for job 1001
+    of the same action`.
+*   `pbrun` and `pbwait` say the same thing on stderr while they wait, and
+    repeat it at most every five minutes.
+*   When the job ahead leaves, the held job starts, finds the receipt it
+    published, and exits without materializing a checkout. Its ending is
+    `cache_hit`.
+
+A held job costs a job id and a node slot for as long as it takes to read one
+receipt. It does not cost a checkout or a second execution.
 
 ### Demand is enforced under SLURM
 
@@ -158,7 +185,7 @@ queue the worker files the ending and `pbwait` only watches.
 | 0 | The work is done. A `cache_hit` counts as done. |
 | 1 | The action failed. `pbrun` prints the worker's message and the log paths. |
 | 2 | `pbrun --withdraw` matched no submission, matched more than one, or `scancel` refused the job. Also argparse's own usage error. |
-| 75 | The wait ended before the work did. Nothing was cancelled. |
+| 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
 
 Exit 1 is the worker launcher's status, not the command's own exit code. A
@@ -176,8 +203,36 @@ ending. The pull queue's authority is the launcher's exit code; the lane's is
 the receipt. A launcher that publishes its receipt and is then signalled is
 filed `failed` by the queue and `executed` by the lane.
 
-After a 75, run `pbwait` on the key. The job is still queued or running, and
-under SLURM `pbwait` is what files the ending once it stops.
+After a 75 from a wait, run `pbwait` on the key. The job is still queued or
+running, and under SLURM `pbwait` is what files the ending once it stops.
+
+After a 75 that says the fate of a submission is unknown, run the `squeue` in
+the message instead. There is nothing to wait on: no submission was recorded,
+because none is known.
+
+### When `sbatch` stops answering
+
+A scheduler command gets 60 seconds. `sbatch` is the one where that bound sits
+in the wrong place: the controller can accept a submission and the client can
+then hang, so the job runs with its id lost.
+
+Every invocation of `sbatch` therefore names itself in the job's `Comment`:
+`pb:<key>:<attempt>:<nonce>`, a fresh nonce each time, sealed into the
+submission record with the rest of the argv. The job name cannot do this --
+every attempt of every submission of one key shares it.
+
+On a timeout the lane asks the controller whether it took the job:
+
+    squeue -h -u $USER --name=pb-<key12> --states=all -o '%i|%k'
+
+`--states=all` because a job accepted and finished inside the same 60 seconds
+would not be listed otherwise; matching on the comment is what makes the wider
+listing safe. One job carrying this invocation's comment is adopted, and the
+submission record is written as if `sbatch` had printed that id. No job
+carrying it means the controller did not take the submission, and the refusal
+stands. A controller that cannot be asked leaves the fate unknown: `pbrun`
+prints the job name, the comment and that `squeue`, files nothing, and exits
+75.
 
 ### No deadline exists by default
 
@@ -481,7 +536,7 @@ an impossible GRES, is reported for that record, the record stays `failed`, and
 | Status | Meaning |
 |---|---|
 | `executed` | The work ran and published a receipt. Filed under `done/`. |
-| `cache_hit` | The receipt was already there. Counts as done. On the lane, `pbrun` finds it before submitting and submits nothing; `done/` keeps the record of the run that did the work, and a `cache_hit` record is filed only when the key had none. A receipt that lands between that check and the job's start is found by the node instead, and the job files `executed`. |
+| `cache_hit` | The receipt was already there. Counts as done. On the lane, `pbrun` finds it before submitting and submits nothing. A job that starts and finds it -- the second job of a key, held behind the first -- reports it too, before materializing anything. Either way `done/` keeps the record of the run that did the work: a `cache_hit` record is filed only when the key has none. |
 | `failed` | No receipt. Something refused, or the command exited non-zero. Filed under `failed/`. |
 | `timeout` | SLURM killed the job at a `--timeout-s` you asked for. `returncode` is null. Retriable. |
 | `withdrawn` | Somebody cancelled the run. Not a defect, and not retried. |
@@ -527,6 +582,12 @@ These are refusals at submission, before anything reaches the fleet.
     message names the required tags and the demand. An unknown Feature is the
     usual cause: a tag that no node carries can never be scheduled. Read
     `sinfo -N -l` for a node that offers it, or fix the `--tag`.
+*   **`the fate of this submission is unknown`** — `sbatch` stopped answering
+    and the controller could not say whether it took the job. This is not a
+    refusal and it is exit 75, not 1. Run the `squeue` in the message. A job
+    listed with that `Comment` is yours and is running with no submission
+    record; withdraw it with `scancel` and submit again. No such job means
+    nothing was submitted.
 
 Two failures happen after the job ran.
 

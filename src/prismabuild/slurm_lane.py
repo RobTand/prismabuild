@@ -64,11 +64,13 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+import getpass
 import json
 import math
 import os
 from pathlib import Path
 import re
+import secrets
 import shlex
 import socket
 import subprocess
@@ -233,6 +235,26 @@ class SlurmLaneError(pb.PrismaBuildError):
     """A scheduler command failed, or answered something unusable."""
 
 
+class CommandTimedOut(SlurmLaneError):
+    """A scheduler command did not answer within ``COMMAND_TIMEOUT_S``.
+
+    Distinct from every other failure because it is the only one that leaves
+    the question open on the *submitting* side: ``sbatch`` may have been
+    accepted and the answer lost, so a plain refusal would tell the caller a
+    job does not exist while it runs.  ``wait`` treats it exactly as it treated
+    it before -- no answer this poll -- because it is a ``SlurmLaneError``.
+    """
+
+
+class SubmissionFateUnknown(SlurmLaneError):
+    """``sbatch`` did not answer and the controller could not settle it.
+
+    Not a refusal.  Nothing is filed, because nothing is known: a job may be
+    queued under this action's name right now.  The message names the job
+    name, the submission's comment, and the ``squeue`` an operator can run.
+    """
+
+
 class ControllerUnreachable(SlurmLaneError):
     """A scheduler command could not reach ``slurmctld`` at all.
 
@@ -381,6 +403,149 @@ def read_action_status(path: str | Path) -> dict[str, object]:
     if "action_returncode" not in status:
         return {}
     return status
+
+
+#: What the node leaves beside its logs when it found the work already done.
+CACHE_HIT_SCHEMA_V1 = "prismaquant.prismabuild.slurm_cache_hit.v1"
+
+
+def cache_hit_path(directory: str | Path, job_id: str) -> Path:
+    """Where the node says this job published nothing because the CAS had it.
+
+    Named for the job rather than fixed, for the reason
+    ``action_status_path`` is: one lane directory holds every attempt of one
+    action key, and a fixed name would let one attempt's answer be read onto
+    another attempt's record.
+    """
+
+    return Path(directory) / f"{str(job_id)}.cache-hit.json"
+
+
+def write_cache_hit(
+    path: str | Path,
+    *,
+    action_key: str,
+    job_id: str,
+    result_digest: object = None,
+) -> None:
+    """Record that this job ran nothing because the result already existed.
+
+    The submitter cannot tell the two apart from outside.  All it sees is a
+    receipt, and a receipt exists whether this job published it or read it, so
+    without this file the ending said ``executed`` for a job that executed
+    nothing -- with the node's elapsed time attached to it.  The node knows
+    which happened, so the node writes it down.
+    """
+
+    _write_json_atomic(Path(path), {
+        "schema": CACHE_HIT_SCHEMA_V1,
+        "action_key": str(action_key),
+        "job_id": str(job_id),
+        "result_digest": result_digest,
+        "found_unix": _now(),
+        "found_host": socket.gethostname(),
+    })
+
+
+def read_cache_hit(path: str | Path) -> dict[str, object]:
+    """The node's cache-hit marker, or an empty mapping when there is none.
+
+    Empty covers every way there is nothing to say: no file, unreadable bytes,
+    text that is not a JSON object, or another schema.  An absent marker means
+    the job ran the work, which is what every job did before this file existed.
+    """
+
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(value, Mapping):
+        return {}
+    if value.get("schema") != CACHE_HIT_SCHEMA_V1:
+        return {}
+    return dict(value)
+
+
+def job_was_cache_hit(job: "SubmittedJob | None") -> bool:
+    """Whether this job reported a hit rather than an execution."""
+
+    if job is None:
+        return False
+    return bool(read_cache_hit(cache_hit_path(job.directory, job.job_id)))
+
+
+def submission_comment(action_key: str, *, attempt: int, nonce: str) -> str:
+    """What one ``sbatch`` invocation calls itself, in the job's ``Comment``.
+
+    ``sbatch`` can be accepted and then hang past ``COMMAND_TIMEOUT_S``, and
+    the job id it was about to print is lost with it.  The job name is not
+    enough to find that job again: it is ``pb-<key12>``, which every attempt
+    of every submission of one action key shares.  A fresh nonce per
+    invocation is, and the controller carries it: ``squeue -o %k`` and
+    ``scontrol show job`` both read it back.
+
+    The whole key is in it rather than the twelve-character prefix, so that a
+    comment read off the controller identifies the action without a lane
+    directory to resolve a prefix against.
+    """
+
+    return f"pb:{str(action_key)}:{int(attempt)}:{str(nonce)}"
+
+
+def adoption_argv(action_key: str, *, squeue: object = "squeue") -> list[object]:
+    """The ``squeue`` that answers whether the controller took a submission.
+
+    ``--states=all`` because the answer must cover a job that was accepted and
+    finished inside the same ``COMMAND_TIMEOUT_S`` window -- a job held behind
+    a sibling and released into a cache hit is exactly that fast, and the
+    default ``squeue`` would not list it.  Matching on the comment is what
+    makes the wider listing safe.
+    """
+
+    return [
+        squeue, "-h", "-u", getpass.getuser(),
+        f"--name=pb-{str(action_key)[:12]}", "--states=all", "-o", "%i|%k",
+    ]
+
+
+def find_submitted_job(
+    action_key: str, *, comment: str, squeue: Command = "squeue"
+) -> list[str]:
+    """Job ids under this action's name whose comment is this invocation's.
+
+    Args:
+        action_key: The action key, whose first twelve characters name the job.
+        comment: The exact ``submission_comment`` sent with the submission.
+        squeue: The ``squeue`` command to ask.
+
+    Returns:
+        Every job id the controller holds with that comment.  Empty means the
+        controller answered and holds none, which is an answer: it did not take
+        the submission.
+
+    Raises:
+        ControllerUnreachable: ``squeue`` could not reach ``slurmctld``.
+        CommandTimedOut: ``squeue`` did not answer either.
+        SlurmLaneError: ``squeue`` refused for some other reason.
+    """
+
+    completed = _run(adoption_argv(action_key, squeue=squeue), where="squeue")
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        if _unreachable(completed):
+            raise ControllerUnreachable(
+                f"squeue could not reach the controller: {detail}")
+        raise SlurmLaneError(f"squeue refused the question: {detail}")
+    found = []
+    for line in completed.stdout.splitlines():
+        job_id, _, text = line.strip().partition("|")
+        if job_id.strip() and text.strip() == comment:
+            found.append(job_id.strip())
+    return found
 
 
 def format_time_limit(timeout_s: float) -> str:
@@ -537,6 +702,11 @@ class JobProvenance:
     elapsed_s: float | None = None
     node: str | None = None
     partition: str | None = None
+    #: Why the job is not running yet, in the controller's own word:
+    #: ``Dependency``, ``Resources``, ``Priority``.  ``sacct`` does not carry
+    #: it, so it is ``None`` on the accounting path and on every job the
+    #: scheduler has already finished with.
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -619,6 +789,12 @@ def _run(argv: Sequence[object], *, where: str) -> subprocess.CompletedProcess[s
             text=True,
             timeout=COMMAND_TIMEOUT_S,
         )
+    except subprocess.TimeoutExpired as exc:
+        # Held apart from every other failure by its type and not by its words:
+        # a command that hung may have done what it was asked before it stopped
+        # answering (see ``CommandTimedOut``), and the message an operator
+        # already reads for this is the one below.
+        raise CommandTimedOut(f"{where} failed: {exc}") from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise SlurmLaneError(f"{where} failed: {exc}") from exc
 
@@ -738,7 +914,8 @@ def submit(
     partition: str | None = None,
     priority: int = 0,
     attempt: int = 1,
-    sbatch: str = "sbatch",
+    sbatch: Command = "sbatch",
+    squeue: Command = "squeue",
     published_unix: float | None = None,
     published_by: str | None = None,
     retry_safe: bool | None = None,
@@ -748,6 +925,16 @@ def submit(
 
     The record is written *after* the id is known and before anything blocks on
     the job, because a job id nobody wrote down is a job nobody can withdraw.
+
+    An ``sbatch`` that is accepted and *then* hangs past ``COMMAND_TIMEOUT_S``
+    leaves exactly that: a job on the fleet with no submission record, which
+    nothing can wait on, withdraw or report.  So every invocation names itself
+    in the job's ``Comment`` (``submission_comment``, a fresh nonce each time)
+    and a timeout asks the controller whether it took the job.  If it did, the
+    record is written as if ``sbatch`` had printed that id.  If the controller
+    answers that it did not, the refusal stands.  If the controller cannot be
+    asked, this raises ``SubmissionFateUnknown`` and files nothing: not knowing
+    is not the same as knowing it was refused.
     """
 
     key = str(action["action_key"])
@@ -778,8 +965,17 @@ def submit(
     nice = nice_for(priority)
     stdout_template = directory / "%j.out"
     stderr_template = directory / "%j.err"
+    # The program as the record will name it.  ``sbatch`` may be a callable
+    # -- the ``Command`` form every other scheduler command already takes, so
+    # that a test can drive a submission without a process -- and the repr of
+    # a bound method is not a thing a sealed record can say was submitted.
+    program = sbatch if isinstance(sbatch, str) else "sbatch"
+    # One invocation's own name, sealed into the record with the rest of the
+    # argv, so an operator holding the record can find the job by its comment.
+    comment = submission_comment(
+        key, attempt=attempt, nonce=secrets.token_hex(8))
     argv = [
-        str(sbatch),
+        program,
         "--parsable",
         # One flag covers operator requeue and automatic restart, so a requeued
         # job is indistinguishable from a rescheduled one afterwards.  A retry
@@ -790,6 +986,24 @@ def submit(
         # any business travelling from the submitter's shell to the node.
         "--export=NIL",
         f"--job-name=pb-{key[:12]}",
+        # One job per action key at a time, held by the controller rather than
+        # by whoever asked second.  An action key is a content hash, so two
+        # callers asking for the same work is the ordinary case, and the window
+        # between one caller's CAS lookup and the other's ``sbatch`` is not one
+        # any submitter-side check can close: ``pbrun`` looks the key up and
+        # attaches to a live submission, but two processes that look at the
+        # same instant both find nothing and both submit.  Measured on the
+        # fleet as two jobs of one action, materializing one checkout twice,
+        # taking the GPU twice and racing to publish one receipt.
+        #
+        # ``singleton`` is scoped by the job name above, per user, so it holds
+        # exactly the second job of this key.  It waits PENDING with reason
+        # ``Dependency`` until the first job leaves, then starts, finds the
+        # receipt the first published, and ends as a cache hit without
+        # materializing anything.  It is a queue order, not a refusal: nothing
+        # is cancelled and nothing is lost if the first job fails, because the
+        # second then runs the work itself.
+        "--dependency=singleton",
         # Without this the job inherits the submitter's cwd, which is a
         # box-local checkout that need not exist on the node that runs it.
         f"--chdir={directory}",
@@ -804,6 +1018,9 @@ def submit(
         # not the thing that differs between an ordinary job and a deprioritized
         # one -- only its value is.
         f"--nice={nice}",
+        # What this invocation of sbatch calls itself.  The job name is shared
+        # by every attempt of every submission of this key; this is not.
+        f"--comment={comment}",
     ]
     if timeout_s is not None:
         # A deadline is sent only when the submitter asked for one.  Wall-clock
@@ -824,21 +1041,29 @@ def submit(
         argv.append(f"--partition={partition}")
     argv.append(str(script))
 
-    completed = _run(argv, where="sbatch")
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()
-        raise SlurmLaneError(
-            f"sbatch refused this action: {detail or completed.returncode}"
-        )
-    output = completed.stdout.strip()
-    if not output or "\n" in output or "\r" in output:
-        raise SlurmLaneError(
-            f"sbatch --parsable returned no single job id: {completed.stdout!r}"
-        )
-    # --parsable prints "<id>" or "<id>;<cluster>" on a federated controller.
-    job_id = output.split(";", 1)[0].strip()
-    if not job_id.isdigit():
-        raise SlurmLaneError(f"sbatch returned no numeric job id: {output!r}")
+    try:
+        completed = _run([sbatch, *argv[1:]], where="sbatch")
+    except CommandTimedOut as exc:
+        job_id = _adopt_hung_submission(key, comment=comment, squeue=squeue,
+                                        timeout=exc)
+    else:
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise SlurmLaneError(
+                f"sbatch refused this action: {detail or completed.returncode}"
+            )
+        output = completed.stdout.strip()
+        if not output or "\n" in output or "\r" in output:
+            raise SlurmLaneError(
+                f"sbatch --parsable returned no single job id: "
+                f"{completed.stdout!r}"
+            )
+        # --parsable prints "<id>" or "<id>;<cluster>" on a federated
+        # controller.
+        job_id = output.split(";", 1)[0].strip()
+        if not job_id.isdigit():
+            raise SlurmLaneError(
+                f"sbatch returned no numeric job id: {output!r}")
 
     generation = (
         float(published_unix) if published_unix is not None else time.time()
@@ -896,6 +1121,60 @@ def submit(
         stderr_path=directory / f"{job_id}.err",
         record_path=record_path,
     )
+
+
+def _adopt_hung_submission(
+    action_key: str,
+    *,
+    comment: str,
+    squeue: Command,
+    timeout: CommandTimedOut,
+) -> str:
+    """The job id of a submission ``sbatch`` took but never reported.
+
+    Args:
+        action_key: The action key that was submitted.
+        comment: The comment that invocation of ``sbatch`` sent.
+        squeue: The ``squeue`` command to ask.
+        timeout: The timeout that started this.
+
+    Returns:
+        The job id the controller holds for this invocation.
+
+    Raises:
+        SlurmLaneError: The controller answered that it holds no such job, so
+            the submission was refused after all.
+        SubmissionFateUnknown: The controller could not be asked, or answered
+            with more than one job carrying this invocation's comment.  Nothing
+            is filed either way.
+    """
+
+    name = f"pb-{str(action_key)[:12]}"
+    operator = shlex.join(
+        [str(part) for part in adoption_argv(action_key, squeue="squeue")])
+    try:
+        found = find_submitted_job(action_key, comment=comment, squeue=squeue)
+    except SlurmLaneError as exc:
+        raise SubmissionFateUnknown(
+            f"{timeout}, and the controller could not be asked whether it "
+            f"took the job ({exc}). Nothing has been filed for this "
+            f"submission, and a job named {name} with Comment={comment} may "
+            f"be queued right now. Run: {operator}"
+        ) from timeout
+    if len(found) > 1:
+        raise SubmissionFateUnknown(
+            f"{timeout}, and {len(found)} jobs ({', '.join(found)}) carry "
+            f"Comment={comment}, which one submission cannot have produced. "
+            f"Nothing has been filed. Run: {operator}"
+        ) from timeout
+    if not found:
+        # An answer, and the only one that lets the refusal stand: the
+        # controller holds no job this invocation created.
+        raise SlurmLaneError(
+            f"sbatch refused this action: {timeout}, and the controller holds "
+            f"no job named {name} with Comment={comment}"
+        ) from timeout
+    return found[0]
 
 
 def _exit_fields(raw: str) -> tuple[int | None, int | None]:
@@ -1029,12 +1308,13 @@ def _scontrol_state(job_id: str, *, scontrol: Command) -> JobProvenance | None:
         elapsed_s=_parse_slurm_duration(fields.get("RunTime")),
         node=_parse_slurm_text(fields.get("NodeList")),
         partition=_parse_slurm_text(fields.get("Partition")),
+        reason=_parse_slurm_text(fields.get("Reason")),
     )
 
 
 def _squeue_state(job_id: str, *, squeue: Command) -> JobProvenance | None:
     completed = _run(
-        [squeue, "-h", "-j", job_id, "-o", "%T"], where="squeue"
+        [squeue, "-h", "-j", job_id, "-o", "%T|%r"], where="squeue"
     )
     if completed.returncode != 0:
         if _unreachable(completed):
@@ -1043,10 +1323,76 @@ def _squeue_state(job_id: str, *, squeue: Command) -> JobProvenance | None:
                 f"{(completed.stderr or completed.stdout).strip()}"
             )
         return None
-    state = completed.stdout.strip().splitlines()
-    if not state or not state[0].strip():
+    lines = completed.stdout.strip().splitlines()
+    if not lines or not lines[0].strip():
         return None
-    return JobProvenance(state=state[0].strip().split()[0])
+    state, _, reason = lines[0].strip().partition("|")
+    if not state.strip():
+        return None
+    return JobProvenance(
+        state=state.strip().split()[0],
+        # ``%r`` is bare in the default layout and parenthesised in some, and
+        # ``pbstatus`` strips the same characters off the same field.
+        reason=_parse_slurm_text(reason.strip().strip("()")),
+    )
+
+
+def sibling_jobs(
+    action_key: str, *, squeue: Command = "squeue"
+) -> list[tuple[str, str]]:
+    """Every job the controller holds under this action key's job name.
+
+    Args:
+        action_key: The action key, whose first twelve characters name the job.
+        squeue: The ``squeue`` command to ask.
+
+    Returns:
+        ``(job_id, state)`` pairs in the order ``squeue`` listed them, and an
+        empty list when the controller answered that it holds none.
+
+    Raises:
+        SlurmLaneError: ``squeue`` could not be run at all.  A non-zero exit is
+            not raised: this is an enrichment, and a caller that cannot have it
+            says less rather than failing.
+    """
+
+    completed = _run(
+        [squeue, "-h", f"--name=pb-{str(action_key)[:12]}", "-o", "%i|%T"],
+        where="squeue",
+    )
+    if completed.returncode != 0:
+        return []
+    found: list[tuple[str, str]] = []
+    for line in completed.stdout.splitlines():
+        job_id, _, state = line.strip().partition("|")
+        if job_id.strip():
+            found.append((job_id.strip(), state.strip().upper()))
+    return found
+
+
+def _dependency_notice(job: "SubmittedJob", *, squeue: Command) -> str:
+    """What to say about a job the singleton dependency is holding.
+
+    Waiting behind the running job of the same action is the design working,
+    not a stall and not a refusal, so this names the job ahead when the
+    controller will say which one it is and says the same thing without the id
+    when it will not.
+    """
+
+    ahead = ""
+    try:
+        for job_id, state in sibling_jobs(job.action_key, squeue=squeue):
+            if job_id != job.job_id and state not in ("PENDING",):
+                ahead = job_id
+                break
+    except SlurmLaneError:
+        ahead = ""
+    behind = f"slurm job {ahead}" if ahead else "another job"
+    return (
+        f"slurm job {job.job_id}: waiting for {behind} to finish the same "
+        f"action {job.action_key[:12]}; one job per action key runs at a "
+        f"time, and this one starts when that one leaves"
+    )
 
 
 def query_provenance(
@@ -1625,6 +1971,10 @@ def wait(
     trouble: str | None = None
     trouble_since: float | None = None
     last_notice: float | None = None
+    # Held apart from the outage timer above: an outage is the scheduler not
+    # answering, and this is the scheduler answering something the caller
+    # should not read as trouble.
+    dependency_notice: float | None = None
     while True:
         try:
             answer = query_provenance(
@@ -1695,6 +2045,18 @@ def wait(
                 provenance=answer,
                 liveness=monitor.summary(),
             )
+        if answer.state == "PENDING" and (answer.reason or "") == "Dependency":
+            # Every submission carries ``--dependency=singleton``, so this is
+            # the second caller of one action key queued behind the first.
+            # Said once and then at most every ``NOTICE_EVERY_S``, because a
+            # caller that sees nothing for an hour has no way to tell a job
+            # that is waiting on purpose from one that is stuck.
+            now = clock()
+            if (dependency_notice is None
+                    or now - dependency_notice >= NOTICE_EVERY_S):
+                dependency_notice = now
+                if on_notice is not None:
+                    on_notice(_dependency_notice(job, squeue=squeue))
         if answer.state == "RUNNING" and monitor.due():
             monitor.sample(answer)
             report = monitor.stall_report()
@@ -2167,7 +2529,7 @@ def run(
     local_checkout_root: str | Path | None = None,
     partition: str | None = None,
     priority: int = 0,
-    sbatch: str = "sbatch",
+    sbatch: Command = "sbatch",
     sacct: Command = "sacct",
     scontrol: Command = "scontrol",
     squeue: Command = "squeue",
@@ -2243,6 +2605,7 @@ def run(
             priority=priority,
             attempt=attempt,
             sbatch=sbatch,
+            squeue=squeue,
             published_unix=published_unix,
             published_by=published_by,
             retry_safe=retry_safe,
@@ -2416,11 +2779,18 @@ def _file_ending(
 ) -> None:
     """Write the terminal record the pull queue's readers expect.
 
-    ``cache_hit`` is not among the statuses this can produce, and that is a
-    limit rather than a choice: the queue learns it from ``run_local``'s own
-    verdict on the box, while all this sees is a receipt that exists.  A hit
-    and a fresh execution are therefore both ``executed`` here, and the job's
-    own log is where the difference is visible.
+    ``cache_hit`` and ``executed`` are told apart by the node, not here.  All
+    a submitter can see is that a receipt exists, and a receipt exists whether
+    this job published it or read it -- so a hit used to be filed as
+    ``executed``, with the node's elapsed time attached to work it never did.
+    The node writes ``write_cache_hit`` beside its logs when it finds the
+    result already in the CAS, and that marker is what this reads.
+
+    A ``cache_hit`` never overwrites an ending already filed for this key.
+    That is ``pbrun.cached_outcome``'s rule and the reason is the same: the
+    record of the run that did the work is the one every reader wants, and a
+    re-run that ran nothing has nothing to add to it.  With no record at all
+    the hit is filed, so the fleet's readers still get an ending.
     """
 
     last = result.last
@@ -2436,7 +2806,7 @@ def _file_ending(
     if marker is not None:
         status = "withdrawn"
     elif result.receipt is not None:
-        status = "executed"
+        status = "cache_hit" if job_was_cache_hit(job) else "executed"
     elif outcome.state in (UNKNOWN_STATE, WAIT_TIMEOUT_STATE):
         # No ending has happened.  The submitter stopped watching, or the
         # controller answered that it knows no such job (purged past
@@ -2451,6 +2821,12 @@ def _file_ending(
         status = "withdrawn"
     else:
         status = "failed"
+
+    if status == "cache_hit" and (
+        _queue_dir(queue_root, pool.DONE) / f"{result.action_key}.json"
+    ).exists():
+        # See the docstring: the run that did the work keeps the record.
+        return
 
     withdrawn_by = withdrawn_unix = None
     if status == "withdrawn":

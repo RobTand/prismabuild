@@ -22,7 +22,7 @@ submitter asserted portable with `pbrun --anywhere` goes to the default
 partition too, where node weight prefers dl380g10 and a GB10 box takes it
 only when dl380g10 is full. The lane has run
 against a real `slurmctld` and `slurmd` in a privileged container on sparky
-(`fleet/slurm/smoke/`, 21 rows on the fleet's 25.11.2 rebuild; the first
+(`fleet/slurm/smoke/`, 23 rows on the fleet's 25.11.2 rebuild; the first
 eleven also on Ubuntu 24.04's 23.11.4), and across three container nodes built
 from the fleet's own `slurm.conf` (`fleet/slurm/smoke/multinode/`, 12 rows on
 both versions: placement per partition, tag and weight, a node killed under a
