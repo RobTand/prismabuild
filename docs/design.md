@@ -1,30 +1,50 @@
 # PrismaBuild — distributed campaign execution
 
-**Status: DETERMINISTIC CORE + SHARED CAS + PULL QUEUE LIVE; SLURM, DAGSTER,
-AND OBSERVABILITY LAYERS NOT DEPLOYED.** The
+**Status: DETERMINISTIC CORE + SHARED CAS + PULL QUEUE LIVE; SLURM LANE BUILT
+AND VERIFIED AGAINST A REAL CONTROLLER IN A CONTAINER, NOT YET INSTALLED ON
+THE FLEET; DAGSTER AND OBSERVABILITY LAYERS NOT DEPLOYED.** The
 dependency-free action-key, immutable-CAS, and local-worker core lives in
-`src/prismabuild/core.py`; the fail-closed SLURM resource transport lives in
-`src/prismabuild/slurm.py`; and the optional asset/DAG adapter lives in
-`src/prismabuild/dagster.py`. Before `sbatch`, the SLURM adapter
-first-writer-publishes a sealed submission identity, bounded retry policy, and
-self-hashed runtime identity for the loaded adapter module plus configured
-worker-launcher bytes;
-after acceptance it binds the returned job id, and after an orchestrator
-restart it adopts only the unique scheduler allocation carrying that exact
-identity. Poll and scheduler-mutation claims are append-only durable state. The
-adapter submits a canonical immutable action request to one sealed cluster
-with an exact `sbatch` argv and a sealed, POSIX-quoted `--wrap=exec` worker argv,
-`--export=NIL`, and explicit resources, then accepts only a scope-correct CAS
-receipt as success. A SLURM `COMPLETED` state without that receipt is a failed
-action.
-`tools/prismabuild_worker.py` is the direct batch-script entry point. The
-Dagster adapter constructs deterministic assets from sealed action keys, binds
-each edge to an expected CAS output digest, and materializes only after
-re-reading that receipt and payload from the CAS. The shared CAS, NFS pull
-queue, and worker loops on Sparky, Sparklina, and dl380g10 are deployed and are
-the live initiative's sole execution plane. The fleet has dispatched Tessera
-and PrismaQuant test, quantization, and measurement campaigns. SLURM daemons,
-Dagster, and the proposed observability stack remain uninstalled.
+`src/prismabuild/core.py`. On 2026-09-04 Rob ratified replacing the pull queue
+with SLURM (`docs/scheduler_decision_2026-09-04.md`). The thin SLURM lane that
+implements it lives in `src/prismabuild/slurm_lane.py` (`pbrun --transport
+slurm`: seal, `sbatch`, wait, CAS lookup, and the terminal records the pull
+queue's readers already look for), with the job entry in
+`tools/fleet/slurm_job.py`, the fleet's configuration under `fleet/slurm/`, and
+the install runbook in `docs/slurm_runbook_2026-09-04.md`. Only SLURM's own
+variables reach a job (`--export=NIL`); the action's environment is the sealed
+one the worker builds. A SLURM `COMPLETED` state without a CAS receipt is a
+failed action, and a receipt is success whatever the exit code said. The lane
+routes work by what the action already declares: a GPU demand goes to the
+`gpu` partition (the two GB10 boxes, as `shard` GRES), untagged CPU-only work
+goes to the `cpu` partition (dl380g10), tagged work goes to the default
+partition, where its sealed constraint picks the node, and CPU-only work the
+submitter asserted portable with `pbrun --anywhere` goes to the default
+partition too, where node weight prefers dl380g10 and a GB10 box takes it
+only when dl380g10 is full. The lane has run
+against a real `slurmctld` and `slurmd` in a privileged container on sparky
+(`fleet/slurm/smoke/`, 21 rows on the fleet's 25.11.2 rebuild; the first
+eleven also on Ubuntu 24.04's 23.11.4), and across three container nodes built
+from the fleet's own `slurm.conf` (`fleet/slurm/smoke/multinode/`, 12 rows on
+both versions: placement per partition, tag and weight, a node killed under a
+job, a controller restart under a job, and the runbook's `verify.sh`). A
+re-run of receipted work submits nothing on either path: `pbrun` reads the
+receipt before `sbatch`. It is installed on no box: the install needs root,
+which is Rob's. `fleet/slurm/install.sh`, `verify.sh`,
+`cutover.sh` and `rollback.sh` are the operator's four steps, in that order.
+`tools/fleet/pbwait.py` and `pbcampaign.py` fan work out over the lane, and
+`pbrun --measurement --host-class` seals a class-keyed action the worker
+attests through the controller. `src/prismabuild/slurm.py` is the earlier durable-state SLURM
+adapter, superseded by the lane and retained until the decision record's
+Phase 3. `tools/prismabuild_worker.py` is the direct batch-script entry point.
+`docs/operating_prismabuild.md` is the usage guide for operators and agents.
+The optional asset/DAG adapter lives in `src/prismabuild/dagster.py`; it
+constructs deterministic assets from sealed action keys, binds each edge to an
+expected CAS output digest, and materializes only after re-reading that
+receipt and payload from the CAS. The shared CAS, NFS pull queue, and worker
+loops on Sparky, Sparklina, and dl380g10 are deployed and remain the live
+execution plane until the cutover. The fleet has dispatched Tessera and
+PrismaQuant test, quantization, and measurement campaigns. Dagster and the
+proposed observability stack remain uninstalled.
 
 Local task output is now crash-recoverable without accepting unowned bytes.
 Before argv, the worker publishes an immutable claim for the exact action,
@@ -79,15 +99,25 @@ larger cluster.
 
 ## Deployed execution plane and optional target services
 
-The repository implements and tests the PrismaBuild core, live pull-queue
-transport, SLURM command adapter, and optional Dagster definitions. The shared
-CAS/pull queue and three worker hosts are live. SLURM, `slurmdbd`, Dagster, and
-the listed telemetry services are not installed.
+The repository implements and tests the PrismaBuild core, the live pull-queue
+transport, the SLURM lane, and optional Dagster definitions. The shared
+CAS/pull queue and three worker hosts are live. SLURM daemons, `slurmdbd`,
+Dagster, and the listed telemetry services are not installed.
 
-1. **SLURM** — resource layer. The deployment would use partitions as host
-   classes, GRES as GPU slots, QOS/priority for the gold path, a standing
-   reservation on sparky, and `slurmdbd` accounting. It would handle nodes
-   joining and leaving (laptops).
+1. **SLURM** — resource layer, ratified 2026-09-04. As configured in
+   `fleet/slurm/slurm.conf`: one cluster with the controller on dl380g10;
+   partitions `gpu` (sparky, gx10-6b77), `cpu` (dl380g10) and the default
+   `all`; `shard` GRES for fractional GPU slots (2 on sparky, 3 on gx10-6b77)
+   and `gpu:1` for exclusive use; cores and memory both consumable
+   (`select/cons_tres`, `CR_Core_Memory`); cgroup containment of cores,
+   memory and devices; the fleet's `RealMemory` budgets carried over from
+   `fleet_boxes.json`; and a node-side Epilog that removes a killed job's
+   containers by ownership label and its materialized checkout. Scheduling
+   is FIFO plus backfill. `slurmdbd`, age priority, QOS and standing
+   reservations are deferred until a measurement asks for them. Machines
+   joining and leaving (rented or contributed) are a later concern; SLURM's
+   cloud-node mechanism is the sanctioned route when it comes, and the
+   transport-agnostic core is what keeps that door open.
 2. **Dagster** — DAG + memoization layer. Selected over Snakemake because two
    hard requirements point at it: (a) native asset memoization keyed by
    `code_version` + upstream input versions — exactly the cache model below;
@@ -163,10 +193,32 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   `linux-aarch64-sm121`). Heterogeneous visible capabilities are ambiguous and
   refuse.
 - `worker_id` is the live hostname locally or SLURM's node name inside an
-  allocation. A `host_class_keyed` action is SLURM-only: its class must equal
-  the job partition or an exact constraint token, and the claimed numeric job
-  must occur in `/proc/self/cgroup`. Merely setting `SLURM_*` variables is not
-  attestation.
+  allocation. Inside an allocation the job id is derived from the `job_<id>`
+  cgroup the kernel placed the process in; `SLURM_JOB_ID`, `SLURMD_NODENAME`
+  and `SLURM_JOB_PARTITION` are recorded evidence that must agree with it and
+  decide nothing, because a batch script can export any variable regardless
+  of `--export=NIL`. `SLURM_JOB_CONSTRAINTS` is set only for the Prolog and
+  Epilog, never in a job's environment.
+- A `host_class_keyed` action is SLURM-only and is attested through the
+  controller: the worker runs `scontrol show job <id>` for `Partition`,
+  `BatchHost` and the job's own constraint (`Features=`), then
+  `scontrol show node <BatchHost>` for `ActiveFeatures`. The class is
+  attested when the node carries the Feature **and** the job's constraint is
+  a plain conjunction that requires it, so the scheduler enforced the
+  placement rather than a worker observing it. Partitions are the resource
+  axis (`all`, `gpu`, `cpu`) and never a class. The controller is retried on
+  the bounded `SCONTROL_RETRY_DELAYS_S` schedule; an unreachable controller
+  refuses by name and is never read as attested. Portable work inside a job
+  never asks the controller. The controller's answer is recorded as
+  `evidence.slurm.controller`, optional in the persisted shape so earlier
+  receipts keep validating, and a receipt re-derives the class from that
+  record alone.
+- `pbrun --measurement --host-class CLASS` seals such an action: the class
+  joins the effective placement, so the SLURM lane sends `--constraint=CLASS`
+  and the action key moves with it. The submission binds the submitting
+  box's argv[0] and ABI facts, as every nonportable action must, so it has to
+  originate on a box of that class; a worker of another class refuses it at
+  preflight, naming the field that differs.
 - The resolved regular file behind `argv[0]` is hashed before execution and
   checked again before publication. Nonportable actions must bind that digest
   and byte count as `environment.toolchain.{argv0.sha256,argv0.bytes}`, plus
@@ -539,7 +591,13 @@ non-bit-reproducible) get run-once/first-result-wins — their entry is the
 *canonical* result, pinned but not re-derivable; and a cached measurement is
 valid only under its host-class key (a gb10 KL never answers an x86 query).
 
-### Durable SLURM submission, polling, and cancellation (implemented, not live-validated)
+### Durable SLURM submission, polling, and cancellation (superseded, never live-validated)
+
+This section describes `src/prismabuild/slurm.py`, the adapter written before
+any scheduler existed on the fleet. The lane in `src/prismabuild/slurm_lane.py`
+replaced it on 2026-09-04 with a smaller contract (submit, wait, cancel, and
+the pull queue's terminal records) that has run against a real controller.
+The adapter stays in the tree until the decision record's Phase 3 removes it.
 
 Scheduler identity is shared CAS state, separate from result truth. For each
 action the adapter owns one immutable lineage:

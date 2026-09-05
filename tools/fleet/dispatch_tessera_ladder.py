@@ -27,7 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import core as pb, pool  # noqa: E402
+from prismabuild import core as pb  # noqa: E402
+import fleet_submit  # noqa: E402
 
 CHECKOUT = SH / "checkout"
 SOURCE = "/mnt/shared/models/GLM-5.3-Flash-BF16"
@@ -111,6 +112,7 @@ def main():
     ap.add_argument("--rung", type=int, default=4)
     ap.add_argument("--calibrate-every", type=int, default=32)
     ap.add_argument("--dry-run", action="store_true")
+    fleet_submit.add_transport_argument(ap)
     args = ap.parse_args()
 
     lo, _, hi = args.shards.partition("-")
@@ -126,10 +128,10 @@ def main():
 
     closure = pb.build_code_closure(CHECKOUT, closure_files())
     cas = pb.PrismaBuildCAS(SH / "cas")
-    queue = pool.PoolQueue(SH / "pb-queue")
 
     print(f"closure {closure['closure_sha256'][:16]} over "
-          f"{len(closure['files'])} files   rung {args.rung}")
+          f"{len(closure['files'])} files   rung {args.rung}   "
+          f"transport {args.transport}")
     published = 0
     for shard in shards:
         action = build_action(shard, closure, args.rung, args.calibrate_every)
@@ -137,10 +139,19 @@ def main():
         if args.dry_run:
             print(f"  shard {shard:>3}  {key[:16]}  (dry run)")
             continue
-        cas.publish_action_request(action)
-        queue.publish(
-            action_key=key,
-            cas_root=str(SH / "cas"),
+        request = cas.publish_action_request(action)
+        # One submit path for every producer, so no tool keeps a dispatcher of
+        # its own: after the cutover a direct publish queues these probes where
+        # no worker drains them, and it succeeds, so nothing says so.
+        submission = fleet_submit.submit(
+            action,
+            cas=cas,
+            request_path=request,
+            transport=args.transport,
+            # Passed on both transports.  The pull queue carries it on the
+            # queue item; the lane seals it as the snapshot the node
+            # materializes, which is a different action key and the one
+            # the submission reports.
             checkout_root=str(CHECKOUT),
             worker_script=str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
             tags=["gb10"],
@@ -152,7 +163,10 @@ def main():
             resources={"gpu": 1, "mem_gb": 12},
         )
         published += 1
-        print(f"  shard {shard:>3}  {key[:16]}  queued")
+        # The submitted key, not the sealed one: under SLURM the lane
+        # seals the checkout into the action, and the key moves with it.
+        print(f"  shard {shard:>3}  {submission.action_key[:16]}  "
+              f"{submission.describe()}")
     print(f"published {published} action(s)")
 
 

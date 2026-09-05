@@ -6,10 +6,20 @@ same briefs that said "use the pool" produced fifteen agents recomputing one
 baseline and a flock jam seven deep.  This hook moves the rule from prose an
 agent may skim to a refusal it cannot.
 
-It is deliberately narrow.  Read-only inspection (``nvidia-smi``) is allowed,
-because refusing it would only teach agents to route around the hook.  What is
-refused is the two things that actually contend for the GPU: the CUDA venv
-interpreter, and the box-local flock wrappers the pool replaces.
+It is deliberately narrow.  Read-only inspection (``nvidia-smi``, ``squeue``,
+``sinfo``) is allowed, because refusing it would only teach agents to route
+around the hook.  What is refused is the things that actually contend for the
+GPU: the CUDA venv interpreter, the box-local flock wrappers the pool replaces,
+and -- since the fleet has a scheduler -- a bare ``sbatch``, ``srun`` or
+``salloc``.
+
+That last one is not a fourth rule, it is the same rule reaching the shape that
+defeats its proxy.  The proxy for GPU work is the CUDA interpreter on the
+command line, and a submission names no interpreter at all: the venv is inside
+the job script, on a node this box never sees.  So the one shape that most
+needs to go through the lane was the one shape the hook let through.
+``scancel`` is deliberately left alone: cancelling a job is not starting work,
+and a guard that refuses the cleanup strands the person complying with it.
 
 Two carve-outs, and both are the same lesson.  A guard that can refuse its own
 repair, or refuse the alternative it names, is worse than no guard: it strands
@@ -56,7 +66,15 @@ CONTENDS = re.compile(
 #: of it -- and this hook refused its own commit, then refused the edit that
 #: would have fixed that, before this existed.  A guard that can lock out its
 #: own repair is a worse failure than the one it guards against.
-NEVER_GPU = ("git", "gh", "echo", "cat", "grep", "sed", "awk", "less", "diff")
+NEVER_GPU = (
+    "git", "gh", "echo", "cat", "grep", "sed", "awk", "less", "diff",
+    # Asking where a program is, what it is, or what it says about itself.
+    # ``which sbatch`` and ``man sbatch`` are the first two commands anyone
+    # runs at a scheduler they have never used, and refusing them teaches the
+    # reader to route around the hook before they have read the rule.
+    "which", "whereis", "type", "command", "man", "ls", "stat", "file",
+    "head", "tail", "wc", "dpkg", "apt", "apt-get", "apt-cache",
+)
 
 
 #: A segment that switches the GPU off for its own child cannot be GPU work,
@@ -80,7 +98,42 @@ NO_DEVICE = re.compile(r"""(?:^|\s)CUDA_VISIBLE_DEVICES=(?:''|""|)(?=\s)""")
 #: pattern by construction.  Refusing that means the hook blocks the pool from
 #: being started at all, which is the same class of failure as refusing its own
 #: repair: the guard removing the alternative it is pointing at.
-POOL_ENTRYPOINTS = ("pbrun.py", "worker_loop.py", "worker.py")
+#:
+#: ``slurm_job.py`` joins them for both reasons at once: it is what a SLURM job
+#: execs on the node, so it *is* the sanctioned path, and it carries the
+#: action's own sealed interpreter -- the CUDA venv -- on its command line.
+POOL_ENTRYPOINTS = ("pbrun.py", "worker_loop.py", "worker.py", "slurm_job.py")
+
+
+#: A submission to the scheduler, by any of its three verbs.  Bounded by
+#: non-word characters on both sides so that ``/usr/bin/sbatch`` is one and
+#: ``my-sbatch-wrapper`` and ``sbatch.sh`` are not -- and so that ``scancel``,
+#: ``squeue`` and ``sinfo`` never match: reading the queue and cancelling a job
+#: start no work.
+SCHEDULER = re.compile(r"(?<![\w.-])(?:sbatch|srun|salloc)(?![\w.-])")
+
+
+#: The verbs' own help and version switches.  ``sbatch --help`` submits
+#: nothing, and it is how a reader of the runbook finds out whether the
+#: scheduler is installed at all.  Only a segment that is the verb and these
+#: switches and nothing else is let through: ``sbatch --help job.sh`` also
+#: submits nothing in practice, but the hook does not parse the verbs' grammar
+#: and does not guess.  A bare ``sbatch`` with no switch reads a script from
+#: standard input, which is a submission.
+DESCRIBES_ITSELF = frozenset({"-h", "--help", "--usage", "-V", "--version"})
+
+
+def _describes_itself(segment: str) -> bool:
+    """True when this segment only asks a scheduler verb about itself."""
+
+    tokens = segment.split()
+    while tokens and "=" in tokens[0] and not tokens[0].startswith("/"):
+        tokens.pop(0)
+    if len(tokens) < 2:
+        return False
+    if tokens[0].rsplit("/", 1)[-1] not in ("sbatch", "srun", "salloc"):
+        return False
+    return set(tokens[1:]) <= DESCRIBES_ITSELF
 
 
 #: Shell operators that end one command and begin another.  A compound command
@@ -182,12 +235,11 @@ def _drop_heredoc_bodies(command: str) -> str:
     return "\n".join(part for part in out if part)
 
 
-def contends(command: str) -> bool:
-    """True when any segment of this command starts GPU work off-pool.
+def _segments(command: str) -> list[str]:
+    """The commands inside one Bash invocation, each judged on its own.
 
-    Each segment carries its own exemption: a leading ``cat`` does not vouch
-    for what follows ``&&``, and a refused segment is not excused by a
-    permitted neighbour.
+    A leading ``cat`` does not vouch for what follows ``&&``, and a refused
+    segment is not excused by a permitted neighbour.
     """
 
     # A backslash-newline is a line continuation, not a command boundary.
@@ -197,12 +249,46 @@ def contends(command: str) -> bool:
     joined = re.sub(r"\\\s*\n", " ", command)
     joined = _drop_heredoc_bodies(joined)
     joined = _drop_pool_payload(joined)
-    for segment in SEPARATORS.split(joined):
+    return SEPARATORS.split(joined)
+
+
+def contends(command: str) -> bool:
+    """True when any segment of this command starts GPU work off-pool."""
+
+    for segment in _segments(command):
         if not CONTENDS.search(segment):
             continue
         if _first_token(segment) in NEVER_GPU:
             continue
         if NO_DEVICE.search(segment):
+            continue
+        if any(entry in segment for entry in POOL_ENTRYPOINTS):
+            continue
+        return True
+    return False
+
+
+def submits(command: str) -> bool:
+    """True when any segment submits to SLURM outside the fleet's lane.
+
+    The exemptions are the three that cannot be anything else: a segment led
+    by a command that never starts work (a commit message, a grep for the
+    word, ``which sbatch``), a verb asked only about itself (``sbatch
+    --help``), and a segment naming the lane's own entrypoints, which are
+    what run ``sbatch`` on this fleet's behalf.
+
+    ``CUDA_VISIBLE_DEVICES=`` is NOT an exemption here, deliberately.  It works
+    for a local command because the kernel then denies the child a device; it
+    says nothing about a job the scheduler will start on another node with a
+    GRES allocation of its own.
+    """
+
+    for segment in _segments(command):
+        if not SCHEDULER.search(segment):
+            continue
+        if _first_token(segment) in NEVER_GPU:
+            continue
+        if _describes_itself(segment):
             continue
         if any(entry in segment for entry in POOL_ENTRYPOINTS):
             continue
@@ -218,21 +304,39 @@ def main() -> int:
     except Exception:                                        # noqa: BLE001
         return 0
     command = str((event.get("tool_input") or {}).get("command") or "")
-    if not contends(command):
-        return 0
-    sys.stderr.write(
-        "Refused: GPU work goes through the PrismaBuild pool, not a local "
-        "lock.\n\n"
-        f"Run it as:\n  /usr/bin/python3 {PBRUN} --gpu -- <your command>\n\n"
-        "Flags: --exclusive for a timing run that needs the whole box "
-        "(expressed as a demand for its full GPU capacity, which the ledger "
-        "turns into exclusion); Git checkouts are sealed through the CAS and "
-        "may be materialized on any matching box; --here pins one on purpose.\n\n"
-        "Why: a box-local flock cannot balance across sparky and sparklina, "
-        "and it reproduced hold-while-gated, starvation and partial-hold "
-        "waste that the pool's ledger solves structurally.\n"
-    )
-    return 2                          # exit 2 blocks and shows this to the agent
+    if contends(command):
+        sys.stderr.write(
+            "Refused: GPU work goes through the PrismaBuild pool, not a local "
+            "lock.\n\n"
+            f"Run it as:\n  /usr/bin/python3 {PBRUN} --gpu -- <your command>\n\n"
+            "Flags: --exclusive for a timing run that needs the whole box "
+            "(expressed as a demand for its full GPU capacity, which the ledger "
+            "turns into exclusion); Git checkouts are sealed through the CAS and "
+            "may be materialized on any matching box; --here pins one on purpose.\n\n"
+            "Why: a box-local flock cannot balance across sparky and sparklina, "
+            "and it reproduced hold-while-gated, starvation and partial-hold "
+            "waste that the pool's ledger solves structurally.\n"
+        )
+        return 2                      # exit 2 blocks and shows this to the agent
+    if submits(command):
+        # The same shape, because it is the same rule: an agent who has read
+        # one refusal should be able to read this one without stopping.
+        sys.stderr.write(
+            "Refused: SLURM work goes through the PrismaBuild lane, not a bare "
+            "submission.\n\n"
+            f"Run it as:\n  /usr/bin/python3 {PBRUN} --transport slurm "
+            "--gpu -- <your command>\n\n"
+            "Flags: the lane turns --demand and --tag into --gres and "
+            "--constraint, --timeout-s into --time, and seals the checkout "
+            "through the CAS so the job materializes it on whichever node the "
+            "scheduler picks; scancel and squeue are not refused.\n\n"
+            "Why: a bare sbatch names no interpreter, so nothing about it can "
+            "be priced, placed against the fleet's own accounting, or looked "
+            "up afterwards -- the job's CAS receipt is what makes an action "
+            "mean the same thing under either transport.\n"
+        )
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

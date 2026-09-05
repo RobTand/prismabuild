@@ -46,6 +46,11 @@ The source's absolute location is absent from result/stamp naming, container
 ownership, the closure stamp, action params, and queue addressing. Two clones
 of the same bytes and logical subdirectory therefore describe the same work.
 
+The materialization itself lives in `prismabuild.materialize`, not in any one
+transport: the pull queue was simply the first caller. Both the queue worker and
+a SLURM batch job run that one sequence, because two transports materializing an
+action key two ways is two different executions wearing one name.
+
 The claiming worker fully verifies the CAS blob, creates a unique directory
 under its local `PRISMABUILD_LOCAL_CHECKOUT_ROOT`, initializes a repository,
 points its `HEAD` at a reserved name no record may claim, fetches the sealed
@@ -238,8 +243,9 @@ number.
 | `pbrun`, the parent that carries ancestry | `            ["commit-tree", tree, "-p", parent],` |
 | `core.validate_pbrun_snapshot_ref_name` | `def validate_pbrun_snapshot_ref_name(value: object, *, where: str) -> str:` |
 | `core._verify_pbrun_checkout_ancestry` | `def _verify_pbrun_checkout_ancestry(` |
-| `pool._execution_checkout` | `def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:` |
-| `pool`, the record the bundle must agree with | `                    f"checkout snapshot bundle contradicts sealed ref {name!r}"` |
+| `materialize._execution_checkout`, the sequence | `def _execution_checkout(` |
+| `materialize`, the record the bundle must agree with | `                    f"checkout snapshot bundle contradicts sealed ref {name!r}"` |
+| `pool._execution_checkout`, the queue's root | `def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:` |
 | `pool`, mutually exclusive addressing | `                    "checkout_root and checkout_snapshot are mutually exclusive"` |
 | `pool.PoolQueue.execute` | `        with _execution_checkout(item) as checkout_root:` |
 | `core`, subdirectory agreement | `                "pbrun checkout stamp cwd differs from snapshot subdirectory"` |

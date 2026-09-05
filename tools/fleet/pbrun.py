@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Run one command through the PrismaBuild pool instead of a local flock.
 
 Why this exists: agent work was scheduled by a box-local ``flock`` semaphore,
@@ -58,11 +59,15 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root
+# The transport default is read in one place for the whole fleet.  pbrun used
+# to spell it itself, which was the same expression until the published
+# generation became able to carry a default and then was silently not.
+from fleet_submit import default_transport
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 #: Every box mounts this at the same path, so a checkout underneath it is
@@ -73,9 +78,20 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import core as pb, pool  # noqa: E402
+from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 POLL_S = 5.0
+#: Which transport carries a submission.  The pull queue is still the default:
+#: SLURM is installed box by box, and the day a controller comes up is not the
+#: day every agent's ``pbrun`` should start talking to it.  Cutover is one
+#: environment variable, and rollback is unsetting it -- the pool path below is
+#: untouched by any of this.
+TRANSPORTS = ("pool", "slurm")
+DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
+#: What ``pbrun`` exits with when it stopped waiting before the work finished.
+#: The pool path already spells it this way; the SLURM path means the same
+#: thing by it, and in both cases the work is still running.
+GAVE_UP_EXIT = 75
 # An arbitrary command can write state outside its declared CAS result before
 # a later check fails.  Retrying that command is never implied by numerical
 # determinism; the producer must opt the whole action into a larger bound.
@@ -97,6 +113,11 @@ CONTENT_TRANSFORM_ATTRIBUTES = frozenset(
 #: Non-zero because the command did not run; distinct from a real failure
 #: because nothing about it was a defect.
 WITHDRAWN_EXIT = 143
+
+#: The one line ``--detach`` prints.  Versioned because ``pbcampaign`` and
+#: ``pbwait`` parse it, and a fleet runs a published runtime generation that
+#: may be older than the tool reading its output.
+DETACH_SCHEMA_V1 = "prismaquant.prismabuild.pbrun_detach.v1"
 #: The receipt ``publish_runtime`` leaves for which bytes the fleet is serving.
 #: A worker loop holds the module it imported at start, so this is the only
 #: thing that says whether a given box's loop can see a withdrawal at all.
@@ -466,18 +487,45 @@ def resolve_snapshot_refs(
 def build_git_checkout_snapshot(
     cwd: Path,
     *,
-    stamp_name: str,
+    stamp_name: str | None = None,
     cas: pb.PrismaBuildCAS,
     max_bytes: int = CHECKOUT_SNAPSHOT_MAX_BYTES,
     expected_identity: dict[str, str] | None = None,
     snapshot_refs: Sequence[str] = (),
 ) -> dict[str, object]:
-    """Publish the exact dirty tree as an immutable Git bundle with ancestry."""
+    """Publish the exact dirty tree as an immutable Git bundle with ancestry.
+
+    Args:
+        cwd: The directory the action runs in, inside a Git worktree.
+        stamp_name: The pbrun closure stamp to seal alongside the tree, or
+            ``None`` for a producer that seals its own action body. The stamp
+            exists so a pull-queue worker can compare the live tree against the
+            action that pinned it; a snapshot-addressed action is compared
+            against its own sealed commit instead, so a producer that never
+            writes a stamp does not need one invented for it.
+        cas: The store the bundle is ingested into.
+        max_bytes: The local-disk bound this snapshot may not exceed.
+        expected_identity: The checkout identity the caller already read, so
+            the seal refuses a tree that moved between the two observations.
+        snapshot_refs: Source branches the bundle also advertises.
+
+    Returns:
+        The validated ``params.checkout_snapshot`` record.
+    """
 
     root = git_repository_root(cwd)
     if root is None:
         raise SystemExit("pbrun: a non-Git checkout cannot be materialized")
     require_checkout_snapshot_limit(max_bytes)
+    if stamp_name is None:
+        subdirectory = cwd.relative_to(root).as_posix() or "."
+        stamp_relative = None
+        stamp_paths: tuple[str, ...] = ()
+        return _build_git_checkout_snapshot(
+            cwd, root, subdirectory, stamp_relative, stamp_paths,
+            cas=cas, max_bytes=max_bytes,
+            expected_identity=expected_identity, snapshot_refs=snapshot_refs,
+        )
     declared_stamp = cwd / stamp_name
     if declared_stamp.is_symlink():
         raise SystemExit("pbrun: checkout stamp must not be a symlink")
@@ -496,7 +544,28 @@ def build_git_checkout_snapshot(
     ).as_posix()
     if observed_stamp_relative != stamp_relative:
         raise SystemExit("pbrun: checkout stamp resolves through a symlinked path")
-    paths = snapshot_path_roster(root, extra_paths=(stamp_relative,))
+    return _build_git_checkout_snapshot(
+        cwd, root, subdirectory, stamp_relative, (stamp_relative,),
+        cas=cas, max_bytes=max_bytes,
+        expected_identity=expected_identity, snapshot_refs=snapshot_refs,
+    )
+
+
+def _build_git_checkout_snapshot(
+    cwd: Path,
+    root: Path,
+    subdirectory: str,
+    stamp_relative: str | None,
+    stamp_paths: tuple[str, ...],
+    *,
+    cas: pb.PrismaBuildCAS,
+    max_bytes: int,
+    expected_identity: dict[str, str] | None,
+    snapshot_refs: Sequence[str],
+) -> dict[str, object]:
+    """Seal the tree once the caller has settled where the stamp is, if any."""
+
+    paths = snapshot_path_roster(root, extra_paths=stamp_paths)
     require_working_tree_size(root, paths, max_bytes=max_bytes)
     require_untransformed_checkout(root, paths)
     identity = expected_identity or _git_identity(cwd)
@@ -538,11 +607,12 @@ def build_git_checkout_snapshot(
             root, ["read-tree", "HEAD"], environment=object_environment
         )
         _snapshot_git(root, ["add", "-A"], environment=object_environment)
-        _snapshot_git(
-            root,
-            ["add", "-f", "--", stamp_relative],
-            environment=object_environment,
-        )
+        if stamp_relative is not None:
+            _snapshot_git(
+                root,
+                ["add", "-f", "--", stamp_relative],
+                environment=object_environment,
+            )
         tree = _snapshot_git(root, ["write-tree"], environment=object_environment)
         require_supported_snapshot_tree(
             root,
@@ -894,12 +964,23 @@ def placement_tags(
       mutable bytes. ``--here`` still forces a host pin for work genuinely
       about *this* machine.
 
+    ``--tag`` and ``--here`` are two constraints, not two spellings of one.
+    A submitter who passes both asks for a box of that class *and* for this
+    box, so both land: the explicit tags, then ``hostname``, deduplicated and
+    with the hostname last.  Returning ``list(explicit)`` instead dropped the
+    host pin without saying so, which is a narrowing the submitter asked for
+    and did not get.  (The order is for a reader: the conjunction is sorted
+    by ``pool.normalize_placement_tags`` before it is sealed.)
+
     Nothing here decides *which* free box runs a shared-checkout action; the
     queue does, from the demand and what each worker offers.  That separation
     is the point.
     """
 
     if explicit:
+        if here:
+            return [*dict.fromkeys(t for t in explicit if t != hostname),
+                    hostname]
         return list(explicit)
     if here:
         return [hostname]
@@ -1091,7 +1172,33 @@ def require_checkout_owned_scripts(
         )
 
 
-def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
+#: What the notice says where it has no fleet census to read.
+#:
+#: The pull queue's census is the worker-offer registry, and ``None`` from
+#: ``placeable_hosts`` means nothing has announced.  A transport that keeps no
+#: such registry is a different fact with the same shape, and printing the
+#: queue's sentence for it would be a claim about a fleet nobody asked.
+UNANNOUNCED_CENSUS = "no worker has announced"
+NO_CENSUS = "this transport keeps no worker census"
+
+
+class _NoCensus:
+    """The placement census a transport without worker offers has: none.
+
+    The SLURM branch deliberately builds no ``PoolQueue`` -- a retained offer
+    from a loop stopped for the cutover would answer wrongly -- but the pin a
+    box-local checkout imposes is just as real there, and it is the thing the
+    submitter is otherwise never told.  So the notice is printed with the
+    census unavailable, which every branch of it already handles.
+    """
+
+    @staticmethod
+    def placeable_hosts(_intent):
+        return None
+
+
+def _width_of_the_pin(queue, intent, tags: list[str], hostname: str,
+                      *, unknown: str = UNANNOUNCED_CENSUS) -> str:
     """How many boxes this action WOULD have had, with the host tag taken off.
 
     Not "how many boxes match the pinned tags" -- that is one, by
@@ -1106,7 +1213,7 @@ def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
     unpinned["tags"] = [t for t in tags if t != hostname]
     hosts = queue.placeable_hosts(unpinned)
     if hosts is None:
-        return "Fleet width unknown: no worker has announced."
+        return f"Fleet width unknown: {unknown}."
     others = [h for h in hosts if h != hostname]
     if not others:
         return "No other live box fits this demand, so the pin costs nothing now."
@@ -1123,6 +1230,7 @@ def pin_notice(
     hostname: str,
     here: bool,
     portable_checkout: bool = False,
+    unknown_census: str = UNANNOUNCED_CENSUS,
 ) -> str:
     """What the submitter is not otherwise told: this action is one box wide.
 
@@ -1136,13 +1244,13 @@ def pin_notice(
     other two boxes idled.
 
     **Everything below is read off the tags that LANDED, never off the flags
-    that asked for them.**  ``placement_tags`` returns ``list(explicit)`` the
-    moment any ``--tag`` is given, so ``--here`` and a box-local checkout are
-    both silently overridden by it.  A first version asked the ``here`` flag
-    instead, and so announced "PINNED to sparky by --here, so no other box can
-    claim this action" for a submission whose tags were ``['x86']`` -- naming,
-    as the *other* box, the only box that could actually run it.  A notice
-    about a pin has one job and that was it.
+    that asked for them.**  A first version asked the ``here`` flag instead,
+    and so announced "PINNED to sparky by --here, so no other box can claim
+    this action" for a submission whose tags were ``['x86']`` -- naming, as
+    the *other* box, the only box that could actually run it.  A notice about
+    a pin has one job and that was it.  ``placement_tags`` no longer drops the
+    host pin that way, but the reading rule is what keeps this correct
+    whatever it returns.
 
     Exclusivity is claimed only where it is provable.  A tag naming this host
     cannot be claimed elsewhere; a tag that merely happens to match one live
@@ -1191,18 +1299,16 @@ def pin_notice(
         tail = ("" if not local else
                 f"  Move the checkout under {SHARED_ROOT} to let any box claim "
                 f"it, or accept the pin knowingly.")
-        return f"{head}  {_width_of_the_pin(queue, intent, tags, hostname)}{tail}"
+        width = _width_of_the_pin(
+            queue, intent, tags, hostname, unknown=unknown_census)
+        return f"{head}  {width}{tail}"
 
     # No host tag landed.  Say what did, and what it costs.
     notes: list[str] = []
-    if here:
-        notes.append(f"--here did NOT pin this action: an explicit --tag "
-                     f"REPLACES the host tag rather than adding to it, so "
-                     f"tags {tags} alone place it.")
     if local:
         if others is None:
             notes.append(f"WARNING -- the checkout {cwd} exists only on "
-                         f"{hostname}, and no worker has announced, so tags "
+                         f"{hostname}, and {unknown_census}, so tags "
                          f"{tags} may let another box claim this action and "
                          f"fail on the missing tree.")
         elif others:
@@ -1224,8 +1330,7 @@ def pin_notice(
                      f"checkout under {SHARED_ROOT}.")
     elif here:
         if claimants is None:
-            notes.append("No worker has announced, so which box claims it is "
-                         "unknown.")
+            notes.append(f"Which box claims it is unknown: {unknown_census}.")
         elif claimants:
             notes.append(f"{len(claimants)} live "
                          f"box{'es' if len(claimants) > 1 else ''} can claim "
@@ -1238,7 +1343,303 @@ def pin_notice(
     return "pbrun: " + "  ".join(notes)
 
 
-def await_outcome(q, key: str, *, wait_s: float) -> int:
+def detach_line(
+    key: str,
+    *,
+    transport: str,
+    status: str,
+    queue_root,
+    published_unix: float | None = None,
+    job_id: str | None = None,
+    submission=None,
+) -> str:
+    """One line saying where a detached submission went, for a machine to read.
+
+    Everything ``pbrun`` prints for a person goes to stderr, so stdout carries
+    this and nothing else: a caller reads one line of JSON instead of parsing
+    prose written to be read aloud.
+
+    ``status`` is one of ``submitted`` (this call put the work somewhere),
+    ``cache_hit`` (it was already in the CAS, so nothing was submitted) or
+    ``attached`` (it was already running under an earlier submission, which
+    this call joined rather than duplicated).  All three exit 0, and the last
+    two name a run this process did not start.
+
+    The generation travels in it because the terminal record a later wait looks
+    for is identified by generation and not by key.  An action key is a content
+    hash, so one key accumulates the records of every earlier run of the same
+    work, and a waiter given only the key cannot tell this run's ending from
+    the ending of a run that finished last week.
+    """
+
+    queue = Path(queue_root)
+    return json.dumps(
+        {
+            "schema": DETACH_SCHEMA_V1,
+            "action_key": str(key),
+            "transport": str(transport),
+            "status": str(status),
+            "published_unix": published_unix,
+            "job_id": str(job_id) if job_id is not None else None,
+            "submission": str(submission) if submission is not None else None,
+            "done": str(queue / pool.DONE / f"{key}.json"),
+            "failed": str(queue / pool.FAILED / f"{key}.json"),
+            "withdrawn": str(queue / pool.WITHDRAWN / f"{key}.json"),
+        },
+        sort_keys=True,
+    )
+
+
+def published_generation(q, key: str, path) -> float | None:
+    """The generation the pull queue stamped on this submission, or ``None``.
+
+    Read back rather than assumed: ``PoolQueue.publish`` stamps
+    ``published_unix`` itself, and a worker may have renamed the item into
+    ``claimed`` -- or run it to completion -- before this looks.  ``None`` is
+    the honest answer when none of those places has it, and it tells a later
+    wait to accept any record for the key rather than to pretend it knows which
+    run the record belongs to.
+    """
+
+    candidates = [Path(path)]
+    for state in (pool.CLAIMED, pool.DONE, pool.FAILED):
+        candidates.append(q.item_path(state, key))
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        stamped = value.get("published_unix") if isinstance(value, dict) else None
+        if isinstance(stamped, (int, float)) and not isinstance(stamped, bool):
+            return float(stamped)
+    return None
+
+
+def terminal_record(path: Path, generation: float | None):
+    """The record filed at ``path``, when it belongs to ``generation``.
+
+    An action key is a content hash, so one key accumulates the endings of
+    every run of the same work.  ``published_unix`` equality is the queue's own
+    generation rule -- ``PoolQueue.terminal_outcome_covers`` states it, and
+    ``slurm_lane._same_generation`` applies it on the other transport -- so a
+    reader waiting for one run must skip the record of another.
+
+    A record carrying no generation stands.  ``PoolQueue.finish`` writes one
+    with no ``published_unix`` when a reaper concluded the claim underneath it,
+    and records filed before generations were stamped have none either;
+    staleness cannot be proved of those, and refusing them would hang a caller
+    on the outcome that is the only account of what happened.
+    """
+
+    try:
+        # Poll by readdir, not by stat.  The queue lives on NFS, where a stat
+        # of a path that did not exist yet is negatively cached: the outcome
+        # landed and a bare ``exists()`` kept answering False.  Listing the
+        # directory revalidates it.
+        if path.name not in os.listdir(path.parent):
+            return None
+    except OSError:
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    if generation is None:
+        return record
+    theirs = record.get("published_unix")
+    if isinstance(theirs, (int, float)) and not isinstance(theirs, bool):
+        return record if float(theirs) == float(generation) else None
+    return record
+
+
+def landed_outcome(
+    q, key: str, *, wait_s: float, generation: float | None = None
+):
+    """Block until this action's ending lands, and return it with its path.
+
+    Watches all THREE terminal directories.  An action whose argv exits
+    non-zero is retried and then filed under ``failed``, never under ``done``
+    -- and this loop used to watch ``done`` alone, so a caller whose suite
+    legitimately failed sat here until ``--wait-s`` expired (a DAY, by default)
+    and then got exit 75 and the words "gave up waiting".  The work had run,
+    three times, and said why each time; none of it reached the person waiting.
+    Sixty-six items sat in ``failed`` when this was found, and the agents who
+    submitted them reported the pool as having never scheduled their work.
+    ``withdrawn`` is the third and is watched for exactly the same reason --
+    and it is the one whose whole point is that a person decided it, so it
+    would be the worst of the three to make somebody wait a day to hear about.
+
+    Returns ``None`` when the caller's patience ran out first.  Split out of
+    ``await_outcome`` so a waiter that reports many actions at once can share
+    one deadline across them instead of spending ``--wait-s`` on each in turn.
+
+    A caller that cannot name the generation gets the NEWEST ending rather than
+    the first directory in order.  One key can hold a ``done`` from a run last
+    week beside a ``failed`` from the run just now, and answering with the
+    ``done`` because ``done`` is looked at first would report success for work
+    that failed.
+    """
+
+    def _stamp(entry) -> float:
+        value = entry[1].get("published_unix")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return float("-inf")
+
+    watched = [q.item_path(state, key)
+               for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
+    deadline = time.monotonic() + wait_s
+    while True:
+        found = []
+        for path in watched:
+            record = terminal_record(path, generation)
+            if record is not None:
+                found.append((path, record))
+        if len(found) == 1 or (found and generation is not None):
+            return found[0]
+        if found:
+            return max(found, key=_stamp)
+        # ``>=``, so a non-blocking probe (``wait_s=0``) does not spend a poll
+        # interval finding out that it had none to spend.
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(POLL_S)
+
+
+def outcome_summary(q, outcome_path, outcome) -> dict:
+    """One ending reduced to the fields a caller reports, after verification.
+
+    The mutable terminal summary is state-machine output.  Where the record
+    links immutable attempt records, the first-writer-published attempt decides
+    what this returns, so a later stale-output refusal cannot replace the
+    causal failure on the submitter's screen.  ``adopted_attempt_summary``
+    verifies every canonical path, digest, byte count and generation on the way
+    through, and refuses a summary that disagrees with the attempt it adopted.
+
+    ``transport`` defaults to the pull queue: the SLURM lane stamps its own
+    records and the pool's predate the field.
+    """
+
+    detail = outcome.get("detail") or {}
+    status = str(outcome.get("status"))
+    adopted = None
+    if (
+        "attempt_history" in outcome
+        or "attempt_history_missing_before" in outcome
+    ):
+        adopted = q.adopted_attempt_summary(outcome)
+        disposition = adopted["disposition"]
+        if disposition != Path(outcome_path).parent.name:
+            raise pool.PoolContractError(
+                "terminal queue directory disagrees with the adopted immutable "
+                f"attempt: {Path(outcome_path).parent.name!r} != {disposition!r}"
+            )
+        for field in ("status", "finished_unix", "finished_host", "detail"):
+            if outcome.get(field) != adopted[field]:
+                raise pool.PoolContractError(
+                    "terminal queue summary disagrees with the adopted "
+                    f"immutable attempt field {field!r}"
+                )
+        detail = adopted["detail"]
+        status = str(adopted["status"])
+    return {
+        "action_key": str(outcome.get("action_key") or ""),
+        "status": status,
+        "detail": detail,
+        "adopted": adopted,
+        # ``executed`` and ``cache_hit`` both mean the work is done; that is
+        # the pull queue's own rule, in ``adopted_attempt_summary``, which
+        # routes both to ``done/``.
+        "succeeded": status in {"executed", "cache_hit"},
+        "transport": str(outcome.get("transport") or "pool"),
+        "finished_host": outcome.get("finished_host"),
+        "elapsed_s": detail.get("elapsed_s"),
+        "returncode": detail.get("returncode"),
+        # The action's own ending, where the transport recorded one.  The
+        # launcher's status above is 1 for every failure, so an action that
+        # exited 7 reads as 1 without this.
+        "action_returncode": detail.get("action_returncode"),
+        "action_signal": detail.get("action_signal"),
+        "receipt_published": detail.get("receipt_published"),
+        "attempts": outcome.get("attempts"),
+        "withdrawn_by": outcome.get("withdrawn_by"),
+        "reason": outcome.get("reason"),
+    }
+
+
+def outstanding_submission(q, key: str, *, lane_root=None):
+    """The newest submission of this key anybody recorded, or ``None``.
+
+    Returns ``(transport, generation, submission)``.  Newest wins because a key
+    can legitimately have been carried by both transports -- the pull queue
+    last week, SLURM today -- and the run being asked about is the one somebody
+    just asked for.
+    """
+
+    candidates = []
+    lane = slurm_lane.recorded_submission(key, root=lane_root)
+    if isinstance(lane, dict):
+        generation = lane.get("published_unix")
+        if isinstance(generation, (int, float)) and not isinstance(generation, bool):
+            candidates.append(("slurm", float(generation), lane))
+    for state in (pool.READY, pool.CLAIMED):
+        try:
+            item = json.loads(
+                q.item_path(state, key).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        generation = item.get("published_unix") if isinstance(item, dict) else None
+        if isinstance(generation, (int, float)) and not isinstance(generation, bool):
+            candidates.append(("pool", float(generation), item))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda entry: entry[1])
+
+
+def live_submission(q, key: str, *, lane_root=None, **lane_commands):
+    """The submission this key is still running under, or ``None``.
+
+    A key is a content hash, so asking for the same work twice is the normal
+    way to ask whether it is done -- and while the first ask is still running,
+    the second must attach to it rather than start a second copy of it.  Two
+    copies is not merely waste: they materialize the same checkout, take the
+    same GPU twice and race to publish one receipt.
+
+    Live means three things together: something was recorded, no ending covers
+    that generation, and the thing that carries it still exists -- a job the
+    controller still knows in a non-terminal state, an item nobody has claimed,
+    or a claim whose lease is still being refreshed.  A forgotten job or a dead
+    lease is not live, and the caller submits afresh, which is what the pull
+    queue's own reaper would arrange for anyway.
+    """
+
+    found = outstanding_submission(q, key, lane_root=lane_root)
+    if found is None:
+        return None
+    transport, generation, submission = found
+    if landed_outcome(q, key, wait_s=0.0, generation=generation) is not None:
+        return None
+    if transport == "slurm":
+        job_id = str(submission.get("job_id") or "")
+        if not job_id:
+            return None
+        state = slurm_lane.query_state(job_id, **lane_commands)
+        if state is None or state[0] in slurm_lane.TERMINAL_STATES:
+            return None
+        return found
+    if q.item_path(pool.READY, key).exists():
+        return found
+    age = q.lease_age(key)
+    if age is not None and age < pool.LEASE_TIMEOUT_S:
+        return found
+    return None
+
+
+def await_outcome(
+    q, key: str, *, wait_s: float, generation: float | None = None
+) -> int:
     """Block until this action reaches a terminal directory, then report it.
 
     Split out of ``main`` so the outcome half can be tested without a
@@ -1247,73 +1648,17 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
     test would have been least likely to reach.
     """
 
-    # Watch BOTH terminal directories.  An action whose argv exits non-zero is
-    # retried and then filed under ``failed``, never under ``done`` -- and this
-    # loop used to watch ``done`` alone, so a caller whose suite legitimately
-    # failed sat here until ``--wait-s`` expired (a DAY, by default) and then
-    # got exit 75 and the words "gave up waiting".  The work had run, three
-    # times, and said why each time; none of it reached the person waiting.
-    # Sixty-six items sat in ``failed`` when this was found, and the agents who
-    # submitted them reported the pool as having never scheduled their work.
-    # ``withdrawn`` is the third terminal directory and is watched for exactly
-    # the same reason -- and it is the one whose whole point is that a person
-    # decided it, so it would be the worst of the three to make someone wait a
-    # day to hear about.
-    done = q.item_path("done", key)
-    failed = q.item_path("failed", key)
-    withdrawn = q.item_path("withdrawn", key)
-    deadline = time.monotonic() + wait_s
-    # Poll by readdir, not by stat.  The queue lives on NFS, where a stat of a
-    # path that did not exist yet is negatively cached: the outcome landed and
-    # a bare ``done.exists()`` kept answering False.  Listing the directory
-    # revalidates it.
-    def _landed(path) -> bool:
-        try:
-            return path.name in os.listdir(path.parent)
-        except OSError:
-            return False
+    landed = landed_outcome(q, key, wait_s=wait_s, generation=generation)
+    if landed is None:
+        print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
+        return 75
+    outcome_path, outcome = landed
 
-    while True:
-        if _landed(done):
-            outcome_path = done
-            break
-        if _landed(failed):
-            outcome_path = failed
-            break
-        if _landed(withdrawn):
-            outcome_path = withdrawn
-            break
-        if time.monotonic() > deadline:
-            print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
-            return 75
-        time.sleep(POLL_S)
-
-    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
-    detail = outcome.get("detail") or {}
-    adopted_summary = None
-    if (
-        "attempt_history" in outcome
-        or "attempt_history_missing_before" in outcome
-    ):
-        # The terminal summary is mutable state-machine output.  Read the
-        # first-writer-published attempt records it links so a later stale-
-        # output refusal cannot replace the causal failure on the submitter's
-        # screen.  ``attempt_outcomes`` verifies every canonical path, digest,
-        # byte count and generation before returning text.
+    summary = outcome_summary(q, outcome_path, outcome)
+    detail = summary["detail"]
+    status = summary["status"]
+    if summary["adopted"] is not None:
         attempts = q.attempt_outcomes(outcome)
-        adopted_summary = q.adopted_attempt_summary(outcome)
-        disposition = adopted_summary["disposition"]
-        if disposition != outcome_path.parent.name:
-            raise pool.PoolContractError(
-                "terminal queue directory disagrees with the adopted immutable "
-                f"attempt: {outcome_path.parent.name!r} != {disposition!r}"
-            )
-        for field in ("status", "finished_unix", "finished_host", "detail"):
-            if outcome.get(field) != adopted_summary[field]:
-                raise pool.PoolContractError(
-                    "terminal queue summary disagrees with the adopted "
-                    f"immutable attempt field {field!r}"
-                )
         missing = outcome.get("attempt_history_missing_before", 0)
         if isinstance(missing, int) and not isinstance(missing, bool) and missing:
             noun = "attempt" if missing == 1 else "attempts"
@@ -1335,19 +1680,17 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
         # Backward compatibility for outcomes filed by a pre-history runtime.
         sys.stdout.write(str(detail.get("stdout") or ""))
         sys.stderr.write(str(detail.get("stderr") or ""))
-    if adopted_summary is not None:
-        detail = adopted_summary["detail"]
-        status = str(adopted_summary["status"])
-    else:
-        status = str(outcome.get("status"))
     if status == "withdrawn":
         who = outcome.get("withdrawn_by") or "an operator"
         why = str(outcome.get("reason") or "").strip()
         print(f"pbrun: withdrawn by {who}"
               f"{' -- ' + why if why else ''}", file=sys.stderr)
         return WITHDRAWN_EXIT
+    # ``elapsed_s`` is present and null on a SLURM record whose scheduler
+    # provenance was purged, so the key's presence must not defeat the default.
     print(f"pbrun: {status} on {outcome.get('finished_host')} "
-          f"in {detail.get('elapsed_s', 0):.0f}s", file=sys.stderr)
+          f"in {(detail.get('elapsed_s') or 0):.0f}s"
+          f"{action_status_suffix(detail)}", file=sys.stderr)
     if status == "cache_hit":
         return 0
     rc = detail.get("returncode")
@@ -1364,6 +1707,720 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
     print(f"pbrun: outcome filed under {outcome_path.parent.name} after "
           f"{outcome.get('attempts', '?')} attempt(s)", file=sys.stderr)
     return 1
+
+
+def action_status_suffix(detail: Mapping[str, object]) -> str:
+    """What to add to an outcome line when the action's status is not the run's.
+
+    Nothing at all when the two agree, which is the ordinary case: an action
+    that exited 3 under a transport that reports its own launcher's status
+    would say the same number twice. When they differ -- the launcher exits 1
+    for every failure -- the run's number stays first, because that is the one
+    ``pbrun`` returns as its own exit status, and the action's is named as the
+    action's.
+    """
+
+    action = detail.get("action_returncode")
+    if not isinstance(action, int) or isinstance(action, bool):
+        return ""
+    if action == detail.get("returncode"):
+        return ""
+    signal = detail.get("action_signal")
+    if isinstance(signal, int) and not isinstance(signal, bool):
+        return f"; rc={detail.get('returncode')} (action killed by signal {signal})"
+    return f"; rc={detail.get('returncode')} (action exited {action})"
+
+
+def _report_stall(key: str, report) -> None:
+    """Say that a running job has not moved.  Say it; do nothing about it.
+
+    The lane decides *when* (``STALL_WINDOW_S`` of unchanged samples, repeated
+    at ``STALL_REPORT_EVERY_S``); this decides the words.  The job is still
+    running and keeps running: a stall is evidence for a person, and the only
+    thing that ends it is that person's ``--withdraw`` or a ``--timeout-s``
+    they asked for.  Wall-clock is never evidence of death.
+    """
+
+    minutes = int(report.stalled_for_s // 60)
+    where = report.node or "an unknown node"
+    print(f"pbrun: {key[:12]} slurm job {report.job_id} has shown no progress "
+          f"for {minutes} min on {where}; it is still running. Withdraw with "
+          f"pbrun --withdraw {key[:12]} if it is dead.",
+          file=sys.stderr, flush=True)
+
+
+#: The scheduler commands ``live_submission`` needs to ask whether a recorded
+#: job is still alive, and the keyword arguments ``slurm_lane.resume`` accepts.
+#: Named explicitly rather than passed through: ``slurm_outcome`` forwards
+#: whatever a caller gave it to ``run``, and ``run`` takes flags -- ``sbatch``,
+#: ``retry_safe`` -- that neither of these two has any use for.
+_QUERY_COMMANDS = frozenset({"sacct", "scontrol", "squeue"})
+_RESUME_COMMANDS = frozenset({
+    "poll_s", "sacct", "scontrol", "squeue", "sstat", "sleep", "clock",
+    "on_stall", "on_notice",
+})
+
+#: The interpreter pbrun's sealed argv starts with.  A nonportable action
+#: binds its exact bytes, so the name is stated once, where the scope is built.
+SEALED_ARGV0 = "/bin/bash"
+
+
+def detached_attempts_refusal(max_attempts: int) -> str:
+    """Why a detached submission cannot carry more than one attempt.
+
+    A retry is a second submission made after somebody watched the first one
+    fail.  Detaching means nobody is watching, so the choice is between
+    silently running one attempt for a caller who asked for three, and saying
+    so.  A function rather than a literal because ``pbcampaign`` submits every
+    row detached and has to refuse the same row for the same reason, at
+    manifest load; two copies of the sentence would be two policies.
+    """
+
+    return (
+        f"pbrun: --detach submits one attempt and returns, so it cannot "
+        f"honour --max-attempts greater than 1 (this asks for {int(max_attempts)}); "
+        f"submit it attached, or detach with a single attempt"
+    )
+
+
+def require_host_class_scope(
+    *, measurement: bool, host_class: str | None, transport: str
+) -> None:
+    """Refuse a scope the design cannot honour, before anything is sealed."""
+
+    if measurement and host_class is None:
+        raise SystemExit(
+            "pbrun: --measurement requires --host-class CLASS.\n"
+            "A measurement's numerics do not transfer across architectures, "
+            "so its result is keyed on the host class that produced it "
+            "(docs/design.md, \"Cache/action-key semantics\"); a portable "
+            "measurement would let any box's KL stand in for another's."
+        )
+    if host_class is not None and transport != "slurm":
+        raise SystemExit(
+            "pbrun: --host-class needs --transport slurm.\n"
+            "A host_class_keyed action is attested through the SLURM "
+            "controller (docs/design.md, \"Worker preflight and execution "
+            "attestation\"); a pull-queue worker refuses it at preflight, so "
+            "submitting it there queues work that cannot run."
+        )
+
+
+def host_class_scope(
+    host_class: str | None,
+) -> tuple[dict[str, object], dict[str, str]]:
+    """The execution scope and the toolchain a submission seals.
+
+    A portable action declares no toolchain.  A host-class-keyed one is
+    nonportable, and the core requires a nonportable action to bind the
+    executable behind argv[0] and the ABI and accelerator facts of the box
+    that runs it -- facts pbrun can read only from the box it runs on.  So a
+    class-keyed submission carries this box's facts, and a worker of the
+    class verifies each of them at preflight; a submission from a box of
+    another class is refused there, naming the field that differs.
+    """
+
+    if host_class is None:
+        return (
+            {"portability": "portable", "platform_key": None, "host_class": None},
+            {},
+        )
+    toolchain = {
+        **pb.executable_toolchain_contract(SEALED_ARGV0),
+        **pb.live_platform_toolchain_contract(),
+    }
+    return (
+        {
+            "portability": "host_class_keyed",
+            "platform_key": None,
+            "host_class": host_class,
+        },
+        toolchain,
+    )
+
+
+def cached_outcome(
+    key: str,
+    *,
+    receipt,
+    queue_root,
+    resources,
+    tags: list[str],
+    retry_safe: bool,
+    max_attempts: int,
+) -> int:
+    """Report receipted work as a finished run, submitting nothing.
+
+    Prints the lines a pull-queue cache hit printed and exits 0.  A ``done/``
+    record is filed only when the key has none: the record of the run that
+    did the work is the one every reader wants, and a re-run has nothing to
+    add to it.  With no record at all -- a receipt published from another
+    store, or a record moved aside -- the fleet's readers still get an ending,
+    with ``status=cache_hit`` as the pull queue filed one.
+
+    Args:
+        key: The action key.
+        receipt: The CAS receipt ``lookup`` returned.
+        queue_root: The queue whose ``done/`` is consulted and, if empty for
+            this key, written.
+        resources: The lane resources the submission would have carried.
+        tags: The sealed placement tags.
+        retry_safe: The retry policy, recorded as the pool recorded it.
+        max_attempts: Likewise.
+
+    Returns:
+        0, always: the work is done.
+    """
+
+    print(f"pbrun: {key[:12]} is already in the CAS; nothing submitted",
+          file=sys.stderr, flush=True)
+    host = socket.gethostname()
+    existing = Path(queue_root) / pool.DONE / f"{key}.json"
+    if not existing.exists():
+        slurm_lane.publish_outcome(
+            queue_root=queue_root,
+            action_key=key,
+            published_unix=time.time(),
+            published_by=host,
+            status="cache_hit",
+            attempts=0,
+            max_attempts=int(max_attempts),
+            retry_safe=bool(retry_safe),
+            resources=resources.demand(),
+            tags=tags,
+            receipt=receipt,
+            claimed_by=host,
+            detail={"elapsed_s": 0.0},
+        )
+    print(f"pbrun: cache_hit on {host} in 0s", file=sys.stderr, flush=True)
+    return 0
+
+
+def slurm_outcome(
+    action,
+    *,
+    cas,
+    request_path,
+    tags: list[str],
+    demand: dict,
+    exclusive: bool,
+    timeout_s: float | None,
+    wait_s: float,
+    retry_safe: bool,
+    max_attempts: int,
+    priority: int = 0,
+    placement_notice: str = "",
+    anywhere: bool = False,
+    detach: bool = False,
+    runtime_root: Path = RUNTIME_ROOT,
+    lane_root=None,
+    queue_root=None,
+    **lane_commands,
+) -> int:
+    """Run one sealed action through SLURM and report it the way the pool does.
+
+    The user-facing contract is this transport's whole point of contact: an
+    agent that submits with ``--transport slurm`` must read the same lines and
+    get the same exit codes it got from the queue, or the cutover is a change
+    to every caller rather than a change to one dispatcher.
+
+    So the verdict comes from the CAS, not from ``sbatch``.  A receipt means
+    the work was done -- whatever the job's exit status said afterwards -- and
+    no receipt means it was not, even from a job that exited zero.  That is the
+    rule ``PoolQueue.finish`` already applies; only the machinery underneath it
+    differs.
+
+    ``detach`` stops after ``sbatch`` accepted the job: the submission is
+    announced on stdout as one line of JSON and this returns 0.  No ending is
+    filed, because none has been observed -- whoever waits later files it, from
+    the same recorded submission ``--withdraw`` already builds a record out of.
+    """
+
+    key = str(action["action_key"])
+    if placement_notice:
+        # How wide this action is, said before anything is submitted, exactly
+        # as the pool path says it.  The pin a box-local checkout imposes is a
+        # consequence of a path rather than of a flag, and a submitter that is
+        # not told has narrowed the fleet to one box without knowing.
+        print(placement_notice, file=sys.stderr, flush=True)
+    slots = int(demand.get("gpu", 0) or 0)
+    if exclusive and slots > 1:
+        # ``LaneResources.gres()`` answers ``gpu:1`` for an exclusive action
+        # whatever the count says, because ``gpu:N`` and ``shard:N`` are
+        # mutually exclusive requests against one device and exclusivity is the
+        # first.  On today's one-device boxes that is right and the count is
+        # redundant; on a two-GPU box it would silently hand back half of what
+        # was asked for.  Refusing is the honest answer either way -- the pool
+        # read the count off worker offers, and SLURM has no such thing here.
+        raise SystemExit(
+            f"pbrun: --exclusive --gpu-capacity {slots} is not something this "
+            f"transport can express.\n"
+            "Under SLURM, exclusivity IS the whole device: the lane sends "
+            "--gres=gpu:1, and a count above one would have to name that many "
+            "whole devices, which nothing here derives or checks.\n"
+            "Drop --gpu-capacity to take one device exclusively, or drop "
+            "--exclusive and ask for --gpu-capacity slots (shards) instead."
+        )
+    resources = slurm_lane.LaneResources.from_demand(demand, exclusive=exclusive)
+    lane_commands.setdefault("on_stall", lambda report: _report_stall(key, report))
+    lane_commands.setdefault(
+        "on_notice",
+        lambda text: print(f"pbrun: {text}", file=sys.stderr, flush=True))
+    # Say that the slot has no device, every time, on the line that announces
+    # the submission.  The mask is applied before the transport branch and it
+    # is also a silent narrowing: a suite that used to run its CUDA tests now
+    # skips them, and a skip that nobody announced reads as the same green.
+    masked = "" if slots else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
+    queue = SH / "pb-queue" if queue_root is None else queue_root
+    # Ask the CAS before asking the scheduler for a node.  A key is a content
+    # hash, and asking for the same work again is the normal way to ask
+    # whether it is done; the answer is a receipt on the mount, readable from
+    # here.  ``--detach`` made this check from the start.  The attached path
+    # let the job discover it instead, which spent a job id, a materialized
+    # checkout and a node to learn what this process could have read -- so a
+    # campaign re-run through ``pbcampaign`` was free and a hand re-run of one
+    # of its rows was not.  The node still checks (``run-local`` looks the
+    # action up before it runs anything), so a receipt that lands between
+    # this check and the job's start costs a materialization, never a rerun.
+    # One lookup: it verifies the result blob, which on a rendered model is
+    # gigabytes hashed over NFS.
+    receipt = None if detach else cas.lookup(action)
+    if receipt is not None:
+        return cached_outcome(
+            key,
+            receipt=receipt,
+            queue_root=queue,
+            resources=resources,
+            tags=tags,
+            retry_safe=retry_safe,
+            max_attempts=max_attempts,
+        )
+    # Attach to a run already in flight rather than start a second copy of it.
+    #
+    # A key is a content hash, so asking for the same work twice is the normal
+    # way to ask whether it is done.  The pull queue answered that with one
+    # ``ready/<key>.json`` and a claim: the second ask could not become a
+    # second execution.  SLURM has no claim, and this path submitted
+    # unconditionally -- so two attached ``pbrun``s of one key were two jobs of
+    # one action on the fleet, materializing the same checkout, taking the same
+    # GPU twice and racing to publish one receipt.
+    #
+    # ``--detach`` already made this check (it is the same
+    # ``live_submission``); it just never ran for a caller who waits.  Live
+    # means recorded, no ending covering that generation, and a job the
+    # controller still knows in a non-terminal state -- so a terminal or
+    # forgotten submission submits afresh here exactly as it does there.
+    attached = None
+    if not detach:
+        found = live_submission(
+            pool.PoolQueue(queue), key, lane_root=lane_root,
+            **{name: lane_commands[name]
+               for name in _QUERY_COMMANDS if name in lane_commands},
+        )
+        # A live *pool* item is not this transport's to wait on: it belongs to
+        # a worker, and ``resume`` reconstructs a SLURM submission record.
+        attached = found if found is not None and found[0] == "slurm" else None
+    # sbatch's own refusal is this transport's capability gate: an unknown
+    # Feature or an impossible GRES is rejected at submit time, which is the
+    # moment the pool path's ``capability_verdict`` spoke.  So it reaches the
+    # caller as the message SLURM wrote, in the shape that message had, rather
+    # than as a traceback.
+    try:
+        if attached is not None:
+            submission = attached[2]
+            job_id = str(submission.get("job_id") or "")
+            print(f"pbrun: {key[:12]} is already running (slurm job {job_id}); "
+                  f"attaching to it rather than submitting a second copy"
+                  f"{masked}", file=sys.stderr, flush=True)
+            # ``resume`` files the ending ``run`` would have filed, off the
+            # recorded submission alone -- the same reconstruction
+            # ``--withdraw`` builds a terminal record from.  So the caller
+            # reads the same lines and gets the same exit code whether it
+            # submitted this job or joined it.
+            result = slurm_lane.resume(
+                submission,
+                action=action,
+                cas=cas,
+                queue_root=queue,
+                wait_s=wait_s,
+                **{name: value for name, value in lane_commands.items()
+                   if name in _RESUME_COMMANDS},
+            )
+        else:
+            result = slurm_lane.run(
+                action,
+                cas=cas,
+                request_path=request_path,
+                placement=tags,
+                resources=resources,
+                partition=slurm_lane.partition_for(
+                    resources, tags, anywhere=anywhere),
+                # ``--priority`` is a queue hint on either transport: the pool
+                # sorts its ready list on it, and SLURM subtracts the derived nice
+                # from the base priority its scheduler assigned.  Dropping it here
+                # is what let ``pool_reset``'s bulk ``--priority -10`` land
+                # alongside interactive work instead of behind it.
+                priority=priority,
+                timeout_s=timeout_s,
+                worker_script=runtime_root / "tools" / "prismabuild_worker.py",
+                job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
+                retry_safe=retry_safe,
+                max_attempts=max_attempts,
+                root=lane_root,
+                # Eleven fleet tools and Tessera's ``merge_suite`` read one action's
+                # ending out of this directory.  The lane files it there so the
+                # cutover is a change to one dispatcher and not to every reader.
+                queue_root=queue,
+                wait_s=wait_s,
+                detach=detach,
+                on_submit=lambda job: print(
+                    f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
+                    f"(attempt {job.attempt}) tags={tags} demand={demand}{masked}",
+                    file=sys.stderr, flush=True),
+                **lane_commands,
+            )
+    except slurm_lane.SlurmLaneError as exc:
+        raise SystemExit(
+            f"pbrun: slurm refused this action.\n"
+            f"  required tags: {tags or '(any box)'}\n"
+            f"  demand:        {demand}\n"
+            f"  {exc}\n"
+            f"Fix the --tag, or read `sinfo -N -l` for a node that offers it."
+        ) from exc
+
+    last = result.last
+    if last is None:                       # unreachable: run always submits
+        print("pbrun: nothing was submitted", file=sys.stderr)
+        return 1
+    job, outcome = last
+    if detach:
+        print(detach_line(
+            key,
+            transport="slurm",
+            status="submitted",
+            queue_root=queue,
+            published_unix=result.published_unix,
+            job_id=job.job_id,
+            submission=job.record_path,
+        ), flush=True)
+        return 0
+    total = len(result.attempts)
+    for index, (attempted, reported) in enumerate(result.attempts, start=1):
+        print(f"pbrun: attempt {index}/{total} slurm job {attempted.job_id} "
+              f"{reported.state}", file=sys.stderr)
+        _echo(attempted.stdout_path, sys.stdout)
+        _echo(attempted.stderr_path, sys.stderr)
+
+    if result.receipt is not None:
+        print(f"pbrun: executed via slurm job {job.job_id} ({outcome.state})",
+              file=sys.stderr)
+        return 0
+    if outcome.state == "CANCELLED":
+        print(f"pbrun: withdrawn -- slurm job {job.job_id} was cancelled",
+              file=sys.stderr)
+        return WITHDRAWN_EXIT
+    if outcome.state == slurm_lane.WAIT_TIMEOUT_STATE:
+        print(f"pbrun: gave up waiting for {key[:12]}; slurm job "
+              f"{job.job_id} is still queued or running "
+              f"(pbrun --transport slurm --withdraw {key[:12]} stops it)",
+              file=sys.stderr)
+        return GAVE_UP_EXIT
+    if outcome.state == slurm_lane.UNKNOWN_STATE:
+        # The controller answered that it knows no such job and there is no
+        # receipt.  That is not a failure and it is not filed as one: the job
+        # may have been purged past MinJobAge, or the controller's memory of
+        # it went with a restart while it runs on.  Same exit as giving up,
+        # because the truth is the same -- no verdict yet.
+        print(f"pbrun: no scheduler command can describe slurm job "
+              f"{job.job_id} for {key[:12]} and it has published no receipt; "
+              f"it may still be running as slurm job {job.job_id}, or have "
+              f"been purged past MinJobAge; look under {job.directory}",
+              file=sys.stderr)
+        return GAVE_UP_EXIT
+    # Say the thing that is actually wrong.  A job that exits zero without
+    # publishing a receipt has not done the work, and reporting its status
+    # would report success for an action nothing can look up.
+    #
+    # `succeeded`, not `exit_code == 0`: SLURM reports a job it killed at the
+    # time limit as `ExitCode=0:15` -- exit code zero, signal fifteen -- so
+    # reading the code alone told an operator whose job was killed by the
+    # scheduler that it "exited 0 but published no receipt", which sends them
+    # to a job log that says nothing while the state that explains it,
+    # TIMEOUT, was already in hand.  Measured in fleet/slurm/smoke row 5 on
+    # 2026-09-04: state=TIMEOUT, returncode=0, signal=15.
+    if outcome.succeeded:
+        print(f"pbrun: slurm job {job.job_id} exited 0 but published no "
+              f"receipt for {key[:12]}; see {job.stdout_path} and "
+              f"{job.stderr_path}", file=sys.stderr)
+        return 1
+    if outcome.state == "OUT_OF_MEMORY":
+        # The state alone sends an operator to a job log that a SIGKILLed
+        # process never got to write.  What decided the ending is the number
+        # this submission declared, which the log does not carry and the
+        # caller may not have typed at all -- `mem_gb` defaults to 4.
+        declared = int(demand.get("mem_gb", 0) or 0)
+        print(f"pbrun: slurm job {job.job_id} exceeded the "
+              f"{declared} GiB it declared; raise it with "
+              f"--demand mem_gb={max(declared * 2, 8)} (or whatever the "
+              f"action really needs)", file=sys.stderr)
+    print(f"pbrun: failed ({outcome.state}) after {total} attempt(s); "
+          f"logs {job.stdout_path} and {job.stderr_path}", file=sys.stderr)
+    if isinstance(outcome.exit_code, int) and outcome.exit_code:
+        return outcome.exit_code
+    return 1
+
+
+def _echo(path, stream) -> None:
+    """Print a job log if it is there, and say nothing when it is not.
+
+    An absent log is normal -- a job cancelled before it started never opened
+    one -- and turning that into an error would replace the reason the action
+    failed with a complaint about the file that would have explained it.
+    """
+
+    try:
+        stream.write(Path(path).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return
+
+
+def withdraw_routed(
+    prefixes, *, transport: str, reason: str = "", by: str = "",
+    lane_root=None, queue_root=None, scancel: str = "scancel", queue=None,
+) -> int:
+    """Send each prefix to the transport that recorded it.
+
+    An operator's shell need not name the transport.  A SLURM job has a
+    submission record under the lane root and a pull-queue item has none, so
+    the record decides where a prefix goes; ``--transport slurm`` still sends
+    every prefix to the lane.  Before this, ``--withdraw`` on a box whose
+    environment did not name the transport went to the pull queue, found
+    nothing there, and left the SLURM job running with exit status 2.
+    """
+
+    lane_prefixes, pool_prefixes = [], []
+    for prefix in prefixes:
+        if transport == "slurm" or slurm_lane.resolve_recorded(
+            str(prefix), root=lane_root
+        ):
+            lane_prefixes.append(prefix)
+        else:
+            pool_prefixes.append(prefix)
+    rc = 0
+    if lane_prefixes:
+        rc = max(rc, withdraw_slurm_main(
+            lane_prefixes, reason=reason, by=by, lane_root=lane_root,
+            queue_root=queue_root, scancel=scancel,
+        ))
+    if pool_prefixes:
+        if queue is None:
+            root = SH / "pb-queue" if queue_root is None else Path(queue_root)
+            queue = pool.PoolQueue(root)
+        rc = max(rc, withdraw_main(queue, pool_prefixes, reason=reason, by=by))
+    return rc
+
+
+def withdraw_slurm_main(
+    prefixes, *, reason: str = "", by: str = "", lane_root=None,
+    queue_root=None, scancel: str = "scancel",
+) -> int:
+    """Cancel each named action's recorded job, refusing an ambiguous prefix.
+
+    Same shape as the pool's withdrawal and for the same reasons: a prefix is
+    what an operator has, one bad name must not stop the other three, and a
+    prefix matching two actions is refused rather than guessed -- the wrong
+    guess here kills somebody else's work.
+
+    The marker and the terminal record are written *before* ``scancel``, as the
+    pool writes its marker before it signals anything.  Two things depend on
+    that order.  ``pool_reset`` skips a re-submission only on a marker or a
+    ``withdrawn_unix``, so a cancellation with neither is re-submitted by the
+    next bulk reset -- a decision undone by a tool that could not see it was a
+    decision.  And the submitting ``pbrun``, still blocked in ``wait``, will
+    file its own account of the same generation the moment the job reports
+    ``CANCELLED``; whichever arrives first is kept, and this one knows who
+    asked and why, which the other cannot.
+    """
+
+    rc = 0
+    for prefix in prefixes:
+        found = slurm_lane.resolve_recorded(str(prefix), root=lane_root)
+        if not found:
+            print(f"pbrun: no slurm submission matches {prefix!r}",
+                  file=sys.stderr)
+            rc = 2
+            continue
+        if len(found) > 1:
+            keys = ", ".join(sorted(str(r["action_key"])[:12] for r in found))
+            print(f"pbrun: {prefix!r} matches {len(found)} submissions "
+                  f"({keys}); name more characters", file=sys.stderr)
+            rc = 2
+            continue
+        record = found[0]
+        key = str(record["action_key"])
+        job_id = str(record["job_id"])
+        queue = SH / "pb-queue" if queue_root is None else Path(queue_root)
+        marker = _file_slurm_withdrawal(
+            queue, record, reason=reason, by=by, scancel_command=scancel)
+        if marker is None:
+            print(f"pbrun: {key[:12]} already has an outcome filed; "
+                  f"nothing to withdraw", file=sys.stderr)
+            continue
+        if slurm_lane.cancel(job_id, scancel=scancel):
+            _stamp_scancel_accepted(queue, record)
+            why = f" -- {reason}" if reason else ""
+            print(f"pbrun: cancelled slurm job {job_id} for {key[:12]}"
+                  f" by {by or 'an operator'}{why}", file=sys.stderr)
+        else:
+            print(f"pbrun: scancel refused slurm job {job_id} for {key[:12]}; "
+                  f"it may already have finished", file=sys.stderr)
+            rc = 2
+    return rc
+
+
+def _file_slurm_withdrawal(
+    queue_root: Path, submission, *, reason: str, by: str, scancel_command: str,
+):
+    """File the marker and the terminal record for one cancellation.
+
+    Returns ``None`` when this generation already has an outcome filed -- the
+    action finished a moment before the operator asked, which is them getting
+    what they wanted rather than them mistyping, and is what
+    ``PoolQueue.withdraw`` reports as ``already_finished``.
+    """
+
+    key = str(submission["action_key"])
+    published_unix = _submission_generation(submission)
+    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+        filed = queue_root / state / f"{key}.json"
+        if not filed.exists() or not slurm_lane._same_generation(filed, published_unix):
+            continue
+        if state == pool.WITHDRAWN:
+            # A bare marker is a withdrawal still in flight (or one whose
+            # scancel never landed); only a record carrying the job's ending
+            # says this generation is over.
+            try:
+                filed_record = json.loads(filed.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                filed_record = None
+            if not (isinstance(filed_record, dict) and "detail" in filed_record):
+                continue
+            # The record this verb writes below carries ``detail`` too, and it
+            # is written before ``scancel`` runs.  Until ``scancel`` accepts,
+            # that record is a decision the scheduler has not honoured, not an
+            # ending; a second ask must reach ``scancel`` again rather than
+            # read its own first attempt as "already finished".
+            if _withdrawal_still_in_flight(filed_record):
+                continue
+        return None
+
+    _, marker = slurm_lane.publish_withdrawal(
+        queue_root=queue_root, action_key=key, reason=reason, by=by,
+        submission=submission,
+    )
+    job_id = str(submission["job_id"])
+    directory = Path(str(submission.get("directory") or "."))
+    slurm_lane.publish_outcome(
+        queue_root=queue_root,
+        action_key=key,
+        published_unix=published_unix,
+        published_by=str(submission.get("published_by") or ""),
+        status="withdrawn",
+        attempts=int(submission.get("attempt") or 1),
+        max_attempts=int(submission.get("max_attempts") or 1),
+        retry_safe=submission.get("retry_safe"),
+        addressing={},
+        resources=submission.get("resources") or {},
+        tags=submission.get("constraint") or [],
+        detail={
+            "slurm": {
+                "job_id": job_id,
+                "state": "CANCELLED",
+                "partition": None,
+                # Derived, not spelled: the record is named by generation and
+                # attempt together, because one action key is submitted again
+                # every time somebody asks for the same work again.
+                "submission_record_path": str(
+                    slurm_lane.submission_record_path(
+                        directory,
+                        published_unix=published_unix,
+                        attempt=int(submission.get("attempt") or 1),
+                    )),
+                "stdout_path": str(submission.get("stdout") or ""),
+                "stderr_path": str(submission.get("stderr") or ""),
+            },
+            "cancelled_with": scancel_command,
+            # The last sample the submitter's wait recorded, so the record of
+            # a withdrawal says what the job was (not) doing when the operator
+            # decided.  None when no wait ever sampled it.
+            "liveness": slurm_lane.read_liveness(
+                key, root=directory.parent if directory.name == key else None),
+        },
+        # No ``SubmittedJob`` here -- this runs from the operator's box, off the
+        # recorded submission -- so the job id the readers use as ``claimed_by``
+        # is passed rather than derived.
+        claimed_by=job_id,
+        withdrawn_by=marker.get("withdrawn_by"),
+        withdrawn_unix=marker.get("withdrawn_unix"),
+        reason=str(marker.get("reason") or ""),
+    )
+    return marker
+
+
+def _submission_generation(submission) -> float:
+    """The ``published_unix`` a submission record belongs to."""
+
+    published_unix = submission.get("published_unix")
+    if isinstance(published_unix, (int, float)):
+        return float(published_unix)
+    # A submission record from before the generation stamp. Withdraw it, but
+    # do not claim to know which request it belonged to.
+    return float(submission.get("submitted_unix") or 0.0)
+
+
+def _withdrawal_still_in_flight(record) -> bool:
+    """Whether a ``withdrawn/`` record is one ``--withdraw`` wrote and has not
+    yet seen ``scancel`` accept.
+
+    ``cancelled_with`` is stamped by ``_file_slurm_withdrawal`` before the
+    cancel is attempted; ``scancel_accepted_unix`` only after ``scancel``
+    returned 0.  The submitter's own ending never writes the first, so a record
+    with the first and without the second is a withdrawal whose ``scancel``
+    was refused or never ran.
+    """
+
+    detail = record.get("detail")
+    return (
+        isinstance(detail, dict)
+        and "cancelled_with" in detail
+        and "scancel_accepted_unix" not in detail
+    )
+
+
+def _stamp_scancel_accepted(queue_root: Path, submission) -> None:
+    """Record on the withdrawal that ``scancel`` took the job.
+
+    Rewrites only a record of this generation that ``_file_slurm_withdrawal``
+    wrote; the submitter's ending for the same generation is refused by
+    ``publish_outcome`` while that record exists, so nothing else writes this
+    file in between.
+    """
+
+    key = str(submission["action_key"])
+    filed = queue_root / pool.WITHDRAWN / f"{key}.json"
+    try:
+        record = json.loads(filed.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(record, dict):
+        return
+    if not slurm_lane._same_generation(filed, _submission_generation(submission)):
+        return
+    detail = record.get("detail")
+    if not isinstance(detail, dict) or "cancelled_with" not in detail:
+        return
+    detail["scancel_accepted_unix"] = time.time()
+    slurm_lane._write_json_atomic(filed, record)
 
 
 def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
@@ -1448,7 +2505,10 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Submit one command to the PrismaBuild pool and wait for it."
+        description="Submit one command to the PrismaBuild fleet and wait for "
+                    "it. Either the pull queue or SLURM carries it, per "
+                    "--transport or the published generation's default; the "
+                    "result does not depend on which."
     )
     ap.add_argument("--demand", default="",
                     help="resource demand, e.g. gpu=1,mem_gb=16")
@@ -1464,6 +2524,16 @@ def main() -> int:
                          "a matching box actually offers")
     ap.add_argument("--tag", action="append", default=[],
                     help="require a box offering this tag (e.g. a hardware class)")
+    ap.add_argument("--measurement", action="store_true",
+                    help="seal task_class=measurement: the result is numerics "
+                         "that do not transfer across architectures, so it "
+                         "requires --host-class")
+    ap.add_argument("--host-class", default=None, metavar="CLASS",
+                    help="key the action on a host class, a node Feature name "
+                         "(e.g. gb10): seals execution_scope host_class_keyed, "
+                         "adds CLASS to the placement, and the SLURM lane "
+                         "sends it as --constraint; the worker attests it "
+                         "through the controller before running")
     ap.add_argument("--anywhere", action="store_true",
                     help="assert that command/tool/data dependencies outside "
                          "the snapshot are identical on every eligible worker")
@@ -1501,10 +2571,39 @@ def main() -> int:
         help=("bounded attempts for a --retry-safe action; arbitrary commands "
               "default to one"),
     )
-    ap.add_argument("--timeout-s", type=float, default=7200.0)
+    # Honoured on the SLURM path, where it becomes --time and the scheduler
+    # enforces it (TERM, then KILL after KillWait).  On the pool path it is
+    # still only parsed: the worker loop's own --timeout-s bounds an action
+    # there, and a submitter-declared bound has nowhere to be recorded.  See
+    # issue #32; the SLURM lane is the half of it that this closes.
+    ap.add_argument("--timeout-s", type=float, default=None,
+                    help="an explicit deadline for the action, enforced by "
+                         "SLURM under --transport slurm; unset means the "
+                         "action runs while it is running, because elapsed "
+                         "time is not evidence that a worker is dead")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
-    ap.add_argument("--priority", type=int, default=0)
+    ap.add_argument(
+        "--detach", action="store_true",
+        help="seal and submit exactly as usual, print one JSON line naming the "
+             "action key, the transport, the job id or queue record and the "
+             "terminal-record paths, and exit 0 without waiting; an action "
+             "already in the CAS prints status=cache_hit and submits nothing, "
+             "and one already running prints status=attached and joins that "
+             "run rather than starting a second copy of it. "
+             "Wait for it later with pbwait.py. Incompatible with "
+             "--max-attempts greater than 1: a retry needs somebody alive to "
+             "see the attempt fail",
+    )
+    ap.add_argument("--priority", type=int, default=0,
+                    help="a queue hint, higher runs sooner; not part of the "
+                         "action's identity, so two submissions that differ "
+                         "only in priority are the same action. The pull "
+                         "queue sorted its ready list on it, before age; the "
+                         "SLURM lane spends it as a --nice "
+                         "(slurm_lane.nice_for), scaled so one priority step "
+                         "outranks submission order rather than one later "
+                         "submission")
     ap.add_argument("--env", action="append", default=[],
                     help="K=V added to the action's environment (repeatable)")
     ap.add_argument("--no-default-env", action="store_true",
@@ -1514,6 +2613,13 @@ def main() -> int:
                          "enough) instead of submitting; repeatable")
     ap.add_argument("--reason", default="",
                     help="why, recorded on the withdrawal record")
+    ap.add_argument(
+        "--transport", choices=TRANSPORTS,
+        default=default_transport(),
+        help="which dispatcher carries this submission (env "
+             "PRISMABUILD_TRANSPORT, else the published runtime generation's "
+             "default_transport); the pull queue stays the default until the "
+             "fleet has cut over to SLURM")
     ap.add_argument("command", nargs=argparse.REMAINDER)
     args = ap.parse_args()
 
@@ -1527,9 +2633,9 @@ def main() -> int:
             who = getpass.getuser()
         except Exception:                                        # noqa: BLE001
             who = "unknown"      # no passwd entry is not a reason to refuse
-        return withdraw_main(
-            pool.PoolQueue(SH / "pb-queue"), args.withdraw,
-            reason=args.reason, by=f"{who}@{socket.gethostname()}",
+        return withdraw_routed(
+            args.withdraw, transport=args.transport, reason=args.reason,
+            by=f"{who}@{socket.gethostname()}",
         )
 
     command = args.command
@@ -1544,6 +2650,8 @@ def main() -> int:
             "pbrun: --max-attempts greater than 1 requires --retry-safe; "
             "--deterministic covers result bytes, not external side effects"
         )
+    if args.detach and args.max_attempts > 1:
+        raise SystemExit(detached_attempts_refusal(args.max_attempts))
     retry_policy = {
         "max_attempts": args.max_attempts,
         "retry_safe": args.retry_safe,
@@ -1640,6 +2748,23 @@ def main() -> int:
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")
+    if args.anywhere and args.tag:
+        # The same contradiction with the second constraint spelled as a
+        # class rather than as a hostname: --anywhere asserts that every
+        # eligible worker can run this action, and --tag says only the boxes
+        # offering that tag may.  Both landed before, and --anywhere won the
+        # part the SLURM lane reads -- an action tagged x86 went to the
+        # default partition as portable work.
+        raise SystemExit(
+            "--anywhere and --tag contradict each other: --anywhere asserts "
+            "every eligible worker can run this action, and --tag admits only "
+            "the boxes offering "
+            f"{', '.join(sorted(set(args.tag)))}.  Drop whichever is not true."
+        )
+    require_host_class_scope(
+        measurement=args.measurement, host_class=args.host_class,
+        transport=args.transport,
+    )
     tags = pool.normalize_placement_tags(
         placement_tags(
             cwd,
@@ -1654,8 +2779,21 @@ def main() -> int:
             anywhere=args.anywhere,
         )
     )
+    if args.host_class is not None:
+        # The class rides the placement axis, the same way --tag does, so the
+        # action key moves with it and the SLURM lane seals it as
+        # --constraint.  A union rather than a replacement: a hostname pin a
+        # box-local executable earned stays, and the class narrows it further.
+        tags = pool.normalize_placement_tags([*tags, args.host_class])
     placement = {"required_tags": tags}
-    if args.exclusive:
+    if args.exclusive and args.transport == "slurm":
+        # SLURM already has a word for the whole device.  ``gpu:1`` and
+        # ``shard:N`` are mutually exclusive requests against one GPU, so
+        # exclusivity is a different GRES name rather than a bigger count, and
+        # the count the pool had to read off worker offers is not needed.
+        demand["gpu"] = args.gpu_capacity or 1
+        demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
+    elif args.exclusive:
         # "All of one box" is a fact about the boxes, and guessing it does not
         # fail loudly -- it fails as an action nobody can ever claim.  The
         # default was 4 while sparky declares 2 and sparklina 1, so every
@@ -1790,19 +2928,20 @@ def main() -> int:
         expected_identity=identity,
         snapshot_refs=list(args.snapshot_ref),
     )
+    execution_scope, toolchain = host_class_scope(args.host_class)
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
             "definition_id": "fleet/pbrun",
             "definition_version": "v1",
-            "task_class": "generation",
+            "task_class": "measurement" if args.measurement else "generation",
             # A pytest or a timing run is not byte-reproducible and must not
             # claim to be: the CAS only enforces canonical equality on
             # "deterministic", so mislabelling one would be a false receipt.
             "determinism": determinism,
             "artifact_family": "generic",
             "artifact_kind": "generic",
-            "argv": ["/bin/bash", "-lc",
+            "argv": [SEALED_ARGV0, "-lc",
                      f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
                      f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
                      f"exit ${{PIPESTATUS[0]}}"],
@@ -1819,10 +2958,8 @@ def main() -> int:
             "checkout_snapshot": checkout_snapshot,
             "retry_policy": retry_policy,
         },
-        "environment": {"variables": variables, "toolchain": {}},
-        "execution_scope": {
-            "portability": "portable", "platform_key": None, "host_class": None,
-        },
+        "environment": {"variables": variables, "toolchain": toolchain},
+        "execution_scope": execution_scope,
     }
     try:
         action = pb.seal_action(body)
@@ -1833,7 +2970,97 @@ def main() -> int:
         raise SystemExit(f"pbrun: refusing to seal the action: {exc}") from None
     key = str(action["action_key"])
 
-    cas.publish_action_request(action)
+    request_path = cas.publish_action_request(action)
+
+    if args.detach and cas.lookup(action) is not None:
+        # Nothing to submit and nothing to wait for.  The attached path lets
+        # the worker discover this and file an ending, which is right when
+        # somebody is holding the terminal open; detached, that ending would be
+        # a job scheduled, a checkout materialized and a node occupied to learn
+        # what this process already knows.  A campaign re-run is the case: every
+        # row a hit, no new job ids.
+        print(f"pbrun: {key[:12]} is already in the CAS; nothing submitted",
+              file=sys.stderr, flush=True)
+        print(detach_line(
+            key,
+            transport=args.transport,
+            status="cache_hit",
+            queue_root=SH / "pb-queue",
+        ), flush=True)
+        return 0
+
+    if args.detach:
+        # Not in the CAS, but perhaps already running: a campaign whose waiter
+        # died is re-run to find out where it got to, and every row still on a
+        # node must be attached to rather than submitted again.
+        live = live_submission(pool.PoolQueue(SH / "pb-queue"), key)
+        if live is not None:
+            transport, generation, submission = live
+            if transport == "slurm":
+                directory = Path(str(submission.get("directory") or "."))
+                record = slurm_lane.submission_record_path(
+                    directory, published_unix=generation,
+                    attempt=int(submission.get("attempt") or 1),
+                )
+                job_id = str(submission.get("job_id") or "")
+            else:
+                ready = (SH / "pb-queue" / pool.READY / f"{key}.json")
+                record = ready if ready.exists() else (
+                    SH / "pb-queue" / pool.CLAIMED / f"{key}.json")
+                job_id = ""
+            print(f"pbrun: {key[:12]} is already running "
+                  f"({transport}{' job ' + job_id if job_id else ''}); "
+                  f"attaching to it rather than submitting a second copy",
+                  file=sys.stderr, flush=True)
+            print(detach_line(
+                key,
+                transport=transport,
+                status="attached",
+                queue_root=SH / "pb-queue",
+                published_unix=generation,
+                job_id=job_id or None,
+                submission=record,
+            ), flush=True)
+            return 0
+
+    if args.transport == "slurm":
+        # Everything below this point reads the pull queue -- worker offers,
+        # the placement census, the ready directory -- and none of it describes
+        # a SLURM fleet.  Worse, it would answer *wrongly*: a retained offer
+        # from a loop that has been stopped for the cutover would refuse a
+        # submission the scheduler can place perfectly well.  The capability
+        # check SLURM keeps is its own: an unknown Feature or an impossible
+        # GRES makes ``sbatch`` refuse at submit time, which is the same moment
+        # and the same intent as ``capability_verdict`` below.
+        return slurm_outcome(
+            action,
+            cas=cas,
+            request_path=request_path,
+            # Built here because only ``main`` knows the checkout and the
+            # flags it was asked with.  The census is unavailable rather than
+            # empty: this branch builds no PoolQueue on purpose, and worker
+            # offers do not describe a SLURM fleet.
+            placement_notice=pin_notice(
+                _NoCensus(),
+                {"tags": tags, "needs_gpu": bool(demand.get("gpu")),
+                 "resources": demand},
+                cwd=cwd,
+                hostname=socket.gethostname(),
+                here=args.here,
+                portable_checkout=portable_checkout,
+                unknown_census=NO_CENSUS,
+            ),
+            tags=tags,
+            demand=demand,
+            exclusive=args.exclusive,
+            timeout_s=args.timeout_s,
+            wait_s=args.wait_s,
+            retry_safe=args.retry_safe,
+            max_attempts=args.max_attempts,
+            priority=args.priority,
+            anywhere=args.anywhere,
+            detach=args.detach,
+        )
 
     q = pool.PoolQueue(SH / "pb-queue")
 
@@ -1921,7 +3148,7 @@ def main() -> int:
     # contract in both cases.
     if "retry_safe" in inspect.signature(q.publish).parameters:
         publication["retry_safe"] = args.retry_safe
-    q.publish(**publication)
+    queued_path = q.publish(**publication)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
@@ -1935,7 +3162,21 @@ def main() -> int:
     print(f"pbrun: queued {key[:12]} tags={tags} demand={demand}{masked}",
           file=sys.stderr, flush=True)
 
-    return await_outcome(q, key, wait_s=args.wait_s)
+    if args.detach:
+        print(detach_line(
+            key,
+            transport="pool",
+            status="submitted",
+            queue_root=q.root,
+            published_unix=published_generation(q, key, queued_path),
+            submission=queued_path,
+        ), flush=True)
+        return 0
+
+    return await_outcome(
+        q, key, wait_s=args.wait_s,
+        generation=published_generation(q, key, queued_path),
+    )
 
 
 if __name__ == "__main__":

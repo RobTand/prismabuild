@@ -1,0 +1,271 @@
+#!/bin/bash
+# Bring a one-node SLURM up inside the container, then run the smoke rows.
+#
+# Runs as root.  The daemons need root; the *jobs* do not, and they are
+# deliberately submitted as `rob` -- that is what makes SLURM_JOB_USER a real
+# unprivileged user, which is what the Epilog's NFS-safe delete needs in order
+# to be exercised rather than asserted.
+#
+# The configuration is generated here rather than copied, because a single-node
+# container is not the fleet: there is no `slurm` user, no systemd, no NFS and
+# no GPU.  Every scheduler *choice* is taken from fleet/slurm/slurm.conf
+# unchanged -- select/cons_tres with CR_Core_Memory, proctrack/cgroup,
+# task/cgroup, jobacct_gather/cgroup, sched/backfill, MinJobAge, the Epilog,
+# accounting off -- and only the deployment facts differ.  The deviations are
+# printed at the top of the run so they end up in the transcript beside the
+# results, and they are listed in fleet/slurm/smoke/README.md.
+set -u
+
+REPO="${PB_SMOKE_REPO:-/repo}"
+VOL="${PB_SMOKE_VOL:-/mnt/shared}"
+NODE="$(hostname -s)"
+LOGDIR="$VOL/logs"
+mkdir -p "$LOGDIR" /etc/slurm /var/log/slurm /var/spool/slurm/ctld /var/spool/slurm/d
+chmod 0777 "$VOL" "$LOGDIR"
+
+say() { printf '%s\n' "$*"; }
+# The daemons log as root onto a volume the host reads back as `rob`, and a
+# transcript nobody outside the container can read is not evidence.
+share_logs() { chmod -R a+rX "$LOGDIR" 2>/dev/null || true; }
+die() { share_logs; say "smoke: FATAL: $*"; exit 1; }
+trap share_logs EXIT
+
+# Whether the container enforces the fleet's core containment.  `yes` is the
+# fleet's `fleet/slurm/cgroup.conf`; `no` drops both `ConstrainCores` and
+# `task/affinity`, which is option B of docs/resource_enforcement_2026-09-05.md
+# -- cores stay an admission count and stop being a cpuset.  One variable
+# drives both settings because they are one decision: `task/affinity` with
+# nothing to constrain has no cpuset to write.
+CONSTRAIN_CORES="${PB_SMOKE_CONSTRAIN_CORES:-yes}"
+
+# Whether a job over its `memory.max` may reclaim into swap.  `no` is the
+# fleet's setting, and under it an over-declared job survives by swapping;
+# `yes` sets `memory.swap.max` from AllowedSwapSpace, and the kernel kills it
+# instead.  Row 10c measures both, so neither is asserted here.
+CONSTRAIN_SWAP="${PB_SMOKE_CONSTRAIN_SWAP:-no}"
+
+say "== prismabuild SLURM smoke =="
+say "node          : $NODE"
+say "repo          : $REPO"
+say "volume        : $VOL"
+say "constrain cpu : $CONSTRAIN_CORES (PB_SMOKE_CONSTRAIN_CORES)"
+say "constrain swap: $CONSTRAIN_SWAP (PB_SMOKE_CONSTRAIN_SWAP)"
+
+# -- cgroup v2 delegation ----------------------------------------------------
+#
+# `proctrack/cgroup` is not optional for this lane and the reason is in
+# core.py, not in SLURM: `_collect_worker_evidence` attests SLURM_JOB_ID
+# against /proc/self/cgroup and refuses a job whose processes are not inside a
+# `job_<id>` cgroup.  A fallback to proctrack/linuxproc would therefore not
+# give a degraded smoke -- it would fail every action inside the worker, for a
+# reason that has nothing to do with what is being tested.  So this is tried
+# first and hard, and the run says so if it cannot be had.
+#
+# Two things stand in the way inside Docker.  The container's root cgroup owns
+# every process, and a cgroup with processes in it may not delegate
+# controllers; and SLURM's cgroup/v2 plugin normally asks systemd for a scope,
+# which is not here.  Moving the processes into a leaf answers the first and
+# `IgnoreSystemd=yes` answers the second.
+prepare_cgroups() {
+    local root=/sys/fs/cgroup
+    [ -f "$root/cgroup.controllers" ] || { say "smoke: no cgroup v2 at $root"; return 1; }
+    mkdir -p "$root/init" 2>/dev/null || return 1
+    if [ -f "$root/cgroup.procs" ]; then
+        while read -r pid; do
+            [ -n "$pid" ] && echo "$pid" >"$root/init/cgroup.procs" 2>/dev/null
+        done <"$root/cgroup.procs"
+    fi
+    echo "+cpuset +cpu +memory +pids" >"$root/cgroup.subtree_control" 2>/dev/null || return 1
+    # 23.11's cgroup/v2 plugin creates its stepd scope under `system.slice` and
+    # fails to initialize when that directory is absent -- measured here:
+    #
+    #     error: Could not create scope directory
+    #            /sys/fs/cgroup/system.slice/<node>_slurmstepd.scope
+    #     error: Unable to initialize cgroup plugin
+    #
+    # On a real box systemd owns that directory.  25.11 does not need it, so
+    # this is created unconditionally rather than branched on the version.
+    mkdir -p "$root/system.slice" 2>/dev/null
+    echo "+cpuset +cpu +memory +pids" >"$root/system.slice/cgroup.subtree_control" 2>/dev/null
+    say "cgroup        : v2, delegated [$(cat "$root/cgroup.subtree_control")]"
+    return 0
+}
+
+case "$CONSTRAIN_CORES:$CONSTRAIN_SWAP" in
+    yes:yes|yes:no|no:yes|no:no) ;;
+    *) say "smoke: PB_SMOKE_CONSTRAIN_CORES and PB_SMOKE_CONSTRAIN_SWAP must"
+       say "smoke: each be yes or no, not $CONSTRAIN_CORES and $CONSTRAIN_SWAP"
+       exit 2 ;;
+esac
+
+CGROUP_MODE=cgroup
+if ! prepare_cgroups; then
+    CGROUP_MODE=linuxproc
+    say "cgroup        : DELEGATION FAILED -- the lane cannot work without it"
+fi
+
+# -- configuration -----------------------------------------------------------
+CPUS="$(nproc)"
+# `task/affinity` is what writes a job's cpuset, so it goes when
+# ConstrainCores does.  `task/cgroup` stays either way: proctrack and the
+# memory constraint both live there, and the lane's process attestation needs
+# the `job_<id>` cgroup it creates.
+if [ "$CGROUP_MODE" = cgroup ]; then
+    TASK_PLUGIN=task/cgroup
+    [ "$CONSTRAIN_CORES" = yes ] && TASK_PLUGIN=task/cgroup,task/affinity
+else
+    TASK_PLUGIN=task/affinity
+fi
+cat >/etc/slurm/slurm.conf <<EOF
+# Generated by fleet/slurm/smoke/inside.sh.  Scheduler choices are
+# fleet/slurm/slurm.conf's; deployment facts are the container's.
+ClusterName=prismabuild-smoke
+SlurmctldHost=$NODE
+# The fleet runs the daemons as a dedicated \`slurm\` user.  There is none in
+# this image and creating one would test useradd, so root it is.
+SlurmUser=root
+AuthType=auth/munge
+CredType=cred/munge
+
+StateSaveLocation=/var/spool/slurm/ctld
+SlurmdSpoolDir=/var/spool/slurm/d
+SlurmctldLogFile=$LOGDIR/slurmctld.log
+SlurmdLogFile=$LOGDIR/slurmd.log
+SlurmctldDebug=debug2
+SlurmdDebug=debug2
+SlurmctldPidFile=/run/slurmctld.pid
+SlurmdPidFile=/run/slurmd.pid
+
+SelectType=select/cons_tres
+SelectTypeParameters=CR_Core_Memory
+ProctrackType=proctrack/$CGROUP_MODE
+TaskPlugin=$TASK_PLUGIN
+JobAcctGatherType=jobacct_gather/$( [ "$CGROUP_MODE" = cgroup ] && echo cgroup || echo linux )
+
+SchedulerType=sched/backfill
+MaxJobCount=10000
+PriorityType=priority/basic
+# The fleet's 30 s.  Shortened here only where a row would otherwise spend it
+# waiting; see the row's own note.
+KillWait=10
+ReturnToService=2
+# The fleet's value, unchanged: with no slurmdbd this is the whole memory the
+# controller has of a finished job, and the lane reads it through scontrol.
+MinJobAge=3600
+Epilog=/etc/slurm/epilog.sh
+EpilogMsgTime=30000
+AccountingStorageType=accounting_storage/none
+GresTypes=gpu,shard
+
+# One node, and it is this container.  \`gb10\`, \`smoke\`, \`gpu\` and \`cpu\`
+# are Features so a --constraint can be aimed at them (the fleet carries
+# \`gpu\`/\`cpu\` because the pool workers announce them as tags); the
+# hostname is a Feature for the same
+# reason it is one on the fleet -- pbrun turns a box-local checkout into a
+# hostname tag and this lane turns tags into --constraint.
+NodeName=$NODE CPUs=$CPUS RealMemory=16384 Gres=gpu:1,shard:2 \\
+    Feature=gb10,smoke,gpu,cpu,$NODE State=UNKNOWN
+
+PartitionName=all Nodes=ALL Default=YES MaxTime=UNLIMITED State=UP
+PartitionName=gpu Nodes=$NODE MaxTime=UNLIMITED State=UP
+PartitionName=cpu Nodes=$NODE MaxTime=UNLIMITED State=UP
+EOF
+
+# The fleet's own gres.conf form, in shape: a sharing `gpu` bound to a device
+# file and `shard` bound to the same one.  Not a stylistic choice -- slurmd
+# refuses to start without it, and that is runbook item 1 answered.  The
+# File-less form produced, on 25.11.2, in this container:
+#
+#     error: SHARING configuration lacks "File" specification
+#     error: SHARED specified without any SHARING found
+#     fatal: failed to merge SHARED and SHARING configuration
+#
+# So the container gets a character device at the same path to bind to.  Nothing
+# opens it: ConstrainDevices is off here and no action in the smoke touches a GPU.
+[ -e /dev/nvidia0 ] || mknod /dev/nvidia0 c 195 0 2>/dev/null || \
+    say "smoke: could not create /dev/nvidia0; the GRES rows will fail"
+cat >/etc/slurm/gres.conf <<EOF
+NodeName=$NODE Name=gpu File=/dev/nvidia0
+NodeName=$NODE Name=shard Count=2 File=/dev/nvidia0
+EOF
+
+# The fleet's cgroup.conf, with the two lines a container has to change:
+# IgnoreSystemd because there is no systemd to ask for a scope, and
+# ConstrainDevices off because there are no devices to constrain.  Device
+# containment therefore stays unverified here, as the README says.
+cat >/etc/slurm/cgroup.conf <<EOF
+CgroupPlugin=autodetect
+IgnoreSystemd=yes
+ConstrainCores=$CONSTRAIN_CORES
+ConstrainRAMSpace=yes
+ConstrainSwapSpace=$CONSTRAIN_SWAP
+ConstrainDevices=no
+EOF
+
+# The real Epilog, byte for byte.  Copied rather than symlinked so its sha256
+# can be printed beside the result and compared with the file in the tree.
+cp "$REPO/fleet/slurm/epilog.sh" /etc/slurm/epilog.sh
+chmod 0755 /etc/slurm/epilog.sh
+say "epilog sha256 : $(sha256sum /etc/slurm/epilog.sh | cut -d' ' -f1)"
+
+# -- daemons -----------------------------------------------------------------
+if [ ! -f /etc/munge/munge.key ]; then
+    dd if=/dev/urandom of=/etc/munge/munge.key bs=1024 count=1 status=none
+    chown munge:munge /etc/munge/munge.key
+    chmod 0400 /etc/munge/munge.key
+fi
+runuser -u munge -- /usr/sbin/munged --force >>"$LOGDIR/munged.log" 2>&1 \
+    || die "munged did not start; see $LOGDIR/munged.log"
+sleep 1
+munge -n | unmunge >/dev/null 2>&1 || die "munge is not answering"
+
+# The Epilog reads the lane root and the Docker command out of slurmd's own
+# environment, so they are exported here rather than passed by the job -- the
+# job's environment is --export=NIL and does not reach an Epilog anyway.
+export PRISMABUILD_SLURM_LANE_ROOT="$VOL/prismabuild-fleet/slurm"
+# Not the job-state root: that one is node-side, and the job and the Epilog
+# each resolve it from PRISMABUILD_SLURM_JOB_STATE_ROOT or the same default.
+# Neither of them can see this shell, so the default is what both get -- which
+# is the agreement row 8 exercises.
+export PRISMABUILD_EPILOG_DOCKER=/usr/local/lib/pb-smoke/docker
+export PB_SMOKE_DOCKER_LOG="$VOL/docker.log"
+: >"$PB_SMOKE_DOCKER_LOG"
+chmod 0666 "$PB_SMOKE_DOCKER_LOG"
+
+/usr/sbin/slurmctld >>"$LOGDIR/slurmctld.stdout" 2>&1 \
+    || die "slurmctld did not start; see /var/log/slurm/slurmctld.log"
+/usr/sbin/slurmd >>"$LOGDIR/slurmd.stdout" 2>&1 \
+    || die "slurmd did not start; see /var/log/slurm/slurmd.log"
+
+for _ in $(seq 1 60); do
+    state="$(sinfo -h -n "$NODE" -o '%T' 2>/dev/null | head -n 1)"
+    case "$state" in
+        idle|idle*) break ;;
+    esac
+    sleep 1
+done
+say "node state    : $(sinfo -h -n "$NODE" -o '%T %G %f' 2>/dev/null)"
+# The rows read slurmd.log for the Epilog's own messages, and they run as `rob`.
+share_logs
+
+say "slurm version : $(sinfo --version 2>&1 | head -n 1)"
+
+if [ "$CGROUP_MODE" != cgroup ]; then
+    say "smoke: refusing to run the rows: proctrack/cgroup is unavailable, and"
+    say "smoke: core._collect_worker_evidence refuses every job without it."
+    exit 3
+fi
+
+# -- the rows ----------------------------------------------------------------
+install -d -o rob -g rob "$VOL/prismabuild-fleet" "$VOL/work"
+chmod 0777 "$VOL/prismabuild-fleet" "$VOL/work"
+
+exec runuser -u rob -- env \
+    PB_SMOKE_REPO="$REPO" \
+    PB_SMOKE_VOL="$VOL" \
+    PB_SMOKE_NODE="$NODE" \
+    PB_SMOKE_CONSTRAIN_CORES="$CONSTRAIN_CORES" \
+    PB_SMOKE_CONSTRAIN_SWAP="$CONSTRAIN_SWAP" \
+    HOME=/home/rob \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    python3 "$REPO/fleet/slurm/smoke/rows.py"

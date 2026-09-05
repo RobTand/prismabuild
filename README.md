@@ -19,14 +19,22 @@ evidence, not a permanent suite-count claim.
 found the memoization core worth owning and the scheduler half to be the
 "roll-your-own queue dir" the spec had declined; see
 `docs/scheduler_decision_2026-09-04.md` for the evidence, the alternatives,
-the per-issue dispositions and the migration plan. Nothing changes on the
-fleet until Rob ratifies it and runs the install.
+the per-issue dispositions and the migration plan. Rob ratified it on
+2026-09-04. Nothing changes on the fleet until he runs the install
+(`fleet/slurm/install.sh`, as root, per box) and then the cutover
+(`fleet/slurm/cutover.sh`, on his word, with an idle queue).
 
-Both originally-shipped transports are inert here: `slurm.py` shells out to
-`sbatch`/`scontrol` and SLURM is installed on neither Spark; `dagster.py` needs
-Dagster, also absent. `pool.py` is the third transport — a pull-queue on the
-shared NFS mount, executing the *same* canonical worker argv SLURM would have
-submitted, so a result does not depend on which transport delivered it.
+SLURM is installed on no box yet. The transport that will carry it is the thin
+lane in `slurm_lane.py` (`pbrun --transport slurm`): one `sbatch` per sealed
+action, the CAS receipt as the verdict, and a terminal record filed into the
+same `pb-queue/done|failed|withdrawn` directories the pool's readers already
+read. It has run against a real `slurmctld` and `slurmd` in a privileged
+container on sparky (`fleet/slurm/smoke/`). `slurm.py` is the earlier
+durable-state SLURM adapter, superseded by the lane and retained until
+Phase 3 of the migration; `dagster.py` needs Dagster, absent here. `pool.py`
+is the transport that runs today — a pull-queue on the shared NFS mount,
+executing the *same* canonical worker argv SLURM would have submitted, so a
+result does not depend on which transport delivered it.
 
 `pqwork` — a stdlib-only pull-queue running as a live systemd unit on both
 Sparks — is the **predecessor** PrismaBuild replaces. Its NFS-safe primitives
@@ -82,6 +90,12 @@ derived host pins) and seals them in action params before computing the action
 key, result/stamp names, and container owner. Flag order and duplicate tags do
 not move identity; a different admissible worker population does, so a
 Sparky-pinned query cannot reuse a gx10 receipt for the same argv.
+`pbrun --transport slurm --measurement --host-class gb10 -- <cmd>` seals a
+measurement keyed on the host class `gb10` (a node Feature name) and sends it
+as `--constraint`; the worker attests the class through the SLURM controller
+before running. A measurement's numerics do not transfer across architectures,
+so `--measurement` refuses without `--host-class`, and because the submission
+binds the submitting box's toolchain, submit it from a box of that class.
 
 Git-backed `pbrun` submissions are checkout-portable: the exact dirty tree is
 sealed as a Git bundle in the CAS — the commit, its ancestry, and any branch
@@ -140,12 +154,60 @@ not a dependency: this package imports nothing from prismaquant.
 ## Layout
 
     src/prismabuild/core.py       action keys, CAS, local execution
-    src/prismabuild/slurm.py      SLURM transport (inert here: no sbatch)
+    src/prismabuild/slurm_lane.py the thin SLURM lane: submit one sealed action, wait, file its ending
+    src/prismabuild/slurm.py      earlier SLURM adapter, superseded by the lane (retired in Phase 3)
     src/prismabuild/dagster.py    Dagster transport (inert here)
-    src/prismabuild/pool.py       shared-FS pull queue (the one that runs here)
+    src/prismabuild/pool.py       shared-FS pull queue (the one that runs today)
+    tools/fleet/slurm_job.py      node side of the lane: materialize, run, publish the receipt
+    fleet/slurm/                  SLURM configuration, install/verify/cutover/rollback scripts, the smoke
+    tools/fleet/pbstatus.py       fleet status: nodes, jobs, recent endings
     tools/prismabuild_worker.py   stdlib-only worker entry point
+    tools/fleet/pbrun.py          submit one command as a sealed action
+    tools/fleet/pbwait.py         wait for submitted actions, report one table
+    tools/fleet/pbcampaign.py     submit a manifest of actions, wait for all
     tests/                        CPU qualification (dated result above)
+
+## Submitting work
+
+`docs/operating_prismabuild.md` is the guide to using the fleet: submitting,
+waiting, campaigns, measurements, status, withdrawal, and reading a failure.
+
+One command, waiting for it:
+
+    tools/fleet/pbrun.py --gpu --timeout-s 3600 -- ./stage.sh --shard 3
+
+The same command, handed back as a key instead of waited for. `--detach`
+prints one line of JSON -- the action key, the transport, the job id or queue
+record, the generation and the paths its ending will be filed at -- and exits
+0. An action already in the CAS prints `cache_hit` and submits nothing, and
+one already running prints `attached` and joins that run rather than starting
+a second copy of it:
+
+    tools/fleet/pbrun.py --detach --gpu -- ./stage.sh --shard 3
+
+Wait for any number of those keys, and get one table back. Exit 0 only if
+every action's work is done:
+
+    tools/fleet/pbwait.py 8fc86da0e13f 4b19a02cc551
+
+Or submit and wait for a whole manifest at once. A manifest is a JSON list of
+rows, each one argv plus a working tree, a demand, tags and an environment;
+every row goes through `pbrun`'s own seal path, so a row's action key is the
+key a hand-typed `pbrun` produces and re-running a manifest runs nothing:
+
+    tools/fleet/pbcampaign.py manifest.json
+
+`pbcampaign.py --help` and the module docstring carry the row schema.
+
+All three take `--transport slurm` (or `PRISMABUILD_TRANSPORT=slurm`) to
+hand the work to a scheduler instead of the pull queue. The result does not
+depend on which one carried it.
 
 ## Test
 
     PYTHONPATH=src python3 -m pytest -q tests/
+
+The suite never touches the fleet's live store. `tests/conftest.py` repoints
+every default that names the shared mount at the test's own temporary
+directory, and fails the session if anything it wrote still reached the mount.
+Pass a root under `tmp_path` to anything that takes one.

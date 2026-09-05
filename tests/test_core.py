@@ -343,7 +343,7 @@ def test_platform_scope_is_derived_from_live_facts_not_a_label(
     monkeypatch.setattr(
         pb,
         "_collect_worker_evidence",
-        lambda: {
+        lambda **_kw: {
             "source": "local",
             "hostname": "foreign-worker",
             "system": "linux",
@@ -395,16 +395,100 @@ def test_slurm_cgroup_attestation_accepts_duplicate_v1_controller_rows(
     )
 
 
-def test_host_class_preflight_records_slurm_and_machine_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def _controller_attested_slurm(
+    *, job_features=("gb10",), node_active_features=("aarch64", "gb10", "sparky")
+) -> dict[str, object]:
+    """SLURM evidence shaped as the worker records it inside a gb10 job."""
+
+    return {
+        "job_id": "77",
+        "node_name": "sparky",
+        "partition": "gpu",
+        "constraints": [],
+        "cgroup": "/slurm/job_77/step_batch",
+        "controller": {
+            "partition": "gpu",
+            "batch_host": "sparky",
+            "job_features": sorted(job_features),
+            "node_active_features": sorted(node_active_features),
+        },
+    }
+
+
+def _host_class_action(tmp_path: Path) -> dict[str, object]:
     body = _live_nonportable_body(tmp_path)
     body["execution_scope"] = {
         "portability": "host_class_keyed",
         "platform_key": None,
         "host_class": "gb10",
     }
-    action = pb.seal_action(body)
+    return pb.seal_action(body)
+
+
+def test_host_class_preflight_records_controller_attested_slurm_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    action = _host_class_action(tmp_path)
+    live = pb._collect_worker_evidence()
+    live["source"] = "slurm"
+    live["slurm"] = _controller_attested_slurm()
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_kw: live)
+    result = pb.run_local_action(
+        action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+    )
+    producer = result["receipt"]["producer"]  # type: ignore[index]
+    assert producer["worker_id"] == "sparky"
+    assert producer["host_class"] == "gb10"
+    assert producer["evidence"]["slurm"]["cgroup"] == "/slurm/job_77/step_batch"
+    assert producer["evidence"]["slurm"]["controller"]["job_features"] == ["gb10"]
+    assert pb.validate_worker_attestation(producer, action=action) == producer
+
+
+@pytest.mark.parametrize(
+    ("slurm", "message"),
+    [
+        # The node does not carry the Feature: a job constrained to `gb10`
+        # cannot land here, so this is a controller that disagrees with itself
+        # or a class that was never a Feature.
+        (
+            _controller_attested_slurm(node_active_features=("x86", "dl380g10")),
+            "does not carry the Feature 'gb10'",
+        ),
+        # The node carries it, but nothing made the scheduler put the job
+        # there: the class was observed, not enforced.
+        (
+            _controller_attested_slurm(job_features=()),
+            "constraint does not require the Feature 'gb10'",
+        ),
+    ],
+)
+def test_host_class_is_refused_unless_the_controller_enforced_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slurm, message
+):
+    action = _host_class_action(tmp_path)
+    live = pb._collect_worker_evidence()
+    live["source"] = "slurm"
+    live["slurm"] = slurm
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_kw: live)
+    with pytest.raises(pb.ActionContractError, match=message):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+def test_env_only_slurm_evidence_no_longer_attests_a_host_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The pre-fix verdict: partition == class, or class in constraints.
+
+    Neither holds on the fleet -- partitions are `all`/`gpu`/`cpu` and
+    `SLURM_JOB_CONSTRAINTS` is never set inside a job -- and both were
+    writable by the batch script.  Evidence in exactly that shape, with
+    the partition named after the class and the class in the constraint
+    list, is refused for want of the controller's record.
+    """
+
+    action = _host_class_action(tmp_path)
     live = pb._collect_worker_evidence()
     live["source"] = "slurm"
     live["slurm"] = {
@@ -414,15 +498,178 @@ def test_host_class_preflight_records_slurm_and_machine_evidence(
         "constraints": ["gb10"],
         "cgroup": "/slurm/job_77/step_batch",
     }
-    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda: live)
-    result = pb.run_local_action(
-        action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_kw: live)
+    with pytest.raises(pb.ActionContractError, match="environment variables attest no class"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+def test_persisted_controller_evidence_must_name_the_worker_node(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    action = _host_class_action(tmp_path)
+    live = pb._collect_worker_evidence()
+    live["source"] = "slurm"
+    live["slurm"] = _controller_attested_slurm()
+    live["slurm"]["controller"]["batch_host"] = "sparklina"
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_kw: live)
+    with pytest.raises(pb.ActionContractError, match="batch_host differs"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+class _FakeScontrol:
+    """Answers `scontrol --oneliner show job|node` the way 25.11.2 does."""
+
+    def __init__(self, *, job: str, node: str, fail_first: int = 0,
+                 error: str = "slurm_load_jobs error: Unable to contact slurm controller (connect failure)"):
+        self.job, self.node, self.fail_first, self.error = job, node, fail_first, error
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        if len(self.calls) <= self.fail_first:
+            return subprocess.CompletedProcess(argv, 1, "", self.error + "\n")
+        kind = argv[2]
+        return subprocess.CompletedProcess(
+            argv, 0, (self.job if kind == "job" else self.node) + "\n", ""
+        )
+
+
+_JOB_LINE = (
+    "JobId=77 JobName=pb-3f2a UserId=rob(1000) GroupId=rob(1000) MCS_label=N/A "
+    "Priority=1 Nice=0 Account=(null) QOS=(null) JobState=RUNNING Reason=None "
+    "Partition=gpu AllocNode:Sid=dl380g10:12 BatchHost=sparky NumNodes=1 "
+    "Features=gb10 DelayBoot=00:00:00 Command=/mnt/shared/x.sh WorkDir=/mnt/shared"
+)
+_NODE_LINE = (
+    "NodeName=sparky Arch=aarch64 CoresPerSocket=10 CPUAlloc=1 CPUTot=20 "
+    "AvailableFeatures=gb10,aarch64,sm121,sparky ActiveFeatures=gb10,aarch64,sm121,sparky "
+    "Gres=gpu:1,shard:2 NodeAddr=sparky State=MIXED Partitions=all,gpu"
+)
+_SLURM_ENV = {
+    "SLURM_JOB_ID": "77", "SLURMD_NODENAME": "sparky", "SLURM_JOB_PARTITION": "gpu",
+    "SLURM_CLUSTER_NAME": "prismabuild",
+}
+
+
+def _no_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pb, "SCONTROL_RETRY_DELAYS_S", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(pb.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        pb, "_slurm_job_from_cgroup", lambda: ("77", "/slurm/job_77/step_batch")
     )
-    producer = result["receipt"]["producer"]  # type: ignore[index]
-    assert producer["worker_id"] == "sparky"
-    assert producer["host_class"] == "gb10"
-    assert producer["evidence"]["slurm"]["cgroup"] == "/slurm/job_77/step_batch"
-    assert pb.validate_worker_attestation(producer, action=action) == producer
+
+
+def test_fake_scontrol_attests_the_class_the_job_was_constrained_to(
+    monkeypatch: pytest.MonkeyPatch
+):
+    _no_wait(monkeypatch)
+    fake = _FakeScontrol(job=_JOB_LINE, node=_NODE_LINE)
+    monkeypatch.setattr(pb, "_run_scontrol", fake)
+    evidence = pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    controller = evidence["slurm"]["controller"]
+    assert controller == {
+        "partition": "gpu",
+        "batch_host": "sparky",
+        "job_features": ["gb10"],
+        "node_active_features": ["aarch64", "gb10", "sm121", "sparky"],
+    }
+    assert fake.calls == [
+        ["--oneliner", "show", "job", "77"],
+        ["--oneliner", "show", "node", "sparky"],
+    ]
+    assert pb._host_class_from_evidence(evidence, expected="gb10") == "gb10"
+    # And the partition did not need to be the class for that to hold.
+    assert evidence["slurm"]["partition"] == "gpu"
+
+
+def test_fake_scontrol_wrong_node_feature_is_refused(monkeypatch):
+    _no_wait(monkeypatch)
+    node = _NODE_LINE.replace("ActiveFeatures=gb10,aarch64,sm121,sparky",
+                              "ActiveFeatures=x86,sparky")
+    monkeypatch.setattr(pb, "_run_scontrol", _FakeScontrol(job=_JOB_LINE, node=node))
+    evidence = pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    with pytest.raises(pb.ActionContractError, match="does not carry the Feature 'gb10'"):
+        pb._host_class_from_evidence(evidence, expected="gb10")
+
+
+@pytest.mark.parametrize("features", ["(null)", "", "gb10|x86", "[gb10*1]", "sparky"])
+def test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused(
+    monkeypatch, features
+):
+    _no_wait(monkeypatch)
+    job = _JOB_LINE.replace("Features=gb10", f"Features={features}")
+    monkeypatch.setattr(pb, "_run_scontrol", _FakeScontrol(job=job, node=_NODE_LINE))
+    evidence = pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    with pytest.raises(pb.ActionContractError, match="constraint does not require"):
+        pb._host_class_from_evidence(evidence, expected="gb10")
+
+
+def test_fake_scontrol_conjunction_still_requires_the_class(monkeypatch):
+    _no_wait(monkeypatch)
+    job = _JOB_LINE.replace("Features=gb10", "Features=sparky&gb10")
+    monkeypatch.setattr(pb, "_run_scontrol", _FakeScontrol(job=job, node=_NODE_LINE))
+    evidence = pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    assert evidence["slurm"]["controller"]["job_features"] == ["gb10", "sparky"]
+    assert pb._host_class_from_evidence(evidence, expected="gb10") == "gb10"
+
+
+def test_unreachable_controller_retries_then_refuses_by_name(monkeypatch):
+    _no_wait(monkeypatch)
+    fake = _FakeScontrol(job=_JOB_LINE, node=_NODE_LINE, fail_first=99)
+    monkeypatch.setattr(pb, "_run_scontrol", fake)
+    with pytest.raises(pb.ActionContractError) as raised:
+        pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    # One attempt per delay, plus the last one after the final delay.
+    assert len(fake.calls) == len(pb.SCONTROL_RETRY_DELAYS_S) + 1
+    message = str(raised.value)
+    assert "the SLURM controller (cluster 'prismabuild'" in message
+    assert "connect failure" in message
+    assert "refused" in message
+
+
+def test_a_controller_that_recovers_within_the_backoff_attests(monkeypatch):
+    _no_wait(monkeypatch)
+    fake = _FakeScontrol(job=_JOB_LINE, node=_NODE_LINE, fail_first=2)
+    monkeypatch.setattr(pb, "_run_scontrol", fake)
+    evidence = pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    assert evidence["slurm"]["controller"]["batch_host"] == "sparky"
+    assert len(fake.calls) == 4          # two refusals, then job, then node
+
+
+def test_node_name_that_disagrees_with_the_controller_is_refused(monkeypatch):
+    _no_wait(monkeypatch)
+    monkeypatch.setattr(pb, "_run_scontrol", _FakeScontrol(job=_JOB_LINE, node=_NODE_LINE))
+    env = {**_SLURM_ENV, "SLURMD_NODENAME": "sparklina"}
+    with pytest.raises(pb.ActionContractError, match="SLURMD_NODENAME disagrees"):
+        pb._collect_worker_evidence(env, attest_host_class="gb10")
+
+
+def test_portable_work_in_a_job_never_asks_the_controller(monkeypatch):
+    _no_wait(monkeypatch)
+    fake = _FakeScontrol(job=_JOB_LINE, node=_NODE_LINE, fail_first=99)
+    monkeypatch.setattr(pb, "_run_scontrol", fake)
+    evidence = pb._collect_worker_evidence(_SLURM_ENV)
+    assert "controller" not in evidence["slurm"]
+    assert fake.calls == []
+
+
+def test_the_job_id_is_the_cgroup_s_and_the_environment_must_agree(monkeypatch):
+    cgroup = b"0::/system.slice/slurmstepd.scope/job_4242/step_batch/user/task_0\n"
+    monkeypatch.setattr(pb, "_read_regular_file", lambda *args, **kwargs: cgroup)
+    assert pb._slurm_job_from_cgroup() == (
+        "4242", "/system.slice/slurmstepd.scope/job_4242/step_batch/user/task_0"
+    )
+    env = {"SLURM_JOB_ID": "4243", "SLURMD_NODENAME": "sparky",
+           "SLURM_JOB_PARTITION": "gpu"}
+    with pytest.raises(pb.ActionContractError, match="cgroup membership"):
+        pb._collect_worker_evidence(env)
+    agreed = pb._collect_worker_evidence({**env, "SLURM_JOB_ID": "4242"})
+    assert agreed["slurm"]["job_id"] == "4242"
+    assert agreed["slurm"]["constraints"] == []
 
 
 def test_worker_runtime_attestation_binds_core_and_optional_launcher(
@@ -611,7 +858,7 @@ def test_nonportable_preflight_refuses_unknown_libc_attestation(
     body["environment"]["toolchain"]["libc"] = "unknown"  # type: ignore[index]
     action = pb.seal_action(body)
     live["libc"] = "unknown"
-    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda: live)
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_kw: live)
     with pytest.raises(pb.ActionContractError, match="unknown libc"):
         pb.preflight_action(
             action, cas_root=tmp_path / "cas", checkout_root=tmp_path
@@ -2330,6 +2577,180 @@ def test_initial_miss_rendezvous_does_not_mutate_manifest_source_or_paths(
         manifest_before[1].st_mode,
     )
     assert not list(namespace.rglob("__pycache__"))
+
+
+def _run_local_argv(action_path: Path, *, cas_root: Path, checkout: Path):
+    return [
+        "run-local",
+        "--action", str(action_path),
+        "--cas-root", str(cas_root),
+        "--checkout-root", str(checkout),
+    ]
+
+
+def test_the_worker_leaves_the_action_status_where_it_was_asked_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A transport that asks for the action's ending gets it as a number.
+
+    The worker exits 1 whatever the action did, so the number cannot ride its
+    exit status. It rides a sidecar the transport names, and the error the
+    worker raises is unchanged by writing one.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(
+        checkout, argv=[sys.executable, "-c", "raise SystemExit(7)"]
+    )
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    sidecar = tmp_path / "lane" / "12345.action.json"
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(sidecar))
+
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert str(caught.value) == "action argv exited with status 7"
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "action_returncode": 7
+    }
+
+
+def test_a_signalled_action_leaves_its_signal_in_the_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(
+        checkout,
+        argv=[
+            sys.executable,
+            "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
+        ],
+    )
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    sidecar = tmp_path / "lane" / "12345.action.json"
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(sidecar))
+
+    with pytest.raises(pb.LocalActionError):
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "action_returncode": -9, "action_signal": 9,
+    }
+
+
+def test_a_worker_verdict_leaves_no_action_status_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """No file rather than a null: absent means the action did not end itself."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(checkout, argv=[sys.executable, "-c", "pass"])
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    sidecar = tmp_path / "lane" / "12345.action.json"
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(sidecar))
+
+    with pytest.raises(pb.LocalActionError, match="without its declared result"):
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert not sidecar.exists()
+
+
+def test_an_unasked_worker_writes_no_action_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The pull queue asks for nothing and gets nothing new."""
+
+    monkeypatch.delenv(pb.ACTION_STATUS_PATH_ENV, raising=False)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(
+        checkout, argv=[sys.executable, "-c", "raise SystemExit(7)"]
+    )
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+
+    with pytest.raises(pb.LocalActionError):
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert not list((tmp_path).glob("*.action.json"))
+
+
+def test_a_failed_action_carries_its_own_exit_status(tmp_path: Path):
+    """The action's status is an attribute, not a substring of the message.
+
+    Every transport folded a non-zero action status into the text of this
+    error, exited 1 itself, and filed 1.  The number an operator wants is the
+    action's, so the error carries it.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(
+        checkout, argv=[sys.executable, "-c", "raise SystemExit(7)"]
+    )
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout
+        )
+    assert str(caught.value) == "action argv exited with status 7"
+    assert caught.value.returncode == 7
+    assert caught.value.signal is None
+
+
+def test_a_signalled_action_carries_the_signal(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(
+        checkout,
+        argv=[
+            sys.executable,
+            "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
+        ],
+    )
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout
+        )
+    assert caught.value.returncode == -9
+    assert caught.value.signal == 9
+
+
+def test_a_worker_verdict_carries_no_action_status(tmp_path: Path):
+    """An error the worker raised about the action is not the action's status."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout, argv=[sys.executable, "-c", "pass"])
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout
+        )
+    assert caught.value.returncode is None
+    assert caught.value.signal is None
 
 
 def test_local_worker_fails_closed_on_dirty_output_or_missing_result(tmp_path: Path):

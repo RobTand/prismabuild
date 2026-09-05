@@ -14,7 +14,9 @@ Three constraints shape this, and none of them are negotiable:
 * **The interpreter is named, not inherited.**  An action runs in a closed
   environment, so its interpreter is sealed into its command and hence its
   action key.  A shard therefore names an interpreter that exists on its target
-  and carries the matching class tag; the two must agree.
+  and carries the matching class tag; the two must agree.  The tag is also what
+  owns that dependency claim, so a shard states it with ``--tag`` alone and
+  never with ``--anywhere``, which would assert the opposite.
 * **A pass/fail here is not a measurement.**  x86 against aarch64 is a
   different BLAS and a different FMA order, so this runs *tests*, never a
   timing or numeric arm.  ``--tag`` defaults to ``x86`` to make that explicit
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +42,12 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
 SHARED = Path("/mnt/shared")
+
+#: ``pbrun``'s own transport vocabulary.  This tool builds pbrun's argv rather
+#: than importing it, so every flag a shard needs has to be forwarded here --
+#: a flag that is not forwarded is a flag twenty shards never see.
+TRANSPORTS = ("pool", "slurm")
+DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
 
 
 def discover(checkout: Path, paths: list[str]) -> list[str]:
@@ -77,9 +86,18 @@ def main() -> int:
                     help="BLAS/OMP threads each shard may use; 0 leaves it alone")
     ap.add_argument("--mem-gb", type=int, default=3,
                     help="memory each shard demands of its box")
-    ap.add_argument("--timeout-s", type=float, default=3600.0)
+    ap.add_argument("--timeout-s", type=float, default=None,
+                    help="an explicit deadline for each shard; unset means none")
     ap.add_argument("--wait-s", type=float, default=10800.0)
     ap.add_argument("--json", default="", help="write the per-shard result here")
+    ap.add_argument(
+        "--transport", choices=TRANSPORTS,
+        default=os.environ.get(DEFAULT_TRANSPORT_ENV) or "pool",
+        help="which dispatcher carries the shards (env PRISMABUILD_TRANSPORT); "
+             "forwarded to pbrun unchanged")
+    # TODO(claude/pb-35-snapshot-ancestry): forward --snapshot-ref once that
+    # branch lands.  pbrun in this tree does not know the flag, and adding it
+    # here would fail every shard at argparse rather than pin an ancestry.
     ap.add_argument("paths", nargs="*", default=["tests"])
     args = ap.parse_args()
 
@@ -92,7 +110,8 @@ def main() -> int:
     tags = args.tag or ["x86"]
     sizes = [len(b) for b in buckets]
     print(f"{len(files)} files -> {len(buckets)} shards "
-          f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}",
+          f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
+          f"transport={args.transport}",
           flush=True)
 
     # torch sizes its thread pool from the affinity mask, so an unconstrained
@@ -109,24 +128,36 @@ def main() -> int:
 
     procs = []
     for index, bucket in enumerate(buckets):
-        command = [
+        # Built in order rather than spliced into.  The repeatable --tag used
+        # to be inserted at a fixed index, which once landed between --demand
+        # and its argument and killed every shard on "expected one argument";
+        # appending each flag where it belongs cannot reach inside a pair.
+        flags = [
             "/usr/bin/python3", str(PBRUN),
             "--cwd", str(checkout),
-            "--anywhere",
+            "--transport", args.transport,
+        ]
+        # The class tag is the whole placement claim, and ``--anywhere``
+        # beside it is the contradiction ``pbrun`` refuses: portable, but
+        # only on x86.  It also bought nothing.  ``placement_tags`` returns
+        # the explicit tags before it reads ``--anywhere``, and
+        # ``partition_for`` answers the default partition for tagged work
+        # either way, so the shards keep their placement and their keys.
+        for tag in tags:
+            flags += ["--tag", tag]
+        flags += [
             "--demand", f"mem_gb={args.mem_gb}",
-            "--timeout-s", str(args.timeout_s),
-            "--wait-s", str(args.wait_s),
+        ]
+        if args.timeout_s is not None:
+            flags += ["--timeout-s", str(args.timeout_s)]
+        flags += ["--wait-s", str(args.wait_s)]
+        command = flags + [
             "--", "env", "TMPDIR=/home/rob/tmp",
             *threads,
             "PYTHONPATH=src:experiments",
             args.python, "-m", "pytest", "-q", "--no-header",
             "-p", "no:cacheprovider", *bucket,
         ]
-        # Insert after "--anywhere" (index 4), never inside a flag/value pair:
-        # index 6 sat between "--demand" and its argument and every shard died
-        # on "expected one argument".
-        for tag in tags:
-            command[5:5] = ["--tag", tag]
         procs.append((index, bucket, subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))
 

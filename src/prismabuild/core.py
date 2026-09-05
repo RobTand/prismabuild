@@ -41,6 +41,16 @@ CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
 CAS_RECEIPT_SCHEMA_V3 = "prismaquant.prismabuild.cas_receipt.v3"
 WORKER_ATTESTATION_SCHEMA_V2 = "prismaquant.prismabuild.worker_attestation.v2"
 WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
+
+#: Where a transport asks this worker to leave the action's own exit status.
+#:
+#: An environment variable rather than an argument, because ``pool.worker_argv``
+#: is pinned byte-identical across both transports -- an action executed under
+#: SLURM and the same action executed by the pull queue must be the same
+#: execution -- and a flag on one of them would end that. The action's own argv
+#: never sees this: ``run_local_action`` builds the sealed environment it runs
+#: in, and this variable is not in it.
+ACTION_STATUS_PATH_ENV = "PRISMABUILD_ACTION_STATUS_PATH"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
@@ -129,6 +139,16 @@ _ACCELERATOR_KEYS = frozenset(
 _SLURM_EVIDENCE_KEYS = frozenset(
     {"job_id", "node_name", "partition", "constraints", "cgroup"}
 )
+#: What the controller said about the job and its node, recorded only for a
+#: ``host_class_keyed`` action.  Optional in the persisted shape so that every
+#: receipt written before the controller was consulted keeps validating.
+_SLURM_CONTROLLER_EVIDENCE_KEYS = frozenset(
+    {"partition", "batch_host", "job_features", "node_active_features"}
+)
+#: How long to wait between attempts to reach the controller, in seconds.  The
+#: sum bounds how long a job whose controller is down spends before it refuses.
+SCONTROL_RETRY_DELAYS_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 15.0)
+_SCONTROL_CANDIDATES = ("/usr/bin/scontrol", "/usr/local/bin/scontrol")
 _EXECUTABLE_KEYS = frozenset({"path", "resolved_path", "sha256", "bytes"})
 _RUNTIME_KEYS = frozenset(
     {"schema", "launch_kind", "core", "launcher", "runtime_sha256"}
@@ -294,7 +314,29 @@ class CASConflictError(PrismaBuildError):
 
 
 class LocalActionError(PrismaBuildError):
-    """A local action could not execute or did not produce its declared file."""
+    """A local action could not execute or did not produce its declared file.
+
+    ``returncode`` and ``signal`` carry the action's own ending when the action
+    ran and ended by itself.  Everything else this error reports -- a missing
+    result file, a changed closure, a timeout -- is the worker's verdict rather
+    than the action's, and leaves both attributes ``None``.
+
+    The message text is unchanged by either attribute.  A reader that scraped
+    "exited with status 7" out of a stderr tail keeps working, and a reader that
+    wants the number as a number no longer has to scrape anything.
+    ``returncode`` follows ``subprocess``: a signalled action carries the
+    negative signal number, and ``signal`` carries the positive one.
+    """
+
+    def __init__(
+        self,
+        *args: object,
+        returncode: int | None = None,
+        signal: int | None = None,
+    ) -> None:
+        super().__init__(*args)
+        self.returncode = returncode
+        self.signal = signal
 
 
 class InitialMissRendezvousError(LocalActionError):
@@ -897,33 +939,211 @@ def _constraint_tokens(value: str) -> list[str]:
     )
 
 
-def _verify_slurm_process_membership(job_id: str) -> str:
-    """Bind SLURM environment claims to this process's kernel-owned cgroup."""
+_CGROUP_JOB_RE = re.compile(r"(?:^|/)job_([1-9][0-9]*)(?:[./]|$)")
 
-    if re.fullmatch(r"[1-9][0-9]*", job_id) is None:
-        raise ActionContractError("SLURM_JOB_ID must be a positive numeric job id")
+
+def _slurm_job_from_cgroup() -> tuple[str, str] | None:
+    """Read the SLURM job that owns this process from its kernel-owned cgroup.
+
+    Returns ``(job_id, cgroup_path)`` when exactly one ``job_<id>`` cgroup
+    holds the process, or ``None`` when no controller row names a job.  The
+    job id is derived here, not read from the environment: ``proctrack/cgroup``
+    places a job's processes under ``job_<id>``, and a batch script cannot
+    move itself out of that hierarchy, whereas it can export any variable.
+    """
+
     raw = _read_regular_file(Path("/proc/self/cgroup"), where="worker cgroup")
     try:
         lines = raw.decode("utf-8").splitlines()
     except UnicodeDecodeError as exc:
         raise ActionContractError("worker cgroup is not UTF-8") from exc
-    pattern = re.compile(rf"(?:^|/)job_{re.escape(job_id)}(?:[./]|$)")
-    matches: set[str] = set()
+    jobs: set[str] = set()
+    paths: set[str] = set()
     for line in lines:
         fields = line.split(":", 2)
-        if len(fields) == 3 and pattern.search(fields[2]):
-            matches.add(fields[2])
-    if len(matches) != 1:
+        if len(fields) != 3:
+            continue
+        match = _CGROUP_JOB_RE.search(fields[2])
+        if match is not None:
+            jobs.add(match.group(1))
+            paths.add(fields[2])
+    if not jobs:
+        return None
+    if len(jobs) != 1 or len(paths) != 1:
+        raise ActionContractError(
+            "worker cgroup membership names more than one SLURM job"
+        )
+    return next(iter(jobs)), _text(next(iter(paths)), where="worker SLURM cgroup")
+
+
+def _verify_slurm_process_membership(job_id: str) -> str:
+    """Bind a claimed SLURM job id to this process's kernel-owned cgroup."""
+
+    if re.fullmatch(r"[1-9][0-9]*", job_id) is None:
+        raise ActionContractError("SLURM_JOB_ID must be a positive numeric job id")
+    kernel = _slurm_job_from_cgroup()
+    if kernel is None or kernel[0] != job_id:
         raise ActionContractError(
             "SLURM environment is not attested by this process's cgroup membership"
         )
-    return _text(next(iter(matches)), where="worker SLURM cgroup")
+    return kernel[1]
+
+
+def _run_scontrol(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    """Run one ``scontrol`` invocation by absolute path; tests replace this."""
+
+    executable = next(
+        (candidate for candidate in _SCONTROL_CANDIDATES if Path(candidate).is_file()),
+        None,
+    )
+    if executable is None:
+        raise ActionContractError(
+            "scontrol is not installed at any of "
+            f"{', '.join(_SCONTROL_CANDIDATES)}; the controller cannot be asked"
+        )
+    return subprocess.run(
+        [executable, *argv],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={"LANG": "C", "LC_ALL": "C", **{
+            key: value for key, value in os.environ.items()
+            if key in {"SLURM_CONF", "SLURM_CLUSTER_NAME", "HOME"}
+        }},
+        timeout=30.0,
+    )
+
+
+def _controller_name(environment: Mapping[str, str]) -> str:
+    """Name the controller for a refusal, without asking the controller."""
+
+    cluster = environment.get("SLURM_CLUSTER_NAME") or ""
+    conf = Path(environment.get("SLURM_CONF") or "/etc/slurm/slurm.conf")
+    host = ""
+    try:
+        for line in conf.read_text(encoding="utf-8", errors="replace").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("SlurmctldHost="):
+                host = stripped.split("=", 1)[1].strip()
+                break
+    except OSError:
+        pass
+    parts = [part for part in (
+        f"cluster {cluster!r}" if cluster else "",
+        f"SlurmctldHost={host}" if host else "",
+    ) if part]
+    return "the SLURM controller" + (f" ({', '.join(parts)})" if parts else "")
+
+
+def _scontrol_show(
+    kind: str, name: str, *, environment: Mapping[str, str]
+) -> dict[str, str]:
+    """Ask the controller for one job or node record, as ``key=value`` fields.
+
+    Retries on the schedule in ``SCONTROL_RETRY_DELAYS_S`` and then refuses.
+    An unreachable controller is never read as attested.
+    """
+
+    argv = ["--oneliner", "show", kind, name]
+    failures: list[str] = []
+    for attempt, delay in enumerate((*SCONTROL_RETRY_DELAYS_S, None)):
+        try:
+            completed = _run_scontrol(argv)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            failures.append(f"attempt {attempt + 1}: {exc}")
+        else:
+            if completed.returncode == 0 and completed.stdout.strip():
+                fields: dict[str, str] = {}
+                for token in completed.stdout.strip().split():
+                    key, sep, value = token.partition("=")
+                    if sep and key not in fields:
+                        fields[key] = value
+                return fields
+            detail = (completed.stderr or completed.stdout).strip()
+            failures.append(
+                f"attempt {attempt + 1}: exit {completed.returncode}: "
+                f"{detail or 'no output'}"
+            )
+        if delay is None:
+            break
+        time.sleep(delay)
+    raise ActionContractError(
+        f"{_controller_name(environment)} did not answer `scontrol show "
+        f"{kind} {name}` after {len(failures)} attempts; a host_class_keyed "
+        f"action is refused rather than assumed placed: {failures[-1]}"
+    )
+
+
+def _feature_conjunction(value: str) -> list[str]:
+    """The Feature names a job's constraint requires, or ``[]``.
+
+    Only a plain conjunction (``a&b``) counts.  A disjunction, a bracketed
+    set, a count, or a parenthesized group can be satisfied without any one
+    named Feature, so such a constraint attests no class and yields ``[]``.
+    """
+
+    text = value.strip()
+    if not text or text == "(null)":
+        return []
+    if re.search(r"[|\[\]()*]", text):
+        return []
+    terms = [term.strip() for term in text.split("&")]
+    if any(_SCOPE_TOKEN_RE.fullmatch(term) is None for term in terms):
+        return []
+    return sorted(set(terms))
+
+
+def _feature_list(value: str) -> list[str]:
+    text = value.strip()
+    if not text or text == "(null)":
+        return []
+    return sorted({
+        token for token in (item.strip() for item in text.split(","))
+        if token and _SCOPE_TOKEN_RE.fullmatch(token) is not None
+    })
+
+
+def _controller_evidence(
+    job_id: str, *, environment: Mapping[str, str]
+) -> dict[str, object]:
+    """What the controller holds for this job and the node running it."""
+
+    job = _scontrol_show("job", job_id, environment=environment)
+    if job.get("JobId") != job_id:
+        raise ActionContractError(
+            f"the SLURM controller answered for a different job than {job_id}"
+        )
+    batch_host = job.get("BatchHost", "").strip().lower()
+    if not batch_host or batch_host == "(null)":
+        raise ActionContractError(
+            "the SLURM controller reports no BatchHost for this job"
+        )
+    node = _scontrol_show("node", batch_host, environment=environment)
+    return {
+        "partition": _text(
+            job.get("Partition", ""), where="scontrol Partition",
+            pattern=_SCOPE_TOKEN_RE,
+        ),
+        "batch_host": _text(batch_host, where="scontrol BatchHost", pattern=_ID_RE),
+        "job_features": _feature_conjunction(job.get("Features", "")),
+        "node_active_features": _feature_list(node.get("ActiveFeatures", "")),
+    }
 
 
 def _collect_worker_evidence(
     environment: Mapping[str, str] | None = None,
+    *,
+    attest_host_class: str | None = None,
 ) -> dict[str, object]:
-    """Collect facts from the live worker and SLURM-owned job environment."""
+    """Collect facts from the live worker and its SLURM job, if any.
+
+    The job id comes from this process's cgroup; ``SLURM_JOB_ID``,
+    ``SLURMD_NODENAME`` and ``SLURM_JOB_PARTITION`` are recorded and checked
+    for consistency but decide nothing.  When ``attest_host_class`` names a
+    class, the controller is also asked for the job's constraint and the
+    node's active Features, which is the only evidence that can attest it.
+    """
 
     env = os.environ if environment is None else environment
     system = platform.system().lower()
@@ -943,11 +1163,17 @@ def _collect_worker_evidence(
         )
     slurm: dict[str, object] | None = None
     source = "local"
+    kernel = _slurm_job_from_cgroup() if any(present) else None
     if all(present):
         source = "slurm"
-        job_id = _text(
+        claimed = _text(
             slurm_values["job_id"], where="SLURM_JOB_ID", pattern=_SCOPE_TOKEN_RE
         )
+        if kernel is None or kernel[0] != claimed:
+            raise ActionContractError(
+                "SLURM environment is not attested by this process's cgroup membership"
+            )
+        job_id, cgroup = kernel
         node_name = str(slurm_values["node_name"]).lower()
         partition = str(slurm_values["partition"])
         slurm = {
@@ -958,9 +1184,24 @@ def _collect_worker_evidence(
             "partition": _text(
                 partition, where="SLURM_JOB_PARTITION", pattern=_SCOPE_TOKEN_RE
             ),
+            # Never set in a job's environment (SLURM sets it only for the
+            # Prolog and Epilog), and submitter-writable if it were; kept as
+            # recorded provenance, read by no verdict.
             "constraints": _constraint_tokens(env.get("SLURM_JOB_CONSTRAINTS", "")),
-            "cgroup": _verify_slurm_process_membership(job_id),
+            "cgroup": cgroup,
         }
+        if attest_host_class is not None:
+            controller = _controller_evidence(job_id, environment=env)
+            if controller["batch_host"] != slurm["node_name"]:
+                raise ActionContractError(
+                    "SLURMD_NODENAME disagrees with the BatchHost the SLURM "
+                    "controller holds for this job"
+                )
+            slurm["controller"] = controller
+    elif attest_host_class is not None:
+        raise ActionContractError(
+            "host_class_keyed actions require complete SLURM job evidence"
+        )
     return {
         "source": source,
         "hostname": _text(hostname, where="worker hostname", pattern=_ID_RE),
@@ -1007,26 +1248,69 @@ def _worker_identity_from_evidence(evidence: Mapping[str, object]) -> str:
 def _host_class_from_evidence(
     evidence: Mapping[str, object], *, expected: str | None
 ) -> str | None:
-    # Partition and constraint are relevant only to a host-class-keyed action.
-    # Do not turn scheduler metadata into an ambient host-class assertion for
-    # portable or platform-keyed work.
+    """The attested host class, or ``None`` for work that keys on none.
+
+    A class is attested only by what the controller holds: the node's
+    ``ActiveFeatures`` name it, and the job's own constraint requires it, so
+    the scheduler enforced the placement rather than a worker observing it.
+    Partition names and ``SLURM_*`` variables are recorded evidence, never
+    the verdict: no partition is a class, and a batch script can export
+    anything.  Scheduler metadata is never turned into an ambient class
+    assertion for portable or platform-keyed work.
+    """
+
     if expected is None:
         return None
     slurm = evidence["slurm"]
     if not isinstance(slurm, Mapping):
-        if expected is not None:
-            raise ActionContractError(
-                "host_class_keyed actions require complete SLURM job evidence"
-            )
-        return None
-    partition = str(slurm["partition"])
-    constraints = slurm["constraints"]
-    assert isinstance(constraints, list)
-    if expected != partition and expected not in constraints:
         raise ActionContractError(
-            "SLURM partition/constraints do not attest the action host_class"
+            "host_class_keyed actions require complete SLURM job evidence"
+        )
+    controller = slurm.get("controller")
+    if not isinstance(controller, Mapping):
+        raise ActionContractError(
+            "host_class_keyed actions require the SLURM controller's record "
+            "of the job and its node; environment variables attest no class"
+        )
+    active = controller["node_active_features"]
+    required = controller["job_features"]
+    assert isinstance(active, list) and isinstance(required, list)
+    if expected not in active:
+        raise ActionContractError(
+            f"the SLURM node {controller['batch_host']} does not carry the "
+            f"Feature {expected!r} the action is keyed on"
+        )
+    if expected not in required:
+        raise ActionContractError(
+            f"the SLURM job's constraint does not require the Feature "
+            f"{expected!r}; placement on it was not enforced by the scheduler"
         )
     return expected
+
+
+def live_platform_toolchain_contract() -> dict[str, str]:
+    """The ABI and accelerator toolchain fields of this box.
+
+    Together with ``executable_toolchain_contract`` these are the fields a
+    nonportable action must declare, and they can be read only on the box
+    whose facts they are.  A submitter that seals them binds the action to
+    boxes that verify identically.
+    """
+
+    evidence = _collect_worker_evidence()
+    fields = {
+        "system": str(evidence["system"]),
+        "machine": str(evidence["machine"]),
+        "libc": str(evidence["libc"]),
+    }
+    accelerators = evidence["accelerators"]
+    assert isinstance(accelerators, list)
+    capabilities = {str(row["compute_capability"]) for row in accelerators}
+    drivers = {str(row["driver_version"]) for row in accelerators}
+    if len(capabilities) == 1 and len(drivers) == 1:
+        fields["cuda_compute_capability"] = next(iter(capabilities))
+        fields["nvidia_driver"] = next(iter(drivers))
+    return fields
 
 
 def _probe_python_toolchain(executable: Path) -> dict[str, str]:
@@ -2396,6 +2680,47 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
         os.close(staging_fd)
 
 
+def _normalize_controller_evidence(value: object) -> dict[str, object]:
+    controller = _exact_mapping(
+        value,
+        keys=_SLURM_CONTROLLER_EVIDENCE_KEYS,
+        where="worker evidence.slurm.controller",
+    )
+
+    def features(key: str) -> list[str]:
+        raw = controller[key]
+        if type(raw) is not list:
+            _fail(f"worker evidence.slurm.controller.{key} must be an array")
+        items = [
+            _text(
+                item,
+                where=f"worker evidence.slurm.controller.{key}[{index}]",
+                pattern=_SCOPE_TOKEN_RE,
+            )
+            for index, item in enumerate(raw)
+        ]
+        if items != sorted(set(items)):
+            _fail(
+                f"worker evidence.slurm.controller.{key} must be unique and sorted"
+            )
+        return items
+
+    return {
+        "partition": _text(
+            controller["partition"],
+            where="worker evidence.slurm.controller.partition",
+            pattern=_SCOPE_TOKEN_RE,
+        ),
+        "batch_host": _text(
+            controller["batch_host"],
+            where="worker evidence.slurm.controller.batch_host",
+            pattern=_ID_RE,
+        ),
+        "job_features": features("job_features"),
+        "node_active_features": features("node_active_features"),
+    }
+
+
 def _normalize_worker_evidence(value: object) -> dict[str, object]:
     evidence = _exact_mapping(
         value, keys=_EVIDENCE_KEYS, where="worker attestation.evidence"
@@ -2447,8 +2772,11 @@ def _normalize_worker_evidence(value: object) -> dict[str, object]:
     if raw_slurm is None:
         slurm = None
     else:
+        has_controller = isinstance(raw_slurm, Mapping) and "controller" in raw_slurm
         slurm_mapping = _exact_mapping(
-            raw_slurm, keys=_SLURM_EVIDENCE_KEYS, where="worker evidence.slurm"
+            raw_slurm,
+            keys=_SLURM_EVIDENCE_KEYS | ({"controller"} if has_controller else set()),
+            where="worker evidence.slurm",
         )
         constraints_raw = slurm_mapping["constraints"]
         if type(constraints_raw) is not list:
@@ -2490,6 +2818,16 @@ def _normalize_worker_evidence(value: object) -> dict[str, object]:
             "constraints": constraints,
             "cgroup": cgroup,
         }
+        if has_controller:
+            controller = _normalize_controller_evidence(
+                slurm_mapping["controller"]
+            )
+            if controller["batch_host"] != slurm["node_name"]:
+                _fail(
+                    "worker evidence.slurm.controller.batch_host differs from "
+                    "the node the worker reported"
+                )
+            slurm["controller"] = controller
         job_pattern = re.compile(
             rf"(?:^|/)job_{re.escape(str(slurm['job_id']))}(?:[./]|$)"
         )
@@ -2748,7 +3086,6 @@ def preflight_action(
         _fail("checkout_root must be absolute")
     verify_code_closure(normalized["code_closure"], root)
     _verify_pbrun_checkout_identity(normalized, root)
-    evidence = _collect_worker_evidence()
     scope = normalized["execution_scope"]
     assert isinstance(scope, Mapping)
     expected_host = (
@@ -2756,6 +3093,7 @@ def preflight_action(
         if scope["portability"] == "host_class_keyed"
         else None
     )
+    evidence = _collect_worker_evidence(attest_host_class=expected_host)
     host_class = _host_class_from_evidence(evidence, expected=expected_host)
     executable = identify_executable(
         normalized["task"]["argv"][0]  # type: ignore[index]
@@ -4584,7 +4922,9 @@ def run_local_action(
                 raise
         if returncode != 0:
             raise LocalActionError(
-                f"action argv exited with status {returncode}"
+                f"action argv exited with status {returncode}",
+                returncode=returncode,
+                signal=-returncode if returncode < 0 else None,
             )
         if not output.exists() and not output.is_symlink():
             raise LocalActionError(
@@ -4718,6 +5058,39 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _record_action_status(error: LocalActionError) -> None:
+    """Leave the action's own ending where the transport that asked can read it.
+
+    This process exits 1 whatever the action did, so its exit status cannot
+    carry the action's -- and it must not: the launcher's status is what every
+    fleet reader means by ``detail.returncode``. The number goes beside the
+    job's logs instead, and the caller decides what to do with it.
+
+    Written only for an action that ran and ended by itself. A worker verdict
+    -- a missing result, a timeout -- leaves no file, so that a transport
+    reading one knows it is reading the action's ending and not a default.
+    A file this cannot write is a diagnostic lost, never an ending changed, so
+    every failure here is swallowed and the original error is raised on.
+    """
+
+    destination = os.environ.get(ACTION_STATUS_PATH_ENV) or ""
+    if not destination or error.returncode is None:
+        return
+    body: dict[str, object] = {"action_returncode": int(error.returncode)}
+    if error.signal is not None:
+        body["action_signal"] = int(error.signal)
+    path = Path(destination)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+        tmp.write_text(
+            json.dumps(body, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -4827,15 +5200,19 @@ def main(
             raise PrismaBuildError("action is not present in the CAS")
         print(json.dumps(receipt, sort_keys=True))
         return 0
-    result = run_local_action(
-        action,
-        cas_root=args.cas_root,
-        checkout_root=args.checkout_root,
-        timeout_seconds=args.timeout_seconds,
-        recompute=args.recompute,
-        worker_launcher_identity=worker_launcher_identity,
-        initial_miss_rendezvous=args.initial_miss_rendezvous,
-    )
+    try:
+        result = run_local_action(
+            action,
+            cas_root=args.cas_root,
+            checkout_root=args.checkout_root,
+            timeout_seconds=args.timeout_seconds,
+            recompute=args.recompute,
+            worker_launcher_identity=worker_launcher_identity,
+            initial_miss_rendezvous=args.initial_miss_rendezvous,
+        )
+    except LocalActionError as error:
+        _record_action_status(error)
+        raise
     print(json.dumps(result, sort_keys=True))
     return 0
 
@@ -4843,6 +5220,7 @@ def main(
 __all__ = [
     "ACTION_SCHEMA_V1",
     "ACTION_SCHEMA_V2",
+    "ACTION_STATUS_PATH_ENV",
     "CAS_RECEIPT_SCHEMA_V3",
     "CODE_CLOSURE_SCHEMA_V1",
     "INITIAL_MISS_RENDEZVOUS_ARRIVAL_SCHEMA_V1",
@@ -4859,6 +5237,8 @@ __all__ = [
     "PBRUN_RESULT_PREFIX",
     "PBRUN_STAMP_PREFIX",
     "WORKER_ATTESTATION_SCHEMA_V2",
+    "SCONTROL_RETRY_DELAYS_S",
+    "live_platform_toolchain_contract",
     "WORKER_RUNTIME_SCHEMA_V1",
     "ActionContractError",
     "CASConflictError",

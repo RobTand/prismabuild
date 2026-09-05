@@ -122,27 +122,61 @@ announcement; nativelink README). Everything else is judgment.
 
 ## 6. Migration plan
 
-Phase 0, done on the fixes branch: the decision-independent fixes (#21, #25,
-#34, the reap half of #36, README line counts) and, on their own branches, the
-#35 snapshot-ancestry fix and the thin SLURM lane (`pbrun --transport slurm`:
-seal, publish request, `sbatch --wait`, CAS lookup; fleet configs under
-`fleet/slurm/`; runbook `docs/slurm_runbook_2026-09-04.md`). Merging any of
-this to `main` deploys nothing: the fleet executes the published runtime
-generation, not `main`.
+Phase 0, done, on `claude/pb-slurm-unified` (PR #41): the decision-independent
+fixes (#21, #25, #34, the reap half of #36, README line counts), the #35
+snapshot-ancestry fix, and the thin SLURM lane (`pbrun --transport slurm`:
+seal, publish request, `sbatch`, wait, CAS lookup, terminal record) with the
+fleet adoption on top: partition routing (GPU work to the Sparks, untagged
+CPU-only work to dl380g10, `--anywhere` to every box with dl380g10 preferred
+by node weight), no default deadline, the timeout and signal record
+convention, `--withdraw` routed by the lane's own record, campaign fan-out
+(`pbrun --detach`, `pbwait`, `pbcampaign`), controller-attested host classes
+(`pbrun --measurement --host-class`), liveness reporting for a job that stops
+moving (reported, never cancelled), the command's own exit status on the
+terminal record (`detail.action_returncode`), `pool_reset` re-submitting a
+sealed action through the lane, an attached `pbrun` joining a job already
+running for its key, the operator guide (`docs/operating_prismabuild.md`),
+the measured resource-enforcement record
+(`docs/resource_enforcement_2026-09-05.md`), a test-suite guard against the
+fleet's live store (`tests/conftest.py`), and the four operator scripts under
+`fleet/slurm/`, with `pbrun` reading the CAS before `sbatch` on the attached
+path as it always did detached. The lane has run against a real 25.11.2
+controller in a container on sparky (`fleet/slurm/smoke/`, 21 rows) and
+across three container nodes built from the fleet's own configuration
+(`fleet/slurm/smoke/multinode/`, 12 rows on both SLURM versions, including
+the runbook's `verify.sh`). Merging any of this to
+`main` deploys nothing: the fleet executes the published runtime generation,
+not `main`.
 
 Phase 1, Rob with sudo, any time: install munge and SLURM per the runbook
 (dl380g10 from apt, Sparks from the prebuilt 25.11.2 debs in
 `/home/rob/slurm-build/arm64-24.04`, rebuilt from the 26.04 source package so
 the version line agrees by construction), start `slurmctld` on
 dl380g10 and `slurmd` on all three, prove `sinfo`, a `sbatch --wait` hello on
-each partition, and `srun --gres=shard:1 nvidia-smi` on a Spark. The pool keeps
-running throughout; nothing changes for campaigns.
+each partition, and `srun --gres=shard:1 nvidia-smi` on a Spark. That is
+`fleet/slurm/install.sh` on each box and then `fleet/slurm/verify.sh` from
+sparky, the one box with a checkout that can reach the other two by name. The
+pool keeps running throughout; nothing changes for campaigns.
 
-Phase 2, campaign-quiet window, Rob's call: publish a runtime generation whose
-`pbrun` default transport is `slurm`, stop `supervise.py` and the worker loops,
-stop the legacy `pqwork.service` on both Sparks, and drain
-`pb-queue/claimed`. Rollback is `--transport pool` and restarting the loops;
-the pool code is untouched by the lane.
+Phase 2, campaign-quiet window, Rob's call: `fleet/slurm/cutover.sh --yes`. It
+drains nothing -- it refuses unless `pb-queue/claimed` and `pb-queue/ready` are
+already empty and no `pbrun` is waiting -- then removes the supervise line from
+each box's crontab, stops `supervise.py` and the worker loops, stops the legacy
+`pqwork.service` on both Sparks, and last publishes a runtime generation whose
+default transport is `slurm`.
+
+The publication goes last rather than first, which is the reverse of how this
+paragraph originally read. A generation published while the loops are still
+alive makes every supervisor cycle its idle loops onto it, which is churn in
+the middle of the one operation that wants the fleet still. And a publication
+that fails after the loops are stopped leaves an idle fleet on the previous
+generation, which is the recoverable direction.
+
+Rollback is `fleet/slurm/rollback.sh`: it points the live runtime back at the
+generation the cutover replaced -- which restores the previous default
+transport in the same atomic operation -- restores each box's crontab from the
+verbatim backup, and starts `pqwork` and the supervisors again. The pool code
+is untouched by the lane.
 
 Phase 3, after two quiet weeks on SLURM: delete `pool.py`, `worker_loop.py`,
 `supervise.py`, `box_capacity.py`, their tests, and the scheduler-only
@@ -199,8 +233,34 @@ run, branch refs never rewritten). `main` = `44b9f8f`.
 
 ## 9. Not verified, and what would verify it
 
-- SLURM has not run on this fleet. Every SLURM claim above is from SchedMD's
-  documents, not from `sinfo`. Phase 1 verifies them.
+- SLURM has not run on this fleet's boxes. It has run in a privileged
+  container on sparky (`fleet/slurm/smoke/`, 2026-09-04 and 2026-09-05): one
+  `slurmctld` and one `slurmd` from the Sparks' own 25.11.2 debs, the fleet's
+  scheduler choices, the real Epilog, and 21 rows through `pbrun --transport
+  slurm` (execute, CAS hit, failure with the command's own exit status,
+  `--timeout-s` as `--time`, withdraw, shard admission, unknown Feature
+  refused, Epilog cleanup, `scontrol` provenance, a campaign and its free
+  re-run, host-class attestation, a stalled job reported and completed, and
+  cores and memory enforced to the declaration).
+  The three-node harness (`fleet/slurm/smoke/multinode/`) adds a controller
+  and three `slurmd`s from the fleet's own `slurm.conf`: placement per
+  partition, tag and weight, `--anywhere` overflow, a submission on one box
+  executed on another, a node killed under a job, a controller restart under
+  a job, and `verify.sh`. What the containers cannot show is listed in the
+  runbook under "Still not verified": device containment on a real GPU, the
+  fleet's systemd cgroup arrangement, `root_squash` end to end, and the
+  pinned `NodeAddr` lines themselves, which the three-node harness strips
+  because Docker's DNS resolves its node names and the LAN addresses bind
+  nothing there. Phase 1 verifies those.
+- The sealed environment under `--export=NIL` is shown by the container smoke
+  (row 2 and the three-node run), not by the suite: the fakes never run a job
+  under `--export=NIL`, so the claim that only SLURM's own variables reach a
+  job rests on the smoke alone.
+- `slurm.conf` sets `CR_Core_Memory` and no `DefMemPerNode` or `DefMemPerCPU`,
+  so a job submitted by hand without `--mem` is charged the node's whole
+  memory and blocks every other job on it. Lane submissions always send
+  `--mem`. Whether to set a default for hand-run jobs is an operator note for
+  Phase 1, alongside `docs/resource_enforcement_2026-09-05.md`.
 - `condor_gpu_discovery -repeat` as the HTCondor shared-GPU mechanism is from
   memory and matters only if Rob picks HTCondor.
 - The `shard` model has never been measured against real GB10 contention. Two
