@@ -379,6 +379,9 @@ def test_a_sealed_reset_submits_the_same_action_key_and_the_same_device(
     assert "--partition=gpu" in argv
     assert "--mem=16384M" in argv
     assert "--cpus-per-task=8" in argv
+    # Behind interactive work, the way the pull-queue half is: the lane turns
+    # the priority into the nice the controller subtracts.
+    assert f"--nice={sl.nice_for(-10)}" in argv
     # No deadline unless the operator asked for one; the original had none.
     assert not [flag for flag in argv if flag.startswith("--time=")]
 

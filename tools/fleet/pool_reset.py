@@ -55,9 +55,11 @@ through ``slurm_lane.run(detach=True)``, which records the submission under
 file, from that record and the CAS receipt -- which is why the key and the job
 id are printed: they are what an operator hands ``pbwait``.
 
-One thing a reset cannot carry onto the lane yet is ``--priority``.  The lane
-sends no ``sbatch --nice``, so a lane re-submission queues at the controller's
-own priority; the flag still applies to the pull-queue half.
+``--priority`` reaches both halves.  The lane turns it into the ``sbatch
+--nice`` the controller subtracts, so a reset queues behind interactive work
+under either dispatcher.  It comes from this tool's own flag rather than from
+the record, because the terminal record carries no priority: an ending says
+what the work did, not how far back it was queued.
 """
 
 from __future__ import annotations
@@ -337,6 +339,7 @@ def resubmit_sealed(
     *,
     cas_root: Path,
     queue_root: Path,
+    priority: int = -10,
     timeout_s: float | None = None,
     lane_root: str | Path | None = None,
     runtime_root: Path = RUNTIME_ROOT,
@@ -365,6 +368,8 @@ def resubmit_sealed(
         plan: One ``mode="resubmit"`` plan from ``plan_resets``.
         cas_root: The store holding the action request and its receipt.
         queue_root: The pull queue root, where withdrawals are read.
+        priority: How far behind interactive work to queue it; the lane sends
+            it as the ``--nice`` the controller subtracts.
         timeout_s: A deadline to enforce, or ``None`` for none.
         lane_root: The SLURM lane root, or ``None`` for the configured one.
         runtime_root: The generation whose worker and job entry are used.
@@ -385,6 +390,7 @@ def resubmit_sealed(
         placement=tags,
         resources=resources,
         partition=slurm_lane.partition_for(resources, tags),
+        priority=int(priority),
         timeout_s=timeout_s,
         worker_script=runtime_root / "tools" / "prismabuild_worker.py",
         job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
@@ -520,7 +526,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             job = resubmit_sealed(
                 plan, cas_root=cas_root, queue_root=Path(args.queue_root),
-                timeout_s=args.timeout_s)
+                priority=args.priority, timeout_s=args.timeout_s)
             if job is None:                     # unreachable: run submits once
                 print(f"  nothing submitted for {label}")
                 continue
