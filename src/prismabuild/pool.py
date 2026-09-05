@@ -2264,6 +2264,39 @@ class PoolQueue:
             return None
         return _now() - float(declared)
 
+    def claim_holder_pids(self, host: str | None = None) -> set[int]:
+        """The pids on ``host`` that hold a claim of this queue right now.
+
+        ``claim`` writes the lease before it returns and ``finish`` unlinks it,
+        so this is exactly the set of loops between those two points --
+        including one that has claimed an action and has not yet started
+        anything to run it.  Nothing about that loop's process tree says so,
+        which is why the question is asked here: the lease carries the
+        claiming loop's own pid, and has since it was written.
+
+        Host-qualified, because the queue is shared and a pid is a name only
+        one box can resolve.  A lease naming another box is another box's
+        business.
+
+        A lease that cannot be read is skipped rather than raised on.  The
+        caller is deciding whether one of its own processes may be signalled,
+        and a single unreadable file must not stop a box managing its loops.
+        """
+
+        host = socket.gethostname() if host is None else host
+        pids: set[int] = set()
+        for lease in _glob(self.dir(CLAIMED), "*.lease"):
+            try:
+                record = _read_json(lease)
+            except PoolContractError:
+                continue
+            if record is None or record.get("host") != host:
+                continue
+            pid = record.get("pid")
+            if isinstance(pid, int) and not isinstance(pid, bool):
+                pids.add(int(pid))
+        return pids
+
     def reap_stale(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
         """Return claims whose lease has expired to ``ready``.
 
