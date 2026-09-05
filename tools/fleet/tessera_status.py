@@ -57,6 +57,57 @@ TERMINAL_STATES = ("done", "failed", "withdrawn")
 #: it.  A busy ``squeue`` must not become a hung status command.
 SQUEUE_TIMEOUT_S = 20.0
 
+#: The prefix every "could not read it" line carries.  ``main`` reads its own
+#: lines to settle the exit status, so the sentence an operator sees and the
+#: code a script branches on cannot drift apart.
+UNAVAILABLE = "unavailable ("
+
+#: The fields the screen sums.  A manifest that parsed but was missing one of
+#: them used to reach the totals and take the whole screen down with a
+#: ``KeyError``, which is the failure a status command must not have: the
+#: operator is already looking at it because something else is wrong.
+MANIFEST_FIELDS = ("shard", "total_bytes", "quantized_bytes", "quantized_params")
+
+#: What the exit status means.  A status screen that always exits 0 cannot be
+#: branched on, and an operator who reads only the code is told the fleet is
+#: fine no matter what the screen printed.
+EXIT_OK = 0
+EXIT_PARTIAL = 1
+EXIT_NOTHING = 3
+
+_EPILOG = """\
+exit status:
+  0  the screen read everything it consulted
+  1  the screen printed, but part of what it consulted could not be read: a
+     missing root, an entry that would not parse, a plan whose digest could
+     not be taken, or a controller that did not answer
+  2  the command line was wrong
+  3  nothing to read: none of the roots this screen consults exists
+
+3 takes precedence over 1.  A store that holds no shards yet is a complete
+screen and exits 0; the export has not started, which is not a failure to
+read it.
+"""
+
+
+def _manifest(text: str) -> dict:
+    """One shard manifest, or a ``ValueError`` naming what is wrong with it.
+
+    The readers already treat an entry they cannot parse as one skipped line
+    rather than the end of the screen.  Validating here puts a manifest that
+    parses but does not carry what the totals sum under that same handling,
+    so ``main`` can add the fields up without guarding each one.
+    """
+
+    body = json.loads(text)
+    if not isinstance(body, dict):
+        raise ValueError("manifest is not an object")
+    for field in MANIFEST_FIELDS:
+        value = body.get(field)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"manifest field {field!r} is not an integer")
+    return body
+
 
 def _keys(directory: Path) -> set[str]:
     """The action keys filed in one queue directory, top level only.
@@ -143,7 +194,7 @@ def describe_squeue_depth(*, squeue: str = "squeue") -> str:
     try:
         depth = squeue_depth(squeue=squeue)
     except Exception as exc:                       # noqa: BLE001 - diagnostic
-        return f"unavailable ({type(exc).__name__})"
+        return f"{UNAVAILABLE}{type(exc).__name__})"
     if not depth:
         return "no jobs queued or running"
     return "; ".join(
@@ -165,7 +216,7 @@ def cas_shard_manifests(
     *,
     plan_sha256: str,
     definition_id: str = EXPORT_DEFINITION_ID,
-) -> tuple[dict[int, dict], int, int]:
+) -> tuple[dict[int, dict], int, list[str]]:
     """Every completed shard of one export, from verified CAS receipts.
 
     An export is identified by the action kind, the digest of the allocation
@@ -187,7 +238,7 @@ def cas_shard_manifests(
 
     Returns:
         The manifests by shard number, how many receipts belonged to another
-        plan, and how many entries could not be read.
+        plan, and the path of every entry that could not be read.
     """
 
     if cas_root is None:
@@ -198,11 +249,11 @@ def cas_shard_manifests(
     pb = _core()
     requests = Path(cas_root) / "requests"
     if not requests.is_dir():
-        return {}, 0, 0
+        return {}, 0, []
     cas = pb.PrismaBuildCAS(cas_root)
     manifests: dict[int, dict] = {}
     other_plans = 0
-    unreadable = 0
+    unreadable: list[str] = []
     for path in sorted(requests.glob("*/*.json")):
         try:
             raw = path.read_text(encoding="utf-8")
@@ -230,21 +281,23 @@ def cas_shard_manifests(
             receipt = cas.lookup(body)
             if receipt is None:
                 continue
-            manifest = json.loads(
+            manifest = _manifest(
                 Path(cas.result_path(receipt, body)).read_text(encoding="utf-8"))
-            if manifest.get("shard") != shard:
-                unreadable += 1
+            if manifest["shard"] != shard:
+                unreadable.append(str(path))
                 continue
             manifests[shard] = manifest
         except Exception:                          # noqa: BLE001 - diagnostic
             # A status script must never be the thing that fails.  One
-            # unreadable entry is reported as a count and costs no other
+            # unreadable entry is named on its own line and costs no other
             # shard its line.
-            unreadable += 1
+            unreadable.append(str(path))
     return manifests, other_plans, unreadable
 
 
-def shared_shard_manifests(results_root: Path | None = None) -> tuple[dict[int, dict], int]:
+def shared_shard_manifests(
+    results_root: Path | None = None,
+) -> tuple[dict[int, dict], list[str]]:
     """The manifests the pull queue's workers wrote into the shared checkout.
 
     Kept for the transport that wrote them.  These files carry no plan digest,
@@ -259,15 +312,15 @@ def shared_shard_manifests(results_root: Path | None = None) -> tuple[dict[int, 
 
     results = Path(results_root)
     if not results.is_dir():
-        return {}, 0
+        return {}, []
     manifests: dict[int, dict] = {}
-    unreadable = 0
+    unreadable: list[str] = []
     for path in sorted(results.glob("shard-*.json")):
         try:
-            manifest = json.loads(path.read_text(encoding="utf-8"))
-            manifests[int(manifest["shard"])] = manifest
+            manifest = _manifest(path.read_text(encoding="utf-8"))
+            manifests[manifest["shard"]] = manifest
         except Exception:                          # noqa: BLE001 - diagnostic
-            unreadable += 1
+            unreadable.append(str(path))
     return manifests, unreadable
 
 
@@ -295,11 +348,15 @@ def width(queue_root: Path | None = None) -> str:
         return pool.describe_placement_census(
             pool.PoolQueue(queue_root).placement_census())
     except Exception as exc:                       # noqa: BLE001 - diagnostic
-        return f"unavailable ({type(exc).__name__})"
+        return f"{UNAVAILABLE}{type(exc).__name__})"
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument(
         "--transport", choices=TRANSPORTS, default=default_transport(),
         help="which dispatcher this fleet is running (env "
@@ -315,6 +372,21 @@ def main(argv: list[str] | None = None) -> int:
     queue_root = Path(args.queue_root)
     results = Path(args.results_root)
 
+    # Every root the screen reads, checked before it reads them.  A missing
+    # queue directory counts as no keys and a missing results directory as no
+    # manifests, so a screen pointed at the wrong store prints the same zeroes
+    # as a fleet with nothing to do.  Naming the roots is also what lets the
+    # exit status tell "nothing here" from "nothing yet".
+    consulted = [("queue root", queue_root), ("CAS root", Path(args.cas_root))]
+    if args.transport != "slurm":
+        consulted.append(("results root", results))
+    absent = [f"{name} {path}" for name, path in consulted if not path.is_dir()]
+    for row in absent:
+        print(f"missing    {row}")
+    if len(absent) == len(consulted):
+        print("nothing    no root this screen reads exists, so it read nothing")
+        return EXIT_NOTHING
+
     # The plan digest names the export, so it is read from the same file the
     # dispatcher hands the exporter.  Imported here rather than at module
     # scope so a status screen costs nothing until it needs the constant.
@@ -326,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
         plan_sha256 = None
 
     if plan_sha256 is None:
-        manifests, other_plans, unreadable = {}, 0, 0
+        manifests, other_plans, unreadable = {}, 0, []
     else:
         manifests, other_plans, unreadable = cas_shard_manifests(
             Path(args.cas_root), plan_sha256=plan_sha256)
@@ -353,9 +425,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.transport == "slurm":
         # The placement census describes worker offers, and under SLURM there
         # are none: the scheduler is the thing that knows what is waiting.
-        print(f"squeue     {describe_squeue_depth()}")
+        depth = describe_squeue_depth()
+        print(f"squeue     {depth}")
     else:
-        print(f"width      {width(queue_root)}")
+        depth = width(queue_root)
+        print(f"width      {depth}")
     print(f"shards     {len(done_shards)}/120 encoded   missing {len(missing)}")
     if plan_sha256 is None:
         print(f"  plan     unreadable, so no receipt could be matched: {plan}")
@@ -369,14 +443,23 @@ def main(argv: list[str] | None = None) -> int:
     if other_plans:
         print(f"  stale    receipts encoding a different plan: {other_plans}")
     if unreadable:
-        print(f"  skipped  entries that could not be read: {unreadable}")
+        # Named, not just counted.  An operator reaches for this screen when
+        # something is already wrong, and a bare count sends them looking for
+        # which file it was.
+        print(f"  skipped  entries that could not be read: {len(unreadable)}")
+        for name in unreadable[:6]:
+            print(f"           {name}")
+        if len(unreadable) > 6:
+            print(f"           and {len(unreadable) - 6} more")
     if missing[:12]:
         print(f"  next     {missing[:12]}{'...' if len(missing) > 12 else ''}")
     if qparams:
         print(f"body       {gib(qbytes):.3f} GiB over {qparams:,} params "
               f"= {qbytes*8/qparams:.4f} bpp")
         print(f"on disk    {gib(total_bytes):.3f} GiB   (Mia 163.560 GiB)")
-    return 0
+    if absent or unreadable or plan_sha256 is None or depth.startswith(UNAVAILABLE):
+        return EXIT_PARTIAL
+    return EXIT_OK
 
 
 if __name__ == "__main__":
