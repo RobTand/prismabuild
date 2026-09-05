@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -13,6 +14,55 @@ import sys
 OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 LABEL = "prismabuild.action"
+
+#: A second label naming the SLURM job this container was created inside.
+#:
+#: The owner label is the action's identity, and under the pull queue that was
+#: also one execution: the queue handed a key to one worker at a time.  SLURM
+#: has no such claim -- an attached ``pbrun`` re-submits a key that already has
+#: a job in flight -- so two jobs of one action can run on one node, share the
+#: owner label, and the first job's Epilog removes the second job's containers.
+#:
+#: The job id is read from this process's kernel-owned cgroup and NOT from the
+#: environment: ``proctrack/cgroup`` puts every process of a job under
+#: ``job_<id>`` and nothing in the job can move itself out, whereas anything
+#: can export a variable.  It is the rule ``core._slurm_job_from_cgroup``
+#: already applies to worker attestation, and the regex below is that one.
+#: Outside a job cgroup -- the pull queue, a hand-run action -- there is no
+#: second label and nothing changes.
+JOB_LABEL = "prismabuild.job"
+CGROUP_JOB_RE = re.compile(r"(?:^|/)job_([1-9][0-9]*)(?:[./]|$)")
+
+
+def _slurm_job_id() -> str:
+    """The job whose cgroup holds this process, or "" when there is not one.
+
+    Silent on every failure by design: a shim that refused to start a container
+    because it could not read ``/proc`` would take the pull queue down with it.
+    An unreadable or ambiguous cgroup yields no label, which the Epilog reads
+    as "not this job's container" and leaves alone -- a leaked container rather
+    than somebody else's removed.
+    """
+
+    # The path is overridable only under the same testing gate the real docker
+    # binary is, and for the same reason: a test cannot give this process a
+    # SLURM job cgroup, and nothing in production reads the override.
+    path = Path("/proc/self/cgroup")
+    if os.environ.get("PRISMABUILD_DOCKER_TESTING") == "1":
+        path = Path(os.environ.get("PRISMABUILD_CGROUP_FILE") or path)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    jobs = set()
+    for line in raw.splitlines():
+        fields = line.split(":", 2)
+        if len(fields) != 3:
+            continue
+        match = CGROUP_JOB_RE.search(fields[2])
+        if match is not None:
+            jobs.add(match.group(1))
+    return jobs.pop() if len(jobs) == 1 else ""
 
 
 def _real_docker() -> str:
@@ -37,13 +87,15 @@ def _starts_unowned_container(argv: list[str]) -> bool:
     return len(argv) >= 2 and argv[0] == "compose" and argv[1] == "up"
 
 
-def _has_owner_label(argv: list[str]) -> bool:
+def _has_reserved_label(argv: list[str]) -> bool:
     for index, token in enumerate(argv):
-        if token.startswith(f"--label={LABEL}=") or token.startswith(f"-l={LABEL}="):
-            return True
-        if token in {"--label", "-l"} and index + 1 < len(argv):
-            if argv[index + 1].startswith(f"{LABEL}="):
+        for reserved in (LABEL, JOB_LABEL):
+            if (token.startswith(f"--label={reserved}=")
+                    or token.startswith(f"-l={reserved}=")):
                 return True
+            if token in {"--label", "-l"} and index + 1 < len(argv):
+                if argv[index + 1].startswith(f"{reserved}="):
+                    return True
     return False
 
 
@@ -69,9 +121,10 @@ def main() -> int:
     insertion = _creation_index(argv)
     if insertion is None:
         os.execv(real, [real, *argv])
-    if _has_owner_label(argv):
+    if _has_reserved_label(argv):
         sys.stderr.write(
-            f"docker shim: callers may not set the reserved {LABEL} label\n")
+            f"docker shim: callers may not set the reserved {LABEL} or "
+            f"{JOB_LABEL} label\n")
         return 125
 
     marker = Path(marker_raw)
@@ -85,8 +138,11 @@ def main() -> int:
         os.ftruncate(descriptor, 0)
         os.write(descriptor, owner.encode() + b"\n")
         os.fsync(descriptor)
-        labelled = [*argv[:insertion], "--label", f"{LABEL}={owner}",
-                    *argv[insertion:]]
+        labels = ["--label", f"{LABEL}={owner}"]
+        job = _slurm_job_id()
+        if job:
+            labels += ["--label", f"{JOB_LABEL}={job}"]
+        labelled = [*argv[:insertion], *labels, *argv[insertion:]]
         return subprocess.run([real, *labelled], check=False).returncode
     finally:
         os.close(descriptor)

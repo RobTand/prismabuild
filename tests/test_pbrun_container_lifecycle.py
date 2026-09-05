@@ -117,3 +117,73 @@ def test_docker_shim_marks_and_labels_a_created_container(tmp_path: Path) -> Non
     assert marker.read_text().strip() == owner
     argv = json.loads(called.read_text())
     assert argv[:3] == ["run", "--label", f"prismabuild.action={owner}"]
+
+
+def test_docker_shim_adds_the_job_label_inside_a_slurm_job(tmp_path: Path) -> None:
+    """A second label naming the job, so one action's two concurrent SLURM jobs
+    do not share an ownership label and remove each other's containers.
+
+    Read from the kernel-owned cgroup, never from the environment: SLURM puts
+    every process of a job under ``job_<id>`` and nothing in the job can move
+    itself out, whereas anything can export a variable.
+    """
+
+    shim = ROOT / "tools" / "fleet" / "docker"
+    called = tmp_path / "called.json"
+    real = tmp_path / "real-docker"
+    real.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, pathlib, sys\n"
+        "pathlib.Path(os.environ['CALLED']).write_text(json.dumps(sys.argv[1:]))\n"
+    )
+    real.chmod(0o755)
+    cgroup = tmp_path / "cgroup"
+    cgroup.write_text(
+        "0::/system.slice/slurmstepd.scope/job_4242/step_batch/user\n",
+        encoding="utf-8")
+    owner = "1" * 64
+    environment = dict(os.environ)
+    environment.update({
+        "CALLED": str(called),
+        "PRISMABUILD_CONTAINER_OWNER": owner,
+        "PRISMABUILD_CONTAINER_MARKER": str(tmp_path / "owner.used"),
+        "PRISMABUILD_DOCKER_REAL": str(real),
+        "PRISMABUILD_DOCKER_TESTING": "1",
+        "PRISMABUILD_CGROUP_FILE": str(cgroup),
+        # Exported, and deliberately a lie: the cgroup decides.
+        "SLURM_JOB_ID": "9999",
+    })
+
+    result = subprocess.run(
+        [str(shim), "run", "--rm", "example:image"],
+        env=environment, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(called.read_text())
+    assert argv[:5] == [
+        "run",
+        "--label", f"prismabuild.action={owner}",
+        "--label", "prismabuild.job=4242",
+    ]
+
+
+def test_docker_shim_refuses_a_caller_set_job_label(tmp_path: Path) -> None:
+    """Both labels are reserved: a caller that could set the job label could
+    hand its container to another job's Epilog, or hide it from its own."""
+
+    shim = ROOT / "tools" / "fleet" / "docker"
+    environment = dict(os.environ)
+    environment.update({
+        "PRISMABUILD_CONTAINER_OWNER": "1" * 64,
+        "PRISMABUILD_CONTAINER_MARKER": str(tmp_path / "owner.used"),
+        "PRISMABUILD_DOCKER_TESTING": "1",
+    })
+
+    result = subprocess.run(
+        [str(shim), "run", "--label", "prismabuild.job=1", "example:image"],
+        env=environment, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 125
+    assert "may not set the reserved" in result.stderr

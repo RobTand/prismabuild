@@ -286,7 +286,7 @@ def _snapshot(tmp_path: Path, source: Path, stamp_name: str,
 
 
 def _runnable_action(tmp_path: Path, cas: pb.PrismaBuildCAS,
-                     *, owner: str = "") -> dict:
+                     *, owner: str = "", marker: str = "") -> dict:
     """An action a real worker can execute: sealed snapshot, real closure."""
 
     source, stamp_name, _identity = _sealed_source(tmp_path)
@@ -294,6 +294,8 @@ def _runnable_action(tmp_path: Path, cas: pb.PrismaBuildCAS,
     variables: dict[str, str] = {}
     if owner:
         variables["PRISMABUILD_CONTAINER_OWNER"] = owner
+    if marker:
+        variables["PRISMABUILD_CONTAINER_MARKER"] = marker
     return pb.seal_action({
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
@@ -909,12 +911,14 @@ def test_the_job_leaves_the_epilog_the_owner_and_the_tree_while_it_runs(
 ) -> None:
     """A job killed at its time limit cleans nothing up, so what the Epilog
     needs has to be on disk *before* the work starts: the container-ownership
-    label the Docker shim stamps, and the tree to remove."""
+    label the Docker shim stamps, the marker it writes beside it, and the tree
+    to remove."""
 
     cas_root = tmp_path / "cas"
     cas = pb.PrismaBuildCAS(cas_root)
     owner = "ab" * 32
-    action = _runnable_action(tmp_path, cas, owner=owner)
+    marker = f"/mnt/shared/pb-queue/container-owners/{owner}.used"
+    action = _runnable_action(tmp_path, cas, owner=owner, marker=marker)
     request = cas.publish_action_request(action)
     state_root = tmp_path / "jobs"
     checkouts = tmp_path / "materialized"
@@ -940,6 +944,10 @@ def test_the_job_leaves_the_epilog_the_owner_and_the_tree_while_it_runs(
     assert code == 0
     assert len(seen) == 2
     assert all(f"container_owner={owner}" in text for text in seen)
+    # And the marker the shim writes on first container creation, so the
+    # Epilog can retire it: the pull queue's ``finish`` unlinked it, and under
+    # SLURM nothing did.  Read off the sealed environment rather than rebuilt.
+    assert all(f"container_marker={marker}" in text for text in seen)
     assert "checkout_dir=\n" in seen[0]            # nothing to remove yet
     tree = [
         line.split("=", 1)[1]
