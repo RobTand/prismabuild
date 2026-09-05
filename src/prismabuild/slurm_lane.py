@@ -1382,6 +1382,91 @@ def run(
     return result
 
 
+def resume(
+    submission: Mapping[str, object],
+    *,
+    action: Mapping[str, object],
+    cas: pb.PrismaBuildCAS,
+    queue_root: str | Path,
+    wait_s: float | None = None,
+    poll_s: float = DEFAULT_POLL_S,
+    sacct: str = "sacct",
+    scontrol: str = "scontrol",
+    squeue: str = "squeue",
+    sleep: Callable[[float], None] = time.sleep,
+) -> RunResult:
+    """Wait for a job somebody else submitted, and file the ending they did not.
+
+    ``run`` files the terminal record because it is the process holding the
+    submission open.  A detached submission has no such process, so the ending
+    has to be filed by whoever waits -- and the recorded submission is enough
+    to do it from, on any box, which ``pbrun --withdraw`` already relies on:
+    ``_file_slurm_withdrawal`` builds a complete terminal record out of
+    ``latest.json`` alone.  This is the same reconstruction with the job's own
+    outcome in it rather than an operator's decision.
+
+    A wait that runs out of patience files nothing.  The job is still queued or
+    running, and an ending written now would say ``failed`` about work nothing
+    has watched -- which is the one thing a terminal record must never do.
+    """
+
+    key = str(submission["action_key"])
+    generation = submission.get("published_unix")
+    if not isinstance(generation, (int, float)) or isinstance(generation, bool):
+        # A submission record from before the generation stamp.  Wait for it,
+        # but do not claim to know which request it belonged to.
+        generation = float(submission.get("submitted_unix") or 0.0)
+    published_unix = float(generation)
+    attempt = int(submission.get("attempt") or 1)
+    directory = Path(str(submission.get("directory") or "."))
+    job = SubmittedJob(
+        action_key=key,
+        job_id=str(submission["job_id"]),
+        attempt=attempt,
+        argv=[str(value) for value in (submission.get("argv") or [])],
+        script=Path(str(submission.get("script") or "")),
+        directory=directory,
+        stdout_path=Path(str(submission.get("stdout") or "")),
+        stderr_path=Path(str(submission.get("stderr") or "")),
+        record_path=submission_record_path(
+            directory, published_unix=published_unix, attempt=attempt
+        ),
+    )
+    result = RunResult(action_key=key, published_unix=published_unix)
+    outcome = wait(
+        job, sacct=sacct, scontrol=scontrol, squeue=squeue,
+        poll_s=poll_s, wait_s=wait_s, sleep=sleep,
+    )
+    result.attempts.append((job, outcome))
+    result.receipt = cas.lookup(action)
+    if outcome.state == WAIT_TIMEOUT_STATE and result.receipt is None:
+        return result
+
+    # Rebuilt from what was submitted rather than round-tripped through the
+    # pool-shaped demand: ``gres`` is where exclusivity lives, and
+    # ``LaneResources.demand`` does not carry it.
+    gres = str(submission.get("gres") or "")
+    _, _, count = gres.partition(":")
+    resources = LaneResources(
+        cpus=max(1, int(submission.get("cpus") or 1)),
+        memory_mib=max(1, int(submission.get("memory_mib") or 4096)),
+        gpu_slots=int(count) if count.isdigit() else 0,
+        exclusive_gpu=gres.startswith("gpu:"),
+    )
+    _file_ending(
+        result,
+        action=action,
+        queue_root=queue_root,
+        published_unix=published_unix,
+        published_by=str(submission.get("published_by") or ""),
+        resources=resources,
+        tags=[str(tag) for tag in (submission.get("constraint") or [])],
+        max_attempts=int(submission.get("max_attempts") or 1),
+        retry_safe=bool(submission.get("retry_safe")),
+    )
+    return result
+
+
 def _file_ending(
     result: RunResult,
     *,
