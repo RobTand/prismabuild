@@ -523,6 +523,13 @@ would undo a decision. A record `pool_reset` has already handled is filed as
 failure it recorded: the returncode, the output tails, and the job the lane
 submitted stay in `detail`, and the reset is stamped beside them under `reset`.
 
+`--apply` keeps each re-submission's output under `<queue root>/resets/` and
+waits a few seconds, once for the whole batch, before it stamps anything. A
+child `pbrun` that refuses does so at once, and a refusal is printed with the
+tail of what it said, leaves its record `failed` so the next run plans it
+again, and makes the command exit non-zero. A child still running at the end
+of that wait has been admitted and is left alone.
+
 A record addressed by a snapshot, which is what the lane files for every
 submission, is not re-sealed. Its tree is a commit in the CAS and nothing can
 have moved under it, so `pool_reset` sends the same action back through the

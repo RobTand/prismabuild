@@ -48,7 +48,12 @@ constraint and exclusivity its own ending recorded.
 
 **A reset detaches, and files no ending.**  ``--apply`` starts every
 re-submission and returns; nothing here stays alive to watch a job, and an
-ending written now would say ``failed`` about work that is still queued.  A
+ending written now would say ``failed`` about work that is still queued.  It
+does wait one shared ``REFUSAL_WINDOW_S`` before stamping the records, because
+a child that refuses does so at once and a run that reported it as submitted
+was reporting work that does not exist.  Nothing is signalled at the end of
+that window: a child still running has been admitted, and its output is kept
+under ``<queue root>/resets/`` either way.  A
 re-sealed action goes out through a detached ``pbrun``, and a sealed one
 through ``slurm_lane.run(detach=True)``, which records the submission under
 ``<lane root>/<key>/latest.json``.  Either way the ending is ``pbwait``'s to
@@ -78,7 +83,7 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from collections.abc import Mapping  # noqa: E402
+from collections.abc import Mapping, Sequence  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
@@ -495,6 +500,86 @@ def submit_command(
     return command + ["--"] + list(plan["argv"])
 
 
+#: How long ``--apply`` watches its re-submissions before calling them in
+#: flight.  One window is shared by every child, so a large reset costs it
+#: once rather than once per action.  It is not a deadline on the work:
+#: nothing is signalled at the end of it, and a child still running is a
+#: submission that landed and is now waiting for its outcome.
+REFUSAL_WINDOW_S = 10.0
+
+#: Where a re-submission's own output is kept, under the queue root.  A
+#: directory of its own, because every reader of this queue addresses the
+#: state directories by ``<key>.json`` and none of them looks here.
+RESETS = "resets"
+
+
+def resubmission_log(queue_root: Path, key: str) -> Path:
+    """Where one re-submission's output goes.
+
+    Named by key and start time, so a second reset of the same action does not
+    overwrite the evidence from the first.
+    """
+
+    return Path(queue_root) / RESETS / f"{key}.{time.time():.6f}.log"
+
+
+def start_resubmission(
+    command: Sequence[str], *, queue_root: Path, key: str
+) -> tuple[subprocess.Popen, Path]:
+    """Start one detached re-submission, keeping what it says.
+
+    Its output used to go to ``/dev/null``, which is the whole of why a
+    refusal was invisible: the child said why it would not run and nobody
+    could read it.
+    """
+
+    log = resubmission_log(queue_root, key)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("wb") as handle:
+        process = subprocess.Popen(
+            list(command), stdout=handle, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    return process, log
+
+
+def refusal_of(
+    process: subprocess.Popen, log: Path, *, deadline: float
+) -> str | None:
+    """Why this child refused, or ``None`` if it did not.
+
+    ``pbrun`` refuses early and exits non-zero: a closure that no longer
+    matches the tree, a checkout that is gone, a demand no box can meet. A
+    child still running at the deadline has been admitted and is waiting for
+    its outcome, and one that exited zero was answered from the CAS. Neither
+    is a refusal, and neither is waited out: this window only decides what to
+    print and what to stamp.
+
+    Args:
+        process: The child started by ``start_resubmission``.
+        log: Where its output is being written.
+        deadline: A ``time.monotonic`` reading to stop waiting at.
+
+    Returns:
+        The child's status and the tail of what it said, or ``None``.
+    """
+
+    try:
+        returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        return None
+    if returncode == 0:
+        return None
+    try:
+        said = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        said = ""
+    tail = [line for line in said.splitlines() if line.strip()][-3:]
+    return "\n    ".join(
+        [f"the re-submission exited {returncode}; its output is {log}"] + tail
+    )
+
+
 def _file_reset(plan: Mapping, *, reason: str) -> None:
     """Mark this plan's endings ``reset`` so the failure count means something.
 
@@ -583,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit:
         ordered = ordered[: args.limit]
     refused: list[str] = []
+    started: list[tuple[dict, str, subprocess.Popen, Path]] = []
     for plan in ordered:
         label = (f"{plan['key'][:12]} x{len(plan['paths'])} "
                  f"{plan['transport']} {plan['cwd'] or 'sealed checkout'}")
@@ -630,16 +716,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  cleared this action's stale result: {cleared[0]}")
         elif note:
             print(f"  no result to clear ({note})")
-        proc = subprocess.Popen(
-            command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        print(f"  submitted {label} (pid {proc.pid})")
+        process, log = start_resubmission(
+            command, queue_root=Path(args.queue_root), key=plan["key"])
+        print(f"  submitted {label} (pid {process.pid})\n    output: {log}")
+        started.append((plan, label, process, log))
+    # The record is stamped after the child has had its moment to refuse, not
+    # from the fact that a process was created.  A refusal used to leave the
+    # operator with a green run, a record saying the work had been
+    # re-submitted, and nothing in flight anywhere.  One deadline is shared by
+    # every child, so a reset of a hundred actions spends the window once.
+    deadline = time.monotonic() + REFUSAL_WINDOW_S
+    for plan, label, process, log in started:
+        refusal = refusal_of(process, log, deadline=deadline)
+        if refusal is not None:
+            print(f"  refused {label}\n    {refusal}")
+            refused.append(plan["key"])
+            continue
         _file_reset(plan, reason="re-submitted as a fresh action by pool_reset")
     if not args.apply:
         print("\nnothing submitted; re-run with --apply")
     if refused:
-        print(f"\n{len(refused)} refused by the scheduler and left failed")
+        print(f"\n{len(refused)} refused and left failed")
         return 1
     return 0
 
