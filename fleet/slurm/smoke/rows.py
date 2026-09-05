@@ -849,7 +849,7 @@ def row_13_cpu_containment() -> None:
 
     Read off ``taskset``, not ``nproc``.  ``nproc`` honours ``OMP_NUM_THREADS``
     before it looks at the affinity mask, and ``pbrun``'s sealed environment
-    sets that to 4 (``tools/fleet/pbrun.py:1936``), so ``nproc`` answers 4
+    sets that to 4 (``tools/fleet/pbrun.py:2294``), so ``nproc`` answers 4
     under every declaration.  It is reported anyway, because an action that
     sizes its own parallelism from ``nproc`` is reading that 4.
     """
