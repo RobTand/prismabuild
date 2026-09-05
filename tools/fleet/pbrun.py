@@ -241,6 +241,20 @@ def _snapshot_git(
     return completed.stdout.strip() if strip else completed.stdout
 
 
+#: Git reads three exclude sources under ``--exclude-standard``: the
+#: repository's own ``.gitignore`` files, ``$GIT_DIR/info/exclude``, and
+#: ``core.excludesFile``.  The first describes the repository and the second is
+#: where ``keep_droppings_out_of_git`` puts pbrun's own generated basenames, so
+#: both belong to the seal.  ``core.excludesFile`` is a personal setting on the
+#: box that submits, and the sealed tree must not be a function of it.
+#: Measured: one untracked file matched by a submitter's global exclude seals a
+#: different tree, and therefore a different action key, for identical bytes.
+#: Pinned to an empty file rather than cleared, because an empty value falls
+#: back to Git's default of ``$XDG_CONFIG_HOME/git/ignore``, which is the very
+#: file this has to stop reading.
+PERSONAL_EXCLUDES_PIN: tuple[str, ...] = ("-c", "core.excludesFile=/dev/null")
+
+
 def snapshot_path_roster(
     root: Path, *, extra_paths: tuple[str, ...] = ()
 ) -> list[str]:
@@ -248,7 +262,7 @@ def snapshot_path_roster(
 
     raw_paths = _snapshot_git(
         root,
-        ["ls-files", "-co", "--exclude-standard", "-z"],
+        [*PERSONAL_EXCLUDES_PIN, "ls-files", "-co", "--exclude-standard", "-z"],
         strip=False,
     )
     return list(dict.fromkeys(
@@ -543,6 +557,54 @@ def require_supported_snapshot_tree(
             "remove generated data from the worktree or lower its footprint"
         )
     return logical_bytes
+
+
+#: How many missing paths a refusal names before it stops listing them.  A cone
+#: that hides a large subtree would otherwise print thousands of lines.
+SPARSE_REFUSAL_SAMPLE = 3
+
+
+def require_materialized_checkout(root: Path) -> None:
+    """Refuse a checkout whose bytes the submitter does not have on disk.
+
+    Git marks a path it deliberately leaves out of the working tree with the
+    skip-worktree bit: that is how ``git sparse-checkout`` works, and
+    ``git update-index --skip-worktree`` sets the same bit by hand.  ``git add
+    -A`` honours the bit, so the sealed tree keeps HEAD's bytes for every such
+    path.  Measured: with ``sparse-checkout set keep``, the bundle carried
+    ``away/b.txt`` from HEAD while the submitter had no copy of it.
+
+    That is not a seal.  The action key would claim bytes the person who typed
+    the command could not read, review, or change, and two submitters with the
+    same HEAD and different cones would get the same key for trees they never
+    both saw.  Refuse instead, the way this sealer already refuses a shallow
+    clone and an active content filter: say what is missing and name the one
+    command that fixes it.
+
+    Not ``--snapshot-ref``: that flag pins extra branch refs into the bundle
+    and has no bearing on which working-tree paths are sealed, so sending a
+    sparse submitter there would be the wrong lever.
+    """
+
+    listing = _snapshot_git(root, ["ls-files", "-t", "-z"], strip=False)
+    skipped = [
+        entry[2:]
+        for entry in listing.split("\0")
+        if entry.startswith("S ")
+    ]
+    if not skipped:
+        return
+    named = sorted(skipped)[:SPARSE_REFUSAL_SAMPLE]
+    remaining = len(skipped) - len(named)
+    sample = ", ".join(named)
+    if remaining > 0:
+        sample += f", and {remaining} more"
+    raise SystemExit(
+        f"pbrun: this checkout leaves {len(skipped)} tracked path(s) out of "
+        f"the working tree ({sample}), so their sealed bytes would come from "
+        "HEAD rather than from anything you have on disk; restore the full "
+        "worktree (git sparse-checkout disable) before submitting"
+    )
 
 
 def require_complete_history(root: Path) -> None:
@@ -862,6 +924,7 @@ def _build_git_checkout_snapshot(
     if _git_identity(cwd) != identity:
         raise SystemExit("pbrun: checkout changed before it could be snapshotted")
     parent = identity["head"]
+    require_materialized_checkout(root)
     require_complete_history(root)
     resolved_refs = resolve_snapshot_refs(root, snapshot_refs)
 
@@ -901,7 +964,15 @@ def _build_git_checkout_snapshot(
             root, ["read-tree", "HEAD"], environment=object_environment
         )
         _seed_index_roster(root, object_environment)
-        _snapshot_git(root, ["add", "-A"], environment=object_environment)
+        # Same exclude pin as the roster, and for the same reason: ``add -A``
+        # applies the ignore rules to an untracked path, so without it the
+        # roster the identity hashes and the tree the bundle carries disagree
+        # on exactly the paths a submitter's global excludes match.
+        _snapshot_git(
+            root,
+            [*PERSONAL_EXCLUDES_PIN, "add", "-A"],
+            environment=object_environment,
+        )
         if stamp_relative is not None:
             _snapshot_git(
                 root,
@@ -3369,6 +3440,21 @@ def main() -> int:
     # those submits *because the commit is in the name*, so atomicity is the
     # whole fix and ordering does not matter.  It was not identical before
     # that: the name held the command and the content held the commit.
+    #
+    # The stamp stays in the checkout after the bundle is built, and issue #57
+    # asks why.  Because that same concurrency is what an unlink would break.
+    # This submission still reads the stamp after the seal -- the closure below
+    # hashes it -- and so does every other submitter of this fingerprint that
+    # is mid-seal, all the way through ``resolve(strict=True)``, ``add -f`` and
+    # its own closure.  Measured: removing the file turns those into "cannot
+    # open code closure file as a regular file" and a bare FileNotFoundError.
+    # There is no unlink-if-nobody-else-needs-it: every correct version is a
+    # lock or a refcount over this path, and the submit side holds neither --
+    # the only lock in this system is the worker's output flock, on the far
+    # side of the queue from here.  Moving the stamp
+    # into a ``.pbrun/`` directory instead would move ``stamp_relative``, which
+    # is a closure entry path and a path in the sealed tree, so it is a key
+    # change and Rob's to make.
     payload = json.dumps(
         {"cwd": logical_cwd, **identity}, indent=1, sort_keys=True
     )
