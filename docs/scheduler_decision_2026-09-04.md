@@ -135,13 +135,16 @@ convention, `--withdraw` routed by the lane's own record, campaign fan-out
 moving (reported, never cancelled), the command's own exit status on the
 terminal record (`detail.action_returncode`), `pool_reset` re-submitting a
 sealed action through the lane, an attached `pbrun` joining a job already
-running for its key, the operator guide (`docs/operating_prismabuild.md`),
+running for its key, one job per action key at a time
+(`--dependency=singleton` under the job name `pb-<key12>`, with the held job
+reading the receipt on the node before it materializes anything and filing
+`cache_hit`), the operator guide (`docs/operating_prismabuild.md`),
 the measured resource-enforcement record
 (`docs/resource_enforcement_2026-09-05.md`), a test-suite guard against the
 fleet's live store (`tests/conftest.py`), and the four operator scripts under
 `fleet/slurm/`, with `pbrun` reading the CAS before `sbatch` on the attached
 path as it always did detached. The lane has run against a real 25.11.2
-controller in a container on sparky (`fleet/slurm/smoke/`, 21 rows) and
+controller in a container on sparky (`fleet/slurm/smoke/`, 23 rows) and
 across three container nodes built from the fleet's own configuration
 (`fleet/slurm/smoke/multinode/`, 12 rows on both SLURM versions, including
 the runbook's `verify.sh`). Merging any of this to
@@ -236,12 +239,13 @@ run, branch refs never rewritten). `main` = `44b9f8f`.
 - SLURM has not run on this fleet's boxes. It has run in a privileged
   container on sparky (`fleet/slurm/smoke/`, 2026-09-04 and 2026-09-05): one
   `slurmctld` and one `slurmd` from the Sparks' own 25.11.2 debs, the fleet's
-  scheduler choices, the real Epilog, and 21 rows through `pbrun --transport
+  scheduler choices, the real Epilog, and 23 rows through `pbrun --transport
   slurm` (execute, CAS hit, failure with the command's own exit status,
   `--timeout-s` as `--time`, withdraw, shard admission, unknown Feature
   refused, Epilog cleanup, `scontrol` provenance, a campaign and its free
-  re-run, host-class attestation, a stalled job reported and completed, and
-  cores and memory enforced to the declaration).
+  re-run, host-class attestation, a stalled job reported and completed, cores
+  and memory enforced to the declaration, and a second job of one action key
+  held on `Dependency` and then answered by the CAS).
   The three-node harness (`fleet/slurm/smoke/multinode/`) adds a controller
   and three `slurmd`s from the fleet's own `slurm.conf`: placement per
   partition, tag and weight, `--anywhere` overflow, a submission on one box

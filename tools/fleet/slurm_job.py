@@ -241,6 +241,44 @@ def main(argv: list[str] | None = None) -> int:
     state_root = slurm_lane.job_state_directory(args.job_state_root or None)
     state_path = state_root / f"{job_id}.job" if job_id else None
 
+    # Ask the CAS before materializing anything, and before writing the
+    # Epilog's state file: nothing has been created yet, so there is nothing
+    # for the Epilog to clean up on this path.
+    #
+    # ``run-local`` asks the same question, but only once the snapshot is
+    # checked out -- which for a large snapshot is minutes of git and disk to
+    # learn what one lookup on the shared mount already knows.  It costs a job
+    # id either way, and that is the point of the singleton dependency the
+    # submitter sends: the second caller of one action key waits for the first,
+    # then arrives here, reads the receipt the first published, and ends
+    # without running or materializing anything.
+    cas = core.PrismaBuildCAS(cas_root)
+    try:
+        receipt = cas.lookup(action)
+    except core.PrismaBuildError as exc:
+        # A request this launcher cannot validate, or a receipt it cannot
+        # verify, is not its verdict to give.  Say so and take the ordinary
+        # path, where the worker asks the same question with the checkout in
+        # place and answers it the way it always did.
+        print(f"slurm_job: the CAS could not be asked about {key[:12]} "
+              f"({exc}); materializing and letting the worker decide",
+              file=sys.stderr, flush=True)
+        receipt = None
+    if receipt is not None:
+        if args.lane_dir and job_id:
+            # What the submitter reads to file ``cache_hit`` rather than
+            # ``executed``.  From outside, the two look alike: a receipt
+            # exists either way.
+            slurm_lane.write_cache_hit(
+                slurm_lane.cache_hit_path(args.lane_dir, job_id),
+                action_key=key,
+                job_id=job_id,
+                result_digest=receipt.get("result_digest"),
+            )
+        print(f"slurm_job: {key[:12]} is already in the CAS; nothing to run",
+              flush=True)
+        return 0
+
     # Written before materialization as well as after it: a job killed while
     # git is still fetching has containers only if the action started one (it
     # has not), but it may already own a partial tree, and the Epilog can only

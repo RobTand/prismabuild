@@ -2112,6 +2112,14 @@ def slurm_outcome(
         _echo(attempted.stderr_path, sys.stderr)
 
     if result.receipt is not None:
+        if slurm_lane.job_was_cache_hit(job):
+            # The job started, read the receipt somebody else published, and
+            # ran nothing.  Saying "executed" here would attribute that
+            # somebody else's work to this job, with this job's elapsed time.
+            print(f"pbrun: cache_hit -- slurm job {job.job_id} found "
+                  f"{key[:12]} already in the CAS and ran nothing",
+                  file=sys.stderr)
+            return 0
         print(f"pbrun: executed via slurm job {job.job_id} ({outcome.state})",
               file=sys.stderr)
         return 0

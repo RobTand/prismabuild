@@ -97,11 +97,38 @@ nothing to the action's identity:
 
 ### What every submission sends
 
-Every job is submitted with `--no-requeue` and `--export=NIL`. Only SLURM's own
-variables reach the job; the action's environment is the sealed one the worker
-builds. `--chdir`, `--output` and `--error` point at the action's own lane
-directory. Retries are new submissions with new job ids, never `--requeue`. The
-[install runbook](slurm_runbook_2026-09-04.md) shows a full `sbatch` line.
+Every job is submitted with `--no-requeue`, `--export=NIL` and
+`--dependency=singleton`, under the job name `pb-<first 12 characters of the
+key>`. Only SLURM's own variables reach the job; the action's environment is
+the sealed one the worker builds. `--chdir`, `--output` and `--error` point at
+the action's own lane directory. Retries are new submissions with new job ids,
+never `--requeue`. The [install runbook](slurm_runbook_2026-09-04.md) shows a
+full `sbatch` line.
+
+### One job per action key at a time
+
+SLURM scopes `--dependency=singleton` by job name and user, and the job name is
+the action key. So the controller runs one job of a key at a time and holds the
+rest.
+
+That is what closes a window the submitter cannot. `pbrun` asks the CAS before
+it submits, and it attaches to a submission that is still running rather than
+starting a second copy. Two `pbrun`s that look at the same instant both see
+nothing and both submit. The scheduler orders them.
+
+A held job is `PENDING` with reason `Dependency`. Nothing is stuck, nothing is
+refused, and nothing is cancelled.
+
+*   `pbstatus` prints the reason and names the job ahead: `waiting for job 1001
+    of the same action`.
+*   `pbrun` and `pbwait` say the same thing on stderr while they wait, and
+    repeat it at most every five minutes.
+*   When the job ahead leaves, the held job starts, finds the receipt it
+    published, and exits without materializing a checkout. Its ending is
+    `cache_hit`.
+
+A held job costs a job id and a node slot for as long as it takes to read one
+receipt. It does not cost a checkout or a second execution.
 
 ### Demand is enforced under SLURM
 
@@ -479,7 +506,7 @@ an impossible GRES, is reported for that record, the record stays `failed`, and
 | Status | Meaning |
 |---|---|
 | `executed` | The work ran and published a receipt. Filed under `done/`. |
-| `cache_hit` | The receipt was already there. Counts as done. On the lane, `pbrun` finds it before submitting and submits nothing; `done/` keeps the record of the run that did the work, and a `cache_hit` record is filed only when the key had none. A receipt that lands between that check and the job's start is found by the node instead, and the job files `executed`. |
+| `cache_hit` | The receipt was already there. Counts as done. On the lane, `pbrun` finds it before submitting and submits nothing. A job that starts and finds it -- the second job of a key, held behind the first -- reports it too, before materializing anything. Either way `done/` keeps the record of the run that did the work: a `cache_hit` record is filed only when the key has none. |
 | `failed` | No receipt. Something refused, or the command exited non-zero. Filed under `failed/`. |
 | `timeout` | SLURM killed the job at a `--timeout-s` you asked for. `returncode` is null. Retriable. |
 | `withdrawn` | Somebody cancelled the run. Not a defect, and not retried. |

@@ -41,6 +41,8 @@ patched. The host's real `/mnt/shared` is never touched.
 | 14a, 14b | with `ConstrainCores=yes`, a `--cpus N` job is confined to N CPUs of a node that has more; with `ConstrainCores=no` it is placed against the count and then sees the whole node |
 | 14c | a job that writes past its declared `mem_gb` runs against a `memory.max` equal to the declaration: it is throttled into swap under `ConstrainSwapSpace=no` and killed `OUT_OF_MEMORY` under `ConstrainSwapSpace=yes`, which `pbrun` reports |
 | 14d | a job that stays under its declared `mem_gb` completes |
+| 15a | a second job of one action key, submitted while the first runs, is held `PENDING` with reason `Dependency` by `--dependency=singleton`; when the first leaves it starts, reads the receipt on the node, writes its cache-hit marker and exits 0, and the action ran exactly once |
+| 15b | two `pbrun --transport slurm` invocations of one key started together both exit 0, the action runs exactly once, and `done/` holds one `executed` record; which of the three paths the second took -- read the CAS, attached, or held by the scheduler -- is recorded rather than asserted, because it is a race |
 
 ## What it does not establish
 
@@ -191,9 +193,12 @@ Three things differ from the one-node harness beyond the node count:
 Two facts the rows record rather than assert, because they are how the lane
 works and not defects:
 
-- **A repeat still costs a job id.** There is no pre-submit CAS short circuit;
-  the lookup happens in the worker on the node that won the allocation, so the
-  second submission is a real job that finds a receipt and publishes nothing.
+- **A held repeat costs a job id, never a checkout.** `pbrun` reads the CAS
+  before `sbatch`, which is what M8 measures, so a repeat it can see costs
+  nothing at all. A repeat it cannot see -- two submitters at the same instant
+  -- is held by `--dependency=singleton` until the first job leaves, and then
+  reads the receipt on the node before materializing anything. Single-node rows
+  15a and 15b measure that half.
 - **`TERM` and `KILL` are different controllers.** M7 restarts slurmctld the
   way `systemctl restart` does, with `TERM`, and the job survives because the
   state save on shutdown carries it. A slurmctld killed with `-9` loses a job

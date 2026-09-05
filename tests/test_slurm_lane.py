@@ -69,6 +69,8 @@ with (state / "submissions.jsonl").open("a") as handle:
 
 script = argv[-1]
 directory = [a.split("=", 1)[1] for a in argv if a.startswith("--chdir=")][0]
+name = ([a.split("=", 1)[1] for a in argv if a.startswith("--job-name=")] + [""])[0]
+(state / f"{number}.name").write_text(name)
 verdict = os.environ.get("FAKE_SBATCH_VERDICT", "run")
 if verdict == "run":
     out = Path(directory) / f"{number}.out"
@@ -192,16 +194,56 @@ if _silence:
         )
         raise SystemExit(1)
 
-job = sys.argv[sys.argv.index("-j") + 1]
+argv = sys.argv[1:]
+job = name = None
+fmt = "%T"
+for index, arg in enumerate(argv):
+    if arg == "-j" and index + 1 < len(argv):
+        job = argv[index + 1]
+    elif arg == "-o" and index + 1 < len(argv):
+        fmt = argv[index + 1]
+    elif arg.startswith("--name="):
+        name = arg.split("=", 1)[1]
+    elif arg == "--name" and index + 1 < len(argv):
+        name = argv[index + 1]
 if os.environ.get("FAKE_CONTROLLER_DOWN") == "1":
     sys.stderr.write("squeue: error: slurm_load_jobs: Unable to contact slurm controller (connect failure)\\n")
     raise SystemExit(1)
-record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
-if not record.exists():
+root = Path(os.environ["FAKE_SLURM_STATE"])
+
+
+def _state(job_id):
+    record = root / f"{job_id}.state"
+    if not record.exists():
+        return None
+    return record.read_text().strip().split("|")[0]
+
+
+def _render(job_id, job_state):
+    reason = "None"
+    if job_state == "PENDING":
+        reason = os.environ.get("FAKE_SQUEUE_REASON", "Resources")
+    line = fmt.replace("%i", str(job_id)).replace("%T", job_state)
+    return line.replace("%r", reason)
+
+
+# squeue lists only what the controller still holds, which is what makes it
+# the wrong tool for a finished job and the right one for a queued one.
+_LIVE = {"PENDING", "RUNNING"}
+if name is not None:
+    for path in sorted(root.glob("*.name")):
+        if path.read_text().strip() != name:
+            continue
+        job_state = _state(path.stem)
+        if job_state is None or job_state not in _LIVE:
+            continue
+        print(_render(path.stem, job_state))
     raise SystemExit(0)
-state, _ = record.read_text().strip().split("|")
-if state in {"PENDING", "RUNNING"}:
-    print(state)
+job_state = _state(job)
+if job_state is None:
+    raise SystemExit(0)
+if job_state in _LIVE:
+    print(_render(job, job_state))
 '''
 
 _SSTAT = '''\
@@ -458,6 +500,7 @@ def test_a_gpu_slot_action_asks_for_shards_its_tags_and_its_own_time(
         "--no-requeue",
         "--export=NIL",
         f"--job-name=pb-{key[:12]}",
+        "--dependency=singleton",
         f"--chdir={directory}",
         f"--output={directory}/%j.out",
         f"--error={directory}/%j.err",

@@ -421,3 +421,47 @@ def test_the_table_names_the_actions_status_beside_the_runs() -> None:
 
     assert pbwait._cell(pbwait._row("a" * 64, "failed", returncode=1),
                         "returncode") == "1"
+
+
+def test_a_wait_says_what_the_scheduler_says_while_it_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """``resume`` reports through ``on_notice``, and this is what prints it.
+
+    Two things reach a waiter that way and neither is an ending: a controller
+    that cannot be asked, and a job the scheduler is holding behind another
+    job of the same action key.  ``pbrun`` prints both.  ``pbwait`` passed no
+    ``on_notice`` at all, so a detached wait printed nothing for however long
+    it waited, whatever the scheduler said.
+    """
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    key = "cd" * 32
+    directory = slurm_lane.lane_directory(key, root=tmp_path / "lane")
+    directory.mkdir(parents=True)
+    (directory / "latest.json").write_text(json.dumps({
+        "schema": slurm_lane.SUBMISSION_SCHEMA_V1,
+        "action_key": key, "attempt": 1, "job_id": "1007",
+        "directory": str(directory), "published_unix": 5.0,
+    }), encoding="utf-8")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    request = Path(cas.root) / "requests" / key[:2] / f"{key}.json"
+    request.parent.mkdir(parents=True)
+    request.write_text(json.dumps({"action_key": key}), encoding="utf-8")
+
+    def resume(submission, **kwargs):
+        kwargs["on_notice"](
+            "slurm job 1007: waiting for slurm job 1006 to finish the same "
+            f"action {key[:12]}")
+        return slurm_lane.RunResult(action_key=key)
+
+    monkeypatch.setattr(pbwait.slurm_lane, "resume", resume)
+    monkeypatch.setattr(cas, "lookup", lambda action: None)
+    rows = pbwait.wait_for_keys(
+        queue, [key], cas=cas, wait_s=0.0, lane_root=tmp_path / "lane",
+        queue_root=queue.root,
+    )
+
+    assert rows[0]["status"] == "waiting"
+    assert "waiting for slurm job 1006" in capsys.readouterr().err

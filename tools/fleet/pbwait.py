@@ -199,6 +199,13 @@ def wait_one(
     item before this looks, leaving nothing outstanding to read it from.
     """
 
+    # Said on stderr, beside the table this returns a row for: a wait that
+    # prints nothing for an hour gives an operator no way to tell a job the
+    # scheduler is holding on purpose from one that is stuck.  ``resume``
+    # reports both through this.
+    lane_commands.setdefault(
+        "on_notice",
+        lambda text: print(f"pbwait: {text}", file=sys.stderr, flush=True))
     found = outstanding(q, key, lane_root=lane_root)
     if generation is None and found is not None:
         generation = found[1]

@@ -315,6 +315,44 @@ def test_a_pending_job_shows_the_reason_it_is_waiting(fleet, capsys):
     assert "Resources" in out and "BadConstraints" in out
 
 
+def test_a_job_held_behind_its_own_key_names_the_job_ahead(fleet, capsys):
+    """``Dependency`` is the singleton the lane submits with, not a fault.
+
+    Every submission carries ``--dependency=singleton`` under the job name
+    ``pb-<key12>``, so this job is queued behind another job of the same
+    action key.  The job it waits for is in the same listing, so naming it
+    costs no second call to the controller -- and an operator reading
+    ``Dependency`` alone has no way to tell that from a dependency somebody
+    set by hand and forgot.
+    """
+
+    _queue_rows(fleet)
+    os.environ["FAKE_SQUEUE_ROWS"] += (
+        f";1005|PENDING|gpu||0:00|02:00:00|rob|pb-{KEY_RUNNING[:12]}|Dependency"
+    )
+    jobs = {row["job_id"]: row for row in _run_json(fleet, capsys)["jobs"]}
+    assert jobs["1005"]["reason"] == "Dependency"
+    assert "waiting for job 1001 of the same action" in jobs["1005"]["note"]
+    assert "waiting for job 1001 of the same action" in _run(fleet, capsys)
+    # A job pending on anything else is left to say what it says.
+    assert jobs["1002"]["note"] is None
+
+
+def test_a_held_job_says_so_even_when_the_job_ahead_has_left(fleet, capsys):
+    """The listing is one instant.  The job ahead can finish inside it, and
+    the held job is still held -- so the note says what is true without the
+    id, rather than saying nothing."""
+
+    _record_submission(
+        fleet, KEY_PENDING, job_id="1006",
+        resources={"cpu": 2, "mem_gb": 4}, constraint=[], host="sparky")
+    os.environ["FAKE_SQUEUE_ROWS"] = (
+        f"1006|PENDING|cpu||0:00|UNLIMITED|rob|pb-{KEY_PENDING[:12]}|Dependency"
+    )
+    jobs = {row["job_id"]: row for row in _run_json(fleet, capsys)["jobs"]}
+    assert jobs["1006"]["note"] == "waiting for another job of the same action"
+
+
 def test_an_unlimited_time_limit_is_reported_as_unlimited(fleet, capsys):
     _queue_rows(fleet)
     jobs = {row["job_id"]: row for row in _run_json(fleet, capsys)["jobs"]}

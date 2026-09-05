@@ -1135,6 +1135,168 @@ def row_14d_within_declared_memory() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# One job per action key at a time (issue #43)
+# ---------------------------------------------------------------------------
+
+def _job_field(job_id: str, fields: str) -> str:
+    """One ``squeue`` line for a job, or an empty string if it is gone."""
+
+    completed = sh(["squeue", "-h", "-j", str(job_id), "-o", fields])
+    return (completed.stdout or "").strip().splitlines()[0].strip() \
+        if (completed.stdout or "").strip() else ""
+
+
+def _detached(completed: subprocess.CompletedProcess) -> dict:
+    """The one JSON line ``pbrun --detach`` prints, or an empty mapping."""
+
+    for line in (completed.stdout or "").splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except ValueError:
+                return {}
+    return {}
+
+
+def row_15a_singleton_holds_the_second_job(nonce: Path) -> None:
+    """A second job of one action key waits for the first, then reads its work.
+
+    The second submission is the lane's *own recorded argv*, replayed through
+    ``sbatch`` while the first job runs.  A second ``pbrun`` would not submit
+    at all -- it reads the CAS and attaches to the live submission, which is
+    the submitter-side half of this and is row 15b -- so replaying the record
+    is what puts a second job in front of the controller deterministically.
+    What it proves is the scheduler's half: with ``--dependency=singleton``
+    under the job name ``pb-<key12>``, the second job is held while the first
+    runs, and when it starts it finds the receipt and materializes nothing.
+    """
+
+    started = pbrun(["bash", "action.sh", "sleep", str(nonce), "45"],
+                    extra=["--detach"])
+    announced = _detached(started)
+    first_job = str(announced.get("job_id") or "")
+    key = str(announced.get("action_key") or "")
+    prefix = key[:12]
+    if not first_job or not key:
+        record("15a a second job of one key waits for the first", False,
+               f"nothing detached: rc={started.returncode} "
+               f"stderr={(started.stderr or '')[-400:]!r}")
+        return
+
+    running = wait_for(
+        lambda: _job_field(first_job, "%T") == "RUNNING", timeout_s=180.0)
+    recorded = lane_latest(prefix)
+    argv = [str(value) for value in (recorded.get("argv") or [])]
+    replay = sh(["sbatch", *argv[1:]]) if len(argv) > 1 else None
+    second_job = (replay.stdout or "").strip().split(";")[0] if replay else ""
+
+    held = ""
+    if second_job:
+        wait_for(lambda: _job_field(second_job, "%T|%r").startswith("PENDING"),
+                 timeout_s=60.0)
+        held = _job_field(second_job, "%T|%r")
+
+    # Both jobs gone from the queue: the first finished its sleep, the second
+    # was released by the dependency and ran.
+    wait_for(lambda: not _job_field(first_job, "%T")
+             and not _job_field(second_job, "%T"), timeout_s=240.0)
+    lane = LANE / key if key else LANE
+    second_out = lane / f"{second_job}.out"
+    said = second_out.read_text() if second_out.exists() else ""
+    ran = nonce.read_text().count("\n") if nonce.exists() else 0
+    marker = lane / f"{second_job}.cache-hit.json"
+    ending = _job_field(second_job, "%T")
+    state = sh(["scontrol", "show", "job", str(second_job)]).stdout or ""
+
+    checks = {
+        "the first job ran": running,
+        "sbatch accepted the replay": bool(second_job),
+        "the second job was held on Dependency": held == "PENDING|Dependency",
+        "the action ran exactly once": ran == 1,
+        "the second job read the CAS instead": "already in the CAS" in said,
+        "the second job filed a cache-hit marker": marker.exists(),
+        "the second job exited 0": "ExitCode=0:0" in state or not ending,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    record(
+        "15a a second job of one key is held on Dependency and then hits the CAS",
+        not failed,
+        f"job {first_job} RUNNING, job {second_job} squeue %T|%r={held!r}; "
+        f"nonce lines={ran}; job {second_job} said "
+        f"{said.strip().splitlines()[-1][:80]!r}"
+        + ("" if not failed else f"; MISSING {failed}"),
+    )
+
+    # Leave the key with the ending every reader of pb-queue expects: the
+    # submitter detached, so nobody has filed one yet.
+    sh([sys.executable, str(REPO / "tools" / "fleet" / "pbwait.py"),
+        "--wait-s", "120", key], timeout=200)
+
+
+def row_15b_two_pbruns_of_one_key(nonce: Path) -> None:
+    """Two ``pbrun``s of one key started together: one execution, both exit 0.
+
+    Which of the three paths the second takes is a race and is reported rather
+    than asserted: it reads the receipt before submitting, it attaches to the
+    first submission, or it submits and the controller holds it.  All three are
+    correct and the invariants below hold for all three.  Asserting one of them
+    would be asserting a scheduling coincidence.
+    """
+
+    command = ["bash", "action.sh", "run", str(nonce)]
+    argv = [
+        sys.executable, str(PBRUN), "--transport", "slurm",
+        "--cwd", str(SRC), "--wait-s", str(WAIT_S), "--", *command,
+    ]
+    both = [
+        subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         text=True, env=dict(os.environ))
+        for _ in range(2)
+    ]
+    said = [process.communicate(timeout=900.0) for process in both]
+    codes = [process.returncode for process in both]
+    prefix = ""
+    for _, err in said:
+        match = (_submitted_re.search(err or "")
+                 or re.search(r"pbrun: ([0-9a-f]{12}) is already in the CAS",
+                              err or ""))
+        if match:
+            prefix = match.group(1)
+            break
+    ran = nonce.read_text().count("\n") if nonce.exists() else 0
+    path, rec = outcome("done", prefix) if prefix else (None, {})
+    detail = rec.get("detail", {}) if isinstance(rec, dict) else {}
+    endings = len(list((QUEUE / "done").glob(f"{prefix}*.json"))) if prefix else 0
+    took = []
+    for out, err in said:
+        printed = (out or "") + (err or "")
+        if "cache_hit --" in printed:
+            took.append("held by the scheduler, then read the CAS on the node")
+        elif "already in the CAS; nothing submitted" in printed:
+            took.append("read the CAS before submitting")
+        elif "attaching to it" in printed:
+            took.append("attached to the other submission")
+        else:
+            took.append("submitted and ran the work")
+    checks = {
+        "both exited 0": codes == [0, 0],
+        "the action ran exactly once": ran == 1,
+        "one done record": endings == 1 and path is not None,
+        "the record is an execution": rec.get("status") == "executed",
+        "receipt_published": detail.get("receipt_published") is True,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    record(
+        "15b two concurrent pbruns of one key execute it once",
+        not failed,
+        f"rc={codes}; nonce lines={ran}; done records={endings}; "
+        f"paths taken={took}"
+        + ("" if not failed else f"; MISSING {failed}"),
+    )
+
+
 def main() -> int:
     for argv in (
         ["git", "config", "--global", "user.name", "PrismaBuild smoke"],
@@ -1173,6 +1335,8 @@ def main() -> int:
     row_14_cpu_containment()
     row_14c_over_declared_memory()
     row_14d_within_declared_memory()
+    row_15a_singleton_holds_the_second_job(VOL / "nonce-singleton.txt")
+    row_15b_two_pbruns_of_one_key(VOL / "nonce-concurrent.txt")
     del prefix, timeout_prefix
 
     width = max(len(name) for name, _, _ in results)
