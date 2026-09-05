@@ -60,6 +60,20 @@ def rewrite_slurm_conf(text: str, *, cpus: int) -> str:
     for line in logical_lines(text):
         bare = line.strip()
 
+        if bare.startswith("SlurmctldHost="):
+            # The fleet pins the controller and every node to a LAN address
+            # because the boxes do not resolve each other's names.  Inside a
+            # docker network the opposite holds: the names resolve, by the
+            # container aliases, and 192.168.1.x is a different fleet
+            # altogether -- the real one, which is not running SLURM.  A
+            # controller configured with those addresses binds and dials into
+            # nothing and answers no RPC at all.
+            note("SlurmctldHost", "dl380g10(192.168.1.107)", "dl380g10",
+                 "docker's own DNS resolves the node names; the fleet's LAN "
+                 "addresses are not on this network")
+            out.append(re.sub(r"\([^)]*\)", "", line))
+            continue
+
         if bare.startswith("SlurmUser="):
             note("SlurmUser", "slurm", "root",
                  "no slurm user in the image, and creating one would test useradd")
@@ -71,6 +85,15 @@ def rewrite_slurm_conf(text: str, *, cpus: int) -> str:
                  "the node-failure row would otherwise spend it waiting")
             out.append("KillWait=10")
             continue
+
+        if bare.startswith("NodeName=") and "NodeAddr=" in bare:
+            if not any(name == "NodeAddr" for name, _, _, _ in DEVIATIONS):
+                note("NodeAddr", "each box's LAN address", "absent",
+                     "the containers resolve each other's node names; "
+                     "whether NodeAddr is the right remedy on the fleet is "
+                     "not a question this can answer")
+            line = re.sub(r"\s*NodeAddr=\S+", "", line)
+            bare = line.strip()
 
         if bare.startswith("NodeName=dl380g10"):
             # The controller container runs on a GB10 like the other two, so
@@ -181,9 +204,10 @@ def main(argv: list[str]) -> int:
     for name, fleet, here, why in DEVIATIONS:
         print(f"  {name.ljust(width)}  {fleet}  ->  {here}")
         print(f"  {' ' * width}  because {why}")
-    print("  RealMemory, CPUs on the two Sparks, Gres, Features, all three")
-    print("  PartitionName lines, SlurmctldHost, ReturnToService=2, MinJobAge,")
-    print("  the scheduler and cgroup plugin choices and the Epilog: unchanged.")
+    print("  RealMemory, CPUs on the two Sparks, Gres, Features, Weight, all")
+    print("  three PartitionName lines, the controller's node name,")
+    print("  ReturnToService=2, MinJobAge, the scheduler and cgroup plugin")
+    print("  choices and the Epilog: unchanged.")
     return 0
 
 

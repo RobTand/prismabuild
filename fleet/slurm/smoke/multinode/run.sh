@@ -51,6 +51,9 @@ net="pb-smoke3-net-$stamp"
 image="prismabuild-slurm-smoke3:$stamp"
 NODES=(dl380g10 sparky gx10-6b77)
 declare -A ROLE=([dl380g10]=ctld [sparky]=node [gx10-6b77]=node)
+# The fleet's friendly name for gx10-6b77, which is what verify.sh's ssh row
+# dials and what `fleet_boxes.json` calls it.
+declare -A ALIAS=([dl380g10]="" [sparky]="" [gx10-6b77]=sparklina)
 
 mkdir -p "$vol" "$ctx" || exit 2
 echo "smoke3: disk at $(df --output=pcent "$RUN_ROOT" | tail -n 1 | tr -d ' ') used on $(dirname "$RUN_ROOT")"
@@ -91,6 +94,10 @@ fi
 cp "$HERE/Dockerfile" "$ctx/" || exit 2
 dd if=/dev/urandom of="$ctx/munge.key" bs=1024 count=1 status=none || exit 2
 chmod 0400 "$ctx/munge.key"
+# An ssh route between the three boxes, because verify.sh row 0b reads the
+# other boxes' /etc/slurm/slurm.conf over ssh and a stub would test the stub.
+rm -f "$ctx/id_smoke" "$ctx/id_smoke.pub"
+ssh-keygen -q -t ed25519 -N "" -C "pb-smoke3-$stamp" -f "$ctx/id_smoke" || exit 2
 echo "smoke3: building $image from $BASE_IMAGE"
 docker build -q --build-arg "BASE_IMAGE=$BASE_IMAGE" -t "$image" "$ctx" \
     >"$run/build.log" 2>&1 || {
@@ -98,7 +105,7 @@ docker build -q --build-arg "BASE_IMAGE=$BASE_IMAGE" -t "$image" "$ctx" \
     tail -n 40 "$run/build.log" >&2
     exit 2
 }
-rm -f "$ctx/munge.key"
+rm -f "$ctx/munge.key" "$ctx/id_smoke" "$ctx/id_smoke.pub"
 
 # -- the configuration, generated once from the fleet's files ----------------
 python3 "$HERE/genconf.py" "$REPO/fleet/slurm" "$vol/etc" "$(nproc)" \
@@ -106,12 +113,27 @@ python3 "$HERE/genconf.py" "$REPO/fleet/slurm" "$vol/etc" "$(nproc)" \
 echo
 
 # -- the network and the three containers ------------------------------------
+# A git worktree's `.git` is a file naming a directory outside the tree, so a
+# checkout mounted alone is not a checkout inside the container -- and
+# `verify.sh` row 7 submits a real `pbrun` from it, which refuses a `--cwd`
+# that is not a Git checkout.  Mounting the common git directory at its own
+# path makes /repo a checkout again.  Read-only, like /repo; nothing here may
+# write to the tree it is testing.  A normal clone needs none of this and the
+# variable stays empty.
+GITDIR="$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null || true)"
+case "$GITDIR" in
+    "" | "$REPO"/*) GITDIR="" ;;
+    *) echo "smoke3: mounting $GITDIR read-only so /repo is a git checkout" ;;
+esac
+
 docker network create "$net" >/dev/null || exit 2
 for node in "${NODES[@]}"; do
     docker run -d --name "pb-smoke3-$node-$stamp" \
         --privileged --cgroupns=private \
         --network "$net" --network-alias "$node" --hostname "$node" \
+        ${ALIAS[$node]:+--network-alias "${ALIAS[$node]}"} \
         -v "$REPO":/repo:ro \
+        ${GITDIR:+-v "$GITDIR":"$GITDIR":ro} \
         -v "$vol":/mnt/shared \
         -e PB_SMOKE_REPO=/repo \
         -e PB_SMOKE_VOL=/mnt/shared \
@@ -123,10 +145,15 @@ done
 # -- wait for all three to register -------------------------------------------
 ctld="pb-smoke3-dl380g10-$stamp"
 ready=0
-for _ in $(seq 1 120); do
+# A wall-clock deadline and a bound on each probe, not a loop count.  `sinfo`
+# against a controller that is up but not answering blocks for SlurmctldTimeout
+# -- two minutes by default -- so a hundred-and-twenty-iteration loop was four
+# hours of silence when the config was wrong.
+deadline=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$deadline" ]; do
     # -p all, because `sinfo -N` prints one line per node PER PARTITION and
     # every node here is in two of them.
-    idle="$(docker exec "$ctld" sinfo -h -N -p all -o '%T' 2>/dev/null | grep -c '^idle$')"
+    idle="$(timeout 15 docker exec "$ctld" sinfo -h -N -p all -o '%T' 2>/dev/null | grep -c '^idle$')"
     marks=0
     for node in "${NODES[@]}"; do
         [ -f "$vol/logs/$node/ready" ] && marks=$((marks + 1))
@@ -136,7 +163,9 @@ for _ in $(seq 1 120); do
 done
 if [ "$ready" != 1 ]; then
     echo "smoke3: the three nodes did not all come up (idle=${idle:-0}/3, boot.sh finished on ${marks:-0}/3)" >&2
-    docker exec "$ctld" sinfo -N -l 2>&1 | sed 's/^/smoke3: /' >&2
+    timeout 30 docker exec "$ctld" sinfo -N -l 2>&1 | sed 's/^/smoke3: /' >&2
+    timeout 30 docker exec "$ctld" scontrol ping 2>&1 | sed 's/^/smoke3: /' >&2
+    tail -n 10 "$vol/logs/dl380g10/slurmctld.log" 2>&1 | sed 's/^/smoke3: ctld /' >&2
     for node in "${NODES[@]}"; do
         echo "smoke3: --- $node boot log ---" >&2
         docker logs "pb-smoke3-$node-$stamp" 2>&1 | tail -n 20 >&2

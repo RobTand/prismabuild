@@ -305,6 +305,11 @@ VERIFY_EXPECTED_FAILURES = {
     "4": "genconf.py sets ConstrainDevices=no, there being no real device to "
          "constrain, so the job opens the mknod'd /dev/nvidia0 and the row "
          "correctly says so; this is the row that needs a box with a driver",
+    "7": "the repository is mounted read-only, because a smoke must not be "
+         "able to change the tree it is testing, and pbrun writes its "
+         "closure stamp inside the checkout.  The claim itself -- pbrun "
+         "through the lane, end to end -- is what M2 to M11 do eleven times "
+         "from a writable checkout on the volume",
 }
 
 _VERIFY_ROW = re.compile(r"^\[(PASS|FAIL)\]\s+(\S+)\s")
@@ -722,7 +727,9 @@ def row_m7_controller_restart(nonce: str) -> None:
         "the controller was really down": down,
         "the controller came back": back,
         "pbrun said it was waiting rather than reporting an ending":
-            "the controller is not answering" in said,
+            "still waiting, the job is not affected" in said,
+        "and said when the scheduler answered again":
+            "answers again after" in said,
         "pbrun rc==0": process.returncode == 0,
         "done record": path is not None,
         "receipt_published": detail.get("receipt_published") is True,

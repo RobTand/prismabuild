@@ -167,16 +167,18 @@ These still need the real install, and no container stands in for them:
    the munge key round-trips and is shredded, and a second run skips every
    completed step -- and step 8 is where a container stops, having no systemd.
    `cutover.sh` and `rollback.sh` have been exercised only in `--dry-run` and
-   through their refusal paths against a sandbox queue. `verify.sh` is no
-   longer on this list: see the row table in
-   `fleet/slurm/smoke/README.md` for what it does in the three-node harness and
-   which of its rows a container cannot answer.
+   through their refusal paths against a sandbox queue. `verify.sh` has now
+   run: ten of its fifteen rows pass in the three-node smoke and the other
+   five need a real box, and running it there found two defects, both fixed.
+   See the row table in `fleet/slurm/smoke/README.md`.
 7. **That the addresses in `slurm.conf` are enough.** The resolution failure in
    both directions is measured and the addresses are measured, but no SLURM
    daemon has yet dialled one of them. `NodeAddr` is the documented remedy for
-   exactly this; it has not been shown working on this fleet. What the
-   three-node harness shows instead is that the daemons find each other by
-   name when the name resolves, which is the case `NodeAddr` exists to rescue.
+   exactly this; it has not been shown working on this fleet. The three-node
+   harness cannot help: `genconf.py` strips `SlurmctldHost`'s address and every
+   `NodeAddr`, because inside a docker network the node names resolve and
+   192.168.1.x is a different fleet entirely. What it shows is the daemons
+   finding each other by name, which is the case `NodeAddr` exists to rescue.
 
 ## What this replaces, and what it does not
 

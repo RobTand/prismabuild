@@ -150,6 +150,7 @@ Three things differ from the one-node harness beyond the node count:
 
 | Row | Claim |
 |-----|-------|
+| M0 | `fleet/slurm/verify.sh`, the runbook's post-install check, runs -- and every row of it passes except the five a container cannot answer |
 | M1 | `sinfo -N` shows all three nodes idle with exactly the Gres and Features `fleet/slurm/slurm.conf` declares |
 | M2 | an untagged CPU-only `pbrun` lands on `dl380g10` with `--partition=cpu`, no constraint, and no `--time` |
 | M3 | a `--gpu` `pbrun` lands on a Spark with `--partition=gpu --gres=shard:1` |
@@ -185,6 +186,34 @@ because SLURM's own client library absorbs it -- a `scontrol` issued while the
 controller is down blocks about forty seconds and then answers. Sixty seconds
 is what it takes for a poll to really come back with nothing.
 
+## `fleet/slurm/verify.sh`, run for the first time
+
+`verify.sh` is step 8 of `docs/slurm_runbook_2026-09-04.md` as an executable,
+and every one of its rows needs a live controller, three registered nodes and
+an ssh route between the boxes. Nothing had ever run it. M0 runs it here,
+first, on an otherwise idle fleet, and holds it to a fixed verdict per row: a
+row that changes in either direction fails the smoke.
+
+Ten of its fifteen rows pass. Five cannot be answered in containers, and each
+is a fact about the containers rather than about the script:
+
+| Row | Why it cannot pass here |
+|-----|--------------------------|
+| 0, 0b | the installed `slurm.conf` is `genconf.py`'s, which deviates from the checkout's on purpose. What 0b does establish is that its ssh read reached both other boxes: it reports their hashes, and they agree with each other. |
+| 3 | no NVIDIA driver, so `nvidia-smi` is not installed and there is no GPU for a shard job to see |
+| 4 | `ConstrainDevices=no`, there being no real device to constrain, so the job opens the `mknod`'d `/dev/nvidia0` and the row correctly says so. This is the row that needs a box with a driver. |
+| 7 | the repository is mounted read-only, and `pbrun` writes its closure stamp inside the checkout. The claim -- `pbrun` through the lane, end to end -- is what M2 to M11 do eleven times from a writable checkout on the volume. |
+
+Two defects came out of that first run and are fixed on this branch:
+`tools/fleet/pbrun.py` was mode 644 with no shebang while three documents
+invoke it as a command, and row 4's `smi-rc` reported `sed`'s exit status
+rather than `nvidia-smi`'s.
+
+One rough edge is recorded and not fixed: `pbrun` raises `OSError: Read-only
+file system` from `main` rather than refusing with a message when its `--cwd`
+checkout cannot be written to. A read-only checkout is not a fleet condition,
+and the fix is a judgement about where the closure stamp should live.
+
 ## Both SLURMs, three nodes
 
 All eleven rows pass on both. The difference is time, and it is the same one
@@ -205,6 +234,12 @@ one more argument for putting the 25.11 packages on the nodes.
   containers, which makes it one filesystem but not a squashing one. The
   Epilog's delete as `SLURM_JOB_USER` is exercised; the reason it exists is
   not.
+- **The addresses in `slurm.conf`.** The fleet pins `SlurmctldHost` and every
+  `NodeName` to a LAN address because the boxes do not resolve each other's
+  names. `genconf.py` strips both: inside a docker network the names resolve
+  and 192.168.1.x is a different fleet entirely. So this shows the daemons find
+  each other by name, which is the case `NodeAddr` exists to rescue, and says
+  nothing about whether the addresses are right.
 - **systemd cgroup delegation.** All three containers need `--privileged`,
   `--cgroupns=private`, a hand-written `cgroup.subtree_control` and
   `IgnoreSystemd=yes`. The fleet's boxes have systemd and slurmd under it.
@@ -236,6 +271,8 @@ and cgroup plugin choice, and the real `epilog.sh`.
 | `ConstrainDevices` | `yes` | `no` | the GRES binds a `mknod`'d character device nothing opens |
 | `IgnoreSystemd` | absent | `yes` | there is no systemd to ask for a cgroup scope |
 | `gres.conf` `File=` | the GB10's device | the same path, `mknod`'d | the file itself is unchanged; slurmd refuses a SHARED gres whose SHARING gres has no `File=` |
+| `SlurmctldHost` | `dl380g10(192.168.1.107)` | `dl380g10` | docker's own DNS resolves the node names, and the fleet's LAN is not on this network. A controller configured with those addresses binds and dials into nothing and answers no RPC at all -- which is what it did, once. |
+| `NodeAddr` | each box's LAN address | absent | the same reason |
 
 `RealMemory` is **not** a deviation, unlike in the one-node harness: 73728,
 81920 and 61440 MiB are all under what slurmd reports inside a container on

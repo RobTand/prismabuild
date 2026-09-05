@@ -86,6 +86,12 @@ if grep -q "^NodeName=$NODE .*Name=gpu" /etc/slurm/gres.conf; then
     say "mknod /dev/nvidia0 for the node's Gres"
 fi
 
+# -- ssh ---------------------------------------------------------------------
+# Only so that verify.sh row 0b can read the other boxes' installed slurm.conf
+# the way it will on the fleet.  Nothing else in the harness uses it.
+/usr/sbin/sshd
+say "sshd started"
+
 # -- munge -------------------------------------------------------------------
 # The key came from the image, which is what makes it one key across the three
 # containers with no ordering between them.
