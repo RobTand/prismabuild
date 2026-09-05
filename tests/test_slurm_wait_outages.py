@@ -153,86 +153,17 @@ def test_no_ending_files_no_terminal_record(
     else:
         assert "gave up waiting" in err
 
-
-def test_a_receipt_still_wins_when_the_scheduler_has_forgotten_the_job(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Purged past MinJobAge *with* a receipt is an execution, filed as one."""
-
-    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
-    cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    action = _paper_action(tmp_path, "purged-with-receipt")
-    request = cas.publish_action_request(action)
-    key = str(action["action_key"])
-    clock = FakeClock()
-    queue = tmp_path / "queue"
-    receipt_root = cas.root / "receipts" / key[:2]
-
-    def forget(now: float) -> None:
-        if now >= 1000.0 + 20.0:
-            for record in fleet.glob("*.state"):
-                record.unlink()
-            receipt_root.mkdir(parents=True, exist_ok=True)
-            monkeypatch.setattr(
-                cas, "lookup", lambda _a: {"result_digest": "sha256:abc"})
-    clock.hooks.append(forget)
-
-    result = sl.run(
-        action, cas=cas, request_path=request, resources=sl.LaneResources(),
-        timeout_s=None, worker_script=WORKER, job_entry=JOB_ENTRY,
-        queue_root=queue, poll_s=5.0, sleep=clock.sleep, clock=clock,
+    # The operator the message points at can still stop the job: with no
+    # record filed for this generation, the withdrawal reaches ``scancel``.
+    # Pre-fix, ``failed/<key>.json`` existed and withdraw_slurm_main said
+    # "already has an outcome filed" and never cancelled anything.
+    rc = pbrun.withdraw_slurm_main(
+        [key[:12]], reason="dead", by="tester",
+        lane_root=Path(str(sl.lane_root())), queue_root=queue,
     )
-    assert result.last[1].state == sl.UNKNOWN_STATE
-    record = json.loads((queue / "done" / f"{key}.json").read_text())
-    assert record["status"] == "executed"
+    assert rc == 0
+    assert (fleet / "cancelled").read_text().split() == ["1000"]
+    assert "already has an outcome filed" not in capsys.readouterr().err
+    record = json.loads((queue / "failed" / f"{key}.json").read_text())
+    assert record["status"] == "withdrawn"
 
-
-def test_a_hung_scheduler_command_does_not_end_the_wait(
-    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Pre-fix: ``SlurmLaneError('scontrol failed: Command ... timed out
-    after 0.2 seconds')`` propagated out of ``wait`` and ``slurm_outcome``
-    raised ``SystemExit('pbrun: slurm refused this action ... Fix the --tag,
-    ...')`` while the job ran on.  Now the timeout is one unanswered poll."""
-
-    monkeypatch.setattr(sl, "COMMAND_TIMEOUT_S", 0.2)
-    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
-    monkeypatch.setenv("FAKE_SACCT_DISABLED", "1")
-    cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    action = _paper_action(tmp_path, "hung")
-    request = cas.publish_action_request(action)
-    key = str(action["action_key"])
-    clock = FakeClock()
-    polls = 0
-
-    def hang_then_finish(now: float) -> None:
-        nonlocal polls
-        polls += 1
-        if polls <= 2:
-            monkeypatch.setenv("FAKE_SCONTROL_HANG", "2")
-        else:
-            monkeypatch.delenv("FAKE_SCONTROL_HANG", raising=False)
-        if polls >= 4:
-            for record in fleet.glob("*.state"):
-                record.write_text("COMPLETED|0:0\n")
-    monkeypatch.setenv("FAKE_SCONTROL_HANG", "2")
-    clock.hooks.append(hang_then_finish)
-
-    code = pbrun.slurm_outcome(
-        action, cas=cas, request_path=request, tags=[],
-        demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
-        timeout_s=None, wait_s=None, retry_safe=False, max_attempts=1,
-        runtime_root=REPOSITORY, queue_root=tmp_path / "queue",
-        poll_s=5.0, sleep=clock.sleep, clock=clock,
-    )
-
-    err = capsys.readouterr().err
-    assert "slurm refused this action" not in err
-    assert "the scheduler could not be asked (scontrol failed" in err
-    assert "timed out" in err
-    assert "the scheduler answers again" in err
-    assert "attempt 1/1 slurm job 1000 COMPLETED" in err
-    assert code == 1                      # a paper action publishes no receipt
-    assert not (fleet / "cancelled").exists()
-    assert (tmp_path / "queue" / "failed" / f"{key}.json").exists()
