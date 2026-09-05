@@ -1708,6 +1708,25 @@ def detail_status_and_returncode(
     return status, outcome.exit_code
 
 
+def _submitted_gres(job: SubmittedJob | None) -> str | None:
+    """The ``--gres`` this job was submitted with, or ``None`` for no device.
+
+    Args:
+        job: The accepted submission, or ``None`` when there was none.
+
+    Returns:
+        ``"gpu:1"`` for a whole device, ``"shard:N"`` for slots, ``None``
+        when the job asked for no device or no submission is known.
+    """
+
+    if job is None:
+        return None
+    for flag in job.argv:
+        if str(flag).startswith("--gres="):
+            return str(flag).split("=", 1)[1]
+    return None
+
+
 def publish_outcome(
     *,
     queue_root: str | Path,
@@ -1771,6 +1790,15 @@ def publish_outcome(
             else (outcome.job_id if outcome is not None else None),
             "state": outcome.state if outcome is not None else None,
             "partition": provenance.partition if provenance is not None else None,
+            # The device request as sent, because ``resources`` cannot carry
+            # it.  ``LaneResources.demand()`` speaks the producer's vocabulary
+            # -- ``{"gpu": 1}`` -- and that same claim is ``gpu:1`` for a whole
+            # device and ``shard:1`` for one sharable slot.  ``pool_reset``
+            # rebuilds a submission out of ``resources``, so without this it
+            # re-emitted an exclusive action's demand as a shard and quietly
+            # dropped ``--exclusive``.  Read off the submitted argv rather than
+            # recomputed: what the scheduler was told is the fact worth filing.
+            "gres": _submitted_gres(job),
             "submission_record_path": str(job.record_path) if job is not None else None,
             "stdout_path": str(job.stdout_path) if job is not None else None,
             "stderr_path": str(job.stderr_path) if job is not None else None,

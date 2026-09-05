@@ -486,18 +486,45 @@ def resolve_snapshot_refs(
 def build_git_checkout_snapshot(
     cwd: Path,
     *,
-    stamp_name: str,
+    stamp_name: str | None = None,
     cas: pb.PrismaBuildCAS,
     max_bytes: int = CHECKOUT_SNAPSHOT_MAX_BYTES,
     expected_identity: dict[str, str] | None = None,
     snapshot_refs: Sequence[str] = (),
 ) -> dict[str, object]:
-    """Publish the exact dirty tree as an immutable Git bundle with ancestry."""
+    """Publish the exact dirty tree as an immutable Git bundle with ancestry.
+
+    Args:
+        cwd: The directory the action runs in, inside a Git worktree.
+        stamp_name: The pbrun closure stamp to seal alongside the tree, or
+            ``None`` for a producer that seals its own action body. The stamp
+            exists so a pull-queue worker can compare the live tree against the
+            action that pinned it; a snapshot-addressed action is compared
+            against its own sealed commit instead, so a producer that never
+            writes a stamp does not need one invented for it.
+        cas: The store the bundle is ingested into.
+        max_bytes: The local-disk bound this snapshot may not exceed.
+        expected_identity: The checkout identity the caller already read, so
+            the seal refuses a tree that moved between the two observations.
+        snapshot_refs: Source branches the bundle also advertises.
+
+    Returns:
+        The validated ``params.checkout_snapshot`` record.
+    """
 
     root = git_repository_root(cwd)
     if root is None:
         raise SystemExit("pbrun: a non-Git checkout cannot be materialized")
     require_checkout_snapshot_limit(max_bytes)
+    if stamp_name is None:
+        subdirectory = cwd.relative_to(root).as_posix() or "."
+        stamp_relative = None
+        stamp_paths: tuple[str, ...] = ()
+        return _build_git_checkout_snapshot(
+            cwd, root, subdirectory, stamp_relative, stamp_paths,
+            cas=cas, max_bytes=max_bytes,
+            expected_identity=expected_identity, snapshot_refs=snapshot_refs,
+        )
     declared_stamp = cwd / stamp_name
     if declared_stamp.is_symlink():
         raise SystemExit("pbrun: checkout stamp must not be a symlink")
@@ -516,7 +543,28 @@ def build_git_checkout_snapshot(
     ).as_posix()
     if observed_stamp_relative != stamp_relative:
         raise SystemExit("pbrun: checkout stamp resolves through a symlinked path")
-    paths = snapshot_path_roster(root, extra_paths=(stamp_relative,))
+    return _build_git_checkout_snapshot(
+        cwd, root, subdirectory, stamp_relative, (stamp_relative,),
+        cas=cas, max_bytes=max_bytes,
+        expected_identity=expected_identity, snapshot_refs=snapshot_refs,
+    )
+
+
+def _build_git_checkout_snapshot(
+    cwd: Path,
+    root: Path,
+    subdirectory: str,
+    stamp_relative: str | None,
+    stamp_paths: tuple[str, ...],
+    *,
+    cas: pb.PrismaBuildCAS,
+    max_bytes: int,
+    expected_identity: dict[str, str] | None,
+    snapshot_refs: Sequence[str],
+) -> dict[str, object]:
+    """Seal the tree once the caller has settled where the stamp is, if any."""
+
+    paths = snapshot_path_roster(root, extra_paths=stamp_paths)
     require_working_tree_size(root, paths, max_bytes=max_bytes)
     require_untransformed_checkout(root, paths)
     identity = expected_identity or _git_identity(cwd)
@@ -558,11 +606,12 @@ def build_git_checkout_snapshot(
             root, ["read-tree", "HEAD"], environment=object_environment
         )
         _snapshot_git(root, ["add", "-A"], environment=object_environment)
-        _snapshot_git(
-            root,
-            ["add", "-f", "--", stamp_relative],
-            environment=object_environment,
-        )
+        if stamp_relative is not None:
+            _snapshot_git(
+                root,
+                ["add", "-f", "--", stamp_relative],
+                environment=object_environment,
+            )
         tree = _snapshot_git(root, ["write-tree"], environment=object_environment)
         require_supported_snapshot_tree(
             root,

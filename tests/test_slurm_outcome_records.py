@@ -554,3 +554,42 @@ def test_a_withdrawal_between_attempts_stops_the_next_one(
     record = _record(queue_root, pool.FAILED, str(action["action_key"]))
     assert record["status"] == "withdrawn"
     assert record["attempts"] == 1
+
+
+def test_the_record_says_whether_the_job_had_the_whole_device(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """``resources`` cannot answer it, so ``detail.slurm.gres`` does.
+
+    ``LaneResources.demand()`` files the producer's own vocabulary, and
+    ``{"gpu": 1}`` is the same claim for an action that had the device to
+    itself and one that took a single sharable slot.  ``pool_reset`` rebuilds
+    a submission out of that dictionary, so without the GRES it re-emitted an
+    exclusive action as ``shard:1`` -- retried beside other work, which is the
+    one thing ``--exclusive`` was asking not to happen.
+    """
+
+    queue_root = _queue(tmp_path)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    filed = {}
+    for name, resources in (
+        ("whole", sl.LaneResources(gpu_slots=1, exclusive_gpu=True)),
+        ("slot", sl.LaneResources(gpu_slots=1)),
+        ("none", sl.LaneResources()),
+    ):
+        action = _paper_action(tmp_path, name)
+        job = sl.submit(
+            action, cas=cas, request_path=cas.publish_action_request(action),
+            resources=resources, timeout_s=None, worker_script=WORKER,
+            job_entry=JOB_ENTRY,
+        )
+        sl.publish_outcome(
+            queue_root=queue_root, action_key=job.action_key,
+            published_unix=1.0, published_by="sparky", status="failed",
+            attempts=1, max_attempts=1, retry_safe=False,
+            resources=resources.demand(), job=job,
+        )
+        filed[name] = _record(
+            queue_root, pool.FAILED, job.action_key)["detail"]["slurm"]["gres"]
+
+    assert filed == {"whole": "gpu:1", "slot": "shard:1", "none": None}
