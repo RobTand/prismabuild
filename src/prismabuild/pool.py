@@ -211,6 +211,11 @@ STARVATION_FLOOR = 3
 #: than the multi-hour actions that turn the guard pathological.
 WITHHOLD_CEILING_S = 900.0
 
+#: How much of an unparseable record is kept inline with the evidence.  Enough
+#: to recognise a writer's handwriting, little enough that a runaway producer
+#: cannot fill the queue root with the file it already failed to write.
+UNREADABLE_HEAD_BYTES = 2048
+
 RESERVATIONS = "reservations"
 PASSES = "passes"
 WORKERS = "workers"
@@ -1846,7 +1851,17 @@ class PoolQueue:
         if not ready.is_dir():
             return out
         for path in sorted(ready.glob("*.json")):
-            record = _read_json(path)
+            try:
+                record = _read_json(path)
+            except PoolContractError:
+                # A record nobody can parse is nobody's work.  Raising it out
+                # of here took ``claim`` down on every box at once for one
+                # foreign writer's truncated file, and ``reap_stale`` with it
+                # -- so the sweep that files the thing was itself among the
+                # casualties.  Skip it and keep serving; ``quarantine_orphans``
+                # files it, and ``serve_once`` reaches that sweep before its
+                # next claim.
+                continue
             if record is not None:
                 record["passes"] = self.passes(str(record.get("action_key", "")))
                 out.append(record)
@@ -2661,6 +2676,54 @@ class PoolQueue:
             swept.append(key)
         return swept
 
+    def _file_unreadable(self, path: Path, *, reason: str) -> str:
+        """Take one unparseable queue record out of the live queue, loudly.
+
+        Two files, because they answer two different questions.  The bytes go
+        to ``superseded/`` so whoever has to find the writer still can; a
+        record with the file's own name goes to ``failed/`` because that is
+        what ``pbstatus`` and ``pbwait`` read, and a defect nobody counts is
+        the silence this sweep exists to end.
+
+        Never over a terminal record.  A corrupt ready file says nothing about
+        an ending already filed for that key, and a key with two terminals is
+        a worse defect than the one being cleaned up.
+        """
+
+        key = path.stem
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            raw = b""
+        self._file_superseded(
+            None, key=key, kind="unreadable", state=READY,
+            status="unreadable_record",
+            filed_unix=_now(), filed_host=socket.gethostname(),
+            reason=reason, raw_bytes=len(raw),
+            raw_head=raw[:UNREADABLE_HEAD_BYTES].decode("utf-8", "replace"),
+        )
+        if not any(self.item_path(state, key).exists()
+                   for state in (DONE, FAILED)):
+            _write_json_atomic(
+                self.item_path(FAILED, key),
+                {
+                    "schema": POOL_OUTCOME_SCHEMA_V1,
+                    "action_key": key,
+                    "status": "unreadable_record",
+                    "finished_unix": _now(),
+                    "finished_host": socket.gethostname(),
+                    "detail": {
+                        "reason": "the ready record could not be parsed, so no "
+                                  "worker could ever claim it; its bytes are "
+                                  "kept under withdrawn/superseded/",
+                        "parse_error": reason,
+                        "bytes": len(raw),
+                    },
+                },
+            )
+        path.unlink(missing_ok=True)
+        return key
+
     def quarantine_orphans(self) -> list[str]:
         """File ready records that no consumer can address.
 
@@ -2672,6 +2735,13 @@ class PoolQueue:
         the sweep stays whether or not that race can still fire.  Filing them
         is the point -- a countable ``orphaned_stub`` in ``failed`` is a
         defect someone can see; a permanent resident of ``ready`` is not.
+
+        A record whose bytes will not parse is the same defect one step
+        earlier, so it takes the same route.  It used to take the whole fleet
+        instead: ``_read_json`` refuses a malformed record, and that refusal
+        reached ``claim``, ``ready_items``, ``reap_stale`` and this sweep, so
+        one foreign writer's truncated file stopped every consumer on every
+        box until somebody deleted it by hand.
         """
 
         filed: list[str] = []
@@ -2679,8 +2749,21 @@ class PoolQueue:
         if not ready.is_dir():
             return filed
         for path in sorted(ready.glob("*.json")):
-            record = _read_json(path)
+            try:
+                record = _read_json(path)
+            except PoolContractError as exc:
+                filed.append(self._file_unreadable(path, reason=str(exc)))
+                continue
             if record is None:
+                # ``None`` covers two different things.  The file vanishing
+                # under the glob is an ordinary race with a concurrent claim
+                # and is not this sweep's business.  A file that is still
+                # there and holds zero bytes is a torn write no consumer will
+                # ever address, which is exactly what this sweep is for.
+                if path.exists():
+                    filed.append(
+                        self._file_unreadable(path, reason="queue record is empty")
+                    )
                 continue
             # Two ways to be unaddressable, and both belong here.  A record
             # with the wrong (or no) ``action_key`` is skipped by ``claim()``
