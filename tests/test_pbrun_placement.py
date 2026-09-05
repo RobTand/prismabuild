@@ -1418,7 +1418,40 @@ def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
     assert "--gpu-capacity" in str(caught.value)
 
 
-def test_the_default_environment_bounds_the_thread_pools():
+def _submitted_environment(root: Path, *extra_argv: str) -> dict[str, str]:
+    """The environment a real submission carries, read off the sealed action.
+
+    Driven through ``main()`` against a private pool root, because the
+    environment the child gets is the one in the action body -- past the
+    ``--env`` loop, the GPU rule and the container variables that all edit the
+    dict after the defaults are written.
+    """
+
+    import socket
+    from unittest import mock
+
+    root.mkdir(parents=True, exist_ok=True)
+    work = _git_checkout(root)
+    queue = pool_module.PoolQueue(root / "pb-queue")
+    queue.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
+                   capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
+
+    with mock.patch.object(pbrun, "SH", root), \
+         mock.patch.object(pbrun, "POLL_S", 0.001), \
+         mock.patch.object(socket, "gethostname", return_value=HOST), \
+         mock.patch.object(sys, "argv",
+                           ["pbrun.py", "--cwd", str(work), "--here",
+                            "--wait-s", "0.01", *extra_argv,
+                            "--", "echo", "hi"]):
+        assert pbrun.main() == 75          # accepted; nothing here claims it
+
+    requests = sorted((root / "cas" / "requests").rglob("*.json"))
+    assert len(requests) == 1, requests
+    body = json.loads(requests[0].read_text(encoding="utf-8"))
+    return body["environment"]["variables"]
+
+
+def test_the_default_environment_bounds_the_thread_pools(tmp_path):
     """A fleet's parallelism is many actions, not one action per box.
 
     Torch, numpy and OpenBLAS each size their pool from the machine's core
@@ -1426,19 +1459,22 @@ def test_the_default_environment_bounds_the_thread_pools():
     multiplies.  dl380g10 ran a 24-worker pytest under 16 worker loops and
     reached a load average of **927** on 80 cores -- every process fighting
     for a scheduler slot it did not need.
-    """
-    import subprocess
-    import sys
 
-    out = subprocess.run(
-        [sys.executable, str(pbrun.__file__), "--help"],
-        capture_output=True, text=True, check=False)
-    assert out.returncode == 0
-    source = Path(pbrun.__file__).read_text()
+    Asserted on the submitted action rather than on pbrun's source: a default
+    that is overwritten further down ``main`` is still spelled in the dict
+    literal, and a source grep reads it as present.
+    """
+
+    variables = _submitted_environment(tmp_path / "defaults")
+
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
-        assert f'"{name}": "4"' in source, name
+        assert variables[name] == "4", name
+
     # And it must stay overridable: --env is applied after the defaults.
-    assert source.index('"OMP_NUM_THREADS"') < source.index("for entry in args.env")
+    overridden = _submitted_environment(
+        tmp_path / "override", "--env", "OMP_NUM_THREADS=16")
+    assert overridden["OMP_NUM_THREADS"] == "16"
+    assert overridden["MKL_NUM_THREADS"] == "4"
 
 
 def _fleet(tmp_path: Path):
