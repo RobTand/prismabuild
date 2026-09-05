@@ -656,6 +656,60 @@ class _Insufficient(Exception):
     """Internal: a demand could not be met in full."""
 
 
+#: Prefix of a claimant-private acquisition directory under ``held/``.  An
+#: action key is 64 hex characters, so a name carrying a dot cannot collide
+#: with one, and every reader that addresses a holder by key sees nothing.
+ACQUIRING_PREFIX = "claiming."
+
+
+def _is_acquisition(name: str) -> bool:
+    """Whether a holder directory belongs to a claimant rather than an action.
+
+    One predicate for both readers, because the two must agree exactly.  A name
+    the sweep declines to recognise but ``held_keys`` reports as an action key
+    is a leak nothing owns: no queue directory holds that name, so no reaper
+    looks for it, and no sweep frees it.
+    """
+
+    return name.startswith(ACQUIRING_PREFIX)
+
+
+def _acquisition_clock(holder: Path) -> float | None:
+    """When a claimant began this acquisition, in seconds since the epoch.
+
+    The clock is in the *name* because there is nowhere else to put it that
+    survives: ``rename`` does not touch mtime, and the directory's own mtime is
+    bumped by every token moved into it, so a claimant that took one token and
+    died looks as fresh as one still working.  A name whose stamp this version
+    cannot read falls back to mtime, which is wrong in the conservative
+    direction -- too fresh, so swept later -- and never leaves the directory
+    unowned.  ``None`` only when the directory has gone.
+    """
+
+    parts = holder.name.split(".", 3)
+    if len(parts) >= 3:
+        try:
+            return int(parts[1]) / 1_000_000.0
+        except ValueError:
+            pass
+    try:
+        return holder.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _acquisition_claimant(name: str) -> tuple[str, int] | None:
+    """The host and pid a claimant stamped on its acquisition, if readable."""
+
+    parts = name.split(".")
+    if len(parts) < 6:
+        return None
+    try:
+        return parts[3], int(parts[4])
+    except ValueError:
+        return None
+
+
 class ResourceLedger:
     """Per-host capacity, held as tokens that are acquired by ``rename``.
 
@@ -793,18 +847,40 @@ class ResourceLedger:
             counts[kind] = counts.get(kind, 0) + 1
         return counts
 
-    def acquire(self, action_key: str, demand: Mapping[str, int]) -> bool:
-        """Take every token the demand asks for, or none of them.
+    def begin_acquire(
+        self, action_key: str, demand: Mapping[str, int]
+    ) -> str | None:
+        """Take the whole demand into a directory only this claimant owns.
 
-        All-or-nothing is the repro's third bug stated as code: a multi-resource
-        actor that keeps what it managed to get while blocked on what it did not
-        is holding resources it cannot use.
+        Admission runs *before* the ready-to-claimed rename, so at the moment
+        tokens are taken it is not yet known which contender will own the
+        action.  Filing them under ``held/<action_key>`` gave every contender
+        for one key the same rollback target: the loser's ``release`` returned
+        the winner's tokens, and a third action was then admitted on capacity
+        the winner was already executing against.  The reservation therefore
+        belongs to the *claimant* until the rename decides, and only then to
+        the action.
+
+        The private directory lives under ``held/`` so that every reader which
+        counts what is not free -- ``ensure_capacity``'s holder scan,
+        ``capacity``, ``held``, ``retire_free_capacity`` -- accounts for tokens
+        in flight without knowing this mechanism exists.  Returns the handle to
+        commit or abandon, or ``None`` when the demand could not be met in
+        full.
+
+        All-or-nothing on the demand: a multi-resource actor that keeps what it
+        managed to get while blocked on what it did not is holding resources it
+        cannot use.
         """
 
         wanted = {k: int(v) for k, v in demand.items() if int(v) > 0}
+        handle = (
+            f"{ACQUIRING_PREFIX}{int(_now() * 1_000_000)}.{action_key}"
+            f".{socket.gethostname()}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+        )
         if not wanted:
-            return True
-        destination = self.held_dir / action_key
+            return handle
+        destination = self.held_dir / handle
         destination.mkdir(parents=True, exist_ok=True)
         try:
             for kind, need in sorted(wanted.items()):
@@ -820,26 +896,151 @@ class ResourceLedger:
                 if taken < need:
                     raise _Insufficient(kind)
         except _Insufficient:
+            self._empty_into_free(destination)
+            return None
+        return handle
+
+    def commit_acquire(self, action_key: str, handle: str) -> int:
+        """Move a claimant's private tokens under its action.  Count moved.
+
+        Called by the winner of the ready-to-claimed rename, and by nobody
+        else.  The move is per token rather than one directory rename: a
+        leftover ``held/<action_key>`` from a release that could not remove its
+        own directory makes a directory rename fail with ``ENOTEMPTY``, and the
+        count this returns has to be exact so the caller can fail closed.  Per
+        token loses nothing, because both directories are under ``held/``: at
+        no point in the merge is a token countable as free, and at no point can
+        a second claimant take one.
+
+        The count is what the caller checks, and it has to be exact, which is
+        the other reason the move is per token.  A claimant swept as stale (see
+        :meth:`sweep_stale_acquisitions`) and then winning its rename would
+        otherwise proceed to run an action with no reservation, which is the
+        same over-admission by another road.  One directory rename would be
+        atomic but countable only by listing the source *before* it, and a
+        sweep landing between the count and the rename would inflate the count
+        -- the one direction the caller must not be lied to in.
+
+        A name already present under the destination is left where it is rather
+        than renamed over.  There is one token per index, so a collision means
+        some earlier incarnation's tokens are filed under this key; replacing
+        the file would delete a token with no retire and no marker, and the
+        short count instead makes the caller fail closed.
+        """
+
+        source = self.held_dir / handle
+        destination = self.held_dir / action_key
+        if not source.is_dir():
+            return 0
+        moved = 0
+        destination.mkdir(parents=True, exist_ok=True)
+        for token in _scan(source):
+            landing = destination / token.name
+            if landing.exists():
+                continue
+            try:
+                os.rename(token, landing)
+            except OSError:
+                continue
+            moved += 1
+        try:
+            source.rmdir()
+        except OSError:
+            pass
+        return moved
+
+    def abandon_acquire(self, handle: str) -> int:
+        """Return a claimant's own private tokens.  Its tokens, nothing else."""
+
+        return self._empty_into_free(self.held_dir / handle)
+
+    def acquire(self, action_key: str, demand: Mapping[str, int]) -> bool:
+        """Take every token the demand asks for, or none of them.
+
+        The uncontended spelling of begin-then-commit, for a caller that has
+        already decided the action is its own.  ``claim`` does not use it: the
+        rename that decides ownership sits between the two halves.
+        """
+
+        handle = self.begin_acquire(action_key, demand)
+        if handle is None:
+            return False
+        wanted = sum(int(v) for v in demand.values() if int(v) > 0)
+        if self.commit_acquire(action_key, handle) < wanted:
+            self.abandon_acquire(handle)
             self.release(action_key)
             return False
         return True
 
+    def sweep_stale_acquisitions(
+        self, *, grace_s: float = LEASE_TIMEOUT_S
+    ) -> list[str]:
+        """Free tokens a claimant took and never committed.
+
+        The window between ``begin_acquire`` and ``commit_acquire`` is one
+        claim-intent write and one rename, so a private directory older than
+        the grace belongs to a claimant that died inside it.  Nothing else
+        recovers those tokens: they are filed under a claimant, not an action
+        key, so no claimed record names them and ``reap_stale``'s release by
+        key cannot see them.
+
+        **The grace is the lease timeout, not the heartbeat.**  This sweep
+        decides that a claimant is dead with no heartbeat behind it, and that
+        is the judgement ``reap_stale``'s own docstring records getting wrong
+        at heartbeat length: it requeued a live seven-second action within a
+        second of its claim (issue #36).  Waiting costs almost nothing here,
+        because the private directory is under ``held/`` and is honestly
+        counted as consumed the whole time, whereas sweeping a live claimant
+        costs it its claim.  A sweep that does fire early is still not an
+        over-admission: ``commit_acquire`` counts what it moved and its caller
+        puts the item back rather than running it unreserved.
+
+        The stamped host and pid buy back the common case.  When the claimant
+        was on this host and its process is gone, there is nothing to wait for
+        and the heartbeat interval is enough.  A reused pid reads as alive and
+        waits the full grace, which is the safe direction.
+        """
+
+        swept: list[str] = []
+        now = _now()
+        local = socket.gethostname()
+        for holder in _scan(self.held_dir):
+            if not _is_acquisition(holder.name) or not holder.is_dir():
+                continue
+            started = _acquisition_clock(holder)
+            if started is None:
+                continue
+            bound = grace_s
+            claimant = _acquisition_claimant(holder.name)
+            if (claimant is not None and claimant[0] == local
+                    and not _process_alive(claimant[1])):
+                bound = min(bound, HEARTBEAT_S)
+            if now - started <= bound:
+                continue
+            self._empty_into_free(holder)
+            swept.append(holder.name)
+        return swept
+
     def release(self, action_key: str) -> int:
         """Return every token held for this action.  Safe to call twice."""
 
-        destination = self.held_dir / action_key
-        if not destination.is_dir():
+        return self._empty_into_free(self.held_dir / action_key)
+
+    def _empty_into_free(self, holder: Path) -> int:
+        """Rename every token under one holder back to ``free/``."""
+
+        if not holder.is_dir():
             return 0
         released = 0
         self.free_dir.mkdir(parents=True, exist_ok=True)
-        for token in _scan(destination):
+        for token in _scan(holder):
             try:
                 os.rename(token, self.free_dir / token.name)
             except OSError:
                 continue
             released += 1
         try:
-            destination.rmdir()
+            holder.rmdir()
         except OSError:
             pass
         return released
@@ -863,7 +1064,18 @@ class ResourceLedger:
         return counts
 
     def held_keys(self) -> list[str]:
-        return sorted(path.name for path in _scan(self.held_dir) if path.is_dir())
+        """Which actions hold tokens here.
+
+        Claimant-private acquisitions are excluded: they are named for the
+        claimant, not for an action, and the contender that will own the action
+        is not decided until its rename.  A caller asking which actions hold
+        capacity would otherwise be handed a name no queue directory has.
+        """
+
+        return sorted(
+            path.name for path in _scan(self.held_dir)
+            if path.is_dir() and not _is_acquisition(path.name)
+        )
 
 
 class PoolQueue:
@@ -1649,10 +1861,12 @@ class PoolQueue:
                 self.item_path(READY, key).unlink(missing_ok=True)
                 continue
             demand = self.demand_of(item)
+            handle: str | None = None
             if ledger is not None and demand:
                 if any(total.get(kind, 0) < need for kind, need in demand.items()):
                     continue      # never fits this box; not this box's to hold
-                if not ledger.acquire(key, demand):
+                handle = ledger.begin_acquire(key, demand)
+                if handle is None:
                     denials = self.record_pass(key)
                     if (denials >= STARVATION_FLOOR
                             and self.withhold_age(key) <= WITHHOLD_CEILING_S):
@@ -1669,9 +1883,42 @@ class PoolQueue:
             try:
                 os.rename(src, dst)
             except (FileNotFoundError, NotADirectoryError):
-                if ledger is not None:
-                    ledger.release(key)   # lost the race: hold nothing
+                if ledger is not None and handle is not None:
+                    # Lost the race: hold nothing -- and return only what THIS
+                    # claimant took.  Releasing by action key here returned the
+                    # winner's reservation and let a third action be admitted
+                    # on top of it.
+                    ledger.abandon_acquire(handle)
                 continue
+            if ledger is not None and handle is not None:
+                # Won the rename, so the reservation stops belonging to this
+                # claimant and starts belonging to the action.  Every branch
+                # below releases by action key, which is correct only once the
+                # tokens are filed under it.
+                if ledger.commit_acquire(key, handle) < sum(demand.values()):
+                    # A stale-acquisition sweep took part of the reservation,
+                    # or tokens of an earlier incarnation are filed under this
+                    # key.  Fail closed rather than run unreserved: ``dst`` is
+                    # still byte-identical to the ready record, because the
+                    # rewrite below has not happened yet, so putting it back
+                    # restores the item exactly as it was.
+                    ledger.abandon_acquire(handle)
+                    ledger.release(key)
+                    # Link rather than rename.  ``publish`` writes ``ready``
+                    # unconditionally, so a re-submission of this key can
+                    # already be sitting there, and a rename would replace that
+                    # new generation with these older bytes and lose the
+                    # request.  If it is there, leave the claim for the reaper
+                    # instead: an extra reaper cycle costs one attempt, a
+                    # clobbered generation costs the whole submission.
+                    try:
+                        os.link(dst, src)
+                    except OSError:
+                        pass
+                    else:
+                        dst.unlink(missing_ok=True)
+                        self.item_path(INTENT, key).unlink(missing_ok=True)
+                    continue
             moved = _read_json(dst) or item
             terminal = self.terminal_outcome_covers(moved, action_key=key)
             if terminal is not None:
@@ -1932,8 +2179,34 @@ class PoolQueue:
             self.lease_path(key).unlink(missing_ok=True)
             requeued.append(key)
         self.sweep_widowed_leases(timeout_s=timeout_s)
+        self.sweep_stale_acquisitions()
         self.quarantine_orphans()
         return requeued
+
+    def sweep_stale_acquisitions(
+        self, *, grace_s: float = LEASE_TIMEOUT_S
+    ) -> list[str]:
+        """Free tokens a claimant on any box took and never committed.
+
+        Every host's ledger, not just this one: a claimant that died between
+        ``begin_acquire`` and ``commit_acquire`` left its tokens under its own
+        box's reservations, and the box that notices may not be that box.
+        ``reap_stale`` already releases a dead claimant's tokens from whatever
+        host held them, so a foreign write here is the established shape and
+        not a new one.
+        """
+
+        swept: list[str] = []
+        for directory in _scan(self.root / RESERVATIONS):
+            if not directory.is_dir():
+                continue
+            swept.extend(
+                f"{directory.name}/{name}"
+                for name in self.ledger(directory.name).sweep_stale_acquisitions(
+                    grace_s=grace_s
+                )
+            )
+        return swept
 
     def sweep_widowed_leases(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
         """Remove leases in ``claimed/`` whose item record is gone.
