@@ -878,3 +878,47 @@ either transport. Ignoring them is the SLURM half only, because the pull queue
 never snapshots. This applies to the smoke action, whose result is
 `fleet_result.txt`, and to every export shard, whose result is
 `results/glm53-tessera/shard-NNNNN.json`.
+
+## Sweep the store's per-execution litter
+
+Every local action files four immutable droppings into the CAS and nothing has
+ever removed one. A claim under `local-results/v1/` records ownership of the
+action's declared result path, a file under `.worker-locks/` serializes writers
+of that path, a directory under `.staging/local-results/` is where the result
+was copied before publication. The claim's digest covers the checkout
+root the action ran in, and a materialized job mints a fresh root for every
+execution, so a campaign leaves one of each behind every time it runs. On
+2026-09-05 the live store held 1785 claims, 1745 locks and 942 empty staging
+namespaces.
+
+`pb_gc` reports them, and removes them when you ask it to.
+
+    tools/fleet/pb_gc.py --cas-root /mnt/shared/prismabuild-fleet/cas
+    tools/fleet/pb_gc.py --cas-root /mnt/shared/prismabuild-fleet/cas --apply
+
+The default only reports. It prints a line per entry with its size, its age and
+why it is dead, the entries it is keeping grouped by reason, and a total.
+`--summary` drops the per-entry lines. There is no default root: this tool
+removes files, and a default would let an operator who typed no root sweep the
+fleet's own store.
+
+What makes a removal safe is structural. A claim exists to authorize repairing
+a leftover result under its own checkout root, and a materialized job removes
+that root when it ends, so a claim whose root is gone can never authorize
+anything again. A claim whose root is still there is the persistent-checkout
+case, where repair is real, and `pb_gc` never touches one. A lock goes only
+when no live claim names its output path, nothing holds its `flock`, and no
+process on the box has its inode open. A staging namespace goes only when it is
+empty and no live claim carries its digest.
+
+`--min-age-hours` is a backstop on top of that rule, not a substitute for it.
+It covers one blind spot: checkout roots are box-local and spelled the same way
+on every box, so a root that is absent here can be a live execution somewhere
+else. The default is 24 hours. `pbrun` has no default deadline, so no age is
+provably safe; raise it past the longest action your campaign runs.
+
+Two things it will not do. Requests and receipts are records, not litter: the
+gap between them is printed as a diagnostic and neither is ever removed. A
+staging namespace that still holds a payload is a killed publication, and
+unwinding one belongs to `core.repair_local_result`, which takes the output
+lock and checks ownership; `pb_gc` reports it and leaves it.
