@@ -58,7 +58,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -1472,6 +1472,11 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         "finished_host": outcome.get("finished_host"),
         "elapsed_s": detail.get("elapsed_s"),
         "returncode": detail.get("returncode"),
+        # The action's own ending, where the transport recorded one.  The
+        # launcher's status above is 1 for every failure, so an action that
+        # exited 7 reads as 1 without this.
+        "action_returncode": detail.get("action_returncode"),
+        "action_signal": detail.get("action_signal"),
         "receipt_published": detail.get("receipt_published"),
         "attempts": outcome.get("attempts"),
         "withdrawn_by": outcome.get("withdrawn_by"),
@@ -1599,7 +1604,8 @@ def await_outcome(
     # ``elapsed_s`` is present and null on a SLURM record whose scheduler
     # provenance was purged, so the key's presence must not defeat the default.
     print(f"pbrun: {status} on {outcome.get('finished_host')} "
-          f"in {(detail.get('elapsed_s') or 0):.0f}s", file=sys.stderr)
+          f"in {(detail.get('elapsed_s') or 0):.0f}s"
+          f"{action_status_suffix(detail)}", file=sys.stderr)
     if status == "cache_hit":
         return 0
     rc = detail.get("returncode")
@@ -1616,6 +1622,28 @@ def await_outcome(
     print(f"pbrun: outcome filed under {outcome_path.parent.name} after "
           f"{outcome.get('attempts', '?')} attempt(s)", file=sys.stderr)
     return 1
+
+
+def action_status_suffix(detail: Mapping[str, object]) -> str:
+    """What to add to an outcome line when the action's status is not the run's.
+
+    Nothing at all when the two agree, which is the ordinary case: an action
+    that exited 3 under a transport that reports its own launcher's status
+    would say the same number twice. When they differ -- the launcher exits 1
+    for every failure -- the run's number stays first, because that is the one
+    ``pbrun`` returns as its own exit status, and the action's is named as the
+    action's.
+    """
+
+    action = detail.get("action_returncode")
+    if not isinstance(action, int) or isinstance(action, bool):
+        return ""
+    if action == detail.get("returncode"):
+        return ""
+    signal = detail.get("action_signal")
+    if isinstance(signal, int) and not isinstance(signal, bool):
+        return f"; rc={detail.get('returncode')} (action killed by signal {signal})"
+    return f"; rc={detail.get('returncode')} (action exited {action})"
 
 
 def _report_stall(key: str, report) -> None:
