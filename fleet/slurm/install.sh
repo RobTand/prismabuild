@@ -4,9 +4,13 @@
 # Run it as root on each of the three fleet boxes, controller first:
 #
 #     sudo bash fleet/slurm/install.sh                 # on dl380g10
-#     scp /home/rob/.munge-key.b64 sparky:/home/rob/   # as rob, not as root
+#     # as rob on sparky, not as root.  Taking the key removes dl380g10's copy;
+#     # re-run the install there if you need it exported again.  umask 077 in a
+#     # subshell because a redirect creates the file 0644 under the default one,
+#     # and scp then carries that mode to the second Spark.
+#     (umask 077; ssh dl380g10 'cat /home/rob/.munge-key.b64 && { shred -u /home/rob/.munge-key.b64 2>/dev/null || rm -f /home/rob/.munge-key.b64; }' > /home/rob/.munge-key.b64)
+#     scp /home/rob/.munge-key.b64 sparklina:/home/rob/.munge-key.b64
 #     sudo bash fleet/slurm/install.sh                 # on sparky
-#     scp /home/rob/.munge-key.b64 sparklina:/home/rob/
 #     ssh -t sparklina sudo bash .../fleet/slurm/install.sh
 #
 # One script rather than three because the three boxes differ in exactly two
@@ -43,11 +47,13 @@ usage: install.sh [--dry-run]
 Installs SLURM 25.11 and munge on this box, per its hostname:
 
   dl380g10    controller and CPU node; SLURM from apt; creates the munge key
-              and leaves a base64 copy at /home/rob/.munge-key.b64 for the
-              operator to scp to the Sparks
+              and exports a base64 copy to /home/rob/.munge-key.b64 for the
+              operator to carry to the Sparks, which removes it as they read
+              it.  A run that does not finish removes the export itself
   sparky      GPU node; SLURM from the prebuilt debs in
   gx10-6b77   /home/rob/slurm-build/arm64-24.04; installs the munge key from
-              /home/rob/.munge-key.b64 and shreds it
+              /home/rob/.munge-key.b64 and shreds it, including when the run
+              fails after reading it
 
 Run as root.  --dry-run needs no root and changes nothing.
 USAGE
@@ -173,6 +179,34 @@ DEB_GLOB="/home/rob/slurm-build/arm64-24.04/*.deb"
 #: this fleet once already.
 KEY_B64="/home/rob/.munge-key.b64"
 KEY_OWNER="rob"
+#: True once this run has put a copy of the key at $KEY_B64 or found one there
+#: and started using it; and true once the run has finished.  Between the two,
+#: an exit means the secret is lying in a home directory that nobody asked to
+#: keep it there, so the exit path removes it.  A run that finishes keeps the
+#: controller's export, because that copy is the whole point of the controller
+#: step and dl380g10 cannot push it to a Spark: it resolves neither.
+KEY_B64_LEFT=0
+RUN_FINISHED=0
+
+#: Remove the base64 copy.  shred where there is one, unlink where there is
+#: not: shred is coreutils and is on all three boxes, but a script whose only
+#: cleanup depends on a binary being present is a script that silently leaves a
+#: secret on the box that lacks it.
+forget_key_b64() {
+    run_shell "shred -u $KEY_B64 2>/dev/null || rm -f $KEY_B64"
+}
+
+#: The same removal on the way out of a run that did not finish.  Silent: the
+#: transcript is a list of commands an operator can paste, and this is not one
+#: of them.  It runs nothing in a dry run, which executes nothing at all.
+forget_key_b64_on_exit() {
+    [ "$DRY_RUN" = 0 ] || return 0
+    [ "$RUN_FINISHED" = 0 ] || return 0
+    [ "$KEY_B64_LEFT" = 1 ] || return 0
+    [ -e "$KEY_B64" ] || return 0
+    shred -u "$KEY_B64" 2>/dev/null || rm -f "$KEY_B64"
+}
+trap forget_key_b64_on_exit EXIT
 #: Where a job leaves the state file its Epilog reads.  This one path is
 #: spelled in three places -- here, `slurm_lane.DEFAULT_JOB_STATE_ROOT`, and
 #: the default in `epilog.sh` -- because a shell script cannot import the
@@ -296,11 +330,15 @@ case "$ROLE" in
         fi
         stamp_fleet_key
         # Exported on every run, including one that kept an existing key: the
-        # reason to be here again may be that a Spark needs the copy.
-        say "# the operator copies this to each Spark as rob:"
-        say "#     scp $KEY_B64 sparky:$KEY_B64"
+        # reason to be here again may be that a Spark needs the copy.  The
+        # export is mode 600 owned by rob so that rob can both read it and
+        # remove it over ssh without root, which is what the pull below does.
+        say "# the operator takes this to the Sparks as rob, and taking it"
+        say "# removes this box's copy.  Re-run this script to export again:"
+        say "#     (umask 077; ssh dl380g10 'cat $KEY_B64 && { shred -u $KEY_B64 2>/dev/null || rm -f $KEY_B64; }' > $KEY_B64)"
         say "#     scp $KEY_B64 sparklina:$KEY_B64"
         run_shell "umask 077 && base64 $MUNGE_KEY > $KEY_B64"
+        KEY_B64_LEFT=1
         run chown "$KEY_OWNER:$KEY_OWNER" "$KEY_B64"
         run chmod 600 "$KEY_B64"
         ;;
@@ -315,6 +353,7 @@ case "$ROLE" in
             # The b64 copy wins over whatever is on disk.  It is the fleet's
             # key by construction and the key here may be the package's.
             run install -d -m 700 -o munge -g munge /etc/munge
+            KEY_B64_LEFT=1
             run_shell "umask 077 && base64 -d $KEY_B64 > $MUNGE_KEY"
             if [ "$DRY_RUN" = 0 ] && [ ! -s "$MUNGE_KEY" ]; then
                 die "the key decoded from $KEY_B64 is empty; re-copy it from dl380g10"
@@ -323,8 +362,9 @@ case "$ROLE" in
             run chmod 400 "$MUNGE_KEY"
             stamp_fleet_key
             # The secret does not stay lying around in a home directory once
-            # it is where it belongs.
-            run shred -u "$KEY_B64"
+            # it is where it belongs.  Nor if this run dies before here: the
+            # exit path removes it too, from the moment the decode above began.
+            forget_key_b64
         fi
         ;;
 esac
@@ -482,11 +522,13 @@ fi
 run systemctl enable slurmd
 run systemctl restart slurmd
 
+RUN_FINISHED=1
 say ""
 say "# done on $NODE."
 case "$ROLE" in
     controller)
-        say "# next: copy $KEY_B64 to each Spark as rob and run this script there."
+        say "# next: take $KEY_B64 to each Spark as rob, which removes it here,"
+        say "# and run this script there."
         ;;
     spark)
         say "# next: when all three boxes are installed, run fleet/slurm/verify.sh as rob."

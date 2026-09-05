@@ -139,3 +139,62 @@ def test_the_install_script_refuses_an_address_the_box_does_not_hold() -> None:
     assert 'declared_address="$(stanza_field "$declared" NodeAddr)"' in script
     assert "ip -4 -o addr show scope global" in script
     assert "declares no NodeAddr" in script
+
+
+# -- the default a hand-run job is charged -----------------------------------
+
+
+def _global_setting(text: str, name: str) -> str | None:
+    """A top-level ``Name=value``, ignoring comments and node stanzas."""
+
+    for line in re.sub(r"\\\n\s*", " ", text).splitlines():
+        line = line.strip()
+        if line.startswith("#") or line.startswith(("NodeName=", "PartitionName=")):
+            continue
+        if line.startswith(f"{name}="):
+            return line.split("=", 1)[1].split()[0]
+    return None
+
+
+def test_a_job_that_names_no_memory_is_charged_a_default_not_the_node() -> None:
+    """``CR_Core_Memory`` with no default charges the node's whole
+    ``RealMemory``, so one ``sbatch`` run by hand without ``--mem`` holds a box
+    against every other job.  The lane always sends ``--mem``; an operator at a
+    shell does not, and that is the case nothing else covers.
+    """
+
+    text = CONF.read_text(encoding="utf-8")
+    assert "CR_Core_Memory" in text
+    assert _global_setting(text, "DefMemPerCPU") is not None, (
+        "no DefMemPerCPU: a raw sbatch takes the node's whole RealMemory"
+    )
+    # One or the other, never both: SLURM rejects a configuration that sets
+    # DefMemPerNode alongside DefMemPerCPU.
+    assert _global_setting(text, "DefMemPerNode") is None
+
+
+def test_the_memory_default_is_one_every_node_can_honour_at_full_occupancy() -> None:
+    """The default is applied before a node is chosen.
+
+    A per-core default above a node's own RealMemory/CPUs ratio makes a
+    whole-node job on that node ask for more memory than the node offers, and
+    SLURM leaves it pending rather than running it somewhere smaller.  So the
+    fleet-wide value is the minimum of the three ratios: 61440/80 = 768 on
+    dl380g10, against 3686 and 4096 on the Sparks.
+    """
+
+    text = CONF.read_text(encoding="utf-8")
+    setting = _global_setting(text, "DefMemPerCPU")
+    assert setting is not None, "no DefMemPerCPU to check"
+    default = int(setting)
+    ratios = {
+        node: int(fields["RealMemory"]) // int(fields["CPUs"])
+        for node, fields in node_stanzas(text).items()
+    }
+    assert default == min(ratios.values()), ratios
+    for node, fields in node_stanzas(text).items():
+        charged = default * int(fields["CPUs"])
+        assert charged <= int(fields["RealMemory"]), (
+            f"{node}: a whole-node job defaults to {charged} MiB of "
+            f"{fields['RealMemory']} MiB"
+        )
