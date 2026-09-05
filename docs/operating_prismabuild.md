@@ -469,7 +469,7 @@ for jobs the controller has forgotten. Use them directly for scheduler detail
 | `/mnt/shared/prismabuild-fleet/pb-queue/done/<key>.json` | The ending of an action whose work was done. |
 | `.../pb-queue/failed/<key>.json` | The ending of an action with no receipt. |
 | `.../pb-queue/withdrawn/<key>.json` | The marker for an action somebody cancelled. |
-| `.../slurm/<key>/` | The lane directory: `job.sh`, `submissions/`, `latest.json`, `liveness.jsonl`, and `<jobid>.out` and `.err`. |
+| `.../slurm/<key>/` | The lane directory: `scripts/<sha256>.sh`, the immutable script each submission sent, plus `job.sh` as a pointer to the newest, `submissions/`, `latest.json`, `liveness.jsonl`, and `<jobid>.out` and `.err`. |
 | `.../cas/` | The content-addressed store: action requests, results, and receipts. |
 
 Both transports file their endings in the same two directories, so a SLURM

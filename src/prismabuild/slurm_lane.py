@@ -66,6 +66,7 @@ from collections.abc import Iterator, Mapping, Sequence
 import contextlib
 from dataclasses import dataclass, field
 import getpass
+import hashlib
 import json
 import math
 import os
@@ -83,6 +84,11 @@ from . import core as pb
 from . import pool
 
 SUBMISSION_SCHEMA_V1 = "prismaquant.prismabuild.slurm_lane_submission.v1"
+
+#: Where a lane directory keeps the immutable batch scripts, one per distinct
+#: set of bytes, named by their sha256.  ``job.sh`` beside it is a pointer to
+#: the newest and is not what any job executes; see ``submit``.
+SCRIPT_DIRNAME = "scripts"
 
 #: The terminal record this lane files where the pull queue files its own.
 #:
@@ -885,6 +891,41 @@ def _now() -> float:
     return time.time()
 
 
+def _publish_bytes_if_absent(
+    path: Path, raw: bytes, *, mode: int = 0o644
+) -> bool:
+    """Link ``raw`` into place at ``path`` only when nothing is there yet.
+
+    The writer under ``_publish_json_if_absent``, which is where the reason
+    for the shape lives.  Separated because the batch script is bytes and a
+    mode rather than a JSON payload, and it is published under the same rule:
+    the name is the digest of these bytes, so a name that already exists holds
+    the same bytes and nothing was substituted.
+
+    Returns True when this call linked the file and False when one was already
+    there; the temp file is gone either way.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Explicit, because ``os.open``'s mode is masked by the umask and a
+        # script an operator reproduces by hand should be executable.
+        os.chmod(tmp, mode)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _publish_json_if_absent(path: Path, payload: Mapping[str, object]) -> bool:
     """File ``payload`` at ``path`` only when nothing is there yet.
 
@@ -905,22 +946,8 @@ def _publish_json_if_absent(path: Path, payload: Mapping[str, object]) -> bool:
     already there; the temp file is gone either way.
     """
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw = pb._canonical_file_bytes(dict(payload))
-    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(tmp, path)
-        except FileExistsError:
-            return False
-        return True
-    finally:
-        tmp.unlink(missing_ok=True)
+    return _publish_bytes_if_absent(
+        path, pb._canonical_file_bytes(dict(payload)))
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
@@ -952,6 +979,11 @@ def job_script_text(
     local_checkout_root: str | Path | None = None,
 ) -> str:
     """The batch script: materialize inside the job, then run the worker.
+
+    Deterministic in its arguments, which is what lets ``submit`` name the
+    file by the digest of these bytes: two submissions that would send the
+    same script share one immutable file, and a submission that would send a
+    different one gets a different name rather than replacing anything.
 
     Materialization happens *here*, on the node that won the allocation, rather
     than at submit time on the submitter's box.  A checkout materialized before
@@ -1039,7 +1071,6 @@ def submit(
     directory = lane_directory(key, root=root)
     directory.mkdir(parents=True, exist_ok=True)
 
-    script = directory / "job.sh"
     text = job_script_text(
         request_path=request_path,
         cas_root=cas.root,
@@ -1050,15 +1081,34 @@ def submit(
         worker_python=worker_python,
         local_checkout_root=local_checkout_root,
     )
-    # Rewritten rather than published immutably: the script is derived from the
-    # action and the deployment, and the deployment's runtime generation may
-    # legitimately roll between two submissions of one action key.  What must
-    # not drift is the record of what each submission actually sent, and that
-    # is first-writer-published below.
-    tmp = directory / f".job.sh.{os.getpid()}.tmp"
-    tmp.write_text(text, encoding="utf-8")
-    tmp.chmod(0o755)
-    os.replace(tmp, script)
+    raw = text.encode("utf-8")
+    # Named by the digest of its own bytes, because a mutable ``job.sh`` was
+    # not the submission's script but the directory's.  An action key is a
+    # content hash, so two callers submitting one key is the ordinary case,
+    # and the deployment's runtime generation may legitimately roll between
+    # them: the second caller replaced ``job.sh`` before the first caller's
+    # ``sbatch`` had read it, so job A ran runtime B's request and CAS root
+    # while A's sealed record still named A's.  Content addressing removes the
+    # substitution rather than serializing around it -- two submitters with
+    # the same bytes share the file, and different bytes are different names.
+    digest = hashlib.sha256(raw).hexdigest()
+    script = directory / SCRIPT_DIRNAME / f"{digest}.sh"
+    _publish_bytes_if_absent(script, raw, mode=0o755)
+    # A pointer to the newest attempt's script, for a reader that wants one
+    # name.  It is not what any job executes and nothing derives a submission
+    # from it: ``sbatch`` is handed the immutable path above and the record
+    # names it with its digest.  The temp name carries a UUID for the reason
+    # ``_write_latest`` gives: a lane directory is on the shared mount and a
+    # pid is unique only within a box.
+    pointer = directory / "job.sh"
+    tmp = directory / f".job.sh.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        tmp.write_bytes(raw)
+        tmp.chmod(0o755)
+        os.replace(tmp, pointer)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
     nice = nice_for(priority)
     stdout_template = directory / "%j.out"
@@ -1173,6 +1223,11 @@ def submit(
         "job_id": job_id,
         "argv": list(argv),
         "script": str(script),
+        # The bytes ``sbatch`` was handed, named by their own digest.  A
+        # submission record that says which script ran is only worth as much
+        # as the script's immutability, so the record carries the check an
+        # operator can repeat: ``sha256sum`` of the path above.
+        "script_sha256": digest,
         "directory": str(directory),
         "stdout": str(directory / f"{job_id}.out"),
         "stderr": str(directory / f"{job_id}.err"),
