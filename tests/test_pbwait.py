@@ -84,7 +84,11 @@ def test_a_detached_pool_action_is_reported_once_a_worker_runs_it(
 
     table = pbwait.render(rows)
     assert table.splitlines()[0].split() == [
-        "key", "status", "transport", "host", "elapsed", "rc", "receipt"]
+        "key", "status", "transport", "job", "host", "elapsed", "rc",
+        "receipt"]
+    # No job handle under the pull queue: the worker ran it in a process that
+    # is gone, and there is nothing an operator could look up.
+    assert rows[0]["job"] == "-"
     assert key[:12] in table.splitlines()[1]
 
 
@@ -196,6 +200,10 @@ def test_a_detached_slurm_action_has_its_ending_filed_by_the_waiter(
     assert record["transport"] == "slurm"
     assert record["detail"]["receipt_published"] is True
     assert record["detail"]["slurm"]["state"] == "COMPLETED"
+    # The job id is on the table, because it is what an operator types into
+    # sacct and scontrol when they want more than the record holds.
+    assert rows[0]["job"] == record["detail"]["slurm"]["job_id"]
+    assert rows[0]["job"] in pbwait.render(rows)
 
 
 def test_a_detached_slurm_job_that_failed_is_filed_and_reported(

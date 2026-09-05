@@ -59,6 +59,7 @@ _COLUMNS = (
     ("key", "key"),
     ("status", "status"),
     ("transport", "transport"),
+    ("job", "job"),
     ("host", "host"),
     ("elapsed", "elapsed"),
     ("returncode", "rc"),
@@ -164,8 +165,9 @@ def recorded_action(cas, key: str):
 
 def _row(key: str, status: str, **fields) -> dict:
     row = {
-        "action_key": key, "status": status, "transport": "-", "host": "-",
-        "elapsed_s": None, "returncode": None, "receipt_published": None,
+        "action_key": key, "status": status, "transport": "-", "job": "-",
+        "host": "-", "elapsed_s": None, "returncode": None,
+        "receipt_published": None,
         "succeeded": status in {"executed", "cache_hit"},
     }
     row.update(fields)
@@ -174,10 +176,15 @@ def _row(key: str, status: str, **fields) -> dict:
 
 def _from_record(q, outcome_path, outcome) -> dict:
     summary = pbrun.outcome_summary(q, outcome_path, outcome)
+    scheduler = summary["detail"].get("slurm") or {}
     return _row(
         summary["action_key"] or "",
         summary["status"],
         transport=summary["transport"],
+        # What an operator needs to read the logs the record names: under SLURM
+        # that is the job id, and under the pull queue there is no such handle
+        # -- the worker ran it in a process that is gone.
+        job=str(scheduler.get("job_id") or "-"),
         host=summary["finished_host"] or "-",
         elapsed_s=summary["elapsed_s"],
         returncode=summary["returncode"],

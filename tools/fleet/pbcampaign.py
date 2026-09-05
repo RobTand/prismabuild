@@ -49,6 +49,12 @@ and each one is exactly one ``pbrun`` flag:
 An unknown field is refused rather than ignored: a typo that is silently
 dropped seals an action nobody asked for.
 
+``--transport`` is a flag on the campaign and not a row field, because which
+dispatcher carries the work is a fact about the fleet rather than about the
+action.  One caveat that belongs to ``pbrun`` and travels here: ``exclusive``
+is the one field whose demand ``pbrun`` derives differently per transport, so
+it is the one field that moves an action key when the transport changes.
+
 Example
 -------
 
@@ -82,6 +88,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -201,7 +208,7 @@ def pbrun_argv(row) -> list[str]:
     return flags + ["--", *[str(item) for item in row["argv"]]]
 
 
-def submit_row(row) -> dict:
+def submit_row(row, *, transport: str = "") -> dict:
     """Seal and submit one row through ``pbrun``, and return what it printed.
 
     A row that ``pbrun`` refuses is recorded and the campaign goes on.  Forty
@@ -209,7 +216,10 @@ def submit_row(row) -> dict:
     there, and the refusal reaches the operator on the table with the rest.
     """
 
-    flags = ["--detach", *pbrun_argv(row)]
+    flags = ["--detach"]
+    if transport:
+        flags += ["--transport", transport]
+    flags += pbrun_argv(row)
     saved = sys.argv
     captured = io.StringIO()
     sys.argv = ["pbrun.py", *flags]
@@ -239,12 +249,12 @@ def submit_row(row) -> dict:
     return published
 
 
-def submit(rows) -> list[dict]:
+def submit(rows, *, transport: str = "") -> list[dict]:
     """Submit every row, in order, and return one submission record each."""
 
     submissions = []
     for index, row in enumerate(rows):
-        published = submit_row(row)
+        published = submit_row(row, transport=transport)
         key = str(published.get("action_key") or "")
         print(f"pbcampaign: row {index} {published['status']} "
               f"{key[:pbwait.KEY_WIDTH] or '-'}", file=sys.stderr, flush=True)
@@ -290,6 +300,13 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="how long to wait for ALL the rows, not for each")
+    ap.add_argument(
+        "--transport", choices=pbrun.TRANSPORTS,
+        default=os.environ.get(pbrun.DEFAULT_TRANSPORT_ENV) or "pool",
+        help="which dispatcher carries every row (env PRISMABUILD_TRANSPORT); "
+             "forwarded to pbrun unchanged. It is one flag and not a row "
+             "field because the transport is a fact about the fleet, not "
+             "about the work")
     ap.add_argument("--detach", action="store_true",
                     help="print each row's submission line and return without "
                          "waiting; wait for them later with pbwait.py")
@@ -303,7 +320,7 @@ def main(argv=None) -> int:
     if not rows:
         raise SystemExit("pbcampaign: the manifest has no rows")
 
-    submissions = submit(rows)
+    submissions = submit(rows, transport=args.transport)
     refused = [one for one in submissions if one.get("status") == "refused"]
     for one in refused:
         print(f"pbcampaign: {one.get('error')}\n"
