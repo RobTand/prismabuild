@@ -131,9 +131,9 @@ GresTypes=gpu,shard
 NodeName=$NODE CPUs=$CPUS RealMemory=16384 Gres=gpu:1,shard:2 \\
     Feature=gb10,smoke,$NODE State=UNKNOWN
 
-PartitionName=all Nodes=ALL Default=YES MaxTime=1-00:00:00 State=UP
-PartitionName=gpu Nodes=$NODE MaxTime=1-00:00:00 State=UP
-PartitionName=cpu Nodes=$NODE MaxTime=1-00:00:00 State=UP
+PartitionName=all Nodes=ALL Default=YES MaxTime=UNLIMITED State=UP
+PartitionName=gpu Nodes=$NODE MaxTime=UNLIMITED State=UP
+PartitionName=cpu Nodes=$NODE MaxTime=UNLIMITED State=UP
 EOF
 
 # The fleet's own gres.conf form, in shape: a sharing `gpu` bound to a device

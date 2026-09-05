@@ -354,9 +354,9 @@ def test_a_gpu_slot_action_asks_for_shards_its_tags_and_its_own_time(
         f"--chdir={directory}",
         f"--output={directory}/%j.out",
         f"--error={directory}/%j.err",
-        "--time=02:00:00",
         "--mem=73728M",
         "--cpus-per-task=4",
+        "--time=02:00:00",
         "--gres=shard:1",
         "--constraint=gb10&sparklina",
         str(directory / "job.sh"),
@@ -394,6 +394,32 @@ def test_an_exclusive_action_asks_for_the_whole_device_not_more_shards(
         {"gpu": 3, "mem_gb": 16, "cpu": 2}, exclusive=True)
     _submit(tmp_path, resources=resources, seed="exclusive")
     assert "--gres=gpu:1" in _submissions(fleet)[0]["argv"]
+
+
+def test_no_requested_deadline_sends_no_time_limit(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """Elapsed time is not evidence of death.  A submission that asked for no
+    deadline carries no --time, so under a partition whose MaxTime is
+    UNLIMITED the job runs while it is running; the pull queue never enforced
+    the old 7200 s default either (issue #32), and enforcing it here would have
+    made the cutover a two-hour kill on every default submission."""
+
+    job = _submit(tmp_path, resources=sl.LaneResources(), timeout_s=None)
+    argv = _submissions(fleet)[0]["argv"]
+    assert not [flag for flag in argv if flag.startswith("--time")]
+    record = json.loads(job.record_path.read_text(encoding="utf-8"))
+    assert record["time_limit"] == ""
+
+
+def test_a_requested_deadline_still_becomes_a_time_limit(
+    tmp_path: Path, fleet: Path
+) -> None:
+    job = _submit(tmp_path, resources=sl.LaneResources(), timeout_s=90.0)
+    argv = _submissions(fleet)[0]["argv"]
+    assert "--time=00:01:30" in argv
+    record = json.loads(job.record_path.read_text(encoding="utf-8"))
+    assert record["time_limit"] == "00:01:30"
 
 
 def test_the_partition_is_read_off_the_demand_and_the_placement() -> None:

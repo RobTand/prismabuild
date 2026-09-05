@@ -47,9 +47,11 @@ DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
 JOB_ENTRY = Path(__file__).resolve(strict=True).parent / "slurm_job.py"
 WORKER_SCRIPT = RUNTIME_ROOT / "tools" / "prismabuild_worker.py"
 
-#: What a producer's action gets if it does not say otherwise.  The pull queue
-#: ignores it; SLURM turns it into ``--time`` and enforces it.
-DEFAULT_TIMEOUT_S = 7200.0
+#: What a producer's action gets if it does not say otherwise: no deadline.
+#: The pull queue never enforced one, and under SLURM an unset deadline sends
+#: no ``--time``, so the job runs while it is running.  A producer that wants
+#: a deadline asks for one, and SLURM enforces that one.
+DEFAULT_TIMEOUT_S: float | None = None
 
 
 class SubmitRefused(Exception):
@@ -96,7 +98,7 @@ def submit(
     needs_gpu: bool = False,
     priority: int = 0,
     resources: Mapping[str, int] | None = None,
-    timeout_s: float = DEFAULT_TIMEOUT_S,
+    timeout_s: float | None = DEFAULT_TIMEOUT_S,
     max_attempts: int = 1,
     retry_safe: bool | None = None,
     queue_root: str | Path = SH / "pb-queue",

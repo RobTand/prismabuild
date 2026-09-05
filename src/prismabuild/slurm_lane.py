@@ -514,7 +514,7 @@ def submit(
     request_path: str | Path,
     placement: Sequence[str] = (),
     resources: LaneResources,
-    timeout_s: float,
+    timeout_s: float | None,
     worker_script: str | Path,
     job_entry: str | Path,
     root: str | Path | None = None,
@@ -582,10 +582,16 @@ def submit(
         f"--chdir={directory}",
         f"--output={stdout_template}",
         f"--error={stderr_template}",
-        f"--time={format_time_limit(timeout_s)}",
         f"--mem={resources.memory_mib}M",
         f"--cpus-per-task={resources.cpus}",
     ]
+    if timeout_s is not None:
+        # A deadline is sent only when the submitter asked for one.  Wall-clock
+        # is not evidence of death: a job that is still progressing at any
+        # elapsed time is left running, and the partition's MaxTime is
+        # UNLIMITED so that an unset deadline means exactly that.  An explicit
+        # --timeout-s still becomes --time and SLURM enforces it.
+        argv.append(f"--time={format_time_limit(timeout_s)}")
     gres = resources.gres()
     if gres:
         argv.append(f"--gres={gres}")
@@ -633,7 +639,8 @@ def submit(
         "gres": gres or "",
         # Empty means the default partition: the constraint decided.
         "partition": partition or "",
-        "time_limit": format_time_limit(timeout_s),
+        # Empty means no deadline was requested: the job runs while it runs.
+        "time_limit": "" if timeout_s is None else format_time_limit(timeout_s),
         "cpus": resources.cpus,
         "memory_mib": resources.memory_mib,
         "submitted_unix": time.time(),
@@ -1248,7 +1255,7 @@ def run(
     request_path: str | Path,
     placement: Sequence[str] = (),
     resources: LaneResources,
-    timeout_s: float,
+    timeout_s: float | None,
     worker_script: str | Path,
     job_entry: str | Path,
     retry_safe: bool = False,
