@@ -190,6 +190,10 @@ munge -n | unmunge >/dev/null 2>&1 || die "munge is not answering"
 # environment, so they are exported here rather than passed by the job -- the
 # job's environment is --export=NIL and does not reach an Epilog anyway.
 export PRISMABUILD_SLURM_LANE_ROOT="$VOL/prismabuild-fleet/slurm"
+# Not the job-state root: that one is node-side, and the job and the Epilog
+# each resolve it from PRISMABUILD_SLURM_JOB_STATE_ROOT or the same default.
+# Neither of them can see this shell, so the default is what both get -- which
+# is the agreement row 8 exercises.
 export PRISMABUILD_EPILOG_DOCKER=/usr/local/lib/pb-smoke/docker
 export PB_SMOKE_DOCKER_LOG="$VOL/docker.log"
 : >"$PB_SMOKE_DOCKER_LOG"

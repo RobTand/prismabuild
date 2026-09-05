@@ -96,6 +96,23 @@ def test_a_producer_that_asks_for_no_deadline_gets_none(
     assert not [flag for flag in argv if flag.startswith("--time")]
 
 
+def test_a_producers_priority_reaches_the_scheduler(
+    tmp_path: Path, fleet: Path,
+) -> None:
+    """The pool branch records ``priority`` and sorts on it; the SLURM branch
+    used to accept the same argument and drop it."""
+
+    cas = _cas(tmp_path)
+    action = _runnable_action(tmp_path, cas)
+    request = cas.publish_action_request(action)
+    fleet_submit.submit(
+        action, cas=cas, request_path=request, transport="slurm",
+        resources={"cpu": 1, "mem_gb": 4}, priority=-10,
+        queue_root=tmp_path / "pb-queue",
+    )
+    assert f"--nice={sl.NICE_BASE + 10}" in _submissions(fleet)[0]["argv"]
+
+
 def test_an_untagged_cpu_action_goes_to_the_cpu_partition(
     tmp_path: Path, fleet: Path,
 ) -> None:

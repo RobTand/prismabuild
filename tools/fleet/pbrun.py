@@ -1160,7 +1160,33 @@ def require_checkout_owned_scripts(
         )
 
 
-def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
+#: What the notice says where it has no fleet census to read.
+#:
+#: The pull queue's census is the worker-offer registry, and ``None`` from
+#: ``placeable_hosts`` means nothing has announced.  A transport that keeps no
+#: such registry is a different fact with the same shape, and printing the
+#: queue's sentence for it would be a claim about a fleet nobody asked.
+UNANNOUNCED_CENSUS = "no worker has announced"
+NO_CENSUS = "this transport keeps no worker census"
+
+
+class _NoCensus:
+    """The placement census a transport without worker offers has: none.
+
+    The SLURM branch deliberately builds no ``PoolQueue`` -- a retained offer
+    from a loop stopped for the cutover would answer wrongly -- but the pin a
+    box-local checkout imposes is just as real there, and it is the thing the
+    submitter is otherwise never told.  So the notice is printed with the
+    census unavailable, which every branch of it already handles.
+    """
+
+    @staticmethod
+    def placeable_hosts(_intent):
+        return None
+
+
+def _width_of_the_pin(queue, intent, tags: list[str], hostname: str,
+                      *, unknown: str = UNANNOUNCED_CENSUS) -> str:
     """How many boxes this action WOULD have had, with the host tag taken off.
 
     Not "how many boxes match the pinned tags" -- that is one, by
@@ -1175,7 +1201,7 @@ def _width_of_the_pin(queue, intent, tags: list[str], hostname: str) -> str:
     unpinned["tags"] = [t for t in tags if t != hostname]
     hosts = queue.placeable_hosts(unpinned)
     if hosts is None:
-        return "Fleet width unknown: no worker has announced."
+        return f"Fleet width unknown: {unknown}."
     others = [h for h in hosts if h != hostname]
     if not others:
         return "No other live box fits this demand, so the pin costs nothing now."
@@ -1192,6 +1218,7 @@ def pin_notice(
     hostname: str,
     here: bool,
     portable_checkout: bool = False,
+    unknown_census: str = UNANNOUNCED_CENSUS,
 ) -> str:
     """What the submitter is not otherwise told: this action is one box wide.
 
@@ -1260,7 +1287,9 @@ def pin_notice(
         tail = ("" if not local else
                 f"  Move the checkout under {SHARED_ROOT} to let any box claim "
                 f"it, or accept the pin knowingly.")
-        return f"{head}  {_width_of_the_pin(queue, intent, tags, hostname)}{tail}"
+        width = _width_of_the_pin(
+            queue, intent, tags, hostname, unknown=unknown_census)
+        return f"{head}  {width}{tail}"
 
     # No host tag landed.  Say what did, and what it costs.
     notes: list[str] = []
@@ -1271,7 +1300,7 @@ def pin_notice(
     if local:
         if others is None:
             notes.append(f"WARNING -- the checkout {cwd} exists only on "
-                         f"{hostname}, and no worker has announced, so tags "
+                         f"{hostname}, and {unknown_census}, so tags "
                          f"{tags} may let another box claim this action and "
                          f"fail on the missing tree.")
         elif others:
@@ -1293,8 +1322,7 @@ def pin_notice(
                      f"checkout under {SHARED_ROOT}.")
     elif here:
         if claimants is None:
-            notes.append("No worker has announced, so which box claims it is "
-                         "unknown.")
+            notes.append(f"Which box claims it is unknown: {unknown_census}.")
         elif claimants:
             notes.append(f"{len(claimants)} live "
                          f"box{'es' if len(claimants) > 1 else ''} can claim "
@@ -1758,6 +1786,8 @@ def slurm_outcome(
     wait_s: float,
     retry_safe: bool,
     max_attempts: int,
+    priority: int = 0,
+    placement_notice: str = "",
     anywhere: bool = False,
     detach: bool = False,
     runtime_root: Path = RUNTIME_ROOT,
@@ -1785,11 +1815,40 @@ def slurm_outcome(
     """
 
     key = str(action["action_key"])
+    if placement_notice:
+        # How wide this action is, said before anything is submitted, exactly
+        # as the pool path says it.  The pin a box-local checkout imposes is a
+        # consequence of a path rather than of a flag, and a submitter that is
+        # not told has narrowed the fleet to one box without knowing.
+        print(placement_notice, file=sys.stderr, flush=True)
+    slots = int(demand.get("gpu", 0) or 0)
+    if exclusive and slots > 1:
+        # ``LaneResources.gres()`` answers ``gpu:1`` for an exclusive action
+        # whatever the count says, because ``gpu:N`` and ``shard:N`` are
+        # mutually exclusive requests against one device and exclusivity is the
+        # first.  On today's one-device boxes that is right and the count is
+        # redundant; on a two-GPU box it would silently hand back half of what
+        # was asked for.  Refusing is the honest answer either way -- the pool
+        # read the count off worker offers, and SLURM has no such thing here.
+        raise SystemExit(
+            f"pbrun: --exclusive --gpu-capacity {slots} is not something this "
+            f"transport can express.\n"
+            "Under SLURM, exclusivity IS the whole device: the lane sends "
+            "--gres=gpu:1, and a count above one would have to name that many "
+            "whole devices, which nothing here derives or checks.\n"
+            "Drop --gpu-capacity to take one device exclusively, or drop "
+            "--exclusive and ask for --gpu-capacity slots (shards) instead."
+        )
     resources = slurm_lane.LaneResources.from_demand(demand, exclusive=exclusive)
     lane_commands.setdefault("on_stall", lambda report: _report_stall(key, report))
     lane_commands.setdefault(
         "on_notice",
         lambda text: print(f"pbrun: {text}", file=sys.stderr, flush=True))
+    # Say that the slot has no device, every time, on the line that announces
+    # the submission.  The mask is applied before the transport branch and it
+    # is also a silent narrowing: a suite that used to run its CUDA tests now
+    # skips them, and a skip that nobody announced reads as the same green.
+    masked = "" if slots else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
     # sbatch's own refusal is this transport's capability gate: an unknown
     # Feature or an impossible GRES is rejected at submit time, which is the
     # moment the pool path's ``capability_verdict`` spoke.  So it reaches the
@@ -1804,6 +1863,12 @@ def slurm_outcome(
             resources=resources,
             partition=slurm_lane.partition_for(
                 resources, tags, anywhere=anywhere),
+            # ``--priority`` is a queue hint on either transport: the pool
+            # sorts its ready list on it, and SLURM subtracts the derived nice
+            # from the base priority its scheduler assigned.  Dropping it here
+            # is what let ``pool_reset``'s bulk ``--priority -10`` land
+            # alongside interactive work instead of behind it.
+            priority=priority,
             timeout_s=timeout_s,
             worker_script=runtime_root / "tools" / "prismabuild_worker.py",
             job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
@@ -1818,7 +1883,7 @@ def slurm_outcome(
             detach=detach,
             on_submit=lambda job: print(
                 f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
-                f"(attempt {job.attempt}) tags={tags} demand={demand}",
+                f"(attempt {job.attempt}) tags={tags} demand={demand}{masked}",
                 file=sys.stderr, flush=True),
             **lane_commands,
         )
@@ -2682,6 +2747,20 @@ def main() -> int:
             action,
             cas=cas,
             request_path=request_path,
+            # Built here because only ``main`` knows the checkout and the
+            # flags it was asked with.  The census is unavailable rather than
+            # empty: this branch builds no PoolQueue on purpose, and worker
+            # offers do not describe a SLURM fleet.
+            placement_notice=pin_notice(
+                _NoCensus(),
+                {"tags": tags, "needs_gpu": bool(demand.get("gpu")),
+                 "resources": demand},
+                cwd=cwd,
+                hostname=socket.gethostname(),
+                here=args.here,
+                portable_checkout=portable_checkout,
+                unknown_census=NO_CENSUS,
+            ),
             tags=tags,
             demand=demand,
             exclusive=args.exclusive,
@@ -2689,6 +2768,7 @@ def main() -> int:
             wait_s=args.wait_s,
             retry_safe=args.retry_safe,
             max_attempts=args.max_attempts,
+            priority=args.priority,
             anywhere=args.anywhere,
             detach=args.detach,
         )
