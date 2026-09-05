@@ -82,6 +82,12 @@ derived host pins) and seals them in action params before computing the action
 key, result/stamp names, and container owner. Flag order and duplicate tags do
 not move identity; a different admissible worker population does, so a
 Sparky-pinned query cannot reuse a gx10 receipt for the same argv.
+`pbrun --transport slurm --measurement --host-class gb10 -- <cmd>` seals a
+measurement keyed on the host class `gb10` (a node Feature name) and sends it
+as `--constraint`; the worker attests the class through the SLURM controller
+before running. A measurement's numerics do not transfer across architectures,
+so `--measurement` refuses without `--host-class`, and because the submission
+binds the submitting box's toolchain, submit it from a box of that class.
 
 Git-backed `pbrun` submissions are checkout-portable: the exact dirty tree is
 sealed as a Git bundle in the CAS — the commit, its ancestry, and any branch
