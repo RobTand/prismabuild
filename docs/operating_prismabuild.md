@@ -718,3 +718,21 @@ afterwards. Run `pbwait` on the keys to derive and file the terminal records.
 
 Any producer that builds its own actions should do the same: seal the action,
 hand it to `fleet_submit`, print the key, and read the CAS for the verdict.
+
+## Smoke-test a transport
+
+`tools/fleet/seal_and_publish.py --transport pool|slurm` seals one trivial
+action and hands it to the named transport. It prints the submitted key, the
+key it sealed, and where the submission went, so a `ready/` item under the
+pull queue and a submission record under the lane are told apart.
+
+The SLURM lane addresses a checkout only through a sealed snapshot, so this
+command makes its smoke checkout sealable: if
+`/mnt/shared/prismabuild-fleet/checkout` has no commit, the first run
+initializes a Git repository there and commits `task_code.py`, and nothing
+else. A checkout that already has a commit is left as it is. Before
+2026-09-05 the command wrote a plain directory, and `--transport slurm`
+refused every run with `a non-Git checkout cannot be materialized` without
+reaching a scheduler command.
+
+A refused submission now prints the transport's reason on stderr and exits 2.
