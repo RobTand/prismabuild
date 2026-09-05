@@ -155,7 +155,11 @@ def main():
             cas=cas,
             request_path=request,
             transport=args.transport,
-            checkout_root=str(CHECKOUT) if args.transport == "pool" else None,
+            # Passed on both transports.  The pull queue carries it on the
+            # queue item; the lane seals it as the snapshot the node
+            # materializes, which is a different action key and the one
+            # the submission reports.
+            checkout_root=str(CHECKOUT),
             worker_script=str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
             tags=["gb10"],
             needs_gpu=True,
@@ -165,7 +169,10 @@ def main():
             resources={"gpu": 1, "mem_gb": 16},
         )
         published += 1
-        print(f"  shard {shard:>3}  {key[:16]}  {submission.describe()}")
+        # The submitted key, not the sealed one: under SLURM the lane
+        # seals the checkout into the action, and the key moves with it.
+        print(f"  shard {shard:>3}  {submission.action_key[:16]}  "
+              f"{submission.describe()}")
     print(f"published {published} action(s)")
 
 
