@@ -15,8 +15,15 @@ Three decisions are worth stating, because each had an alternative.
 publishing a receipt did not do the work, and a job that exits non-zero after
 publishing one did.  ``wait`` therefore reports the scheduler's state and log
 paths as *diagnosis*; the caller asks ``cas.lookup(action)`` for the verdict.
-That is the same rule the pull queue follows, which is what lets an action
-executed under either transport mean the same thing.
+
+The pull queue reaches the same answer by a different rule, and the difference
+is deliberate rather than incidental.  Its verdict is the launcher's exit code
+(``pool.py``: ``status = "executed" if process.returncode == 0 else "failed"``),
+and the two rules agree whenever the launcher exits, because ``core.py``
+publishes a receipt only on a clean run.  They part on one ending: a launcher
+that publishes its receipt and is then signalled.  The queue files ``failed``;
+this lane files ``executed``, because the receipt is in the CAS and the work it
+attests was done.  The lane trusts the receipt.
 
 **Submission does not use ``sbatch --wait``.**  It would hand back the job's
 exit status directly, and it costs two things this lane needs more.  The job id
