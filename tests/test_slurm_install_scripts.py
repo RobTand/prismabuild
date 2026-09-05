@@ -826,3 +826,91 @@ def test_a_pid_that_exits_between_pgrep_and_the_read_is_silently_gone(
     assert result.returncode == 0, result.stderr
     assert result.stderr == "", result.stderr
     assert result.stdout == "", result.stdout
+
+
+# -- the munge key does not outlive the run that needed it -------------------
+
+
+def _shell_function(text: str, name: str) -> str:
+    """One function definition, `name() {` to the closing brace in column 1."""
+
+    start = text.index(f"{name}() {{")
+    end = text.index("\n}\n", start) + len("\n}\n")
+    return text[start:end]
+
+
+def test_the_key_is_removed_on_a_box_that_has_no_shred(tmp_path: Path) -> None:
+    """`shred -u` alone leaves the fleet's shared secret in a home directory
+    on any box that does not have it.
+
+    shred is coreutils and is on all three boxes today, so this is about the
+    removal not depending on that staying true: cleanup that silently does
+    nothing is the failure mode a secret cannot afford.
+    """
+
+    lines = [
+        line for line in _dry_run(tmp_path, "sparky").splitlines()
+        if "shred" in line
+    ]
+    assert len(lines) == 1, lines
+    key = tmp_path / "key.b64"
+    key.write_text("bXVuZ2U=\n", encoding="utf-8")
+
+    # A PATH holding everything the removal needs except shred.
+    coreutils = tmp_path / "no-shred"
+    coreutils.mkdir()
+    for name in ("rm", "cat"):
+        (coreutils / name).symlink_to(shutil.which(name))
+    assert shutil.which("shred", path=str(coreutils)) is None
+    result = subprocess.run(
+        ["/bin/bash", "-c", lines[0].replace(KEY_B64, str(key))],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PATH": str(coreutils)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not key.exists(), "the key survived a box with no shred"
+
+
+def test_a_run_that_stops_after_reading_the_key_does_not_leave_it_behind(
+    tmp_path: Path,
+) -> None:
+    """The install refuses rather than repairs, so it exits partway by design:
+    a slurm uid it will not accept, a topology the box does not report, a SLURM
+    older than the controller's.  Every one of those on a Spark happens after
+    the key has been decoded, and on the controller after it has been exported.
+
+    The exit path removes the copy in that window, and only in it: a run that
+    finishes keeps the controller's export, which is the copy the operator
+    carries.
+    """
+
+    handler = _shell_function(
+        (FLEET / "install.sh").read_text(encoding="utf-8"),
+        "forget_key_b64_on_exit",
+    )
+
+    def run_with(*, finished: str) -> Path:
+        key = tmp_path / f"key-{finished}.b64"
+        key.write_text("bXVuZ2U=\n", encoding="utf-8")
+        program = "\n".join([
+            f'KEY_B64="{key}"',
+            "DRY_RUN=0",
+            "KEY_B64_LEFT=1",
+            f"RUN_FINISHED={finished}",
+            handler,
+            "trap forget_key_b64_on_exit EXIT",
+            "exit 1",
+        ])
+        result = subprocess.run(
+            ["bash", "-c", program], capture_output=True, text=True, check=False)
+        assert result.stderr == "", result.stderr
+        assert result.stdout == "", result.stdout
+        return key
+
+    assert not run_with(finished="0").exists(), (
+        "a run that stopped partway left the fleet's key in a home directory"
+    )
+    assert run_with(finished="1").exists(), (
+        "a finished run must keep the export the operator carries"
+    )
