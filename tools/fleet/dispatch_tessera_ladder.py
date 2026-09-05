@@ -163,9 +163,10 @@ def main():
                          "than assumed")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the action key each shard would be sealed "
-                         "under and enqueue nothing; the wrapper is still "
-                         "staged into the shared checkout, because the "
-                         "closure digest being previewed is computed over it")
+                         "under, enqueue nothing, and write nothing into the "
+                         "shared checkout; the closure previewed is the one "
+                         "the checkout holds now, so it says when that is not "
+                         "what a real run would seal")
     fleet_submit.add_transport_argument(ap)
     args = ap.parse_args()
 
@@ -175,9 +176,36 @@ def main():
     # This is a NEW file, so it does not disturb any closure an in-flight
     # action already sealed -- unlike touching tessera/**/*.py, which every
     # running export shard has bound into its key and re-verifies at its CAS
-    # commit point.  Staged even on a dry run, because the closure digest is
-    # the thing being previewed and it cannot be computed without the file.
-    shutil.copy2(LOCAL_WRAPPER, CHECKOUT / WRAPPER)
+    # commit point.
+    #
+    # Never on a dry run.  A dry run that writes is not a dry run, and this
+    # one wrote into a checkout two boxes execute.  The closure digest cannot
+    # be previewed without the file, so a dry run reads the checkout as it
+    # stands and says when that is not what ``--apply`` would seal.  It
+    # refuses rather than previewing a digest no submission would produce.
+    staged = CHECKOUT / WRAPPER
+    if args.dry_run:
+        if not staged.is_file():
+            sys.stderr.write(
+                f"dry run: {WRAPPER} is not staged in {CHECKOUT}, and a dry "
+                f"run does not stage it, so there is no closure to preview. "
+                f"Re-run without --dry-run to stage it.\n")
+            return 1
+        try:
+            staged_is_local = staged.read_bytes() == LOCAL_WRAPPER.read_bytes()
+        except OSError as exc:
+            # The local wrapper lives on one box, so on any other there is
+            # nothing to compare the staged copy against.
+            print(f"note       {LOCAL_WRAPPER} could not be read "
+                  f"({exc.strerror}), so the staged wrapper is reported as it "
+                  f"is rather than as what --apply would stage")
+        else:
+            if not staged_is_local:
+                print(f"note       {WRAPPER} in the checkout differs from "
+                      f"{LOCAL_WRAPPER}, so the digests below are the "
+                      f"checkout's, not what --apply would seal")
+    else:
+        shutil.copy2(LOCAL_WRAPPER, staged)
 
     closure = pb.build_code_closure(CHECKOUT, closure_files())
     cas = pb.PrismaBuildCAS(SH / "cas")
