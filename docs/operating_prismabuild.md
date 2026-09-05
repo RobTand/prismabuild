@@ -323,6 +323,18 @@ an omitted field is not passed at all.
 An unknown field is refused when the manifest loads, before any row is sealed:
 a dropped typo would seal an action nobody asked for.
 
+Every field's value shape is refused at load too, and for the same reason: a
+value that cannot become its flag used to raise while a later row was being
+prepared, after the rows before it had been submitted, and their keys went with
+the traceback. A count in `demand` is an integer or a string holding one, a
+name in `demand` and `env` is a string, an `env` value is a string or a number,
+`tags` and `snapshot_ref` are lists of non-empty strings, `timeout_s` is a
+number, `cwd` and `host_class` are strings, and every switch field is `true` or
+`false` rather than anything truthy. Two of those refusals were silent before:
+`"tags": "x86"` sealed three tags, one per character, and `"deterministic":
+"no"` sealed the opposite of what it said. Each refusal names the row index,
+the field, and the value.
+
 Three rows are refused at load as well, each for the reason `pbrun` gives at
 submit:
 
