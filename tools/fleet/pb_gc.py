@@ -21,6 +21,10 @@ Where each comes from:
 *   A **staging namespace** at ``.staging/local-results/<claim digest>/`` is
     where a claimed result is copied before publication.  The payload is
     unlinked when the publication finishes; the directory is not.
+*   A **root staging copy** at ``.staging/.payload.*.tmp`` is a bundle ingest
+    or a namespace-less result publication.  It is unlinked in a ``finally``,
+    so it survives only a killed process, and a snapshot bundle can be 512 MiB.
+
 What makes removal safe is structural, not a guess about age.  A claim exists
 to authorize ``core.repair_local_result`` of a leftover result *under its own
 checkout root*.  ``materialize._cleanup_execution_checkout`` removes that root
@@ -30,7 +34,8 @@ claim whose root is still there is the persistent-checkout case, where repair
 is real work, and this tool never touches one.  Every other class hangs off
 that same fact: a lock is swept only when no live claim names its output path,
 no process holds its ``flock``, and no process holds its inode open; a staging
-namespace only when it is empty and no live claim carries its digest.
+namespace only when it is empty and no live claim carries its digest; a root
+staging copy only when no process on this box has it open.
 
 ``--min-age-hours`` is a backstop on top of that rule and never a substitute
 for it.  It exists for one blind spot: checkout roots are box-local with the
@@ -82,17 +87,21 @@ from prismabuild import core as pb  # noqa: E402
 KIND_CLAIM = "claim"
 KIND_LOCK = "lock"
 KIND_NAMESPACE = "staging namespace"
-KINDS = (KIND_CLAIM, KIND_LOCK, KIND_NAMESPACE)
+KIND_INGEST = "aborted staging copy"
+KINDS = (KIND_CLAIM, KIND_LOCK, KIND_NAMESPACE, KIND_INGEST)
 
 #: Where each class lives, spelled the way the code that writes it spells it:
-#: ``core._local_result_claim_path``, ``core._local_output_lock`` and
-#: ``core.PrismaBuildCAS.publish_result``.
+#: ``core._local_result_claim_path``, ``core._local_output_lock``,
+#: ``core.PrismaBuildCAS.publish_result`` and ``core._copy_to_staging``.
 #: ``test_pb_gc`` mints one of each through those functions and asserts this
 #: tool finds them, so a layout change is a failing test rather than a sweeper
 #: that quietly stops sweeping.
 CLAIM_SUBPATH = ("local-results", "v1")
 LOCK_SUBPATH = (".worker-locks",)
+STAGING_SUBPATH = (".staging",)
 NAMESPACE_SUBPATH = (".staging", "local-results")
+STAGING_PREFIX = ".payload."
+STAGING_SUFFIX = ".tmp"
 
 #: Generous enough that an ordinary campaign action is never near it, small
 #: enough to be useful on a store nobody has swept. It is a backstop, not the
@@ -450,6 +459,46 @@ def _survey_namespaces(
     return {"scanned": scanned, "remove": remove, "keep": keep}, occupied
 
 
+def _survey_ingests(
+    cas_root: Path, *, min_age_s: float, held_inodes: set[tuple[int, int]]
+) -> dict:
+    root = cas_root.joinpath(*STAGING_SUBPATH)
+    remove: list[dict] = []
+    keep: list[dict] = []
+    scanned = 0
+    for entry in _entries(root):
+        path = Path(entry.path)
+        if entry.name == NAMESPACE_SUBPATH[-1]:
+            continue  # the namespace container, surveyed above
+        if not (entry.name.startswith(STAGING_PREFIX)
+                and entry.name.endswith(STAGING_SUFFIX)):
+            keep.append(_retain(KIND_INGEST, path, "unexpected entry"))
+            continue
+        scanned += 1
+        try:
+            info = os.lstat(path)
+        except OSError as exc:
+            keep.append(_retain(KIND_INGEST, path, f"cannot inspect: {exc}"))
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            keep.append(_retain(KIND_INGEST, path, "not a regular file"))
+            continue
+        if (info.st_dev, info.st_ino) in held_inodes:
+            keep.append(_retain(KIND_INGEST, path, "open in another process"))
+            continue
+        if max(0.0, time.time() - info.st_mtime) < min_age_s:
+            keep.append(_retain(KIND_INGEST, path, "younger than the age backstop"))
+            continue
+        # ``_copy_to_staging`` chmods to 0o444 only once the whole copy landed,
+        # so the mode says which half died: 0o600 never finished copying,
+        # 0o444 copied and never published.
+        finished = "copied, never published" if info.st_mode & 0o444 == 0o444 \
+            else "copy never finished"
+        remove.append(_candidate(
+            KIND_INGEST, path, info, f"nothing holds it open; {finished}"))
+    return {"scanned": scanned, "remove": remove, "keep": keep}
+
+
 def survey(
     cas_root: Path,
     *,
@@ -476,10 +525,13 @@ def survey(
     namespaces, occupied = _survey_namespaces(
         cas_root, min_age_s=min_age_s, protected=claims["protected_namespaces"]
     )
+    ingests = _survey_ingests(
+        cas_root, min_age_s=min_age_s, held_inodes=held_inodes)
     sections = {
         KIND_CLAIM: claims,
         KIND_LOCK: locks,
         KIND_NAMESPACE: namespaces,
+        KIND_INGEST: ingests,
     }
     requests = _count_json(cas_root / "requests")
     receipts = _count_json(cas_root / "actions")

@@ -1,7 +1,7 @@
 """The store's reaper removes only what no execution can still reach.
 
 Nothing in PrismaBuild has ever removed a claim, a ``.worker-locks`` entry, a
-staging namespace. They are immutable by design and
+staging namespace or an aborted staging copy. They are immutable by design and
 minted per execution, so a campaign leaves one of each behind every time it
 runs an action in a fresh materialized checkout. The live store held 1785
 claims, 1745 locks and 942 empty namespaces when this was written.
@@ -9,8 +9,9 @@ claims, 1745 locks and 942 empty namespaces when this was written.
 The whole question is which of those a live execution still needs, and the
 fixtures here answer it the only way that proves anything: every litter class
 is minted by the code that mints it in production. The claims, locks and
-namespaces come out of real ``core.run_local_action`` calls and the
-in-flight lock out of ``core._local_output_lock``. A fixture that wrote these files by hand, with
+namespaces come out of real ``core.run_local_action`` calls, the aborted
+staging copy out of ``core._copy_to_staging``, and the in-flight lock out of
+``core._local_output_lock``. A fixture that wrote these files by hand, with
 this test's own idea of the lock's digest or the namespace's name, would prove
 that ``pb_gc`` agrees with the test rather than with the store.
 
@@ -299,6 +300,46 @@ def test_a_worker_lock_belonging_to_a_live_claim_survives_apply(tmp_path: Path):
 
     assert lock.exists()
     assert "output path of a live local result claim" in screen
+
+
+def test_an_aborted_staging_copy_goes_and_one_being_written_stays(
+    tmp_path: Path,
+):
+    """The two states a root ``.staging`` file can be in, told apart by ``/proc``.
+
+    All three are minted by ``core._copy_to_staging`` and none of them by this
+    test's idea of what a staging file is called. Two are then abandoned, which
+    is exactly what a killed ingest leaves behind: a copy of up to 512 MiB that
+    nothing will ever collect. The third is the same file with its descriptor
+    still open, and the only thing that separates it from the other two is
+    whether a process on this box holds the inode.
+
+    The mode says which half of an abandoned copy died. ``_copy_to_staging``
+    chmods to ``0o444`` once the whole copy has landed, so the one forced back
+    to ``0o600`` is a copy that never finished.
+    """
+
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    staging = cas.root / ".staging"
+    source = tmp_path / "bundle.pack"
+    source.write_bytes(b"bundle bytes")
+    published, _d, _s = pb._copy_to_staging(source, staging)
+    half_copied, _d, _s = pb._copy_to_staging(source, staging)
+    half_copied.chmod(0o600)
+    in_progress, _d, _s = pb._copy_to_staging(source, staging)
+
+    descriptor = os.open(in_progress, os.O_RDONLY)
+    try:
+        screen = _run(
+            "--cas-root", str(cas.root), "--apply", "--min-age-hours", "0")
+        assert not published.exists(), "an abandoned staging copy was left behind"
+        assert not half_copied.exists(), "a killed copy was left behind"
+        assert in_progress.exists(), "a staging copy in flight was removed"
+    finally:
+        os.close(descriptor)
+    assert "open in another process" in screen
+    assert "copied, never published" in screen
+    assert "copy never finished" in screen
 
 
 # --------------------------------------------------------------------------

@@ -885,7 +885,8 @@ Every local action files four immutable droppings into the CAS and nothing has
 ever removed one. A claim under `local-results/v1/` records ownership of the
 action's declared result path, a file under `.worker-locks/` serializes writers
 of that path, a directory under `.staging/local-results/` is where the result
-was copied before publication. The claim's digest covers the checkout
+was copied before publication, and a killed bundle ingest leaves a copy of up
+to 512 MiB at the root of `.staging/`. The claim's digest covers the checkout
 root the action ran in, and a materialized job mints a fresh root for every
 execution, so a campaign leaves one of each behind every time it runs. On
 2026-09-05 the live store held 1785 claims, 1745 locks and 942 empty staging
@@ -909,7 +910,8 @@ anything again. A claim whose root is still there is the persistent-checkout
 case, where repair is real, and `pb_gc` never touches one. A lock goes only
 when no live claim names its output path, nothing holds its `flock`, and no
 process on the box has its inode open. A staging namespace goes only when it is
-empty and no live claim carries its digest.
+empty and no live claim carries its digest. A root staging copy goes only when
+no process has it open.
 
 `--min-age-hours` is a backstop on top of that rule, not a substitute for it.
 It covers one blind spot: checkout roots are box-local and spelled the same way
