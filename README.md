@@ -141,10 +141,45 @@ not a dependency: this package imports nothing from prismaquant.
 
     src/prismabuild/core.py       action keys, CAS, local execution
     src/prismabuild/slurm.py      SLURM transport (inert here: no sbatch)
+    src/prismabuild/slurm_lane.py the thin SLURM lane pbrun submits through
     src/prismabuild/dagster.py    Dagster transport (inert here)
     src/prismabuild/pool.py       shared-FS pull queue (the one that runs here)
     tools/prismabuild_worker.py   stdlib-only worker entry point
+    tools/fleet/pbrun.py          submit one command as a sealed action
+    tools/fleet/pbwait.py         wait for submitted actions, report one table
+    tools/fleet/pbcampaign.py     submit a manifest of actions, wait for all
     tests/                        CPU qualification (dated result above)
+
+## Submitting work
+
+One command, waiting for it:
+
+    tools/fleet/pbrun.py --gpu --timeout-s 3600 -- ./stage.sh --shard 3
+
+The same command, handed back as a key instead of waited for. `--detach`
+prints one line of JSON -- the action key, the transport, the job id or queue
+record, the generation and the paths its ending will be filed at -- and exits
+0. An action already in the CAS prints `cache_hit` and submits nothing:
+
+    tools/fleet/pbrun.py --detach --gpu -- ./stage.sh --shard 3
+
+Wait for any number of those keys, and get one table back. Exit 0 only if
+every action's work is done:
+
+    tools/fleet/pbwait.py 8fc86da0e13f 4b19a02cc551
+
+Or submit and wait for a whole manifest at once. A manifest is a JSON list of
+rows, each one argv plus a working tree, a demand, tags and an environment;
+every row goes through `pbrun`'s own seal path, so a row's action key is the
+key a hand-typed `pbrun` produces and re-running a manifest runs nothing:
+
+    tools/fleet/pbcampaign.py manifest.json
+
+`pbcampaign.py --help` and the module docstring carry the row schema.
+
+All three take `--transport slurm` (or `PRISMABUILD_TRANSPORT=slurm`) to
+hand the work to a scheduler instead of the pull queue. The result does not
+depend on which one carried it.
 
 ## Test
 
