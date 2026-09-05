@@ -331,6 +331,52 @@ def submission_record_path(
     )
 
 
+def action_status_path(directory: str | Path, job_id: str) -> Path:
+    """Where the node leaves this job's action exit status, beside its logs.
+
+    Named for the job rather than fixed, and for the same reason the logs are:
+    one lane directory holds every attempt of one action key, a retry is a new
+    job id in that directory, and a fixed name would let attempt one's exit
+    status be read onto attempt two's record -- including onto a ``done/``
+    record, when the retry succeeded.
+
+    ``core`` writes this file only for an action that ran and ended by itself,
+    so an absent file is the normal case and means the ending was the worker's
+    verdict rather than the action's.
+    """
+
+    return Path(directory) / f"{str(job_id)}.action.json"
+
+
+def read_action_status(path: str | Path) -> dict[str, object]:
+    """The action's ending from its sidecar, or an empty mapping.
+
+    Empty covers every way there is nothing to say: no file, unreadable bytes,
+    text that is not a JSON object, or a status field that is not an integer.
+    The caller files what comes back, so a malformed sidecar leaves the record
+    exactly as it was before there were sidecars.
+    """
+
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(value, Mapping):
+        return {}
+    status: dict[str, object] = {}
+    for field in ("action_returncode", "action_signal"):
+        number = value.get(field)
+        if isinstance(number, int) and not isinstance(number, bool):
+            status[field] = number
+    if "action_returncode" not in status:
+        return {}
+    return status
+
+
 def format_time_limit(timeout_s: float) -> str:
     """Seconds to what ``--time`` accepts, rounded up, never rounded to zero.
 
@@ -1841,7 +1887,7 @@ def publish_outcome(
     withdrawn_unix: float | None = None,
     reason: str | None = None,
 ) -> Path | None:
-    """File one action's ending under ``done/`` or ``failed/``.
+    """File one action's ending under ``done/``, ``failed/`` or ``withdrawn/``.
 
     Which directory is decided by the CAS, not by the exit status: a receipt
     means the work was done whatever the job said afterwards, and no receipt
@@ -1856,10 +1902,38 @@ def publish_outcome(
 
     key = str(action_key)
     provenance = outcome.provenance if outcome is not None else None
-    state = pool.DONE if status == "executed" else pool.FAILED
+    if status == "executed":
+        state = pool.DONE
+    elif status == "withdrawn":
+        # The pool's rule, from ``PoolQueue.withdraw``: a withdrawal lands in
+        # ``withdrawn/``, never ``failed/``.  A withdrawn action is a decision,
+        # and a record of it under ``failed/`` makes the failure record lie
+        # about the fleet -- every reader that counts failures counts it.
+        # The marker ``publish_withdrawal`` filed there is the decision; this
+        # record enriches it with the job's ending and keeps its fields.
+        state = pool.WITHDRAWN
+    else:
+        state = pool.FAILED
     path = _queue_dir(queue_root, state) / f"{key}.json"
-    if path.exists() and _same_generation(path, published_unix):
-        return None
+    decision: dict[str, object] = {}
+    if path.exists():
+        if state == pool.WITHDRAWN:
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = None
+            if isinstance(existing, dict):
+                if "detail" in existing and _same_generation(path, published_unix):
+                    # A full ending is already filed for this generation.
+                    return None
+                decision = {
+                    field: existing[field]
+                    for field in ("withdrawn_unix", "withdrawn_by",
+                                  "withdrawn_host", "withdrawn_from", "reason")
+                    if field in existing
+                }
+        elif _same_generation(path, published_unix):
+            return None
 
     detail_status, returncode = detail_status_and_returncode(status, outcome)
     body: dict[str, object] = {
@@ -1875,6 +1949,14 @@ def publish_outcome(
             receipt.get("result_digest") if isinstance(receipt, Mapping) else None
         ),
     }
+    if job is not None:
+        # The action's own ending, when the node left one. ``returncode`` above
+        # is the launcher's and stays that -- eleven fleet tools and Tessera's
+        # ``merge_suite`` read it as such -- so the action's goes in a field of
+        # its own, and is absent when there is nothing to say.
+        body.update(read_action_status(
+            action_status_path(job.directory, job.job_id)
+        ))
     if job is not None or outcome is not None:
         body["slurm"] = {
             "job_id": job.job_id if job is not None
@@ -1934,6 +2016,11 @@ def publish_outcome(
         record["withdrawn_unix"] = float(withdrawn_unix)
     if reason is not None:
         record["reason"] = reason
+    # The marker's decision fields win over this call's: the first writer of
+    # a withdrawal is the one who decided it, and the pool's readers of this
+    # directory (``withdrawn_keys``, ``withdrawal_covers``, ``pool_reset``)
+    # read exactly those fields.
+    record.update(decision)
     _write_json_atomic(path, record)
     return path
 

@@ -165,6 +165,17 @@ field name keep working across the cutover with no change; a reader that wants
 to tell a SLURM ending from a pull-queue one has the `schema` and `transport`
 fields to do it with.
 
+One field is the lane's own. `detail.returncode` means what it has always
+meant -- the launcher's exit status, or `-signal`, or `null` for a timeout --
+and the launcher exits 1 for every failure, so an action that exited 7 files a
+1. The action's own status is filed beside it as `detail.action_returncode`
+(plus `detail.action_signal` when the action was signalled). The node's worker
+writes it to `<lane root>/<action key>/<jobid>.action.json` and the submitter
+reads it there; a record with no such field is one whose action did not end by
+itself, which is what a timeout, a cancellation and a missing result all look
+like. `pbrun` says `rc=1 (action exited 7)` when the two differ, `pbwait`'s rc
+column reads `1 (action 7)`, and `pbstatus` has an `ACTION RC` column.
+
 One gap in that arrangement is worth knowing before the cutover, because it is
 structural rather than a defect. **The submitter is the writer.** A `pbrun`
 killed mid-wait, or one whose `--wait-s` expired, files no terminal record for a

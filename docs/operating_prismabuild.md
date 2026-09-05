@@ -158,7 +158,13 @@ queue the worker files the ending and `pbwait` only watches.
 
 Exit 1 is the worker launcher's status, not the command's own exit code. A
 command that exits 7 makes the worker refuse to publish a receipt, and both
-transports report that refusal as 1.
+transports report that refusal as 1. Under SLURM the terminal record also
+carries the command's own status, as `detail.action_returncode`, with
+`detail.action_signal` beside it when a signal ended the command. `pbrun`,
+`pbwait`, and `pbstatus` print that number next to the launcher's. The field is
+absent when the ending was the worker's verdict rather than the command's, such
+as a missing result file or a timeout. The pull queue's records do not carry
+it.
 
 The two transports reach the verdict by different rules, and they part on one
 ending. The pull queue's authority is the launcher's exit code; the lane's is
@@ -433,10 +439,11 @@ immediately.
 
 ### Reset a batch of failures
 
-`pool_reset` re-submits the queue's failed items as fresh actions. It resets the
-work, not the record: it recovers each action's command, working directory and
-demand from the CAS request, and submits again through `pbrun`, which re-seals
-the closure against the tree as it is now.
+`pool_reset` re-submits the queue's failed items. It resets the work, not the
+record. For an action addressed by a path, which is what the pull queue files,
+it recovers the command, working directory and demand from the CAS request and
+submits again through `pbrun`, which re-seals the closure against the tree as
+it is now.
 
     tools/fleet/pool_reset.py                 # report only
     tools/fleet/pool_reset.py --apply --limit 20
@@ -451,10 +458,15 @@ worker drains would lose it. Withdrawn actions are skipped: re-submitting them
 would undo a decision. A record `pool_reset` has already handled is filed as
 `reset` and skipped, unless you pass `--include-reset`.
 
-A lane record sealed by a producer cannot be reset here. It is addressed by a
-snapshot — a commit and a subdirectory — and names no source tree, so there is
-no working directory to re-submit against. `pool_reset` says so and skips it;
-re-dispatch that action from the producer that sealed it.
+A record addressed by a snapshot, which is what the lane files for every
+submission, is not re-sealed. Its tree is a commit in the CAS and nothing can
+have moved under it, so `pool_reset` sends the same action back through the
+lane unchanged, with the demand, tags, and exclusivity its own ending recorded,
+and detaches. It prints the key and the job id, and `pbwait` files the ending.
+Such a record goes out on the lane only: under `--transport pool` it is skipped
+with the reason. A submission the controller refuses, for an unknown Feature or
+an impossible GRES, is reported for that record, the record stays `failed`, and
+`pool_reset` exits 1 after handling the rest.
 
 ### What each terminal status means
 

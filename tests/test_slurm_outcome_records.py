@@ -192,7 +192,10 @@ def test_a_withdrawal_files_the_marker_pool_reset_reads(
     assert marker["action_key"] == key
     assert key in pool.PoolQueue(queue_root).withdrawn_keys()
 
-    outcome = _record(queue_root, pool.FAILED, key)
+    # The ending enriches the marker in place; nothing lands in failed/,
+    # which is the pool's rule: a withdrawal is a decision, not a failure.
+    assert not (queue_root / pool.FAILED / f"{key}.json").exists()
+    outcome = _record(queue_root, pool.WITHDRAWN, key)
     assert outcome["status"] == "withdrawn"
     assert outcome["withdrawn_by"] == "rob@sparky"
     assert isinstance(outcome["withdrawn_unix"], float)
@@ -405,6 +408,170 @@ def test_a_job_slurm_killed_at_its_limit_files_the_pools_timeout_convention(
     assert detail["slurm"]["state"] == "TIMEOUT"
 
 
+#: A sealed task that ends by itself, with a status no launcher would invent.
+_EXITS_SEVEN = "raise SystemExit(7)\n"
+
+
+def _run_the_job(
+    request: Path, *, cas_root: Path, tmp_path: Path, lane_dir: Path, job_id: str
+) -> subprocess.CompletedProcess:
+    """Run the node's launcher the way the batch script does.
+
+    Directly rather than through the fake ``sbatch``: the sidecar is named for
+    the job, the launcher reads that id out of ``SLURM_JOB_ID``, and no fake
+    can set that trio without also claiming a cgroup membership this box does
+    not have (``core._collect_worker_evidence``). The lane's own tests drive
+    the launcher this way for the same reason.
+    """
+
+    return subprocess.run(
+        [sys.executable, str(JOB_ENTRY),
+         "--action", str(request), "--cas-root", str(cas_root),
+         "--worker", str(WORKER), "--worker-python", sys.executable,
+         "--lane-dir", str(lane_dir), "--job-id", job_id,
+         "--checkout-root", str(tmp_path / "materialized")],
+        capture_output=True, text=True,
+    )
+
+
+def test_the_actions_own_exit_status_reaches_the_terminal_record(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """``returncode`` is the launcher's 1; ``action_returncode`` is the 7.
+
+    The launcher exits 1 for every failure, so the record said 1 for an action
+    that exited 7 and the 7 survived only as prose in a stderr tail. Both
+    numbers are on the record now, each meaning what its name says.
+    """
+
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    action = _runnable_action(tmp_path, cas, task_body=_EXITS_SEVEN)
+    request = cas.publish_action_request(action)
+    key = str(action["action_key"])
+    lane_dir = sl.lane_directory(key)
+    lane_dir.mkdir(parents=True)
+    queue_root = _queue(tmp_path)
+
+    completed = _run_the_job(
+        request, cas_root=cas_root, tmp_path=tmp_path,
+        lane_dir=lane_dir, job_id="4242",
+    )
+    assert completed.returncode == 1, completed.stderr
+    assert json.loads(
+        sl.action_status_path(lane_dir, "4242").read_text(encoding="utf-8")
+    ) == {"action_returncode": 7}
+
+    job = sl.SubmittedJob(
+        action_key=key, job_id="4242", attempt=1, argv=[],
+        script=lane_dir / "job.sh", directory=lane_dir,
+        stdout_path=lane_dir / "4242.out", stderr_path=lane_dir / "4242.err",
+        record_path=lane_dir / "submissions" / "1.json",
+    )
+    sl.publish_outcome(
+        queue_root=queue_root, action_key=key, published_unix=100.0,
+        published_by="sparky", status="failed", attempts=1, max_attempts=1,
+        retry_safe=False, job=job,
+        outcome=sl.Outcome(
+            job_id="4242", state="FAILED", exit_code=1, signal=None,
+            stdout_path=job.stdout_path, stderr_path=job.stderr_path,
+        ),
+    )
+
+    detail = _record(queue_root, pool.FAILED, key)["detail"]
+    assert detail["returncode"] == 1, "the launcher's own status is unchanged"
+    assert detail["action_returncode"] == 7
+    assert "action_signal" not in detail
+
+
+def test_a_record_with_no_sidecar_carries_no_action_status(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absent, not null: the field is the action's own ending or is not there."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:7")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "no-sidecar")
+    request = cas.publish_action_request(action)
+    queue_root = _queue(tmp_path)
+
+    sl.run(
+        action, cas=cas, request_path=request, placement=[],
+        resources=sl.LaneResources(), timeout_s=600.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY,
+        queue_root=queue_root, poll_s=0.0,
+    )
+
+    detail = _record(queue_root, pool.FAILED, str(action["action_key"]))["detail"]
+    assert detail["returncode"] == 7
+    assert "action_returncode" not in detail
+    assert "action_signal" not in detail
+
+
+def test_a_resumed_ending_carries_the_action_status_too(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A detached run's ending is filed by whoever waits, and is one shape.
+
+    ``pbwait`` reaches ``_file_ending`` through ``resume`` rather than through
+    ``run``, and a resumed record missing a field would be a second shape none
+    of the readers expects.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:1")
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    action = _runnable_action(tmp_path, cas, task_body=_EXITS_SEVEN)
+    request = cas.publish_action_request(action)
+    key = str(action["action_key"])
+    queue_root = _queue(tmp_path)
+
+    job = sl.submit(
+        action, cas=cas, request_path=request, placement=[],
+        resources=sl.LaneResources(), timeout_s=600.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY,
+        worker_python=sys.executable, job_python=sys.executable,
+        local_checkout_root=tmp_path / "checkouts",
+    )
+    # The scheduler said it started the job and this is the job: the launcher
+    # run the fake did not run.
+    assert _run_the_job(
+        request, cas_root=cas_root, tmp_path=tmp_path,
+        lane_dir=job.directory, job_id=job.job_id,
+    ).returncode == 1
+
+    submission = sl.recorded_submission(key)
+    assert submission is not None
+    sl.resume(
+        submission, action=action, cas=cas, queue_root=queue_root,
+        wait_s=0.0, poll_s=0.0,
+    )
+
+    detail = _record(queue_root, pool.FAILED, key)["detail"]
+    assert detail["returncode"] == 1
+    assert detail["action_returncode"] == 7
+
+
+def test_a_malformed_sidecar_leaves_the_record_as_it_was(
+    tmp_path: Path, fleet: Path
+) -> None:
+    """A diagnostic that cannot be read is dropped, never guessed at."""
+
+    directory = tmp_path / "lane" / ("c" * 64)
+    directory.mkdir(parents=True)
+    sidecar = sl.action_status_path(directory, "77")
+    for text in ("{", "[]", '{"action_returncode": "7"}', '{"action_signal": 9}'):
+        sidecar.write_text(text, encoding="utf-8")
+        assert sl.read_action_status(sidecar) == {}
+    assert sl.read_action_status(directory / "nothing.json") == {}
+    sidecar.write_text(
+        '{"action_returncode": -9, "action_signal": 9}', encoding="utf-8"
+    )
+    assert sl.read_action_status(sidecar) == {
+        "action_returncode": -9, "action_signal": 9,
+    }
+
+
 def test_detail_returncode_follows_the_pull_queues_convention() -> None:
     """A signalled job carries the negative signal, as ``subprocess`` reports
     a signalled child and as the pool's records therefore carried it; a plain
@@ -487,7 +654,7 @@ def test_a_job_that_finishes_before_scancel_lands_is_still_a_withdrawal(
     ``--withdraw`` writes the marker, then ``scancel`` reports that the job may
     already have finished -- and it had, with a receipt.  If the submitter files
     its own ``executed`` account anyway, one generation carries a ``withdrawn/``
-    marker, a ``failed/`` record and a ``done/`` record at once: ``merge_suite``
+    record and a ``done/`` record at once: ``merge_suite``
     cannot resolve the double match and ``reclaim_terminal_reservation``
     refuses on two terminals.  The pool avoids this by reading the marker
     before every finish; so does this.
@@ -512,7 +679,8 @@ def test_a_job_that_finishes_before_scancel_lands_is_still_a_withdrawal(
     assert result.receipt is not None          # the work really did happen
 
     assert not (queue_root / pool.DONE / f"{key}.json").exists()
-    record = _record(queue_root, pool.FAILED, key)
+    assert not (queue_root / pool.FAILED / f"{key}.json").exists()
+    record = _record(queue_root, pool.WITHDRAWN, key)
     assert record["status"] == "withdrawn"
     assert record["withdrawn_by"] == "rob@sparky"
     assert record["reason"] == "wrong branch"
@@ -551,7 +719,7 @@ def test_a_withdrawal_between_attempts_stops_the_next_one(
     # it is what keeps a second run of this key from colliding with this one.
     names = sorted(x.name for x in submissions.iterdir())
     assert len(names) == 1 and names[0].endswith("-001.json"), names
-    record = _record(queue_root, pool.FAILED, str(action["action_key"]))
+    record = _record(queue_root, pool.WITHDRAWN, str(action["action_key"]))
     assert record["status"] == "withdrawn"
     assert record["attempts"] == 1
 
@@ -593,3 +761,39 @@ def test_the_record_says_whether_the_job_had_the_whole_device(
             queue_root, pool.FAILED, job.action_key)["detail"]["slurm"]["gres"]
 
     assert filed == {"whole": "gpu:1", "slot": "shard:1", "none": None}
+
+
+def test_a_cancelled_job_is_filed_under_withdrawn_and_never_under_failed(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pool's rule, from ``PoolQueue.withdraw``: a withdrawal lands in
+    ``withdrawn/``, never ``failed/``.  A job cancelled outside ``pbrun
+    --withdraw`` -- an operator's ``scancel``, the scheduler -- is still a
+    decision about the work and not a failure of it, so its ending carries the
+    job's detail into the withdrawn record and adds nothing to the failure
+    record that every reader counts."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "CANCELLED")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "cancelled-outside")
+    request = cas.publish_action_request(action)
+    queue_root = _queue(tmp_path)
+    key = str(action["action_key"])
+
+    result = sl.run(
+        action, cas=cas, request_path=request,
+        placement=["gb10"], resources=sl.LaneResources(gpu_slots=1),
+        timeout_s=600.0, worker_script=WORKER, job_entry=JOB_ENTRY,
+        queue_root=queue_root, poll_s=0.0,
+    )
+    assert result.receipt is None
+
+    assert not (queue_root / pool.FAILED / f"{key}.json").exists()
+    assert not (queue_root / pool.DONE / f"{key}.json").exists()
+    record = _record(queue_root, pool.WITHDRAWN, key)
+    assert record["status"] == "withdrawn"
+    assert record["withdrawn_by"] == "slurm:scancel"
+    assert isinstance(record["withdrawn_unix"], float)
+    assert record["detail"]["slurm"]["state"] == "CANCELLED"
+    assert record["detail"]["returncode"] == -15
+    assert key in pool.PoolQueue(queue_root).withdrawn_keys()

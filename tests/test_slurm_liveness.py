@@ -524,7 +524,7 @@ def test_a_withdrawal_carries_the_last_liveness_sample(
     )
 
     assert rc == 0
-    record = json.loads((queue / "failed" / f"{job.action_key}.json").read_text())
+    record = json.loads((queue / "withdrawn" / f"{job.action_key}.json").read_text())
     assert record["status"] == "withdrawn"
     liveness = record["detail"]["liveness"]
     assert liveness["job_id"] == job.job_id
