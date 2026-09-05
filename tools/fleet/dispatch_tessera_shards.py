@@ -52,6 +52,43 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+#: How many shards the export is cut into. Bound into every action's
+#: ``of_shards``, so a number outside 1..120 names no work at all.
+#: Duplicated in the other Tessera dispatcher rather than shared, the way
+#: ``closure_files`` already is: each dispatcher declares the shape of its own
+#: run, and a ladder probe that is later cut differently must not silently
+#: move the export's domain with it.
+OF_SHARDS = 120
+
+
+def shard_range(text):
+    """``N`` or ``LO-HI``, inclusive, within ``1..OF_SHARDS``.
+
+    A bare ``int()`` after ``parse_args`` raised a ``ValueError`` traceback at
+    an operator who typed a range wrong, and accepted ``0``, ``500`` and
+    ``9-4`` without complaint: the first two seal actions for shards that do
+    not exist and the third seals nothing while reporting success. argparse
+    prints an ``ArgumentTypeError`` as a usage error, so the domain is stated
+    once and every wrong value gets it.
+    """
+
+    domain = f"a shard number or an inclusive LO-HI range within 1-{OF_SHARDS}"
+    low, separator, high = text.partition("-")
+    # ``1-`` is a half-typed range, not shard 1: taking the low end as the
+    # high end would run one shard where the operator asked for many.
+    if separator and not high:
+        raise argparse.ArgumentTypeError(f"expected {domain}, got {text!r}")
+    high = high or low
+    if not (low.isdigit() and high.isdigit()):
+        raise argparse.ArgumentTypeError(f"expected {domain}, got {text!r}")
+    low, high = int(low), int(high)
+    if not 1 <= low <= high <= OF_SHARDS:
+        raise argparse.ArgumentTypeError(
+            f"expected {domain}, got {text!r}: "
+            f"{low}-{high} is empty or names a shard that does not exist")
+    return range(low, high + 1)
+
+
 def closure_files():
     """Every .py of the staged encoder, plus the wrapper that drives it."""
     files = [WRAPPER]
@@ -96,7 +133,7 @@ def build_action(shard, closure, plan_sha):
             "grid": "E2M1_K2",
             "rung_q256": 896,
             "shard": shard,
-            "of_shards": 120,
+            "of_shards": OF_SHARDS,
         },
         "environment": {
             "variables": {
@@ -133,15 +170,17 @@ def build_action(shard, closure, plan_sha):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shards", required=True, help="e.g. 61 or 1-120")
+    ap.add_argument(
+        "--shards", required=True, type=shard_range,
+        help=f"which shards to seal: one number, or an inclusive LO-HI range, "
+             f"within 1-{OF_SHARDS} (e.g. 61 or 1-{OF_SHARDS})")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the action key each shard would be sealed "
                          "under and enqueue nothing")
     fleet_submit.add_transport_argument(ap)
     args = ap.parse_args()
 
-    lo, _, hi = args.shards.partition("-")
-    shards = range(int(lo), int(hi or lo) + 1)
+    shards = args.shards
 
     closure = pb.build_code_closure(CHECKOUT, closure_files())
     plan_sha = sha256_file(PLAN)
