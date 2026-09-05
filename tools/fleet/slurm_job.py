@@ -139,6 +139,7 @@ def _write_job_state(
     action_key: str,
     container_owner: str,
     container_marker: str,
+    container_job: str,
     checkout_dir: Path | None,
     local_checkout_root: Path,
 ) -> None:
@@ -153,6 +154,7 @@ def _write_job_state(
         f"action_key={action_key}",
         f"container_owner={container_owner}",
         f"container_marker={container_marker}",
+        f"container_job={container_job}",
         f"checkout_dir={checkout_dir or ''}",
         f"local_checkout_root={local_checkout_root}",
         f"host={socket.gethostname()}",
@@ -222,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             action_key=key,
             container_owner=owner,
             container_marker=marker,
+            container_job=job_id,
             checkout_dir=None,
             local_checkout_root=local_root,
         )
@@ -236,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
                 action_key=key,
                 container_owner=owner,
                 container_marker=marker,
+                container_job=job_id,
                 checkout_dir=_temporary_root(Path(checkout_root), local_root),
                 local_checkout_root=local_root,
             )

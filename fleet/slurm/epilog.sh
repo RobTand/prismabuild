@@ -45,6 +45,14 @@ set -u
 JOB_STATE_ROOT="${PRISMABUILD_SLURM_JOB_STATE_ROOT:-/mnt/shared/prismabuild-fleet/slurm/jobs}"
 DOCKER="${PRISMABUILD_EPILOG_DOCKER:-docker}"
 LABEL="prismabuild.action"
+# The second label the shim stamps, naming the SLURM job the container was
+# created inside.  The owner label is the ACTION's identity, and under the pull
+# queue that was also one execution; SLURM has no claim, so two jobs of one
+# action can run on one node and share the owner label.  Removing on the owner
+# label alone therefore removed a sibling job's containers.  The shim reads the
+# job id from its own cgroup, which is where proctrack/cgroup puts it and which
+# nothing in the job can move itself out of.
+JOB_LABEL="prismabuild.job"
 # Who owns the files under the job-state root.  The job wrote them; this script runs
 # as root; and dl380g10 exports that dataset without no_root_squash --
 # measured 2026-09-04:
@@ -76,6 +84,7 @@ field() { sed -n "s/^$1=//p" "$state_file" | head -n 1; }
 
 owner="$(field container_owner)"
 marker="$(field container_marker)"
+container_job="$(field container_job)"
 checkout_dir="$(field checkout_dir)"
 local_root="$(field local_checkout_root)"
 
@@ -85,9 +94,10 @@ local_root="$(field local_checkout_root)"
 owner_settled=1
 
 # -- containers --------------------------------------------------------------
-# Matched by label, never by name or by image: the label is the action's
-# complete identity and the only thing that distinguishes this job's container
-# from an identical one somebody else is using right now.
+# Matched by label, never by name or by image: the labels are the action's
+# identity and this job's, and together they are the only thing that
+# distinguishes this job's container from an identical one somebody else --
+# including another job of the same action -- is using right now.
 case "$owner" in
     "")
         ;;
@@ -97,7 +107,19 @@ case "$owner" in
         ;;
     *)
         if [ "${#owner}" -eq 64 ]; then
-            containers="$("$DOCKER" ps -aq --filter "label=${LABEL}=${owner}" 2>/dev/null)"
+            # Both labels, ANDed by the daemon.  A state file written before
+            # the job label existed -- a job that was already running when the
+            # runtime generation rolled -- records no job id, and matching on
+            # the owner alone is what this did for all of them; say so, because
+            # in that window a sibling job's container can still be caught.
+            if [ -n "$container_job" ]; then
+                filters="--filter label=${LABEL}=${owner} --filter label=${JOB_LABEL}=${container_job}"
+            else
+                filters="--filter label=${LABEL}=${owner}"
+                log "no job id recorded for ${owner:0:12}; matching on the owner label alone"
+            fi
+            # shellcheck disable=SC2086
+            containers="$("$DOCKER" ps -aq $filters 2>/dev/null)"
             if [ -n "$containers" ]; then
                 # shellcheck disable=SC2086
                 if "$DOCKER" rm -f $containers >/dev/null 2>&1; then
@@ -105,11 +127,14 @@ case "$owner" in
                 else
                     log "could not remove containers for ${owner:0:12}"
                 fi
+                # Asked again rather than inferred from the exit status, the
+                # way cleanup_action_containers asks: the marker below may be
+                # retired only when the label has nothing left behind it.
             fi
-            # Asked again rather than inferred from the exit status, the way
-            # cleanup_action_containers asks, and asked whether or not this job
-            # started anything: the marker below may be retired only when the
-            # label has nothing left behind it.
+            # Asked on the OWNER label alone, and asked whether or not this job
+            # started anything: the marker below is the ACTION's, so a sibling
+            # job's container has to keep it alive, and this job may have
+            # started none at all while that sibling did.
             remaining="$("$DOCKER" ps -aq --filter "label=${LABEL}=${owner}" 2>/dev/null)"
             if [ -n "$remaining" ]; then
                 owner_settled=0

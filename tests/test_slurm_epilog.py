@@ -77,7 +77,8 @@ def node(tmp_path: Path) -> dict[str, Path]:
 
 
 def _state(node: dict[str, Path], *, job_id: str, owner: str,
-           checkout_dir: str, local_root: str, marker: str = "") -> Path:
+           checkout_dir: str, local_root: str, marker: str = "",
+           container_job: str = "") -> Path:
     jobs = node["jobs"]
     jobs.mkdir(parents=True, exist_ok=True)
     path = jobs / f"{job_id}.job"
@@ -85,6 +86,7 @@ def _state(node: dict[str, Path], *, job_id: str, owner: str,
         f"action_key={'cd' * 32}\n"
         f"container_owner={owner}\n"
         f"container_marker={marker}\n"
+        f"container_job={container_job}\n"
         f"checkout_dir={checkout_dir}\n"
         f"local_checkout_root={local_root}\n"
         "host=sparky\n"
@@ -398,3 +400,73 @@ def test_a_relative_marker_path_is_left_alone(node: dict[str, Path]) -> None:
 
     assert result.returncode == 0
     assert "not an absolute path" in result.stderr
+
+
+def test_it_matches_containers_by_this_jobs_label_as_well_as_the_actions(
+    node: dict[str, Path]
+) -> None:
+    """The owner label is the ACTION's identity, and under the pull queue that
+    was also one execution.  SLURM has no claim, so two jobs of one action can
+    run on one node; removing on the owner label alone took a sibling job's
+    containers with it."""
+
+    node["listed"].write_text("c0ffee06\n")
+    _state(node, job_id="1260", owner=OWNER, checkout_dir="",
+           local_root=str(node["checkouts"]), container_job="1260")
+
+    assert _run(node, "1260").returncode == 0
+    calls = node["calls"].read_text().splitlines()
+    assert calls[0] == (
+        f"ps -aq --filter label=prismabuild.action={OWNER} "
+        f"--filter label=prismabuild.job=1260")
+    assert calls[1] == "rm -f c0ffee06"
+    # And the marker question is asked on the owner label alone, because the
+    # marker is the action's: a sibling job's container has to keep it alive.
+    assert calls[2] == f"ps -aq --filter label=prismabuild.action={OWNER}"
+
+
+def test_a_state_file_with_no_job_id_still_matches_on_the_owner(
+    node: dict[str, Path]
+) -> None:
+    """A job already running when the runtime generation rolled wrote no job
+    id.  Matching on the owner alone is what this did for all of them, so it
+    stays the fallback -- and says so, because in that window a sibling job's
+    container can still be caught."""
+
+    node["listed"].write_text("c0ffee07\n")
+    _state(node, job_id="1261", owner=OWNER, checkout_dir="",
+           local_root=str(node["checkouts"]))
+
+    result = _run(node, "1261")
+
+    assert result.returncode == 0
+    calls = node["calls"].read_text().splitlines()
+    assert calls[0] == f"ps -aq --filter label=prismabuild.action={OWNER}"
+    assert "matching on the owner label alone" in result.stderr
+
+
+def test_the_shim_and_the_epilog_read_the_same_cgroup_job(tmp_path: Path) -> None:
+    """The shim derives the job id the Epilog matches on, and it derives it the
+    way ``core._slurm_job_from_cgroup`` does -- from the kernel-owned cgroup,
+    never from an environment anything in the job could have exported."""
+
+    import importlib.util
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from prismabuild import core  # noqa: PLC0415
+
+    shim_path = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "docker"
+    spec = importlib.util.spec_from_loader(
+        "pb_docker_shim",
+        importlib.machinery.SourceFileLoader("pb_docker_shim", str(shim_path)),
+    )
+    shim = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shim)
+
+    assert shim.CGROUP_JOB_RE.pattern == core._CGROUP_JOB_RE.pattern
+
+    cgroup = tmp_path / "cgroup"
+    cgroup.write_text("0::/system.slice/slurmstepd.scope/job_4242/step_batch\n",
+                      encoding="utf-8")
+    assert shim.CGROUP_JOB_RE.search(cgroup.read_text()).group(1) == "4242"
