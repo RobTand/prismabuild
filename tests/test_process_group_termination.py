@@ -166,7 +166,12 @@ def test_termination_kills_a_term_ignoring_descendant(
         )
         assert not pb._process_group_has_live_members(pgid)
     finally:
-        _reap(pgid, [child_pid] if child_pid is not None else [])
+        # ``process.pid`` rather than ``pgid``: ``start_new_session`` makes the
+        # leader its own group leader, so the group is known the moment
+        # ``Popen`` returns. ``pgid`` is still ``None`` whenever the body
+        # raises before ``_await_marker`` returns, and reaping ``None`` left
+        # the SIGTERM-ignoring child running for its full hour.
+        _reap(process.pid, [child_pid] if child_pid is not None else [])
 
 
 def test_termination_returns_promptly_when_the_group_is_compliant(
