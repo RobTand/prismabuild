@@ -27,16 +27,28 @@ Two guards, because neither is complete on its own:
 from __future__ import annotations
 
 import os
+import subprocess
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 import sys
 
 import pytest
 
-#: The mount the fleet executes against. Absent on a box without the mount,
-#: in which case the session guard does nothing. The environment override
-#: exists so the guard itself can be exercised against a scratch store.
+#: The mount the fleet executes against. The environment override exists so
+#: the guard itself can be exercised against a scratch store.
 LIVE_ROOT = Path(
     os.environ.get("PRISMABUILD_TEST_LIVE_ROOT") or "/mnt/shared/prismabuild-fleet"
+)
+
+#: How long the session guard will wait to find out whether ``LIVE_ROOT`` is
+#: there. The mount is ``hard`` with ``timeo=600``, so when the NFS server is
+#: down a plain ``is_dir()`` on it does not return, ever: measured on
+#: 2026-09-05, ``Path("/mnt/shared/prismabuild-fleet").is_dir()`` had not
+#: answered after 15 s and the xdist workers sat in ``rpc_wait_bit_killable``
+#: for over 330 s. The guard is a convenience and the suite is not, so an
+#: unreachable store costs this many seconds and then the guard stands down.
+LIVE_PROBE_TIMEOUT_S = float(
+    os.environ.get("PRISMABUILD_TEST_LIVE_PROBE_TIMEOUT_S") or "10"
 )
 
 #: Top-level entries of ``LIVE_ROOT`` the guard leaves alone. The quarantine
@@ -60,6 +72,32 @@ LIVE_DEFAULTS = (
     ("pool_reset", "SH", "fleet"),
     ("fleet_submit", "SH", "fleet"),
     ("worker_loop", "SH", "fleet"),
+    ("worker_loop", "RUNTIME_VERSION", "fleet/repo/RUNTIME_VERSION.json"),
+    ("worker", "SH", "fleet"),
+    # ``supervise.MIRROR`` was the gap this list was completed to close.
+    # ``_proven_roots`` lists ``MIRROR / "runtime-generations"``, so
+    # ``test_only_idle_loops_are_stopped`` read the live store on every run of
+    # the suite, on every box. It passed, which is why nothing noticed: the
+    # cost was a test that depended on the fleet's state and a suite that hung
+    # for as long as the mount was unreachable.
+    ("supervise", "MIRROR", "fleet"),
+    ("publish_runtime", "MIRROR", "fleet/repo"),
+    ("seal_and_publish", "SH", "fleet"),
+    ("pbtest", "SHARED", "mount"),
+    ("tessera_status", "SH", "fleet"),
+    ("tessera_status", "CAS", "fleet/cas"),
+    ("tessera_status", "Q", "fleet/pb-queue"),
+    ("tessera_status", "RES", "fleet/checkout/results/glm53-tessera"),
+    ("tessera_status", "PARTS", "mount/models/parts"),
+    ("dispatch_tessera_ladder", "SH", "fleet"),
+    ("dispatch_tessera_ladder", "CHECKOUT", "fleet/checkout"),
+    ("dispatch_tessera_ladder", "SOURCE", "mount/models/source"),
+    ("dispatch_tessera_shards", "SH", "fleet"),
+    ("dispatch_tessera_shards", "CHECKOUT", "fleet/checkout"),
+    ("dispatch_tessera_shards", "SOURCE", "mount/models/source"),
+    ("dispatch_tessera_shards", "PLAN", "mount/plan.json"),
+    ("dispatch_tessera_shards", "PARTS", "mount/models/parts"),
+    ("render_identity", "MODEL", "mount/models/render"),
     ("prismabuild.pool", "DEFAULT_POOL_ROOT", "pb-queue"),
     # Two spellings of one root, and each transport reads its own: the SLURM
     # job entry reads ``materialize.LOCAL_CHECKOUT_ROOT`` and the pull queue
@@ -87,8 +125,15 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setenv(name, str(root / sub))
     for module_name, attr, sub in LIVE_DEFAULTS:
         module = sys.modules.get(module_name)
-        if module is not None and hasattr(module, attr):
-            monkeypatch.setattr(module, attr, root / sub)
+        if module is None or not hasattr(module, attr):
+            continue
+        # Keep the declared type. Several of these are plain strings, and
+        # handing a module a ``Path`` where it declared a ``str`` changes
+        # behaviour the test was not asking about.
+        replacement = root / sub
+        if isinstance(getattr(module, attr), str):
+            replacement = str(replacement)
+        monkeypatch.setattr(module, attr, replacement)
     yield
 
 
@@ -204,15 +249,68 @@ def leaked_entries(
     return leaked, unattributed
 
 
+def _probe_argv(root: Path) -> list[str]:
+    return [
+        sys.executable, "-c",
+        "import os,sys; sys.exit(0 if os.path.isdir(sys.argv[1]) else 1)",
+        str(root),
+    ]
+
+
+def reachable(
+    root: Path,
+    timeout_s: float = LIVE_PROBE_TIMEOUT_S,
+    argv: Callable[[Path], list[str]] = _probe_argv,
+) -> bool:
+    """Whether ``root`` is a readable directory, answered within ``timeout_s``.
+
+    The question is asked in a child process rather than in this one, because
+    the answer can never arrive. A read of an unreachable ``hard`` NFS mount
+    is uninterruptible: no timeout, no signal and no thread cancellation ends
+    it, and whichever process asked is stuck until the server returns. Asking
+    in a child means the stuck process is one this session can walk away from,
+    and pytest still runs and still reports.
+
+    The child is killed on timeout and deliberately not waited for. A process
+    in uninterruptible sleep does not die on SIGKILL either; it is reaped when
+    the mount comes back. Waiting for it here would move the hang back into
+    the session, which is the whole thing being avoided.
+    """
+
+    try:
+        probe = subprocess.Popen(
+            argv(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    except OSError:
+        return False
+    try:
+        return probe.wait(timeout=timeout_s) == 0
+    except subprocess.TimeoutExpired:
+        probe.kill()
+        return False
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
-    session.config._pb_live_before = (  # type: ignore[attr-defined]
-        listing() if LIVE_ROOT.is_dir() else None
-    )
+    available = reachable(LIVE_ROOT)
+    session.config._pb_live_reachable = available  # type: ignore[attr-defined]
+    session.config._pb_live_before = listing() if available else None  # type: ignore[attr-defined]
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     before = getattr(session.config, "_pb_live_before", None)
     if before is None:
+        # Absent and unreachable are different, and the guard used to report
+        # neither. A box without the mount is expected and silent; a box whose
+        # mount did not answer means the suite ran unguarded, and the operator
+        # has to be told which of the two happened.
+        if getattr(session.config, "_pb_live_reachable", True) is False and LIVE_ROOT.parent.exists():
+            reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+            write = reporter.write_line if reporter is not None else print
+            write(
+                f"note: {LIVE_ROOT} did not answer within "
+                f"{LIVE_PROBE_TIMEOUT_S:g}s, so the live-store leak guard did "
+                "not run this session. Re-run it when the mount is back."
+            )
         return
     factory = getattr(session.config, "_tmp_path_factory", None)
     if factory is None:
