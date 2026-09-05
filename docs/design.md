@@ -383,6 +383,10 @@ an explicitly acknowledged maintenance window with every CAS producer paused
 on every host and candidate checkout roots verified absent on all hosts.
 Neither file age nor local process inspection proves remote abandonment.
 This is an operator prerequisite, not an automatically acquired fleet lock.
+Exclusive lock probes open existing markers read-write without modifying their
+bytes, because NFS requires a writable descriptor for its byte-range lock.
+When deleting a private ingest, GC closes the unlinked ownership marker before
+removing the directory so NFS can clear its temporary `.nfs*` name.
 GC retains records, unknown entries, occupied result namespaces, and private
 ingest directories whose owner lock cannot be acquired. Rechecks compare inode
 identity and removal traverses directory descriptors without following symlinks.

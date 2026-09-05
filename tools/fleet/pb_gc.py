@@ -311,13 +311,12 @@ def _survey_claims(cas_root: Path, *, min_age_s: float) -> dict:
 def _probe_lock(path: Path) -> str:
     """``""`` when nothing holds this lock, else why it is held.
 
-    Opened read-only and never created: ``flock`` does not care about the
-    access mode, and a sweeper that created a lock file would be inventing the
-    thing it came to remove. The lock is taken non-blocking and released at
-    once, so a producer that arrives during the probe waits microseconds.
+    Opened read-write but never created or written. Linux NFS implements
+    ``flock`` with byte-range locks, requiring a writable descriptor for an
+    exclusive lock. Taking the lock non-blocking preserves active owners.
     """
 
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
@@ -327,8 +326,10 @@ def _probe_lock(path: Path) -> str:
             return "not a regular ownership lock"
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except BlockingIOError:
             return "held by a live local action"
+        except OSError as exc:
+            return f"cannot probe ownership lock: {exc}"
         fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
         os.close(descriptor)
@@ -535,7 +536,7 @@ def _remove_private_ingest(row: Mapping[str, object]) -> str:
                                dir_fd=parent_fd)
         if _identity(os.fstat(directory_fd)) != row["identity"]:
             return "replaced or changed during the sweep"
-        owner_fd = os.open(PRIVATE_STAGING_OWNER, os.O_RDONLY | os.O_NOFOLLOW
+        owner_fd = os.open(PRIVATE_STAGING_OWNER, os.O_RDWR | os.O_NOFOLLOW
                            | os.O_NONBLOCK, dir_fd=directory_fd)
         fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         members = row["members"]
@@ -551,6 +552,11 @@ def _remove_private_ingest(row: Mapping[str, object]) -> str:
             if name != PRIVATE_STAGING_OWNER:
                 os.unlink(name, dir_fd=directory_fd)
         os.unlink(PRIVATE_STAGING_OWNER, dir_fd=directory_fd)
+        # NFS may rename an open unlinked owner to .nfs*. Closing the last
+        # descriptor completes that deletion before the directory is removed.
+        # All payloads are gone and the caller maintains fleet quiescence.
+        os.close(owner_fd)
+        owner_fd = None
         os.rmdir(path.name, dir_fd=parent_fd)
     except (OSError, pb.PrismaBuildError) as exc:
         return f"cannot remove ingest: {exc}"
@@ -634,7 +640,7 @@ def _remove_lock(path: Path, identity: tuple) -> str:
     except (OSError, pb.PrismaBuildError) as exc:
         return f"cannot open {path.parent}: {exc}"
     try:
-        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
         try:
             descriptor = os.open(path.name, flags, dir_fd=directory_fd)
         except FileNotFoundError:
@@ -644,8 +650,10 @@ def _remove_lock(path: Path, identity: tuple) -> str:
         try:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+            except BlockingIOError:
                 return "taken by a live local action during the sweep"
+            except OSError as exc:
+                return f"cannot acquire ownership lock: {exc}"
             locked = os.fstat(descriptor)
             if _identity(locked) != identity:
                 return "replaced or changed during the sweep"
