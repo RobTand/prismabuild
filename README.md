@@ -162,7 +162,9 @@ One command, waiting for it:
 The same command, handed back as a key instead of waited for. `--detach`
 prints one line of JSON -- the action key, the transport, the job id or queue
 record, the generation and the paths its ending will be filed at -- and exits
-0. An action already in the CAS prints `cache_hit` and submits nothing:
+0. An action already in the CAS prints `cache_hit` and submits nothing, and
+one already running prints `attached` and joins that run rather than starting
+a second copy of it:
 
     tools/fleet/pbrun.py --detach --gpu -- ./stage.sh --shard 3
 

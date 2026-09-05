@@ -92,6 +92,12 @@ Run it, and run it again::
     pbcampaign.py manifest.json
     pbcampaign.py manifest.json          # every row a cache hit, nothing runs
     pbcampaign.py --detach manifest.json # submit and walk away
+
+Re-running is also how a campaign is resumed.  A row already finished is a
+cache hit and costs nothing; a row still on a node is attached to by its
+recorded job id rather than started a second time, and the table reports it
+like any other row.  So a waiter that died, a laptop that closed or a
+connection that dropped costs the wait, never the work.
 """
 from __future__ import annotations
 

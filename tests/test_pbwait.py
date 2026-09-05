@@ -240,6 +240,28 @@ def test_a_detached_slurm_action_has_its_ending_filed_by_the_waiter(
     assert rows[0]["job"] == record["detail"]["slurm"]["job_id"]
     assert rows[0]["job"] in pbwait.render(rows)
 
+    # And what the waiter filed is the record a waiting pbrun would have
+    # filed.  Every reader of pb-queue reads one shape; a resumed ending that
+    # was missing a field would be a second shape none of them expects.
+    second = tmp_path / "attended"
+    second.mkdir()
+    other = _runnable_action(second, cas)
+    attended_key = str(other["action_key"])
+    assert pbrun.slurm_outcome(
+        other, cas=cas, request_path=cas.publish_action_request(other), tags=[],
+        demand={"cpu": 1, "mem_gb": 1}, exclusive=False, timeout_s=600.0,
+        wait_s=60.0, retry_safe=False, max_attempts=1,
+        queue_root=queue.root,
+        worker_python=sys.executable, job_python=sys.executable,
+        local_checkout_root=tmp_path / "checkouts",
+    ) == 0
+    attended = json.loads(
+        queue.item_path(pool.DONE, attended_key).read_text(encoding="utf-8"))
+    assert set(record) == set(attended)
+    assert set(record["detail"]) == set(attended["detail"])
+    assert record["published_by"] == attended["published_by"]
+    assert record["status"] == attended["status"] == "executed"
+
 
 def test_the_receipt_outranks_the_controller_when_the_ending_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fleet: Path
