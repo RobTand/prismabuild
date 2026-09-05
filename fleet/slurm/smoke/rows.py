@@ -1113,7 +1113,7 @@ def main() -> int:
     row_10_scontrol_answers_the_job(WORK)
     row_11_host_class_measurement(VOL / "nonce-measurement.txt")
     row_12_unknown_host_class_is_refused()
-    row_14_liveness()
+    row_13_liveness()
     row_14_cpu_containment()
     row_14c_over_declared_memory()
     row_14d_within_declared_memory()
