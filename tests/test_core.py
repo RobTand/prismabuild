@@ -1761,6 +1761,11 @@ def test_initial_miss_rendezvous_one_arrival_times_out_without_task(
         timeout_seconds=0.05,
     )
     monkeypatch.setattr(pb, "_initial_miss_hostname", lambda: "host-a")
+    # Expire only after the arrival wait actually polls. A 50ms wall-clock
+    # budget can expire during manifest validation on a busy fleet worker.
+    clock = [0.0]
+    monkeypatch.setattr(pb.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(pb.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
     with pytest.raises(
         pb.InitialMissRendezvousError, match="timed out waiting for exact arrivals"
     ):
