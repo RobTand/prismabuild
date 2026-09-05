@@ -514,6 +514,54 @@ def _transport(record: Mapping[str, object]) -> str:
     return schema or UNKNOWN
 
 
+def _unreadable_row(entry: os.DirEntry, reason: str) -> dict:
+    """One record this could not read, kept as a row instead of dropped.
+
+    The row carries the path and the reason because those are the whole of
+    what an operator can act on: the key is only what the file is named, and
+    every other column is inside the file nobody could read.
+    """
+
+    try:
+        mtime = entry.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return {
+        "action_key": entry.name[:-5],
+        "status": "unreadable",
+        "transport": UNKNOWN,
+        "host": None,
+        "elapsed_s": None,
+        "returncode": None,
+        "action_returncode": None,
+        "action_signal": None,
+        "receipt_published": None,
+        "slurm_state": None,
+        "unreadable": reason,
+        # The record's own finished time is unreadable too, so the file's
+        # modification time is what places the row. It is the same clock
+        # ``_ending_paths`` selected the record by.
+        "finished_unix": mtime,
+        "path": entry.path,
+    }
+
+
+def _unreadable_reason(exc: Exception) -> str:
+    """Why a record could not be read, in the terms that pick the fix.
+
+    A record nobody may read and a record nobody can parse are different
+    faults: the first is a mode or a mount, the second is a writer that
+    stopped. Terminal records are published by rename, so a half-written one
+    is a fault rather than a write still in flight.
+    """
+
+    if isinstance(exc, PermissionError):
+        return "permission denied"
+    if isinstance(exc, OSError):
+        return str(exc.strerror or type(exc).__name__).lower()
+    return "not valid JSON"
+
+
 def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
                  ) -> list[dict]:
     """Describe how the newest actions ended, under either transport.
@@ -524,16 +572,24 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
 
     Returns:
         One dictionary per ending, newest first by the time the record says the
-        work finished, falling back to the file's modification time.
+        work finished, falling back to the file's modification time. A record
+        that cannot be read is returned as a row with status ``unreadable``,
+        naming its path and why, rather than left out.
     """
 
     rows: list[dict] = []
     for entry in _ending_paths(queue_root, limit):
         try:
             record = json.loads(Path(entry.path).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            # Not dropped. ``limit`` sliced the newest records before any of
+            # them was read, so dropping one printed the same empty table a
+            # fleet that had filed nothing prints, and the two states call for
+            # opposite responses.
+            rows.append(_unreadable_row(entry, _unreadable_reason(exc)))
             continue
         if not isinstance(record, dict):
+            rows.append(_unreadable_row(entry, "not a JSON object"))
             continue
         detail = record.get("detail")
         detail = detail if isinstance(detail, dict) else {}
@@ -559,6 +615,9 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
             # a different thing from a receipt that was not published.
             "receipt_published": detail.get("receipt_published"),
             "slurm_state": slurm.get("state"),
+            # Present on every row so a reader of the JSON can test one field
+            # rather than the absence of one.
+            "unreadable": None,
             "finished_unix": (
                 float(finished)
                 if isinstance(finished, (int, float)) else mtime
@@ -711,11 +770,12 @@ def ending_lines(endings: Sequence[Mapping[str, object]]) -> list[str]:
         return ["no endings filed under done/, failed/ or withdrawn/"]
     headers = (
         "KEY", "STATUS", "VIA", "HOST", "ELAPSED", "RC", "ACTION RC",
-        "RECEIPT", "SLURM",
+        "RECEIPT", "SLURM", "NOTE",
     )
     rows = []
     for ending in endings:
         elapsed = ending.get("elapsed_s")
+        reason = ending.get("unreadable")
         rows.append((
             str(ending.get("action_key"))[:12], ending.get("status"),
             ending.get("transport"), ending.get("host"),
@@ -730,6 +790,9 @@ def ending_lines(endings: Sequence[Mapping[str, object]]) -> list[str]:
             ABSENT if ending.get("receipt_published") is None
             else ending.get("receipt_published"),
             ending.get("slurm_state") or ABSENT,
+            # The path and the reason, on the one kind of row where every
+            # other column is inside a file nobody could read.
+            f"{reason}: {ending.get('path')}" if reason else ABSENT,
         ))
     return render_table(headers, rows)
 

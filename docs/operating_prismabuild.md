@@ -411,8 +411,10 @@ It prints three tables:
 
 `pbstatus` never blocks, never writes, and never fails. A controller that is not
 installed prints one line saying so, and the endings table still prints, because
-those records are files on the shared mount. `--json` prints one object with the
-three lists and any scheduler notes.
+those records are files on the shared mount. A record it cannot read prints as an
+`unreadable` row whose note names the path and the reason, so a truncated or
+unreadable newest record does not read as a fleet that filed nothing. `--json`
+prints one object with the three lists and any scheduler notes.
 
 The underlying commands are `sinfo` for nodes, `squeue` for jobs, and `sacct`
 for jobs the controller has forgotten. Use them directly for scheduler detail
