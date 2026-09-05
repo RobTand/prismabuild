@@ -603,9 +603,11 @@ It refuses unless all six of these hold:
    for a result the loops are about to stop producing.
 5. `sinfo -h -N -o '%N %T'` reports every box -- `dl380g10`, `sparky` and
    `gx10-6b77`, which is sparklina's `NodeName` -- under `idle`, `mixed` or
-   `allocated`. Trailing state flags (`idle*`, `mixed~`) are stripped before
-   the word is read, and a node absent from `sinfo -N` is as bad as one that
-   is `down`. This is the last question asked before anything is written, and
+   `allocated`, carrying no state flag. A trailing flag is classified, not
+   stripped: `idle*` is a node the controller is getting no response from and
+   `idle~` one that is powered off, so any flag refuses and the refusal quotes
+   the state as `sinfo` reported it, flag included. A node absent from
+   `sinfo -N` is as bad as one that is `down`. This is the last question asked before anything is written, and
    `--verified` does not skip it: the marker says a fleet passed once, this
    asks whether it is up now. Step 3 stops the loops that are the only
    execution plane until SLURM takes over, so a node the controller will not

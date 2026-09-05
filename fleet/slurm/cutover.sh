@@ -20,9 +20,10 @@
 #   * publish_runtime.py --dry-run accepts this checkout, asked here rather
 #     than at step 5, which runs after every loop is already dead
 #   * no pbrun is waiting on a pull-queue action anywhere in the fleet
-#   * the controller reports every box idle, mixed or allocated, asked last
-#     because it is the only one of these whose answer expires -- and not
-#     skipped by --verified, which is about an earlier verification, not now
+#   * the controller reports every box idle, mixed or allocated with no state
+#     flag, asked last because it is the only one of these whose answer
+#     expires -- and not skipped by --verified, which is about an earlier
+#     verification, not now
 #   * --yes
 #
 # The order of what it then does is not arrangeable.  The supervise loops are
@@ -158,17 +159,53 @@ human_age() {
     fi
 }
 
+#: The characters `sinfo` appends to a node state as flags, and what each one
+#: says about the node.  Single-quoted and read back through a variable
+#: because `$` is live inside a bracket expression.  The table is sinfo(1)'s
+#: NODE STATE CODES.
+STATE_FLAGS='*~#!%@$^-'
+flag_meaning() {
+    case "$1" in
+        '*') printf 'the controller is getting no response from it' ;;
+        '~') printf 'it is powered off' ;;
+        '#') printf 'it is powering up or being configured' ;;
+        '!') printf 'a power-down is pending' ;;
+        '%') printf 'it is powering down' ;;
+        '$') printf 'it is in a reservation with the maintenance flag' ;;
+        '@') printf 'a reboot is pending' ;;
+        '^') printf 'a reboot has been issued' ;;
+        '-') printf 'the backfill scheduler has planned it for another job' ;;
+        *) printf 'the controller has flagged it' ;;
+    esac
+}
+
+#: Every flag on one state, read out in order.
+flag_reasons() {
+    local rest="$1" first out=""
+    while [ -n "$rest" ]; do
+        first="${rest%"${rest#?}"}"
+        rest="${rest#?}"
+        [ -z "$out" ] || out="$out, "
+        out="$out$(flag_meaning "$first")"
+    done
+    printf '%s' "$out"
+}
+
 #: Which boxes the controller says are not usable right now, one per line, or
 #: nothing when every one of them is.  Exit 2 means sinfo could not be asked
 #: at all, which is a different failure and reads differently.
 #:
 #: `sinfo -N` prints one line per node per partition, so a node in `all` and
 #: in `gpu` appears twice; every line is read and the node is reported once.
-#: A state carries flags -- `idle*` is a node the controller cannot reach,
-#: `idle~` one that is powered down -- and the flag is the whole point of
-#: reading them, so it is stripped only after the base word is taken.
+#: A state carries flags, and the flag is classified rather than removed: a
+#: node reported `idle*` is one the controller is getting no response from and
+#: `idle~` one that is powered off, and both used to reach the accepting
+#: branch because the flag was stripped before the word was read.  Any flag
+#: refuses, because a flag is the controller saying something is happening to
+#: that node and this gate wants the boxes nothing is happening to.  The
+#: original state string is what gets reported, flag included.
 node_liveness() {
-    local table box node name state seen offending bad
+    local table box node name state base flags seen offending bad
     command -v sinfo >/dev/null 2>&1 || return 2
     table="$(sinfo -h -N -o '%N %T' 2>&1)" || return 2
     bad=""
@@ -179,10 +216,15 @@ node_liveness() {
         while read -r name state; do
             [ "$name" = "$node" ] || continue
             seen=yes
-            state="$(printf '%s' "$state" \
-                | tr '[:upper:]' '[:lower:]' \
-                | sed 's/[*~#!%@$^-]*$//')"
-            case "$state" in
+            state="$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')"
+            base="${state%%["$STATE_FLAGS"]*}"
+            flags="${state#"$base"}"
+            if [ -n "$flags" ]; then
+                [ -n "$offending" ] \
+                    || offending="$state, $(flag_reasons "$flags")"
+                continue
+            fi
+            case "$base" in
                 idle|mixed|allocated) ;;
                 *) [ -n "$offending" ] || offending="$state" ;;
             esac
@@ -286,7 +328,7 @@ if [ "$DRY_RUN" = 1 ]; then
     say "#   $QUEUE_ROOT/claimed and .../ready are empty"
     say "#   $PUBLISH --dry-run --default-transport slurm succeeds"
     say "#   no confirmed pbrun.py process on any of: $BOXES"
-    say "#   sinfo reports every one of $BOXES idle, mixed or allocated"
+    say "#   sinfo reports every one of $BOXES idle, mixed or allocated, with no state flag"
     # The last one is the only refusal a dry run can answer rather than name:
     # sinfo reads and changes nothing, and the answer is about now, so it is
     # worth having before the window is chosen.  It still refuses nothing.
@@ -298,7 +340,7 @@ if [ "$DRY_RUN" = 1 ]; then
     elif [ -n "$unusable" ]; then
         say "# a live run would refuse; these are not usable right now:$unusable"
     else
-        say "# every one of $BOXES is idle, mixed or allocated"
+        say "# every one of $BOXES is idle, mixed or allocated, with no state flag"
     fi
 fi
 
@@ -422,11 +464,13 @@ plane the moment step 1 runs.  Run fleet/slurm/verify.sh."
     if [ -n "$unusable" ]; then
         die "the controller does not report every box as usable right now:$unusable
 A node that is down, drained or unregistered runs nothing after the pull
-queue's loops are stopped, and stopping them is step 3.  Bring it back -- and
-a node the controller merely drained comes back with:
+queue's loops are stopped, and stopping them is step 3.  A state flag refuses
+for the same reason: the flag is the controller saying something is happening
+to that node, and this gate wants the boxes nothing is happening to.  Bring it
+back -- and a node the controller merely drained comes back with:
   scontrol update NodeName=<node> State=RESUME"
     fi
-    say "# every one of $BOXES is idle, mixed or allocated"
+    say "# every one of $BOXES is idle, mixed or allocated, with no state flag"
 fi
 
 # -- record what is being replaced, before replacing it ----------------------

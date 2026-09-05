@@ -223,11 +223,16 @@ def test_no_sinfo_at_all_is_refused(tmp_path: Path) -> None:
     _nothing_was_changed(environment)
 
 
-def test_usable_states_carrying_flags_get_past_the_gate(tmp_path: Path) -> None:
-    """``sinfo -N`` prints one line per node per partition, and a state comes
-    with flags: ``idle*`` is a node the controller cannot reach right now,
-    ``mixed~`` one that is powered down.  The base word is what decides, the
-    same node may be reported more than once, and case is not a claim.
+def test_a_node_reported_once_per_partition_gets_past_the_gate(
+    tmp_path: Path,
+) -> None:
+    """``sinfo -N`` prints one line per node per partition, so a node in
+    ``all`` and in ``gpu`` appears twice.  Every line is read, the node is
+    reported once, and case is not a claim.
+
+    A trailing state flag is a different question and it is answered in
+    ``test_slurm_cutover_node_flags``: any flag refuses, because the flag is
+    the controller saying something is happening to that node.
     """
 
     environment = _healthy(tmp_path)
@@ -235,7 +240,7 @@ def test_usable_states_carrying_flags_get_past_the_gate(tmp_path: Path) -> None:
     environment["PB_BOXES"] = f"{FAKE_BOX} {second}"
     write_fake_sinfo(
         tmp_path,
-        f"{FAKE_BOX} IDLE\n{second} Mixed~\n{FAKE_BOX} allocated\n",
+        f"{FAKE_BOX} IDLE\n{second} Mixed\n{FAKE_BOX} allocated\n",
     )
 
     result = _cutover(environment, "--yes")
