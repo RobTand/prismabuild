@@ -103,8 +103,17 @@ def build_action(shard, closure, plan_sha):
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
                 "HOME": "/home/rob",
                 "LANG": "C.UTF-8",
-                # The shared source is the PYTHONPATH: one tree, two boxes.
-                "PYTHONPATH": str(CHECKOUT / "tessera" / "src"),
+                # Relative to the tree this action runs in, not to the
+                # submitter's copy of it.  An absolute path into the shared
+                # checkout survives the SLURM lane's re-seal, so the worker
+                # would verify the sealed encoder bytes in its private
+                # checkout and then import whatever the shared tree held by
+                # the time the job started -- and commit those bytes to the
+                # CAS under the original sealed key.  A relative entry
+                # resolves against the working directory, which is the
+                # materialized snapshot under SLURM and the shared checkout
+                # under the pull queue, so one tree still means one tree.
+                "PYTHONPATH": "tessera/src",
                 # Never /tmp -- an OOM cleared it once and took artifacts with
                 # it.  Box-local, under $HOME.
                 "TMPDIR": "/home/rob/tmp",

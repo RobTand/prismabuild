@@ -81,14 +81,20 @@ import time
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+from runtime_paths import (  # noqa: E402
+    fleet_tool, generation_root, tool_candidates,
+)
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Mapping, Sequence  # noqa: E402
 import fleet_submit  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
-PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
+#: The submitter this tool re-submits through, under whichever layout the
+#: runtime containing it uses.  ``None`` when neither layout has one, which
+#: ``submit_command`` refuses on rather than handing a child a path that is
+#: not there.
+PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
 #: A stale declared result is cleared through ``core.repair_local_result`` and
 #: never by globbing.  The prefix is the pool's own dropping, but the file name
 #: is per *action fingerprint*, and pbrun tees a live run into the very same
@@ -263,9 +269,14 @@ def _has_receipt(request: Mapping, *, cas_root: Path) -> bool:
 
 
 def _clear_stale_result(
-    action: object, cwd: str, *, cas_root: Path = SH / "cas"
+    action: object, cwd: str, *, cas_root: Path | None = None
 ) -> tuple[list[str], str]:
     """Clear only this action's own leftover declared result, under its claim."""
+
+    if cas_root is None:
+        # Resolved on the call, so a repointed ``SH`` is honoured; see the
+        # same note on ``fleet_submit.submit``.
+        cas_root = SH / "cas"
 
     try:
         outcome = pb.repair_local_result(
@@ -283,7 +294,7 @@ def _clear_stale_result(
 def plan_resets(
     queue: pool.PoolQueue,
     *,
-    cas_root: Path = SH / "cas",
+    cas_root: Path | None = None,
     transport: str = "pool",
     include_reset: bool = False,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
@@ -295,6 +306,11 @@ def plan_resets(
     plan carries the transport its own record names, so a mixed queue during
     the cutover resets each half onto the dispatcher that ran it.
     """
+
+    if cas_root is None:
+        # Resolved on the call, so a repointed ``SH`` is honoured; see the
+        # same note on ``fleet_submit.submit``.
+        cas_root = SH / "cas"
 
     failed = sorted(queue.dir(pool.FAILED).glob("*.json"))
     # A withdrawal is a decision, and re-submitting it would undo it.  Two ways
@@ -478,8 +494,22 @@ def submit_command(
 
     Returns:
         The argv to run.
+
+    Raises:
+        SystemExit: There is no ``pbrun.py`` under this runtime root. Nothing
+            can be re-submitted at all, so it is said once rather than as a
+            child's "can't open file" per recovered record.
     """
 
+    if pbrun is None or not Path(pbrun).is_file():
+        looked = " and ".join(
+            str(candidate)
+            for candidate in tool_candidates("pbrun.py", root=RUNTIME_ROOT)
+        )
+        raise SystemExit(
+            f"pool_reset: no pbrun.py to re-submit through; looked for "
+            f"{looked}"
+        )
     command = [
         python, str(pbrun),
         "--transport", str(transport),
