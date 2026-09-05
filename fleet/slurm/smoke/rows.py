@@ -483,6 +483,180 @@ def row_9_no_slurmdbd(job_id: str) -> None:
     del path
 
 
+# ---------------------------------------------------------------------------
+# Rows 10a-10d: what ConstrainCores and ConstrainRAMSpace actually do
+#
+# Under the pull queue, `pbrun --cpus` and `--demand mem_gb=` were admission
+# declarations that nothing enforced.  Under `select/cons_tres` with
+# `CR_Core_Memory` they become `--cpus-per-task` and `--mem`, and
+# fleet/slurm/cgroup.conf turns those into a cpuset and a `memory.max`.  These
+# rows measure the difference rather than argue it, and they are the evidence
+# behind docs/resource_enforcement_2026-09-05.md.
+#
+# The block runs twice: once with the fleet's `ConstrainCores=yes`, once with
+# `PB_SMOKE_CONSTRAIN_CORES=no`, which also drops `task/affinity`.  Each row
+# names the setting it ran under, so a transcript says which arm it is.
+# ---------------------------------------------------------------------------
+
+#: The container's `ConstrainCores`, as `inside.sh` generated it.
+CONSTRAIN_CORES = os.environ.get("PB_SMOKE_CONSTRAIN_CORES", "yes")
+
+#: How much memory row 10c writes past its declaration, and in what chunks.
+#: `bytearray(N)` will not do: it is a calloc, so the pages are mapped and
+#: never written, and a cgroup charges pages that are faulted in.  `extend`
+#: copies, which touches every page.
+GROW_CHUNK_MIB = 64
+OVER_DECLARED_GB = 1
+OVER_GROW_MIB = 3072
+UNDER_DECLARED_GB = 2
+UNDER_GROW_MIB = 256
+
+_AFFINITY_RE = re.compile(r"current affinity list:\s*(\S+)")
+_NPROC_RE = re.compile(r"nproc=(\d+)")
+
+
+def _affinity_width(text: str) -> int:
+    """How many CPUs a ``taskset -cp`` list names, or ``-1`` when it said none.
+
+    ``-cp`` rather than ``-p``: the list form is countable, and a hex mask is
+    a second thing to get wrong in a row that is about a number.
+    """
+
+    match = _AFFINITY_RE.search(text or "")
+    if not match:
+        return -1
+    total = 0
+    for part in match.group(1).split(","):
+        if "-" in part:
+            first, last = part.split("-", 1)
+            total += int(last) - int(first) + 1
+        else:
+            total += 1
+    return total
+
+
+def _grower(megabytes: int) -> list[str]:
+    """A command that writes ``megabytes`` MiB of anonymous memory and says so."""
+
+    return [
+        "python3", "-c",
+        f"b=bytearray()\n"
+        f"for _ in range({megabytes // GROW_CHUNK_MIB}):\n"
+        f"    b.extend(b'x' * ({GROW_CHUNK_MIB} << 20))\n"
+        f"print('grew', len(b) >> 20, 'MiB', flush=True)\n",
+    ]
+
+
+def _ending(prefix: str) -> tuple[str, dict]:
+    """The terminal record filed for a key prefix, whichever directory it is in."""
+
+    for state in ("done", "failed"):
+        path, record = outcome(state, prefix)
+        if path is not None:
+            return state, record
+    return "", {}
+
+
+def row_10_cpu_containment() -> None:
+    """What a job sees of the node's CPUs when it declares one, and when two."""
+
+    node_cpus = int((sh(["nproc"]).stdout or "0").strip() or 0)
+    for label, declared in (("10a", 1), ("10b", 2)):
+        completed = pbrun(
+            ["bash", "-c", "echo nproc=$(nproc); taskset -cp $$"],
+            extra=["--cpus", str(declared)],
+        )
+        text = (completed.stdout or "") + (completed.stderr or "")
+        match = _NPROC_RE.search(text)
+        seen = int(match.group(1)) if match else -1
+        width = _affinity_width(text)
+        if CONSTRAIN_CORES == "yes":
+            # The declaration is a cpuset: the job sees exactly what it asked
+            # for, and the node has more than that to give.
+            ok = seen == declared and width == declared and node_cpus > declared
+        else:
+            # The declaration is an admission count only: the job is placed
+            # against it, and then sees the whole node.
+            ok = seen == node_cpus and width == node_cpus
+        record(
+            f"{label} --cpus {declared} with ConstrainCores={CONSTRAIN_CORES}",
+            ok,
+            f"job saw nproc={seen} affinity width={width} "
+            f"of node's {node_cpus} CPUs (declared {declared})",
+        )
+
+
+def row_10c_over_declared_memory() -> None:
+    """A job that writes past its declared memory does not quietly finish.
+
+    The claim is deliberately not ``state == OUT_OF_MEMORY``: what matters for
+    the decision is whether the constraint stops the job at all, and the state
+    the controller picks is quoted rather than assumed.  `ConstrainSwapSpace`
+    is `no` on the fleet and here, so a job over `memory.max` can reclaim into
+    swap instead of dying -- and if it does, this row says so by failing.
+    """
+
+    completed = pbrun(
+        _grower(OVER_GROW_MIB),
+        extra=["--demand", f"mem_gb={OVER_DECLARED_GB}"],
+    )
+    prefix, job_id = submitted(completed)
+    where, rec = _ending(prefix) if prefix else ("", {})
+    detail = rec.get("detail", {}) if isinstance(rec, dict) else {}
+    slurm = detail.get("slurm", {}) if isinstance(detail, dict) else {}
+    state = str(slurm.get("state") or "")
+    said = f"pbrun: failed ({state})" in (completed.stderr or "")
+    # slurmstepd's own line is the primary evidence: a process the kernel
+    # SIGKILLs writes nothing itself, so without this the row would be
+    # reading a state with no mechanism behind it.
+    stderr_tail = str(detail.get("stderr") or "") + (completed.stderr or "")
+    oom_said = "oom" in stderr_tail.lower()
+    ok = (
+        where == "failed"
+        and rec.get("status") == "failed"
+        and state not in ("", "COMPLETED")
+        and said
+    )
+    record(
+        f"10c a job over its mem_gb is stopped, not finished "
+        f"(ConstrainCores={CONSTRAIN_CORES})",
+        ok,
+        f"job={job_id} declared mem_gb={OVER_DECLARED_GB} wrote "
+        f"{OVER_GROW_MIB} MiB -> filed {where or 'nothing'}/ "
+        f"state={state!r} rc={detail.get('returncode')} "
+        f"signal={detail.get('signal')} "
+        f"pbrun said failed({state})={said} stepd mentioned oom={oom_said}",
+    )
+
+
+def row_10d_within_declared_memory() -> None:
+    """And a job that stays under its declaration is untouched by the limit."""
+
+    completed = pbrun(
+        _grower(UNDER_GROW_MIB),
+        extra=["--demand", f"mem_gb={UNDER_DECLARED_GB}"],
+    )
+    prefix, job_id = submitted(completed)
+    where, rec = _ending(prefix) if prefix else ("", {})
+    detail = rec.get("detail", {}) if isinstance(rec, dict) else {}
+    slurm = detail.get("slurm", {}) if isinstance(detail, dict) else {}
+    ok = (
+        completed.returncode == 0
+        and where == "done"
+        and rec.get("status") == "executed"
+        and f"grew {UNDER_GROW_MIB} MiB" in (completed.stdout or "")
+    )
+    record(
+        f"10d a job within its mem_gb completes "
+        f"(ConstrainCores={CONSTRAIN_CORES})",
+        ok,
+        f"job={job_id} declared mem_gb={UNDER_DECLARED_GB} wrote "
+        f"{UNDER_GROW_MIB} MiB -> filed {where or 'nothing'}/ "
+        f"status={rec.get('status')} state={slurm.get('state')} "
+        f"rc={completed.returncode}",
+    )
+
+
 def main() -> int:
     for argv in (
         ["git", "config", "--global", "user.name", "PrismaBuild smoke"],
@@ -507,6 +681,9 @@ def main() -> int:
     row_7_gres_and_constraint()
     row_8_epilog(timeout_job)
     row_9_no_slurmdbd(timeout_job or first_job)
+    row_10_cpu_containment()
+    row_10c_over_declared_memory()
+    row_10d_within_declared_memory()
     del prefix, timeout_prefix
 
     width = max(len(name) for name, _, _ in results)

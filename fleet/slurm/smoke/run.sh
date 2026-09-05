@@ -4,6 +4,11 @@
 #   fleet/slurm/smoke/run.sh                             # Ubuntu 24.04's 23.11.4
 #   DEB_DIR=/home/rob/slurm-build/arm64-24.04 .../run.sh # the fleet's 25.11.2
 #
+# PB_SMOKE_CONSTRAIN_CORES=no runs the same rows with the container's
+# cgroup.conf ConstrainCores off and task/affinity dropped, which is what
+# docs/resource_enforcement_2026-09-05.md calls option B.  The default, `yes`,
+# is fleet/slurm/cgroup.conf's own setting.
+#
 # DEB_DIR names a directory of .deb files to install instead of the archive's
 # `slurm-wlm`.  `full-set/` beneath it is picked up too, because the node
 # packages alone have no `slurmctld` and a one-node cluster needs one.
@@ -63,6 +68,7 @@ docker build -q -t "$IMAGE" "$ctx" >"$run/build.log" 2>&1 || {
 
 name="pb-slurm-smoke-$stamp"
 echo "smoke: running $name (repo read-only, volume $vol)"
+echo "smoke: ConstrainCores=${PB_SMOKE_CONSTRAIN_CORES:-yes}"
 docker run --rm --name "$name" \
     --privileged --cgroupns=private \
     --hostname pbsmoke \
@@ -70,6 +76,7 @@ docker run --rm --name "$name" \
     -v "$vol":/mnt/shared \
     -e PB_SMOKE_REPO=/repo \
     -e PB_SMOKE_VOL=/mnt/shared \
+    -e PB_SMOKE_CONSTRAIN_CORES="${PB_SMOKE_CONSTRAIN_CORES:-yes}" \
     "$IMAGE" bash /repo/fleet/slurm/smoke/inside.sh 2>&1 | tee "$run/smoke.log"
 status="${PIPESTATUS[0]}"
 

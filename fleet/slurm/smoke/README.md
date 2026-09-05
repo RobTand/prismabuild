@@ -32,6 +32,9 @@ patched. The host's real `/mnt/shared` is never touched.
 | 7b | `--constraint` for a Feature no node has is refused at submit and reported by `pbrun` |
 | 8 | the Epilog ran for a killed job, matched containers by the action's ownership label, and removed its state file as the job's user rather than as root |
 | 9 | with no `slurmdbd`, `sacct` answers nothing and the lane's provenance comes from `scontrol` |
+| 10a, 10b | with `ConstrainCores=yes`, a `--cpus N` job sees exactly N CPUs of a node that has more; with `ConstrainCores=no` it sees the whole node |
+| 10c | a job that writes past its declared `mem_gb` is stopped by the memory constraint rather than finishing, and `pbrun` reports the state the controller chose |
+| 10d | a job that stays under its declared `mem_gb` completes |
 
 ## What it does not establish
 
@@ -70,6 +73,24 @@ neither is a lane defect:
   a stalled fleet. That is an argument for putting the 25.11 packages on the
   nodes beyond the RPC-version one.
 
+## The resource-enforcement arm
+
+Rows 10a-10d run twice, because the setting they measure is the one Rob has to
+decide:
+
+```
+fleet/slurm/smoke/run.sh                                    # ConstrainCores=yes
+PB_SMOKE_CONSTRAIN_CORES=no fleet/slurm/smoke/run.sh        # ConstrainCores=no
+```
+
+`PB_SMOKE_CONSTRAIN_CORES=no` writes `ConstrainCores=no` into the container's
+`cgroup.conf` and drops `task/affinity` from `TaskPlugin`; one variable drives
+both, because `task/affinity` with no cores to constrain has no cpuset to
+write. `ConstrainRAMSpace` stays `yes` in both arms, so rows 10c and 10d
+measure memory under each core setting rather than a second variable. The
+measurements and what they mean for the cutover are in
+`docs/resource_enforcement_2026-09-05.md`.
+
 ## Deviations from `fleet/slurm/slurm.conf`, and why
 
 `inside.sh` generates the config rather than copying it, and prints every
@@ -83,9 +104,11 @@ deviation at the top of the run:
 | `KillWait` | 30 | 10 | rows 5 and 6 would otherwise spend it waiting |
 | `ConstrainDevices` | `yes` | `no` | there are no devices to constrain |
 | `IgnoreSystemd` | absent | `yes` | there is no systemd to ask for a cgroup scope |
+| `ConstrainCores` | `yes` | `yes`, or `no` under `PB_SMOKE_CONSTRAIN_CORES=no` | rows 10a-10d measure both settings; the default is the fleet's |
 | `gres.conf` `File=` | `/dev/nvidia0` | `/dev/nvidia0`, a `mknod`'d character device | slurmd refuses `shard` with no `File=` on the sharing GRES; see below |
 
 Every scheduler *choice* is the fleet's unchanged: `select/cons_tres` with
-`CR_Core_Memory`, `proctrack/cgroup`, `task/cgroup,task/affinity`,
+`CR_Core_Memory`, `proctrack/cgroup`, `task/cgroup,task/affinity` (except in the
+`PB_SMOKE_CONSTRAIN_CORES=no` arm),
 `jobacct_gather/cgroup`, `sched/backfill`, `priority/basic`, `MinJobAge=3600`,
 `AccountingStorageType=accounting_storage/none`, and the real `epilog.sh`.
