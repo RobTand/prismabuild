@@ -929,9 +929,10 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
 
     The mutable summary is a pointer, not an audit log: the queue rewrites it on
     every retry and so must this.  First-writer-wins belongs to the *immutable*
-    records -- the submission records above -- and the generation check in
-    ``publish_outcome`` is what keeps two writers inside one generation from
-    overwriting each other.
+    records -- the submission records above -- and ``_land_summary`` is what
+    keeps two writers of one key from overwriting each other: it compares
+    generations before this call and re-reads after it, so an older waiter
+    cannot leave its ending standing over a later run's.
     """
 
     _write_latest(path, payload)
@@ -2318,6 +2319,9 @@ def _same_generation(path: Path, published_unix: float) -> bool:
     queue's own generation rule -- ``terminal_outcome_covers`` states it, and
     states that an old outcome must not blacklist a later submission -- so a
     writer defers to a record of its own generation and replaces an older one.
+    A *newer* record is not replaced either; ``_land_summary`` holds that half
+    of the rule, because equality alone let a delayed waiter file its ending
+    over a later run's.
     """
 
     try:
@@ -2375,6 +2379,108 @@ def _submitted_gres(job: SubmittedJob | None) -> str | None:
     return None
 
 
+def _newer_ending_stands(
+    existing: Mapping[str, object], published_unix: float
+) -> bool:
+    """Is the record at the summary a later run's ending, and not this one's
+    to replace?
+
+    A ``cache_hit`` is the one exception, and it is not a generation rule.  A
+    hit is the ending of a run that executed nothing: it says the receipt was
+    already in the CAS.  The record of the run that *did* the work carries the
+    job id, the elapsed time and the logs, and it is the one every reader
+    wants, so an execution replaces a standing hit whichever generation each
+    belongs to.  ``_file_ending`` and ``pbrun.cached_outcome`` state the same
+    rule from the other side: a hit is filed only when the key has no ending
+    at all, link-first, so it can never replace one.
+
+    A record with no readable generation cannot be shown to be later, and is
+    replaced as it always was.
+    """
+
+    theirs = _record_generation(existing)
+    if theirs is None or theirs <= float(published_unix):
+        return False
+    return str(existing.get("status") or "") != "cache_hit"
+
+
+def _land_summary(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    published_unix: float,
+    refuse_same_generation: bool,
+) -> bool:
+    """Leave ``payload`` standing at ``path`` unless a newer ending is there.
+
+    The mutable terminal summary is one name per key, and every run of one
+    content-addressed key files its ending at that name.  So the rule is an
+    ordering and not an equality: a later generation replaces an earlier one,
+    and an earlier one may not replace a later one.  Only equality was
+    checked, so a waiter that resumed an old job after a newer run of the same
+    key had already finished replaced the newer ending with its own --
+    ``pbrun.terminal_record(path, <newer generation>)`` then answered ``None``
+    and a generation-specific waiter timed out with an ending on disk saying
+    the older run.
+
+    Read-then-rename cannot state that rule, because the comparison and the
+    write are two steps and two writers cross inside them.  This is the
+    re-read form: the write lands, then the bytes that stand are read back,
+    and a record older than this one is written over again.  A writer that
+    crossed us and lost sees a *newer* record on its own re-read and stops, so
+    the fixed point is the highest generation whichever order the two ran in.
+    The absent case is link-first (``_publish_json_if_absent``), so two
+    writers arriving at an empty name cannot both think they were first.
+
+    Repair stops on anything but a readable older generation.  A record with
+    no generation is not evidence this one is stale, and a *vanished* record
+    must not be recreated: ``supersede_withdrawal`` unlinks a withdrawal
+    marker, and a repair loop that re-published one would revive a decision a
+    later submission had already retired.
+
+    The residual window is a crash: a writer that replaces a newer record and
+    dies before its re-read leaves the older ending standing.  That is a
+    reporting error an operator can see and re-file, where the shape it
+    replaces was a silent loss on every crossing.
+
+    Args:
+        path: The terminal summary, ``<state>/<key>.json``.
+        payload: The record to land.
+        published_unix: The generation ``payload`` belongs to.
+        refuse_same_generation: Whether a record of this same generation is
+            left standing.  False only for the withdrawal enrichment, whose
+            whole job is to replace the marker of its own generation with the
+            marker plus the job's ending.
+
+    Returns:
+        True when a record of this generation or newer stands at ``path`` and
+        this call put it there, False when a record this call may not replace
+        was found instead.
+    """
+
+    floor = float(published_unix)
+    while True:
+        existing = _read_json_object(path)
+        if existing is None:
+            if not _publish_json_if_absent(path, payload):
+                # A record landed between the read and the link.  Compare
+                # against it rather than replacing it unseen.
+                continue
+        else:
+            if _newer_ending_stands(existing, floor) or (
+                refuse_same_generation
+                and _record_generation(existing) == floor
+            ):
+                return False
+            _write_json_atomic(path, payload)
+        after = _read_json_object(path)
+        standing = None if after is None else _record_generation(after)
+        if standing is None or standing >= floor:
+            # Ours, or a later run's, or one that names no generation -- and a
+            # vanished one, which is deliberately not re-published.
+            return True
+
+
 def publish_outcome(
     *,
     queue_root: str | Path,
@@ -2406,9 +2512,13 @@ def publish_outcome(
     ``PoolQueue.finish`` applies through ``succeeded``; only the machinery
     underneath it differs.
 
-    Returns the path written, or ``None`` when a record of this same generation
-    was already there -- the first account of a generation is the one that
-    stands, and a later generation replaces it.
+    Returns the path written, or ``None`` when a record this call may not
+    replace was already there: one of this same generation, because the first
+    account of a generation is the one that stands, or one of a *newer*
+    generation, because a later run's ending is not an older waiter's to
+    overwrite.  ``_land_summary`` states both halves and applies them across
+    the write rather than only before it, and ``_newer_ending_stands`` carries
+    the one exception, a standing ``cache_hit``.
     """
 
     key = str(action_key)
@@ -2430,23 +2540,26 @@ def publish_outcome(
         state = pool.FAILED
     path = _queue_dir(queue_root, state) / f"{key}.json"
     decision: dict[str, object] = {}
-    if path.exists():
+    existing = _read_json_object(path)
+    if existing is not None:
+        if _newer_ending_stands(existing, published_unix):
+            # A later run of this key has already ended.  Its account stands:
+            # this one is a delayed waiter for a request nobody is waiting on
+            # any more.  ``_land_summary`` applies the same rule again across
+            # the write, for a record that lands while this one is built.
+            return None
+        theirs = _record_generation(existing)
         if state == pool.WITHDRAWN:
-            try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                existing = None
-            if isinstance(existing, dict):
-                if "detail" in existing and _same_generation(path, published_unix):
-                    # A full ending is already filed for this generation.
-                    return None
-                decision = {
-                    field: existing[field]
-                    for field in ("withdrawn_unix", "withdrawn_by",
-                                  "withdrawn_host", "withdrawn_from", "reason")
-                    if field in existing
-                }
-        elif _same_generation(path, published_unix):
+            if "detail" in existing and theirs == float(published_unix):
+                # A full ending is already filed for this generation.
+                return None
+            decision = {
+                field: existing[field]
+                for field in ("withdrawn_unix", "withdrawn_by",
+                              "withdrawn_host", "withdrawn_from", "reason")
+                if field in existing
+            }
+        elif theirs == float(published_unix):
             return None
 
     detail_status, returncode = detail_status_and_returncode(status, outcome)
@@ -2545,7 +2658,14 @@ def publish_outcome(
         if not _publish_json_if_absent(path, record):
             return None
         return path
-    _write_json_atomic(path, record)
+    if not _land_summary(
+        path, record, published_unix=float(published_unix),
+        # The withdrawal enrichment replaces the marker of its own generation
+        # with the marker plus the job's ending, which is the one write that
+        # legitimately lands on a record of the same generation.
+        refuse_same_generation=state != pool.WITHDRAWN,
+    ):
+        return None
     return path
 
 
