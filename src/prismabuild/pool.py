@@ -1256,7 +1256,9 @@ class PoolQueue:
     def lease_path(self, action_key: str) -> Path:
         return self.dir(CLAIMED) / f"{action_key}.lease"
 
-    def _entomb_claim(self, action_key: str) -> Path | None:
+    def _entomb_claim(
+        self, action_key: str, *, expect: Mapping[str, object] | None = None
+    ) -> tuple[Path | None, bool]:
         """Move a claim aside so its own cleanup cannot delete its successor.
 
         ``finish`` and ``reap_stale`` both used to publish the item's next home
@@ -1271,8 +1273,20 @@ class PoolQueue:
         So the claim moves out of the way first, atomically, to a name no
         reader of ``claimed/`` treats as a claim, and only the tombstone is
         deleted afterwards.  A crash inside the window leaves the tombstone,
-        which :meth:`sweep_finish_tombstones` recovers.  ``None`` when there
-        was no claim to move, which is the ordinary lost-race case.
+        which :meth:`sweep_finish_tombstones` recovers.
+
+        ``expect`` is the claim the caller judged.  A caller reads a claim,
+        decides what becomes of it, and only then moves it aside, and the
+        claim can conclude and be re-claimed inside that gap -- the reaper's
+        gap spans an ``archive_attempt`` write, which is an NFS round trip.
+        Without the comparison the mover entombs a *live* claim it never
+        judged, deletes that claim's lease, releases its reservation and
+        republishes the item, leaving a second worker running an action
+        nothing records it holds.  Returns the tombstone and whether the claim
+        was the caller's: ``(None, False)`` says a different claim is there
+        now and the caller must leave the key alone.  With no ``expect`` the
+        move is unconditional, which is what a caller holding the only claim
+        on the key wants.
         """
 
         tombstone = self.dir(CLAIMED) / (
@@ -1282,8 +1296,26 @@ class PoolQueue:
         try:
             os.rename(self.item_path(CLAIMED, action_key), tombstone)
         except OSError:
-            return None
-        return tombstone
+            return None, True
+        if expect is None:
+            return tombstone, True
+        entombed = _read_json(tombstone)
+        if entombed is not None and not _same_claim(entombed, expect):
+            # The rename is what makes this decidable.  Comparing before it
+            # tests a name another process can replace between the read and
+            # the move; afterwards these bytes are held exclusively and can be
+            # put back.  Link rather than rename, so a claim that appeared in
+            # the meantime is never replaced; if the link fails,
+            # ``sweep_finish_tombstones`` recovers the record and the caller
+            # has still touched nothing that was not its own.
+            try:
+                os.link(tombstone, self.item_path(CLAIMED, action_key))
+            except OSError:
+                pass
+            else:
+                tombstone.unlink(missing_ok=True)
+            return None, False
+        return tombstone, True
 
     def attempt_generation(self, record: Mapping[str, object]) -> str:
         """Stable directory name for one submission of a content-addressed key."""
@@ -2287,6 +2319,10 @@ class PoolQueue:
                         # release tokens the claimant is about to hold.
                         continue
             record = _read_json(path)
+            # The claim exactly as it was read, before the archiving below
+            # rewrites its attempt fields.  ``_entomb_claim`` compares against
+            # this so the loop can only move aside the claim it judged.
+            read_claim = dict(record) if record is not None else None
             if record is None:
                 # The claim concluded under us.  Both ``finish()`` and this
                 # loop write the item's next home and only then unlink the
@@ -2409,7 +2445,13 @@ class PoolQueue:
             # published the requeue and only then unlinked the claim and lease,
             # so a worker that claimed the requeue inside that window had its
             # claim and lease deleted by this reaper.
-            tombstone = self._entomb_claim(key)
+            tombstone, mine = self._entomb_claim(key, expect=read_claim)
+            if not mine:
+                # A retry is live under this key: its claim, lease and
+                # reservation are its own.  This loop has written nothing
+                # outside the attempt archive, which is immutable and
+                # first-writer-wins, so leaving now costs the key nothing.
+                continue
             self.lease_path(key).unlink(missing_ok=True)
             # Whatever the outcome, the dead claimant's capacity goes back.  A
             # reservation outliving its holder is the starvation bug's shape.
@@ -3247,7 +3289,9 @@ class PoolQueue:
         # visible: the claim to a tombstone, then its own lease.  A retry
         # published while either still stood was claimed by the next poll, and
         # the unlinks below then deleted that new claim and its lease.
-        tombstone = self._entomb_claim(action_key)
+        # No ``expect``: ``finish`` has already established, above, that the
+        # claim at this key is the one this worker executed.
+        tombstone, _mine = self._entomb_claim(action_key)
         self.lease_path(action_key).unlink(missing_ok=True)
         # Capacity is released before the item is filed, so the next worker to
         # look sees the tokens free rather than racing this rename.
