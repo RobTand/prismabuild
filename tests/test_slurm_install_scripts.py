@@ -16,12 +16,14 @@ is the fleet's shared secret and an NFS export is the wrong place for one).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -306,6 +308,51 @@ def _fake_ssh(tmp_path: Path) -> Path:
     return script
 
 
+#: The marker ``fleet/slurm/verify.sh`` writes on a pass, in its shape.
+#: ``cutover.sh`` reads ``slurm_conf_sha256`` and ``verified_unix`` back out
+#: and refuses a marker that verified a slurm.conf this checkout no longer
+#: contains, so ``{}`` no longer stands in for a passing verification.  Pass
+#: ``key=None`` to leave a field out.
+def write_verify_marker(environment: dict[str, str], **overrides: object) -> Path:
+    fields: dict[str, object] = {
+        "schema": "prismaquant.prismabuild.slurm_verify.v1",
+        "host": "sparky",
+        # Three hours and twelve minutes ago, so the age line has both units.
+        "verified_unix": int(time.time()) - 11520,
+        "checkout": str(ROOT),
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "slurm_conf_sha256": hashlib.sha256(
+            (FLEET / "slurm.conf").read_bytes()).hexdigest(),
+        "rows": 21,
+    }
+    fields.update(overrides)
+    path = Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json"
+    path.write_text(
+        json.dumps({name: value for name, value in fields.items()
+                    if value is not None}, indent=1) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+#: A ``sinfo -h -N -o '%N %T'`` that answers with ``table``, one
+#: ``<node> <state>`` line per row.  ``cutover.sh`` asks the controller
+#: whether every box is usable before it changes anything, and SLURM is
+#: installed on no box in this fleet, so the answer has to be faked here.
+def write_fake_sinfo(tmp_path: Path, table: str) -> Path:
+    fakes = tmp_path / "fakes"
+    fakes.mkdir(exist_ok=True)
+    script = fakes / "sinfo"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"echo \"sinfo $*\" >> '{tmp_path}/calls'\n"
+        f"cat <<'PBNODES'\n{table}\nPBNODES\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
 def _cutover_environment(tmp_path: Path) -> dict[str, str]:
     queue = tmp_path / "pb-queue"
     (queue / "claimed").mkdir(parents=True)
@@ -363,7 +410,7 @@ def test_install_reads_its_configuration_from_beside_itself(tmp_path: Path) -> N
 
 def test_cutover_refuses_without_yes(tmp_path: Path) -> None:
     environment = _cutover_environment(tmp_path)
-    (Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json").write_text("{}")
+    write_verify_marker(environment)
     result = _cutover(environment)
     assert result.returncode == 1
     assert "pass --yes" in result.stderr
@@ -371,7 +418,7 @@ def test_cutover_refuses_without_yes(tmp_path: Path) -> None:
 
 def test_cutover_refuses_when_the_queue_still_holds_a_claim(tmp_path: Path) -> None:
     environment = _cutover_environment(tmp_path)
-    (Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json").write_text("{}")
+    write_verify_marker(environment)
     claim = Path(environment["PB_QUEUE_ROOT"]) / "claimed" / ("a" * 64 + ".json")
     claim.write_text("{}")
     result = _cutover(environment, "--yes")
@@ -384,7 +431,7 @@ def test_cutover_refuses_when_the_queue_still_holds_a_ready_item(tmp_path: Path)
     """An item in ready is one no SLURM job would ever pick up."""
 
     environment = _cutover_environment(tmp_path)
-    (Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json").write_text("{}")
+    write_verify_marker(environment)
     (Path(environment["PB_QUEUE_ROOT"]) / "ready" / ("b" * 64 + ".json")).write_text("{}")
     result = _cutover(environment, "--yes")
     assert result.returncode == 1
@@ -404,7 +451,7 @@ def test_cutover_refuses_before_the_kills_when_publication_would_refuse(
     """
 
     environment = _cutover_environment(tmp_path)
-    (Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json").write_text("{}")
+    write_verify_marker(environment)
     refusing = tmp_path / "publish_stub.sh"
     refusing.write_text(
         "#!/bin/sh\n"
@@ -466,12 +513,14 @@ def _live_cutover(tmp_path: Path, *, crontab: str, publish_exit: int) -> dict[st
     nothing, so the stop steps have nothing to signal and the pbrun scan finds
     no waiter; ``crontab`` reads and writes one file under ``tmp_path``; the
     publish stub accepts ``--dry-run`` and exits ``publish_exit`` on the real
-    publication.  The fakes log every call, and the tests read the log before
-    trusting that the real commands were never reached.
+    publication; ``sinfo`` reports the one box idle, which is the last thing
+    the refusal block asks before it writes anything.  The fakes log every
+    call, and the tests read the log before trusting that the real commands
+    were never reached.
     """
 
     environment = _cutover_environment(tmp_path)
-    (Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json").write_text("{}")
+    write_verify_marker(environment)
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     (fakes / "pgrep").write_text(
@@ -490,6 +539,7 @@ def _live_cutover(tmp_path: Path, *, crontab: str, publish_exit: int) -> dict[st
     )
     for name in ("pgrep", "crontab"):
         (fakes / name).chmod(0o755)
+    write_fake_sinfo(tmp_path, f"{FAKE_BOX} idle")
     publish = tmp_path / "publish_stub.sh"
     publish.write_text(
         "#!/bin/sh\n"
@@ -577,7 +627,7 @@ def test_a_cutover_dry_run_names_its_refusals_and_publishes_the_transport(
     result = _cutover(_cutover_environment(tmp_path), "--dry-run", "--yes")
     assert result.returncode == 0, result.stderr
     assert "publish_runtime.py --default-transport slurm" in result.stdout
-    assert "a live run refuses unless all five of these hold" in result.stdout
+    assert "a live run refuses unless all six of these hold" in result.stdout
     # The order that makes the cutover stick.
     crontab = result.stdout.index("step 1: take the supervise line")
     supervisors = result.stdout.index("step 2: stop the supervisors")

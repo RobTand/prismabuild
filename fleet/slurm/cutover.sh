@@ -11,14 +11,18 @@
 # rob's, pqwork.service is rob's user unit, and the runtime generation is
 # rob's to publish.
 #
-# It refuses unless all five of these hold, because each one is a way for the
+# It refuses unless all six of these hold, because each one is a way for the
 # cutover to lose work rather than move it:
 #
-#   * fleet/slurm/verify.sh passed (its marker, or --verified)
+#   * fleet/slurm/verify.sh passed -- its marker, read rather than counted
+#     (the slurm.conf it verified must be this checkout's), or --verified
 #   * pb-queue/claimed and pb-queue/ready are both empty
 #   * publish_runtime.py --dry-run accepts this checkout, asked here rather
 #     than at step 5, which runs after every loop is already dead
 #   * no pbrun is waiting on a pull-queue action anywhere in the fleet
+#   * the controller reports every box idle, mixed or allocated, asked last
+#     because it is the only one of these whose answer expires -- and not
+#     skipped by --verified, which is about an earlier verification, not now
 #   * --yes
 #
 # The order of what it then does is not arrangeable.  The supervise loops are
@@ -86,6 +90,10 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # mode 644, so running it as a command is a "Permission denied" at the
 # one step that happens after every loop is already stopped.
 PUBLISH="${PB_PUBLISH:-python3 $REPO/tools/fleet/publish_runtime.py}"
+# The configuration this checkout would have the fleet run.  Same spelling as
+# verify.sh's CONF, because the marker below records a hash of this file and
+# the two have to be talking about the same one.
+CONF="$REPO/fleet/slurm/slurm.conf"
 QUEUE_ROOT="${PB_QUEUE_ROOT:-/mnt/shared/prismabuild-fleet/pb-queue}"
 RUNTIME_DIR="${PB_RUNTIME_DIR:-/mnt/shared/prismabuild-fleet}"
 BOXES="${PB_BOXES:-dl380g10 sparky sparklina}"
@@ -112,6 +120,85 @@ ssh_name_of_this_box() {
     esac
 }
 LOCAL="$(ssh_name_of_this_box)"
+
+#: The name SLURM knows one entry of $BOXES by.  fleet/slurm/slurm.conf spells
+#: every node as its `hostname -s`, so sparklina is `NodeName=gx10-6b77` there
+#: and every other box is the name ssh already uses.  This is
+#: ssh_name_of_this_box read the other way round.
+slurm_node_of_box() {
+    case "$1" in
+        sparklina) printf 'gx10-6b77' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+#: One top-level key out of the verify marker, quotes and any trailing comma
+#: removed.  verify.sh's `finish` writes it as a fixed heredoc, one key per
+#: line, so sed reads it without needing a JSON parser this script does not
+#: otherwise depend on.  An empty answer means the key is not there.
+marker_field() {
+    sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\(.*\)\$/\1/p" "$MARKER" \
+        | head -n 1 \
+        | sed 's/,[[:space:]]*$//; s/^"//; s/"$//'
+}
+
+#: A count of seconds as the largest two units that are not zero.  Reported,
+#: never judged: how old a verification may be is the operator's call.
+human_age() {
+    local seconds="$1" days hours minutes
+    days=$((seconds / 86400))
+    hours=$((seconds % 86400 / 3600))
+    minutes=$((seconds % 3600 / 60))
+    if [ "$days" -gt 0 ]; then
+        printf '%dd %dh' "$days" "$hours"
+    elif [ "$hours" -gt 0 ]; then
+        printf '%dh %dm' "$hours" "$minutes"
+    else
+        printf '%dm' "$minutes"
+    fi
+}
+
+#: Which boxes the controller says are not usable right now, one per line, or
+#: nothing when every one of them is.  Exit 2 means sinfo could not be asked
+#: at all, which is a different failure and reads differently.
+#:
+#: `sinfo -N` prints one line per node per partition, so a node in `all` and
+#: in `gpu` appears twice; every line is read and the node is reported once.
+#: A state carries flags -- `idle*` is a node the controller cannot reach,
+#: `idle~` one that is powered down -- and the flag is the whole point of
+#: reading them, so it is stripped only after the base word is taken.
+node_liveness() {
+    local table box node name state seen offending bad
+    command -v sinfo >/dev/null 2>&1 || return 2
+    table="$(sinfo -h -N -o '%N %T' 2>&1)" || return 2
+    bad=""
+    for box in $BOXES; do
+        node="$(slurm_node_of_box "$box")"
+        seen=""
+        offending=""
+        while read -r name state; do
+            [ "$name" = "$node" ] || continue
+            seen=yes
+            state="$(printf '%s' "$state" \
+                | tr '[:upper:]' '[:lower:]' \
+                | sed 's/[*~#!%@$^-]*$//')"
+            case "$state" in
+                idle|mixed|allocated) ;;
+                *) [ -n "$offending" ] || offending="$state" ;;
+            esac
+        done <<NODES
+$table
+NODES
+        if [ -z "$seen" ]; then
+            bad="$bad
+  $node: not reported by sinfo -N at all"
+        elif [ -n "$offending" ]; then
+            bad="$bad
+  $node: $offending"
+        fi
+    done
+    printf '%s' "$bad"
+}
 
 #: Run a shell snippet on one box, locally when it is this one.  Prints the
 #: command verbatim; in a dry run that is all it does.
@@ -192,23 +279,83 @@ say ""
 
 if [ "$DRY_RUN" = 1 ]; then
     # A dry run refuses nothing, so say what it would have checked.  These are
-    # read-only questions and they are the five ways this can lose work.
-    say "# a live run refuses unless all five of these hold:"
+    # read-only questions and they are the six ways this can lose work.
+    say "# a live run refuses unless all six of these hold:"
     say "#   --yes was given"
-    say "#   $MARKER exists, or --verified"
+    say "#   $MARKER records this checkout's slurm.conf, or --verified"
     say "#   $QUEUE_ROOT/claimed and .../ready are empty"
     say "#   $PUBLISH --dry-run --default-transport slurm succeeds"
     say "#   no confirmed pbrun.py process on any of: $BOXES"
+    say "#   sinfo reports every one of $BOXES idle, mixed or allocated"
+    # The last one is the only refusal a dry run can answer rather than name:
+    # sinfo reads and changes nothing, and the answer is about now, so it is
+    # worth having before the window is chosen.  It still refuses nothing.
+    unusable="$(node_liveness)"
+    liveness_status=$?
+    if [ "$liveness_status" != 0 ]; then
+        say "# sinfo cannot be asked here, so a live run would refuse: SLURM is"
+        say "#   not installed on this box, or slurmctld is unreachable"
+    elif [ -n "$unusable" ]; then
+        say "# a live run would refuse; these are not usable right now:$unusable"
+    else
+        say "# every one of $BOXES is idle, mixed or allocated"
+    fi
 fi
 
 if [ "$DRY_RUN" = 0 ]; then
     [ "$YES" = 1 ] || die "this changes what the whole fleet executes; pass --yes"
 
+    # The marker is read, not counted.  Existence alone said only that
+    # verify.sh once passed somewhere -- against a slurm.conf this checkout
+    # may no longer contain, which is a verification of a different fleet than
+    # the one about to be cut over to.  The hash is the refusal; the age and
+    # the commit are reported, because how old is too old is the operator's
+    # call and not this script's.
     if [ "$VERIFIED" = 1 ]; then
         say "# --verified: taking it that fleet/slurm/verify.sh passed elsewhere"
     elif [ -f "$MARKER" ]; then
+        marker_sha="$(marker_field slurm_conf_sha256)"
+        marker_when="$(marker_field verified_unix)"
+        marker_host="$(marker_field host)"
+        marker_commit="$(marker_field commit)"
+        conf_sha="$(sha256sum "$CONF" | cut -d' ' -f1)"
+
+        if ! printf '%s' "$marker_sha" | grep -Eqx '[0-9a-f]{64}'; then
+            die "$MARKER does not say which slurm.conf was verified: no readable
+slurm_conf_sha256 field.  A marker that cannot be matched against this
+checkout is not evidence about this fleet.  Re-run fleet/slurm/verify.sh."
+        fi
+        if ! printf '%s' "$marker_when" | grep -Eqx '[0-9]+'; then
+            die "$MARKER does not say when it was written: no readable
+verified_unix field.  A marker whose age cannot be read is not evidence about
+this fleet.  Re-run fleet/slurm/verify.sh."
+        fi
+        if [ "$marker_sha" != "$conf_sha" ]; then
+            die "$MARKER verified a different slurm.conf:
+  the marker's:  $marker_sha
+  this checkout: $conf_sha
+                 ($CONF)
+verify.sh checked a fleet running a configuration this checkout no longer
+contains, so it says nothing about the fleet this cutover would produce.
+Re-run fleet/slurm/verify.sh, or check out the commit it verified."
+        fi
+
         say "# verified: $MARKER"
         say "$(sed 's/^/#   /' "$MARKER")"
+        marker_age=$((STAMP - marker_when))
+        if [ "$marker_age" -lt 0 ]; then
+            say "# verified at $marker_when, which is in this box's future, on ${marker_host:-an unnamed box}, commit ${marker_commit:-unknown}"
+        else
+            say "# verified $(human_age "$marker_age") ago on ${marker_host:-an unnamed box}, commit ${marker_commit:-unknown}"
+        fi
+        say "#   the age is reported, not judged: how old is too old is your call"
+        say "# the marker's slurm.conf is this checkout's ($conf_sha)"
+        head_commit="$(git -C "$REPO" rev-parse --verify HEAD 2>/dev/null || echo unknown)"
+        if [ "$marker_commit" = "$head_commit" ]; then
+            say "# and it was verified at this checkout's HEAD"
+        else
+            say "# but this checkout's HEAD is $head_commit, not $marker_commit (informational)"
+        fi
     else
         die "no $MARKER. Run fleet/slurm/verify.sh first, or pass --verified if you ran it on another box (the marker is box-local)"
     fi
@@ -257,6 +404,29 @@ Each one is somebody watching for a result that the loops are about to stop
 producing.  Let them finish."
     fi
     say "# no pbrun is waiting on any box"
+
+    # Last, because it is the only question whose answer expires: the marker
+    # says a fleet passed once, and this asks the controller whether that
+    # fleet is up now.  --verified does not skip it for the same reason.  It
+    # is also the last read before anything is written -- the state file
+    # below and step 1's crontab edit are the first irreversible acts -- so a
+    # fleet that is down is refused with nothing yet changed.
+    unusable="$(node_liveness)"
+    liveness_status=$?
+    if [ "$liveness_status" != 0 ]; then
+        die "sinfo could not be asked which nodes are up: SLURM is not installed
+here, or slurmctld is unreachable.  This cutover makes SLURM the fleet's
+transport, so a controller that cannot answer now is a fleet with no execution
+plane the moment step 1 runs.  Run fleet/slurm/verify.sh."
+    fi
+    if [ -n "$unusable" ]; then
+        die "the controller does not report every box as usable right now:$unusable
+A node that is down, drained or unregistered runs nothing after the pull
+queue's loops are stopped, and stopping them is step 3.  Bring it back -- and
+a node the controller merely drained comes back with:
+  scontrol update NodeName=<node> State=RESUME"
+    fi
+    say "# every one of $BOXES is idle, mixed or allocated"
 fi
 
 # -- record what is being replaced, before replacing it ----------------------
