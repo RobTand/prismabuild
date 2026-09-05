@@ -2,7 +2,8 @@
 
 The rule lives in ``slurm_lane.partition_for``; this checks that ``pbrun``
 actually hands its answer to ``slurm_lane.run`` for each of the three shapes
-an agent submits: GPU work, untagged CPU work, and CPU work pinned to a box.
+an agent submits: GPU work, untagged CPU work, CPU work pinned to a box, and
+CPU work asserted portable with ``--anywhere``.
 """
 from __future__ import annotations
 
@@ -39,8 +40,10 @@ def _lane_kwargs(monkeypatch: pytest.MonkeyPatch, *, tags, demand,
     return raised.value.kwargs
 
 
-def _partition_pbrun_sends(monkeypatch: pytest.MonkeyPatch, *, tags, demand):
-    return _lane_kwargs(monkeypatch, tags=tags, demand=demand)["partition"]
+def _partition_pbrun_sends(monkeypatch: pytest.MonkeyPatch, *, tags, demand,
+                           anywhere: bool = False):
+    return _lane_kwargs(
+        monkeypatch, tags=tags, demand=demand, anywhere=anywhere)["partition"]
 
 
 def test_gpu_work_is_sent_to_the_gpu_partition(monkeypatch) -> None:
@@ -99,3 +102,9 @@ def test_one_exclusive_device_is_still_accepted(monkeypatch) -> None:
         monkeypatch, tags=["gb10"], demand={"gpu": 1, "mem_gb": 16},
         exclusive=True)
     assert kwargs["resources"].gres() == "gpu:1"
+
+
+def test_anywhere_cpu_work_is_left_to_the_default_partition(monkeypatch) -> None:
+    assert _partition_pbrun_sends(
+        monkeypatch, tags=[], demand={"cpu": 8, "mem_gb": 32}, anywhere=True
+    ) is None
