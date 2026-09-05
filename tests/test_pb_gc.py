@@ -122,6 +122,9 @@ def _droppings(execution: dict[str, object]) -> list[Path]:
 
 
 def _run(*argv: str, expect: int = 0) -> str:
+    # These isolated fixture stores have no remote producers.
+    if "--apply" in argv:
+        argv = (*argv, "--quiescent-store")
     completed = subprocess.run(
         [sys.executable, str(TOOL), *argv],
         capture_output=True, text=True, check=False,
@@ -487,3 +490,53 @@ def test_a_claim_whose_checkout_root_cannot_be_inspected_is_kept(
     reasons = {str(row["why"]) for row in plan["keep"]}
     assert "checkout root could not be inspected" in reasons
     assert "output path of a live local result claim" in reasons
+
+
+def test_apply_requires_fleet_quiescence_acknowledgement(tmp_path: Path):
+    dead = _execute(tmp_path, "remote-looking")
+    shutil.rmtree(Path(str(dead["checkout"])))
+    before = _snapshot(tmp_path / "cas")
+    assert pb_gc.main([
+        "--cas-root", str(tmp_path / "cas"), "--apply", "--min-age-hours", "0",
+    ]) == 2
+    assert _snapshot(tmp_path / "cas") == before
+
+
+def test_sweep_requires_fleet_quiescence_acknowledgement(tmp_path: Path):
+    dead = _execute(tmp_path, "dead")
+    shutil.rmtree(Path(str(dead["checkout"])))
+    plan = pb_gc.survey(tmp_path / "cas", min_age_s=0)
+    with pytest.raises(pb_gc.SweepError, match="quiescent"):
+        pb_gc.sweep(plan, min_age_s=0)
+    assert all(path.exists() for path in _droppings(dead))
+
+
+@pytest.mark.parametrize("age", ["nan", "inf", "-1"])
+def test_invalid_age_is_rejected(tmp_path: Path, age: str):
+    assert pb_gc.main(["--cas-root", str(tmp_path), "--min-age-hours", age]) == 2
+
+
+def test_symlinked_store_subdirectory_is_not_swept(tmp_path: Path):
+    cas = tmp_path / "cas"
+    cas.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    payload = outside / ".payload.abandoned.tmp"
+    payload.write_bytes(b"preserve")
+    (cas / ".staging").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(pb_gc.SweepError, match="symlink"):
+        pb_gc.survey(cas, min_age_s=0)
+    assert payload.read_bytes() == b"preserve"
+
+
+def test_a_replaced_candidate_is_preserved(tmp_path: Path):
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    source = tmp_path / "source"
+    source.write_bytes(b"old")
+    staged, _, _ = pb._copy_to_staging(source, cas.root / ".staging")
+    plan = pb_gc.survey(cas.root, min_age_s=0)
+    row = next(row for row in plan["remove"] if row["path"] == staged)
+    staged.rename(staged.with_suffix(".saved"))
+    staged.write_bytes(b"new publication")
+    assert "replaced" in pb_gc._remove(row)
+    assert staged.read_bytes() == b"new publication"

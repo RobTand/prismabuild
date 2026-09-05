@@ -991,46 +991,49 @@ never snapshots. This applies to the smoke action, whose result is
 
 ## Sweep the store's per-execution litter
 
-Every local action files four immutable droppings into the CAS and nothing has
-ever removed one. A claim under `local-results/v1/` records ownership of the
-action's declared result path, a file under `.worker-locks/` serializes writers
-of that path, a directory under `.staging/local-results/` is where the result
-was copied before publication, and a killed bundle ingest leaves a copy of up
-to 512 MiB at the root of `.staging/`. The claim's digest covers the checkout
-root the action ran in, and a materialized job mints a fresh root for every
-execution, so a campaign leaves one of each behind every time it runs. On
-2026-09-05 the live store held 1785 claims, 1745 locks and 942 empty staging
-namespaces.
-
-`pb_gc` reports them, and removes them when you ask it to.
+`pb_gc` inventories per-execution claims under `local-results/v1/`, worker lock
+files, empty local-result staging namespaces, legacy root staging payloads,
+and private `ingest.*` staging directories left by killed ingests. Requests,
+receipts, unrecognized entries, and nonempty result staging namespaces are
+retained. Normal ingest completion removes its private directory; SIGKILL can
+leave payload bytes behind for this maintenance command to reclaim.
 
     tools/fleet/pb_gc.py --cas-root /mnt/shared/prismabuild-fleet/cas
-    tools/fleet/pb_gc.py --cas-root /mnt/shared/prismabuild-fleet/cas --apply
 
-The default only reports. It prints a line per entry with its size, its age and
-why it is dead, the entries it is keeping grouped by reason, and a total.
-`--summary` drops the per-entry lines. There is no default root: this tool
-removes files, and a default would let an operator who typed no root sweep the
-fleet's own store.
+The default only reports, including candidate paths, bytes, ages, reasons for
+retention, and record counts. `--summary` omits individual paths. No default
+CAS root is supplied. Candidate status describes local observations; it does
+not establish that a remote execution is dead.
 
-What makes a removal safe is structural. A claim exists to authorize repairing
-a leftover result under its own checkout root, and a materialized job removes
-that root when it ends, so a claim whose root is gone can never authorize
-anything again. A claim whose root is still there is the persistent-checkout
-case, where repair is real, and `pb_gc` never touches one. A lock goes only
-when no live claim names its output path, nothing holds its `flock`, and no
-process on the box has its inode open. A staging namespace goes only when it is
-empty and no live claim carries its digest. A root staging copy goes only when
-no process has it open.
+Before applying a sweep, stop new submissions and drain or stop **all CAS
+producers on every host**, including direct clients outside the worker pool.
+Review the dry-run paths and verify candidate checkout roots are absent on all
+hosts where they could reside. Keep any claim needed to repair a persistent
+checkout. Maintain this quiescence until the command exits. Only then run:
 
-`--min-age-hours` is a backstop on top of that rule, not a substitute for it.
-It covers one blind spot: checkout roots are box-local and spelled the same way
-on every box, so a root that is absent here can be a live execution somewhere
-else. The default is 24 hours. `pbrun` has no default deadline, so no age is
-provably safe; raise it past the longest action your campaign runs.
+    tools/fleet/pb_gc.py --cas-root /mnt/shared/prismabuild-fleet/cas --apply --quiescent-store
 
-Two things it will not do. Requests and receipts are records, not litter: the
-gap between them is printed as a diagnostic and neither is ever removed. A
-staging namespace that still holds a payload is a killed publication, and
-unwinding one belongs to `core.repair_local_result`, which takes the output
-lock and checks ownership; `pb_gc` reports it and leaves it.
+Both flags are required for removal. `--quiescent-store` records the operator's
+assertion; the tool does not acquire a distributed maintenance lock or stop
+workers itself. A root missing on this host can exist on another host, and a
+local `/proc` scan cannot see remote file users. Removing an unlocked worker
+lock while producers may open it can leave a waiter on an orphan inode. The
+maintenance requirement prevents relying on those incomplete local checks.
+
+`--min-age-hours` is a finite, nonnegative retention threshold (default 24),
+never proof of abandonment. Raising it does not make an online sweep safe.
+The tool retains claims whose checkout roots exist or cannot be inspected,
+locks protected by those claims or a local holder, occupied result staging
+namespaces, open local staging files, and private ingest directories whose
+ownership lock is held, missing, or contains unrecognized files. A private
+ingest lock is held throughout copying and publication; the reaper also holds
+it while deleting that directory. Incomplete hidden `.ingest.*` initialization
+directories are retained for manual inspection.
+
+A fresh survey and inode identity checks protect against entries that changed
+since the report. Parent directories are opened without following symlinks.
+A skipped removal exits 1 and reports the path; invalid arguments or an unsafe
+store layout exit 2. These safeguards complement the maintenance prerequisite.
+Use `core.repair_local_result` for occupied result namespaces: it takes the
+output lock and validates the result's ownership before clearing a crash-left
+publication.

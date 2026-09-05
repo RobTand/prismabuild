@@ -1,67 +1,27 @@
 #!/usr/bin/env python3
 """Report, and on request remove, the per-execution litter in a store.
 
-Every local action leaves four immutable droppings behind, and nothing in the
-system has ever removed any of them.  On the live store on 2026-09-05 that was
-1785 claims, 1745 ``.worker-locks`` entries and 942 empty staging namespace
-directories, all of them dead.
+Claims, worker lock files, empty result staging namespaces and killed ingest
+payloads accumulate under the shared CAS. This command surveys them without
+writing, and removes candidates only during explicitly acknowledged maintenance.
 
-Where each comes from:
+Before --apply --quiescent-store, stop new submissions and drain/stop every
+producer sharing this CAS, on every host. Inspect the dry-run candidates and
+verify that each candidate claim's checkout is absent on every host where it
+could reside; retain claims needed to repair persistent checkouts. Keep the
+store quiescent until the sweep finishes. This acknowledgement is an operator
+assertion, not an automatically acquired distributed maintenance lock.
 
-*   A **claim** at ``local-results/v1/<shard>/<digest>.json`` records exclusive
-    ownership of one action's declared result path.  Its digest covers the
-    ``checkout_root`` the action ran in (``core._local_result_claim_body``),
-    and ``materialize._execution_checkout`` mints a fresh ``mkdtemp`` root for
-    every execution of a sealed snapshot.  So a campaign that runs one action a
-    thousand times files a thousand distinct claims.
-*   A **lock** at ``.worker-locks/<digest>.lock`` serializes writers of one
-    declared output path (``core._local_output_lock``).  The identity is the
-    physical output path, which lives inside that same per-execution root, so
-    it too is unique per run.
-*   A **staging namespace** at ``.staging/local-results/<claim digest>/`` is
-    where a claimed result is copied before publication.  The payload is
-    unlinked when the publication finishes; the directory is not.
-*   A **root staging copy** at ``.staging/.payload.*.tmp`` is a bundle ingest
-    or a namespace-less result publication.  It is unlinked in a ``finally``,
-    so it survives only a killed process, and a snapshot bundle can be 512 MiB.
+A missing local checkout, local /proc descriptors, an available flock, and file
+age cannot prove that a remote execution is dead. An age threshold is only a
+retention preference. In particular an unlocked worker lock cannot safely be
+unlinked while producers may open it: a waiter could acquire an orphan inode.
+Local probes add protection against mistakes, but never authorize online GC.
 
-What makes removal safe is structural, not a guess about age.  A claim exists
-to authorize ``core.repair_local_result`` of a leftover result *under its own
-checkout root*.  ``materialize._cleanup_execution_checkout`` removes that root
-in a ``finally``, unconditionally.  Once the root is gone there is no path the
-claim could ever authorize again, so the claim is dead by construction.  A
-claim whose root is still there is the persistent-checkout case, where repair
-is real work, and this tool never touches one.  Every other class hangs off
-that same fact: a lock is swept only when no live claim names its output path,
-no process holds its ``flock``, and no process holds its inode open; a staging
-namespace only when it is empty and no live claim carries its digest; a root
-staging copy only when no process on this box has it open.
+Requests and receipts are records and are never removed. Nonempty local-result
+staging namespaces remain available for core.repair_local_result. --cas-root
+is required and --apply defaults off.
 
-``--min-age-hours`` is a backstop on top of that rule and never a substitute
-for it.  It exists for one blind spot: checkout roots are box-local with the
-same spelling on every box (``materialize.LOCAL_CHECKOUT_ROOT``), so a root
-that is absent here can be a live execution over there.  ``pbrun`` has no
-default deadline, so no age is provably safe; raise the backstop past the
-longest action a campaign runs.
-
-Two honest limits, recorded rather than papered over:
-
-*   Winning a lock file's ``flock`` and then unlinking it leaves a window in
-    which a producer that opened the same path acquires the lock on an orphan
-    inode while the next producer creates a fresh one.  The ``/proc`` scan
-    narrows that window and does not close it.  It costs duplicate work rather
-    than corruption, the same exposure the store already carries because
-    ``flock`` is not cross-box, and for a per-execution checkout the output
-    path is never reused at all.
-*   The ``/proc`` scan sees only processes this user can inspect.  The count it
-    could not read is reported, because an incomplete answer must not read as
-    an empty one.
-
-Requests and receipts are records, not litter.  The gap between them is
-reported as a diagnostic and nothing here will remove either.
-
-``--cas-root`` is required and has no default.  This tool removes files, and a
-default would let it be pointed at the live fleet store by omission.
 """
 
 from __future__ import annotations
@@ -70,6 +30,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -88,7 +49,10 @@ KIND_CLAIM = "claim"
 KIND_LOCK = "lock"
 KIND_NAMESPACE = "staging namespace"
 KIND_INGEST = "aborted staging copy"
-KINDS = (KIND_CLAIM, KIND_LOCK, KIND_NAMESPACE, KIND_INGEST)
+KIND_PRIVATE_INGEST = "private ingest staging"
+KINDS = (KIND_CLAIM, KIND_LOCK, KIND_NAMESPACE, KIND_INGEST, KIND_PRIVATE_INGEST)
+PRIVATE_STAGING_PREFIX = "ingest."
+PRIVATE_STAGING_OWNER = ".owner.lock"
 
 #: Where each class lives, spelled the way the code that writes it spells it:
 #: ``core._local_result_claim_path``, ``core._local_output_lock``,
@@ -129,6 +93,11 @@ def _entries(directory: Path) -> list[os.DirEntry[str]]:
     """
 
     try:
+        # Validate every component, including fixed CAS layout directories.
+        # A final-entry nofollow check alone misses a redirected .staging.
+        for component in reversed((directory, *directory.parents)):
+            if stat.S_ISLNK(os.lstat(component).st_mode):
+                raise SweepError(f"refusing symlinked store directory: {component}")
         with os.scandir(directory) as scan:
             return sorted(scan, key=lambda entry: entry.name)
     except FileNotFoundError:
@@ -251,6 +220,7 @@ def _candidate(kind: str, path: Path, info: os.stat_result, why: str) -> dict:
         "path": path,
         "bytes": info.st_size if stat.S_ISREG(info.st_mode) else 0,
         "age_s": max(0.0, time.time() - info.st_mtime),
+        "identity": (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns),
         "why": why,
     }
 
@@ -468,7 +438,8 @@ def _survey_ingests(
     scanned = 0
     for entry in _entries(root):
         path = Path(entry.path)
-        if entry.name == NAMESPACE_SUBPATH[-1]:
+        if (entry.name == NAMESPACE_SUBPATH[-1]
+                or entry.name.startswith(PRIVATE_STAGING_PREFIX)):
             continue  # the namespace container, surveyed above
         if not (entry.name.startswith(STAGING_PREFIX)
                 and entry.name.endswith(STAGING_SUFFIX)):
@@ -497,6 +468,87 @@ def _survey_ingests(
         remove.append(_candidate(
             KIND_INGEST, path, info, f"nothing holds it open; {finished}"))
     return {"scanned": scanned, "remove": remove, "keep": keep}
+
+
+def _survey_private_ingests(
+    cas_root: Path, *, min_age_s: float, held_inodes: set[tuple[int, int]],
+) -> dict:
+    remove, keep = [], []
+    scanned = 0
+    for entry in _entries(cas_root / ".staging"):
+        if not entry.name.startswith(PRIVATE_STAGING_PREFIX):
+            continue
+        scanned += 1
+        path = Path(entry.path)
+        if not entry.is_dir(follow_symlinks=False):
+            keep.append(_retain(KIND_PRIVATE_INGEST, path, "not a real directory"))
+            continue
+        info = path.lstat()
+        members = {}
+        reason = ""
+        for member in _entries(path):
+            member_info = member.stat(follow_symlinks=False)
+            if (not stat.S_ISREG(member_info.st_mode)
+                    or member_info.st_uid != os.geteuid()
+                    or not (member.name == PRIVATE_STAGING_OWNER
+                            or (member.name.startswith(STAGING_PREFIX)
+                                and member.name.endswith(STAGING_SUFFIX)))):
+                reason = "unrecognized or foreign-owned ingest contents"
+                break
+            if (member_info.st_dev, member_info.st_ino) in held_inodes:
+                reason = "open in another process"
+                break
+            members[member.name] = _identity(member_info)
+        if not reason and PRIVATE_STAGING_OWNER not in members:
+            reason = "missing ingest ownership lock"
+        if not reason:
+            reason = _probe_lock(path / PRIVATE_STAGING_OWNER)
+        if not reason and time.time() - info.st_mtime < min_age_s:
+            reason = "younger than the age backstop"
+        if reason:
+            keep.append(_retain(KIND_PRIVATE_INGEST, path, reason))
+            continue
+        row = _candidate(KIND_PRIVATE_INGEST, path, info,
+                         "private ingest ownership lock is available")
+        row["members"] = members
+        row["bytes"] = sum(identity[2] for identity in members.values())
+        remove.append(row)
+    return {"scanned": scanned, "remove": remove, "keep": keep}
+
+
+def _remove_private_ingest(row: Mapping[str, object]) -> str:
+    path = Path(str(row["path"]))
+    parent_fd = directory_fd = owner_fd = None
+    try:
+        parent_fd = pb._open_directory_nofollow(path.parent, where="GC parent")
+        directory_fd = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                               dir_fd=parent_fd)
+        if _identity(os.fstat(directory_fd)) != row["identity"]:
+            return "replaced or changed during the sweep"
+        owner_fd = os.open(PRIVATE_STAGING_OWNER, os.O_RDONLY | os.O_NOFOLLOW
+                           | os.O_NONBLOCK, dir_fd=directory_fd)
+        fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        members = row["members"]
+        if set(os.listdir(directory_fd)) != set(members):
+            return "ingest contents changed during the sweep"
+        for name, expected in members.items():
+            observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if _identity(observed) != expected:
+                return "ingest contents replaced during the sweep"
+        if _identity(os.fstat(owner_fd)) != members[PRIVATE_STAGING_OWNER]:
+            return "ingest ownership lock replaced during the sweep"
+        for name in members:
+            if name != PRIVATE_STAGING_OWNER:
+                os.unlink(name, dir_fd=directory_fd)
+        os.unlink(PRIVATE_STAGING_OWNER, dir_fd=directory_fd)
+        os.rmdir(path.name, dir_fd=parent_fd)
+    except (OSError, pb.PrismaBuildError) as exc:
+        return f"cannot remove ingest: {exc}"
+    finally:
+        for descriptor in (owner_fd, directory_fd, parent_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+    return ""
 
 
 def survey(
@@ -532,6 +584,8 @@ def survey(
         KIND_LOCK: locks,
         KIND_NAMESPACE: namespaces,
         KIND_INGEST: ingests,
+        KIND_PRIVATE_INGEST: _survey_private_ingests(
+            cas_root, min_age_s=min_age_s, held_inodes=held_inodes),
     }
     requests = _count_json(cas_root / "requests")
     receipts = _count_json(cas_root / "actions")
@@ -555,7 +609,7 @@ def survey(
 # --------------------------------------------------------------------------
 
 
-def _remove_lock(path: Path) -> str:
+def _remove_lock(path: Path, identity: tuple) -> str:
     """Unlink one lock file while holding its own exclusive lock.
 
     The lock is taken first so a producer already inside ``_local_output_lock``
@@ -564,9 +618,8 @@ def _remove_lock(path: Path) -> str:
     """
 
     try:
-        directory_fd = os.open(
-            path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError as exc:
+        directory_fd = pb._open_directory_nofollow(path.parent, where="GC parent")
+    except (OSError, pb.PrismaBuildError) as exc:
         return f"cannot open {path.parent}: {exc}"
     try:
         flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
@@ -582,6 +635,8 @@ def _remove_lock(path: Path) -> str:
             except OSError:
                 return "taken by a live local action during the sweep"
             locked = os.fstat(descriptor)
+            if _identity(locked) != identity:
+                return "replaced or changed during the sweep"
             named = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
             if (locked.st_dev, locked.st_ino) != (named.st_dev, named.st_ino):
                 return "replaced during the sweep"
@@ -595,45 +650,62 @@ def _remove_lock(path: Path) -> str:
     return ""
 
 
+def _identity(info: os.stat_result) -> tuple:
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+
 def _remove(row: Mapping[str, object]) -> str:
-    """Remove one candidate. Returns ``""`` or why it was left alone."""
+    """Remove the inspected inode through a descriptor anchored below the CAS."""
 
     path = Path(str(row["path"]))
     kind = str(row["kind"])
     if kind == KIND_LOCK:
-        return _remove_lock(path)
+        return _remove_lock(path, row["identity"])
+    if kind == KIND_PRIVATE_INGEST:
+        return _remove_private_ingest(row)
     try:
+        directory_fd = pb._open_directory_nofollow(path.parent, where="GC parent")
+    except (OSError, pb.PrismaBuildError) as exc:
+        return f"cannot open parent: {exc}"
+    try:
+        info = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+        if _identity(info) != row["identity"]:
+            return "replaced or changed during the sweep"
         if kind == KIND_NAMESPACE:
-            os.rmdir(path)
+            os.rmdir(path.name, dir_fd=directory_fd)
         else:
-            os.unlink(path)
+            os.unlink(path.name, dir_fd=directory_fd)
     except FileNotFoundError:
         return "already gone"
     except OSError as exc:
         return f"cannot remove: {exc}"
+    finally:
+        os.close(directory_fd)
     return ""
 
 
-def sweep(plan: Mapping[str, object], *, min_age_s: float) -> dict:
-    """Remove the plan's candidates, re-proving each one first.
+def sweep(
+    plan: Mapping[str, object], *, min_age_s: float, quiescent_store: bool = False,
+) -> dict:
+    """Remove candidates during an operator-established fleet maintenance window.
 
-    The whole survey is re-run against a fresh ``/proc`` reading and only the
-    paths both surveys condemn are removed. A candidate that became live in
-    between is skipped and reported, which is what makes "never removes
-    something in flight" a property rather than a hope.
+    Re-surveying adds a local race check; it cannot establish fleet quiescence.
+    The caller must stop producers and verify remote checkout absence first.
     """
 
+    if not quiescent_store:
+        raise SweepError("removal requires an acknowledged quiescent store")
     held, unreadable = open_inodes(skip_pid=os.getpid())
     recheck = survey(
         Path(str(plan["cas_root"])), min_age_s=min_age_s,
         held_inodes=held, unreadable_processes=unreadable,
     )
-    still_dead = {str(row["path"]) for row in recheck["remove"]}
+    still_dead = {str(row["path"]): row["identity"] for row in recheck["remove"]}
     removed: list[dict] = []
     skipped: list[tuple[dict, str]] = []
     for row in plan["remove"]:  # type: ignore[index]
-        if str(row["path"]) not in still_dead:
-            skipped.append((dict(row), "became live between the plan and the sweep"))
+        if still_dead.get(str(row["path"])) != row["identity"]:
+            skipped.append((dict(row), "became live or changed between the plan and the sweep"))
             continue
         why = _remove(row)
         if why:
@@ -675,7 +747,9 @@ def report(plan: Mapping[str, object], *, list_paths: bool = True) -> list[str]:
     """The dry-run screen, as lines."""
 
     sections = plan["sections"]  # type: ignore[index]
-    lines = [f"pb_gc: {plan['cas_root']}"]
+    lines = [f"pb_gc: {plan['cas_root']}",
+             "Candidates require fleet-wide quiescence and remote checkout "
+             "verification before removal; local probes cannot prove abandonment."]
     total_bytes = 0.0
     for kind in KINDS:
         section = sections[kind]  # type: ignore[index]
@@ -708,7 +782,7 @@ def report(plan: Mapping[str, object], *, list_paths: bool = True) -> list[str]:
     if diagnostics["occupied_staging_namespaces"]:
         lines.append(
             f"  {diagnostics['occupied_staging_namespaces']} staging "
-            "namespaces still hold a payload; each is a killed publication"
+            "namespaces still hold a payload; retained for ownership-aware repair"
         )
     if diagnostics["unreadable_processes"]:
         lines.append(
@@ -734,12 +808,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "no default, because this tool removes files")
     ap.add_argument("--apply", action="store_true",
                     help="actually remove; the default only reports")
+    ap.add_argument("--quiescent-store", action="store_true",
+                    help="acknowledge all producers on all hosts are paused, "
+                         "and candidate checkout roots are absent on every "
+                         "host; required with --apply")
     ap.add_argument("--min-age-hours", type=float, default=DEFAULT_MIN_AGE_HOURS,
-                    help="backstop on top of the structural rule, for the "
-                         "cross-box blind spot: a checkout root absent here "
-                         "can be a live execution on another box (default "
-                         f"{DEFAULT_MIN_AGE_HOURS:g}). Raise it past the "
-                         "longest action a campaign runs")
+                    help="minimum retention age in hours; never proof of "
+                         f"remote abandonment (default {DEFAULT_MIN_AGE_HOURS:g})")
     ap.add_argument("--summary", action="store_true",
                     help="counts and totals only, without a line per entry")
     return ap
@@ -747,7 +822,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    min_age_s = max(0.0, args.min_age_hours) * 3600.0
+    if not math.isfinite(args.min_age_hours) or args.min_age_hours < 0:
+        print("pb_gc: --min-age-hours must be finite and nonnegative", file=sys.stderr)
+        return 2
+    if args.apply and not args.quiescent_store:
+        print("pb_gc: --apply requires --quiescent-store; pause all producers "
+              "on all hosts and verify candidate checkout roots first", file=sys.stderr)
+        return 2
+    min_age_s = args.min_age_hours * 3600.0
     try:
         plan = survey(Path(args.cas_root), min_age_s=min_age_s)
     except SweepError as exc:
@@ -757,12 +839,17 @@ def main(argv: list[str] | None = None) -> int:
     if not args.apply:
         print("\nnothing removed; re-run with --apply")
         return 0
-    outcome = sweep(plan, min_age_s=min_age_s)
+    try:
+        outcome = sweep(plan, min_age_s=min_age_s,
+                        quiescent_store=args.quiescent_store)
+    except SweepError as exc:
+        print(f"pb_gc: {exc}", file=sys.stderr)
+        return 2
     freed = sum(float(row["bytes"]) for row in outcome["removed"])
     print(f"\nremoved {len(outcome['removed'])} entries, {format_bytes(freed)}")
     for row, why in outcome["skipped"]:
         print(f"  left {row['path']}: {why}")
-    return 0
+    return 1 if outcome["skipped"] else 0
 
 
 if __name__ == "__main__":
