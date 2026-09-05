@@ -992,6 +992,56 @@ def test_pbrun_reports_a_slurm_execution_the_way_it_reports_a_pool_one(
     assert "submitted" in err and "attempt 1/1" in err and "executed via" in err
 
 
+def test_the_slurm_path_prints_the_placement_notices_the_pool_path_prints(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both notices printed on the pool path only, though the pin is just as
+    real under SLURM and the GPU mask is applied before the transport branch.
+
+    A pin is a consequence of a checkout path rather than of a flag, so a
+    submitter that is not told has narrowed the fleet to one box without
+    knowing; and a slot with no device silently turns a suite's CUDA tests into
+    skips, which read as the same green.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "notices")
+    request = cas.publish_action_request(action)
+
+    pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=["x86"],
+        demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
+        timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
+        runtime_root=REPOSITORY, poll_s=0.0,
+        placement_notice="pbrun: PINNED to sparky -- test notice",
+    )
+
+    err = capsys.readouterr().err
+    assert "pbrun: PINNED to sparky -- test notice" in err
+    assert "[no GPU: CUDA_VISIBLE_DEVICES='']" in err
+
+
+def test_a_gpu_action_is_not_told_its_slot_has_no_device(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "has-a-device")
+    request = cas.publish_action_request(action)
+
+    pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=["gb10"],
+        demand={"gpu": 1, "mem_gb": 16}, exclusive=False,
+        timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
+        runtime_root=REPOSITORY, poll_s=0.0,
+    )
+
+    assert "no GPU" not in capsys.readouterr().err
+
+
 def test_a_job_that_exits_zero_without_a_receipt_is_not_reported_as_success(
     tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1109,6 +1159,21 @@ def test_the_slurm_transport_never_touches_the_pull_queue(
     assert seen["tags"] == ["x86"]
     assert seen["timeout_s"] == 1800.0
     assert seen["exclusive"] is False
+
+
+def test_main_hands_the_slurm_path_the_pin_notice_it_would_have_printed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Built in ``main``, which is the only place that knows the checkout and
+    the flags.  The census is unavailable rather than empty: this branch builds
+    no ``PoolQueue`` on purpose, and worker offers do not describe a SLURM
+    fleet, so the notice says so instead of borrowing the queue's sentence."""
+
+    seen = _slurm_main_kwargs(tmp_path, monkeypatch, "--here")
+    notice = str(seen["placement_notice"])
+    assert "PINNED" in notice
+    assert pbrun.NO_CENSUS in notice
+    assert pbrun.UNANNOUNCED_CENSUS not in notice
 
 
 def test_the_priority_a_caller_asked_for_reaches_the_lane(
