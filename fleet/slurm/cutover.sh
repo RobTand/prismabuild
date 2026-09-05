@@ -15,7 +15,8 @@
 # cutover to lose work rather than move it:
 #
 #   * fleet/slurm/verify.sh passed -- its marker, read rather than counted
-#     (the slurm.conf it verified must be this checkout's), or --verified
+#     (the slurm.conf it verified must be this checkout's), and no later run
+#     of verify.sh recorded a failure, or --verified
 #   * pb-queue/claimed and pb-queue/ready are both empty
 #   * publish_runtime.py --dry-run accepts this checkout, asked here rather
 #     than at step 5, which runs after every loop is already dead
@@ -104,6 +105,11 @@ SPARKS="${PB_SPARKS-sparky sparklina}"
 SSH="${PB_SSH:-ssh -o BatchMode=yes}"
 STATE_DIR="${PB_STATE_DIR:-$HOME/.prismabuild}"
 MARKER="$STATE_DIR/slurm-verify-passed.json"
+#: What verify.sh writes when it does not pass, removing MARKER as it does.
+#: The two never coexist: whichever verify.sh writes, it removes the other.
+#: So this file existing means the last verification run on this box failed,
+#: whatever an older success said about the same slurm.conf.
+FAILURE_MARKER="$STATE_DIR/slurm-verify-failed.json"
 CRONTAB_BACKUP="$STATE_DIR/crontab.pre-cutover"
 STAMP="$(date +%s)"
 STATE="$STATE_DIR/cutover-$STAMP.json"
@@ -324,7 +330,7 @@ if [ "$DRY_RUN" = 1 ]; then
     # read-only questions and they are the six ways this can lose work.
     say "# a live run refuses unless all six of these hold:"
     say "#   --yes was given"
-    say "#   $MARKER records this checkout's slurm.conf, or --verified"
+    say "#   $MARKER records this checkout's slurm.conf and $FAILURE_MARKER is absent, or --verified"
     say "#   $QUEUE_ROOT/claimed and .../ready are empty"
     say "#   $PUBLISH --dry-run --default-transport slurm succeeds"
     say "#   no confirmed pbrun.py process on any of: $BOXES"
@@ -355,6 +361,19 @@ if [ "$DRY_RUN" = 0 ]; then
     # call and not this script's.
     if [ "$VERIFIED" = 1 ]; then
         say "# --verified: taking it that fleet/slurm/verify.sh passed elsewhere"
+    elif [ -f "$FAILURE_MARKER" ]; then
+        # Asked before the success marker, because the two answer different
+        # questions and this one is newer by construction.  A success marker
+        # says a fleet passed once, against a slurm.conf that may still be
+        # this checkout's and nodes that may still register; it cannot say
+        # that the run the operator just watched failed.
+        die "$FAILURE_MARKER records a verification that did not pass:
+$(sed 's/^/  /' "$FAILURE_MARKER")
+An earlier pass says a fleet worked once.  This says the last verification
+run on this box did not, so end-to-end execution is not established for the
+fleet this cutover would produce.  Re-run fleet/slurm/verify.sh -- a pass
+removes this file -- or pass --verified if you have verified the fleet from
+another box."
     elif [ -f "$MARKER" ]; then
         marker_sha="$(marker_field slurm_conf_sha256)"
         marker_when="$(marker_field verified_unix)"

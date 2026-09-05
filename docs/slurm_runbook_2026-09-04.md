@@ -469,6 +469,13 @@ verification ran against, and `cutover.sh` refuses a marker whose hash is not
 the one in the checkout it is about to publish -- so re-run `verify.sh` after
 any change to `slurm.conf`.
 
+A run that does not pass does the reverse: it removes the success marker and
+writes `~/.prismabuild/slurm-verify-failed.json` in its place, carrying the
+first failing row, the time and the commit. `cutover.sh` refuses while that
+file is there, and the next passing run removes it. The early exits invalidate
+the same way, so a box whose `sinfo` has gone missing does not keep last
+week's pass. Use `--verified` if you have verified the fleet from another box.
+
 The rows, and what each one is really asking:
 
 | Row | Claim |
@@ -579,7 +586,12 @@ options, the container measurements for each, and a recommendation.
 It refuses unless all six of these hold:
 
 1. `verify.sh` passed -- its marker, or `--verified` if you ran it on another
-   box, because the marker is box-local. The marker is read, not counted: its
+   box, because the marker is box-local. No
+   `~/.prismabuild/slurm-verify-failed.json` may be present: `verify.sh`
+   writes that file whenever it does not pass and removes it when it next
+   passes, so its presence means the last verification run on this box failed
+   whatever an older success said about the same `slurm.conf`. The refusal
+   quotes the recorded row. The marker is read, not counted: its
    `slurm_conf_sha256` must be the sha256 of this checkout's
    `fleet/slurm/slurm.conf`, and a marker with no readable
    `slurm_conf_sha256` or `verified_unix` is refused. A verification against a
@@ -854,5 +866,6 @@ reads `latest.json` to find the job to cancel.
 | `/mnt/shared/prismabuild-fleet/slurm/jobs/` | One state file per running job, for the Epilog |
 | `/home/rob/.munge-key.b64` | The key in transit, created on dl380g10 and shredded on each Spark |
 | `~/.prismabuild/slurm-verify-passed.json` | `verify.sh` passed here, against which `slurm.conf` and when; `cutover.sh` reads all three |
+| `~/.prismabuild/slurm-verify-failed.json` | `verify.sh` did not pass here, which row failed and when; `cutover.sh` refuses while it exists |
 | `~/.prismabuild/crontab.pre-cutover` | Each box's crontab as it was, for `rollback.sh` |
 | `~/.prismabuild/cutover-<unix>.json` | What the cutover replaced, for `rollback.sh` |
