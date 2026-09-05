@@ -199,19 +199,41 @@ def test_the_munge_self_test_fails_when_munge_does(
     fakes = tmp_path / f"fakes-{box}"
     fakes.mkdir()
     (fakes / "munge").write_text(
-        "#!/bin/sh\necho 'munge: Error: Failed to access \"/run/munge/munge.socket.2\"' >&2\nexit 1\n",
+        "#!/bin/sh\n"
+        "if [ \"${FAKE_MUNGE_BROKEN:-0}\" = 1 ]; then\n"
+        "    echo 'munge: Error: Failed to access \"/run/munge/munge.socket.2\"' >&2\n"
+        "    exit 1\n"
+        "fi\n"
+        "echo MUNGE:AwQDAAA=:\n",
         encoding="utf-8")
-    (fakes / "unmunge").write_text("#!/bin/sh\ncat\n", encoding="utf-8")
+    # The real unmunge prints about a dozen lines.  This one pauses after the
+    # fifth, so a truncation that closes the pipe early is still being written
+    # to when it does: under pipefail that SIGPIPE is the pipeline's status.
+    (fakes / "unmunge").write_text(
+        "#!/bin/sh\n"
+        "cat >/dev/null\n"
+        "for n in 1 2 3 4 5; do echo \"LINE $n\"; done\n"
+        "sleep 0.3\n"
+        "for n in 6 7 8 9 10 11 12; do echo \"LINE $n\" || exit 141; done\n",
+        encoding="utf-8")
     for name in ("munge", "unmunge"):
         (fakes / name).chmod(0o755)
     environment = dict(os.environ)
     environment["PATH"] = f"{fakes}{os.pathsep}{environment['PATH']}"
-    result = subprocess.run(
+
+    broken = subprocess.run(
+        ["bash", "-c", self_test], capture_output=True, text=True,
+        check=False, env={**environment, "FAKE_MUNGE_BROKEN": "1"},
+    )
+    assert broken.returncode != 0
+    assert "munge.socket" in broken.stderr
+
+    healthy = subprocess.run(
         ["bash", "-c", self_test], capture_output=True, text=True,
         check=False, env=environment,
     )
-    assert result.returncode != 0
-    assert "munge.socket" in result.stderr
+    assert healthy.returncode == 0, (healthy.returncode, healthy.stderr)
+    assert healthy.stdout.splitlines() == [f"LINE {n}" for n in range(1, 6)]
 
 
 @pytest.mark.parametrize("box", BOXES)
