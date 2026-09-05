@@ -83,6 +83,19 @@ have run on the 25.11.2 rebuild only. What the eleven settle:
   file records, a leaked tree is the smaller loss, and a sweep that guessed a
   path would be an unbounded `rm -rf`. Grep `slurmd.log` for
   `could not be read` after any shared-mount outage.
+- **Which `docker` spellings the shim accepts.** Every action's `docker`
+  resolves to `tools/fleet/docker`, which labels what it creates so cleanup
+  and the Epilog can find it. It reads Docker's global options before the
+  subcommand, so `docker --context default run` is labelled exactly as
+  `docker run` is. These forms exit 125 with a reason on stderr: `start` and
+  `container start`, because a container created outside the action cannot be
+  given the action's label; `compose up`, `run`, `create` and `start`, because
+  Compose owns the labels on what it creates; and any `--label` naming
+  `prismabuild.action` or `prismabuild.job`, in any spelling, because a caller
+  that could set those could hand its container to another job's Epilog. A
+  global option the shim does not know is also refused, since the shim then
+  cannot tell where the command begins. Everything that starts no container
+  passes through untouched.
 - **`CPUs=` for the two GB10 boxes** (was item 5). Measured and written into
   `slurm.conf`: 20 CPUs as one socket of twenty, one thread per core, measured
   again on 2026-09-05 with `slurmd -C` from the fleet's own 25.11.2 build.
