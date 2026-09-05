@@ -396,6 +396,40 @@ def test_an_exclusive_action_asks_for_the_whole_device_not_more_shards(
     assert "--gres=gpu:1" in _submissions(fleet)[0]["argv"]
 
 
+def test_the_partition_is_read_off_the_demand_and_the_placement() -> None:
+    """The fleet's rule, CPU-only work goes to the CPU box, without naming a
+    box: shards exist only in the GPU partition; an untagged action with no
+    GPU demand goes to the CPU partition; a tagged one goes to the default
+    partition and lets its constraint decide."""
+
+    gpu = sl.LaneResources.from_demand({"gpu": 1, "mem_gb": 16})
+    cpu = sl.LaneResources.from_demand({"cpu": 8, "mem_gb": 32})
+    assert sl.partition_for(gpu, []) == "gpu"
+    assert sl.partition_for(gpu, ["gb10", "sparklina"]) == "gpu"
+    assert sl.partition_for(cpu, []) == "cpu"
+    assert sl.partition_for(cpu, ["x86"]) is None
+    assert sl.partition_for(cpu, [""]) == "cpu"
+
+
+def test_a_pinned_cpu_action_is_not_forced_into_the_cpu_partition() -> None:
+    """The case that bites: a CPU-only action whose argv[0] is a GPU box's
+    venv.  Placement pins it to that box by hostname; sending it to the CPU
+    partition as well would make it unschedulable, because no node there
+    carries the pin's feature."""
+
+    cpu = sl.LaneResources.from_demand({"cpu": 4, "mem_gb": 8})
+    assert sl.partition_for(cpu, ["sparky"]) is None
+
+
+def test_a_named_partition_reaches_sbatch(tmp_path: Path, fleet: Path) -> None:
+    resources = sl.LaneResources.from_demand({"cpu": 2, "mem_gb": 4})
+    _submit(tmp_path, resources=resources,
+            partition=sl.partition_for(resources, []))
+    argv = _submissions(fleet)[0]["argv"]
+    assert "--partition=cpu" in argv
+    assert not [flag for flag in argv if flag.startswith("--constraint")]
+
+
 def test_an_untagged_action_carries_no_constraint(
     tmp_path: Path, fleet: Path
 ) -> None:

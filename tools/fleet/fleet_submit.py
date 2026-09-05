@@ -154,12 +154,14 @@ def submit(
     # live marker in place would make the re-submitted action unrunnable and
     # the only remedy a hand edit of the queue.
     slurm_lane.supersede_withdrawal(queue_root, key)
+    lane_resources = slurm_lane.LaneResources.from_demand(dict(resources or {}))
     job = slurm_lane.submit(
         action,
         cas=cas,
         request_path=request_path,
         placement=list(tags),
-        resources=slurm_lane.LaneResources.from_demand(dict(resources or {})),
+        resources=lane_resources,
+        partition=slurm_lane.partition_for(lane_resources, list(tags)),
         timeout_s=timeout_s,
         worker_script=worker_script,
         job_entry=job_entry,

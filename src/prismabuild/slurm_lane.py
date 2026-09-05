@@ -295,6 +295,41 @@ class LaneResources:
         return f"shard:{self.gpu_slots}"
 
 
+#: The fleet's partition names, as ``fleet/slurm/slurm.conf`` declares them.
+#: The default partition is deliberately not named here: a tagged action is
+#: sent there and its sealed ``--constraint`` picks the node.
+GPU_PARTITION = "gpu"
+CPU_PARTITION = "cpu"
+
+
+def partition_for(
+    resources: LaneResources, placement: Sequence[str]
+) -> str | None:
+    """Which partition carries an action, read off what it already declares.
+
+    The fleet's rule is that CPU-only work goes to the CPU box.  It is stated
+    here without naming a box, so it holds on a fleet that grows:
+
+    * a GPU demand goes to the GPU partition, the only place shards exist;
+    * no GPU demand and no placement tag goes to the CPU partition;
+    * anything tagged goes to the default partition, where the sealed
+      ``--constraint`` picks the node.  The tag is a hostname pin from a
+      box-local executable or a class the submitter named, and forcing a
+      partition on top of it is how a CPU-only action whose interpreter lives
+      on a GPU box becomes unschedulable: no node in the CPU partition carries
+      that box's feature.
+
+    The answer is a function of two sealed inputs, the demand and the
+    effective placement, so it adds nothing to the action's identity.
+    """
+
+    if resources.gpu_slots:
+        return GPU_PARTITION
+    if not [tag for tag in placement if str(tag)]:
+        return CPU_PARTITION
+    return None
+
+
 @dataclass(frozen=True)
 class JobProvenance:
     """What the scheduler knows about one job, beyond whether it ended.

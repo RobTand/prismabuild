@@ -1422,6 +1422,7 @@ def slurm_outcome(
             request_path=request_path,
             placement=tags,
             resources=resources,
+            partition=slurm_lane.partition_for(resources, tags),
             timeout_s=timeout_s,
             worker_script=runtime_root / "tools" / "prismabuild_worker.py",
             job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
