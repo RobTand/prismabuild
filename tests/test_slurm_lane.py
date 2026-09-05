@@ -82,7 +82,10 @@ elif verdict.startswith("exit:"):
     slurm_state = "COMPLETED" if code == 0 else "FAILED"
 else:
     code, slurm_state = 0, verdict
-(state / f"{number}.state").write_text(f"{slurm_state}|{code}:0\\n")
+# A job SLURM killed at its limit or on scancel reports ExitCode=0:15 (smoke
+# row 5, 2026-09-04): exit code zero, signal fifteen.  The fake says the same.
+signal = 15 if slurm_state in {"TIMEOUT", "CANCELLED"} else 0
+(state / f"{number}.state").write_text(f"{slurm_state}|{code}:{signal}\\n")
 print(number)
 '''
 

@@ -1026,6 +1026,34 @@ def _same_generation(path: Path, published_unix: float) -> bool:
     return isinstance(theirs, (int, float)) and float(theirs) == float(published_unix)
 
 
+def detail_status_and_returncode(
+    status: str, outcome: Outcome | None
+) -> tuple[str, int | None]:
+    """``detail.status`` and ``detail.returncode`` in the pull queue's terms.
+
+    The readers of these records were written against ``PoolQueue.finish``,
+    and two of its conventions carry meaning a scheduler's raw exit fields do
+    not.  SLURM reports a job it killed at its time limit as ``ExitCode=0:15``:
+    exit code zero, signal fifteen.  Filed as ``returncode=0`` under
+    ``failed/``, that zero reads as a pass to any reader that takes zero as
+    success, and Tessera's ``merge_suite`` does.  The pool filed a timeout as
+    ``status="timeout"`` with ``returncode=None`` (status is the authority;
+    ``pbrun`` returns any integer returncode as its own exit status), so that
+    is what a ``TIMEOUT`` job files here.  A job that died by any other signal
+    carries the negative signal number, which is how ``subprocess`` reports a
+    signalled child and therefore what the pool's records carried.  The raw
+    ``code:signal`` pair stays in ``detail.signal`` and ``detail.slurm.state``.
+    """
+
+    if outcome is None:
+        return status, None
+    if status == "failed" and outcome.state == "TIMEOUT":
+        return "timeout", None
+    if outcome.signal:
+        return status, -int(outcome.signal)
+    return status, outcome.exit_code
+
+
 def publish_outcome(
     *,
     queue_root: str | Path,
@@ -1069,9 +1097,10 @@ def publish_outcome(
     if path.exists() and _same_generation(path, published_unix):
         return None
 
+    detail_status, returncode = detail_status_and_returncode(status, outcome)
     body: dict[str, object] = {
-        "status": status,
-        "returncode": outcome.exit_code if outcome is not None else None,
+        "status": detail_status,
+        "returncode": returncode,
         "signal": outcome.signal if outcome is not None else None,
         "elapsed_s": provenance.elapsed_s if provenance is not None else None,
         "stdout": read_stream_tail(job.stdout_path) if job is not None else "",
