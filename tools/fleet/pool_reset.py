@@ -382,6 +382,13 @@ def resubmit_sealed(
         slurm_lane.SlurmLaneError: The controller refused the submission --
             an unknown Feature, an impossible GRES.  The caller reports it
             and moves on to the next plan; this record stays ``failed``.
+
+    The partition is derived again from the demand and the tags, as
+    ``pbrun`` derives it, because the terminal record carries neither the
+    partition the submitter was given nor ``--anywhere``.  An action that
+    was submitted portable therefore goes back out as untagged CPU work, to
+    the ``cpu`` partition rather than to every box: narrower than it was,
+    and still correct, since the partition is not part of the action.
     """
 
     action = plan["action"]
