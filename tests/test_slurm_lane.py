@@ -216,6 +216,12 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # ``sbatch`` runs the job script in this process's environment, and the
     # default is the fleet's real shared mount.
     monkeypatch.setenv(sl.JOB_STATE_ROOT_ENV, str(tmp_path / "node-jobs"))
+    # And the fleet root ``pbrun`` files endings under.  Without this,
+    # ``slurm_outcome``'s default ``queue_root`` is the REAL
+    # /mnt/shared/prismabuild-fleet/pb-queue, and every test that runs a job to
+    # its ending wrote a terminal record into the live queue -- 324 of them,
+    # counted on 2026-09-05, each naming a /tmp/pytest-of-rob path.
+    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
     return state
 
 
