@@ -13,7 +13,9 @@ Two dispatchers carry work: the pull queue (`pool`) and SLURM (`slurm`). The
 result does not depend on which one carried it. Examples below name the
 transport explicitly with `--transport slurm` where SLURM behaviour is the
 point. You can set `PRISMABUILD_TRANSPORT=slurm` instead, and the published
-runtime generation carries a default that applies when neither is set.
+runtime generation carries a default that applies when neither is set. See
+"Publish the runtime the fleet executes" for what a generation is and who
+may publish one.
 
 ## Actions, keys, and why a re-run is free
 
@@ -56,6 +58,14 @@ checkout to seal; it defaults to the current directory and must be inside a Git
 checkout on the box you submit from. The checkout must be writable: `pbrun`
 keeps its closure stamp there, and the action tees its output to a result file
 in the same tree.
+
+The checkout has a size ceiling. `pbrun` refuses a working tree whose sealed
+paths exceed 512 MiB, before it hashes anything, and refuses the bundle at the
+same bound. `--checkout-snapshot-max-bytes N` lowers that ceiling for one
+submission, which is useful when you want the refusal early rather than after a
+large tree has been read. It cannot raise it: a value above the fleet ceiling is
+refused by name. The ceiling covers local disk on the box that materializes the
+checkout, so it is not part of the action's identity.
 
 ### Placement vocabulary
 
@@ -535,6 +545,12 @@ those records are files on the shared mount. A record it cannot read prints as a
 unreadable newest record does not read as a fleet that filed nothing. `--json`
 prints one object with the three lists and any scheduler notes.
 
+Two flags say where `pbstatus` looks. `--lane-root` is the SLURM lane root that
+job names are resolved against, and it defaults to `$PRISMABUILD_SLURM_LANE_ROOT`, or
+to the fleet lane root when that is unset. `--queue-root` is the queue root
+holding `done/` and `failed/`, which is where the endings table is read from.
+Point them at a test fleet to read one without touching the live store.
+
 The underlying commands are `sinfo` for nodes, `squeue` for jobs, and `sacct`
 for jobs the controller has forgotten. Use them directly for scheduler detail
 `pbstatus` does not join in.
@@ -715,12 +731,14 @@ an impossible GRES, is reported for that record, the record stays `failed`, and
 
 | Status | Meaning |
 |---|---|
-| `executed` | The work ran and published a receipt. Filed under `done/`. |
+| `executed` | The work ran. Filed under `done/`. The two transports decide it differently: the lane files `executed` only when the receipt is in the CAS, and the pull queue derives it from the launcher exiting 0. |
 | `cache_hit` | The receipt was already there. Counts as done. On the lane, `pbrun` finds it before submitting and submits nothing. A job that starts and finds it -- the second job of a key, held behind the first -- reports it too, before materializing anything. Either way `done/` keeps the record of the run that did the work: a `cache_hit` record is filed only when the key has none. |
 | `failed` | No receipt. Something refused, or the command exited non-zero. Filed under `failed/`. |
-| `timeout` | SLURM killed the job at a `--timeout-s` you asked for. `returncode` is null. Retriable. |
+| `timeout` | The action was killed at a deadline. `returncode` is null, because an action that finished inside the tick that crossed the deadline would otherwise report 0 for a record filed as a timeout: read `status`, not `returncode`. Filed under `failed/`. Retriable. Under SLURM the deadline is the `--timeout-s` you asked for and the scheduler enforces it. In the pull queue `pbrun --timeout-s` is parsed and not sent, so the deadline is the worker loop's own `--timeout-s` on the box that claimed the action. |
 | `withdrawn` | Somebody cancelled the run. Not a defect, and not retried. |
-| `reset` | A `failed` ending that `pool_reset --apply` re-submitted. The record stays under `failed/` with its `detail` intact and a `reset` object beside it (host, time, and the attempt history it inherited), so the next run plans the action again. See "Reset a batch of failures". |
+| `reset` | A `failed` ending that `pool_reset --apply` re-submitted. The record stays under `failed/` with its `detail` intact and a `reset` object beside it, carrying the reason, the time and the host that reset it. The attempt links move to `attempt_history_before_reset`, so a reader does not adopt the old attempt's `failed` as this record's own ending. See "Reset a batch of failures". |
+| `finish_lost_race` | The worker finished work whose claim a reaper had already concluded, and the item's own record was gone, so nothing could be carried forward. Filed under `failed/` with the reason in `detail` and the launcher's own result under `detail.worker_detail`. Only a failing outcome reaches this: a successful one files its real status. |
+| `unreadable` | Not a filed status. `pbstatus` prints this row for a record it could not read, so a truncated or unreadable newest record does not print the empty table a fleet that filed nothing prints. The note column names the reason and the path: `permission denied`, the OS error's own text, `not valid JSON`, or `not a JSON object`. No other column carries a value, because every other column is inside the file nobody could read. The row is placed by the file's modification time. |
 
 ## Read a failure
 
@@ -841,6 +859,98 @@ not read rather than failing.
 
 Any producer that builds its own actions should do the same: seal the action,
 hand it to `fleet_submit`, print the key, and read the CAS for the verdict.
+
+## Publish the runtime the fleet executes
+
+A worker does not run your checkout. It runs
+`/mnt/shared/prismabuild-fleet/repo`, the copy on the one filesystem every box
+mounts. A fix you commit here changes nothing on the fleet until that copy is
+republished.
+
+**Publishing a generation, and cutting the fleet over to a transport, need
+Rob's explicit word and an idle queue.** That is a standing constraint of the
+campaign freeze, not a suggestion, and it holds even when the change looks
+small. The install and the cutover are his to run
+(`fleet/slurm/install.sh`, then `fleet/slurm/cutover.sh`); see the
+[README](../README.md) and the [SLURM install
+runbook](slurm_runbook_2026-09-04.md).
+
+`tools/fleet/publish_runtime.py` is the mechanism. It does not copy over the
+live bytes. It builds a complete new generation under
+`/mnt/shared/prismabuild-fleet/runtime-generations/`, named for the commit, the
+time and a nonce, then moves `repo` onto it in one namespace operation. A
+reader therefore sees one whole generation or the previous one, never a
+half-copied mixture.
+
+    tools/fleet/publish_runtime.py --dry-run
+    tools/fleet/publish_runtime.py
+
+`--dry-run` prints the commit and every file that would be published, and
+writes nothing.
+
+Each generation carries `RUNTIME_VERSION.json`: the commit, whether the tree
+was dirty, the generation name, who published it, and a sha256 for every
+published file. The receipt is what makes a disagreement between a box and this
+checkout a fact rather than a suspicion. A worker's own attestation records the
+resolved path, the size and the sha256 of the core module it loaded and of the
+launcher script that started it, and it refuses if either changed after it was
+captured, so the two sides can be compared after the fact.
+
+Publication refuses rather than guesses:
+
+*   **A dirty tree** is refused unless you pass `--allow-dirty`, because the
+    receipt would name a commit whose bytes are not the bytes published.
+*   **A checkout that moves while the copy is staged** is refused. The commit,
+    the dirty flag and every file digest are re-proved after the copy and
+    before the receipt is written.
+*   **A generation that fails its import probe** is refused. The staged tree is
+    imported off to one side before anything is activated.
+*   **A generation store this user cannot write** is refused before the tool
+    says it is publishing anything. The live runtime is untouched either way.
+*   **A live `repo` that is still the legacy plain directory** is refused
+    without `--migrate-directory`. Replacing a directory with a symlink is
+    not one atomic operation on this NFS mount, so that one-time handoff
+    retains the old directory beside the generation store and rolls the name
+    back if the install fails. A caller can be refused in that narrow
+    interval. It can never read a mixed generation.
+*   **A live `repo` that is neither a directory nor a symlink** is refused.
+
+A published generation is sealed read-only and is never deleted. That is what
+makes rollback a namespace operation:
+
+    tools/fleet/publish_runtime.py --activate-generation <name>
+
+Rollback is deliberately not a re-publication. The old generation's bytes and
+receipt were proved when it was published, and rebuilding them from a checkout
+that has moved would not be the same thing. A name that is not a direct child
+of the generation store, a dot-name, or a directory with no receipt is refused
+before `repo` is touched. A dot-name matters: a staging tree left by an
+interrupted publish carries a receipt but was never sealed or probed.
+
+### The default transport rides in the generation
+
+`--default-transport pool|slurm` records `default_transport` in the receipt.
+`fleet_submit.default_transport` reads `PRISMABUILD_TRANSPORT` first, then that
+field, then falls back to the pull queue. The field is optional, and absent
+means the pull queue, so every generation published before the SLURM cutover
+keeps the behaviour it had.
+
+The default rides in the bytes because a fleet has no single environment to
+export into. Agents start `pbrun` from a crontab, from user units, and from
+each other on three boxes. Pointing `repo` back at the previous generation
+restores the previous default in the same atomic operation that changed it.
+
+### Who reads the generation
+
+*   `pbrun` reports the published commit, so a submission can say which bytes
+    the fleet is serving.
+*   A worker loop holds the module it imported for its whole life. It compares
+    the commit beside those bytes against the commit at the live `repo` name on
+    each idle poll, which is how it notices a successor was published.
+*   `supervise` treats the live generation and every published generation
+    behind it as legitimate, because an old generation may still be running an
+    action. A tree that is neither is not this fleet's, whatever the script
+    inside it is called.
 
 ## Smoke-test a transport
 

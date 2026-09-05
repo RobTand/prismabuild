@@ -309,7 +309,15 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   snapshotted. Active Git content transforms, gitlinks, and symlinks whose
   lexical target escapes the sealed tree (including `.git`) refuse: none
   guarantees that a parent bundle recreates the submitter's exact working
-  bytes. The hard 512 MiB fleet ceiling applies independently to logical
+  bytes. A checkout that leaves a tracked path out of the working tree refuses
+  for the same reason from the other side: `git add -A` honours the
+  skip-worktree bit `git sparse-checkout` sets, so those paths would be sealed
+  from `HEAD` rather than from bytes the submitter has. A shallow or partial
+  clone refuses because the bundle cannot walk ancestry the source does not
+  hold. The submitter's own `core.excludesFile` is pinned away from the seal:
+  the repository's `.gitignore` and `$GIT_DIR/info/exclude` decide what the
+  sealed tree contains, never a personal setting on the box that submits.
+  The hard 512 MiB fleet ceiling applies independently to logical
   materialized bytes (summed per path) and compressed bundle bytes; a caller
   may lower but never raise it.
 
