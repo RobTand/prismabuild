@@ -309,17 +309,25 @@ fi
 # minutes, and a supervisor tops the loops back up thirty seconds later.  The
 # whole crontab is backed up verbatim rather than the one line, so rollback
 # restores what was there instead of reconstructing it.
+#
+# The backup is taken only while the crontab still has the line.  A re-run
+# after a partial cutover -- the thing step 5's failure message suggests --
+# sees a crontab the first run already edited, and saving that over the
+# backup would give rollback a crontab with no supervise line to restore.
 
 say ""
 say "# step 1: take the supervise line out of each box's crontab"
 for box in $BOXES; do
     on_box "$box" "set -e
 mkdir -p '$STATE_DIR'
-crontab -l > '$CRONTAB_BACKUP' 2>/dev/null || : > '$CRONTAB_BACKUP'
-if grep -q supervise.py '$CRONTAB_BACKUP'; then
+if crontab -l 2>/dev/null | grep -q supervise.py; then
+    crontab -l > '$CRONTAB_BACKUP'
     grep -v supervise.py '$CRONTAB_BACKUP' | crontab -
     echo \"\$(hostname -s): supervise line removed; whole crontab saved to $CRONTAB_BACKUP\"
+elif [ -f '$CRONTAB_BACKUP' ]; then
+    echo \"\$(hostname -s): no supervise line in the crontab; keeping the backup an earlier run saved to $CRONTAB_BACKUP\"
 else
+    crontab -l > '$CRONTAB_BACKUP' 2>/dev/null || : > '$CRONTAB_BACKUP'
     echo \"\$(hostname -s): no supervise line in the crontab\"
 fi" || die "could not edit the crontab on $box"
 done

@@ -458,6 +458,33 @@ def test_cutover_writes_the_state_file_rollback_needs_before_it_stops_anything(
     assert "--activate-generation gen-old" in rollback.stdout
 
 
+def test_a_rerun_after_a_partial_cutover_keeps_the_crontab_backup(
+    tmp_path: Path,
+) -> None:
+    """The backup is what rollback restores.  A cutover that failed at step 5
+    has already taken the supervise line out; the re-run the failure message
+    suggests then saw a crontab without the line.  Pre-fix it saved that
+    crontab over the backup, and a rollback restored a fleet with no cron
+    entry keeping a supervisor alive."""
+
+    environment = _live_cutover(
+        tmp_path, crontab="MAILTO=rob\n" + SUPERVISE_LINE + "\n", publish_exit=1)
+    backup = Path(environment["PB_STATE_DIR"]) / "crontab.pre-cutover"
+
+    first = _cutover(environment, "--yes")
+    assert first.returncode == 1, first.stderr
+    assert "supervise line removed" in first.stdout
+    assert SUPERVISE_LINE in backup.read_text(encoding="utf-8")
+    assert SUPERVISE_LINE not in (tmp_path / "crontab").read_text(encoding="utf-8")
+
+    second = _cutover(environment, "--yes")
+    assert second.returncode == 1, second.stderr
+    assert "no supervise line in the crontab" in second.stdout
+    saved = backup.read_text(encoding="utf-8")
+    assert SUPERVISE_LINE in saved
+    assert "MAILTO=rob" in saved
+
+
 def test_a_cutover_dry_run_names_its_refusals_and_publishes_the_transport(
     tmp_path: Path,
 ) -> None:
