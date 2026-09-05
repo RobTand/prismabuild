@@ -367,7 +367,11 @@ lock on `.staging/ingest.<random>/.owner.lock` for its complete staging lifetime
 The directory is initialized under a hidden name and renamed into that namespace
 only after locking. A death during initialization can leave a hidden directory
 with at most its empty marker; no payload is written before publication. Success
-and ordinary refusal remove it; process death leaves
+and ordinary refusal remove it. Cleanup enumerates from a fresh directory
+file description anchored to the held inode, so prior directory stream offsets
+cannot hide its ownership marker. The unlinked marker is closed before removing
+the directory so NFS removes any temporary open-file placeholder first.
+Process death leaves
 an attributable directory whose lock is released by the kernel. A reaper must
 acquire the owner lock before removal; local PID absence cannot establish that
 a writer on another host is dead.

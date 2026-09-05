@@ -25,6 +25,7 @@ directory on both the success and the failure path.
 from __future__ import annotations
 
 import fcntl
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -190,3 +191,26 @@ def test_ingest_staging_refuses_symlinked_parent(tmp_path: Path) -> None:
     with pytest.raises(pb.CASTamperError):
         cas.ingest_input(_payload(tmp_path), input_id="test/input")
     assert list(elsewhere.iterdir()) == []
+
+
+def test_cleanup_ignores_a_held_directory_enumeration_offset(
+    tmp_path: Path, monkeypatch
+) -> None:
+    real_open = os.open
+    private_descriptors = []
+
+    def capture_open(path, flags, *args, **kwargs):
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if str(path).startswith(".ingest.") and flags & os.O_DIRECTORY:
+            private_descriptors.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(pb.os, "open", capture_open)
+    with pb._private_staging_directory(tmp_path / ".staging") as private:
+        assert len(private_descriptors) == 1
+        # scandir(fd) consumes that open-file description's directory stream.
+        # Cleanup must enumerate from the beginning through a fresh description.
+        os.lseek(private_descriptors[0], 0, os.SEEK_SET)
+        with os.scandir(private_descriptors[0]) as entries:
+            assert [entry.name for entry in entries] == [pb.PRIVATE_STAGING_OWNER]
+    assert not private.exists()

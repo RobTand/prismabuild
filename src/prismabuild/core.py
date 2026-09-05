@@ -2741,21 +2741,37 @@ def _private_staging_directory(staging_directory: Path):
         )
         yield private
     finally:
-        # Keep the owner locked through payload removal and directory cleanup.
+        # Keep the owner locked through payload and ownership-marker removal.
         # Cleanup failure retains evidence without masking the ingest's error.
         if private_fd is not None:
             if owner_fd is not None:
                 with suppress(OSError):
                     # If payload cleanup failed, retain its released ownership
                     # marker so a later reaper can still prove abandonment.
-                    if os.listdir(private_fd) == [PRIVATE_STAGING_OWNER]:
+                    # Enumeration starts from a fresh open-file description.
+                    # A held directory descriptor can retain an exhausted
+                    # directory offset (observed on Python 3.14/Btrfs). Open
+                    # relative to that inode, never through a mutable pathname.
+                    listing_fd = os.open(
+                        ".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        dir_fd=private_fd,
+                    )
+                    try:
+                        contents = os.listdir(listing_fd)
+                    finally:
+                        os.close(listing_fd)
+                    if contents == [PRIVATE_STAGING_OWNER]:
                         os.unlink(PRIVATE_STAGING_OWNER, dir_fd=private_fd)
             os.close(private_fd)
+        if owner_fd is not None:
+            # On NFS, unlinking an open marker creates a .nfs* placeholder
+            # until this close. Release it before rmdir so success leaves no
+            # empty directory behind. The missing marker prevents a reaper
+            # from claiming the directory during this final removal interval.
+            os.close(owner_fd)
         if created:
             with suppress(OSError):
                 os.rmdir(name, dir_fd=parent_fd)
-        if owner_fd is not None:
-            os.close(owner_fd)
         os.close(parent_fd)
 
 
