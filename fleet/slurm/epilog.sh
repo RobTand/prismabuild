@@ -3,17 +3,23 @@
 # and named by Epilog= in slurm.conf.  Runs as root on the compute node, with
 # SLURM_JOB_ID set, after the job's processes are gone.
 #
-# It exists because two things outlive a job that was killed rather than ended.
+# It exists because things outlive the job, and this is the only thing that
+# runs after every ending, killed or not.  It is therefore the single owner of
+# node-side cleanup: the job runner leaves its state file in place and this
+# script does both cleanups and then deletes the file.
 #
 # A Docker container started by an action is reparented to containerd-shim and
 # runs under dockerd's cgroup: it survives a kill of every process group below
-# the job, and no cgroup limit ever charged it.  The one thing that connects it
-# back to the job is the ownership label the fleet's Docker shim stamps on
-# creation (prismabuild.action=<owner>), which is why the job writes that owner
-# down before it starts work.
+# the job, and no cgroup limit ever charged it -- and it survives a NORMAL
+# ending just as completely, which is why this runs on both.  The one thing
+# that connects it back to the job is the ownership label the fleet's Docker
+# shim stamps on creation (prismabuild.action=<owner>), which is why the job
+# writes that owner down before it starts work.
 #
 # A materialized checkout is removed by the job itself on the way out -- unless
-# the job did not get a way out, which is exactly what a time limit is.
+# the job did not get a way out, which is exactly what a time limit is.  Both
+# cases arrive here; the removal below is guarded on the tree still existing,
+# so the job having done it already is not an error.
 #
 # THIS SCRIPT ALWAYS EXITS 0.  A non-zero Epilog drains the node, and a cleanup
 # that could not find a container must not take a box out of the fleet.  Every
@@ -27,11 +33,19 @@ set -u
 # the container smoke on 2026-09-04: an Epilog run with
 # PRISMABUILD_EPILOG_DOCKER exported to slurmd still ran plain `docker`.  On a
 # node the defaults are therefore what run, which is why they are the fleet's
-# real lane root and the real command name rather than placeholders.
-LANE_ROOT="${PRISMABUILD_SLURM_LANE_ROOT:-/mnt/shared/prismabuild-fleet/slurm}"
+# real job-state root and the real command name rather than placeholders.
+# Where the job left its state file.  This is a NODE-side path, and it is the
+# one thing this script and `slurm_job.py` have to agree on: the variable name
+# and the default below are `slurm_lane.JOB_STATE_ROOT_ENV` and
+# `slurm_lane.DEFAULT_JOB_STATE_ROOT`, spelled again here because a shell
+# script cannot import that module.  It is deliberately NOT the submitter's
+# lane root: a submitter that exported PRISMABUILD_SLURM_LANE_ROOT used to bake
+# its own answer into the batch script while this script kept reading its
+# default, the two disagreed, and node-side cleanup silently stopped happening.
+JOB_STATE_ROOT="${PRISMABUILD_SLURM_JOB_STATE_ROOT:-/mnt/shared/prismabuild-fleet/slurm/jobs}"
 DOCKER="${PRISMABUILD_EPILOG_DOCKER:-docker}"
 LABEL="prismabuild.action"
-# Who owns the files under the lane root.  The job wrote them; this script runs
+# Who owns the files under the job-state root.  The job wrote them; this script runs
 # as root; and dl380g10 exports that dataset without no_root_squash --
 # measured 2026-09-04:
 #
@@ -39,8 +53,8 @@ LABEL="prismabuild.action"
 #                          192.168.1.110(rw,async,no_subtree_check)
 #
 # so this root is `nobody` over NFS and its unlink fails.  Silently, because
-# this script swallows every failure by design.  So every write and delete
-# below the lane root is performed as the job's own user instead.
+# this script swallows every failure by design.  So every delete below the
+# job-state root is performed as the job's own user instead.
 JOB_USER="${SLURM_JOB_USER:-}"
 
 log() { echo "prismabuild-epilog[${SLURM_JOB_ID:-?}]: $*" >&2; }
@@ -51,10 +65,10 @@ if [ -z "$job_id" ]; then
     exit 0
 fi
 
-state_file="${LANE_ROOT}/jobs/${job_id}.job"
+state_file="${JOB_STATE_ROOT}/${job_id}.job"
 if [ ! -f "$state_file" ]; then
-    # The normal ending.  A job that finished on its own removed this file
-    # itself, having already done both cleanups.
+    # Not a PrismaBuild job, or one whose launcher never got as far as writing
+    # its state file.  Either way there is nothing recorded to clean up.
     exit 0
 fi
 
@@ -116,8 +130,9 @@ fi
 # On the shared mount, written by the job's user, deleted here.  As the job's
 # user, for the reason above: root's unlink is squashed to `nobody` and fails,
 # and the symptom of that is not an error but a `jobs/` directory that fills up
-# for months.  Falling back to a plain unlink keeps a lane root that is NOT on
-# NFS -- a single-box deployment, the container smoke -- working unchanged.
+# for months.  Falling back to a plain unlink keeps a job-state root that is
+# NOT on NFS -- a single-box deployment, the container smoke -- working
+# unchanged.
 lane_delete() {
     if [ -n "$JOB_USER" ] && command -v runuser >/dev/null 2>&1; then
         if runuser -u "$JOB_USER" -- rm -f -- "$1" 2>/dev/null; then

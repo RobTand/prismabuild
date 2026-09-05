@@ -9,14 +9,21 @@ submitted it is gone", and an interactive ``pbrun --wait`` has no such question
 ``scancel``, not adoption.  So this module is a transport and nothing else:
 write a script, ``sbatch`` it, record what was submitted, poll, report.
 
-Three decisions are worth stating, because each had an alternative.
+Four decisions are worth stating, because each had an alternative.
 
 **The truth is the CAS, not the exit code.**  A job that exits 0 without
 publishing a receipt did not do the work, and a job that exits non-zero after
 publishing one did.  ``wait`` therefore reports the scheduler's state and log
 paths as *diagnosis*; the caller asks ``cas.lookup(action)`` for the verdict.
-That is the same rule the pull queue follows, which is what lets an action
-executed under either transport mean the same thing.
+
+The pull queue reaches the same answer by a different rule, and the difference
+is deliberate rather than incidental.  Its verdict is the launcher's exit code
+(``pool.py``: ``status = "executed" if process.returncode == 0 else "failed"``),
+and the two rules agree whenever the launcher exits, because ``core.py``
+publishes a receipt only on a clean run.  They part on one ending: a launcher
+that publishes its receipt and is then signalled.  The queue files ``failed``;
+this lane files ``executed``, because the receipt is in the CAS and the work it
+attests was done.  The lane trusts the receipt.
 
 **Submission does not use ``sbatch --wait``.**  It would hand back the job's
 exit status directly, and it costs two things this lane needs more.  The job id
@@ -33,6 +40,15 @@ job ends (the fleet config raises that deliberately, and says why), and
 ``squeue`` answers while it is alive.  ``sacct`` is tried first anyway, so that
 deploying ``slurmdbd`` later is a configuration change and not a code change.
 
+**A running job is never killed on elapsed time.**  ``wait`` samples what the
+scheduler's accounting says the job is doing (``sstat``: CPU time, RSS, I/O)
+and how its logs grow, appends each sample to ``liveness.jsonl`` in the lane
+directory, and *reports* a job whose samples have not moved for
+``STALL_WINDOW_S``.  It cancels nothing.  A stall ends by an operator's
+``pbrun --withdraw`` or by a ``--time`` the submitter asked for, and both are
+the same thing: a person's decision, recorded as one.  The liveness section
+below states the policy and derives the window.
+
 Retries are resubmissions, never ``--requeue``.  SLURM uses one flag for
 operator requeue and automatic restart, so a requeued job cannot be
 distinguished from a rescheduled one after the fact; ``--no-requeue`` is set and
@@ -45,6 +61,7 @@ box that must not need a package installed to talk to the scheduler.
 """
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import json
@@ -91,6 +108,25 @@ DEFAULT_LANE_ROOT = "/mnt/shared/prismabuild-fleet/slurm"
 #: ``SLURM_JOB_ID`` and nothing else for certain.
 JOB_STATE_DIRNAME = "jobs"
 
+#: Where those files live, resolved on the *node* and never by the submitter.
+#:
+#: The lane root above is a submitter-side record location and it is
+#: overridable per process.  This one is not the same question.  A submitter
+#: that exported ``PRISMABUILD_SLURM_LANE_ROOT`` used to bake its own answer
+#: into the batch script, while the Epilog -- which cannot see slurmd's
+#: environment, let alone the submitter's -- kept reading its own default.  The
+#: two disagreed, the Epilog found no state file, and a killed job leaked its
+#: checkout and its containers with nothing said.
+#:
+#: So the job script carries no job-state path at all.  ``slurm_job`` resolves
+#: it on the node from ``JOB_STATE_ROOT_ENV`` or this default, and
+#: ``fleet/slurm/epilog.sh`` reads the same variable and the same default --
+#: the one place the two sides have to agree, spelled once on each side because
+#: a shell script cannot import this module.  The value is what the Epilog
+#: already hardcoded, so nothing about the deployed fleet moves.
+JOB_STATE_ROOT_ENV = "PRISMABUILD_SLURM_JOB_STATE_ROOT"
+DEFAULT_JOB_STATE_ROOT = f"{DEFAULT_LANE_ROOT}/{JOB_STATE_DIRNAME}"
+
 #: ``/usr/bin/python3`` on both architectures, deliberately.  A job may land on
 #: aarch64 or x86_64 and ``fleet_boxes.json`` names a different venv per box, so
 #: no single venv path is correct for the launcher.  It does not need to be:
@@ -98,12 +134,47 @@ JOB_STATE_DIRNAME = "jobs"
 #: own sealed argv[0] selects whatever interpreter the work requires.
 DEFAULT_JOB_PYTHON = "/usr/bin/python3"
 
+#: The nice value a ``--priority 0`` job carries, and the origin every other
+#: priority is measured from.
+#:
+#: SLURM has no submitter-settable priority *number*: ``PriorityType=priority/
+#: basic`` orders by an internal base priority, and the one lever an
+#: unprivileged submitter has over it is ``--nice``, which is SUBTRACTED from
+#: that base.  So a higher pool priority has to become a smaller nice, and the
+#: base exists because a NEGATIVE nice -- a boost -- requires SlurmUser
+#: privilege that the submitting user does not have.  A base of 2**30 leaves
+#: every realistic priority on the non-negative side of that line and inside
+#: sbatch's +-2147483645 range.
+#:
+#: The scale is what makes priority mean what it meant on the pool.  The pool
+#: sorted its ready queue on priority before age, so a ``--priority -10`` reset
+#: sat behind every interactive item however old the reset grew.  Under
+#: ``priority/basic`` the base priority steps down by one per submission and
+#: the nice is subtracted from it, so a nice one unit larger sinks a job behind
+#: exactly one later submission.  Multiplying the priority by 2**20 makes one
+#: priority step outrank a million submissions, which is the pool's order for
+#: any queue this fleet will hold.
+#:
+#: This is a queue hint and nothing more.  It is not part of the action
+#: identity, it does not reach ``seal_action``, and two submissions of one
+#: action that differ only in priority are the same action.
+NICE_BASE = 1 << 30
+
+#: Nice units per priority step; see ``NICE_BASE``.
+NICE_SCALE = 1 << 20
+
 #: How long ``wait`` leaves between polls of a job that has not finished.
 DEFAULT_POLL_S = 5.0
 
 #: How long any one scheduler command may take before the lane gives up on it.
-#: A hung ``squeue`` against a busy controller must not become a hung ``pbrun``.
+#: A hung ``squeue`` against a busy controller must not become a hung ``pbrun``
+#: -- and, since the outage fix, not a dead one either: ``wait`` treats the
+#: timeout as "no answer this poll" and asks again.
 COMMAND_TIMEOUT_S = 60.0
+
+#: How often ``wait`` repeats that it cannot reach the scheduler.  A bound on
+#: chatter, not evidence of anything.
+NOTICE_EVERY_S = 300.0
 
 #: States after which SLURM has nothing further to say about a job.
 TERMINAL_STATES = frozenset({
@@ -158,12 +229,54 @@ class SlurmLaneError(pb.PrismaBuildError):
     """A scheduler command failed, or answered something unusable."""
 
 
+class ControllerUnreachable(SlurmLaneError):
+    """A scheduler command could not reach ``slurmctld`` at all.
+
+    Not an answer about the job.  ``systemctl restart slurmctld`` on the
+    controller box, or any recovery window, makes every ``scontrol`` and
+    ``squeue`` fail with this for a while; the job on its node neither knows
+    nor cares.  ``wait`` keeps polling through it.
+    """
+
+
+#: What ``scontrol``/``squeue`` print when the controller is not there to ask,
+#: as opposed to when it answered that there is no such job.  Matched against
+#: stderr, case-insensitively.  ``Invalid job id specified`` is deliberately
+#: not here: that is an answer.
+_UNREACHABLE_MARKERS = (
+    "unable to contact slurm controller",
+    "connection refused",
+    "connect failure",
+    "socket timed out",
+    "zero bytes were transmitted",
+    "protocol authentication error",
+)
+
+
+def _unreachable(completed: subprocess.CompletedProcess[str]) -> bool:
+    text = f"{completed.stderr or ''}\n{completed.stdout or ''}".lower()
+    return any(marker in text for marker in _UNREACHABLE_MARKERS)
+
+
 def lane_root(explicit: str | Path | None = None) -> Path:
     """The lane root this process is to use, environment included."""
 
     if explicit is not None:
         return Path(explicit)
     return Path(os.environ.get(LANE_ROOT_ENV) or DEFAULT_LANE_ROOT)
+
+
+def nice_for(priority: int) -> int:
+    """The ``--nice`` value that carries one pool priority.
+
+    Clamped at zero rather than refused: ``sbatch`` rejects a negative nice
+    from an unprivileged submitter, and a priority past ``NICE_BASE //
+    NICE_SCALE`` is asking for a boost this user cannot be granted.  Zero is
+    the most this lane can do for it, and it is still ordered ahead of every
+    ordinary submission.
+    """
+
+    return max(0, NICE_BASE - int(priority) * NICE_SCALE)
 
 
 def lane_directory(action_key: str, *, root: str | Path | None = None) -> Path:
@@ -175,10 +288,18 @@ def lane_directory(action_key: str, *, root: str | Path | None = None) -> Path:
     return lane_root(root) / key
 
 
-def job_state_directory(*, root: str | Path | None = None) -> Path:
-    """Where a job leaves the facts its Epilog needs after it is gone."""
+def job_state_directory(explicit: str | Path | None = None) -> Path:
+    """Where a job leaves the facts its Epilog needs after it is gone.
 
-    return lane_root(root) / JOB_STATE_DIRNAME
+    Read on the node that runs the job, not on the box that submitted it.  An
+    explicit path is for a launcher driven by hand and for the tests; the
+    environment variable is the node-side override the Epilog honours in the
+    same way; the default is what both sides fall back to.
+    """
+
+    if explicit is not None:
+        return Path(explicit)
+    return Path(os.environ.get(JOB_STATE_ROOT_ENV) or DEFAULT_JOB_STATE_ROOT)
 
 
 def submission_record_path(
@@ -392,6 +513,11 @@ class Outcome:
     stdout_path: Path | None
     stderr_path: Path | None
     provenance: JobProvenance | None = None
+    #: ``LivenessMonitor.summary()`` for the wait that produced this outcome:
+    #: the latest sample and ``stalled_since``.  ``None`` only for an outcome
+    #: built somewhere other than ``wait`` (a withdrawal filed from another
+    #: box, a test).
+    liveness: dict[str, object] | None = None
 
     @property
     def terminal(self) -> bool:
@@ -421,10 +547,22 @@ class RunResult:
         return self.attempts[-1] if self.attempts else None
 
 
-def _run(argv: Sequence[str], *, where: str) -> subprocess.CompletedProcess[str]:
+#: A scheduler command as the lane is given it: the executable's name or path,
+#: or a callable that takes the arguments after it and returns what
+#: ``subprocess.run`` would.  The callable form exists for tests, which drive
+#: ``wait`` through hundreds of polls on a fake clock and cannot afford a
+#: process per poll; the lane treats both forms alike, so a hang (a
+#: ``TimeoutExpired`` raised by the callable) reads the same either way.
+Command = str | Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
+
+
+def _run(argv: Sequence[object], *, where: str) -> subprocess.CompletedProcess[str]:
+    head, rest = argv[0], [str(arg) for arg in argv[1:]]
     try:
+        if callable(head):
+            return head(rest)
         return subprocess.run(
-            list(argv),
+            [str(head), *rest],
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT_S,
@@ -483,7 +621,6 @@ def job_script_text(
     worker_script: str | Path,
     job_entry: str | Path,
     lane_directory_path: str | Path,
-    job_state_root: str | Path,
     job_python: str = DEFAULT_JOB_PYTHON,
     worker_python: str = DEFAULT_JOB_PYTHON,
     local_checkout_root: str | Path | None = None,
@@ -498,6 +635,13 @@ def job_script_text(
 
     Every path is absolute because ``--export=NIL`` leaves the job with only
     SLURM's own variables: there is no ``PATH`` to resolve a bare name against.
+
+    One path is deliberately absent: where the job leaves its Epilog state
+    file.  That is a node-side location, and a script that carried the
+    submitter's answer to it was how a submitter with
+    ``PRISMABUILD_SLURM_LANE_ROOT`` set silently disabled node-side cleanup.
+    ``slurm_job`` resolves it there, from the variable and default the Epilog
+    reads.
     """
 
     argv = [
@@ -508,7 +652,6 @@ def job_script_text(
         "--worker", str(worker_script),
         "--worker-python", str(worker_python),
         "--lane-dir", str(lane_directory_path),
-        "--job-state-root", str(job_state_root),
     ]
     if local_checkout_root is not None:
         argv.extend(["--checkout-root", str(local_checkout_root)])
@@ -541,6 +684,7 @@ def submit(
     worker_python: str = DEFAULT_JOB_PYTHON,
     local_checkout_root: str | Path | None = None,
     partition: str | None = None,
+    priority: int = 0,
     attempt: int = 1,
     sbatch: str = "sbatch",
     published_unix: float | None = None,
@@ -557,8 +701,6 @@ def submit(
     key = str(action["action_key"])
     directory = lane_directory(key, root=root)
     directory.mkdir(parents=True, exist_ok=True)
-    state_root = job_state_directory(root=root)
-    state_root.mkdir(parents=True, exist_ok=True)
 
     script = directory / "job.sh"
     text = job_script_text(
@@ -567,7 +709,6 @@ def submit(
         worker_script=worker_script,
         job_entry=job_entry,
         lane_directory_path=directory,
-        job_state_root=state_root,
         job_python=job_python,
         worker_python=worker_python,
         local_checkout_root=local_checkout_root,
@@ -582,6 +723,7 @@ def submit(
     tmp.chmod(0o755)
     os.replace(tmp, script)
 
+    nice = nice_for(priority)
     stdout_template = directory / "%j.out"
     stderr_template = directory / "%j.err"
     argv = [
@@ -603,6 +745,13 @@ def submit(
         f"--error={stderr_template}",
         f"--mem={resources.memory_mib}M",
         f"--cpus-per-task={resources.cpus}",
+        # The pool recorded a priority and sorted its ready queue on it.  SLURM
+        # has no submitter-settable priority number, so the same ordering is
+        # expressed as a nice the controller subtracts; see ``NICE_BASE``.
+        # Sent on every submission, including priority 0, so that the flag is
+        # not the thing that differs between an ordinary job and a deprioritized
+        # one -- only its value is.
+        f"--nice={nice}",
     ]
     if timeout_s is not None:
         # A deadline is sent only when the submitter asked for one.  Wall-clock
@@ -658,6 +807,10 @@ def submit(
         "gres": gres or "",
         # Empty means the default partition: the constraint decided.
         "partition": partition or "",
+        # What the submitter's priority became.  Recorded rather than derived
+        # again by a reader: ``NICE_BASE`` may move, and a record that says
+        # what was sent stays readable when it does.
+        "nice": nice,
         # Empty means no deadline was requested: the job runs while it runs.
         "time_limit": "" if timeout_s is None else format_time_limit(timeout_s),
         "cpus": resources.cpus,
@@ -765,7 +918,7 @@ def _field(fields: Sequence[str], index: int) -> str:
     return fields[index] if index < len(fields) else ""
 
 
-def _sacct_state(job_id: str, *, sacct: str) -> JobProvenance | None:
+def _sacct_state(job_id: str, *, sacct: Command) -> JobProvenance | None:
     completed = _run(
         [
             sacct, "-j", job_id, "--parsable2", "--noheader",
@@ -801,9 +954,14 @@ def _sacct_state(job_id: str, *, sacct: str) -> JobProvenance | None:
 _SCONTROL_FIELD = re.compile(r"(\w+)=(\S*)")
 
 
-def _scontrol_state(job_id: str, *, scontrol: str) -> JobProvenance | None:
+def _scontrol_state(job_id: str, *, scontrol: Command) -> JobProvenance | None:
     completed = _run([scontrol, "show", "job", job_id], where="scontrol")
     if completed.returncode != 0:
+        if _unreachable(completed):
+            raise ControllerUnreachable(
+                f"scontrol could not reach the controller: "
+                f"{(completed.stderr or completed.stdout).strip()}"
+            )
         return None
     fields = dict(_SCONTROL_FIELD.findall(completed.stdout))
     state = fields.get("JobState", "").strip()
@@ -822,11 +980,16 @@ def _scontrol_state(job_id: str, *, scontrol: str) -> JobProvenance | None:
     )
 
 
-def _squeue_state(job_id: str, *, squeue: str) -> JobProvenance | None:
+def _squeue_state(job_id: str, *, squeue: Command) -> JobProvenance | None:
     completed = _run(
         [squeue, "-h", "-j", job_id, "-o", "%T"], where="squeue"
     )
     if completed.returncode != 0:
+        if _unreachable(completed):
+            raise ControllerUnreachable(
+                f"squeue could not reach the controller: "
+                f"{(completed.stderr or completed.stdout).strip()}"
+            )
         return None
     state = completed.stdout.strip().splitlines()
     if not state or not state[0].strip():
@@ -837,9 +1000,9 @@ def _squeue_state(job_id: str, *, squeue: str) -> JobProvenance | None:
 def query_provenance(
     job_id: str,
     *,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
 ) -> JobProvenance | None:
     """Everything the scheduler will say, from whichever tool can say it.
 
@@ -847,6 +1010,12 @@ def query_provenance(
     older than ``MinJobAge`` -- and the only one that is inert until slurmdbd
     exists, which is why it is not the only one asked.  The fallbacks answer
     fewer fields, and the missing ones stay null rather than being invented.
+
+    ``None`` means the controller *answered* and knows no such job.  A
+    controller that cannot be reached raises ``ControllerUnreachable`` instead
+    of being read as "no such job": before that distinction existed, a
+    ``systemctl restart slurmctld`` turned every running job's wait into
+    ``UNKNOWN`` on the next poll, and ``run`` filed it as failed.
     """
 
     for reader in (
@@ -863,9 +1032,9 @@ def query_provenance(
 def query_state(
     job_id: str,
     *,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
 ) -> tuple[str, int | None, int | None] | None:
     """The ending alone: state, exit code, signal, or ``None`` if unknown."""
 
@@ -876,29 +1045,578 @@ def query_state(
     return (answer.state, answer.exit_code, answer.signal)
 
 
+# --------------------------------------------------------------------------
+# Liveness: sampled evidence that a running job is doing something
+# --------------------------------------------------------------------------
+#
+# The policy this implements (Rob, 2026-09-04): a worker that is actively doing
+# something and not visibly dead is never killed on elapsed time.  Wall-clock
+# is evidence of wall-clock, not of death.  So ``wait`` samples what the
+# scheduler's own accounting says the job is doing, derives ``progressing``
+# from whether any of it moved since the previous sample, records every sample
+# on the lane directory, and *reports* a job that has not moved for a window.
+# Nothing here cancels anything.  A stall ends only by an operator's deliberate
+# ``pbrun --withdraw`` or by a deadline the submitter asked for (``--time``,
+# which ``submit`` sends only when ``timeout_s`` is given).
+#
+# What is read, and why it is the job's and not the action's:
+#
+# * ``sstat`` -- CPU time (``AveCPU``, and ``cpu=`` milliseconds out of
+#   ``TRESUsageInTot``), RSS and I/O bytes of the job's steps, gathered by
+#   ``jobacct_gather/cgroup`` on the node from the job's own cgroup.  The action
+#   does nothing to produce it, so an action that never heard of this lane is
+#   measured exactly as well as one that did, and the numbers are taken where
+#   the work runs rather than on the submitter.  ``sstat`` reads running steps
+#   from ``slurmd`` and needs no ``slurmdbd``; the container smoke (row 13)
+#   confirms it answers on this fleet's configuration.
+# * the growth of the job's ``<jobid>.out`` and ``<jobid>.err`` under the lane
+#   directory -- the only evidence left when ``sstat`` is absent or refuses.
+#
+# What is *not* read: GPU residency.  On GB10 every per-process GPU figure
+# reads null (``nvidia-smi`` per-process memory is empty; ``utilization.memory``
+# is a hard 0; ``gpu_utilization`` reads 96% for stalled and saturated kernels
+# alike), so claiming GPU evidence would be claiming a measurement nobody can
+# take.  The one honest GPU load signal the fleet has is board power against
+# its envelope (``nvidia-smi --query-gpu=power.draw``), and ``gpu_power_sample``
+# below is the named seam for it.  It returns ``None`` today: it would need to
+# run on the node rather than on the submitter, and the container the smoke
+# runs in has no GPU to verify it against.
+
+LIVENESS_SCHEMA_V1 = "prismaquant.prismabuild.slurm_liveness.v1"
+
+#: One append-only file per lane directory, one JSON line per sample.  Never
+#: rewritten: issue #16 measured a 69 s NFS stall on a queue file rewritten
+#: every heartbeat, and an appended file is the access pattern NFS serves well.
+#: Nothing on a hot path reads it; ``read_liveness`` reads its last line on an
+#: operator's request.
+LIVENESS_FILENAME = "liveness.jsonl"
+
+#: The floor for "no output bytes" evidence: the longest a client was measured
+#: to see stale state from the shared mount (issue #16, 69 s).  A ``stat`` of
+#: the job's log can therefore report an unchanged size for that long while
+#: the job is writing.
+NFS_STALL_FLOOR_S = 69.0
+
+#: The floor for CPU-time evidence: ``JobAcctGatherFrequency``, the interval at
+#: which ``jobacct_gather/cgroup`` refreshes what ``sstat`` reports.  The
+#: fleet's ``slurm.conf`` does not set it, so it is SLURM's default of 30 s
+#: (``scontrol show config`` in the smoke quotes the effective value).  Two
+#: ``sstat`` calls inside one interval read the same gather, so a sample
+#: cadence faster than this reads nothing new.
+ACCT_GATHER_S = 30.0
+
+#: How often ``wait`` takes a sample while the job is RUNNING.  Equal to the
+#: accounting interval, for the reason above; the poll (``DEFAULT_POLL_S``) is
+#: faster, and most polls take no sample.
+LIVENESS_SAMPLE_S = ACCT_GATHER_S
+
+#: How long a job must show no progress before ``wait`` reports it.
+#:
+#: Derived, not chosen.  The binding floor is the NFS one: a sample taken
+#: inside a 69 s stall can read an unchanged log size for a job that is
+#: writing, so a window has to be long enough that the samples across it
+#: cannot all sit inside one such stall.  ``ceil(69 / 30) = 3`` cadences cover
+#: the stall itself; one more cadence is the sample that establishes the
+#: baseline the others are compared against.  That is 4 cadences, 120 s.
+#: The same span straddles at least three accounting gathers, so an unchanged
+#: ``TotalCPU`` across it is at least two full gather intervals of zero CPU and
+#: not a phase artifact of sampling at the gather's own period.
+STALL_WINDOW_S = (
+    (math.ceil(NFS_STALL_FLOOR_S / LIVENESS_SAMPLE_S) + 1) * LIVENESS_SAMPLE_S
+)
+
+#: How often the report is repeated while the stall continues.  This one is a
+#: chattiness bound with no measurement behind it: five windows, ten minutes,
+#: so a stall that lasts an hour prints six lines and not sixty.
+STALL_REPORT_EVERY_S = 5 * STALL_WINDOW_S
+
+#: How many samples ``wait`` keeps in memory: enough to hold one window plus
+#: the baseline and the sample that ends it.  The file holds all of them.
+LIVENESS_HISTORY = int(STALL_WINDOW_S // LIVENESS_SAMPLE_S) + 2
+
+#: What ``sstat`` is asked for.  Every name is one ``sstat --helpformat``
+#: prints on 25.11.2 -- checked in the container smoke (row 13), which is how
+#: ``TotalCPU`` was found to be an ``sacct`` field that ``sstat`` refuses
+#: (``Invalid field requested: "TotalCPU"``, 2026-09-05).  ``AveCPU`` is the
+#: CPU time per task as ``[DD-]HH:MM:SS``; the ``cpu=`` entry of
+#: ``TRESUsageInTot`` is printed the same way (the smoke's real line was
+#: ``cpu=00:00:00`` next to ``AveCPU`` ``00:00:00``), not as a millisecond
+#: count as this comment first claimed.  ``MaxRSS`` is recorded in whatever
+#: unit ``--noconvert`` prints and not relabelled: the smoke printed
+#: ``MaxRSS`` ``20164608`` beside ``mem=20094976`` in the TRES list, which is
+#: bytes for a process that size, not KiB.  Only the change between samples
+#: is evidence, so the unit is a matter for the record, not the verdict.
+SSTAT_FORMAT = (
+    "JobID,AveCPU,MinCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,NTasks,TRESUsageInTot"
+)
+
+#: The sample fields compared between consecutive samples.  ``progressing`` is
+#: true when any of them changed; a field that is ``None`` on either side is
+#: not evidence either way.
+PROGRESS_FIELDS = (
+    "cpu_s", "tres_cpu_s", "rss", "disk_read", "disk_write", "out_bytes",
+    "err_bytes",
+)
+
+
+def gpu_power_sample(node: str | None) -> dict[str, object] | None:
+    """The seam for the fleet's one honest GPU load signal: board power.
+
+    Not implemented, and the docstring says why rather than the code guessing.
+    Per-process GPU telemetry on GB10 reads null, so the only signal worth
+    sampling is ``nvidia-smi --query-gpu=power.draw,power.limit`` read against
+    the envelope on the node the job runs on.  That is a node-side read the
+    submitter cannot take, and the container smoke has no GPU to verify it in.
+    Until it exists, every sample records ``"gpu": null`` and no reader may
+    treat the absence as idleness.
+    """
+
+    del node
+    return None
+
+
+def _parse_slurm_size(raw: str | None, *, unit_bytes: float = 1.0) -> float | None:
+    """``1234``, ``1234K``, ``0.05M``, ``2G`` to a number in ``unit_bytes``.
+
+    An unsuffixed value is taken in ``unit_bytes``; a suffixed one is scaled
+    from the suffix.  Only the *change* between two samples is evidence, so
+    the unit matters for the record and not for the verdict.
+    """
+
+    text = (raw or "").strip()
+    if text.lower() in _ABSENT:
+        return None
+    scale = {"K": 1024.0, "M": 1024.0 ** 2, "G": 1024.0 ** 3,
+             "T": 1024.0 ** 4, "P": 1024.0 ** 5}
+    suffix = text[-1].upper()
+    if suffix in scale:
+        try:
+            return float(text[:-1]) * scale[suffix] / unit_bytes
+        except ValueError:
+            return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_tres_cpu(raw: str) -> float | None:
+    """The ``cpu=`` entry of ``TRESUsageInTot`` in seconds.
+
+    ``sstat`` 25.11.2 prints it as ``[DD-]HH:MM:SS`` (the smoke's real line
+    read ``cpu=00:00:00``); a bare number is taken as seconds so a build that
+    prints one is still read.  The first parser matched only leading digits
+    and read ``00:00:45`` as ``0``.
+    """
+
+    text = raw.strip()
+    if ":" in text:
+        return _parse_slurm_duration(text)
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_sstat(job_id: str, stdout: str) -> dict[str, object]:
+    """Aggregate every step ``sstat -a`` printed for one job.
+
+    CPU time and disk bytes are summed across steps and RSS is the maximum,
+    because the question is whether the *job* moved and not which step did.
+    """
+
+    steps: list[str] = []
+    cpu = min_cpu = read = write = 0.0
+    tres_cpu: float | None = None
+    rss: float | None = None
+    ntasks = 0
+    seen_cpu = seen_io = False
+    for line in stdout.splitlines():
+        fields = line.split("|")
+        if len(fields) < 7:
+            continue
+        step = fields[0].strip()
+        if step != job_id and not step.startswith(f"{job_id}."):
+            continue
+        steps.append(step)
+        value = _parse_slurm_duration(fields[1])
+        if value is not None:
+            cpu += value
+            seen_cpu = True
+        value = _parse_slurm_duration(fields[2])
+        if value is not None:
+            min_cpu += value
+        match = re.search(r"(?:^|,)cpu=([^,]+)", _field(fields, 7))
+        if match:
+            value = _parse_tres_cpu(match.group(1))
+            if value is not None:
+                tres_cpu = (tres_cpu or 0.0) + value
+        value = _parse_slurm_size(fields[3])
+        if value is not None:
+            rss = value if rss is None else max(rss, value)
+        value = _parse_slurm_size(fields[4])
+        if value is not None:
+            read += value
+            seen_io = True
+        value = _parse_slurm_size(fields[5])
+        if value is not None:
+            write += value
+            seen_io = True
+        try:
+            ntasks += int(fields[6].strip() or 0)
+        except ValueError:
+            pass
+    return {
+        "steps": steps,
+        "cpu_s": cpu if seen_cpu else None,
+        "tres_cpu_s": tres_cpu,
+        "min_cpu_s": min_cpu if seen_cpu else None,
+        "rss": rss,
+        "disk_read": read if seen_io else None,
+        "disk_write": write if seen_io else None,
+        "ntasks": ntasks if steps else None,
+    }
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def liveness_path(directory: str | Path) -> Path:
+    """Where one lane directory keeps its samples."""
+
+    return Path(directory) / LIVENESS_FILENAME
+
+
+@dataclass(frozen=True)
+class StallReport:
+    """What ``wait`` hands its caller when a running job has not moved.
+
+    A report, not a verdict: the job is still running and nothing has been
+    done to it.  The caller prints it; an operator decides.
+    """
+
+    action_key: str
+    job_id: str
+    node: str | None
+    stalled_since: float
+    stalled_for_s: float
+    samples_without_progress: int
+    evidence: tuple[str, ...]
+    path: Path
+
+
+class LivenessMonitor:
+    """The sampler ``wait`` owns for one job: cadence, history, verdict, file.
+
+    ``sample`` never raises.  Liveness is evidence about a job and a failure
+    to gather it is recorded on the sample as ``sstat_error``; it must never
+    end a ``wait`` that the scheduler's own answers would have continued.
+    """
+
+    def __init__(
+        self,
+        job: SubmittedJob,
+        *,
+        sstat: Command = "sstat",
+        clock: Callable[[], float] = time.monotonic,
+        sample_s: float = LIVENESS_SAMPLE_S,
+        window_s: float = STALL_WINDOW_S,
+        report_every_s: float = STALL_REPORT_EVERY_S,
+        history: int = LIVENESS_HISTORY,
+    ) -> None:
+        self.job = job
+        self.sstat = sstat
+        self.clock = clock
+        self.sample_s = float(sample_s)
+        self.window_s = float(window_s)
+        self.report_every_s = float(report_every_s)
+        self.samples: deque[dict[str, object]] = deque(maxlen=max(2, int(history)))
+        self.count = 0
+        self.path = liveness_path(job.directory)
+        self.record_error: str | None = None
+        self._last_sample_mono: float | None = None
+        self._stalled_since_unix: float | None = None
+        self._stalled_since_mono: float | None = None
+        self._without_progress = 0
+        self._last_report_mono: float | None = None
+
+    @property
+    def latest(self) -> dict[str, object] | None:
+        return self.samples[-1] if self.samples else None
+
+    @property
+    def stalled_since(self) -> float | None:
+        """Unix time of the first sample that showed no progress, or ``None``
+        when the latest sample moved (or nothing has been compared yet)."""
+
+        return self._stalled_since_unix
+
+    def due(self) -> bool:
+        """Is it time for another sample?  Bounded by the cadence, never by
+        the poll."""
+
+        if self._last_sample_mono is None:
+            return True
+        return self.clock() - self._last_sample_mono >= self.sample_s
+
+    def _read_sstat(self) -> tuple[dict[str, object], str | None]:
+        argv = [
+            self.sstat, "-j", self.job.job_id, "-a", "-P", "-n", "--noconvert",
+            f"--format={SSTAT_FORMAT}",
+        ]
+        try:
+            completed = _run(argv, where="sstat")
+        except SlurmLaneError as exc:
+            return {}, str(exc)
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            return {}, f"sstat exited {completed.returncode}: {detail}"
+        parsed = _parse_sstat(self.job.job_id, completed.stdout)
+        if not parsed["steps"]:
+            return parsed, "sstat printed no step for this job"
+        return parsed, None
+
+    def sample(self, provenance: JobProvenance | None = None) -> dict[str, object]:
+        """Take one sample, compare it with the previous, append it to the file."""
+
+        now_mono = self.clock()
+        self._last_sample_mono = now_mono
+        accounting, error = self._read_sstat()
+        node = provenance.node if provenance is not None else None
+        current: dict[str, object] = {
+            "schema": LIVENESS_SCHEMA_V1,
+            "unix": _now(),
+            "action_key": self.job.action_key,
+            "job_id": self.job.job_id,
+            "attempt": self.job.attempt,
+            "node": node,
+            "steps": list(accounting.get("steps") or []),
+            "cpu_s": accounting.get("cpu_s"),
+            "tres_cpu_s": accounting.get("tres_cpu_s"),
+            "min_cpu_s": accounting.get("min_cpu_s"),
+            "rss": accounting.get("rss"),
+            "disk_read": accounting.get("disk_read"),
+            "disk_write": accounting.get("disk_write"),
+            "ntasks": accounting.get("ntasks"),
+            "out_bytes": _file_size(self.job.stdout_path),
+            "err_bytes": _file_size(self.job.stderr_path),
+            "gpu": gpu_power_sample(node),
+            "sstat_error": error,
+            "evidence": (
+                ["output"] if error is not None else ["sstat", "output"]
+            ),
+        }
+        previous = self.latest
+        if previous is None:
+            progressing: bool | None = None
+        else:
+            progressing = any(
+                previous.get(name) is not None
+                and current.get(name) is not None
+                and previous.get(name) != current.get(name)
+                for name in PROGRESS_FIELDS
+            )
+        if progressing is False:
+            if self._stalled_since_unix is None:
+                self._stalled_since_unix = float(current["unix"])
+                self._stalled_since_mono = now_mono
+            self._without_progress += 1
+        elif progressing is True:
+            self._stalled_since_unix = None
+            self._stalled_since_mono = None
+            self._without_progress = 0
+            self._last_report_mono = None
+        current["progressing"] = progressing
+        current["stalled_since"] = self._stalled_since_unix
+        self.samples.append(current)
+        self.count += 1
+        self._append(current)
+        return current
+
+    def _append(self, sample: Mapping[str, object]) -> None:
+        line = json.dumps(dict(sample), sort_keys=True, separators=(",", ":"))
+        try:
+            with open(self.path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError as exc:
+            # The evidence is still in memory and reaches the outcome record.
+            self.record_error = f"{type(exc).__name__}: {exc}"
+
+    def stall_report(self) -> StallReport | None:
+        """A report when the stall has lasted the window and none was issued
+        in the last ``report_every_s``; otherwise ``None``."""
+
+        if self._stalled_since_mono is None or self._stalled_since_unix is None:
+            return None
+        now_mono = self.clock()
+        stalled_for = now_mono - self._stalled_since_mono
+        if stalled_for < self.window_s:
+            return None
+        if (
+            self._last_report_mono is not None
+            and now_mono - self._last_report_mono < self.report_every_s
+        ):
+            return None
+        self._last_report_mono = now_mono
+        latest = self.latest or {}
+        return StallReport(
+            action_key=self.job.action_key,
+            job_id=self.job.job_id,
+            node=latest.get("node") if isinstance(latest.get("node"), str) else None,
+            stalled_since=self._stalled_since_unix,
+            stalled_for_s=stalled_for,
+            samples_without_progress=self._without_progress,
+            evidence=tuple(str(e) for e in (latest.get("evidence") or ())),
+            path=self.path,
+        )
+
+    def summary(self) -> dict[str, object]:
+        """What the outcome record carries under ``detail.liveness``."""
+
+        return {
+            "schema": LIVENESS_SCHEMA_V1,
+            "samples": self.count,
+            "sample_s": self.sample_s,
+            "window_s": self.window_s,
+            "latest": self.latest,
+            "stalled_since": self._stalled_since_unix,
+            "samples_without_progress": self._without_progress,
+            "path": str(self.path),
+            "record_error": self.record_error,
+        }
+
+
+def read_liveness(
+    action_key: str, *, root: str | Path | None = None
+) -> dict[str, object] | None:
+    """The newest liveness sample recorded for an action key, or ``None``.
+
+    For a reader that wants "stalled since" without re-implementing the file:
+    every line carries its own ``stalled_since``, so the last line is the
+    whole answer.  Reads a bounded tail, never the file.  Returns
+    ``{"latest": <sample>, "stalled_since": ..., "job_id": ..., "path": ...}``.
+    """
+
+    try:
+        directory = lane_directory(action_key, root=root)
+    except SlurmLaneError:
+        return None
+    path = liveness_path(directory)
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as handle:
+            bound = 64 * 1024
+            if size > bound:
+                handle.seek(size - bound)
+            raw = handle.read()
+    except OSError:
+        return None
+    lines = [line for line in raw.decode("utf-8", errors="replace").splitlines()
+             if line.strip()]
+    if not lines:
+        return None
+    try:
+        sample = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(sample, dict):
+        return None
+    return {
+        "latest": sample,
+        "stalled_since": sample.get("stalled_since"),
+        "progressing": sample.get("progressing"),
+        "job_id": sample.get("job_id"),
+        "unix": sample.get("unix"),
+        "path": str(path),
+    }
+
+
 def wait(
     job: SubmittedJob,
     *,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
+    sstat: Command = "sstat",
     poll_s: float = DEFAULT_POLL_S,
     wait_s: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    on_stall: Callable[[StallReport], None] | None = None,
+    on_notice: Callable[[str], None] | None = None,
 ) -> Outcome:
     """Poll until the job reaches a terminal state, the caller's patience ends,
-    or the scheduler stops knowing about it.
+    or the scheduler answers that it knows no such job.
 
     None of the three is a verdict on the work.  The caller reads the CAS for
     that; this says which job to read the logs of, and why it stopped.
+
+    While the job is RUNNING, a ``LivenessMonitor`` samples it at its own
+    cadence and ``on_stall`` is called when the samples have not moved for
+    ``STALL_WINDOW_S``.  That call is a report and only a report: nothing in
+    this loop cancels a job, on any evidence.
+
+    A poll that cannot be answered -- the controller unreachable, a scheduler
+    command hung past ``COMMAND_TIMEOUT_S`` -- is not an answer about the job
+    either.  The loop says so through ``on_notice`` (once, then at most every
+    ``NOTICE_EVERY_S``, and once more when polling recovers) and keeps
+    polling.  The caller's own ``wait_s`` still bounds how long it waits.
     """
 
-    deadline = None if wait_s is None else time.monotonic() + float(wait_s)
+    deadline = None if wait_s is None else clock() + float(wait_s)
     last: JobProvenance | None = None
+    monitor = LivenessMonitor(job, sstat=sstat, clock=clock)
+    trouble: str | None = None
+    trouble_since: float | None = None
+    last_notice: float | None = None
     while True:
-        answer = query_provenance(
-            job.job_id, sacct=sacct, scontrol=scontrol, squeue=squeue
-        )
+        try:
+            answer = query_provenance(
+                job.job_id, sacct=sacct, scontrol=scontrol, squeue=squeue
+            )
+        except SlurmLaneError as exc:
+            # ``ControllerUnreachable`` or a command that hung or failed to
+            # start.  Neither says anything about the job, so neither ends
+            # the wait.  Before this, an unreachable controller was read as
+            # "no such job" and a hung ``scontrol`` propagated out of here
+            # into pbrun's "sbatch refused this action" handler -- with the
+            # job running on in both cases.
+            now = clock()
+            if trouble_since is None:
+                trouble_since = now
+            trouble = str(exc)
+            if last_notice is None or now - last_notice >= NOTICE_EVERY_S:
+                last_notice = now
+                if on_notice is not None:
+                    on_notice(
+                        f"slurm job {job.job_id}: the scheduler could not be "
+                        f"asked ({trouble}); still waiting, the job is not "
+                        f"affected"
+                    )
+            if deadline is not None and now > deadline:
+                return Outcome(
+                    job_id=job.job_id,
+                    state=WAIT_TIMEOUT_STATE,
+                    exit_code=None,
+                    signal=None,
+                    stdout_path=job.stdout_path,
+                    stderr_path=job.stderr_path,
+                    provenance=last,
+                    liveness=monitor.summary(),
+                )
+            sleep(poll_s)
+            continue
+        if trouble is not None:
+            if on_notice is not None:
+                on_notice(
+                    f"slurm job {job.job_id}: the scheduler answers again "
+                    f"after {clock() - (trouble_since or clock()):.0f} s"
+                )
+            trouble = trouble_since = last_notice = None
         if answer is None:
             return Outcome(
                 job_id=job.job_id,
@@ -911,6 +1629,7 @@ def wait(
                 # account of where this job ran, and it is the only one left
                 # once the controller has forgotten the job.
                 provenance=last,
+                liveness=monitor.summary(),
             )
         last = answer
         if answer.state in TERMINAL_STATES:
@@ -922,8 +1641,14 @@ def wait(
                 stdout_path=job.stdout_path,
                 stderr_path=job.stderr_path,
                 provenance=answer,
+                liveness=monitor.summary(),
             )
-        if deadline is not None and time.monotonic() > deadline:
+        if answer.state == "RUNNING" and monitor.due():
+            monitor.sample(answer)
+            report = monitor.stall_report()
+            if report is not None and on_stall is not None:
+                on_stall(report)
+        if deadline is not None and clock() > deadline:
             return Outcome(
                 job_id=job.job_id,
                 state=WAIT_TIMEOUT_STATE,
@@ -932,11 +1657,12 @@ def wait(
                 stdout_path=job.stdout_path,
                 stderr_path=job.stderr_path,
                 provenance=answer,
+                liveness=monitor.summary(),
             )
         sleep(poll_s)
 
 
-def cancel(job_id: str, *, scancel: str = "scancel") -> bool:
+def cancel(job_id: str, *, scancel: Command = "scancel") -> bool:
     """Stop one job.  SLURM sends TERM, then KILL after ``KillWait``."""
 
     completed = _run([scancel, str(job_id)], where="scancel")
@@ -1073,6 +1799,25 @@ def detail_status_and_returncode(
     return status, outcome.exit_code
 
 
+def _submitted_gres(job: SubmittedJob | None) -> str | None:
+    """The ``--gres`` this job was submitted with, or ``None`` for no device.
+
+    Args:
+        job: The accepted submission, or ``None`` when there was none.
+
+    Returns:
+        ``"gpu:1"`` for a whole device, ``"shard:N"`` for slots, ``None``
+        when the job asked for no device or no submission is known.
+    """
+
+    if job is None:
+        return None
+    for flag in job.argv:
+        if str(flag).startswith("--gres="):
+            return str(flag).split("=", 1)[1]
+    return None
+
+
 def publish_outcome(
     *,
     queue_root: str | Path,
@@ -1096,7 +1841,7 @@ def publish_outcome(
     withdrawn_unix: float | None = None,
     reason: str | None = None,
 ) -> Path | None:
-    """File one action's ending under ``done/`` or ``failed/``.
+    """File one action's ending under ``done/``, ``failed/`` or ``withdrawn/``.
 
     Which directory is decided by the CAS, not by the exit status: a receipt
     means the work was done whatever the job said afterwards, and no receipt
@@ -1111,10 +1856,38 @@ def publish_outcome(
 
     key = str(action_key)
     provenance = outcome.provenance if outcome is not None else None
-    state = pool.DONE if status == "executed" else pool.FAILED
+    if status == "executed":
+        state = pool.DONE
+    elif status == "withdrawn":
+        # The pool's rule, from ``PoolQueue.withdraw``: a withdrawal lands in
+        # ``withdrawn/``, never ``failed/``.  A withdrawn action is a decision,
+        # and a record of it under ``failed/`` makes the failure record lie
+        # about the fleet -- every reader that counts failures counts it.
+        # The marker ``publish_withdrawal`` filed there is the decision; this
+        # record enriches it with the job's ending and keeps its fields.
+        state = pool.WITHDRAWN
+    else:
+        state = pool.FAILED
     path = _queue_dir(queue_root, state) / f"{key}.json"
-    if path.exists() and _same_generation(path, published_unix):
-        return None
+    decision: dict[str, object] = {}
+    if path.exists():
+        if state == pool.WITHDRAWN:
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = None
+            if isinstance(existing, dict):
+                if "detail" in existing and _same_generation(path, published_unix):
+                    # A full ending is already filed for this generation.
+                    return None
+                decision = {
+                    field: existing[field]
+                    for field in ("withdrawn_unix", "withdrawn_by",
+                                  "withdrawn_host", "withdrawn_from", "reason")
+                    if field in existing
+                }
+        elif _same_generation(path, published_unix):
+            return None
 
     detail_status, returncode = detail_status_and_returncode(status, outcome)
     body: dict[str, object] = {
@@ -1136,10 +1909,21 @@ def publish_outcome(
             else (outcome.job_id if outcome is not None else None),
             "state": outcome.state if outcome is not None else None,
             "partition": provenance.partition if provenance is not None else None,
+            # The device request as sent, because ``resources`` cannot carry
+            # it.  ``LaneResources.demand()`` speaks the producer's vocabulary
+            # -- ``{"gpu": 1}`` -- and that same claim is ``gpu:1`` for a whole
+            # device and ``shard:1`` for one sharable slot.  ``pool_reset``
+            # rebuilds a submission out of ``resources``, so without this it
+            # re-emitted an exclusive action's demand as a shard and quietly
+            # dropped ``--exclusive``.  Read off the submitted argv rather than
+            # recomputed: what the scheduler was told is the fact worth filing.
+            "gres": _submitted_gres(job),
             "submission_record_path": str(job.record_path) if job is not None else None,
             "stdout_path": str(job.stdout_path) if job is not None else None,
             "stderr_path": str(job.stderr_path) if job is not None else None,
         }
+    if outcome is not None and outcome.liveness is not None:
+        body["liveness"] = dict(outcome.liveness)
     body.update(dict(detail or {}))
 
     finished_unix = provenance.end_unix if provenance is not None else None
@@ -1178,6 +1962,11 @@ def publish_outcome(
         record["withdrawn_unix"] = float(withdrawn_unix)
     if reason is not None:
         record["reason"] = reason
+    # The marker's decision fields win over this call's: the first writer of
+    # a withdrawal is the one who decided it, and the pool's readers of this
+    # directory (``withdrawn_keys``, ``withdrawal_covers``, ``pool_reset``)
+    # read exactly those fields.
+    record.update(decision)
     _write_json_atomic(path, record)
     return path
 
@@ -1314,14 +2103,19 @@ def run(
     worker_python: str = DEFAULT_JOB_PYTHON,
     local_checkout_root: str | Path | None = None,
     partition: str | None = None,
+    priority: int = 0,
     sbatch: str = "sbatch",
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
+    sstat: Command = "sstat",
     poll_s: float = DEFAULT_POLL_S,
     wait_s: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
     on_submit: Callable[[SubmittedJob], None] | None = None,
+    on_stall: Callable[[StallReport], None] | None = None,
+    on_notice: Callable[[str], None] | None = None,
     detach: bool = False,
 ) -> RunResult:
     """Submit, wait, and resubmit while the producer's contract allows it.
@@ -1333,6 +2127,12 @@ def run(
     code said, and so does a cancellation -- an operator's decision is not a
     defect to retry around.
 
+    ``wait_s`` is one budget for the whole run, as ``pbrun.await_outcome``
+    holds one deadline across the pool's retries: each attempt's ``wait`` is
+    given what is left of it, so three attempts cannot turn a 30 minute
+    ``--wait-s`` into ninety.  A retry submitted after the budget is spent
+    still goes out (the retry policy is about the action, the budget about
+    how long this caller stays) and its wait ends on the first poll.
     ``detach`` submits the first attempt and returns there, without waiting and
     without filing an ending.  The caller is saying that something else reads
     the job out later, so this must not file a verdict it has not observed: an
@@ -1347,6 +2147,7 @@ def run(
     key = str(action["action_key"])
     result = RunResult(action_key=key)
     attempts = max(1, int(max_attempts)) if retry_safe else 1
+    deadline = None if wait_s is None else clock() + float(wait_s)
     # One generation for the whole run, stamped on every submission record and
     # on the ending.  Retries are attempts within it, not new requests.
     published_unix = _now()
@@ -1379,6 +2180,7 @@ def run(
             worker_python=worker_python,
             local_checkout_root=local_checkout_root,
             partition=partition,
+            priority=priority,
             attempt=attempt,
             sbatch=sbatch,
             published_unix=published_unix,
@@ -1403,9 +2205,13 @@ def run(
             sacct=sacct,
             scontrol=scontrol,
             squeue=squeue,
+            sstat=sstat,
             poll_s=poll_s,
-            wait_s=wait_s,
+            wait_s=None if deadline is None else max(0.0, deadline - clock()),
             sleep=sleep,
+            clock=clock,
+            on_stall=on_stall,
+            on_notice=on_notice,
         )
         result.attempts.append((job, outcome))
         result.receipt = cas.lookup(action)
@@ -1436,10 +2242,14 @@ def resume(
     queue_root: str | Path,
     wait_s: float | None = None,
     poll_s: float = DEFAULT_POLL_S,
-    sacct: str = "sacct",
-    scontrol: str = "scontrol",
-    squeue: str = "squeue",
+    sacct: Command = "sacct",
+    scontrol: Command = "scontrol",
+    squeue: Command = "squeue",
+    sstat: Command = "sstat",
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    on_stall: Callable[[StallReport], None] | None = None,
+    on_notice: Callable[[str], None] | None = None,
 ) -> RunResult:
     """Wait for a job somebody else submitted, and file the ending they did not.
 
@@ -1487,12 +2297,18 @@ def resume(
     )
     result = RunResult(action_key=key, published_unix=published_unix)
     outcome = wait(
-        job, sacct=sacct, scontrol=scontrol, squeue=squeue,
-        poll_s=poll_s, wait_s=wait_s, sleep=sleep,
+        job, sacct=sacct, scontrol=scontrol, squeue=squeue, sstat=sstat,
+        poll_s=poll_s, wait_s=wait_s, sleep=sleep, clock=clock,
+        on_stall=on_stall, on_notice=on_notice,
     )
     result.attempts.append((job, outcome))
     result.receipt = cas.lookup(action)
     if outcome.state in (WAIT_TIMEOUT_STATE, UNKNOWN_STATE) and result.receipt is None:
+        # A fast path only: ``_file_ending`` holds the rule (it files nothing
+        # for these two states after the marker and receipt checks), and
+        # ``run`` reaches it through the same function.  Returning here saves
+        # rebuilding the resources below for an ending that will not be
+        # written.
         return result
 
     # Rebuilt from what was submitted rather than round-tripped through the
@@ -1555,6 +2371,16 @@ def _file_ending(
         status = "withdrawn"
     elif result.receipt is not None:
         status = "executed"
+    elif outcome.state in (UNKNOWN_STATE, WAIT_TIMEOUT_STATE):
+        # No ending has happened.  The submitter stopped watching, or the
+        # controller answered that it knows no such job (purged past
+        # MinJobAge with no accounting behind it, and no receipt yet).  A
+        # terminal record here is a lie with consequences: ``publish_outcome``
+        # is first-writer-wins per generation, so a ``failed/`` record filed
+        # now would stand even when the job publishes its receipt minutes
+        # later, and ``done/`` would never be written.  Before this branch
+        # existed, that is exactly what a controller restart produced.
+        return
     elif outcome.state == "CANCELLED":
         status = "withdrawn"
     else:

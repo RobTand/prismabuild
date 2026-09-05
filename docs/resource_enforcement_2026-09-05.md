@@ -53,7 +53,7 @@ placed.
 
 ## The measurements
 
-Rows 13a-13d of `fleet/slurm/smoke` run a real `slurmctld` and `slurmd` in a
+Rows 14a-14d of `fleet/slurm/smoke` run a real `slurmctld` and `slurmd` in a
 container on a 20-CPU node, with the fleet's scheduler configuration. Three
 arms, one per setting under decision. The rows are quoted verbatim.
 

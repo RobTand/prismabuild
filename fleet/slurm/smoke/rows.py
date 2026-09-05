@@ -528,6 +528,113 @@ def row_9_no_slurmdbd(job_id: str) -> None:
     del path
 
 
+def row_13_liveness() -> None:
+    """A job that sleeps is reported as stalled, and left to finish itself.
+
+    Three claims in one row, because they only mean something together:
+    ``sstat`` answers on this configuration (``jobacct_gather/cgroup``, no
+    ``slurmdbd``) and its format names are the ones the lane asks for; a job
+    that does nothing for the window is reported by ``pbrun`` on stderr; and
+    that job completes on its own, with ``status=executed`` and the samples on
+    the record -- nothing cancelled it.
+    """
+
+    helpformat = sh(["sstat", "--helpformat"])
+    names = set((helpformat.stdout or "").split())
+    wanted = [
+        "JobID", "AveCPU", "MinCPU", "MaxRSS", "MaxDiskRead", "MaxDiskWrite",
+        "NTasks", "TRESUsageInTot",
+    ]
+    missing = [name for name in wanted if name not in names]
+    config = sh(["scontrol", "show", "config"])
+    gather = next(
+        (line.strip() for line in (config.stdout or "").splitlines()
+         if line.strip().startswith("JobAcctGatherFrequency")), "",
+    )
+
+    # 240, not 300 or 600: an action key is a content hash, and rows 5 and 6
+    # already own those two sleeps.  Long enough for the lane's 120 s window
+    # to elapse after the materialization's own CPU stops counting as
+    # progress, and for one report to be printed before the job ends.
+    process = subprocess.Popen(
+        [
+            sys.executable, str(PBRUN), "--transport", "slurm",
+            "--cwd", str(SRC), "--wait-s", "900",
+            "--", "bash", "action.sh", "sleep", "", "240",
+        ],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    prefix = job_id = ""
+    first = ""
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        first = process.stderr.readline()
+        if not first:
+            break
+        match = _submitted_re.search(first)
+        if match:
+            prefix, job_id = match.group(1), match.group(2)
+            break
+    running = wait_for(
+        lambda: (sh(["squeue", "-h", "-j", job_id, "-o", "%T"]).stdout or
+                 "").strip() == "RUNNING",
+        timeout_s=180,
+    ) if job_id else False
+    # A raw sstat answer while the job runs, quoted so the README can say what
+    # the lane parses on a real controller rather than on a fake.
+    time.sleep(45)
+    probe = sh([
+        "sstat", "-j", job_id, "-a", "-P", "-n", "--noconvert",
+        "--format=JobID,AveCPU,MinCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,NTasks,"
+        "TRESUsageInTot",
+    ]) if job_id else None
+    sstat_line = (probe.stdout or "").strip().replace("\n", " ; ") if probe else ""
+    sstat_ok = probe is not None and probe.returncode == 0 and bool(sstat_line)
+    try:
+        rest = process.communicate(timeout=600)[1]
+    except subprocess.TimeoutExpired:
+        process.kill()
+        rest = ""
+    said = [line for line in (first + rest).splitlines()
+            if "has shown no progress for" in line]
+    path, rec = outcome("done", prefix) if prefix else (None, {})
+    detail = rec.get("detail", {}) if isinstance(rec, dict) else {}
+    liveness = detail.get("liveness", {}) if isinstance(detail, dict) else {}
+    lane_dir = next(
+        (d for d in LANE.iterdir() if prefix and d.name.startswith(prefix)), None
+    )
+    samples = []
+    if lane_dir is not None and (lane_dir / "liveness.jsonl").exists():
+        samples = [
+            line for line in (lane_dir / "liveness.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+    latest = liveness.get("latest") or {}
+    ok = (
+        not missing
+        and sstat_ok
+        and running
+        and bool(said)
+        and "still running" in (said[0] if said else "")
+        and process.returncode == 0
+        and rec.get("status") == "executed"
+        and liveness.get("stalled_since") is not None
+        and latest.get("evidence") == ["sstat", "output"]
+        and len(samples) >= 2
+    )
+    record(
+        "13 a sleeping job is reported as stalled, not killed, and completes",
+        ok,
+        f"job={job_id} pbrun rc={process.returncode} status={rec.get('status')} "
+        f"reports={len(said)} first={said[0] if said else None!r} "
+        f"samples={len(samples)} stalled_since={liveness.get('stalled_since')} "
+        f"latest cpu_s={latest.get('cpu_s')} rss={latest.get('rss')} tres_cpu_s={latest.get('tres_cpu_s')} "
+        f"sstat_error={latest.get('sstat_error')!r} "
+        f"helpformat missing={missing} {gather!r} "
+        f"sstat={sstat_line!r}"
+        + ("" if ok else f" stderr={(rest or '')[-600:]!r}"),
+    )
+    del path
 def row_10a_campaign(nonces: list[Path]) -> None:
     """One manifest, three rows, mixed demand, one table.
 
@@ -708,7 +815,7 @@ def row_12_unknown_host_class_is_refused() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Rows 13a-13d: what ConstrainCores and ConstrainRAMSpace actually do
+# Rows 14a-14d: what ConstrainCores and ConstrainRAMSpace actually do
 #
 # Under the pull queue, `pbrun --cpus` and `--demand mem_gb=` were admission
 # declarations that nothing enforced.  Under `select/cons_tres` with
@@ -844,7 +951,7 @@ def _binding_cgroup(text: str) -> dict[str, str]:
     return {}
 
 
-def row_13_cpu_containment() -> None:
+def row_14_cpu_containment() -> None:
     """What a job sees of the node's CPUs when it declares one, and when two.
 
     Read off ``taskset``, not ``nproc``.  ``nproc`` honours ``OMP_NUM_THREADS``
@@ -855,7 +962,7 @@ def row_13_cpu_containment() -> None:
     """
 
     node_cpus = int((sh(["nproc"]).stdout or "0").strip() or 0)
-    for label, declared in (("13a", 1), ("13b", 2)):
+    for label, declared in (("14a", 1), ("14b", 2)):
         completed = pbrun(
             ["bash", "-c", "echo nproc=$(nproc); taskset -cp $$"],
             extra=["--cpus", str(declared)],
@@ -881,7 +988,7 @@ def row_13_cpu_containment() -> None:
         )
 
 
-def row_13c_over_declared_memory() -> None:
+def row_14c_over_declared_memory() -> None:
     """A job that writes past its declared memory does not run unconstrained.
 
     The claim is deliberately not ``state == OUT_OF_MEMORY``: what the
@@ -929,7 +1036,7 @@ def row_13c_over_declared_memory() -> None:
         acted and limit.isdigit() and int(limit) == declared_bytes
     )
     record(
-        f"13c a job over its mem_gb is constrained, not ignored [{ARM}]",
+        f"14c a job over its mem_gb is constrained, not ignored [{ARM}]",
         ok,
         f"job={job_id} declared mem_gb={OVER_DECLARED_GB}, wrote "
         f"{OVER_GROW_MIB} MiB -> filed {where or 'nothing'}/ state={state!r} "
@@ -945,7 +1052,7 @@ def row_13c_over_declared_memory() -> None:
     )
 
 
-def row_13d_within_declared_memory() -> None:
+def row_14d_within_declared_memory() -> None:
     """And a job that stays under its declaration is untouched by the limit."""
 
     completed = pbrun(
@@ -963,7 +1070,7 @@ def row_13d_within_declared_memory() -> None:
         and f"grew {UNDER_GROW_MIB} MiB" in (completed.stdout or "")
     )
     record(
-        f"13d a job within its mem_gb completes [{ARM}]",
+        f"14d a job within its mem_gb completes [{ARM}]",
         ok,
         f"job={job_id} declared mem_gb={UNDER_DECLARED_GB}, wrote "
         f"{UNDER_GROW_MIB} MiB -> filed {where or 'nothing'}/ "
@@ -1006,9 +1113,10 @@ def main() -> int:
     row_10_scontrol_answers_the_job(WORK)
     row_11_host_class_measurement(VOL / "nonce-measurement.txt")
     row_12_unknown_host_class_is_refused()
-    row_13_cpu_containment()
-    row_13c_over_declared_memory()
-    row_13d_within_declared_memory()
+    row_14_liveness()
+    row_14_cpu_containment()
+    row_14c_over_declared_memory()
+    row_14d_within_declared_memory()
     del prefix, timeout_prefix
 
     width = max(len(name) for name, _, _ in results)

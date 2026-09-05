@@ -53,10 +53,8 @@ if [ -n "$DEB_DIR" ]; then
     cp "$DEB_DIR"/*.deb "$ctx/debs/" 2>/dev/null
     # slurmctld lives in full-set/ in the fleet's build; the node packages do
     # not carry it and a single-node cluster is still a cluster.
-    for extra in slurmctld; do
-        cp "$DEB_DIR"/full-set/${extra}_*.deb "$ctx/debs/" 2>/dev/null
-    done
-    echo "smoke: installing $(ls "$ctx/debs" | wc -l) packages from $DEB_DIR"
+    cp "$DEB_DIR"/full-set/slurmctld_*.deb "$ctx/debs/" 2>/dev/null
+    echo "smoke: installing $(find "$ctx/debs" -name '*.deb' | wc -l) packages from $DEB_DIR"
 else
     echo "smoke: installing slurm-wlm from the Ubuntu 24.04 archive"
 fi

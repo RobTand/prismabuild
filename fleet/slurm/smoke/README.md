@@ -37,18 +37,21 @@ patched. The host's real `/mnt/shared` is never touched.
 | 10 | from inside a batch step, `scontrol show job` and `scontrol show node` return `Features=` and `ActiveFeatures=` to the job's owner, and `SLURM_JOB_CONSTRAINTS` is unset |
 | 11 | `pbrun --measurement --host-class gb10` executes, and the receipt's producer carries `host_class="gb10"` with the controller's `job_features` and `node_active_features` |
 | 12 | `--host-class` for a Feature no node has is refused at submit by `sbatch` |
-| 13a, 13b | with `ConstrainCores=yes`, a `--cpus N` job is confined to N CPUs of a node that has more; with `ConstrainCores=no` it is placed against the count and then sees the whole node |
-| 13c | a job that writes past its declared `mem_gb` runs against a `memory.max` equal to the declaration: it is throttled into swap under `ConstrainSwapSpace=no` and killed `OUT_OF_MEMORY` under `ConstrainSwapSpace=yes`, which `pbrun` reports |
-| 13d | a job that stays under its declared `mem_gb` completes |
+| 13 | `sstat` answers without `slurmdbd` and lists the fields the lane asks for; a job that sleeps with no output is reported by `pbrun` as stalled ("still running"), is not cancelled, and files `done/<key>.json` with `status=executed` and its samples under `detail.liveness`; `liveness.jsonl` in the lane directory holds them |
+| 14a, 14b | with `ConstrainCores=yes`, a `--cpus N` job is confined to N CPUs of a node that has more; with `ConstrainCores=no` it is placed against the count and then sees the whole node |
+| 14c | a job that writes past its declared `mem_gb` runs against a `memory.max` equal to the declaration: it is throttled into swap under `ConstrainSwapSpace=no` and killed `OUT_OF_MEMORY` under `ConstrainSwapSpace=yes`, which `pbrun` reports |
+| 14d | a job that stays under its declared `mem_gb` completes |
 
 ## What it does not establish
 
 The container is not the fleet, and four things stay open for the install:
 
 - **Device containment.** `ConstrainDevices` is off here and the node's GRES is
-  bound to a character device nothing opens. Whether
-  `cgroup_allowed_devices_file.conf` admits exactly the right NVIDIA control
-  interfaces is answerable only on a box with a GPU.
+  bound to a character device nothing opens. On cgroup v2 the containment is an
+  eBPF program that denies exactly the GRES `File=` devices a job was not
+  allocated and admits everything else, and whether it lets a job holding
+  `shard:1` initialize CUDA while a job holding nothing cannot open
+  `/dev/nvidia0` is answerable only on a box with a GPU.
 - **The fleet's cgroup arrangement.** Delegation here needs `--privileged`,
   `--cgroupns=private`, a manual `cgroup.subtree_control` and
   `IgnoreSystemd=yes`; the fleet's boxes have systemd and slurmd under it.
@@ -63,9 +66,12 @@ The container is not the fleet, and four things stay open for the install:
 
 ## The two SLURMs behave differently, and the differences are recorded
 
-Both pass rows 1 to 9. The campaign rows (10a, 10b) and the host-class rows
-(10 to 12) were added afterwards and have run on 25.11.2 only
-(run-20260905T010019, 13/13, and run-20260905T010156, 14/14). Two things had
+Both pass rows 1 to 9. The campaign rows (10a, 10b), the host-class rows
+(10 to 12) and the liveness row (13) were added afterwards and have run on
+25.11.2 only (run-20260905T010019, 13/13; run-20260905T010156, 14/14; row 13
+in run-20260905T010418, before the renumbering). Row 13 adds about five
+minutes: a job has to sleep through the lane's 120 s stall window and then
+finish on its own. Two things had
 to be worked around for 23.11.4, and neither is a lane defect:
 
 - Its `cgroup/v2` plugin creates its stepd scope under `/sys/fs/cgroup/system.slice`
@@ -82,7 +88,7 @@ to be worked around for 23.11.4, and neither is a lane defect:
 
 ## The resource-enforcement arm
 
-Rows 13a-13d run three times, because the settings they measure are the ones Rob has to
+Rows 14a-14d run three times, because the settings they measure are the ones Rob has to
 decide:
 
 ```
@@ -112,8 +118,8 @@ deviation at the top of the run:
 | `KillWait` | 30 | 10 | rows 5 and 6 would otherwise spend it waiting |
 | `ConstrainDevices` | `yes` | `no` | there are no devices to constrain |
 | `IgnoreSystemd` | absent | `yes` | there is no systemd to ask for a cgroup scope |
-| `ConstrainCores` | `yes` | `yes`, or `no` under `PB_SMOKE_CONSTRAIN_CORES=no` | rows 13a and 13b measure both settings; the default is the fleet's |
-| `ConstrainSwapSpace` | `no` | `no`, or `yes` under `PB_SMOKE_CONSTRAIN_SWAP=yes` | row 13c measures both settings; the default is the fleet's |
+| `ConstrainCores` | `yes` | `yes`, or `no` under `PB_SMOKE_CONSTRAIN_CORES=no` | rows 14a and 14b measure both settings; the default is the fleet's |
+| `ConstrainSwapSpace` | `no` | `no`, or `yes` under `PB_SMOKE_CONSTRAIN_SWAP=yes` | row 14c measures both settings; the default is the fleet's |
 | `gres.conf` `File=` | `/dev/nvidia0` | `/dev/nvidia0`, a `mknod`'d character device | slurmd refuses `shard` with no `File=` on the sharing GRES; see below |
 
 Every scheduler *choice* is the fleet's unchanged: `select/cons_tres` with
