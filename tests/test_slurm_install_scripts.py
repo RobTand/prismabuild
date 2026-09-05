@@ -16,6 +16,7 @@ is the fleet's shared secret and an NFS export is the wrong place for one).
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -180,6 +181,59 @@ def test_only_the_controller_runs_a_controller(rendered) -> None:
         assert "slurmctld" not in rendered[box], (
             f"{box} would enable a second controller"
         )
+
+
+@pytest.mark.parametrize("box", BOXES)
+def test_the_munge_self_test_fails_when_munge_does(
+    rendered, box, tmp_path: Path
+) -> None:
+    """``munge -n | unmunge | head`` reports ``head``'s status, so pre-fix a
+    munge that could not round-trip a credential passed the only check the
+    install makes of it, and the first ``sbatch`` failed instead."""
+
+    lines = [line for line in rendered[box].splitlines() if "munge -n" in line]
+    assert len(lines) == 1, lines
+    self_test = lines[0]
+    assert self_test.startswith("set -o pipefail;"), self_test
+
+    fakes = tmp_path / f"fakes-{box}"
+    fakes.mkdir()
+    (fakes / "munge").write_text(
+        "#!/bin/sh\n"
+        "if [ \"${FAKE_MUNGE_BROKEN:-0}\" = 1 ]; then\n"
+        "    echo 'munge: Error: Failed to access \"/run/munge/munge.socket.2\"' >&2\n"
+        "    exit 1\n"
+        "fi\n"
+        "echo MUNGE:AwQDAAA=:\n",
+        encoding="utf-8")
+    # The real unmunge prints about a dozen lines.  This one pauses after the
+    # fifth, so a truncation that closes the pipe early is still being written
+    # to when it does: under pipefail that SIGPIPE is the pipeline's status.
+    (fakes / "unmunge").write_text(
+        "#!/bin/sh\n"
+        "cat >/dev/null\n"
+        "for n in 1 2 3 4 5; do echo \"LINE $n\"; done\n"
+        "sleep 0.3\n"
+        "for n in 6 7 8 9 10 11 12; do echo \"LINE $n\" || exit 141; done\n",
+        encoding="utf-8")
+    for name in ("munge", "unmunge"):
+        (fakes / name).chmod(0o755)
+    environment = dict(os.environ)
+    environment["PATH"] = f"{fakes}{os.pathsep}{environment['PATH']}"
+
+    broken = subprocess.run(
+        ["bash", "-c", self_test], capture_output=True, text=True,
+        check=False, env={**environment, "FAKE_MUNGE_BROKEN": "1"},
+    )
+    assert broken.returncode != 0
+    assert "munge.socket" in broken.stderr
+
+    healthy = subprocess.run(
+        ["bash", "-c", self_test], capture_output=True, text=True,
+        check=False, env=environment,
+    )
+    assert healthy.returncode == 0, (healthy.returncode, healthy.stderr)
+    assert healthy.stdout.splitlines() == [f"LINE {n}" for n in range(1, 6)]
 
 
 @pytest.mark.parametrize("box", BOXES)
@@ -356,6 +410,132 @@ def test_cutover_refuses_when_verification_did_not_pass_here(tmp_path: Path) -> 
     result = _cutover(_cutover_environment(tmp_path), "--yes")
     assert result.returncode == 1
     assert "verify.sh" in result.stderr
+
+
+def test_cutover_honours_an_empty_pb_sparks(tmp_path: Path) -> None:
+    """``PB_SPARKS`` is the list of boxes with a pqwork unit, and the tests set
+    it empty so a run reaches no Spark.  Pre-fix the script read it with
+    ``:-``, which treats empty as unset, and step 4 went to both Sparks."""
+
+    environment = _cutover_environment(tmp_path)
+    assert environment["PB_SPARKS"] == ""
+    result = _cutover(environment, "--dry-run", "--yes")
+    assert result.returncode == 0, result.stderr
+    step4 = result.stdout.split("step 4:", 1)[1].split("step 5:", 1)[0]
+    assert "systemctl --user stop pqwork.service" not in step4
+    assert "sparklina" not in step4 and "sparky" not in step4
+
+
+def _live_cutover(tmp_path: Path, *, crontab: str, publish_exit: int) -> dict[str, str]:
+    """An environment in which a live cutover touches only fakes.
+
+    ``pgrep`` finds nothing, so the kill steps have nothing to kill and the
+    pbrun scan finds no waiter; ``crontab`` reads and writes one file under
+    ``tmp_path``; the publish stub accepts ``--dry-run`` and exits
+    ``publish_exit`` on the real publication.  The fakes log every call, and
+    the tests read the log before trusting that the real commands were never
+    reached.
+    """
+
+    environment = _cutover_environment(tmp_path)
+    (Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json").write_text("{}")
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    (fakes / "pgrep").write_text(
+        "#!/bin/sh\n"
+        f"echo \"pgrep $*\" >> '{tmp_path}/calls'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    crontab_file = tmp_path / "crontab"
+    crontab_file.write_text(crontab, encoding="utf-8")
+    (fakes / "crontab").write_text(
+        "#!/bin/sh\n"
+        f"echo \"crontab $*\" >> '{tmp_path}/calls'\n"
+        f"case \"$1\" in -l) cat '{crontab_file}' ;; -) cat > '{crontab_file}' ;; esac\n",
+        encoding="utf-8",
+    )
+    for name in ("pgrep", "crontab"):
+        (fakes / name).chmod(0o755)
+    publish = tmp_path / "publish_stub.sh"
+    publish.write_text(
+        "#!/bin/sh\n"
+        f"echo \"publish $*\" >> '{tmp_path}/calls'\n"
+        "case \"$*\" in *--dry-run*) exit 0 ;; esac\n"
+        f"echo 'publication failed' >&2; exit {publish_exit}\n",
+        encoding="utf-8",
+    )
+    publish.chmod(0o755)
+    environment["PB_PUBLISH"] = f"sh {publish}"
+    environment["PATH"] = f"{fakes}{os.pathsep}{environment['PATH']}"
+    return environment
+
+
+SUPERVISE_LINE = (
+    "*/5 * * * * /usr/bin/python3 /mnt/shared/prismabuild-fleet/repo/tools/"
+    "supervise.py --ensure >> /home/rob/tmp/pb-supervisor.log 2>&1"
+)
+
+
+def test_cutover_writes_the_state_file_rollback_needs_before_it_stops_anything(
+    tmp_path: Path,
+) -> None:
+    """Step 5's failure message says to run rollback.sh, and rollback.sh
+    refuses without a state file.  Pre-fix the state file was written after
+    step 5, so the one failure that points at rollback left it nothing to
+    read, with the crontab already edited and every loop dead."""
+
+    environment = _live_cutover(
+        tmp_path, crontab=SUPERVISE_LINE + "\n", publish_exit=1)
+    result = _cutover(environment, "--yes")
+    assert result.returncode == 1, result.stderr
+    assert "run fleet/slurm/rollback.sh" in result.stderr
+    calls = (tmp_path / "calls").read_text(encoding="utf-8")
+    assert "crontab -" in calls and "pgrep" in calls and "publish" in calls
+
+    state_files = sorted(Path(environment["PB_STATE_DIR"]).glob("cutover-*.json"))
+    assert len(state_files) == 1, state_files
+    state = json.loads(state_files[0].read_text(encoding="utf-8"))
+    assert state["previous_generation"] == "gen-old"
+    assert state["boxes"] == environment["PB_BOXES"]
+    assert state["crontab_backup"] == str(
+        Path(environment["PB_STATE_DIR"]) / "crontab.pre-cutover")
+    # The one field only the end of the run can know is empty, not guessed.
+    assert state["new_generation"] == ""
+
+    rollback = subprocess.run(
+        ["bash", str(FLEET / "rollback.sh"), "--dry-run"],
+        capture_output=True, text=True, check=False, env=environment,
+    )
+    assert rollback.returncode == 0, rollback.stderr
+    assert "--activate-generation gen-old" in rollback.stdout
+
+
+def test_a_rerun_after_a_partial_cutover_keeps_the_crontab_backup(
+    tmp_path: Path,
+) -> None:
+    """The backup is what rollback restores.  A cutover that failed at step 5
+    has already taken the supervise line out; the re-run the failure message
+    suggests then saw a crontab without the line.  Pre-fix it saved that
+    crontab over the backup, and a rollback restored a fleet with no cron
+    entry keeping a supervisor alive."""
+
+    environment = _live_cutover(
+        tmp_path, crontab="MAILTO=rob\n" + SUPERVISE_LINE + "\n", publish_exit=1)
+    backup = Path(environment["PB_STATE_DIR"]) / "crontab.pre-cutover"
+
+    first = _cutover(environment, "--yes")
+    assert first.returncode == 1, first.stderr
+    assert "supervise line removed" in first.stdout
+    assert SUPERVISE_LINE in backup.read_text(encoding="utf-8")
+    assert SUPERVISE_LINE not in (tmp_path / "crontab").read_text(encoding="utf-8")
+
+    second = _cutover(environment, "--yes")
+    assert second.returncode == 1, second.stderr
+    assert "no supervise line in the crontab" in second.stdout
+    saved = backup.read_text(encoding="utf-8")
+    assert SUPERVISE_LINE in saved
+    assert "MAILTO=rob" in saved
 
 
 def test_a_cutover_dry_run_names_its_refusals_and_publishes_the_transport(

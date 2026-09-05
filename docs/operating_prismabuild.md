@@ -404,10 +404,13 @@ You do not have to name the transport. A SLURM job has a submission record under
 the lane root and a pull-queue item has none, so the record decides where each
 prefix goes. `--transport slurm` sends every prefix to the lane.
 
-Under SLURM, a withdrawal writes the marker under `withdrawn/` and the terminal
-record under `failed/` before it runs `scancel`. That order matters: `pool_reset`
-skips a re-submission only on a marker or a `withdrawn_unix`, so a cancellation
-with neither would be re-submitted by the next bulk reset.
+Under SLURM, a withdrawal writes the marker and then the terminal record, both
+under `withdrawn/`, before it runs `scancel`. Nothing lands in `failed/`: a
+withdrawal is a decision, not a failure. That order matters: `pool_reset` skips
+a re-submission only on a marker or a `withdrawn_unix`, so a cancellation with
+neither would be re-submitted by the next bulk reset. If `scancel` is refused,
+run the same command again: the decision on disk is kept, and `scancel` is
+retried until it accepts the job.
 
 A withdrawal cancels the run, not the name. The marker is scoped to the
 generation it was filed against, and a later submission of the same key retires

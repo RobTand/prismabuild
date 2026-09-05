@@ -163,6 +163,10 @@ NICE_BASE = 1 << 30
 #: Nice units per priority step; see ``NICE_BASE``.
 NICE_SCALE = 1 << 20
 
+#: The largest nice ``sbatch`` accepts (its manual: "adjustment range is
+#: +/- 2147483645").  A priority of -1024 or below reaches it.
+NICE_MAX = 2147483645
+
 #: How long ``wait`` leaves between polls of a job that has not finished.
 DEFAULT_POLL_S = 5.0
 
@@ -273,10 +277,12 @@ def nice_for(priority: int) -> int:
     from an unprivileged submitter, and a priority past ``NICE_BASE //
     NICE_SCALE`` is asking for a boost this user cannot be granted.  Zero is
     the most this lane can do for it, and it is still ordered ahead of every
-    ordinary submission.
+    ordinary submission.  Clamped at ``NICE_MAX`` for the same reason at the
+    other end: ``sbatch`` refuses a nice past its range, and a priority that
+    low is asking to sit behind everything, which ``NICE_MAX`` already does.
     """
 
-    return max(0, NICE_BASE - int(priority) * NICE_SCALE)
+    return min(NICE_MAX, max(0, NICE_BASE - int(priority) * NICE_SCALE))
 
 
 def lane_directory(action_key: str, *, root: str | Path | None = None) -> Path:
@@ -2207,9 +2213,6 @@ def run(
     published_unix = _now()
     result.published_unix = published_unix
     published_by = socket.gethostname()
-    if queue_root is not None:
-        # A submission is what retires a withdrawal; see ``supersede_withdrawal``.
-        supersede_withdrawal(queue_root, key)
     for attempt in range(1, attempts + 1):
         if (
             attempt > 1
@@ -2242,6 +2245,12 @@ def run(
             retry_safe=retry_safe,
             max_attempts=max_attempts,
         )
+        if attempt == 1 and queue_root is not None:
+            # A submission is what retires a withdrawal; see
+            # ``supersede_withdrawal``.  After ``sbatch`` accepted, not before:
+            # a refused submission has retired nothing, and an operator's
+            # decision must not be moved aside by a job that never existed.
+            supersede_withdrawal(queue_root, key)
         if on_submit is not None:
             on_submit(job)
         if detach:

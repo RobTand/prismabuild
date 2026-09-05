@@ -106,7 +106,17 @@ case "$owner" in
         owner_settled=0
         ;;
     *)
-        if [ "${#owner}" -eq 64 ]; then
+        if [ "${#owner}" -ne 64 ]; then
+            log "container owner is not 64 characters; refusing to match on it"
+            owner_settled=0
+        elif [ -n "$container_job" ] && [ "$container_job" != "$job_id" ]; then
+            # slurm_job writes its own SLURM_JOB_ID here, and the value goes
+            # into a docker filter unquoted from a file in a directory every
+            # job's user can write.  Anything but this job's id is refused
+            # rather than passed to the daemon.
+            log "state file names container job '$container_job' but this is job $job_id; refusing to match on it"
+            owner_settled=0
+        else
             # Both labels, ANDed by the daemon.  A state file written before
             # the job label existed -- a job that was already running when the
             # runtime generation rolled -- records no job id, and matching on
@@ -140,9 +150,6 @@ case "$owner" in
                 owner_settled=0
                 log "containers for ${owner:0:12} remain: $(echo "$remaining" | tr '\n' ' ')"
             fi
-        else
-            log "container owner is not 64 characters; refusing to match on it"
-            owner_settled=0
         fi
         ;;
 esac

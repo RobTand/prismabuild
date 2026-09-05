@@ -468,7 +468,11 @@ step 8 "enable and start munge, then SLURM"
 
 run systemctl enable munge
 run systemctl restart munge
-run_shell "munge -n | unmunge | head -n 5"
+# pipefail, or the status is the last command's and a munge that cannot
+# round-trip a credential passes the one check that exists for it.  The
+# truncation reads to EOF: `head -n 5` would close the pipe with unmunge
+# still writing, and under pipefail its SIGPIPE fails a healthy munge.
+run_shell "set -o pipefail; munge -n | unmunge | sed -n 1,5p"
 
 if [ "$ROLE" = controller ]; then
     run systemctl enable slurmctld

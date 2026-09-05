@@ -218,6 +218,14 @@ def _recover(record: dict, *, cas_root: Path) -> tuple[dict | None, str]:
         "request_path": str(_request_path(key, cas_root=cas_root)),
     }
     if action_snapshot(request) is not None:
+        # Nothing to run when the key already holds a receipt.  A key is a
+        # content hash and is submitted again every time the same work is
+        # asked for, so an older generation's failed/ record can sit beside a
+        # newer generation's receipt; a submission would only spend a job to
+        # be told ``cache_hit``.  The path-addressed branch gets the same
+        # refusal from ``repair_local_result`` at apply time.
+        if _has_receipt(request, cas_root=cas_root):
+            return None, "already has a CAS receipt; the work landed"
         # Nothing to recover: the action names its own tree, by commit.
         return {**plan, "mode": "resubmit"}, ""
     # The action's own ``working_directory`` is relative to wherever the
@@ -231,6 +239,20 @@ def _recover(record: dict, *, cas_root: Path) -> tuple[dict | None, str]:
     if not Path(cwd).is_dir():
         return None, f"working directory is gone: {cwd}"
     return {**plan, "cwd": str(cwd)}, ""
+
+
+def _has_receipt(request: Mapping, *, cas_root: Path) -> bool:
+    """Whether the CAS already holds a verified receipt for this action.
+
+    A request the CAS cannot validate, or a receipt it cannot verify, counts as
+    no receipt: the reset then plans the action the way it always did, and the
+    lane's own ``cache_hit`` check is the one that answers at run time.
+    """
+
+    try:
+        return pb.PrismaBuildCAS(cas_root).lookup(request) is not None
+    except (pb.PrismaBuildError, OSError, ValueError):
+        return False
 
 
 def _clear_stale_result(

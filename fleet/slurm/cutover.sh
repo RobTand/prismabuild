@@ -89,7 +89,9 @@ PUBLISH="${PB_PUBLISH:-python3 $REPO/tools/fleet/publish_runtime.py}"
 QUEUE_ROOT="${PB_QUEUE_ROOT:-/mnt/shared/prismabuild-fleet/pb-queue}"
 RUNTIME_DIR="${PB_RUNTIME_DIR:-/mnt/shared/prismabuild-fleet}"
 BOXES="${PB_BOXES:-dl380g10 sparky sparklina}"
-SPARKS="${PB_SPARKS:-sparky sparklina}"
+# `-` rather than `:-`: an empty PB_SPARKS means no box has a pqwork unit,
+# which is what the tests set and not the same as leaving it unset.
+SPARKS="${PB_SPARKS-sparky sparklina}"
 SSH="${PB_SSH:-ssh -o BatchMode=yes}"
 STATE_DIR="${PB_STATE_DIR:-$HOME/.prismabuild}"
 MARKER="$STATE_DIR/slurm-verify-passed.json"
@@ -271,23 +273,61 @@ fi
 
 mkdir -p "$STATE_DIR"
 
+# -- the state file rollback reads, before anything is changed ---------------
+#
+# Everything rollback.sh needs is known now: the generation being replaced,
+# the boxes, and where the crontab backup goes.  Written here rather than at
+# the end, because the failure that points the operator at rollback.sh is
+# step 5's, and a rollback that refuses for want of a state file leaves the
+# crontab edited and every loop dead.  new_generation is filled in once step
+# 5 has produced it.
+
+write_state() {
+    cat > "$STATE" <<EOF
+{
+ "schema": "prismaquant.prismabuild.slurm_cutover.v1",
+ "cutover_unix": $STAMP,
+ "run_from": "$this_box",
+ "checkout": "$REPO",
+ "boxes": "$BOXES",
+ "sparks": "$SPARKS",
+ "previous_generation": "$previous_generation",
+ "new_generation": "$1",
+ "crontab_backup": "$CRONTAB_BACKUP"
+}
+EOF
+}
+
+if [ "$DRY_RUN" = 0 ]; then
+    write_state "" || die "could not write $STATE"
+    say "# wrote $STATE (new_generation is filled in after step 5)"
+fi
+
 # -- 1. the crontab, first, on every box -------------------------------------
 #
 # Before any process is killed: cron re-runs `supervise.py --ensure` every five
 # minutes, and a supervisor tops the loops back up thirty seconds later.  The
 # whole crontab is backed up verbatim rather than the one line, so rollback
 # restores what was there instead of reconstructing it.
+#
+# The backup is taken only while the crontab still has the line.  A re-run
+# after a partial cutover -- the thing step 5's failure message suggests --
+# sees a crontab the first run already edited, and saving that over the
+# backup would give rollback a crontab with no supervise line to restore.
 
 say ""
 say "# step 1: take the supervise line out of each box's crontab"
 for box in $BOXES; do
     on_box "$box" "set -e
 mkdir -p '$STATE_DIR'
-crontab -l > '$CRONTAB_BACKUP' 2>/dev/null || : > '$CRONTAB_BACKUP'
-if grep -q supervise.py '$CRONTAB_BACKUP'; then
+if crontab -l 2>/dev/null | grep -q supervise.py; then
+    crontab -l > '$CRONTAB_BACKUP'
     grep -v supervise.py '$CRONTAB_BACKUP' | crontab -
     echo \"\$(hostname -s): supervise line removed; whole crontab saved to $CRONTAB_BACKUP\"
+elif [ -f '$CRONTAB_BACKUP' ]; then
+    echo \"\$(hostname -s): no supervise line in the crontab; keeping the backup an earlier run saved to $CRONTAB_BACKUP\"
 else
+    crontab -l > '$CRONTAB_BACKUP' 2>/dev/null || : > '$CRONTAB_BACKUP'
     echo \"\$(hostname -s): no supervise line in the crontab\"
 fi" || die "could not edit the crontab on $box"
 done
@@ -346,25 +386,13 @@ else
         || die "publication failed; the loops are stopped and the fleet is still on the previous generation. Fix the publication and re-run, or run fleet/slurm/rollback.sh"
 fi
 
-# -- the state file rollback reads -------------------------------------------
+# -- the state file, completed ------------------------------------------------
 
 new_generation=""
 [ -L "$RUNTIME_DIR/repo" ] && new_generation="$(basename "$(readlink "$RUNTIME_DIR/repo")")"
 
 if [ "$DRY_RUN" = 0 ]; then
-    cat > "$STATE" <<EOF
-{
- "schema": "prismaquant.prismabuild.slurm_cutover.v1",
- "cutover_unix": $STAMP,
- "run_from": "$this_box",
- "checkout": "$REPO",
- "boxes": "$BOXES",
- "sparks": "$SPARKS",
- "previous_generation": "$previous_generation",
- "new_generation": "$new_generation",
- "crontab_backup": "$CRONTAB_BACKUP"
-}
-EOF
+    write_state "$new_generation" || die "could not rewrite $STATE"
     say ""
     say "# wrote $STATE"
 fi

@@ -425,6 +425,28 @@ def test_it_matches_containers_by_this_jobs_label_as_well_as_the_actions(
     assert calls[2] == f"ps -aq --filter label=prismabuild.action={OWNER}"
 
 
+def test_it_refuses_a_container_job_that_is_not_this_job(
+    node: dict[str, Path]
+) -> None:
+    """``container_job`` is written by ``slurm_job`` from its own
+    ``SLURM_JOB_ID`` and goes into a docker filter unquoted, from a file in a
+    directory every job's user can write.  Pre-fix any value was passed to
+    the daemon as extra arguments; a state file that names a job other than
+    this one is refused, and the marker is left alone with it."""
+
+    node["listed"].write_text("c0ffee08\n")
+    _state(node, job_id="1262", owner=OWNER, checkout_dir="",
+           local_root=str(node["checkouts"]),
+           container_job="1262 --filter label=x=y", marker="m")
+
+    result = _run(node, "1262")
+
+    assert result.returncode == 0
+    assert not node["calls"].exists()
+    assert "refusing to match on it" in result.stderr
+    assert "but this is job 1262" in result.stderr
+
+
 def test_a_state_file_with_no_job_id_still_matches_on_the_owner(
     node: dict[str, Path]
 ) -> None:

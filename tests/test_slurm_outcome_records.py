@@ -241,6 +241,73 @@ def test_the_first_writer_of_a_generation_keeps_the_record(
     assert _record(queue_root, pool.FAILED, key)["detail"]["note"] == "later"
 
 
+def test_a_withdrawal_whose_scancel_was_refused_can_be_asked_for_again(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``scancel`` is the last thing ``--withdraw`` does and the only thing
+    that can fail after the decision is on disk.  A controller restart window
+    refuses it; the operator reads "scancel refused" and runs the same command
+    again.  Pre-fix, the record the first run wrote before ``scancel`` matched
+    the verb's own "already finished" test, the second run said "nothing to
+    withdraw" with exit 0, and the job ran to completion."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "scancel-refused-once")
+    request = cas.publish_action_request(action)
+    queue_root = _queue(tmp_path)
+    key = str(action["action_key"])
+    job = sl.submit(
+        action, cas=cas, request_path=request, placement=["gb10"],
+        resources=sl.LaneResources(gpu_slots=1), timeout_s=600.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY,
+        published_unix=1757000000.0, published_by="sparky",
+        retry_safe=False, max_attempts=1,
+    )
+    # An scancel that refuses while FAKE_SCANCEL_REFUSE is set and otherwise
+    # hands the job to the fixture's fake.
+    flaky = tmp_path / "scancel-flaky"
+    flaky.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "if os.environ.get('FAKE_SCANCEL_REFUSE') == '1':\n"
+        "    sys.stderr.write('scancel: error: Kill job error on job id "
+        "1000: Socket timed out on send/recv operation\\n')\n"
+        "    raise SystemExit(1)\n"
+        "os.execvp('scancel', ['scancel'] + sys.argv[1:])\n",
+        encoding="utf-8",
+    )
+    flaky.chmod(0o755)
+    withdraw = dict(reason="wrong branch", by="rob@sparky",
+                    queue_root=queue_root, scancel=str(flaky))
+
+    monkeypatch.setenv("FAKE_SCANCEL_REFUSE", "1")
+    assert pbrun.withdraw_slurm_main([key[:12]], **withdraw) == 2
+    assert not (fleet / "cancelled").exists()
+    assert "scancel refused" in capsys.readouterr().err
+    # The decision is on disk either way; the scheduler just has not honoured it.
+    assert _record(queue_root, pool.WITHDRAWN, key)["withdrawn_by"] == "rob@sparky"
+
+    monkeypatch.delenv("FAKE_SCANCEL_REFUSE")
+    assert pbrun.withdraw_slurm_main([key[:12]], **withdraw) == 0
+    assert (fleet / "cancelled").read_text().split() == [job.job_id]
+    err = capsys.readouterr().err
+    assert "already has an outcome filed" not in err
+    assert f"cancelled slurm job {job.job_id}" in err
+    record = _record(queue_root, pool.WITHDRAWN, key)
+    # The first decision, not a second one.
+    assert record["withdrawn_by"] == "rob@sparky"
+    assert record["reason"] == "wrong branch"
+    assert isinstance(record["detail"]["scancel_accepted_unix"], float)
+
+    # Once scancel has taken the job, asking a third time is the
+    # already-finished case: no second scancel, exit 0.
+    assert pbrun.withdraw_slurm_main([key[:12]], **withdraw) == 0
+    assert (fleet / "cancelled").read_text().split() == [job.job_id]
+    assert "already has an outcome filed" in capsys.readouterr().err
+
+
 def test_a_new_submission_retires_the_withdrawal_it_supersedes(
     tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -277,6 +344,43 @@ def test_a_new_submission_retires_the_withdrawal_it_supersedes(
     kept = sorted((queue_root / pool.WITHDRAWN / "superseded").glob(f"{key}.*"))
     assert kept, "the decision must be kept, not deleted"
     assert json.loads(kept[0].read_text())["reason"] == "an older decision"
+
+
+def test_a_refused_submission_leaves_the_withdrawal_it_would_have_retired(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A submission retires a withdrawal; a refusal is not a submission.
+    Pre-fix ``run`` moved the marker to ``superseded/`` before ``sbatch`` had
+    answered, so a refused re-submission left the withdrawn generation's
+    still-waiting submitter to file the cancellation as ``slurm:scancel``,
+    with the operator's decision and reason moved out of its way."""
+
+    monkeypatch.setenv("FAKE_SBATCH_REFUSE", "1")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "refused-revival")
+    request = cas.publish_action_request(action)
+    queue_root = _queue(tmp_path)
+    key = str(action["action_key"])
+    marker = queue_root / pool.WITHDRAWN / f"{key}.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({
+        "schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": key,
+        "status": "withdrawn", "withdrawn_unix": 1.0, "withdrawn_by": "rob",
+        "reason": "an older decision",
+    }), encoding="utf-8")
+
+    with pytest.raises(sl.SlurmLaneError, match="node configuration"):
+        sl.run(
+            action, cas=cas, request_path=request, placement=["nosuchbox"],
+            resources=sl.LaneResources(), timeout_s=600.0,
+            worker_script=WORKER, job_entry=JOB_ENTRY,
+            queue_root=queue_root, poll_s=0.0,
+        )
+
+    assert marker.exists()
+    assert json.loads(marker.read_text())["reason"] == "an older decision"
+    assert key in pool.PoolQueue(queue_root).withdrawn_keys()
+    assert not list((queue_root / pool.WITHDRAWN / "superseded").glob(f"{key}.*"))
 
 
 # --------------------------------------------------------------------------

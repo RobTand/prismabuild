@@ -33,6 +33,8 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 import pool_reset  # noqa: E402
 
 from test_slurm_lane import (  # noqa: E402
+    JOB_ENTRY,
+    WORKER,
     _runnable_action,
     _submissions,
     fleet as slurm_fleet,
@@ -354,6 +356,34 @@ def test_a_sealed_failure_is_planned_as_a_resubmission_of_itself(
     assert plan["request_path"] == str(
         sealed["cas_root"] / "requests" / sealed["key"][:2]
         / f"{sealed['key']}.json")
+
+
+def test_a_sealed_failure_whose_key_already_holds_a_receipt_is_not_resubmitted(
+    tmp_path: Path, slurm_fleet: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One key is submitted again every time the same work is asked for, and
+    a later generation can land a receipt while an older generation's
+    ``failed/`` record is still on disk.  Pre-fix ``_recover`` never asked the
+    CAS, so a bulk reset spent a job on every such key to be told
+    ``cache_hit``; the path-addressed half already refuses on a receipt
+    through ``repair_local_result``, and the sealed half now says the same."""
+
+    sealed = _sealed_failure(tmp_path)
+    cas = pb.PrismaBuildCAS(sealed["cas_root"])
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "run")
+    landed = sl.run(
+        sealed["action"], cas=cas,
+        request_path=cas.publish_action_request(sealed["action"]),
+        resources=sl.LaneResources(cpus=1, memory_mib=512), timeout_s=600.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY, poll_s=0.0,
+    )
+    assert landed.receipt is not None
+    assert cas.lookup(sealed["action"]) is not None
+
+    plans, skipped = pool_reset.plan_resets(
+        sealed["queue"], cas_root=sealed["cas_root"], transport="slurm")
+    assert not [plan for plan in plans if plan["key"] == sealed["key"]]
+    assert skipped == [(sealed["key"][:12], "already has a CAS receipt; the work landed")]
 
 
 def test_a_sealed_reset_submits_the_same_action_key_and_the_same_device(
