@@ -53,7 +53,8 @@ def main() -> int:
     signal.signal(signal.SIGINT, terminate)
     try:
         request = {'op': 'run', **identity, 'argv': argv,
-                   'cwd': os.getcwd(), 'env': dict(os.environ)}
+                   'cwd': os.getcwd(), 'env': dict(os.environ),
+                   'affinity': sorted(os.sched_getaffinity(0))}
         message = json.dumps(request, separators=(',', ':')).encode() + b'\n'
         if len(message) > MAX_MESSAGE_BYTES:
             raise OSError('resource launch request exceeds 64 KiB')

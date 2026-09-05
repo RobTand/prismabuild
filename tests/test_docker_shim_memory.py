@@ -92,3 +92,46 @@ def test_container_cannot_opt_out_of_group_oom(tmp_path, value):
     environment, cgroup = _environment(tmp_path)
     result, _, _ = _shim(tmp_path, ['run', '--oom-score-adj=' + value, 'image'], cgroup=cgroup, docker_env=environment)
     assert result.returncode == 125
+
+
+def test_container_intent_brackets_the_daemon_request(tmp_path):
+    import json
+    environment, cgroup = _environment(tmp_path)
+    result, _, forwarded = _shim(tmp_path, ['run', 'image'], cgroup=cgroup, docker_env=environment)
+    assert result.returncode == 0, result.stderr
+    scope = forwarded[forwarded.index('--cgroup-parent')+1]
+    assert json.loads((tmp_path / 'broker.json').read_text()) == [
+        {'op': 'container_begin', 'scope_id': scope},
+        {'op': 'container_end', 'scope_id': scope, 'ticket': 'b'*64},
+    ]
+
+
+def test_broker_refusal_prevents_container_request(tmp_path):
+    environment, cgroup = _environment(tmp_path)
+    environment['PRISMABUILD_DOCKER_TEST_BROKER_FAIL'] = '1'
+    result, _, forwarded = _shim(tmp_path, ['run', 'image'], cgroup=cgroup, docker_env=environment)
+    assert result.returncode == 125
+    assert forwarded is None
+    assert 'resource broker' in result.stderr
+
+
+def test_killed_shim_preserves_pending_creation_intent(tmp_path):
+    import json
+    environment, cgroup = _environment(tmp_path)
+    environment['PRISMABUILD_DOCKER_TEST_KILL_SHIM'] = '1'
+    result, _, forwarded = _shim(tmp_path, ['run', 'image'], cgroup=cgroup, docker_env=environment)
+    assert result.returncode == -9
+    assert forwarded is not None
+    calls = json.loads((tmp_path / 'broker.json').read_text())
+    assert len(calls) == 1 and calls[0]['op'] == 'container_begin'
+
+
+@pytest.mark.parametrize('status', ['1', '125'])
+def test_nonzero_cli_result_retains_ambiguous_intent(tmp_path, status):
+    import json
+    environment, cgroup = _environment(tmp_path)
+    environment['PRISMABUILD_DOCKER_TEST_RETURN'] = status
+    result, _, forwarded = _shim(tmp_path, ['run', 'image'], cgroup=cgroup, docker_env=environment)
+    assert result.returncode == int(status), result.stderr
+    assert forwarded is not None
+    assert [call['op'] for call in json.loads((tmp_path / 'broker.json').read_text())] == ['container_begin']

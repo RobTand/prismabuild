@@ -435,6 +435,29 @@ def _refuse_unaccounted_work(sub: list[str], *, scope: tuple[str, int] | None) -
                       "use docker run/create, including an owned container for a builder")
 
 
+def _container_intent(scope: str, *, ticket: str | None = None) -> dict:
+    # Published fleet tools are flattened; source checkouts retain tools/fleet.
+    source = Path(__file__).resolve().parents[1] / "src"
+    if not source.is_dir():
+        source = Path(__file__).resolve().parents[2] / "src"
+    sys.path.insert(0, str(source))
+    from prismabuild.resource_scope import BROKER_SOCKET, broker_request
+    endpoint = BROKER_SOCKET
+    if os.environ.get("PRISMABUILD_DOCKER_TESTING") == "1":
+        endpoint = Path(os.environ.get("PRISMABUILD_RESOURCE_SOCKET") or endpoint)
+    request = {"op": "container_begin" if ticket is None else "container_end",
+               "scope_id": scope}
+    if ticket is not None:
+        request["ticket"] = ticket
+    try:
+        response = broker_request(request, socket_path=endpoint)
+        if ticket is None and re.fullmatch(r"[a-f0-9]{64}", str(response.get("ticket", ""))) is None:
+            raise OSError("broker returned no valid container intent ticket")
+        return response
+    except (OSError, ValueError) as exc:
+        raise Refused(f"cannot register container creation with the PB resource broker: {exc}") from exc
+
+
 def main() -> int:
     argv = sys.argv[1:]
     owner = os.environ.get(OWNER_ENV, "")
@@ -519,8 +542,19 @@ def main() -> int:
                            "--memory-swap", str(limit)]
         labelled = [*global_options, *sub[:relative], *labels, *containment,
                     "--cpuset-cpus", cpuset, *creation]
-        return subprocess.run([real, *labelled], env=environment,
-                              check=False).returncode
+        try:
+            ticket = _container_intent(scope[0])["ticket"] if scope else None
+            result = subprocess.run([real, *labelled], env=environment, check=False)
+            # Only CLI success proves the daemon operation settled. A nonzero
+            # exit can follow a connection failure after daemon acceptance.
+            # Retain its pending ticket (also for an ordinary user-command
+            # failure), so release keeps a frozen tombstone for late creation.
+            if ticket is not None and result.returncode == 0:
+                _container_intent(scope[0], ticket=ticket)
+            return result.returncode
+        except Refused as refusal:
+            sys.stderr.write(f"docker shim: {refusal}\n")
+            return 125
     finally:
         os.close(descriptor)
 
