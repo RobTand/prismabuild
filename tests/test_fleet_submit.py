@@ -318,7 +318,6 @@ def _point_at_this_tree(
         # exists on sparky and nowhere else.
         wrapper = tmp_path / producer.WRAPPER
         wrapper.write_text("# wrapper\n", encoding="utf-8")
-        monkeypatch.setattr(producer, "LOCAL_WRAPPER", wrapper)
     else:
         plan = tmp_path / "plan.json"
         plan.write_text("{}\n", encoding="utf-8")
