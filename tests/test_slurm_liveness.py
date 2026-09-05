@@ -345,3 +345,77 @@ def test_the_outcome_record_carries_the_liveness_summary(
     assert liveness["latest"]["stalled_since"] == liveness["stalled_since"]
     assert liveness["path"] == str(sl.liveness_path(job.directory))
     assert liveness["window_s"] == sl.STALL_WINDOW_S
+
+
+# --------------------------------------------------------------------------
+# pbrun's side: one line to stderr, and nothing done to the job
+# --------------------------------------------------------------------------
+
+def test_pbrun_reports_a_stall_on_stderr_and_cancels_nothing(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("FAKE_SSTAT_MODE", "frozen")
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "stalled")
+    request = cas.publish_action_request(action)
+    key = str(action["action_key"])
+    clock = FakeClock()
+
+    def finish(now: float) -> None:
+        if now >= 1000.0 + 800.0:
+            for record in fleet.glob("*.state"):
+                record.write_text("COMPLETED|0:0\n")
+    clock.hooks.append(finish)
+
+    code = pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[],
+        demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
+        timeout_s=None, wait_s=None, retry_safe=False, max_attempts=1,
+        runtime_root=REPOSITORY, queue_root=tmp_path / "queue",
+        poll_s=5.0, sleep=clock.sleep, clock=clock,
+    )
+
+    err = capsys.readouterr().err
+    lines = [line for line in err.splitlines() if "has shown no progress" in line]
+    # Reported at t=150 and repeated at t=750; finished at t=800.
+    assert len(lines) == 2
+    assert lines[0] == (
+        f"pbrun: {key[:12]} slurm job 1000 has shown no progress for 2 min on "
+        f"sparky; it is still running. Withdraw with pbrun --withdraw "
+        f"{key[:12]} if it is dead."
+    )
+    assert "for 12 min on sparky" in lines[1]
+    assert not (fleet / "cancelled").exists()
+    assert code == 1                      # no receipt: a paper action ran nothing
+    assert "slurm job 1000 exited 0 but published no receipt" in err
+    record = json.loads((tmp_path / "queue" / "failed" / f"{key}.json").read_text())
+    assert record["detail"]["liveness"]["stalled_since"] is not None
+
+
+def test_a_withdrawal_carries_the_last_liveness_sample(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_SSTAT_MODE", "frozen")
+    job = _running_job(tmp_path, monkeypatch, seed="withdrawn")
+    clock = FakeClock()
+    _finish_at(clock, fleet, job, 200.0)
+    sl.wait(job, poll_s=5.0, sleep=clock.sleep, clock=clock)
+    # Pretend the job is still running when the operator arrives.
+    (fleet / f"{job.job_id}.state").write_text("RUNNING|0:0\n")
+    queue = tmp_path / "queue"
+    root = Path(str(sl.lane_root()))
+
+    rc = pbrun.withdraw_slurm_main(
+        [job.action_key[:12]], reason="dead", by="tester",
+        lane_root=root, queue_root=queue,
+    )
+
+    assert rc == 0
+    record = json.loads((queue / "failed" / f"{job.action_key}.json").read_text())
+    assert record["status"] == "withdrawn"
+    liveness = record["detail"]["liveness"]
+    assert liveness["job_id"] == job.job_id
+    assert liveness["stalled_since"] is not None
+    assert liveness["latest"] == _samples(job)[-1]
