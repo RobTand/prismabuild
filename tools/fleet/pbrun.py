@@ -1412,6 +1412,24 @@ def slurm_outcome(
     """
 
     key = str(action["action_key"])
+    slots = int(demand.get("gpu", 0) or 0)
+    if exclusive and slots > 1:
+        # ``LaneResources.gres()`` answers ``gpu:1`` for an exclusive action
+        # whatever the count says, because ``gpu:N`` and ``shard:N`` are
+        # mutually exclusive requests against one device and exclusivity is the
+        # first.  On today's one-device boxes that is right and the count is
+        # redundant; on a two-GPU box it would silently hand back half of what
+        # was asked for.  Refusing is the honest answer either way -- the pool
+        # read the count off worker offers, and SLURM has no such thing here.
+        raise SystemExit(
+            f"pbrun: --exclusive --gpu-capacity {slots} is not something this "
+            f"transport can express.\n"
+            "Under SLURM, exclusivity IS the whole device: the lane sends "
+            "--gres=gpu:1, and a count above one would have to name that many "
+            "whole devices, which nothing here derives or checks.\n"
+            "Drop --gpu-capacity to take one device exclusively, or drop "
+            "--exclusive and ask for --gpu-capacity slots (shards) instead."
+        )
     resources = slurm_lane.LaneResources.from_demand(demand, exclusive=exclusive)
     # sbatch's own refusal is this transport's capability gate: an unknown
     # Feature or an impossible GRES is rejected at submit time, which is the
