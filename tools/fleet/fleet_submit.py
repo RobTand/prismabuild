@@ -444,8 +444,10 @@ def submit(
     # ``PoolQueue.publish`` applies, and the lane's ``run`` with it.  Leaving a
     # live marker in place would make the re-submitted action unrunnable and
     # the only remedy a hand edit of the queue.  After ``sbatch`` accepted,
-    # not before: a refused submission has retired nothing.
-    slurm_lane.supersede_withdrawal(queue_root, key)
+    # not before: a refused submission has retired nothing.  Scoped to this
+    # submission's own generation: a withdrawal of the run being submitted is
+    # a decision about this work, not a stale marker to move aside.
+    slurm_lane.supersede_withdrawal(queue_root, key, job.published_unix)
     return Submission(
         transport="slurm", where=job.record_path, job_id=job.job_id,
         action_key=key,

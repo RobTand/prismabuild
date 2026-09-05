@@ -511,7 +511,7 @@ for jobs the controller has forgotten. Use them directly for scheduler detail
 | `/mnt/shared/prismabuild-fleet/pb-queue/done/<key>.json` | The ending of an action whose work was done. |
 | `.../pb-queue/failed/<key>.json` | The ending of an action with no receipt. |
 | `.../pb-queue/withdrawn/<key>.json` | The marker for an action somebody cancelled. |
-| `.../slurm/<key>/` | The lane directory: `job.sh`, `submissions/`, `latest.json`, `liveness.jsonl`, and `<jobid>.out` and `.err`. |
+| `.../slurm/<key>/` | The lane directory: `scripts/<sha256>.sh`, the immutable script each submission sent, plus `job.sh` as a pointer to the newest, `submissions/`, `latest.json`, `liveness.jsonl`, and `<jobid>.out` and `.err`. |
 | `.../cas/` | The content-addressed store: action requests, results, and receipts. |
 
 Both transports file their endings in the same two directories, so a SLURM
@@ -582,11 +582,13 @@ reported and the withdrawal stands, because a sibling that finished between the
 listing and the cancel is the ordinary case.
 
 A withdrawal cancels the run, not the name. The marker is scoped to the
-generation it was filed against, and a later submission of the same key retires
-it into `withdrawn/superseded/`: the action key is a content hash, so
-re-submitting it is how anybody asks for the same work again. If the action
-finished a moment before you asked, `pbrun` says an outcome is already filed and
-withdraws nothing.
+generation it was filed against, and a submission of a *later* generation
+retires it into `withdrawn/superseded/`: the action key is a content hash, so
+re-submitting it is how anybody asks for the same work again. A withdrawal of
+the run being submitted is left where it is, whenever it lands: it stops the
+remaining attempts of that run and it is the ending that gets filed. If the
+action finished a moment before you asked, `pbrun` says an outcome is already
+filed and withdraws nothing.
 
 ### Retry
 

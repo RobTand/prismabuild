@@ -20,7 +20,9 @@ hook on the fake clock, so the outage begins and ends at chosen moments.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -244,7 +246,15 @@ def test_a_hung_scheduler_command_does_not_end_the_wait(
     """Pre-fix: ``SlurmLaneError('scontrol failed: Command ... timed out
     after 0.2 seconds')`` propagated out of ``wait`` and ``slurm_outcome``
     raised ``SystemExit('pbrun: slurm refused this action ... Fix the --tag,
-    ...')`` while the job ran on.  Now the timeout is one unanswered poll."""
+    ...')`` while the job ran on.  Now the timeout is one unanswered poll.
+
+    Both controller clients hang here, because since issue #67 one hung
+    command is not an unanswered poll: ``query_provenance`` asks the next
+    reader, and an outage is reported only when none of the three can
+    establish the state.  A slurmctld that hangs ``scontrol`` hangs ``squeue``
+    with it, and ``sacct`` is inert on this fleet.  The first failure is what
+    the notice names, which is still the hung ``scontrol``.
+    """
 
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
     monkeypatch.setenv("FAKE_SACCT_DISABLED", "1")
@@ -268,12 +278,19 @@ def test_a_hung_scheduler_command_does_not_end_the_wait(
     monkeypatch.setenv("FAKE_SCONTROL_HANG", "2")
     clock.hooks.append(hang_then_finish)
 
+    def hanging_squeue(argv):
+        hang = os.environ.get("FAKE_SCONTROL_HANG")
+        if hang:
+            raise subprocess.TimeoutExpired(["squeue", *argv], float(hang))
+        return scheduler.squeue(argv)
+
     code = pbrun.slurm_outcome(
         action, cas=cas, request_path=request, tags=[],
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=None, wait_s=None, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, queue_root=tmp_path / "queue",
-        **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
+        **scheduler.commands_with(squeue=hanging_squeue),
+        poll_s=5.0, sleep=clock.sleep, clock=clock,
     )
 
     err = capsys.readouterr().err

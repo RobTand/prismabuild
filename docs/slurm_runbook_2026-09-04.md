@@ -794,8 +794,15 @@ sbatch --parsable --no-requeue --export=NIL \
     --mem=16384M --cpus-per-task=1 --nice=1073741824 \
     --comment=pb:<action key>:<attempt>:<16 hex digits> \
     --time=02:00:00 --gres=shard:1 --constraint=gb10&sparklina \
-    /mnt/shared/prismabuild-fleet/slurm/<action key>/job.sh
+    /mnt/shared/prismabuild-fleet/slurm/<action key>/scripts/<sha256>.sh
 ```
+
+The script named there is immutable and is named by the sha256 of its own
+bytes, which the submission record carries as `script_sha256`. Two callers of
+one action key can submit across a runtime publication, so a single mutable
+script in the action directory was one caller's job reading the other's bytes.
+`job.sh` beside `scripts/` is a pointer to the newest submission's script and
+is not what any job executes.
 
 For a CPU action, the `--gres` flag is absent entirely, and `--constraint`
 carries whatever tags the checkout's location produced. `--time` is sent only
