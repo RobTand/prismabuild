@@ -257,7 +257,7 @@ def _execution_checkout(
             where="initialize materialized checkout",
         )
         heads = _run_materializer_git(
-            ["git", "bundle", "list-heads", str(bundle)],
+            ["git", "-C", str(repository), "bundle", "list-heads", str(bundle)],
             where="read checkout snapshot bundle",
         )
         commit = str(snapshot["commit"])

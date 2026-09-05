@@ -497,6 +497,19 @@ def _materialization_item(tmp_path: Path) -> dict[str, object]:
     }
 
 
+def test_execution_checkout_ignores_a_broken_ambient_git_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = _materialization_item(tmp_path)
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized", raising=False)
+    ambient = tmp_path / "broken-cwd"
+    ambient.mkdir()
+    (ambient / ".git").write_text("gitdir: /nonexistent/prismabuild-worktree\n")
+    monkeypatch.chdir(ambient)
+    with pool._execution_checkout(item) as checkout:
+        assert (checkout / "payload.txt").read_text() == "sealed lifecycle bytes\n"
+
+
 def test_execution_checkout_removes_ordinary_materialization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
