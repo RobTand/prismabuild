@@ -348,7 +348,7 @@ def row_m0_verify_script() -> None:
     ])
     checks = {
         "verify.sh produced a table": bool(seen),
-        "every row is PASS but the three a container cannot answer":
+        "every row is PASS but the five a container cannot answer":
             not unexpected,
         "it refused to write the ready marker": marker.returncode != 0,
     }

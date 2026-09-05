@@ -216,11 +216,12 @@ and the fix is a judgement about where the closure stamp should live.
 
 ## Both SLURMs, three nodes
 
-All eleven rows pass on both. The difference is time, and it is the same one
+All twelve rows pass on both. The difference is time, and it is the same one
 the one-node harness records: with `AccountingStorageType=accounting_storage/none`
 23.11.4 schedules every job as `InvalidAccount` and starts it about thirty
 seconds later, once the association refresh fills in `Assoc=0`. Measured on
-2026-09-05: 4 min 12 s on 25.11.2, 9 min 05 s on 23.11.4, same rows, same box.
+2026-09-05, twelve rows each: 4 min 34 s on 25.11.2, 10 min 37 s on 23.11.4,
+same rows, same box.
 Nothing fails; a fleet on 23.11 would simply be slower at everything, which is
 one more argument for putting the 25.11 packages on the nodes.
 
@@ -257,7 +258,7 @@ one more argument for putting the 25.11 packages on the nodes.
 ## Deviations from `fleet/slurm/*.conf`, and why
 
 `genconf.py` prints these at the top of every run. Everything not listed is the
-fleet's file unchanged, including `SlurmctldHost=dl380g10`, all three
+fleet's file unchanged, including the controller's node name, all three
 `NodeName` lines' `RealMemory`, `Gres`, `Feature` and `Weight`, all three
 `PartitionName` lines, `ReturnToService=2`, `MinJobAge=3600`, every scheduler
 and cgroup plugin choice, and the real `epilog.sh`.
