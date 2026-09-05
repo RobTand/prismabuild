@@ -48,19 +48,15 @@ on a box holding no copy of the source could not be done at all.  So such a
 record is re-submitted through ``slurm_lane`` unchanged, with the resources,
 constraint and exclusivity its own ending recorded.
 
-**A reset detaches, and files no ending.**  ``--apply`` starts every
-re-submission and returns; nothing here stays alive to watch a job, and an
-ending written now would say ``failed`` about work that is still queued.  It
-does wait one shared ``REFUSAL_WINDOW_S`` before stamping the records, because
-a child that refuses does so at once and a run that reported it as submitted
-was reporting work that does not exist.  Nothing is signalled at the end of
-that window: a child still running has been admitted, and its output is kept
-under ``<queue root>/resets/`` either way.  A
-re-sealed action goes out through a detached ``pbrun``, and a sealed one
-through ``slurm_lane.run(detach=True)``, which records the submission under
-``<lane root>/<key>/latest.json``.  Either way the ending is ``pbwait``'s to
-file, from that record and the CAS receipt -- which is why the key and the job
-id are printed: they are what an operator hands ``pbwait``.
+**A reset waits for admission, then detaches.** ``--apply`` waits for each
+``pbrun --detach`` child to exit and name its admitted action in a structured
+acknowledgement. A slow seal is reported as pending; a refusal or missing
+acknowledgement leaves the original failure resettable. Child diagnostics are
+kept as a bounded tail under ``<queue root>/resets/``. No action output is
+streamed into these logs. A sealed action goes through
+``slurm_lane.run(detach=True)``, which records its submission under
+``<lane root>/<key>/latest.json``. The ending is ``pbwait``'s to file from that
+record and the CAS receipt; the printed key and job id identify the new run.
 
 ``--priority`` reaches both halves.  The lane turns it into the ``sbatch
 --nice`` the controller subtracts, so a reset queues behind interactive work
@@ -78,6 +74,8 @@ import socket
 import subprocess
 import sys
 import time
+import threading
+import re
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -561,6 +559,11 @@ POLL_S = 0.25
 #: state directories by ``<key>.json`` and none of them looks here.
 RESETS = "resets"
 
+# Only the final acknowledgement and refusal diagnostics are consumed. Keep
+# enough tail for a traceback and the acknowledgement without storing action
+# output (the detached submitter exits before the action completes).
+LOG_LIMIT_BYTES = 64 * 1024
+
 
 def resubmission_log(queue_root: Path, key: str) -> Path:
     """Where one re-submission's output goes.
@@ -584,11 +587,34 @@ def start_resubmission(
 
     log = resubmission_log(queue_root, key)
     log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("wb") as handle:
+    handle = log.open("wb", buffering=0)
+    try:
         process = subprocess.Popen(
-            list(command), stdout=handle, stderr=subprocess.STDOUT,
+            list(command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+    except BaseException:
+        handle.close()
+        raise
+
+    def capture() -> None:
+        tail = b""
+        with process.stdout, handle:
+            while chunk := process.stdout.read1(LOG_LIMIT_BYTES):
+                if getattr(process, "_reset_capture_error", None):
+                    continue  # Drain even if the log mount stopped accepting writes.
+                tail = (tail + chunk)[-LOG_LIMIT_BYTES:]
+                try:
+                    handle.seek(0)
+                    handle.write(tail)
+                    handle.truncate()
+                    handle.flush()
+                except OSError as exc:
+                    process._reset_capture_error = str(exc)
+
+    thread = threading.Thread(target=capture, name="pool-reset-output", daemon=True)
+    process._reset_capture = thread
+    thread.start()
     return process, log
 
 
@@ -612,7 +638,11 @@ def announced_submission(said: str) -> dict | None:
         except ValueError:
             continue
         if (isinstance(value, dict)
-                and value.get("schema") == pbrun.DETACH_SCHEMA_V1):
+                and value.get("schema") == pbrun.DETACH_SCHEMA_V1
+                and isinstance(value.get("action_key"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", value["action_key"])
+                and value.get("transport") in ("pool", "slurm")
+                and value.get("status") in ("submitted", "attached", "cache_hit")):
             return value
     return None
 
@@ -636,6 +666,11 @@ def submission_outcome(process: subprocess.Popen, log: Path) -> dict:
     """
 
     returncode = process.wait()
+    capture = getattr(process, "_reset_capture", None)
+    if capture is not None:
+        capture.join()
+    if error := getattr(process, "_reset_capture_error", None):
+        return {"state": "unclear", "detail": f"cannot capture {log}: {error}"}
     try:
         said = log.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -820,7 +855,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  no result to clear ({note})")
         process, log = start_resubmission(
             command, queue_root=Path(args.queue_root), key=plan["key"])
-        print(f"  submitted {label} (pid {process.pid})\n    output: {log}")
+        print(f"  submitting {label} (pid {process.pid})\n    output: {log}")
         started.append((plan, label, process, log))
     # Every record is stamped from what its child said, and none from a clock.
     # A refusal used to leave the operator with a green run, a record saying
@@ -888,8 +923,9 @@ def main(argv: list[str] | None = None) -> int:
     if unclear:
         print(f"\n{len(unclear)} exited 0 without saying where the work went "
               f"and were left failed")
-    if refused or unclear:
+    if refused:
         print(f"\n{len(refused)} refused and left failed")
+    if refused or unclear:
         return 1
     return 0
 
