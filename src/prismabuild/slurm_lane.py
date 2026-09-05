@@ -255,6 +255,23 @@ def submission_record_path(
     )
 
 
+def action_status_path(directory: str | Path, job_id: str) -> Path:
+    """Where the node leaves this job's action exit status, beside its logs.
+
+    Named for the job rather than fixed, and for the same reason the logs are:
+    one lane directory holds every attempt of one action key, a retry is a new
+    job id in that directory, and a fixed name would let attempt one's exit
+    status be read onto attempt two's record -- including onto a ``done/``
+    record, when the retry succeeded.
+
+    ``core`` writes this file only for an action that ran and ended by itself,
+    so an absent file is the normal case and means the ending was the worker's
+    verdict rather than the action's.
+    """
+
+    return Path(directory) / f"{str(job_id)}.action.json"
+
+
 def format_time_limit(timeout_s: float) -> str:
     """Seconds to what ``--time`` accepts, rounded up, never rounded to zero.
 

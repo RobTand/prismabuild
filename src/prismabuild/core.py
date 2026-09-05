@@ -41,6 +41,16 @@ CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
 CAS_RECEIPT_SCHEMA_V3 = "prismaquant.prismabuild.cas_receipt.v3"
 WORKER_ATTESTATION_SCHEMA_V2 = "prismaquant.prismabuild.worker_attestation.v2"
 WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
+
+#: Where a transport asks this worker to leave the action's own exit status.
+#:
+#: An environment variable rather than an argument, because ``pool.worker_argv``
+#: is pinned byte-identical across both transports -- an action executed under
+#: SLURM and the same action executed by the pull queue must be the same
+#: execution -- and a flag on one of them would end that. The action's own argv
+#: never sees this: ``run_local_action`` builds the sealed environment it runs
+#: in, and this variable is not in it.
+ACTION_STATUS_PATH_ENV = "PRISMABUILD_ACTION_STATUS_PATH"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
@@ -5048,6 +5058,39 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _record_action_status(error: LocalActionError) -> None:
+    """Leave the action's own ending where the transport that asked can read it.
+
+    This process exits 1 whatever the action did, so its exit status cannot
+    carry the action's -- and it must not: the launcher's status is what every
+    fleet reader means by ``detail.returncode``. The number goes beside the
+    job's logs instead, and the caller decides what to do with it.
+
+    Written only for an action that ran and ended by itself. A worker verdict
+    -- a missing result, a timeout -- leaves no file, so that a transport
+    reading one knows it is reading the action's ending and not a default.
+    A file this cannot write is a diagnostic lost, never an ending changed, so
+    every failure here is swallowed and the original error is raised on.
+    """
+
+    destination = os.environ.get(ACTION_STATUS_PATH_ENV) or ""
+    if not destination or error.returncode is None:
+        return
+    body: dict[str, object] = {"action_returncode": int(error.returncode)}
+    if error.signal is not None:
+        body["action_signal"] = int(error.signal)
+    path = Path(destination)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+        tmp.write_text(
+            json.dumps(body, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -5157,15 +5200,19 @@ def main(
             raise PrismaBuildError("action is not present in the CAS")
         print(json.dumps(receipt, sort_keys=True))
         return 0
-    result = run_local_action(
-        action,
-        cas_root=args.cas_root,
-        checkout_root=args.checkout_root,
-        timeout_seconds=args.timeout_seconds,
-        recompute=args.recompute,
-        worker_launcher_identity=worker_launcher_identity,
-        initial_miss_rendezvous=args.initial_miss_rendezvous,
-    )
+    try:
+        result = run_local_action(
+            action,
+            cas_root=args.cas_root,
+            checkout_root=args.checkout_root,
+            timeout_seconds=args.timeout_seconds,
+            recompute=args.recompute,
+            worker_launcher_identity=worker_launcher_identity,
+            initial_miss_rendezvous=args.initial_miss_rendezvous,
+        )
+    except LocalActionError as error:
+        _record_action_status(error)
+        raise
     print(json.dumps(result, sort_keys=True))
     return 0
 
@@ -5173,6 +5220,7 @@ def main(
 __all__ = [
     "ACTION_SCHEMA_V1",
     "ACTION_SCHEMA_V2",
+    "ACTION_STATUS_PATH_ENV",
     "CAS_RECEIPT_SCHEMA_V3",
     "CODE_CLOSURE_SCHEMA_V1",
     "INITIAL_MISS_RENDEZVOUS_ARRIVAL_SCHEMA_V1",

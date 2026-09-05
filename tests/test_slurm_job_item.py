@@ -66,3 +66,30 @@ def test_an_action_addressed_neither_way_is_refused(slurm_job, params) -> None:
         slurm_job._queue_item(
             {"action_key": KEY, "params": params}, cas_root=Path("/cas")
         )
+
+
+def test_the_worker_is_told_where_to_leave_the_action_status(slurm_job) -> None:
+    """The launcher names the sidecar; the worker writes it.
+
+    The launcher runs the worker as a child and sees only its exit status,
+    which is 1 for every failure. The action's own status therefore travels in
+    a file, and the launcher's part is to say which one.
+    """
+
+    environment = slurm_job._worker_environment(
+        {"PATH": "/usr/bin"}, lane_dir="/lane/abc", job_id="4211"
+    )
+    assert environment["PATH"] == "/usr/bin"
+    assert environment[slurm_job.core.ACTION_STATUS_PATH_ENV] == (
+        "/lane/abc/4211.action.json"
+    )
+
+
+def test_a_job_with_no_lane_or_id_asks_for_nothing(slurm_job) -> None:
+    """A launcher run by hand outside SLURM has nowhere to name."""
+
+    for lane_dir, job_id in (("", "4211"), ("/lane/abc", "")):
+        environment = slurm_job._worker_environment(
+            {"PATH": "/usr/bin"}, lane_dir=lane_dir, job_id=job_id
+        )
+        assert environment == {"PATH": "/usr/bin"}

@@ -36,7 +36,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import materialize, pool  # noqa: E402
+from prismabuild import core, materialize, pool, slurm_lane  # noqa: E402
 
 #: The environment variable the Docker shim reads to label containers, and
 #: therefore the one the Epilog needs to find them again.  Read from the sealed
@@ -117,6 +117,32 @@ def _temporary_root(checkout: Path, base: Path) -> Path | None:
     return None
 
 
+def _worker_environment(
+    environment: dict[str, str], *, lane_dir: str, job_id: str
+) -> dict[str, str]:
+    """The worker's environment, plus where to leave the action's exit status.
+
+    The worker exits 1 for any failure, so its status cannot say what the
+    action's was, and the launch argv cannot carry the question either:
+    ``pool.worker_argv`` is pinned byte-identical across both transports so
+    that one action means one execution whichever delivered it. The request
+    travels in the environment instead, and only when this job has both a lane
+    directory to write in and an id to name the file after.
+
+    The action itself never sees this variable. ``run_local_action`` builds the
+    sealed environment the action's argv runs in, and this is not in it.
+    """
+
+    if not lane_dir or not job_id:
+        return dict(environment)
+    return {
+        **environment,
+        core.ACTION_STATUS_PATH_ENV: str(
+            slurm_lane.action_status_path(lane_dir, job_id)
+        ),
+    }
+
+
 def _write_job_state(
     path: Path,
     *,
@@ -155,7 +181,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="tools/prismabuild_worker.py to exec")
     parser.add_argument("--worker-python", default="/usr/bin/python3")
     parser.add_argument("--lane-dir", default="",
-                        help="this action's lane directory (diagnostics only)")
+                        help="this action's lane directory: the job's logs and "
+                             "the action's exit status go here")
     parser.add_argument("--job-state-root", default="",
                         help="where to leave this job's Epilog state file")
     parser.add_argument("--checkout-root", default="",
@@ -225,7 +252,13 @@ def main(argv: list[str] | None = None) -> int:
         # and no __exit__.  That case is the Epilog's, which reads the state
         # file written above and removes the checkout and any containers as
         # root; smoke row 8 is the evidence for that path.
-        completed = subprocess.run(worker, check=False)
+        completed = subprocess.run(
+            worker,
+            check=False,
+            env=_worker_environment(
+                dict(os.environ), lane_dir=str(args.lane_dir), job_id=job_id
+            ),
+        )
     if state_path is not None:
         # Removed last: from here on the Epilog has nothing left to do that
         # this process has not already done.

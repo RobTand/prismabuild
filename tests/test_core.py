@@ -2579,6 +2579,125 @@ def test_initial_miss_rendezvous_does_not_mutate_manifest_source_or_paths(
     assert not list(namespace.rglob("__pycache__"))
 
 
+def _run_local_argv(action_path: Path, *, cas_root: Path, checkout: Path):
+    return [
+        "run-local",
+        "--action", str(action_path),
+        "--cas-root", str(cas_root),
+        "--checkout-root", str(checkout),
+    ]
+
+
+def test_the_worker_leaves_the_action_status_where_it_was_asked_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A transport that asks for the action's ending gets it as a number.
+
+    The worker exits 1 whatever the action did, so the number cannot ride its
+    exit status. It rides a sidecar the transport names, and the error the
+    worker raises is unchanged by writing one.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(
+        checkout, argv=[sys.executable, "-c", "raise SystemExit(7)"]
+    )
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    sidecar = tmp_path / "lane" / "12345.action.json"
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(sidecar))
+
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert str(caught.value) == "action argv exited with status 7"
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "action_returncode": 7
+    }
+
+
+def test_a_signalled_action_leaves_its_signal_in_the_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(
+        checkout,
+        argv=[
+            sys.executable,
+            "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
+        ],
+    )
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    sidecar = tmp_path / "lane" / "12345.action.json"
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(sidecar))
+
+    with pytest.raises(pb.LocalActionError):
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "action_returncode": -9, "action_signal": 9,
+    }
+
+
+def test_a_worker_verdict_leaves_no_action_status_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """No file rather than a null: absent means the action did not end itself."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(checkout, argv=[sys.executable, "-c", "pass"])
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    sidecar = tmp_path / "lane" / "12345.action.json"
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(sidecar))
+
+    with pytest.raises(pb.LocalActionError, match="without its declared result"):
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert not sidecar.exists()
+
+
+def test_an_unasked_worker_writes_no_action_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The pull queue asks for nothing and gets nothing new."""
+
+    monkeypatch.delenv(pb.ACTION_STATUS_PATH_ENV, raising=False)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(
+        checkout, argv=[sys.executable, "-c", "raise SystemExit(7)"]
+    )
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+
+    with pytest.raises(pb.LocalActionError):
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert not list((tmp_path).glob("*.action.json"))
+
+
 def test_a_failed_action_carries_its_own_exit_status(tmp_path: Path):
     """The action's status is an attribute, not a substring of the message.
 
