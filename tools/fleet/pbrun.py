@@ -486,18 +486,45 @@ def resolve_snapshot_refs(
 def build_git_checkout_snapshot(
     cwd: Path,
     *,
-    stamp_name: str,
+    stamp_name: str | None = None,
     cas: pb.PrismaBuildCAS,
     max_bytes: int = CHECKOUT_SNAPSHOT_MAX_BYTES,
     expected_identity: dict[str, str] | None = None,
     snapshot_refs: Sequence[str] = (),
 ) -> dict[str, object]:
-    """Publish the exact dirty tree as an immutable Git bundle with ancestry."""
+    """Publish the exact dirty tree as an immutable Git bundle with ancestry.
+
+    Args:
+        cwd: The directory the action runs in, inside a Git worktree.
+        stamp_name: The pbrun closure stamp to seal alongside the tree, or
+            ``None`` for a producer that seals its own action body. The stamp
+            exists so a pull-queue worker can compare the live tree against the
+            action that pinned it; a snapshot-addressed action is compared
+            against its own sealed commit instead, so a producer that never
+            writes a stamp does not need one invented for it.
+        cas: The store the bundle is ingested into.
+        max_bytes: The local-disk bound this snapshot may not exceed.
+        expected_identity: The checkout identity the caller already read, so
+            the seal refuses a tree that moved between the two observations.
+        snapshot_refs: Source branches the bundle also advertises.
+
+    Returns:
+        The validated ``params.checkout_snapshot`` record.
+    """
 
     root = git_repository_root(cwd)
     if root is None:
         raise SystemExit("pbrun: a non-Git checkout cannot be materialized")
     require_checkout_snapshot_limit(max_bytes)
+    if stamp_name is None:
+        subdirectory = cwd.relative_to(root).as_posix() or "."
+        stamp_relative = None
+        stamp_paths: tuple[str, ...] = ()
+        return _build_git_checkout_snapshot(
+            cwd, root, subdirectory, stamp_relative, stamp_paths,
+            cas=cas, max_bytes=max_bytes,
+            expected_identity=expected_identity, snapshot_refs=snapshot_refs,
+        )
     declared_stamp = cwd / stamp_name
     if declared_stamp.is_symlink():
         raise SystemExit("pbrun: checkout stamp must not be a symlink")
@@ -516,7 +543,28 @@ def build_git_checkout_snapshot(
     ).as_posix()
     if observed_stamp_relative != stamp_relative:
         raise SystemExit("pbrun: checkout stamp resolves through a symlinked path")
-    paths = snapshot_path_roster(root, extra_paths=(stamp_relative,))
+    return _build_git_checkout_snapshot(
+        cwd, root, subdirectory, stamp_relative, (stamp_relative,),
+        cas=cas, max_bytes=max_bytes,
+        expected_identity=expected_identity, snapshot_refs=snapshot_refs,
+    )
+
+
+def _build_git_checkout_snapshot(
+    cwd: Path,
+    root: Path,
+    subdirectory: str,
+    stamp_relative: str | None,
+    stamp_paths: tuple[str, ...],
+    *,
+    cas: pb.PrismaBuildCAS,
+    max_bytes: int,
+    expected_identity: dict[str, str] | None,
+    snapshot_refs: Sequence[str],
+) -> dict[str, object]:
+    """Seal the tree once the caller has settled where the stamp is, if any."""
+
+    paths = snapshot_path_roster(root, extra_paths=stamp_paths)
     require_working_tree_size(root, paths, max_bytes=max_bytes)
     require_untransformed_checkout(root, paths)
     identity = expected_identity or _git_identity(cwd)
@@ -558,11 +606,12 @@ def build_git_checkout_snapshot(
             root, ["read-tree", "HEAD"], environment=object_environment
         )
         _snapshot_git(root, ["add", "-A"], environment=object_environment)
-        _snapshot_git(
-            root,
-            ["add", "-f", "--", stamp_relative],
-            environment=object_environment,
-        )
+        if stamp_relative is not None:
+            _snapshot_git(
+                root,
+                ["add", "-f", "--", stamp_relative],
+                environment=object_environment,
+            )
         tree = _snapshot_git(root, ["write-tree"], environment=object_environment)
         require_supported_snapshot_tree(
             root,
@@ -1646,6 +1695,24 @@ def await_outcome(
     return 1
 
 
+def _report_stall(key: str, report) -> None:
+    """Say that a running job has not moved.  Say it; do nothing about it.
+
+    The lane decides *when* (``STALL_WINDOW_S`` of unchanged samples, repeated
+    at ``STALL_REPORT_EVERY_S``); this decides the words.  The job is still
+    running and keeps running: a stall is evidence for a person, and the only
+    thing that ends it is that person's ``--withdraw`` or a ``--timeout-s``
+    they asked for.  Wall-clock is never evidence of death.
+    """
+
+    minutes = int(report.stalled_for_s // 60)
+    where = report.node or "an unknown node"
+    print(f"pbrun: {key[:12]} slurm job {report.job_id} has shown no progress "
+          f"for {minutes} min on {where}; it is still running. Withdraw with "
+          f"pbrun --withdraw {key[:12]} if it is dead.",
+          file=sys.stderr, flush=True)
+
+
 #: The interpreter pbrun's sealed argv starts with.  A nonportable action
 #: binds its exact bytes, so the name is stated once, where the scope is built.
 SEALED_ARGV0 = "/bin/bash"
@@ -1773,6 +1840,10 @@ def slurm_outcome(
             "--exclusive and ask for --gpu-capacity slots (shards) instead."
         )
     resources = slurm_lane.LaneResources.from_demand(demand, exclusive=exclusive)
+    lane_commands.setdefault("on_stall", lambda report: _report_stall(key, report))
+    lane_commands.setdefault(
+        "on_notice",
+        lambda text: print(f"pbrun: {text}", file=sys.stderr, flush=True))
     # Say that the slot has no device, every time, on the line that announces
     # the submission.  The mask is applied before the transport branch and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
@@ -1860,6 +1931,18 @@ def slurm_outcome(
         print(f"pbrun: gave up waiting for {key[:12]}; slurm job "
               f"{job.job_id} is still queued or running "
               f"(pbrun --transport slurm --withdraw {key[:12]} stops it)",
+              file=sys.stderr)
+        return GAVE_UP_EXIT
+    if outcome.state == slurm_lane.UNKNOWN_STATE:
+        # The controller answered that it knows no such job and there is no
+        # receipt.  That is not a failure and it is not filed as one: the job
+        # may have been purged past MinJobAge, or the controller's memory of
+        # it went with a restart while it runs on.  Same exit as giving up,
+        # because the truth is the same -- no verdict yet.
+        print(f"pbrun: no scheduler command can describe slurm job "
+              f"{job.job_id} for {key[:12]} and it has published no receipt; "
+              f"it may still be running as slurm job {job.job_id}, or have "
+              f"been purged past MinJobAge; look under {job.directory}",
               file=sys.stderr)
         return GAVE_UP_EXIT
     # Say the thing that is actually wrong.  A job that exits zero without
@@ -2050,6 +2133,11 @@ def _file_slurm_withdrawal(
                 "stderr_path": str(submission.get("stderr") or ""),
             },
             "cancelled_with": scancel_command,
+            # The last sample the submitter's wait recorded, so the record of
+            # a withdrawal says what the job was (not) doing when the operator
+            # decided.  None when no wait ever sampled it.
+            "liveness": slurm_lane.read_liveness(
+                key, root=directory.parent if directory.name == key else None),
         },
         # No ``SubmittedJob`` here -- this runs from the operator's box, off the
         # recorded submission -- so the job id the readers use as ``claimed_by``

@@ -117,6 +117,13 @@ import os, sys
 from pathlib import Path
 
 job = sys.argv[-1]
+if os.environ.get("FAKE_CONTROLLER_DOWN") == "1":
+    sys.stderr.write(
+        "slurm_load_jobs error: Unable to contact slurm controller (connect failure)\\n")
+    raise SystemExit(1)
+if os.environ.get("FAKE_SCONTROL_HANG"):
+    import time
+    time.sleep(float(os.environ["FAKE_SCONTROL_HANG"]))
 record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
 if not record.exists():
     sys.stderr.write(f"slurm_load_jobs error: Invalid job id specified\\n")
@@ -137,12 +144,39 @@ import os, sys
 from pathlib import Path
 
 job = sys.argv[sys.argv.index("-j") + 1]
+if os.environ.get("FAKE_CONTROLLER_DOWN") == "1":
+    sys.stderr.write("squeue: error: slurm_load_jobs: Unable to contact slurm controller (connect failure)\\n")
+    raise SystemExit(1)
 record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
 if not record.exists():
     raise SystemExit(0)
 state, _ = record.read_text().strip().split("|")
 if state in {"PENDING", "RUNNING"}:
     print(state)
+'''
+
+_SSTAT = '''\
+import os, sys
+from pathlib import Path
+
+# Modes: progress (TotalCPU grows every call), frozen (constant), fail (exit 1).
+mode = os.environ.get("FAKE_SSTAT_MODE", "progress")
+if mode == "fail":
+    sys.stderr.write("sstat: error: no steps running for job\\n")
+    raise SystemExit(1)
+job = sys.argv[sys.argv.index("-j") + 1]
+state = Path(os.environ["FAKE_SLURM_STATE"])
+with (state / "sstat.argv").open("a") as handle:
+    handle.write(" ".join(sys.argv[1:]) + "\\n")
+counter = state / f"{job}.sstat"
+calls = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(calls))
+cpu = calls if mode == "progress" else 1
+# The shape sstat 25.11.2 printed in the container smoke under -P --noconvert:
+# durations as HH:MM:SS (cpu= included), RSS and disk counters as bare numbers.
+print(f"{job}.batch|00:00:{cpu:02d}|00:00:{cpu:02d}|4194304|102400|0|1|"
+      f"cpu=00:00:{cpu:02d},energy=0,fs/disk=102400,mem=4194304,pages=0,vmem=0")
+print(f"{job}.extern|00:00:00|00:00:00|102400|0|0|1|cpu=00:00:00,energy=0,fs/disk=0,mem=102400,pages=0,vmem=0")
 '''
 
 _SCANCEL = '''\
@@ -164,7 +198,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     binaries.mkdir()
     for name, body in (
         ("sbatch", _SBATCH), ("sacct", _SACCT), ("scontrol", _SCONTROL),
-        ("squeue", _SQUEUE), ("scancel", _SCANCEL),
+        ("squeue", _SQUEUE), ("scancel", _SCANCEL), ("sstat", _SSTAT),
     ):
         script = binaries / name
         script.write_text(
@@ -366,7 +400,7 @@ def test_a_gpu_slot_action_asks_for_shards_its_tags_and_its_own_time(
         f"--error={directory}/%j.err",
         "--mem=73728M",
         "--cpus-per-task=4",
-        "--nice=10000",
+        f"--nice={sl.NICE_BASE}",
         "--time=02:00:00",
         "--gres=shard:1",
         "--constraint=gb10&sparklina",
@@ -435,7 +469,11 @@ def test_a_requested_deadline_still_becomes_a_time_limit(
 
 @pytest.mark.parametrize(
     ("priority", "expected"),
-    [(0, "--nice=10000"), (5, "--nice=9995"), (-10, "--nice=10010")],
+    [
+        (0, f"--nice={sl.NICE_BASE}"),
+        (5, f"--nice={sl.NICE_BASE - 5 * sl.NICE_SCALE}"),
+        (-10, f"--nice={sl.NICE_BASE + 10 * sl.NICE_SCALE}"),
+    ],
 )
 def test_the_submitters_priority_becomes_the_nice_slurm_can_honour(
     tmp_path: Path, fleet: Path, priority: int, expected: str
@@ -465,9 +503,10 @@ def test_a_priority_past_the_base_asks_for_the_most_it_can_be_given(
     priority past the base is clamped to zero rather than turned into a
     submission the scheduler rejects."""
 
-    assert sl.nice_for(sl.NICE_BASE + 1) == 0
+    past = sl.NICE_BASE // sl.NICE_SCALE + 1
+    assert sl.nice_for(past) == 0
     job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
-                  priority=sl.NICE_BASE + 1, seed="clamped")
+                  priority=past, seed="clamped")
     record = [r for r in _submissions(fleet) if r["job_id"] == int(job.job_id)][0]
     assert "--nice=0" in record["argv"]
 
@@ -481,7 +520,7 @@ def test_the_submission_record_says_what_the_priority_became(
     job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
                   priority=-10, seed="recorded")
     record = json.loads(job.record_path.read_text(encoding="utf-8"))
-    assert record["nice"] == 10010
+    assert record["nice"] == sl.NICE_BASE + 10 * sl.NICE_SCALE
     assert "partition" in record
 
 
@@ -1034,7 +1073,7 @@ def test_a_priority_reaches_sbatch_through_the_whole_lane(
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0, priority=-10,
     )
 
-    assert f"--nice={sl.NICE_BASE + 10}" in _submissions(fleet)[0]["argv"]
+    assert f"--nice={sl.NICE_BASE + 10 * sl.NICE_SCALE}" in _submissions(fleet)[0]["argv"]
 
 
 def test_the_slurm_path_prints_the_placement_notices_the_pool_path_prints(

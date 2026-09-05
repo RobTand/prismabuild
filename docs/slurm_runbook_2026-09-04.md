@@ -589,6 +589,70 @@ SLURM jobs already running keep running. Cancel the ones you do not want with
 id and calls `scancel`. You can leave `slurmctld` and `slurmd` running; with no
 submissions they do nothing.
 
+## Liveness: a running job is reported, never killed on elapsed time
+
+`pbrun --transport slurm` sends no `--time` unless you pass `--timeout-s`.
+A job that is doing something and is not visibly dead runs until it ends.
+What the lane does instead of a wall-clock bound is measure, at a bounded
+cadence, whether the job is doing anything, and tell you when it is not.
+
+**What liveness is.** While a job is `RUNNING`, the submitting `pbrun` takes one
+sample every 30 s (`LIVENESS_SAMPLE_S`, which is `JobAcctGatherFrequency`,
+the rate at which `jobacct_gather/cgroup` refreshes the numbers; asking more
+often reads the same gather twice). A sample is `progressing` when any of
+these changed since the previous sample: CPU time, RSS, disk bytes read or
+written, or the size of the job's `.out` or `.err`. `stalled_since` is the
+time of the first sample in the current run of unchanged samples, or null.
+
+**What it reads.**
+
+- `sstat -j <jobid> -a -P -n --noconvert
+  --format=JobID,AveCPU,MinCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,NTasks,TRESUsageInTot`.
+  (`TotalCPU` is an `sacct` field; `sstat` 25.11.2 refuses it. `AveCPU` and
+  the `cpu=` entry of `TRESUsageInTot` are both `[DD-]HH:MM:SS`; the smoke's
+  real line read `cpu=00:00:00`. `MaxRSS` is kept in the unit `--noconvert`
+  prints, which the smoke showed to be bytes, and the sample calls it `rss`
+  rather than asserting a unit.)
+  This is the job's own cgroup accounting on the node, so an action does
+  nothing to be measured and the numbers come from where the work runs.
+  `sstat` reads running steps from `slurmd` and works without `slurmdbd`;
+  smoke row 13 confirms it on this configuration.
+- `stat` of `<lane root>/<action key>/<jobid>.out` and `.err`. This is the
+  only evidence left when `sstat` is absent or refuses, and the sample says
+  so in `sstat_error` and `evidence`.
+- Nothing about the GPU. Per-process GPU telemetry on GB10 reads null, so
+  the lane does not claim it. `slurm_lane.gpu_power_sample` is the seam for
+  a board-power read against the envelope, the fleet's one honest GPU load
+  signal, and returns null until it exists.
+
+**Where it goes.** Every sample is one JSON line appended to
+`<lane root>/<action key>/liveness.jsonl`. The file is append-only and is
+never rewritten (issue #16 measured a 69 s NFS stall on a file rewritten
+every heartbeat). When the job ends, the outcome record under
+`pb-queue/done/` or `failed/` carries the latest sample and `stalled_since`
+under `detail.liveness`; a withdrawal record carries the last sample too.
+`slurm_lane.read_liveness(key, root)` returns the last line for any tool
+that wants "stalled since" without parsing the file.
+
+**When it speaks.** After 120 s of unchanged samples (`STALL_WINDOW_S`:
+`ceil(69 s / 30 s) + 1` cadences, so that the samples across the window
+cannot all sit inside one NFS stall, and so that an unchanged CPU count spans
+at least two full accounting intervals), `pbrun` prints one line to stderr
+and repeats it every ten minutes while the stall lasts:
+
+```text
+pbrun: <key12> slurm job <id> has shown no progress for <N> min on <node>; it is still running. Withdraw with pbrun --withdraw <key12> if it is dead.
+```
+
+**What it never does.** It never cancels a job. Not after the window, not
+after any number of repeats. A stalled job ends in one of three ways: it
+finishes; you decide it is dead and run
+`pbrun --transport slurm --withdraw <key prefix>`; or it reaches a
+`--timeout-s` you asked for at submission, which becomes `--time` and is
+enforced by SLURM exactly as before. Elapsed time on its own is never
+treated as evidence of death, and a job that is sleeping on a lock or waiting
+on a network is reported, not judged.
+
 ## Reference: what the lane sends
 
 For a GPU-slot action with two tags and a two-hour timeout, `pbrun --transport
