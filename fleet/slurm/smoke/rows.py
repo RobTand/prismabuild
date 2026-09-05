@@ -873,7 +873,7 @@ def row_13_cpu_containment() -> None:
             # against it and then sees the whole node.
             ok = width == node_cpus
         record(
-            f"{label} --cpus {declared} confines the job [{ARM}]",
+            f"{label} what a --cpus {declared} job may run on [{ARM}]",
             ok,
             f"job affinity width={width} of the node's {node_cpus} CPUs "
             f"(declared {declared}); nproc said {seen} "
