@@ -371,20 +371,28 @@ def row_6_withdraw() -> None:
     marker_path = next(
         (p for p in (QUEUE / "withdrawn").glob(f"{prefix}*.json")), None
     ) if prefix else None
-    path, rec = outcome("failed", prefix) if prefix else (None, {})
+    # The pool's rule: a withdrawal lands in withdrawn/ and never in failed/.
+    # The marker pbrun --withdraw filed is enriched with the job's ending in
+    # place, so one record carries the decision and the detail.
+    path, rec = outcome("withdrawn", prefix) if prefix else (None, {})
+    failed_path, _ = outcome("failed", prefix) if prefix else (None, {})
     ok = (
         running
         and withdrawn is not None
         and withdrawn.returncode == 0
         and marker_path is not None
         and path is not None
+        and failed_path is None
         and rec.get("status") == "withdrawn"
         and bool(rec.get("withdrawn_by"))
+        and isinstance(rec.get("detail"), dict)
+        and (rec.get("detail") or {}).get("slurm", {}).get("job_id") == job_id
     )
     record(
-        "6 --withdraw scancels, files withdrawn/ and a failed/ record",
+        "6 --withdraw scancels and files one withdrawn/ record, nothing in failed/",
         ok,
         f"job={job_id} running={running} marker={bool(marker_path)} "
+        f"failed_record={failed_path is not None} "
         f"status={rec.get('status')} by={rec.get('withdrawn_by')!r}"
         + ("" if ok else
            f" pbrun rc={process.returncode} first={line.strip()!r} "
