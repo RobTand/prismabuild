@@ -52,6 +52,7 @@ Environment, for the tests and for nothing else:
   PB_BOXES        ssh names, in order (default: from the state file)
   PB_SSH          the ssh command (default "ssh -o BatchMode=yes")
   PB_STATE_DIR    where the state file lives (default $HOME/.prismabuild)
+  PB_PUBLISH      the publish_runtime.py invocation
 USAGE
 }
 
@@ -66,6 +67,8 @@ while [ $# -gt 0 ]; do
 done
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Mode 644 in the checkout, so it runs through the interpreter.
+PUBLISH="${PB_PUBLISH:-python3 $REPO/tools/fleet/publish_runtime.py}"
 RUNTIME_DIR="${PB_RUNTIME_DIR:-/mnt/shared/prismabuild-fleet}"
 SSH="${PB_SSH:-ssh -o BatchMode=yes}"
 STATE_DIR="${PB_STATE_DIR:-$HOME/.prismabuild}"
@@ -126,9 +129,9 @@ say "mode     : $([ "$DRY_RUN" = 1 ] && echo 'dry run, nothing is executed' || e
 say ""
 say "# step 1: point the live runtime back at $PREVIOUS"
 if [ "$DRY_RUN" = 1 ]; then
-    say "$REPO/tools/fleet/publish_runtime.py --activate-generation $PREVIOUS"
+    say "$PUBLISH --activate-generation $PREVIOUS"
 else
-    "$REPO/tools/fleet/publish_runtime.py" --activate-generation "$PREVIOUS" \
+    $PUBLISH --activate-generation "$PREVIOUS" \
         || die "could not activate $PREVIOUS. Check that it is still under $RUNTIME_DIR/runtime-generations; publication never deletes a generation, so it should be."
 fi
 

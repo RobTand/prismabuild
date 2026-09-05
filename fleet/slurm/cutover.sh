@@ -64,6 +64,7 @@ Environment, for the tests and for nothing else:
   PB_SPARKS       the boxes with a pqwork user unit (default "sparky sparklina")
   PB_SSH          the ssh command (default "ssh -o BatchMode=yes")
   PB_STATE_DIR    where the state file goes (default $HOME/.prismabuild)
+  PB_PUBLISH      the publish_runtime.py invocation
 USAGE
 }
 
@@ -79,6 +80,10 @@ while [ $# -gt 0 ]; do
 done
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Through the interpreter on purpose: publish_runtime.py is checked in
+# mode 644, so running it as a command is a "Permission denied" at the
+# one step that happens after every loop is already stopped.
+PUBLISH="${PB_PUBLISH:-python3 $REPO/tools/fleet/publish_runtime.py}"
 QUEUE_ROOT="${PB_QUEUE_ROOT:-/mnt/shared/prismabuild-fleet/pb-queue}"
 RUNTIME_DIR="${PB_RUNTIME_DIR:-/mnt/shared/prismabuild-fleet}"
 BOXES="${PB_BOXES:-dl380g10 sparky sparklina}"
@@ -183,11 +188,12 @@ say ""
 
 if [ "$DRY_RUN" = 1 ]; then
     # A dry run refuses nothing, so say what it would have checked.  These are
-    # read-only questions and they are the four ways this can lose work.
-    say "# a live run refuses unless all four of these hold:"
+    # read-only questions and they are the five ways this can lose work.
+    say "# a live run refuses unless all five of these hold:"
     say "#   --yes was given"
     say "#   $MARKER exists, or --verified"
     say "#   $QUEUE_ROOT/claimed and .../ready are empty"
+    say "#   $PUBLISH --dry-run --default-transport slurm succeeds"
     say "#   no confirmed pbrun.py process on any of: $BOXES"
 fi
 
@@ -217,6 +223,22 @@ them, or withdraw them with: pbrun --withdraw <key prefix>"
         fi
     done
     say "# pb-queue/claimed and pb-queue/ready are both empty"
+
+    # Step 5 is the only step that cannot simply be re-run: by the time it
+    # fires, cron is edited and every loop on every box is dead.  So ask
+    # publish_runtime the same questions now, while nothing has been stopped.
+    # --dry-run establishes the commit identity and the dirty check before it
+    # returns, so a dirty tree -- the usual cause, and this checkout is a
+    # worktree that collects untracked files -- is refused here instead of
+    # there.  (--activate-generation returns before those checks, which is why
+    # rollback.sh needs no clean tree to undo this.)
+    if ! preflight="$($PUBLISH --dry-run --default-transport slurm 2>&1)"; then
+        die "publish_runtime.py refuses this checkout, and step 5 would hit the
+same refusal with the crontab already edited and every loop already dead:
+$(printf '%s\n' "$preflight" | sed 's/^/  /')
+Fix it in $REPO first; commit or stash, then re-run."
+    fi
+    say "# publish_runtime.py --dry-run accepts $REPO"
 
     waiters=""
     for box in $BOXES; do
@@ -316,9 +338,9 @@ say "#       Stop it again after a reboot, or disable it deliberately."
 say ""
 say "# step 5: publish a runtime generation whose default transport is slurm"
 if [ "$DRY_RUN" = 1 ]; then
-    say "$REPO/tools/fleet/publish_runtime.py --default-transport slurm"
+    say "$PUBLISH --default-transport slurm"
 else
-    "$REPO/tools/fleet/publish_runtime.py" --default-transport slurm \
+    $PUBLISH --default-transport slurm \
         || die "publication failed; the loops are stopped and the fleet is still on the previous generation. Fix the publication and re-run, or run fleet/slurm/rollback.sh"
 fi
 

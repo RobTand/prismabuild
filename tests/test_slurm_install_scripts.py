@@ -278,6 +278,54 @@ def test_cutover_refuses_when_the_queue_still_holds_a_ready_item(tmp_path: Path)
     assert "ready is not empty" in result.stderr
 
 
+def test_cutover_refuses_before_the_kills_when_publication_would_refuse(
+    tmp_path: Path,
+) -> None:
+    """Step 5 is the step that cannot be re-run.
+
+    It publishes the generation, and by the time it runs the crontab is edited
+    and every loop on all three boxes is dead.  ``publish_runtime.py`` refuses
+    a dirty tree, and the checkout the runbook names is a worktree that
+    collects untracked files, so that refusal is a thing that happens.  It has
+    to happen before anything is stopped.
+    """
+
+    environment = _cutover_environment(tmp_path)
+    (Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json").write_text("{}")
+    refusing = tmp_path / "publish_stub.sh"
+    refusing.write_text(
+        "#!/bin/sh\n"
+        "echo 'refusing to publish a dirty tree' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    refusing.chmod(0o755)
+    environment["PB_PUBLISH"] = f"sh {refusing}"
+
+    result = _cutover(environment, "--yes")
+
+    assert result.returncode == 1
+    assert "refusing to publish a dirty tree" in result.stderr
+    # Before any box was touched at all: no step ran, and the fleet-wide pbrun
+    # scan did not even happen.
+    assert "step 1" not in result.stdout
+    assert "no pbrun is waiting" not in result.stdout
+
+
+def test_cutover_publishes_through_the_interpreter(tmp_path: Path) -> None:
+    """publish_runtime.py is checked in mode 644.
+
+    Running it as a command is a "Permission denied" at the one step that has
+    no cheap retry, so both scripts name an interpreter.
+    """
+
+    for name in ("cutover.sh", "rollback.sh"):
+        text = (FLEET / name).read_text(encoding="utf-8")
+        assert 'PUBLISH="${PB_PUBLISH:-python3 ' in text, name
+        assert '"$REPO/tools/fleet/publish_runtime.py"' not in text, name
+    assert not os.access(ROOT / "tools" / "fleet" / "publish_runtime.py", os.X_OK)
+
+
 def test_cutover_refuses_when_verification_did_not_pass_here(tmp_path: Path) -> None:
     result = _cutover(_cutover_environment(tmp_path), "--yes")
     assert result.returncode == 1
@@ -290,7 +338,7 @@ def test_a_cutover_dry_run_names_its_refusals_and_publishes_the_transport(
     result = _cutover(_cutover_environment(tmp_path), "--dry-run", "--yes")
     assert result.returncode == 0, result.stderr
     assert "publish_runtime.py --default-transport slurm" in result.stdout
-    assert "a live run refuses unless all four of these hold" in result.stdout
+    assert "a live run refuses unless all five of these hold" in result.stdout
     # The order that makes the cutover stick.
     crontab = result.stdout.index("step 1: take the supervise line")
     supervisors = result.stdout.index("step 2: stop the supervisors")
