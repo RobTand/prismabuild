@@ -248,24 +248,41 @@ def row_2_end_to_end(nonce: Path) -> tuple[str, str]:
     return prefix, job_id
 
 
-def row_3_cas_hit(nonce: Path, first_job: str) -> None:
+def row_3_cas_hit(nonce: Path, first_job: str, prefix: str) -> None:
+    """The same action again costs no job: pbrun reads the receipt first.
+
+    Before this row asserted a short circuit, a repeat was a real job that
+    materialized the checkout and found the receipt on the node; the row then
+    said "the worker reported a cache hit".  Now the CAS answers before
+    ``sbatch``, and the run's own ``done/`` record is left as it was.
+    """
+
     before = nonce.read_text().count("\n") if nonce.exists() else 0
+    submissions_before = lane_submissions()
+    _, rec_before = outcome("done", prefix)
     completed = pbrun(["bash", "action.sh", "run", str(nonce)])
-    prefix, job_id = submitted(completed)
+    _, job_id = submitted(completed)
     after = nonce.read_text().count("\n") if nonce.exists() else 0
-    _, rec = outcome("done", prefix) if prefix else (None, {})
-    hit = "cache_hit" in (completed.stdout or "") + (completed.stderr or "")
-    ok = (
-        completed.returncode == 0
-        and after == before
-        and rec.get("status") == "executed"
-    )
+    _, rec_after = outcome("done", prefix)
+    said = (completed.stdout or "") + (completed.stderr or "")
+    checks = {
+        "pbrun rc==0": completed.returncode == 0,
+        "no job announced": job_id == "",
+        "no new lane submission": lane_submissions() == submissions_before,
+        "the action did not run again": after == before,
+        "pbrun said the CAS answered":
+            "already in the CAS" in said and "cache_hit" in said,
+        "done/ still holds the run's own record":
+            rec_after == rec_before and rec_after.get("status") == "executed",
+    }
+    failed = [name for name, ok in checks.items() if not ok]
     record(
-        "3 a repeat submission re-runs nothing (CAS hit)",
-        ok,
-        f"job={job_id} nonce lines {before}->{after} "
-        f"worker said cache_hit={hit} status={rec.get('status')}"
-        + ("" if ok else f" rc={completed.returncode} "
+        "3 a repeat submission submits nothing: the CAS answers before sbatch",
+        not failed,
+        f"first job={first_job}, now none; nonce lines {before}->{after}; "
+        f"lane submissions {submissions_before}->{lane_submissions()}; "
+        f"done/ status={rec_after.get('status')}"
+        + ("" if not failed else f" MISSING {failed}; rc={completed.returncode} "
            f"stderr={(completed.stderr or '')[-800:]!r}"),
     )
 
@@ -1135,7 +1152,7 @@ def main() -> int:
 
     row_1_node_and_wrap()
     prefix, first_job = row_2_end_to_end(nonce)
-    row_3_cas_hit(nonce, first_job)
+    row_3_cas_hit(nonce, first_job, prefix)
     row_4_failure()
     timeout_prefix, timeout_job = row_5_timeout()
     row_6_withdraw()

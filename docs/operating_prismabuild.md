@@ -479,7 +479,7 @@ an impossible GRES, is reported for that record, the record stays `failed`, and
 | Status | Meaning |
 |---|---|
 | `executed` | The work ran and published a receipt. Filed under `done/`. |
-| `cache_hit` | The receipt was already there. Counts as done. The pull queue files it under `done/`; the SLURM lane sees only that a receipt exists and files `executed`. |
+| `cache_hit` | The receipt was already there. Counts as done. On the lane, `pbrun` finds it before submitting and submits nothing; `done/` keeps the record of the run that did the work, and a `cache_hit` record is filed only when the key had none. A receipt that lands between that check and the job's start is found by the node instead, and the job files `executed`. |
 | `failed` | No receipt. Something refused, or the command exited non-zero. Filed under `failed/`. |
 | `timeout` | SLURM killed the job at a `--timeout-s` you asked for. `returncode` is null. Retriable. |
 | `withdrawn` | Somebody cancelled the run. Not a defect, and not retried. |

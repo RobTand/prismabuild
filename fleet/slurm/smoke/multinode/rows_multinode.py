@@ -746,39 +746,41 @@ def row_m7_controller_restart(nonce: str) -> None:
 
 
 def row_m8_cas_hit(cpu_nonce: str, gpu_nonce: str) -> None:
-    """The same two actions again: routed the same way, executed neither time."""
+    """The same two actions again: neither is submitted, neither runs."""
 
     host_cpu = VOL / Path(cpu_nonce).relative_to(INSIDE)
     host_gpu = VOL / Path(gpu_nonce).relative_to(INSIDE)
     before = (lines(host_cpu), lines(host_gpu))
+    submissions_before = len(list(LANE.glob("*/submissions/*.json")))
+    done_before = sorted(p.name for p in (QUEUE / "done").glob("*.json"))
     again_cpu = pbrun("dl380g10", ["./action.sh", "run", cpu_nonce])
     again_gpu = pbrun("dl380g10", ["./action.sh", "run", gpu_nonce],
                       extra=["--gpu"])
     after = (lines(host_cpu), lines(host_gpu))
-    cpu_prefix, cpu_job = submitted(again_cpu)
-    gpu_prefix, gpu_job = submitted(again_gpu)
+    submissions_after = len(list(LANE.glob("*/submissions/*.json")))
+    done_after = sorted(p.name for p in (QUEUE / "done").glob("*.json"))
     said = "".join((completed.stdout or "") + (completed.stderr or "")
                    for completed in (again_cpu, again_gpu))
     checks = {
         "both exited 0": again_cpu.returncode == 0 and again_gpu.returncode == 0,
         "neither action ran again": after == before,
-        "the worker reported a cache hit": said.count("cache_hit") >= 2,
-        "the CPU one was still routed to the cpu partition":
-            submission(cpu_prefix).get("partition") == "cpu",
-        "the GPU one was still routed to the gpu partition":
-            submission(gpu_prefix).get("partition") == "gpu",
+        "neither announced a job":
+            submitted(again_cpu)[1] == "" and submitted(again_gpu)[1] == "",
+        "no new lane submission": submissions_after == submissions_before,
+        "both said the CAS answered": said.count("already in the CAS") == 2
+            and said.count("cache_hit") >= 2,
+        "done/ has the same records as before": done_after == done_before,
     }
     failed = [key for key, ok in checks.items() if not ok]
     record(
-        "M8 repeating M2 and M3 re-executes neither, and routes both the same",
+        "M8 repeating M2 and M3 submits nothing: the CAS answers before sbatch",
         not failed,
-        # A repeat still costs a job: the CAS lookup happens in the worker on
-        # the node that won the allocation, not in `pbrun` before it submits,
-        # so the second submission is a real job that finds a receipt and
-        # publishes nothing.  That is the lane's design, and the row says so
-        # rather than asserting a short circuit that does not exist.
-        f"jobs {cpu_job},{gpu_job} (a repeat still costs a job id; the CAS "
-        f"lookup is on the node) nonce lines {before}->{after}"
+        # The CAS lookup happens in `pbrun` before it submits, as it always
+        # did for `--detach`; the node's own lookup in `run-local` remains
+        # the guard for a receipt that lands between the check and the job.
+        f"lane submissions {submissions_before}->{submissions_after}, "
+        f"done/ records {len(done_before)}->{len(done_after)}, "
+        f"nonce lines {before}->{after}"
         + ("" if not failed else f" MISSING {failed}; said={said[-600:]!r}"),
     )
 

@@ -1839,6 +1839,63 @@ def host_class_scope(
     )
 
 
+def cached_outcome(
+    key: str,
+    *,
+    receipt,
+    queue_root,
+    resources,
+    tags: list[str],
+    retry_safe: bool,
+    max_attempts: int,
+) -> int:
+    """Report receipted work as a finished run, submitting nothing.
+
+    Prints the lines a pull-queue cache hit printed and exits 0.  A ``done/``
+    record is filed only when the key has none: the record of the run that
+    did the work is the one every reader wants, and a re-run has nothing to
+    add to it.  With no record at all -- a receipt published from another
+    store, or a record moved aside -- the fleet's readers still get an ending,
+    with ``status=cache_hit`` as the pull queue filed one.
+
+    Args:
+        key: The action key.
+        receipt: The CAS receipt ``lookup`` returned.
+        queue_root: The queue whose ``done/`` is consulted and, if empty for
+            this key, written.
+        resources: The lane resources the submission would have carried.
+        tags: The sealed placement tags.
+        retry_safe: The retry policy, recorded as the pool recorded it.
+        max_attempts: Likewise.
+
+    Returns:
+        0, always: the work is done.
+    """
+
+    print(f"pbrun: {key[:12]} is already in the CAS; nothing submitted",
+          file=sys.stderr, flush=True)
+    host = socket.gethostname()
+    existing = Path(queue_root) / pool.DONE / f"{key}.json"
+    if not existing.exists():
+        slurm_lane.publish_outcome(
+            queue_root=queue_root,
+            action_key=key,
+            published_unix=time.time(),
+            published_by=host,
+            status="cache_hit",
+            attempts=0,
+            max_attempts=int(max_attempts),
+            retry_safe=bool(retry_safe),
+            resources=resources.demand(),
+            tags=tags,
+            receipt=receipt,
+            claimed_by=host,
+            detail={"elapsed_s": 0.0},
+        )
+    print(f"pbrun: cache_hit on {host} in 0s", file=sys.stderr, flush=True)
+    return 0
+
+
 def slurm_outcome(
     action,
     *,
@@ -1915,6 +1972,26 @@ def slurm_outcome(
     # skips them, and a skip that nobody announced reads as the same green.
     masked = "" if slots else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
     queue = SH / "pb-queue" if queue_root is None else queue_root
+    # Ask the CAS before asking the scheduler for a node.  A key is a content
+    # hash, and asking for the same work again is the normal way to ask
+    # whether it is done; the answer is a receipt on the mount, readable from
+    # here.  ``--detach`` made this check from the start.  The attached path
+    # let the job discover it instead, which spent a job id, a materialized
+    # checkout and a node to learn what this process could have read -- so a
+    # campaign re-run through ``pbcampaign`` was free and a hand re-run of one
+    # of its rows was not.  The node still checks (``run-local`` looks the
+    # action up before it runs anything), so a receipt that lands between
+    # this check and the job's start costs a materialization, never a rerun.
+    if not detach and cas.lookup(action) is not None:
+        return cached_outcome(
+            key,
+            receipt=cas.lookup(action),
+            queue_root=queue,
+            resources=resources,
+            tags=tags,
+            retry_safe=retry_safe,
+            max_attempts=max_attempts,
+        )
     # Attach to a run already in flight rather than start a second copy of it.
     #
     # A key is a content hash, so asking for the same work twice is the normal

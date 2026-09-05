@@ -18,6 +18,13 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 import pbrun  # noqa: E402
 
 
+class _NoReceipt:
+    """A CAS that holds no receipt, so pbrun goes on to the scheduler."""
+
+    def lookup(self, action):
+        return None
+
+
 class _Captured(Exception):
     def __init__(self, kwargs: dict) -> None:
         super().__init__("captured")
@@ -32,7 +39,7 @@ def _lane_kwargs(monkeypatch: pytest.MonkeyPatch, *, tags, demand,
     monkeypatch.setattr(pbrun.slurm_lane, "run", record)
     with pytest.raises(_Captured) as raised:
         pbrun.slurm_outcome(
-            {"action_key": "0" * 64}, cas=None, request_path="request.json",
+            {"action_key": "0" * 64}, cas=_NoReceipt(), request_path="request.json",
             tags=list(tags), demand=dict(demand), exclusive=exclusive,
             timeout_s=60.0, wait_s=60.0, retry_safe=False, max_attempts=1,
             **extra,
@@ -85,7 +92,7 @@ def test_an_exclusive_action_asking_for_more_than_one_device_is_refused(
 
     with pytest.raises(SystemExit) as refused:
         pbrun.slurm_outcome(
-            {"action_key": "0" * 64}, cas=None, request_path="request.json",
+            {"action_key": "0" * 64}, cas=_NoReceipt(), request_path="request.json",
             tags=[], demand={"gpu": 2, "mem_gb": 16}, exclusive=True,
             timeout_s=60.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         )

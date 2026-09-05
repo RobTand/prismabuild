@@ -24,7 +24,7 @@ patched. The host's real `/mnt/shared` is never touched.
 | 1a | `sinfo` shows the node idle offering `shard:2` |
 | 1b | a plain `sbatch --wait --wrap=hostname` returns 0 |
 | 2 | `pbrun --transport slurm` runs a git-snapshot action end to end, publishes a CAS receipt, and files `pb-queue/done/<key>.json` with `status=executed`, `detail.receipt_published`, the job id and the node |
-| 3 | the same action submitted again re-executes nothing |
+| 3 | the same action submitted again submits no job: `pbrun` reads the receipt before `sbatch`, files nothing new, and `done/` keeps the run's own record |
 | 4 | a failing command files `failed/<key>.json` with a non-zero `detail.returncode` -- the launcher's 1 -- with the action's own `detail.action_returncode=7` beside it, and a stderr tail |
 | 5 | `--timeout-s` becomes `--time`, and SLURM -- not `pbrun` -- kills the job, which arrives as `detail.slurm.state=TIMEOUT` with `signal=15`, and which `pbrun` reports as `failed (TIMEOUT)` |
 | 6 | `--withdraw` on a running job `scancel`s it and files one `withdrawn/` record carrying `withdrawn_by` and the job's detail; nothing lands in `failed/` |
@@ -186,7 +186,7 @@ Three things differ from the one-node harness beyond the node count:
 | M5 | a `pbrun` submitted in the `sparky` container executes on `dl380g10`, and its output comes back through the shared volume |
 | M6 | a node whose slurmd and job processes are killed under a running job ends it as `NODE_FAIL`, `pbrun` reports that state with no receipt, and the node returns to idle on `ReturnToService=2` with no operator action |
 | M7 | the controller is restarted for sixty seconds under a running job, `pbrun` says it is waiting rather than reporting an ending, and the job completes and reaches the submitter |
-| M8 | repeating M2 and M3 executes neither again |
+| M8 | repeating M2 and M3 submits nothing: the CAS answers before `sbatch` on both |
 
 Two facts the rows record rather than assert, because they are how the lane
 works and not defects:

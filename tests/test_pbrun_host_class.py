@@ -20,6 +20,13 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
 import pbrun  # noqa: E402
 
+
+class _NoReceipt:
+    """A CAS that holds no receipt, so pbrun goes on to the scheduler."""
+
+    def lookup(self, action):
+        return None
+
 #: The real sealer, taken before any test replaces it on the shared module.
 _seal_action = pb.seal_action
 
@@ -163,7 +170,7 @@ def test_the_slurm_lane_receives_the_class_as_placement(monkeypatch):
     monkeypatch.setattr(pbrun.slurm_lane, "run", record)
     with pytest.raises(_Captured) as raised:
         pbrun.slurm_outcome(
-            {"action_key": "0" * 64}, cas=None, request_path="request.json",
+            {"action_key": "0" * 64}, cas=_NoReceipt(), request_path="request.json",
             tags=["gb10"], demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
             timeout_s=None, wait_s=60.0, retry_safe=False, max_attempts=1,
         )

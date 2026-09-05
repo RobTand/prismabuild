@@ -1908,7 +1908,10 @@ def publish_outcome(
 
     key = str(action_key)
     provenance = outcome.provenance if outcome is not None else None
-    if status == "executed":
+    if status in ("executed", "cache_hit"):
+        # ``cache_hit`` is the pull queue's word for work the CAS already
+        # held; ``pbrun`` files it here only when the key has no ``done/``
+        # record at all (see ``pbrun.cached_outcome``).
         state = pool.DONE
     elif status == "withdrawn":
         # The pool's rule, from ``PoolQueue.withdraw``: a withdrawal lands in
