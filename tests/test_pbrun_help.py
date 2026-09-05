@@ -48,3 +48,27 @@ def test_the_description_names_no_transport_as_the_one_that_carries_work(
 
     assert "PrismaBuild pool" not in text
     assert "Submit one command to the PrismaBuild fleet and wait for it" in text
+
+
+def test_priority_says_what_it_is_and_what_each_transport_does_with_it(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """``--priority`` printed its name, its type and nothing else.
+
+    Three facts a submitter needs and cannot read off the flag: it is a queue
+    hint rather than part of the action's identity, so two submissions that
+    differ only in priority are one action; the pull queue sorted its ready
+    list on it ahead of age; and the lane spends it as a ``--nice``, scaled so
+    one step outranks submission order rather than one later submission.
+    """
+
+    text = _help(monkeypatch, capsys)
+    # The last mention is the option list's; the first is the usage line's.
+    priority = text[text.rindex("--priority"):]
+    priority = priority[:priority.index("--env")]
+
+    assert "higher runs sooner" in priority
+    assert "not part of the action" in priority
+    assert "before age" in priority
+    assert "--nice" in priority
+    assert "outranks submission order" in priority

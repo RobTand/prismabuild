@@ -2347,7 +2347,15 @@ def main() -> int:
              "--max-attempts greater than 1: a retry needs somebody alive to "
              "see the attempt fail",
     )
-    ap.add_argument("--priority", type=int, default=0)
+    ap.add_argument("--priority", type=int, default=0,
+                    help="a queue hint, higher runs sooner; not part of the "
+                         "action's identity, so two submissions that differ "
+                         "only in priority are the same action. The pull "
+                         "queue sorted its ready list on it, before age; the "
+                         "SLURM lane spends it as a --nice "
+                         "(slurm_lane.nice_for), scaled so one priority step "
+                         "outranks submission order rather than one later "
+                         "submission")
     ap.add_argument("--env", action="append", default=[],
                     help="K=V added to the action's environment (repeatable)")
     ap.add_argument("--no-default-env", action="store_true",
