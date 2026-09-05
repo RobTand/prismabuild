@@ -1880,14 +1880,71 @@ def _verify_pbrun_checkout_ancestry(
             )
 
 
+def _verify_pbrun_checkout_snapshot(
+    action: Mapping[str, object],
+    root: Path,
+    raw_snapshot: object,
+    *,
+    subdirectory: str | None,
+) -> None:
+    """Prove the live tree is the sealed commit, clean, with its ancestry.
+
+    ``subdirectory`` is the directory the action declares it runs in, for a
+    definition that declares one, and ``None`` for a producer that does not.
+    """
+
+    snapshot = validate_pbrun_checkout_snapshot(raw_snapshot)
+    if subdirectory is not None and subdirectory != snapshot["subdirectory"]:
+        raise ActionContractError(
+            "pbrun checkout stamp cwd differs from snapshot subdirectory"
+        )
+    inputs = action["inputs"]
+    assert isinstance(inputs, list)
+    if snapshot["input"] not in inputs:
+        raise ActionContractError(
+            "pbrun checkout snapshot is absent from action.inputs"
+        )
+    live = git_checkout_identity(root)
+    clean = hashlib.sha256(b"").hexdigest()
+    if live != {"head": snapshot["commit"], "dirty_sha256": clean}:
+        raise ActionContractError(
+            "materialized pbrun checkout differs from its sealed commit"
+        )
+    if snapshot["schema"] == PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2:
+        _verify_pbrun_checkout_ancestry(snapshot, root)
+
+
 def _verify_pbrun_checkout_identity(
     action: Mapping[str, object], root: Path
 ) -> None:
-    """Verify the live Git semantics claimed by a pbrun closure stamp."""
+    """Verify the live Git semantics an action's checkout claims.
+
+    Two proofs live here and they belong to different things. The snapshot
+    proof belongs to ``params.checkout_snapshot``: whatever built the action,
+    a sealed snapshot promises the worker a clean tree at one commit with a
+    named ancestry, and the worker must hold it to that before running
+    anything. The stamp proof belongs to ``fleet/pbrun``, which is the only
+    definition that writes a closure stamp.
+
+    Keying the whole function on the definition id conflated them, so every
+    action a producer sealed itself skipped the snapshot proof.
+    ``fleet_submit`` seals a snapshot for ``tessera/*`` on the SLURM lane, and
+    those nodes ran a materialized tree nothing had checked.
+    """
 
     task = action["task"]
     assert isinstance(task, Mapping)
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    raw_snapshot = params.get("checkout_snapshot")
     if task["definition_id"] != "fleet/pbrun":
+        if raw_snapshot is not None:
+            # A producer that builds its own action body writes no stamp and
+            # declares no cwd, so there is no cwd to cross-check. The
+            # snapshot still names the commit the tree must be.
+            _verify_pbrun_checkout_snapshot(
+                action, root, raw_snapshot, subdirectory=None
+            )
         return
     closure = action["code_closure"]
     assert isinstance(closure, Mapping)
@@ -1921,34 +1978,15 @@ def _verify_pbrun_checkout_identity(
     stamped_cwd = _text(
         stamp["cwd"], where="pbrun checkout identity stamp.cwd"
     )
-    params = action["params"]
-    assert isinstance(params, Mapping)
     source_cwd = _text(params.get("cwd"), where="fleet/pbrun params.cwd")
     if stamped_cwd != source_cwd:
         raise ActionContractError(
             "pbrun checkout identity stamp cwd differs from action params"
         )
-    raw_snapshot = params.get("checkout_snapshot")
     if raw_snapshot is not None:
-        snapshot = validate_pbrun_checkout_snapshot(raw_snapshot)
-        if source_cwd != snapshot["subdirectory"]:
-            raise ActionContractError(
-                "pbrun checkout stamp cwd differs from snapshot subdirectory"
-            )
-        inputs = action["inputs"]
-        assert isinstance(inputs, list)
-        if snapshot["input"] not in inputs:
-            raise ActionContractError(
-                "pbrun checkout snapshot is absent from action.inputs"
-            )
-        live = git_checkout_identity(root)
-        clean = hashlib.sha256(b"").hexdigest()
-        if live != {"head": snapshot["commit"], "dirty_sha256": clean}:
-            raise ActionContractError(
-                "materialized pbrun checkout differs from its sealed commit"
-            )
-        if snapshot["schema"] == PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2:
-            _verify_pbrun_checkout_ancestry(snapshot, root)
+        _verify_pbrun_checkout_snapshot(
+            action, root, raw_snapshot, subdirectory=source_cwd
+        )
         return
     if git_checkout_identity(root) != recorded:
         raise ActionContractError(
