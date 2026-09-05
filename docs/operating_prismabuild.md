@@ -137,7 +137,10 @@ Wait for detached keys later, in any number, with `pbwait`:
 
 `pbwait` accepts a full key or a prefix that something has already recorded. It
 prints one table and exits 0 only if every action's work is done. Its `--wait-s`
-is the deadline for all the keys together, not for each.
+is the deadline for all the keys together, not for each. If the submission it
+recorded has since been superseded by a newer submission of the same key, it
+waits out `--wait-s` and exits 75 rather than file an ending for the wrong
+generation; run `pbwait` again and it reads the newer one.
 
 Under SLURM, `pbwait` does more than watch. The waiting process files the
 terminal record, so a detached submission has nobody to file one. `pbwait`

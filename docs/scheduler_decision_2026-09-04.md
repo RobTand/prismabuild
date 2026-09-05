@@ -242,6 +242,15 @@ run, branch refs never rewritten). `main` = `44b9f8f`.
   verified": device containment on a real GPU, the fleet's systemd cgroup
   arrangement, `root_squash` end to end, and three-box RPC. Phase 1 verifies
   those.
+- The sealed environment under `--export=NIL` is shown by the container smoke
+  (row 2 and the three-node run), not by the suite: the fakes never run a job
+  under `--export=NIL`, so the claim that only SLURM's own variables reach a
+  job rests on the smoke alone.
+- `slurm.conf` sets `CR_Core_Memory` and no `DefMemPerNode` or `DefMemPerCPU`,
+  so a job submitted by hand without `--mem` is charged the node's whole
+  memory and blocks every other job on it. Lane submissions always send
+  `--mem`. Whether to set a default for hand-run jobs is an operator note for
+  Phase 1, alongside `docs/resource_enforcement_2026-09-05.md`.
 - `condor_gpu_discovery -repeat` as the HTCondor shared-GPU mechanism is from
   memory and matters only if Rob picks HTCondor.
 - The `shard` model has never been measured against real GB10 contention. Two
