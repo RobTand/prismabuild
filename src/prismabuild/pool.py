@@ -2223,7 +2223,7 @@ class PoolQueue:
                 dst.unlink(missing_ok=True)
                 self.passes_path(key).unlink(missing_ok=True)
                 continue
-            if self.withdrawal_covers(item, action_key=key) is not None:
+            if self.withdrawal_covers(moved, action_key=key) is not None:
                 # Withdrawn between the scan above and this rename.  The window
                 # is microseconds wide and closing it here costs one listing on
                 # a path taken once per claim; leaving it open costs a cancelled
@@ -2231,13 +2231,23 @@ class PoolQueue:
                 if ledger is not None:
                     ledger.release(key)
                 self._file_superseded(
-                    item, key=key, kind="dropped", status="dropped",
+                    moved, key=key, kind="dropped", status="dropped",
                     dropped_unix=_now(), dropped_host=socket.gethostname(),
                     reason="withdrawn between the ready scan and the claim",
                 )
                 dst.unlink(missing_ok=True)
                 continue
-            claimed = dict(item)
+            # From ``moved``, not from ``item``: past the rename the bytes in
+            # ``claimed`` are the item, and the scan's copy may be a generation
+            # ``publish`` has already replaced.  Rebuilding the claim from the
+            # scan wrote that replaced generation back over the one the rename
+            # moved, so the worker ran a submission nobody had asked for and
+            # ``finish`` filed the outcome under the retired ``published_unix``
+            # -- where the waiter on the live one never looked.  The terminal
+            # and withdrawal guards above already read ``moved`` for this
+            # reason; the record this method returns is the last place that
+            # still did not.
+            claimed = dict(moved)
             # ``passes`` is not a field of the item; it is the aging sidecar,
             # which ``ready_items`` stamps on its copy so the ready ordering
             # can read it and which this method deletes four lines below.
