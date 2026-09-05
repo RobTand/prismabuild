@@ -1,15 +1,20 @@
 """What ``wait`` does when the scheduler cannot be asked, or answers nothing.
 
-A defect from the SchedMD-docs review of 2026-09-05, in the poll loop, with
-the job running on unaffected while the submitter drew the wrong conclusion:
-every reader answered ``None`` on *any* non-zero exit, so a controller that
-could not be reached (``systemctl restart slurmctld``) read as "no such job",
-``wait`` returned ``UNKNOWN`` on that one poll, ``run`` stopped, and
-``_file_ending`` filed ``failed/<key>.json`` -- first-writer-wins per
-generation, so the receipt the job published minutes later never reached
-``done/``.
+Two defects from the SchedMD-docs review of 2026-09-05, both in the poll
+loop, both with the job running on unaffected while the submitter drew the
+wrong conclusion:
 
-The fakes are the shared fixture's, switched by environment variable from a
+* every reader answered ``None`` on *any* non-zero exit, so a controller that
+  could not be reached (``systemctl restart slurmctld``) read as "no such
+  job", ``wait`` returned ``UNKNOWN`` on that one poll, ``run`` stopped, and
+  ``_file_ending`` filed ``failed/<key>.json`` -- first-writer-wins per
+  generation, so the receipt the job published minutes later never reached
+  ``done/``;
+* ``_run`` raises ``SlurmLaneError`` when a command hangs past
+  ``COMMAND_TIMEOUT_S``, and ``wait`` let it propagate into pbrun's
+  "sbatch refused this action ... fix the --tag" handler.
+
+Both fakes are the shared fixture's, switched by environment variable from a
 hook on the fake clock, so the outage begins and ends at chosen moments.
 """
 from __future__ import annotations
@@ -180,3 +185,54 @@ def test_a_receipt_still_wins_when_the_scheduler_has_forgotten_the_job(
     assert result.last[1].state == sl.UNKNOWN_STATE
     record = json.loads((queue / "done" / f"{key}.json").read_text())
     assert record["status"] == "executed"
+
+
+def test_a_hung_scheduler_command_does_not_end_the_wait(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Pre-fix: ``SlurmLaneError('scontrol failed: Command ... timed out
+    after 0.2 seconds')`` propagated out of ``wait`` and ``slurm_outcome``
+    raised ``SystemExit('pbrun: slurm refused this action ... Fix the --tag,
+    ...')`` while the job ran on.  Now the timeout is one unanswered poll."""
+
+    monkeypatch.setattr(sl, "COMMAND_TIMEOUT_S", 0.2)
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
+    monkeypatch.setenv("FAKE_SACCT_DISABLED", "1")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "hung")
+    request = cas.publish_action_request(action)
+    key = str(action["action_key"])
+    clock = FakeClock()
+    polls = 0
+
+    def hang_then_finish(now: float) -> None:
+        nonlocal polls
+        polls += 1
+        if polls <= 2:
+            monkeypatch.setenv("FAKE_SCONTROL_HANG", "2")
+        else:
+            monkeypatch.delenv("FAKE_SCONTROL_HANG", raising=False)
+        if polls >= 4:
+            for record in fleet.glob("*.state"):
+                record.write_text("COMPLETED|0:0\n")
+    monkeypatch.setenv("FAKE_SCONTROL_HANG", "2")
+    clock.hooks.append(hang_then_finish)
+
+    code = pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[],
+        demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
+        timeout_s=None, wait_s=None, retry_safe=False, max_attempts=1,
+        runtime_root=REPOSITORY, queue_root=tmp_path / "queue",
+        poll_s=5.0, sleep=clock.sleep, clock=clock,
+    )
+
+    err = capsys.readouterr().err
+    assert "slurm refused this action" not in err
+    assert "the scheduler could not be asked (scontrol failed" in err
+    assert "timed out" in err
+    assert "the scheduler answers again" in err
+    assert "attempt 1/1 slurm job 1000 COMPLETED" in err
+    assert code == 1                      # a paper action publishes no receipt
+    assert not (fleet / "cancelled").exists()
+    assert (tmp_path / "queue" / "failed" / f"{key}.json").exists()

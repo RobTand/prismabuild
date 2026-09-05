@@ -112,7 +112,9 @@ DEFAULT_JOB_PYTHON = "/usr/bin/python3"
 DEFAULT_POLL_S = 5.0
 
 #: How long any one scheduler command may take before the lane gives up on it.
-#: A hung ``squeue`` against a busy controller must not become a hung ``pbrun``.
+#: A hung ``squeue`` against a busy controller must not become a hung ``pbrun``
+#: -- and, since the outage fix, not a dead one either: ``wait`` treats the
+#: timeout as "no answer this poll" and asks again.
 COMMAND_TIMEOUT_S = 60.0
 
 #: How often ``wait`` repeats that it cannot reach the scheduler.  A bound on
@@ -1412,8 +1414,9 @@ def wait(
     ``STALL_WINDOW_S``.  That call is a report and only a report: nothing in
     this loop cancels a job, on any evidence.
 
-    A poll that cannot be answered -- the controller unreachable -- is not an
-    answer about the job either.  The loop says so through ``on_notice`` (once, then at most every
+    A poll that cannot be answered -- the controller unreachable, a scheduler
+    command hung past ``COMMAND_TIMEOUT_S`` -- is not an answer about the job
+    either.  The loop says so through ``on_notice`` (once, then at most every
     ``NOTICE_EVERY_S``, and once more when polling recovers) and keeps
     polling.  The caller's own ``wait_s`` still bounds how long it waits.
     """
@@ -1429,10 +1432,13 @@ def wait(
             answer = query_provenance(
                 job.job_id, sacct=sacct, scontrol=scontrol, squeue=squeue
             )
-        except ControllerUnreachable as exc:
-            # Says nothing about the job, so it does not end the wait.
-            # Before this, an unreachable controller was read as "no such
-            # job" -- with the job running on.
+        except SlurmLaneError as exc:
+            # ``ControllerUnreachable`` or a command that hung or failed to
+            # start.  Neither says anything about the job, so neither ends
+            # the wait.  Before this, an unreachable controller was read as
+            # "no such job" and a hung ``scontrol`` propagated out of here
+            # into pbrun's "sbatch refused this action" handler -- with the
+            # job running on in both cases.
             now = clock()
             if trouble_since is None:
                 trouble_since = now

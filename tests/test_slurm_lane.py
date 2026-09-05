@@ -121,6 +121,9 @@ if os.environ.get("FAKE_CONTROLLER_DOWN") == "1":
     sys.stderr.write(
         "slurm_load_jobs error: Unable to contact slurm controller (connect failure)\\n")
     raise SystemExit(1)
+if os.environ.get("FAKE_SCONTROL_HANG"):
+    import time
+    time.sleep(float(os.environ["FAKE_SCONTROL_HANG"]))
 record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
 if not record.exists():
     sys.stderr.write(f"slurm_load_jobs error: Invalid job id specified\\n")
