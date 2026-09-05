@@ -88,7 +88,9 @@ def test_it_writes_the_exclude_git_actually_reads(tmp_path: Path) -> None:
     # that started reading it would make the choice of file arbitrary.
     per_worktree = root / ".git" / "worktrees" / "wt" / "info" / "exclude"
     per_worktree.parent.mkdir(parents=True, exist_ok=True)
-    per_worktree.write_text(f"{pbrun.STAMP_PREFIX}*\n")
+    # Use the exact stamp so an accidental append of the general pattern to
+    # this wrong file remains observable, even after staging the premise.
+    per_worktree.write_text(f"{stamp}\n")
     assert not _ignored(tree, stamp)
 
     written = pbrun.keep_droppings_out_of_git(tree)
@@ -96,7 +98,7 @@ def test_it_writes_the_exclude_git_actually_reads(tmp_path: Path) -> None:
     assert written == root / ".git" / "info" / "exclude"
     assert pbrun.STAMP_PREFIX in written.read_text()   # named, and written
     assert _ignored(tree, stamp)                       # and read back by git
-    assert per_worktree.read_text() == f"{pbrun.STAMP_PREFIX}*\n"
+    assert per_worktree.read_text() == f"{stamp}\n"
 
 
 def test_a_repository_root_still_works_and_is_not_written_twice(tmp_path: Path) -> None:
