@@ -23,7 +23,20 @@ from prismabuild.resource_scope import ResourceScope
 
 LIMIT = 96 * 1024**2
 PAYLOAD = "import time; time.sleep(5); memory=bytearray(56*1024**2); time.sleep(30)"
-HEALTHY = "import time; memory=bytearray(8*1024**2); end=time.monotonic()+.15\nwhile time.monotonic()<end: pass\nprint('healthy ready',flush=True); time.sleep(30)"
+HEALTHY = """import json, os, pathlib, socket, sys, time
+memory=bytearray(8*1024**2)
+end=time.monotonic()+.15
+while time.monotonic()<end: pass
+probe=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+probe.close()
+status=dict(line.split(':',1) for line in pathlib.Path('/proc/self/status').read_text().splitlines())
+print(json.dumps({'ready': True, 'uids': os.getresuid(), 'gids': os.getresgid(),
+ 'no_new_privs': int(status['NoNewPrivs']),
+ 'oom_score_adj': int(pathlib.Path('/proc/self/oom_score_adj').read_text()),
+ 'host_tmp_visible': pathlib.Path(sys.argv[1]).read_text() == 'visible',
+ 'inet_socket_created': True, 'affinity': sorted(os.sched_getaffinity(0))}), flush=True)
+time.sleep(30)
+"""
 
 
 def qualify(mode: str, image: str | None, directory: Path) -> dict:
@@ -32,15 +45,24 @@ def qualify(mode: str, image: str | None, directory: Path) -> dict:
               for name in ['healthy', 'greedy']]
     created = []
     processes = []
+    host_tmp = tempfile.NamedTemporaryFile(mode='w', prefix='pb-scope-host-visible-', dir='/tmp')
+    host_tmp.write('visible')
+    host_tmp.flush()
     try:
         for scope in scopes:
             scope.create()
             created.append(scope)
         healthy, greedy = scopes
-        process = subprocess.Popen(healthy.wrap_argv([sys.executable, '-c', HEALTHY]),
+        process = subprocess.Popen(healthy.wrap_argv([sys.executable, '-c', HEALTHY, host_tmp.name]),
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         processes.append(process)
-        assert process.stdout.readline().strip() == 'healthy ready', 'healthy payload failed to start'
+        line = process.stdout.readline()
+        assert line.strip(), 'healthy payload failed to start: ' + process.stderr.read()
+        privilege = json.loads(line)
+        assert privilege == {'ready': True, 'uids': [1000]*3, 'gids': [1000]*3,
+                             'no_new_privs': 1, 'oom_score_adj': 0,
+                             'host_tmp_visible': True, 'inet_socket_created': True,
+                             'affinity': sorted(os.sched_getaffinity(0))}, privilege
         if mode == 'direct':
             for _ in range(2):
                 processes.append(subprocess.Popen(greedy.wrap_argv([sys.executable, '-c', PAYLOAD]),
@@ -89,8 +111,10 @@ def qualify(mode: str, image: str | None, directory: Path) -> dict:
         assert well_behaved['oom_kill'] == 0, well_behaved
         assert well_behaved['cpu_seconds'] > .05, well_behaved
         return {'mode': mode, 'greedy': evidence, 'healthy': well_behaved,
-                'healthy_survived': True, 'samples': len(samples), 'container_ids': container_ids}
+                'healthy_survived': True, 'samples': len(samples), 'container_ids': container_ids,
+                'payload_privilege': privilege}
     finally:
+        host_tmp.close()
         for scope in created:
             scope.terminate_owned('disposable qualification cleanup')
             # Removal is exact immutable scope label, never a loose name match.
