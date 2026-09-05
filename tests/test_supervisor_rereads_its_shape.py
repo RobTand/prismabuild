@@ -68,8 +68,15 @@ def test_the_first_read_still_refuses_to_guess(config):
 
 
 def test_only_idle_loops_are_stopped(monkeypatch):
-    """The rule both cycle reasons share: a loop holding an action is left."""
-    monkeypatch.setattr(supervise, "_live_loops", lambda: [11, 22, 33])
+    """The rule both cycle reasons share: a loop holding an action is left.
+
+    Ownership is stubbed rather than staged: these pids are not fleet loops
+    and ``_stop_idle_loops`` proves ownership at the kill site since issue
+    #87.  The rule under test here is the idleness one, and
+    ``test_supervisor_owns_the_loops_it_signals.py`` pins the other.
+    """
+    monkeypatch.setattr(supervise, "_live_loops", lambda *_a, **_k: [11, 22, 33])
+    monkeypatch.setattr(supervise, "_is_fleet_loop", lambda *_a, **_k: True)
     monkeypatch.setattr(supervise, "_is_idle", lambda pid: pid != 22)
     killed = []
     monkeypatch.setattr(supervise.os, "kill", lambda pid, sig: killed.append(pid))
@@ -103,7 +110,10 @@ def test_only_the_mismatched_loops_are_candidates(monkeypatch):
     """A loop already on the declared shape is never stopped for it."""
     shape = ["--gpu-slots", "3"]
     carried = {11: ["--gpu-slots", "2"], 22: shape, 33: None}
-    monkeypatch.setattr(supervise, "_live_loops", lambda: [11, 22, 33])
+    monkeypatch.setattr(supervise, "_live_loops", lambda *_a, **_k: [11, 22, 33])
+    # As above: the rule under test is the shape mismatch, not the ownership
+    # proof these fake pids cannot satisfy.
+    monkeypatch.setattr(supervise, "_is_fleet_loop", lambda *_a, **_k: True)
     monkeypatch.setattr(supervise, "loop_args_of", lambda pid: carried[pid])
     monkeypatch.setattr(supervise, "_is_idle", lambda pid: True)
     killed = []

@@ -83,6 +83,19 @@ have run on the 25.11.2 rebuild only. What the eleven settle:
   file records, a leaked tree is the smaller loss, and a sweep that guessed a
   path would be an unbounded `rm -rf`. Grep `slurmd.log` for
   `could not be read` after any shared-mount outage.
+- **Which `docker` spellings the shim accepts.** Every action's `docker`
+  resolves to `tools/fleet/docker`, which labels what it creates so cleanup
+  and the Epilog can find it. It reads Docker's global options before the
+  subcommand, so `docker --context default run` is labelled exactly as
+  `docker run` is. These forms exit 125 with a reason on stderr: `start` and
+  `container start`, because a container created outside the action cannot be
+  given the action's label; `compose up`, `run`, `create` and `start`, because
+  Compose owns the labels on what it creates; and any `--label` naming
+  `prismabuild.action` or `prismabuild.job`, in any spelling, because a caller
+  that could set those could hand its container to another job's Epilog. A
+  global option the shim does not know is also refused, since the shim then
+  cannot tell where the command begins. Everything that starts no container
+  passes through untouched.
 - **`CPUs=` for the two GB10 boxes** (was item 5). Measured and written into
   `slurm.conf`: 20 CPUs as one socket of twenty, one thread per core, measured
   again on 2026-09-05 with `slurmd -C` from the fleet's own 25.11.2 build.
@@ -703,12 +716,42 @@ Then, in this order, and the order is not arrangeable:
 5. **The runtime generation**, published with
    `publish_runtime.py --default-transport slurm`.
 
-Processes are found the way `supervise._live_loops` finds them -- argv[0] is an
-interpreter and argv[1] is the script -- and killed by pid. A `pkill -f
+`cutover.sh` finds processes by reading each candidate's own argv -- argv[0] is
+an interpreter and argv[1] is the script -- and kills them by pid. A `pkill -f
 supervise.py` would match the ssh command carrying it, and a
 `pkill -f tools/fleet/supervise.py` matches nothing at all: the live processes
 run the published path, `.../repo/tools/supervise.py`, and on dl380g10 the
 relative `repo/tools/supervise.py`.
+
+`supervise._live_loops` asks for more than that argv shape, and the difference
+matters when you read a supervisor's log. A candidate counts as one of this
+box's loops only when its script resolves inside a published runtime
+generation and its environment carries
+`PRISMABUILD_SUPERVISED_WORKER=<this box>`, which the supervisor sets on every
+loop it spawns. An unrelated program that happens to be called
+`worker_loop.py` is therefore neither counted toward the box's target nor sent
+SIGTERM.
+
+Publishing this generation onto a live pull queue has two consequences, both
+because a supervisor outlives a generation and holds the bytes it started
+with. The supervisor already running keeps its claim, so the crontab's
+`--ensure` still exits quietly, and its loops exit when they see the published
+commit move. It respawns them from the new generation, because `_spawn`
+re-reads the `repo` symlink, but without the ownership mark, because setting
+the mark is the new bytes' behaviour and that supervisor is not running them.
+The next supervisor started on the new bytes counts none of those loops and
+tops the box up beside them, and the unmarked ones stay until they reach
+`--max-idle` on their own, which is 500 polls of 15 seconds, so about two
+hours. So restart the supervisor on each box as part of the publish rather
+than leaving it to the crontab. Extra loops waste polls and cannot
+oversubscribe the box, because admission is by the pool's resource ledger and
+not by loop count.
+
+The second consequence is in the maintenance path. `supervise.py
+--cycle-stale --once` running the new bytes reaches only marked loops, so it
+cannot cycle loops that predate the mark. Stop those with the argv-shape
+search above, which is deliberately a question about the shape of a process
+rather than about who owns it.
 
 ### What the cutover retires and does not replace
 

@@ -79,9 +79,19 @@ NEVER_GPU = (
     # ``which sbatch`` and ``man sbatch`` are the first two commands anyone
     # runs at a scheduler they have never used, and refusing them teaches the
     # reader to route around the hook before they have read the rule.
-    "which", "whereis", "type", "command", "man", "ls", "stat", "file",
+    "which", "whereis", "type", "man", "ls", "stat", "file",
     "head", "tail", "wc", "dpkg", "apt", "apt-get", "apt-cache",
 )
+
+
+#: ``command`` is NOT in the list above, because it is not a command that
+#: never starts work: ``command sbatch job.sh`` submits the job, and the whole
+#: segment was exempt for as long as the builtin's name led it.  Its two
+#: inspection switches are the part that must stay allowed -- ``command -v
+#: sbatch`` prints a path and runs nothing, and it is in the runbook -- so
+#: those are exempted by shape rather than by the builtin's name.  ``-p`` is
+#: accepted between the two because it only chooses the default PATH.
+INSPECTION_SWITCHES = frozenset({"-v", "-V"})
 
 
 #: A segment that switches the GPU off for its own child cannot be GPU work,
@@ -133,9 +143,7 @@ DESCRIBES_ITSELF = frozenset({"-h", "--help", "--usage", "-V", "--version"})
 def _describes_itself(segment: str) -> bool:
     """True when this segment only asks a scheduler verb about itself."""
 
-    tokens = segment.split()
-    while tokens and "=" in tokens[0] and not tokens[0].startswith("/"):
-        tokens.pop(0)
+    tokens = _command_tokens(segment)
     if len(tokens) < 2:
         return False
     if tokens[0].rsplit("/", 1)[-1] not in ("sbatch", "srun", "salloc"):
@@ -143,27 +151,57 @@ def _describes_itself(segment: str) -> bool:
     return set(tokens[1:]) <= DESCRIBES_ITSELF
 
 
-#: Shell operators that end one command and begin another.  A compound command
-#: is judged segment by segment, because judging it by its first token is a
-#: hole wide enough to drive the whole rule through: ``cat note.txt && <cuda
-#: python> -m pytest`` leads with ``cat``, which is exempt, and the pytest
-#: behind it ran unrefused.  Found by walking into it while fixing the hook.
-SEPARATORS = re.compile(r"&&|\|\||;|\||\n")
+#: Shell words that stand in front of a command without being one.  A
+#: compound command's boundaries put these at the head of a segment -- ``for f
+#: in *.py; do grep sbatch $f; done`` runs ``grep``, and the segment the
+#: boundaries hand over begins ``do`` -- so a segment led by one of these was
+#: judged as an unknown command and refused.  That is the same failure as
+#: judging a compound command by its first token, one level in: the word the
+#: exemption has to look at is the command word, not whatever is leftmost.
+#: ``for``, ``case`` and ``select`` are deliberately absent: the word after
+#: those is a variable name, not a command, so stripping them would judge a
+#: loop by its loop variable.
+RESERVED_WORDS = frozenset({
+    "!", "{", "if", "elif", "then", "else", "while", "until", "do", "time",
+})
+
+
+def _command_tokens(segment: str) -> list[str]:
+    """The segment's words, past the prefixes that are not the command."""
+
+    tokens = segment.split()
+    while tokens:
+        head = tokens[0]
+        if head in RESERVED_WORDS:
+            tokens.pop(0)
+            continue
+        if "=" in head and not head.startswith("/"):
+            tokens.pop(0)          # a variable assignment prefixing a command
+            continue
+        break
+    return tokens
 
 
 def _first_token(command: str) -> str:
-    """The command actually being run, past any leading env assignments."""
+    """The command actually being run, past the words that are not it."""
 
-    stripped = command.lstrip()
-    while stripped:
-        head = stripped.split(" ", 1)[0]
-        if "=" not in head or head.startswith("/"):
-            break
-        parts = stripped.split(" ", 1)
-        if len(parts) == 1:
-            return ""
-        stripped = parts[1].lstrip()
-    return stripped.split(" ", 1)[0].rsplit("/", 1)[-1]
+    tokens = _command_tokens(command)
+    # ``command X ...`` runs X, so X is the command being judged.  ``-p`` is
+    # accepted between them because it only chooses the default PATH.
+    while tokens and (tokens[0].rsplit("/", 1)[-1] == "command"
+                      or tokens[0] == "-p"):
+        tokens.pop(0)
+    return tokens[0].rsplit("/", 1)[-1] if tokens else ""
+
+
+def _inspects_only(segment: str) -> bool:
+    """True when this segment only asks ``command`` where a program is."""
+
+    tokens = _command_tokens(segment)
+    if not tokens or tokens[0].rsplit("/", 1)[-1] != "command":
+        return False
+    rest = [token for token in tokens[1:] if token != "-p"]
+    return bool(rest) and rest[0] in INSPECTION_SWITCHES
 
 
 def _drop_pool_payload(command: str) -> str:
@@ -180,6 +218,16 @@ def _drop_pool_payload(command: str) -> str:
     after it, because that pair is what makes the rest argv for another
     process.  A chain like ``pbrun.py --help && <cuda venv> train.py`` has no
     ``--``, so its second segment is still scanned and still refused.
+
+    It is applied to ONE segment, after the boundaries are known, and that is
+    the correction issue #89 names.  Cutting the raw command line at the first
+    entrypoint's ``--`` threw away everything after it, including commands
+    that belong to the outer shell and never reach pbrun: ``pbrun.py --gpu --
+    true && <cuda python> train.py`` runs the second command locally, and
+    ``pbrun.py -- true && sbatch job.sh`` submits locally, and neither was
+    scanned.  A payload that really is argv keeps its ``&&`` inside quotes,
+    which the segmenter does not split on, so the payload the cut exists for
+    is still one segment.
     """
 
     best = None
@@ -196,50 +244,489 @@ def _drop_pool_payload(command: str) -> str:
     return command if best is None else command[:best]
 
 
-#: A here-document body is data on its way to a file, not a command.  Scanning
-#: it is how this hook refused the very file that starts the fleet's workers:
-#: that config names the CUDA interpreter as a worker's ``--python`` argument,
-#: which is the pattern above by construction, and the writing command led with
-#: ``cd``.  Nothing inside a heredoc can start GPU work -- the shell is copying
-#: bytes to a file -- so the body is removed before anything is judged.  This
-#: was the fourth time the hook locked out its own repair; the rule it enforces
-#: is unchanged, only what counts as a command.
-HEREDOC = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1""")
+#: A here-document opener, as the shell would read one.  The delimiter may be
+#: quoted, which is what decides whether the body is expanded -- and POSIX
+#: gives three spellings of "quoted", not one: ``<<'EOF'``, ``<<"EOF"`` and
+#: ``<<\\EOF`` all stop expansion.  Matching only the first two read a
+#: backslash-quoted delimiter as an unquoted one and scanned a body the shell
+#: copies verbatim.
+HEREDOC = re.compile(
+    r"""<<-?\s*(?:"""
+    r"""(?P<mark>['"])(?P<quoted>[A-Za-z_][A-Za-z0-9_]*)(?P=mark)"""
+    r"""|\\(?P<escaped>[A-Za-z_][A-Za-z0-9_]*)"""
+    r"""|(?P<bare>[A-Za-z_][A-Za-z0-9_]*)"""
+    r""")"""
+)
 
 
-def _drop_heredoc_bodies(command: str) -> str:
-    """Remove every here-document body, keeping the commands around them."""
+def _heredoc_tag(match: re.Match[str]) -> tuple[str, bool]:
+    """The delimiter this opener names, and whether it stops expansion."""
 
-    out: list[str] = []
+    for group in ("quoted", "escaped"):
+        if match.group(group) is not None:
+            return match.group(group), True
+    return match.group("bare"), False
+
+#: Programs that execute their standard input.  A here-document fed to one of
+#: these is a script, not data on its way to a file, and scanning it is the
+#: whole point rather than the mistake: ``bash <<'EOF'`` with the CUDA
+#: interpreter inside it starts exactly the work this hook refuses.
+INTERPRETERS = ("bash", "sh", "dash", "zsh", "ksh")
+
+
+def _is_interpreter(name: str) -> bool:
+    return name in INTERPRETERS or re.fullmatch(r"python[0-9.]*", name) is not None
+
+
+#: Commands that run another command given to them as an argument.  The
+#: interpreter reading a here-document is not always the command word of the
+#: segment that owns it: ``ssh box bash``, ``sudo bash`` and ``docker exec -i
+#: c bash`` all end in a shell that reads the body, and the first of those is
+#: how routine work reaches the other boxes here.  Looking past the command
+#: word only for these keeps ``grep -c python`` and ``cat bash_notes`` what
+#: they are, which reading every word of every segment did not.
+WRAPPERS = frozenset({
+    "ssh", "sudo", "doas", "env", "nice", "ionice", "timeout", "nohup",
+    "setsid", "stdbuf", "xargs", "docker", "podman", "kubectl", "chroot",
+    "unshare", "taskset", "flock", "command", "time",
+})
+
+
+def _name_of(token: str) -> str:
+    return token.strip("'\"").rsplit("/", 1)[-1]
+
+
+def _feeds_an_interpreter(segment: str) -> bool:
+    """True when this segment hands its standard input to an interpreter."""
+
+    tokens = _command_tokens(segment)
+    if not tokens:
+        return False
+    if _is_interpreter(_name_of(tokens[0])):
+        return True
+    if _name_of(tokens[0]) not in WRAPPERS:
+        return False
+    return any(_is_interpreter(_name_of(token)) for token in tokens[1:])
+
+
+def _substitution(text: str, start: int) -> tuple[str, int]:
+    """The body of the ``$( ... )`` at ``start``, and the index past its ``)``.
+
+    Quotes and nested parentheses are tracked, so ``$(echo "a)b")`` ends at
+    the right place.  An unterminated substitution yields the rest of the
+    text, which is the conservative reading: what the shell would run if the
+    caller finished typing.
+
+    A here-document body inside the substitution is skipped rather than read
+    as command text, because the body is prose as often as not and an
+    apostrophe in it would otherwise open a quote that swallows the closing
+    ``)`` and everything after it.  ``git commit -m "$(cat <<'EOF'`` with a
+    body saying "doesn't" is the case that matters, and it is the shape this
+    repo writes commit messages with.
+    """
+
+    begin = start + 2
+    index = begin
+    depth = 0
+    quote = ""
+    pending: list[str] = []
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == "\\" and quote == '"' and index + 1 < len(text):
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(text):
+            index += 2
+            continue
+        if char in "'\"":
+            quote = char
+            index += 1
+            continue
+        if text.startswith("<<", index):
+            match = HEREDOC.match(text, index)
+            if match is None:
+                index += 2
+                continue
+            pending.append(_heredoc_tag(match)[0])
+            index = match.end()
+            continue
+        if char == "\n" and pending:
+            index = _past_bodies(text, index, pending)
+            pending = []
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                return text[begin:index], index + 1
+            depth -= 1
+        index += 1
+    return text[begin:], len(text)
+
+
+def _pipeline_after(line: str, at: int) -> str:
+    """The rest of the pipeline the command at ``at`` sits in.
+
+    Everything from ``at`` up to the first boundary that ends a pipeline: a
+    ``;``, a ``&&``, a ``||``, a ``&`` or a newline.  A ``|`` deliberately
+    does not end it, because a pipeline is the one boundary that hands a
+    command's output to the next command as input.
+    """
+
+    quote = ""
+    index = at
+    while index < len(line):
+        char = line[index]
+        if quote:
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(line):
+            index += 2
+            continue
+        if char in "'\"":
+            quote = char
+            index += 1
+            continue
+        if line.startswith("&&", index) or line.startswith("||", index):
+            return line[at:index]
+        if char in ";&\n()":
+            return line[at:index]
+        index += 1
+    return line[at:]
+
+
+def _past_bodies(text: str, newline: int, tags: list[str]) -> int:
+    """Where the here-document bodies opened on one line end.
+
+    ``newline`` indexes the newline that ends the opener's line, so the first
+    body starts right after it and each body ends at its own terminator line.
+    The index returned is the newline that closes the last of them, which is
+    where the shell resumes reading the command line.
+    """
+
+    at = newline
+    for tag in tags:
+        while at < len(text):
+            end = text.find("\n", at + 1)
+            line = text[at + 1:len(text) if end < 0 else end]
+            if line.strip() == tag:
+                at = len(text) if end < 0 else end
+                break
+            if end < 0:
+                return len(text)
+            at = end
+    return at
+
+
+def _backquoted(text: str, start: int) -> tuple[str, int]:
+    """The body of the backquoted command at ``start``, and the index past it."""
+
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\" and index + 1 < len(text):
+            index += 2
+            continue
+        if text[index] == "`":
+            return text[start + 1:index], index + 1
+        index += 1
+    return text[start + 1:], len(text)
+
+
+def _commands_in(text: str) -> list[str]:
+    """The commands one piece of shell text runs, each as its own segment.
+
+    This is the correction the whole of issue #89 turns on: the boundaries are
+    identified BEFORE any exemption is applied, and they are identified with
+    the quoting rules the shell uses rather than by splitting on the operator
+    characters wherever they appear.  Splitting raw text got both directions
+    wrong at once.  A quoted ``&&`` inside a pbrun payload is not a boundary
+    and used to be one, which is why the payload had to be cut off the front
+    of the command line; an unquoted ``&&`` after a pbrun payload IS a
+    boundary and used to be swallowed by that cut, so the command the outer
+    shell ran next was never judged.
+
+    A ``$( ... )`` or backquoted substitution is a command the shell runs, so
+    its body becomes its own segment.  The text around it keeps accumulating
+    with the substitution elided, so the enclosing command still leads its own
+    segment and keeps whatever exemption it had: ``git commit -m "$(cat f)"``
+    is a ``git`` segment and a ``cat`` segment, and neither is refused.  The
+    body is scanned by ``_scan`` rather than by this function alone, because a
+    substitution is a whole shell context and may open a here-document of its
+    own -- ``git commit -m "$(cat <<'EOF'`` is how a long message is written
+    here, and reading its body as commands refused the commit.
+
+    A ``#`` at the start of a word begins a comment, which runs to the end of
+    the line and is not a command.  It has to be recognized for the same
+    reason quotes do: an apostrophe in a comment otherwise opens a quote that
+    runs on and glues the next line's real command into the comment's segment,
+    where it inherits the comment's verdict in whichever direction is wrong.
+    """
+
+    segments: list[str] = []
+    buffer: list[str] = []
+    quote = ""
+    index = 0
+
+    def flush() -> None:
+        piece = "".join(buffer).strip()
+        if piece:
+            segments.append(piece)
+        buffer.clear()
+
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            buffer.append(char)
+            if char == "'":
+                quote = ""
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(text):
+            # A backslash-newline is a line continuation, not a boundary and
+            # not two literal characters.  Handling it here rather than by
+            # rewriting the whole command first keeps it out of here-document
+            # bodies and quoted strings, where the shell does not apply it.
+            buffer.append(" " if text[index + 1] == "\n"
+                          else text[index:index + 2])
+            index += 2
+            continue
+        if text.startswith("$(", index):
+            inner, index = _substitution(text, index)
+            segments.extend(_scan(inner))
+            buffer.append(" ")
+            continue
+        if char == "`":
+            inner, index = _backquoted(text, index)
+            segments.extend(_scan(inner))
+            buffer.append(" ")
+            continue
+        if quote == '"':
+            buffer.append(char)
+            if char == '"':
+                quote = ""
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            buffer.append(char)
+            index += 1
+            continue
+        if char == "#" and (not buffer or buffer[-1][-1:].isspace()):
+            flush()
+            end = text.find("\n", index)
+            index = len(text) if end < 0 else end
+            continue
+        if text.startswith("&&", index) or text.startswith("||", index):
+            flush()
+            index += 2
+            continue
+        if char == "&":
+            # A lone ``&`` backgrounds the command before it and starts
+            # another, so it is a boundary.  The redirection spellings that
+            # merely contain the character are not: ``2>&1``, ``>&2``, ``&>``
+            # and ``<&3`` all belong to the command they sit in.
+            if text[index + 1:index + 2] == ">" or buffer and \
+                    buffer[-1][-1:] in "><&":
+                buffer.append(char)
+                index += 1
+                continue
+            flush()
+            index += 1
+            continue
+        if char in ";|\n()":
+            flush()
+            index += 1
+            continue
+        buffer.append(char)
+        index += 1
+    flush()
+    return segments
+
+
+def _expansions_in(text: str) -> list[str]:
+    """The commands an UNQUOTED here-document body runs when it is expanded.
+
+    An unquoted delimiter makes the body behave like a double-quoted string:
+    quotes inside it are literal, and ``$( )`` and backquotes still run.  So
+    ``cat >/dev/null <<EOF`` carrying ``$(<cuda python> train.py)`` starts GPU
+    work even though the command writing the file is ``cat``.
+    """
+
+    segments: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] == "\\" and index + 1 < len(text):
+            index += 2
+            continue
+        if text.startswith("$(", index):
+            inner, index = _substitution(text, index)
+            segments.extend(_scan(inner))
+            continue
+        if text[index] == "`":
+            inner, index = _backquoted(text, index)
+            segments.extend(_scan(inner))
+            continue
+        index += 1
+    return segments
+
+
+def _find_heredoc(text: str) -> tuple[int, int, str, bool] | None:
+    """The first here-document opener the shell would act on.
+
+    Quote-aware, so a ``<<EOF`` inside a quoted argument is text rather than
+    an opener.
+    """
+
+    quote = ""
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == "\\" and quote == '"' and index + 1 < len(text):
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(text):
+            index += 2
+            continue
+        if char in "'\"":
+            quote = char
+            index += 1
+            continue
+        if text.startswith("<<", index):
+            match = HEREDOC.match(text, index)
+            if match is not None:
+                tag, quoted = _heredoc_tag(match)
+                return match.start(), match.end(), tag, quoted
+            index += 2
+            continue
+        index += 1
+    return None
+
+
+def _heredocs(command: str) -> tuple[str, list[str]]:
+    """Split the here-document bodies out, and say what each one is.
+
+    Returns the command text with every body removed, and the segments those
+    bodies contribute.  Three cases, and the difference between them is what
+    the shell does with the body, not what the body looks like:
+
+    * Fed to an interpreter (``bash <<EOF``): the body is a script, so all of
+      it is scanned.
+    * An unquoted delimiter (``cat >f <<EOF``): the body is data, but the
+      shell expands it first, so its substitutions are scanned.
+    * A quoted delimiter to anything else (``cat >f <<'EOF'``): the shell
+      copies bytes to a file and nothing in the body runs, so it is dropped.
+      This is the case the exemption was written for, and it stays: the file
+      that starts the fleet's workers names the CUDA interpreter as a
+      ``--python`` argument by construction, and the hook refused that write
+      four times.
+
+    Only the opener TOKENS leave the command line, not the rest of the line
+    they sit on.  Dropping everything from the opener to the newline is the
+    same "raw text is data" mistake one token over: ``cat > f <<'EOF' &&
+    <cuda python> train.py`` runs that second command after the write, and it
+    was never judged.  A line may also carry more than one opener, and the
+    shell reads their bodies in order, so they are consumed in order rather
+    than leaving the second body standing where a command should be.
+    """
+
+    kept: list[str] = []
+    extra: list[str] = []
     rest = command
     while True:
-        opener = HEREDOC.search(rest)
+        opener = _find_heredoc(rest)
         if opener is None:
-            out.append(rest)
+            kept.append(rest)
             break
-        tag = opener.group(2)
-        newline = rest.find("\n", opener.end())
-        if newline < 0:
+        start, end, tag, quoted = opener
+        line_end = rest.find("\n", end)
+        if line_end < 0:
             # An opener with no body yet: nothing has been fed in, so there is
             # nothing to strip and the text before it still stands as command.
-            out.append(rest)
+            kept.append(rest)
             break
-        out.append(rest[: opener.start()])
-        lines = rest[newline + 1:].split("\n")
-        for index, line in enumerate(lines):
-            if line.strip() == tag:
-                rest = "\n".join(lines[index + 1:])
+        # Every opener on this command line, in the order the shell reads
+        # their bodies, and the spans to excise from the line itself.
+        openers = [(tag, quoted)]
+        spans = [(start, end)]
+        cursor = end
+        while cursor < line_end:
+            more = _find_heredoc(rest[cursor:line_end])
+            if more is None:
                 break
-        else:
-            # Unterminated: the rest of the input is body all the way down.
-            rest = ""
-            break
+            openers.append((more[2], more[3]))
+            spans.append((cursor + more[0], cursor + more[1]))
+            cursor += more[1]
+        line = ""
+        at = 0
+        for span_start, span_end in spans:
+            line += rest[at:span_start]
+            at = span_end
+        after_openers = len(line)
+        line += rest[at:line_end]
+        kept.append(line)
+        # The command the here-document is attached to is the last one before
+        # it, not the first one on the line: ``cd x && bash <<EOF`` feeds bash.
+        owner_segments = _commands_in(rest[:start])
+        owner = owner_segments[-1] if owner_segments else ""
+        # A pipeline hands that command's output to the next one as input, so
+        # ``cat <<'EOF' | bash`` executes the body just as ``bash <<'EOF'``
+        # does, one command further along.  Only the pipeline counts: after a
+        # ``&&`` the next command reads its own standard input, and treating
+        # ``cat > f <<'EOF' && bash other.sh`` as executable would refuse the
+        # file write this exemption exists for.
+        downstream = _pipeline_after(line, after_openers)
+        executed = _feeds_an_interpreter(owner) or (
+            "|" in downstream
+            and any(_feeds_an_interpreter(part)
+                    for part in _commands_in(downstream)))
+        body_text = rest[line_end + 1:]
+        for tag, quoted in openers:
+            lines = body_text.split("\n")
+            body: list[str] = []
+            remainder = ""
+            for position, entry in enumerate(lines):
+                if entry.strip() == tag:
+                    remainder = "\n".join(lines[position + 1:])
+                    break
+                body.append(entry)
+            text = "\n".join(body)
+            if executed:
+                extra.extend(_commands_in(text))
+            elif not quoted:
+                extra.extend(_expansions_in(text))
+            body_text = remainder
+        rest = body_text
     # Rejoin with a boundary, not a space.  Gluing the command before a
     # heredoc to the command after it makes one segment whose first token is
     # the writer -- ``cat``, which is exempt -- and the work behind the
     # heredoc inherits that exemption.  Same hole as judging a compound
     # command by its first token, reached from a different direction.
-    return "\n".join(part for part in out if part)
+    return "\n".join(part for part in kept if part), extra
+
+
+def _scan(text: str) -> list[str]:
+    """Every command one piece of shell text runs, here-documents included.
+
+    One function rather than two calls at the top level, because a command
+    substitution is a shell context in its own right: its body can open a
+    here-document, and reading that body without this pass turned a commit
+    message into commands.
+    """
+
+    kept, extra = _heredocs(text)
+    return [*_commands_in(kept), *extra]
 
 
 def _segments(command: str) -> list[str]:
@@ -249,14 +736,9 @@ def _segments(command: str) -> list[str]:
     segment is not excused by a permitted neighbour.
     """
 
-    # A backslash-newline is a line continuation, not a command boundary.
-    # Splitting on the raw newline tears one command into pieces and strips
-    # each piece of the context that exempts it -- which refused a worker
-    # launch whose interpreter argument sat on its own continued line.
-    joined = re.sub(r"\\\s*\n", " ", command)
-    joined = _drop_heredoc_bodies(joined)
-    joined = _drop_pool_payload(joined)
-    return SEPARATORS.split(joined)
+    # The payload cut is per segment, so it can no longer discard the outer
+    # shell's own commands.  See ``_drop_pool_payload``.
+    return [_drop_pool_payload(segment) for segment in _scan(command)]
 
 
 def contends(command: str) -> bool:
@@ -264,6 +746,8 @@ def contends(command: str) -> bool:
 
     for segment in _segments(command):
         if not CONTENDS.search(segment):
+            continue
+        if _inspects_only(segment):
             continue
         if _first_token(segment) in NEVER_GPU:
             continue
@@ -282,7 +766,9 @@ def submits(command: str) -> bool:
     by a command that never starts work (a commit message, a grep for the
     word, ``which sbatch``), a verb asked only about itself (``sbatch
     --help``), and a segment naming the lane's own entrypoints, which are
-    what run ``sbatch`` on this fleet's behalf.
+    what run ``sbatch`` on this fleet's behalf.  ``command -v sbatch`` joins
+    the first of those by shape rather than by the builtin's name, because
+    ``command sbatch job.sh`` submits.
 
     ``CUDA_VISIBLE_DEVICES=`` is NOT an exemption here, deliberately.  It works
     for a local command because the kernel then denies the child a device; it
@@ -292,6 +778,8 @@ def submits(command: str) -> bool:
 
     for segment in _segments(command):
         if not SCHEDULER.search(segment):
+            continue
+        if _inspects_only(segment):
             continue
         if _first_token(segment) in NEVER_GPU:
             continue

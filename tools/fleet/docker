@@ -71,7 +71,84 @@ def _real_docker() -> str:
     return "/usr/bin/docker"
 
 
+class Refused(Exception):
+    """A command this shim will not hand to Docker, with the reason."""
+
+
+#: Docker's own global options, which may precede the subcommand.
+#:
+#: The shim used to read ``argv[0]`` as the subcommand, so every documented
+#: spelling that puts an option first hid the command behind it: ``docker
+#: --context default run -d IMAGE`` reached the daemon with no owner label, no
+#: job label and no marker, and a detached container created that way is one
+#: ``pool.cleanup_action_containers`` and the Epilog both query by label and
+#: therefore never find.  ``docker --context default start`` and ``docker
+#: compose -f f.yml up -d`` escaped the refusals for the same reason.  Options
+#: are split by arity because that is the only thing the shim needs from them:
+#: where the command begins.
+GLOBAL_VALUE_OPTIONS = frozenset({
+    "--config", "-c", "--context", "-H", "--host", "-l", "--log-level",
+    "--tlscacert", "--tlscert", "--tlskey",
+})
+GLOBAL_FLAGS = frozenset({
+    "-D", "--debug", "--tls", "--tlsverify", "-v", "--version", "-h", "--help",
+})
+
+#: Compose's own options, which sit between ``compose`` and its verb.
+COMPOSE_VALUE_OPTIONS = frozenset({
+    "--ansi", "--env-file", "-f", "--file", "--parallel", "--profile",
+    "--progress", "--project-directory", "-p", "--project-name",
+})
+COMPOSE_FLAGS = frozenset({"--all-resources", "--compatibility", "--dry-run"})
+
+#: Compose verbs that create or start containers.  Compose owns the labels on
+#: what it creates, so none of them can carry this action's owner label, and
+#: all four are the refusal ``compose up`` already was.
+COMPOSE_STARTS = frozenset({"up", "run", "create", "start"})
+
+
+def _verb_index(argv: list[str], value_options: frozenset[str],
+                flags: frozenset[str], *, what: str) -> int | None:
+    """Index of the first token past these options, or None if there is none.
+
+    Raises ``Refused`` on an option the shim does not know.  Guessing an
+    unknown option's arity is what the old fixed-position read did by
+    accident: parse one token out and an image name reads as a subcommand, or
+    a ``start`` reads as an option's value.  A refusal names the option and
+    the operator adds it to the table above; a guess loses a container.
+    """
+
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            return index + 1 if index + 1 < len(argv) else None
+        if not token.startswith("-") or token == "-":
+            return index
+        name = token.split("=", 1)[0]
+        if name in value_options:
+            index += 1 if "=" in token else 2
+            continue
+        if name in flags:
+            index += 1
+            continue
+        if not token.startswith("--") and token[:2] in value_options:
+            index += 1                     # attached: -cdefault, -Hunix:///x
+            continue
+        raise Refused(
+            f"{what} option {token} is not one this shim knows, so it cannot "
+            f"tell where the command begins; add it to the shim's option "
+            f"table or run this without the option")
+    return None
+
+
 def _creation_index(argv: list[str]) -> int | None:
+    """Where a container command's own options begin, or None.
+
+    ``argv`` is the subcommand and everything after it, Docker's globals
+    already consumed by the caller.
+    """
+
     if argv and argv[0] in {"run", "create"}:
         return 1
     if len(argv) >= 2 and argv[0] == "container" and argv[1] in {"run", "create"}:
@@ -80,22 +157,46 @@ def _creation_index(argv: list[str]) -> int | None:
 
 
 def _starts_unowned_container(argv: list[str]) -> bool:
+    """True for a lifecycle form that cannot be given this action's label."""
+
     if argv and argv[0] == "start":
         return True
     if len(argv) >= 2 and argv[0] == "container" and argv[1] == "start":
         return True
-    return len(argv) >= 2 and argv[0] == "compose" and argv[1] == "up"
+    if argv and argv[0] == "compose":
+        verb = _verb_index(argv[1:], COMPOSE_VALUE_OPTIONS, COMPOSE_FLAGS,
+                           what="compose")
+        return verb is not None and argv[1 + verb] in COMPOSE_STARTS
+    return False
+
+
+def _label_values(argv: list[str]):
+    """Every ``--label`` value on a container command, however it is spelled.
+
+    ``--label=prismabuild.action`` (a key with no value) and the attached
+    ``-lprismabuild.job=9999`` are the same fixed-token assumption the
+    subcommand read had: both set a reserved label and neither was seen.
+    """
+
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in {"--label", "-l"}:
+            if index + 1 < len(argv):
+                yield argv[index + 1]
+            index += 2
+            continue
+        for prefix in ("--label=", "-l=", "-l"):
+            if token.startswith(prefix) and len(token) > len(prefix):
+                yield token[len(prefix):]
+                break
+        index += 1
 
 
 def _has_reserved_label(argv: list[str]) -> bool:
-    for index, token in enumerate(argv):
-        for reserved in (LABEL, JOB_LABEL):
-            if (token.startswith(f"--label={reserved}=")
-                    or token.startswith(f"-l={reserved}=")):
-                return True
-            if token in {"--label", "-l"} and index + 1 < len(argv):
-                if argv[index + 1].startswith(f"{reserved}="):
-                    return True
+    for value in _label_values(argv):
+        if value.split("=", 1)[0] in {LABEL, JOB_LABEL}:
+            return True
     return False
 
 
@@ -112,16 +213,25 @@ def main() -> int:
     if not marker_raw:
         sys.stderr.write(f"docker shim: {MARKER_ENV} is missing\n")
         return 125
-    if _starts_unowned_container(argv):
+    try:
+        command = _verb_index(argv, GLOBAL_VALUE_OPTIONS, GLOBAL_FLAGS,
+                              what="global")
+        sub = [] if command is None else argv[command:]
+        unowned = _starts_unowned_container(sub)
+    except Refused as refusal:
+        sys.stderr.write(f"docker shim: {refusal}\n")
+        return 125
+    if unowned:
         sys.stderr.write(
             "docker shim: start/compose-up cannot attach PrismaBuild's owner "
             "label; use docker run/create inside this action\n")
         return 125
 
-    insertion = _creation_index(argv)
-    if insertion is None:
+    relative = _creation_index(sub)
+    if relative is None:
         os.execv(real, [real, *argv])
-    if _has_reserved_label(argv):
+    insertion = command + relative
+    if _has_reserved_label(argv[insertion:]):
         sys.stderr.write(
             f"docker shim: callers may not set the reserved {LABEL} or "
             f"{JOB_LABEL} label\n")

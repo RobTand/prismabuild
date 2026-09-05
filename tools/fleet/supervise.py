@@ -46,6 +46,29 @@ MIRROR = Path("/mnt/shared/prismabuild-fleet")
 CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
 CLAIM = Path("/home/rob/tmp/prismabuild-supervisor.claim")
 LOG_DIR = Path("/home/rob/tmp")
+PROC = Path("/proc")
+
+#: The mark this supervisor sets on every loop it launches, carrying the box
+#: it launched the loop for.
+#:
+#: A basename is not ownership.  ``pgrep -f worker_loop.py`` matches any
+#: command line containing that string, and the confirmation step only asked
+#: whether an interpreter was running a script whose name ended that way -- so
+#: an unrelated ``/another-project/worker_loop.py`` under the same user was
+#: counted toward this box's fleet capacity, and on the first tick where its
+#: arguments did not match ``fleet_boxes.json`` and it happened to have no
+#: child process, it was SIGTERMed.  A long-running Python workload is busy
+#: and childless at the same time all the time.
+#:
+#: The mark is read from ``/proc/<pid>/environ`` rather than believed from a
+#: log or a pid file, and it is only half the answer: it says this supervisor
+#: launched the process, and the resolved script path says the bytes came from
+#: a runtime generation this fleet published.  Either alone is guessable.
+OWNERSHIP_ENV = "PRISMABUILD_SUPERVISED_WORKER"
+
+#: The script a fleet worker loop runs, checked after the path resolves rather
+#: than as a suffix of whatever ``pgrep`` matched.
+LOOP_SCRIPT = "worker_loop.py"
 
 
 def _current_root() -> Path:
@@ -103,35 +126,128 @@ def declared_shape(host: str, override_loops: int,
             [str(a) for a in config.get("args", [])])
 
 
-def _live_loops() -> list[int]:
-    """The worker loops actually running, not the processes that mention one.
+def _proven_roots() -> list[Path]:
+    """Every runtime tree a fleet worker loop may legitimately have started in.
 
-    ``pgrep -f worker_loop.py`` matches any command line containing that
-    string, and plenty do: the ssh invocation that starts a supervisor, an
-    agent grepping for loops, this file being edited.  Over-counting is the
-    dangerous direction -- it makes a drained box look full and suppresses
-    exactly the respawn this exists for -- so a candidate is confirmed by
-    reading its own argv and requiring the loop script to be an argument to
-    an interpreter, which is what a running loop is and a mention of one
-    never is.
+    The live generation, and the published generations behind it.  A loop
+    holds the bytes it imported for its whole life and publication never
+    deletes a generation, so an old immutable generation may still be running
+    an action; refusing to recognize it would make the supervisor spawn a
+    replacement beside work in flight.  A tree that is neither is not this
+    fleet's, whatever the script inside it is called.
+
+    The generation store is filtered by the rule ``publish_runtime
+    ._activate_existing`` already applies: a direct child, not a dot-name,
+    carrying a ``RUNTIME_VERSION.json``.  A ``.<name>.staging`` survivor of an
+    interrupted publish carries a receipt and passes every other check, and
+    its bytes were never sealed or probed.
     """
 
-    proc = subprocess.run(["pgrep", "-f", "worker_loop.py"],
+    roots: list[Path] = []
+
+    def add(candidate: Path) -> None:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            return
+        if resolved not in roots:
+            roots.append(resolved)
+
+    add(_current_root())
+    try:
+        children = sorted((MIRROR / "runtime-generations").iterdir())
+    except OSError:
+        children = []
+    for child in children:
+        if child.name.startswith("."):
+            continue
+        if not (child / "RUNTIME_VERSION.json").is_file():
+            continue
+        add(child)
+    return roots
+
+
+def _proc_field(pid: int, name: str, proc_root: Path) -> bytes | None:
+    try:
+        return (proc_root / str(pid) / name).read_bytes()
+    except OSError:
+        return None                       # exited, or not ours to read
+
+
+def _script_of(pid: int, argv: list[str], proc_root: Path) -> Path | None:
+    """The loop script this process is running, resolved absolutely.
+
+    dl380g10's loops carry a relative ``repo/tools/worker_loop.py``, so the
+    path is resolved against the process's own working directory rather than
+    the supervisor's -- reading ``/proc/<pid>/cwd`` asks the kernel instead of
+    assuming the two agree.
+    """
+
+    script = Path(argv[1])
+    if not script.is_absolute():
+        try:
+            script = (proc_root / str(pid) / "cwd").resolve(strict=True) / script
+        except OSError:
+            return None
+    try:
+        return script.resolve(strict=True)
+    except OSError:
+        return None
+
+
+def _is_fleet_loop(pid: int, roots: list[Path],
+                   proc_root: Path | None = None) -> bool:
+    """True when this pid is a worker loop this box's supervisor launched.
+
+    Three facts, none of them a name: an interpreter is running the script as
+    an argument, the script resolves inside a proven runtime root, and the
+    process carries this supervisor's ownership mark for this box.  A process
+    that fails any of them is neither counted toward the box's target nor
+    signalled, which is the whole of issue #87.
+    """
+
+    proc_root = PROC if proc_root is None else proc_root
+    raw = _proc_field(pid, "cmdline", proc_root)
+    if raw is None:
+        return False
+    argv = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+    if len(argv) < 2 or "python" not in argv[0].rsplit("/", 1)[-1]:
+        return False
+    script = _script_of(pid, argv, proc_root)
+    if script is None or script.name != LOOP_SCRIPT:
+        return False
+    if not any(script.is_relative_to(root) for root in roots):
+        return False
+    environ = _proc_field(pid, "environ", proc_root)
+    if environ is None:
+        return False
+    for entry in environ.split(b"\0"):
+        name, sep, value = entry.partition(b"=")
+        if sep and name.decode("utf-8", "replace") == OWNERSHIP_ENV:
+            return value.decode("utf-8", "replace") == socket.gethostname()
+    return False
+
+
+def _live_loops(proc_root: Path | None = None) -> list[int]:
+    """The worker loops this supervisor owns, not the processes that mention one.
+
+    ``pgrep`` is a candidate generator and nothing more.  Over-counting is the
+    dangerous direction for the respawn this exists for -- it makes a drained
+    box look full -- and over-claiming is the dangerous direction for the
+    SIGTERM: both are decided by ``_is_fleet_loop`` rather than by the string
+    ``pgrep`` matched on.
+    """
+
+    proc = subprocess.run(["pgrep", "-f", LOOP_SCRIPT],
                           capture_output=True, text=True, check=False)
     mine = os.getpid()
+    roots = _proven_roots()
     confirmed: list[int] = []
     for token in proc.stdout.split():
         pid = int(token)
         if pid == mine:
             continue
-        try:
-            argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-        except OSError:
-            continue                      # exited between pgrep and here
-        args = [part.decode("utf-8", "replace") for part in argv if part]
-        if len(args) < 2 or "python" not in args[0].rsplit("/", 1)[-1]:
-            continue
-        if any(arg.endswith("worker_loop.py") for arg in args[1:2]):
+        if _is_fleet_loop(pid, roots, proc_root):
             confirmed.append(pid)
     return confirmed
 
@@ -199,7 +315,8 @@ def cycle_stale(published: str) -> list[int]:
     return _stop_idle_loops()
 
 
-def _stop_idle_loops(pids: list[int] | None = None) -> list[int]:
+def _stop_idle_loops(pids: list[int] | None = None,
+                     proc_root: Path | None = None) -> list[int]:
     """SIGTERM every loop holding no action, and report which.
 
     The one rule both reasons to cycle a loop share -- stale bytes and a
@@ -208,7 +325,14 @@ def _stop_idle_loops(pids: list[int] | None = None) -> list[int]:
     """
 
     stopped: list[int] = []
-    for pid in (_live_loops() if pids is None else pids):
+    roots = _proven_roots()
+    for pid in (_live_loops(proc_root) if pids is None else pids):
+        # Proved again here, at the line that actually sends the signal.  The
+        # caller has always passed pids that came from ``_live_loops``, but a
+        # future caller that does not must not be able to turn this into the
+        # basename kill it used to be.
+        if not _is_fleet_loop(pid, roots, proc_root):
+            continue
         if not _is_idle(pid):
             continue
         try:
@@ -231,6 +355,10 @@ def _spawn(args: list[str], index: int) -> int:
         [sys.executable, str(loop), *args],
         cwd=str(MIRROR), stdout=handle, stderr=subprocess.STDOUT,
         start_new_session=True,
+        # The mark that makes this loop attributable to this supervisor.  It
+        # is what ``_is_fleet_loop`` reads back out of ``/proc``, and a loop
+        # spawned without it is not counted and never signalled.
+        env={**os.environ, OWNERSHIP_ENV: socket.gethostname()},
     )
     return proc.pid
 
