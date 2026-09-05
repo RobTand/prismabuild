@@ -56,6 +56,7 @@ mkdir -p "$vol" "$ctx" || exit 2
 echo "smoke3: disk at $(df --output=pcent "$RUN_ROOT" | tail -n 1 | tr -d ' ') used on $(dirname "$RUN_ROOT")"
 echo "smoke3: run directory $run"
 
+# shellcheck disable=SC2329  # invoked by the EXIT trap below
 cleanup() {
     for node in "${NODES[@]}"; do
         docker rm -f "pb-smoke3-$node-$stamp" >/dev/null 2>&1
