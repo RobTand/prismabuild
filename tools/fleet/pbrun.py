@@ -2795,23 +2795,32 @@ def _file_slurm_withdrawal(
     action finished a moment before the operator asked, which is them getting
     what they wanted rather than them mistyping, and is what
     ``PoolQueue.withdraw`` reports as ``already_finished``.
+
+    Each directory is listed before the name in it is read.  These are the same
+    NFS directories ``read_withdrawal_marker`` was written for: a lookup of a
+    name that did not exist yet is negatively cached, so ``exists()`` keeps
+    answering False after the ending has landed.  On a stale answer this verb
+    filed a withdrawal over a run already in ``done/`` and reported work that
+    succeeded as cancelled.  ``slurm_lane._read_json_object`` is the general
+    form of that revalidation; ``read_withdrawal_marker`` itself is pinned to
+    ``withdrawn/`` and this loop reads all three terminal directories.
     """
 
     key = str(submission["action_key"])
     published_unix = _submission_generation(submission)
     for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         filed = queue_root / state / f"{key}.json"
-        if not filed.exists() or not slurm_lane._same_generation(filed, published_unix):
+        filed_record = slurm_lane._read_json_object(filed)
+        if filed_record is None:
+            continue
+        theirs = slurm_lane._record_generation(filed_record)
+        if theirs is None or theirs != published_unix:
             continue
         if state == pool.WITHDRAWN:
             # A bare marker is a withdrawal still in flight (or one whose
             # scancel never landed); only a record carrying the job's ending
             # says this generation is over.
-            try:
-                filed_record = json.loads(filed.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                filed_record = None
-            if not (isinstance(filed_record, dict) and "detail" in filed_record):
+            if "detail" not in filed_record:
                 continue
             # The record this verb writes below carries ``detail`` too, and it
             # is written before ``scancel`` runs.  Until ``scancel`` accepts,
