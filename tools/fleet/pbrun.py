@@ -1452,6 +1452,7 @@ def slurm_outcome(
     wait_s: float,
     retry_safe: bool,
     max_attempts: int,
+    anywhere: bool = False,
     runtime_root: Path = RUNTIME_ROOT,
     lane_root=None,
     queue_root=None,
@@ -1485,7 +1486,8 @@ def slurm_outcome(
             request_path=request_path,
             placement=tags,
             resources=resources,
-            partition=slurm_lane.partition_for(resources, tags),
+            partition=slurm_lane.partition_for(
+                resources, tags, anywhere=anywhere),
             timeout_s=timeout_s,
             worker_script=runtime_root / "tools" / "prismabuild_worker.py",
             job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
@@ -2268,6 +2270,7 @@ def main() -> int:
             wait_s=args.wait_s,
             retry_safe=args.retry_safe,
             max_attempts=args.max_attempts,
+            anywhere=args.anywhere,
         )
 
     q = pool.PoolQueue(SH / "pb-queue")

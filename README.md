@@ -149,6 +149,9 @@ not a dependency: this package imports nothing from prismaquant.
     src/prismabuild/slurm.py      SLURM transport (inert here: no sbatch)
     src/prismabuild/dagster.py    Dagster transport (inert here)
     src/prismabuild/pool.py       shared-FS pull queue (the one that runs here)
+    src/prismabuild/slurm_lane.py submit one sealed action to SLURM and wait
+    fleet/slurm/                  the fleet's SLURM configuration and its smoke
+    tools/fleet/pbstatus.py       fleet status: nodes, jobs, recent endings
     tools/prismabuild_worker.py   stdlib-only worker entry point
     tests/                        CPU qualification (dated result above)
 
