@@ -3434,6 +3434,20 @@ def main() -> int:
     # those submits *because the commit is in the name*, so atomicity is the
     # whole fix and ordering does not matter.  It was not identical before
     # that: the name held the command and the content held the commit.
+    #
+    # The stamp stays in the checkout after the bundle is built, and issue #57
+    # asks why.  Because that same concurrency is what an unlink would break.
+    # This submission still reads the stamp after the seal -- the closure below
+    # hashes it -- and so does every other submitter of this fingerprint that
+    # is mid-seal, all the way through ``resolve(strict=True)``, ``add -f`` and
+    # its own closure.  Measured: removing the file turns those into "cannot
+    # open code closure file as a regular file" and a bare FileNotFoundError.
+    # There is no unlink-if-nobody-else-needs-it; every correct version is a
+    # lock or a refcount, and the one lock this submit side has is a flock the
+    # audit already recorded as not working across boxes.  Moving the stamp
+    # into a ``.pbrun/`` directory instead would move ``stamp_relative``, which
+    # is a closure entry path and a path in the sealed tree, so it is a key
+    # change and Rob's to make.
     payload = json.dumps(
         {"cwd": logical_cwd, **identity}, indent=1, sort_keys=True
     )
