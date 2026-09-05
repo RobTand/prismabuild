@@ -3264,9 +3264,6 @@ def main() -> int:
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        "OMP_NUM_THREADS": "4",
-        "MKL_NUM_THREADS": "4",
-        "OPENBLAS_NUM_THREADS": "4",
     }
     caller_variables: dict[str, str] = {}
     for entry in args.env:
@@ -3294,6 +3291,9 @@ def main() -> int:
     if args.cpus < 1:
         raise SystemExit("--cpus must be at least 1")
     demand.setdefault("cpu", args.cpus)
+    if not args.no_default_env:
+        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            variables.setdefault(name, str(demand["cpu"]))
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")
@@ -3518,7 +3518,7 @@ def main() -> int:
             "determinism": determinism,
             "artifact_family": "generic",
             "artifact_kind": "generic",
-            "argv": [SEALED_ARGV0, "-lc",
+            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
                      f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
                      f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
                      f"exit ${{PIPESTATUS[0]}}"],

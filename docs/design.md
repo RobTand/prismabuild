@@ -70,6 +70,17 @@ roots naming one file share one lock. Workers whose declared outputs are
 distinct files may execute task argv concurrently and converge through
 ordinary CAS publication.
 
+## Sealed execution environment
+
+`pbrun` executes its wrapper with `bash --noprofile --norc -c`. Host login
+profiles cannot rewrite the sealed PATH or select a different executable.
+CUDA tooling outside the default PATH must be named explicitly or supplied
+with `--env PATH=...` and appropriate placement. Native OMP, MKL and OpenBLAS
+thread defaults equal the sealed CPU demand; explicit environment overrides
+remain caller-owned. Parallel test processes must reserve their combined CPU
+and memory demand. These defaults change new action identities; old immutable
+requests and receipts retain their original meaning.
+
 ## Problem
 
 Campaign work (screens, per-point KL fan-outs, per-tensor encodes, A/Bs)

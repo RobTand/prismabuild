@@ -49,6 +49,12 @@ key; a different admissible worker population does.
 
 ## Submit one command
 
+The wrapper runs without login profiles. Use an absolute executable or seal
+its required PATH with `--env PATH=...`; a worker's shell startup files are
+not dependencies. Native thread defaults match `--cpus` (or `cpu=` in
+`--demand`), and explicit `--env` overrides are preserved. Reserve the total
+cores and memory used by parallel child processes, including pytest workers.
+
 Submit a command with `pbrun`. Everything after `--` is the command.
 
     tools/fleet/pbrun.py --gpu --timeout-s 3600 -- ./stage.sh --shard 3
