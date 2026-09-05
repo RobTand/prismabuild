@@ -321,7 +321,7 @@ def submit(
     timeout_s: float | None = DEFAULT_TIMEOUT_S,
     max_attempts: int = 1,
     retry_safe: bool | None = None,
-    queue_root: str | Path = SH / "pb-queue",
+    queue_root: str | Path | None = None,
     lane_root: str | Path | None = None,
     job_entry: str | Path = JOB_ENTRY,
     sbatch: str = "sbatch",
@@ -356,7 +356,8 @@ def submit(
         timeout_s: A deadline to enforce, or ``None`` for none.
         max_attempts: How many runs this action may have.
         retry_safe: Whether the producer declared the command idempotent.
-        queue_root: The pull queue root, also where withdrawals live.
+        queue_root: The pull queue root, also where withdrawals live, or
+            ``None`` for ``SH / "pb-queue"`` as it stands when this runs.
         lane_root: The SLURM lane root, or ``None`` for the configured one.
         job_entry: The batch job's entry point.
         sbatch: The submit binary, for tests.
@@ -373,6 +374,14 @@ def submit(
     if transport not in TRANSPORTS:
         raise SubmitRefused(f"unknown transport {transport!r}")
     key = str(action["action_key"])
+    if queue_root is None:
+        # Read when this runs, not when the module loaded.  A default built
+        # from ``SH`` at definition time was bound to the live queue for good,
+        # so repointing ``SH``, which every test does through
+        # ``tests/conftest.py``, never reached it: a test that called this on
+        # the pool transport without a ``queue_root`` published into the
+        # fleet's queue, and a worker on another box claimed the item.
+        queue_root = SH / "pb-queue"
 
     if transport == "pool":
         queue = pool.PoolQueue(queue_root)

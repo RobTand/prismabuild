@@ -70,7 +70,7 @@ def _keys(directory: Path) -> set[str]:
     return {path.stem for path in directory.glob("*.json")}
 
 
-def queue_counts(queue_root: Path = Q, *, transport: str = "pool") -> dict:
+def queue_counts(queue_root: Path | None = None, *, transport: str = "pool") -> dict:
     """What the queue directories hold, counted once per action.
 
     A withdrawal is filed twice by design -- the marker under ``withdrawn/``
@@ -79,6 +79,11 @@ def queue_counts(queue_root: Path = Q, *, transport: str = "pool") -> dict:
     counting both makes one cancellation read as a cancellation plus a
     failure.  It is one action ending one way.
     """
+
+    if queue_root is None:
+        # Resolved on the call, not bound at definition; see
+        # ``fleet_submit.submit``.
+        queue_root = Q
 
     root = Path(queue_root)
     states = TERMINAL_STATES if transport == "slurm" else (
@@ -156,7 +161,7 @@ def _core():
 
 
 def cas_shard_manifests(
-    cas_root: Path = CAS,
+    cas_root: Path | None = None,
     *,
     plan_sha256: str,
     definition_id: str = EXPORT_DEFINITION_ID,
@@ -184,6 +189,11 @@ def cas_shard_manifests(
         The manifests by shard number, how many receipts belonged to another
         plan, and how many entries could not be read.
     """
+
+    if cas_root is None:
+        # Resolved on the call, not bound at definition; see
+        # ``fleet_submit.submit``.
+        cas_root = SH / "cas"
 
     pb = _core()
     requests = Path(cas_root) / "requests"
@@ -234,13 +244,18 @@ def cas_shard_manifests(
     return manifests, other_plans, unreadable
 
 
-def shared_shard_manifests(results_root: Path = RES) -> tuple[dict[int, dict], int]:
+def shared_shard_manifests(results_root: Path | None = None) -> tuple[dict[int, dict], int]:
     """The manifests the pull queue's workers wrote into the shared checkout.
 
     Kept for the transport that wrote them.  These files carry no plan digest,
     so a leftover from a previous export cannot be told from a current one,
     which is the second half of why the count moved to the CAS.
     """
+
+    if results_root is None:
+        # Resolved on the call, not bound at definition; see
+        # ``fleet_submit.submit``.
+        results_root = RES
 
     results = Path(results_root)
     if not results.is_dir():
@@ -256,7 +271,7 @@ def shared_shard_manifests(results_root: Path = RES) -> tuple[dict[int, dict], i
     return manifests, unreadable
 
 
-def width(queue_root: Path = Q) -> str:
+def width(queue_root: Path | None = None) -> str:
     """How much of ``ready`` only one box can take.
 
     ``queue {'ready': 18}`` reads the same whether those items are spread
@@ -268,6 +283,11 @@ def width(queue_root: Path = Q) -> str:
     A status script must never be the thing that fails, so an unreadable
     fleet is reported as unknown rather than raised.
     """
+
+    if queue_root is None:
+        # Resolved on the call, not bound at definition; see
+        # ``fleet_submit.submit``.
+        queue_root = Q
 
     try:
         sys.path.insert(0, str(RUNTIME_ROOT / "src"))

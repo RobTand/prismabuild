@@ -269,9 +269,14 @@ def _has_receipt(request: Mapping, *, cas_root: Path) -> bool:
 
 
 def _clear_stale_result(
-    action: object, cwd: str, *, cas_root: Path = SH / "cas"
+    action: object, cwd: str, *, cas_root: Path | None = None
 ) -> tuple[list[str], str]:
     """Clear only this action's own leftover declared result, under its claim."""
+
+    if cas_root is None:
+        # Resolved on the call, so a repointed ``SH`` is honoured; see the
+        # same note on ``fleet_submit.submit``.
+        cas_root = SH / "cas"
 
     try:
         outcome = pb.repair_local_result(
@@ -289,7 +294,7 @@ def _clear_stale_result(
 def plan_resets(
     queue: pool.PoolQueue,
     *,
-    cas_root: Path = SH / "cas",
+    cas_root: Path | None = None,
     transport: str = "pool",
     include_reset: bool = False,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
@@ -301,6 +306,11 @@ def plan_resets(
     plan carries the transport its own record names, so a mixed queue during
     the cutover resets each half onto the dispatcher that ran it.
     """
+
+    if cas_root is None:
+        # Resolved on the call, so a repointed ``SH`` is honoured; see the
+        # same note on ``fleet_submit.submit``.
+        cas_root = SH / "cas"
 
     failed = sorted(queue.dir(pool.FAILED).glob("*.json"))
     # A withdrawal is a decision, and re-submitting it would undo it.  Two ways
