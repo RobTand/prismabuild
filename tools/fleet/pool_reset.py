@@ -81,14 +81,20 @@ import time
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+from runtime_paths import (  # noqa: E402
+    fleet_tool, generation_root, tool_candidates,
+)
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Mapping, Sequence  # noqa: E402
 import fleet_submit  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
-PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
+#: The submitter this tool re-submits through, under whichever layout the
+#: runtime containing it uses.  ``None`` when neither layout has one, which
+#: ``submit_command`` refuses on rather than handing a child a path that is
+#: not there.
+PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
 #: A stale declared result is cleared through ``core.repair_local_result`` and
 #: never by globbing.  The prefix is the pool's own dropping, but the file name
 #: is per *action fingerprint*, and pbrun tees a live run into the very same
@@ -478,8 +484,22 @@ def submit_command(
 
     Returns:
         The argv to run.
+
+    Raises:
+        SystemExit: There is no ``pbrun.py`` under this runtime root. Nothing
+            can be re-submitted at all, so it is said once rather than as a
+            child's "can't open file" per recovered record.
     """
 
+    if pbrun is None or not Path(pbrun).is_file():
+        looked = " and ".join(
+            str(candidate)
+            for candidate in tool_candidates("pbrun.py", root=RUNTIME_ROOT)
+        )
+        raise SystemExit(
+            f"pool_reset: no pbrun.py to re-submit through; looked for "
+            f"{looked}"
+        )
     command = [
         python, str(pbrun),
         "--transport", str(transport),

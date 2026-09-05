@@ -24,3 +24,45 @@ def generation_root(entrypoint: str | Path) -> Path:
     raise RuntimeError(
         f"fleet entry point is outside tools/ or tools/fleet/: {resolved}"
     )
+
+
+#: Where a fleet entry point can sit under a root, in the order searched.
+#: The checkout keeps every tool at ``tools/fleet/name.py`` and only a
+#: published generation carries the flat ``tools/name.py`` copy, so the
+#: checkout layout is looked at first: a published root holds both, and a
+#: checkout holds one.
+TOOL_LAYOUTS = (("tools", "fleet"), ("tools",))
+
+
+def tool_candidates(name: str, *, root: str | Path) -> tuple[Path, ...]:
+    """Every path ``name`` could have under ``root``, in the order searched.
+
+    Kept beside ``generation_root`` because it is the same fact about the
+    publisher's two layouts, and a refusal that names both candidates needs
+    the list rather than the answer.
+    """
+
+    return tuple(
+        Path(root).joinpath(*parts, name) for parts in TOOL_LAYOUTS
+    )
+
+
+def fleet_tool(name: str, *, root: str | Path) -> Path | None:
+    """The path of fleet entry point ``name`` under ``root``, or ``None``.
+
+    A launcher that hardcodes one of the two layouts works under one of them
+    and not the other. ``pool_reset`` hardcoded the published one, so every
+    path-addressed reset run from a checkout, which is the invocation the
+    operating guide shows, started a child on a file that does not exist and
+    exited 2.
+
+    ``None`` rather than an exception, because the caller is the one that can
+    say what a missing launcher means: a tool imported for a report has
+    nothing to refuse yet, and the refusal belongs where the child would have
+    been started.
+    """
+
+    for candidate in tool_candidates(name, root=root):
+        if candidate.is_file():
+            return candidate
+    return None
