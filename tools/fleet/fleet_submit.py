@@ -160,13 +160,20 @@ def add_transport_argument(parser: argparse.ArgumentParser) -> None:
              "default until the fleet has cut over to SLURM")
 
 
-#: One bundle per (checkout, working-tree state) per process, not one per
-#: action.  A dispatcher seals 120 shards out of one tree in one loop, and
+#: One bundle per (store, checkout, working-tree state) per process, not one
+#: per action.  A dispatcher seals 120 shards out of one tree in one loop, and
 #: ``git bundle create`` over that tree 120 times is 119 bundles of identical
 #: bytes.  Caching also narrows the window the seal refuses on: the roster is
 #: read once, so a tree that moves mid-loop is caught by the identity check
 #: rather than producing a hundred subtly different snapshots.
-_SNAPSHOT_CACHE: dict[tuple[str, str, str], dict[str, object]] = {}
+#:
+#: The store is part of the key because ingestion is part of the work.  A
+#: snapshot record is a reference into one CAS, so returning the first store's
+#: record for a second store hands the caller an input whose blob was never
+#: written there: the submission succeeds and the node cannot materialize the
+#: tree.  Keying on the store root makes the second call do the ingest the
+#: caller asked for.
+_SNAPSHOT_CACHE: dict[tuple[str, str, str, str], dict[str, object]] = {}
 
 
 def seal_checkout_snapshot(
@@ -188,7 +195,8 @@ def seal_checkout_snapshot(
         max_bytes: A lowered local-disk bound, or ``None`` for pbrun's own.
 
     Returns:
-        The ``params.checkout_snapshot`` record, cached per working-tree state.
+        The ``params.checkout_snapshot`` record, cached per store and
+        working-tree state.
 
     Raises:
         SubmitRefused: The tree cannot be sealed, with pbrun's own reason.
@@ -208,7 +216,12 @@ def seal_checkout_snapshot(
             f"snapshot, and this one cannot be identified: {exc}"
         ) from None
     cached = _SNAPSHOT_CACHE.get(
-        key := (str(root), str(identity["head"]), str(identity["dirty_sha256"]))
+        key := (
+            str(cas.root),
+            str(root),
+            str(identity["head"]),
+            str(identity["dirty_sha256"]),
+        )
     )
     if cached is not None:
         return cached
