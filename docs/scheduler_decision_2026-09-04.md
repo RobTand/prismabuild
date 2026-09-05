@@ -132,9 +132,15 @@ by node weight), no default deadline, the timeout and signal record
 convention, `--withdraw` routed by the lane's own record, campaign fan-out
 (`pbrun --detach`, `pbwait`, `pbcampaign`), controller-attested host classes
 (`pbrun --measurement --host-class`), liveness reporting for a job that stops
-moving (reported, never cancelled), and the four operator scripts under
+moving (reported, never cancelled), the command's own exit status on the
+terminal record (`detail.action_returncode`), `pool_reset` re-submitting a
+sealed action through the lane, an attached `pbrun` joining a job already
+running for its key, the operator guide (`docs/operating_prismabuild.md`),
+the measured resource-enforcement record
+(`docs/resource_enforcement_2026-09-05.md`), a test-suite guard against the
+fleet's live store (`tests/conftest.py`), and the four operator scripts under
 `fleet/slurm/`. The lane has run against a real 25.11.2 controller in a
-container on sparky (`fleet/slurm/smoke/`, 17 rows). Merging any of this to
+container on sparky (`fleet/slurm/smoke/`, 21 rows). Merging any of this to
 `main` deploys nothing: the fleet executes the published runtime generation,
 not `main`.
 
@@ -224,11 +230,14 @@ run, branch refs never rewritten). `main` = `44b9f8f`.
 ## 9. Not verified, and what would verify it
 
 - SLURM has not run on this fleet's boxes. It has run in a privileged
-  container on sparky (`fleet/slurm/smoke/`, 2026-09-04): one `slurmctld` and
-  one `slurmd` from the Sparks' own 25.11.2 debs, the fleet's scheduler
-  choices, the real Epilog, and eleven rows through `pbrun --transport slurm`
-  (execute, CAS hit, failure, `--timeout-s` as `--time`, withdraw, shard
-  admission, unknown Feature refused, Epilog cleanup, `scontrol` provenance).
+  container on sparky (`fleet/slurm/smoke/`, 2026-09-04 and 2026-09-05): one
+  `slurmctld` and one `slurmd` from the Sparks' own 25.11.2 debs, the fleet's
+  scheduler choices, the real Epilog, and 21 rows through `pbrun --transport
+  slurm` (execute, CAS hit, failure with the command's own exit status,
+  `--timeout-s` as `--time`, withdraw, shard admission, unknown Feature
+  refused, Epilog cleanup, `scontrol` provenance, a campaign and its free
+  re-run, host-class attestation, a stalled job reported and completed, and
+  cores and memory enforced to the declaration).
   What the container cannot show is listed in the runbook under "Still not
   verified": device containment on a real GPU, the fleet's systemd cgroup
   arrangement, `root_squash` end to end, and three-box RPC. Phase 1 verifies

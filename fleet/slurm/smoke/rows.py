@@ -853,6 +853,271 @@ def row_12_unknown_host_class_is_refused() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Rows 14a-14d: what ConstrainCores and ConstrainRAMSpace actually do
+#
+# Under the pull queue, `pbrun --cpus` and `--demand mem_gb=` were admission
+# declarations that nothing enforced.  Under `select/cons_tres` with
+# `CR_Core_Memory` they become `--cpus-per-task` and `--mem`, and
+# fleet/slurm/cgroup.conf turns those into a cpuset and a `memory.max`.  These
+# rows measure the difference rather than argue it, and they are the evidence
+# behind docs/resource_enforcement_2026-09-05.md.
+#
+# The block runs three times, one arm per setting the decision turns on:
+#
+#   PB_SMOKE_CONSTRAIN_CORES=yes PB_SMOKE_CONSTRAIN_SWAP=no   # the fleet today
+#   PB_SMOKE_CONSTRAIN_CORES=no  PB_SMOKE_CONSTRAIN_SWAP=no   # cores unenforced
+#   PB_SMOKE_CONSTRAIN_CORES=yes PB_SMOKE_CONSTRAIN_SWAP=yes  # memory that kills
+#
+# Each row names the arm it ran under, so a transcript says which one it is.
+# ---------------------------------------------------------------------------
+
+#: The container's cgroup settings, as ``inside.sh`` generated them.
+CONSTRAIN_CORES = os.environ.get("PB_SMOKE_CONSTRAIN_CORES", "yes")
+CONSTRAIN_SWAP = os.environ.get("PB_SMOKE_CONSTRAIN_SWAP", "no")
+ARM = f"cores={CONSTRAIN_CORES} swap={CONSTRAIN_SWAP}"
+
+#: How much memory row 13c writes past its declaration, and in what chunks.
+#: ``bytearray(N)`` will not do: it is a calloc, so the pages are mapped and
+#: never written, and a cgroup charges pages that are faulted in.  ``extend``
+#: copies, which touches every page.
+GROW_CHUNK_MIB = 64
+OVER_DECLARED_GB = 1
+OVER_GROW_MIB = 3072
+UNDER_DECLARED_GB = 2
+UNDER_GROW_MIB = 256
+
+_AFFINITY_RE = re.compile(r"current affinity list:\s*(\S+)")
+_NPROC_RE = re.compile(r"nproc=(\d+)")
+
+
+def _affinity_width(text: str) -> int:
+    """How many CPUs a ``taskset -cp`` list names, or ``-1`` when it said none.
+
+    ``-cp`` rather than ``-p``: the list form is countable, and a hex mask is
+    a second thing to get wrong in a row that is about a number.
+    """
+
+    match = _AFFINITY_RE.search(text or "")
+    if not match:
+        return -1
+    total = 0
+    for part in match.group(1).split(","):
+        if "-" in part:
+            first, last = part.split("-", 1)
+            total += int(last) - int(first) + 1
+        else:
+            total += 1
+    return total
+
+
+def _grower(megabytes: int, *, report: bool = False) -> list[str]:
+    """A command that writes ``megabytes`` MiB and, optionally, reports its cgroup.
+
+    The report is what makes row 13c readable in every arm.  A job the kernel
+    kills says nothing itself, so the state is the evidence; a job that
+    survives has to say whether it survived unconstrained or by reclaiming,
+    and only its own ``memory.events`` can answer that.
+    """
+
+    lines = [
+        "b = bytearray()",
+        f"for _ in range({megabytes // GROW_CHUNK_MIB}):",
+        f"    b.extend(b'x' * ({GROW_CHUNK_MIB} << 20))",
+        "print('grew', len(b) >> 20, 'MiB', flush=True)",
+    ]
+    if report:
+        # The whole chain, not the leaf.  A cgroup v2 limit is hierarchical:
+        # slurmstepd sets `memory.max` on the job's cgroup and the process
+        # runs two levels below it, where `memory.max` reads `max` and
+        # `memory.events` counts nothing.  Reading only the leaf reported the
+        # constraint absent while it was being enforced one level up.
+        lines += [
+            "import pathlib",
+            "rel = open('/proc/self/cgroup').read().strip().rsplit(':', 1)[-1]",
+            "root = pathlib.Path('/sys/fs/cgroup')",
+            "node = root / rel.lstrip('/')",
+            "while True:",
+            "    def read(name, node=node):",
+            "        try:",
+            "            return ' '.join((node / name).read_text().split())",
+            "        except OSError:",
+            "            return '-'",
+            "    print('cgroup', node, 'memory.max=' + read('memory.max'),",
+            "          'memory.swap.max=' + read('memory.swap.max'),",
+            "          'memory.current=' + read('memory.current'),",
+            "          'memory.swap.current=' + read('memory.swap.current'),",
+            "          'memory.events=[' + read('memory.events') + ']',",
+            "          flush=True)",
+            "    if node == root:",
+            "        break",
+            "    node = node.parent",
+        ]
+    return ["python3", "-c", "\n".join(lines) + "\n"]
+
+
+def _ending(prefix: str) -> tuple[str, dict]:
+    """The terminal record filed for a key prefix, whichever directory it is in."""
+
+    for state in ("done", "failed"):
+        path, record = outcome(state, prefix)
+        if path is not None:
+            return state, record
+    return "", {}
+
+
+_CGROUP_RE = re.compile(
+    r"^cgroup (?P<path>\S+) memory\.max=(?P<limit>\S+) "
+    r"memory\.swap\.max=(?P<swap_limit>\S+) "
+    r"memory\.current=(?P<current>\S+) "
+    r"memory\.swap\.current=(?P<swap_current>\S+) "
+    r"memory\.events=\[(?P<events>[^\]]*)\]$",
+    re.M,
+)
+
+
+def _binding_cgroup(text: str) -> dict[str, str]:
+    """The nearest ancestor cgroup that names a numeric ``memory.max``.
+
+    A cgroup v2 limit binds the whole subtree, so the level that carries the
+    number is the one that decides the job's fate -- not the leaf the process
+    happens to be in, which reads ``max`` and counts no events.
+    """
+
+    for match in _CGROUP_RE.finditer(text or ""):
+        if match.group("limit").isdigit():
+            return match.groupdict()
+    return {}
+
+
+def row_14_cpu_containment() -> None:
+    """What a job sees of the node's CPUs when it declares one, and when two.
+
+    Read off ``taskset``, not ``nproc``.  ``nproc`` honours ``OMP_NUM_THREADS``
+    before it looks at the affinity mask, and ``pbrun``'s sealed environment
+    sets that to 4 (``tools/fleet/pbrun.py:2549``), so ``nproc`` answers 4
+    under every declaration.  It is reported anyway, because an action that
+    sizes its own parallelism from ``nproc`` is reading that 4.
+    """
+
+    node_cpus = int((sh(["nproc"]).stdout or "0").strip() or 0)
+    for label, declared in (("14a", 1), ("14b", 2)):
+        completed = pbrun(
+            ["bash", "-c", "echo nproc=$(nproc); taskset -cp $$"],
+            extra=["--cpus", str(declared)],
+        )
+        text = (completed.stdout or "") + (completed.stderr or "")
+        match = _NPROC_RE.search(text)
+        seen = int(match.group(1)) if match else -1
+        width = _affinity_width(text)
+        if CONSTRAIN_CORES == "yes":
+            # The declaration is a cpuset: the job is confined to exactly what
+            # it asked for, on a node that had more to give.
+            ok = width == declared and node_cpus > declared
+        else:
+            # The declaration is an admission count only: the job is placed
+            # against it and then sees the whole node.
+            ok = width == node_cpus
+        record(
+            f"{label} what a --cpus {declared} job may run on [{ARM}]",
+            ok,
+            f"job affinity width={width} of the node's {node_cpus} CPUs "
+            f"(declared {declared}); nproc said {seen} "
+            f"(OMP_NUM_THREADS, not the cpuset)",
+        )
+
+
+def row_14c_over_declared_memory() -> None:
+    """A job that writes past its declared memory does not run unconstrained.
+
+    The claim is deliberately not ``state == OUT_OF_MEMORY``: what the
+    decision turns on is whether the constraint reaches the job at all, and
+    the state the controller picks is quoted rather than assumed.  With
+    ``ConstrainSwapSpace=no`` -- the fleet's setting -- a job over
+    ``memory.max`` reclaims into swap and lives; with it on, the kernel kills
+    it.  Both are the constraint working, and the row passes on either, so the
+    arms differ in what they report rather than in whether they pass.
+    """
+
+    completed = pbrun(
+        _grower(OVER_GROW_MIB, report=True),
+        extra=["--demand", f"mem_gb={OVER_DECLARED_GB}"],
+    )
+    prefix, job_id = submitted(completed)
+    where, rec = _ending(prefix) if prefix else ("", {})
+    detail = rec.get("detail", {}) if isinstance(rec, dict) else {}
+    slurm = detail.get("slurm", {}) if isinstance(detail, dict) else {}
+    state = str(slurm.get("state") or "")
+    text = (completed.stdout or "") + str(detail.get("stdout") or "")
+    binding = _binding_cgroup(text)
+    limit = binding.get("limit", "")
+    events = binding.get("events", "")
+    hit = re.search(r"\bmax (\d+)", events)
+    swap_used = binding.get("swap_current", "")
+    killed = state not in ("", "COMPLETED")
+    declared_bytes = OVER_DECLARED_GB * 1024 ** 3
+    said = f"pbrun: failed ({state})" in (completed.stderr or "")
+    # And that `pbrun` named the declaration, not only the state.  A job the
+    # kernel kills writes nothing to its own log, so the number that decided
+    # the ending is in the submission and nowhere the operator was sent.
+    named = (f"exceeded the {OVER_DECLARED_GB} GiB it declared"
+             in (completed.stderr or ""))
+    # Evidence that the limit did something, not merely that it exists.  A
+    # `max` event is the direct form; pages in swap are the form it takes
+    # under `ConstrainSwapSpace=no`, where reclaim succeeds and the counter
+    # stays at zero -- measured on 2026-09-05: `memory.max` exactly the
+    # declared 1073741824 bytes, `memory.events` all zero, and 2246184960
+    # bytes of a 3072 MiB allocation resident in swap.
+    acted = (bool(hit) and int(hit.group(1)) > 0) or (
+        swap_used.isdigit() and int(swap_used) > 0
+    )
+    ok = (killed and said and named) or (
+        acted and limit.isdigit() and int(limit) == declared_bytes
+    )
+    record(
+        f"14c a job over its mem_gb is constrained, not ignored [{ARM}]",
+        ok,
+        f"job={job_id} declared mem_gb={OVER_DECLARED_GB}, wrote "
+        f"{OVER_GROW_MIB} MiB -> filed {where or 'nothing'}/ state={state!r} "
+        f"rc={detail.get('returncode')} signal={detail.get('signal')} "
+        f"pbrun said failed({state})={said} and named the declaration"
+        f"={named}; binding cgroup "
+        f"{binding.get('path', '(none reported)')} "
+        f"memory.max={limit or '-'} "
+        f"(declared {declared_bytes}) "
+        f"memory.swap.max={binding.get('swap_limit', '-')} "
+        f"memory.swap.current={swap_used or '-'} "
+        f"memory.events=[{events}]",
+    )
+
+
+def row_14d_within_declared_memory() -> None:
+    """And a job that stays under its declaration is untouched by the limit."""
+
+    completed = pbrun(
+        _grower(UNDER_GROW_MIB),
+        extra=["--demand", f"mem_gb={UNDER_DECLARED_GB}"],
+    )
+    prefix, job_id = submitted(completed)
+    where, rec = _ending(prefix) if prefix else ("", {})
+    detail = rec.get("detail", {}) if isinstance(rec, dict) else {}
+    slurm = detail.get("slurm", {}) if isinstance(detail, dict) else {}
+    ok = (
+        completed.returncode == 0
+        and where == "done"
+        and rec.get("status") == "executed"
+        and f"grew {UNDER_GROW_MIB} MiB" in (completed.stdout or "")
+    )
+    record(
+        f"14d a job within its mem_gb completes [{ARM}]",
+        ok,
+        f"job={job_id} declared mem_gb={UNDER_DECLARED_GB}, wrote "
+        f"{UNDER_GROW_MIB} MiB -> filed {where or 'nothing'}/ "
+        f"status={rec.get('status')} state={slurm.get('state')} "
+        f"rc={completed.returncode}",
+    )
+
+
 def main() -> int:
     for argv in (
         ["git", "config", "--global", "user.name", "PrismaBuild smoke"],
@@ -888,6 +1153,9 @@ def main() -> int:
     row_11_host_class_measurement(VOL / "nonce-measurement.txt")
     row_12_unknown_host_class_is_refused()
     row_13_liveness()
+    row_14_cpu_containment()
+    row_14c_over_declared_memory()
+    row_14d_within_declared_memory()
     del prefix, timeout_prefix
 
     width = max(len(name) for name, _, _ in results)

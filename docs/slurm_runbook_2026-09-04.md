@@ -32,8 +32,10 @@ DEB_DIR=/home/rob/slurm-build/arm64-24.04 fleet/slurm/smoke/run.sh
 PRISMABUILD_SLURM_SMOKE=1 PYTHONPATH=src pytest -q tests/test_slurm_smoke.py
 ```
 
-Both SLURMs pass all eleven rows: the fleet's 25.11.2 rebuild (primary) and
-Ubuntu 24.04's own 23.11.4 (secondary). What that settles:
+The first eleven rows pass on both SLURMs: the fleet's 25.11.2 rebuild
+(primary) and Ubuntu 24.04's own 23.11.4 (secondary). Rows 10a-14d, added on
+2026-09-05 for campaigns, host classes, liveness, and resource enforcement,
+have run on the 25.11.2 rebuild only. What the eleven settle:
 
 - **The `shard` syntax in `gres.conf`** (was item 1). `File=` is *required*, not
   optional: a `shard` with no sharing `gpu` bound to a device file is fatal at
@@ -486,6 +488,11 @@ that can resolve the other two by name.
 Nothing in it needs root. The loops are rob's processes, the crontab is rob's,
 `pqwork.service` is rob's user unit, and the runtime generation is rob's to
 publish.
+
+Before you switch the transport, settle what the cgroup settings should be:
+`ConstrainCores` and `ConstrainRAMSpace` turn a declared demand into a cpuset
+and a `memory.max`, and `docs/resource_enforcement_2026-09-05.md` has the three
+options, the container measurements for each, and a recommendation.
 
 It refuses unless all five of these hold:
 
