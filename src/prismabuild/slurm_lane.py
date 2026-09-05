@@ -55,6 +55,7 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import time
 from typing import Callable
 
@@ -746,18 +747,59 @@ def _field(fields: Sequence[str], index: int) -> str:
     return fields[index] if index < len(fields) else ""
 
 
-def _sacct_state(job_id: str, *, sacct: str) -> JobProvenance | None:
-    completed = _run(
+#: What every SLURM client prints when it could not reach the controller at
+#: all.  Deliberately not the same thing as "Invalid job id specified", which
+#: is the controller *answering* that it has forgotten the job: one is silence
+#: and the other is an answer, and a job that is still running looks exactly
+#: like a purged one if the difference is thrown away.  Measured against
+#: 25.11.2 in fleet/slurm/smoke/multinode on 2026-09-05.
+_UNREACHABLE = re.compile(
+    r"unable to contact slurm controller"
+    r"|slurmctld.*(not responding|unavailable)"
+    r"|connection refused"
+    r"|socket timed out on send/recv",
+    re.IGNORECASE,
+)
+
+
+def _ask(
+    argv: Sequence[str], *, where: str
+) -> tuple[subprocess.CompletedProcess[str] | None, bool]:
+    """Run one read-only scheduler query, and say whether anyone answered.
+
+    A status query is not a submission.  ``sbatch`` failing has to reach the
+    caller as a refusal of the action; ``scontrol`` failing while a job runs is
+    a fact about the controller and says nothing about the job.  So a timeout
+    here is reported as the same silence as a connect failure rather than
+    raised: a restarting controller must not surface as "slurm refused this
+    action" for work it already accepted and is still running.
+    """
+
+    try:
+        completed = _run(argv, where=where)
+    except SlurmLaneError:
+        return None, True
+    if completed.returncode != 0 and _UNREACHABLE.search(
+        (completed.stderr or "") + (completed.stdout or "")
+    ):
+        return completed, True
+    return completed, False
+
+
+def _sacct_state(
+    job_id: str, *, sacct: str
+) -> tuple[JobProvenance | None, bool]:
+    completed, unreachable = _ask(
         [
             sacct, "-j", job_id, "--parsable2", "--noheader",
             "-o", "JobID,State,ExitCode,Start,End,Elapsed,NodeList,Partition",
         ],
         where="sacct",
     )
-    if completed.returncode != 0:
+    if completed is None or completed.returncode != 0:
         # Accounting storage is off until slurmdbd is deployed; that is a
         # configuration fact, not a failure of this action.
-        return None
+        return None, unreachable
     for line in completed.stdout.splitlines():
         fields = line.split("|")
         if len(fields) < 3 or fields[0].strip() != job_id:
@@ -775,21 +817,24 @@ def _sacct_state(job_id: str, *, sacct: str) -> JobProvenance | None:
             elapsed_s=_parse_slurm_duration(_field(fields, 5)),
             node=_parse_slurm_text(_field(fields, 6)),
             partition=_parse_slurm_text(_field(fields, 7)),
-        )
-    return None
+        ), False
+    return None, False
 
 
 _SCONTROL_FIELD = re.compile(r"(\w+)=(\S*)")
 
 
-def _scontrol_state(job_id: str, *, scontrol: str) -> JobProvenance | None:
-    completed = _run([scontrol, "show", "job", job_id], where="scontrol")
-    if completed.returncode != 0:
-        return None
+def _scontrol_state(
+    job_id: str, *, scontrol: str
+) -> tuple[JobProvenance | None, bool]:
+    completed, unreachable = _ask(
+        [scontrol, "show", "job", job_id], where="scontrol")
+    if completed is None or completed.returncode != 0:
+        return None, unreachable
     fields = dict(_SCONTROL_FIELD.findall(completed.stdout))
     state = fields.get("JobState", "").strip()
     if not state:
-        return None
+        return None, False
     exit_code, signal_number = _exit_fields(fields.get("ExitCode", ""))
     return JobProvenance(
         state=state,
@@ -800,19 +845,46 @@ def _scontrol_state(job_id: str, *, scontrol: str) -> JobProvenance | None:
         elapsed_s=_parse_slurm_duration(fields.get("RunTime")),
         node=_parse_slurm_text(fields.get("NodeList")),
         partition=_parse_slurm_text(fields.get("Partition")),
-    )
+    ), False
 
 
-def _squeue_state(job_id: str, *, squeue: str) -> JobProvenance | None:
-    completed = _run(
+def _squeue_state(
+    job_id: str, *, squeue: str
+) -> tuple[JobProvenance | None, bool]:
+    completed, unreachable = _ask(
         [squeue, "-h", "-j", job_id, "-o", "%T"], where="squeue"
     )
-    if completed.returncode != 0:
-        return None
+    if completed is None or completed.returncode != 0:
+        return None, unreachable
     state = completed.stdout.strip().splitlines()
     if not state or not state[0].strip():
-        return None
-    return JobProvenance(state=state[0].strip().split()[0])
+        return None, False
+    return JobProvenance(state=state[0].strip().split()[0]), False
+
+
+def _provenance(
+    job_id: str, *, sacct: str, scontrol: str, squeue: str
+) -> tuple[JobProvenance | None, bool]:
+    """The scheduler's answer, and whether the silence was the controller's.
+
+    Two nothings have to be told apart.  A controller that answers "Invalid job
+    id specified" has forgotten the job, which is an answer; a controller that
+    is not listening at all has said nothing, and the job it was asked about is
+    still allocated and still running.  The second flag is which of the two
+    this was.
+    """
+
+    unreachable = False
+    for reader in (
+        lambda: _sacct_state(job_id, sacct=sacct),
+        lambda: _scontrol_state(job_id, scontrol=scontrol),
+        lambda: _squeue_state(job_id, squeue=squeue),
+    ):
+        answer, silent = reader()
+        if answer is not None:
+            return answer, False
+        unreachable = unreachable or silent
+    return None, unreachable
 
 
 def query_provenance(
@@ -830,15 +902,8 @@ def query_provenance(
     fewer fields, and the missing ones stay null rather than being invented.
     """
 
-    for reader in (
-        lambda: _sacct_state(job_id, sacct=sacct),
-        lambda: _scontrol_state(job_id, scontrol=scontrol),
-        lambda: _squeue_state(job_id, squeue=squeue),
-    ):
-        answer = reader()
-        if answer is not None:
-            return answer
-    return None
+    return _provenance(
+        job_id, sacct=sacct, scontrol=scontrol, squeue=squeue)[0]
 
 
 def query_state(
@@ -872,14 +937,59 @@ def wait(
 
     None of the three is a verdict on the work.  The caller reads the CAS for
     that; this says which job to read the logs of, and why it stopped.
+
+    A controller that is not answering is none of the three either.  It is
+    waited through, bounded by ``wait_s`` like everything else here, and the
+    wait is announced so an operator can see why nothing is happening.  A
+    caller who passed ``wait_s=None`` asked to wait for a terminal state
+    however long it takes, and an outage does not change that answer.
     """
 
     deadline = None if wait_s is None else time.monotonic() + float(wait_s)
     last: JobProvenance | None = None
+    silent_since: float | None = None
     while True:
-        answer = query_provenance(
+        answer, unreachable = _provenance(
             job.job_id, sacct=sacct, scontrol=scontrol, squeue=squeue
         )
+        if answer is None and unreachable:
+            # Not news about the job.  It is still allocated, still running,
+            # and the controller will say so when it is back; reporting
+            # UNKNOWN here told an operator their work had no outcome while
+            # it was on its way to a receipt.  Measured on 2026-09-05 in
+            # fleet/slurm/smoke/multinode row M7: a 100 s restart of the
+            # controller, a job that went on to COMPLETE, and a `pbrun` that
+            # said `failed (UNKNOWN)` and exited 1.
+            if silent_since is None:
+                silent_since = time.monotonic()
+                print(
+                    f"slurm_lane: the controller is not answering about job "
+                    f"{job.job_id}; the job is still allocated, so this waits",
+                    file=sys.stderr, flush=True,
+                )
+            if deadline is None or time.monotonic() <= deadline:
+                sleep(poll_s)
+                continue
+            # The caller's patience ran out while nobody was listening.  The
+            # job is not finished as far as anything here knows, which is what
+            # WAIT_TIMEOUT already means.
+            return Outcome(
+                job_id=job.job_id,
+                state=WAIT_TIMEOUT_STATE,
+                exit_code=None,
+                signal=None,
+                stdout_path=job.stdout_path,
+                stderr_path=job.stderr_path,
+                provenance=last,
+            )
+        if silent_since is not None:
+            print(
+                f"slurm_lane: the controller answered again about job "
+                f"{job.job_id} after "
+                f"{time.monotonic() - silent_since:.0f}s",
+                file=sys.stderr, flush=True,
+            )
+            silent_since = None
         if answer is None:
             return Outcome(
                 job_id=job.job_id,

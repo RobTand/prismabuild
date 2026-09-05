@@ -533,7 +533,7 @@ def row_m7_controller_restart(nonce: str) -> None:
 
     process = subprocess.Popen(
         exec_argv("dl380g10",
-                  pbrun_argv(["./action.sh", "sleep", nonce, "90"]),
+                  pbrun_argv(["./action.sh", "sleep", nonce, "150"]),
                   cwd=str(SRC_INSIDE)),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
@@ -559,10 +559,14 @@ def row_m7_controller_restart(nonce: str) -> None:
     dexec("dl380g10", ["bash", "-c", "pkill -TERM slurmctld; exit 0"], user="root")
     down = wait_for(
         lambda: ctl(["scontrol", "ping"]).returncode != 0, timeout_s=30)
-    # Long enough that the submitting `pbrun` polls at least twice while
-    # nothing is listening.  A shorter outage can slip between two five-second
-    # polls, and a row that only passes when the poll misses is not a row.
-    time.sleep(12)
+    # Long enough to outlast SLURM's own client-side retry, which is what
+    # makes this a row rather than a formality.  Measured here on 25.11.2: a
+    # `scontrol` issued while the controller is down blocks about forty
+    # seconds inside the client library and then answers, so an outage of
+    # twenty seconds is invisible to the lane and proves nothing.  At sixty a
+    # poll really does come back with nothing, which is the case the lane has
+    # to tell apart from a job the controller has forgotten.
+    time.sleep(60)
     ddetach("dl380g10", ["/usr/local/bin/pb-start-slurmctld"])
     back = wait_for(
         lambda: ctl(["scontrol", "ping"]).returncode == 0, timeout_s=120)
@@ -579,6 +583,8 @@ def row_m7_controller_restart(nonce: str) -> None:
         "the job was running when the controller went": running,
         "the controller was really down": down,
         "the controller came back": back,
+        "pbrun said it was waiting rather than reporting an ending":
+            "the controller is not answering" in said,
         "pbrun rc==0": process.returncode == 0,
         "done record": path is not None,
         "receipt_published": detail.get("receipt_published") is True,

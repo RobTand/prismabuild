@@ -90,6 +90,21 @@ _SACCT = '''\
 import os, sys
 from pathlib import Path
 
+# A controller that is not listening.  Every SLURM client says the same thing
+# and exits non-zero, which is what `_UNREACHABLE` matches; the countdown is
+# shared by all three so one "poll" costs three of it.
+_silence = os.environ.get("FAKE_SLURM_UNREACHABLE")
+if _silence:
+    _left = Path(_silence)
+    _n = int(_left.read_text() or "0") if _left.exists() else 0
+    if _n > 0:
+        _left.write_text(str(_n - 1))
+        sys.stderr.write(
+            "slurm_load_jobs error: Unable to contact slurm controller "
+            "(connect failure)\\n"
+        )
+        raise SystemExit(1)
+
 if os.environ.get("FAKE_SACCT_DISABLED") == "1":
     sys.stderr.write("sacct: error: Slurm accounting storage is disabled\\n")
     raise SystemExit(1)
@@ -113,6 +128,21 @@ _SCONTROL = '''\
 import os, sys
 from pathlib import Path
 
+# A controller that is not listening.  Every SLURM client says the same thing
+# and exits non-zero, which is what `_UNREACHABLE` matches; the countdown is
+# shared by all three so one "poll" costs three of it.
+_silence = os.environ.get("FAKE_SLURM_UNREACHABLE")
+if _silence:
+    _left = Path(_silence)
+    _n = int(_left.read_text() or "0") if _left.exists() else 0
+    if _n > 0:
+        _left.write_text(str(_n - 1))
+        sys.stderr.write(
+            "slurm_load_jobs error: Unable to contact slurm controller "
+            "(connect failure)\\n"
+        )
+        raise SystemExit(1)
+
 job = sys.argv[-1]
 record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
 if not record.exists():
@@ -132,6 +162,21 @@ print(
 _SQUEUE = '''\
 import os, sys
 from pathlib import Path
+
+# A controller that is not listening.  Every SLURM client says the same thing
+# and exits non-zero, which is what `_UNREACHABLE` matches; the countdown is
+# shared by all three so one "poll" costs three of it.
+_silence = os.environ.get("FAKE_SLURM_UNREACHABLE")
+if _silence:
+    _left = Path(_silence)
+    _n = int(_left.read_text() or "0") if _left.exists() else 0
+    if _n > 0:
+        _left.write_text(str(_n - 1))
+        sys.stderr.write(
+            "slurm_load_jobs error: Unable to contact slurm controller "
+            "(connect failure)\\n"
+        )
+        raise SystemExit(1)
 
 job = sys.argv[sys.argv.index("-j") + 1]
 record = Path(os.environ["FAKE_SLURM_STATE"]) / f"{job}.state"
@@ -563,6 +608,58 @@ def test_a_purged_job_nobody_can_describe_is_unknown_not_failed(
     for record in fleet.glob("*.state"):
         record.unlink()
     assert sl.wait(job, poll_s=0.0).state == sl.UNKNOWN_STATE
+
+
+def test_a_controller_that_is_not_answering_is_waited_through_not_reported(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreachable controller says nothing about the job, and nothing is
+    not an ending.
+
+    Two silences look identical if only the return code is read.  "Invalid job
+    id specified" is the controller answering that it has forgotten the job;
+    a connect failure is nobody answering at all, and the job it was asked
+    about is still allocated and still running.
+
+    Before this was told apart, ``wait`` returned ``UNKNOWN`` on the first
+    poll that could not reach the controller, ``run`` then looked the action
+    up in a CAS it had not been written to yet, and ``pbrun`` printed
+    ``failed (UNKNOWN)`` and exited 1 for work that completed seconds later.
+    Measured on 2026-09-05 in ``fleet/slurm/smoke/multinode`` against 25.11.2:
+    a job in ``RUNNING``, the controller restarted for 100 s, one poll blocked
+    40 s inside SLURM's own client retry and then answered ``None``, and
+    ``wait`` returned ``UNKNOWN`` for a job that went on to ``COMPLETED``.
+    """
+
+    job = _submit(tmp_path, resources=sl.LaneResources())
+    # Two polls' worth of silence: each poll asks sacct, scontrol and squeue.
+    (fleet / "silence").write_text("6")
+    monkeypatch.setenv("FAKE_SLURM_UNREACHABLE", str(fleet / "silence"))
+
+    outcome = sl.wait(job, poll_s=0.0, wait_s=60.0, sleep=lambda _s: None)
+
+    assert outcome.state == "COMPLETED"
+    assert (fleet / "silence").read_text() == "0"
+
+
+def test_patience_that_runs_out_during_an_outage_is_a_wait_timeout(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``UNKNOWN`` would be a claim nothing established.
+
+    The job is not finished as far as anything here knows -- which is what
+    ``WAIT_TIMEOUT`` already means, and what makes ``pbrun`` print the job id
+    and the ``--withdraw`` that stops it rather than a verdict.
+    """
+
+    job = _submit(tmp_path, resources=sl.LaneResources())
+    (fleet / "silence").write_text("999")
+    monkeypatch.setenv("FAKE_SLURM_UNREACHABLE", str(fleet / "silence"))
+
+    outcome = sl.wait(job, poll_s=0.0, wait_s=0.0, sleep=lambda _s: None)
+
+    assert outcome.state == sl.WAIT_TIMEOUT_STATE
+    assert not (fleet / "cancelled").exists()
 
 
 def test_a_failed_retry_safe_action_is_resubmitted_to_its_declared_bound(
