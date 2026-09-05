@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Refuse GPU work that does not go through the PrismaBuild pool.
+"""Refuse test and GPU work that does not go through PrismaBuild.
 
 Briefs are discipline, not enforcement, and discipline is what failed: the
 same briefs that said "use the pool" produced fifteen agents recomputing one
 baseline and a flock jam seven deep.  This hook moves the rule from prose an
 agent may skim to a refusal it cannot.
 
-It is deliberately narrow.  Read-only inspection (``nvidia-smi``, ``squeue``,
+Recognized test runners and GPU containers are also refused. The global agent
+policy covers indirect execution this lexical guard cannot prove. Read-only inspection (``nvidia-smi``, ``squeue``,
 ``sinfo``) is allowed, because refusing it would only teach agents to route
 around the hook.  What is refused is the things that actually contend for the
 GPU: the CUDA venv interpreter, the box-local flock wrappers the pool replaces,

@@ -313,12 +313,7 @@ def _point_at_this_tree(
     monkeypatch.setattr(producer, "CHECKOUT", checkout)
     monkeypatch.setattr(producer, "PYTHON", sys.executable)
     monkeypatch.setattr(producer, "SOURCE", str(tmp_path / "unused-model"))
-    if producer is ladder:
-        # Staged into the checkout by ``main`` itself, out of a path that
-        # exists on sparky and nowhere else.
-        wrapper = tmp_path / producer.WRAPPER
-        wrapper.write_text("# wrapper\n", encoding="utf-8")
-    else:
+    if producer is not ladder:
         plan = tmp_path / "plan.json"
         plan.write_text("{}\n", encoding="utf-8")
         monkeypatch.setattr(producer, "PLAN", str(plan))

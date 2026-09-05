@@ -1038,3 +1038,25 @@ queue waiting does not consume it. Communication waits are capped by the
 remaining budget independently of lease-heartbeat cadence. Expiry uses the
 existing bounded process-group termination and timeout receipt path. SLURM
 continues enforcing the submitter budget through its scheduler time limit.
+
+## Fleet durability and terminal publication (2026-09-05)
+
+The two NFS client exports on dl380g10 now use `sync`, with ZFS
+`sync=standard`. This removes the known asynchronous-export acknowledgement
+exception; it is verified configuration, not a power-loss test or a hardware
+durability claim. The server's `/mnt/shared` is a persistent bind mount of
+`/storage_pool/shared`, ordered after ZFS mounting.
+
+SLURM summary writers serialize each key's generation comparison and atomic
+publication with a permanent POSIX lock file under `.summary-locks/`, plus
+in-process thread exclusion. Newer sibling terminal states also prevent an
+older ending from landing. POSIX lock exclusion was verified in both directions
+between sparky's NFSv4.2 mount (`local_lock=none`) and the server-local ZFS path.
+Do not unlink lock files while publishers can run. Mounts with local-only
+locking are not supported for this contract.
+
+`pbsweep --apply` reconciles unwatched SLURM endings. Keep campaign manifest
+re-run recovery: it also resubmits unfinished work and supports the pool,
+whereas a sweep only files an authoritative ending. Sweep before re-running a
+SLURM campaign to preserve its execution record. An unknown job without a CAS
+receipt remains unresolved; neither recovery path invents success.
