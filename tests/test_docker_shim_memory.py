@@ -85,3 +85,10 @@ def test_scope_preserves_read_only_docker_commands(tmp_path, command):
     result, _, forwarded = _shim(tmp_path, command, cgroup=cgroup, docker_env=environment)
     assert result.returncode == 0, result.stderr
     assert forwarded == command
+
+
+@pytest.mark.parametrize('value', ['-1000', '-01000'])
+def test_container_cannot_opt_out_of_group_oom(tmp_path, value):
+    environment, cgroup = _environment(tmp_path)
+    result, _, _ = _shim(tmp_path, ['run', '--oom-score-adj=' + value, 'image'], cgroup=cgroup, docker_env=environment)
+    assert result.returncode == 125

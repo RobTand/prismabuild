@@ -102,7 +102,15 @@ def qualify(mode: str, image: str | None, directory: Path) -> dict:
                 ids = found.stdout.split()
                 if ids:
                     subprocess.run([*prefix, 'rm', '-f', *ids], check=True, capture_output=True)
-            scope.release()
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    scope.release()
+                    break
+                except OSError as exc:
+                    if 'populated' not in str(exc) or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(.05)
         for process in processes:
             process.communicate(timeout=5)
 

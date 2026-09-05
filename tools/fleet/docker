@@ -280,6 +280,13 @@ def _container_options(argv: list[str], *, memory_limit: int | None = None) -> t
                     break  # Explicit short boolean value, left for Docker to validate.
         if name in {"--label", "-l"}:
             options.extend(["--label", value])
+        if memory_limit is not None and name == "--oom-score-adj":
+            try:
+                adjustment = int(value)
+            except ValueError as exc:
+                raise Refused("invalid --oom-score-adj value") from exc
+            if adjustment == -1000:
+                raise Refused("containers may not opt out of the PB group OOM boundary")
         if memory_limit is not None and name == "--restart" and value != "no":
             raise Refused("container restart policies cannot resurrect a completed PB job")
         if memory_limit is not None and name in {"--cgroup-parent", "--oom-kill-disable"}:
