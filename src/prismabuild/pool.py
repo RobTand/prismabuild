@@ -102,7 +102,7 @@ are NTP-synchronised and measured 1.2-2.5 ms apart against a 300 s lease.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -744,34 +744,148 @@ class ResourceLedger:
     def held_dir(self) -> Path:
         return self.base / "held"
 
+    @property
+    def minted_dir(self) -> Path:
+        """Where the mint right for each token index is recorded, permanently.
+
+        One file per index, created with ``O_EXCL`` and never renamed.  It is
+        the only thing that decides whether an index has been minted, because
+        the tokens themselves move and a scan of where they move cannot be
+        made atomic.
+        """
+
+        return self.base / "minted"
+
     def ensure_capacity(self, capacity: Mapping[str, int]) -> None:
         """Create any missing token of each declared kind, idempotently.
 
-        A token index is present if it is either free or held, so two workers
-        declaring the same capacity converge and neither hands back a token the
-        other is using.
+        **The marker mints, not the scan.**  This used to snapshot ``free/``,
+        then scan ``held/``, then create anything neither listing had shown.
+        Movement between the two listings makes a present token invisible to
+        both: a token held by A, released while ``held/`` is being scanned and
+        re-acquired by B, appears in neither, and ``O_EXCL`` at its free
+        pathname does not protect a token of the same name under a holder.  The
+        ledger then reported ``cpu=2`` for a configured ``cpu=1`` and admitted
+        work against capacity that does not exist.  ``claim`` calls this on
+        every poll, so the interleaving overlaps ordinary action turnover
+        rather than only initialization.
+
+        So the decision to mint index ``i`` is an ``O_EXCL`` create of
+        ``minted/<kind>-<index>``, which never moves and is therefore never
+        invisible.  An index whose marker exists is skipped: its token exists
+        somewhere, or was deliberately retired.
+
+        **Adoption mints nothing.**  Every ledger already on the shared store
+        has free and held tokens and no markers, so the first call creates a
+        marker for each token it finds and leaves the totals alone.
+
+        Adoption is a scan, so it inherits the scan's blind spot: a union of
+        ``free/`` and ``held/`` is missable in either order, by a concurrent
+        release in one and a concurrent acquire in the other.  A token missed
+        by adoption is minted a second time here, and that residual duplicate
+        is *transient rather than permanent*, which is the property that makes
+        it tolerable: the duplicate can only be the free copy of a name whose
+        real token is held, and ``release`` renames a held token onto
+        ``free/<name>``, replacing it.  The two copies therefore collapse to
+        one the moment the holder finishes, without anything ever removing a
+        token a holder is using.  An earlier revision of this fix tried to
+        remove the duplicate on sight by inode; that reintroduced exactly the
+        check-then-act over a set a concurrent rename mutates that the markers
+        exist to retire, and it could take a token a second claimant had
+        already acquired.
+
+        Ordering note for the one window that remains: a process killed between
+        the marker create and the token create loses that index until an
+        operator removes the marker.  That direction under-declares capacity,
+        which is the safe one; the marker cannot be created second without
+        making the duplicate permanent again.
         """
 
         self.free_dir.mkdir(parents=True, exist_ok=True)
         self.held_dir.mkdir(parents=True, exist_ok=True)
+        self.minted_dir.mkdir(parents=True, exist_ok=True)
+        # One listing per call rather than an O_EXCL attempt per index: a
+        # 96-token memory ledger is polled every few seconds, and the marker
+        # remains the arbiter for anything this listing did not show.
+        minted = {path.name for path in _scan(self.minted_dir)}
+        minted |= self._adopt_present_tokens(minted)
         for kind, count in sorted(capacity.items()):
             total = int(count)
             if total < 0:
                 raise PoolContractError(f"capacity for {kind!r} must not be negative")
-            present = {path.name for path in _glob(self.free_dir, f"{kind}-*")}
-            for holder in _scan(self.held_dir):
-                if holder.is_dir():
-                    present.update(path.name for path in _glob(holder, f"{kind}-*"))
             for index in range(total):
                 name = f"{kind}-{index:04d}"
-                if name in present:
+                if name in minted:
                     continue
-                token = self.free_dir / name
                 try:
-                    descriptor = os.open(token, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                    descriptor = os.open(
+                        self.minted_dir / name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o644,
+                    )
                 except FileExistsError:
                     continue
                 os.close(descriptor)
+                minted.add(name)
+                if self._token_is_held(name):
+                    # Adoption did not see it, but a holder has it: the marker
+                    # now accounts for that token and nothing is minted.  The
+                    # check is a scan and can still miss, which is what the
+                    # docstring's transient duplicate is.
+                    continue
+                try:
+                    descriptor = os.open(
+                        self.free_dir / name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o644,
+                    )
+                except FileExistsError:
+                    continue      # a free token of this name already exists
+                os.close(descriptor)
+
+    def _token_is_held(self, name: str) -> bool:
+        """Whether any holder here currently contains a token called ``name``."""
+
+        return any(
+            (holder / name).exists()
+            for holder in _scan(self.held_dir)
+            if holder.is_dir()
+        )
+
+    def _adopt_present_tokens(self, minted: Container[str]) -> set[str]:
+        """Record the mint right for every token this ledger already has.
+
+        Called before minting so a ledger that predates the markers keeps the
+        capacity it has instead of having it minted a second time.  Creates
+        markers only; it never creates or removes a token.
+
+        ``minted`` is the marker listing already read, so the steady state
+        costs the directory walk and no syscall per token: every name is
+        already known and only a ledger being adopted opens anything.
+        """
+
+        adopted: set[str] = set()
+        present = {path.name for path in _glob(self.free_dir, "*-*")}
+        for holder in _scan(self.held_dir):
+            if holder.is_dir():
+                present.update(path.name for path in _glob(holder, "*-*"))
+        for name in sorted(present):
+            if name in minted:
+                continue
+            try:
+                descriptor = os.open(
+                    self.minted_dir / name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o644,
+                )
+            except FileExistsError:
+                adopted.add(name)
+                continue
+            except OSError:
+                continue
+            os.close(descriptor)
+            adopted.add(name)
+        return adopted
 
     def retire_free_capacity(self, capacity: Mapping[str, int]) -> dict[str, int]:
         """Lower a kind's total to ``capacity`` by deleting FREE tokens only.
@@ -817,11 +931,22 @@ class ResourceLedger:
             # and that is the documented behaviour: the total falls the rest of
             # the way as holders finish and their tokens are not re-created.
             for token in sorted(free, reverse=True)[:excess] if excess else []:
+                # The mint right goes FIRST, then the token.  Both orders have
+                # a two-syscall window, and they fail in opposite directions.
+                # Token first leaves a marker with no token, which
+                # ``ensure_capacity`` skips forever: capacity silently and
+                # permanently lost, undetectable without a scan that cannot be
+                # made safe.  Marker first leaves a token with no marker, which
+                # the next poll's adoption re-marks and this retire retires
+                # again -- the retire simply did not happen, which is the
+                # recoverable direction.  Adoption is why: a token with no
+                # marker is adopted, never minted a second time.
+                (self.minted_dir / token.name).unlink(missing_ok=True)
                 try:
                     token.unlink()
-                    retired[kind] = retired.get(kind, 0) + 1
                 except OSError:
-                    pass
+                    continue
+                retired[kind] = retired.get(kind, 0) + 1
         return retired
 
     def capacity(self) -> dict[str, int]:
