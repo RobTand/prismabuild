@@ -69,6 +69,11 @@ FLEET_SCRIPTS = (
     # no waiter asked for, and the operator who notices they are missing is
     # on whichever box has the shared mount rather than the checkout.
     "pbsweep.py",
+    # Per-job containment clients and root-installed authority sources travel
+    # with the generation; installation copies privileged code to root-owned
+    # storage rather than executing it from this shared runtime.
+    "resource_exec.py", "resource_broker.py", "resource_payload.py",
+    "qualify_resource_scope.py", "install_resource_broker.sh",
 )
 #: Fleet tools deliberately left out of the generation, each with the reason.
 #: Empty: every tool under ``tools/fleet`` is something a box with no checkout
