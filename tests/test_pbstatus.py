@@ -399,7 +399,9 @@ def test_endings_name_their_transport_and_their_slurm_state(fleet, capsys):
     assert slurm_row["slurm_state"] == "TIMEOUT"
     assert slurm_row["host"] == "sparky"
     assert slurm_row["elapsed_s"] == 42.0
-    assert slurm_row["returncode"] == 1
+    # A TIMEOUT files the pull queue's convention (detail.status "timeout",
+    # returncode None); the state column is where the kill is named.
+    assert slurm_row["returncode"] is None
     assert slurm_row["receipt_published"] is False
     # The pull queue files no receipt field at all, which is not the same as a
     # receipt that was not published.
