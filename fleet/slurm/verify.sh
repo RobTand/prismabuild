@@ -78,6 +78,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONF="$REPO/fleet/slurm/slurm.conf"
 LANE_ROOT="${PRISMABUILD_SLURM_LANE_ROOT:-/mnt/shared/prismabuild-fleet/slurm}"
 NODES="dl380g10 sparky gx10-6b77"
+#: Reading /etc/slurm/slurm.conf on the other boxes needs no sudo; this is
+#: the only thing in this script that leaves the box it runs on.
+SSH="${PB_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10}"
 SPARKS="sparky gx10-6b77"
 #: A bound on one verification step, so a fleet with a down node fails a row
 #: instead of hanging.  It is not a bound on any fleet *work*: nothing this
@@ -192,6 +195,39 @@ if [ -r /etc/slurm/slurm.conf ]; then
 else
     fail 0 "this box's /etc/slurm/slurm.conf is the one in the checkout" \
         "/etc/slurm/slurm.conf is not readable"
+fi
+
+# -- row 0b: and so does every other box -------------------------------------
+#
+# Row 0 answers for this box only, and the failure worth catching is two boxes
+# that disagree: a controller and a node running different slurm.conf files
+# produce errors that name neither file.  /etc/slurm/slurm.conf is mode 644,
+# so reading it on the other two needs no sudo and no root here.
+
+want_hash="$(sha256sum < "$CONF" | cut -d' ' -f1)"
+here="$(hostname -s)"
+drift=""
+agree=""
+for node in $NODES; do
+    [ "$node" = "$here" ] && continue
+    box="$node"
+    [ "$node" = gx10-6b77 ] && box=sparklina
+    # shellcheck disable=SC2086  # $SSH is a command with its options
+    got="$($SSH "$box" 'sha256sum < /etc/slurm/slurm.conf' 2>&1 | cut -d' ' -f1)"
+    if [ "$got" = "$want_hash" ]; then
+        agree="$agree $node"
+    else
+        drift="$drift
+  $node: $got"
+    fi
+done
+if [ -n "$drift" ]; then
+    fail 0b "every box runs the checkout's slurm.conf" \
+        "the checkout is $want_hash; these do not match:$drift
+Re-run install.sh on each box that differs, then restart slurmd there.
+(A line that is not a hash is what ssh said instead.)"
+else
+    pass 0b "every box runs the checkout's slurm.conf" "matches on:$agree"
 fi
 
 # -- row 1: three nodes, registered, idle, offering what they declare --------

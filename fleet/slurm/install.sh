@@ -157,8 +157,12 @@ case "$NODE" in
         ;;
 esac
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CONF_SRC="$REPO/fleet/slurm"
+#: The configuration files this installs are the ones sitting next to this
+#: script, not a path relative to a checkout: no box but sparky has a
+#: prismabuild checkout, and `fleet/` is not among the files publish_runtime
+#: mirrors to /mnt/shared, so the realistic way this reaches dl380g10 and
+#: sparklina is a copy of this one directory.
+CONF_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SLURM_UID=64030
 SLURM_GID=64030
 SLURM_VERSION_PREFIX="25.11."
@@ -174,7 +178,7 @@ CONFIGS_644="slurm.conf gres.conf cgroup.conf"
 
 say "# prismabuild SLURM install"
 say "# box        : $NODE ($ROLE)"
-say "# checkout   : $REPO"
+say "# configs    : $CONF_SRC"
 say "# mode       : $([ "$DRY_RUN" = 1 ] && echo 'dry run, nothing is executed' || echo 'live')"
 
 if [ "$DRY_RUN" = 0 ] && [ "$(id -u)" -ne 0 ]; then

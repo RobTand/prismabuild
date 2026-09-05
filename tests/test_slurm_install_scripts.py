@@ -248,6 +248,33 @@ def _cutover(environment: dict[str, str], *argv: str) -> subprocess.CompletedPro
     )
 
 
+def test_install_reads_its_configuration_from_beside_itself(tmp_path: Path) -> None:
+    """The install has to work on a box with no checkout.
+
+    Measured 2026-09-05: neither dl380g10 nor sparklina has
+    ``/home/rob/prismabuild``, and ``fleet/`` is not among the files
+    ``publish_runtime`` mirrors to ``/mnt/shared``, so the way this script
+    reaches those two boxes is a copy of the one directory.  Resolving the
+    config files through ``../..`` would have looked for them in ``/home``.
+    """
+
+    copied = tmp_path / "pb-slurm"
+    copied.mkdir()
+    for source in FLEET.iterdir():
+        if source.is_file():
+            shutil.copy2(source, copied / source.name)
+
+    result = subprocess.run(
+        ["bash", str(copied / "install.sh"), "--dry-run"],
+        capture_output=True, text=True, check=False,
+        env=_fake_hostname(tmp_path, "sparky"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"configs    : {copied}" in result.stdout
+    assert str(copied / "slurm.conf") in result.stdout
+
+
 def test_cutover_refuses_without_yes(tmp_path: Path) -> None:
     environment = _cutover_environment(tmp_path)
     (Path(environment["PB_STATE_DIR"]) / "slurm-verify-passed.json").write_text("{}")
