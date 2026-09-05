@@ -2238,6 +2238,15 @@ class PoolQueue:
                 dst.unlink(missing_ok=True)
                 continue
             claimed = dict(item)
+            # ``passes`` is not a field of the item; it is the aging sidecar,
+            # which ``ready_items`` stamps on its copy so the ready ordering
+            # can read it and which this method deletes four lines below.
+            # Copying it into the claim freezes a denial count into the
+            # claimed record, into every attempt archived from it, and into
+            # the done or failed record it becomes -- a number describing a
+            # counter that no longer exists, on a record no admission decision
+            # ever reads.
+            claimed.pop("passes", None)
             claimed["claimed_by"] = owner
             claimed["claimed_unix"] = _now()
             claimed["claimed_host"] = socket.gethostname()
