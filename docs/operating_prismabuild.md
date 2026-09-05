@@ -597,6 +597,13 @@ it is now.
     tools/fleet/pool_reset.py                 # report only
     tools/fleet/pool_reset.py --apply --limit 20
 
+Either invocation works from a checkout and from a published runtime
+generation: the child `pbrun.py` is looked up under both layouts, `tools/fleet`
+first and then the published flat `tools`, which hold the same bytes. A runtime
+with neither is refused by name before anything is submitted. Before this,
+every path-addressed reset run from a checkout exited 2 with the interpreter's
+"can't open file" and left its record failed.
+
 The default only reports, and it sends no deadline unless you pass
 `--timeout-s`. It submits at `--priority -10` by default, behind everything
 interactive. Duplicates are collapsed by working directory and argv. An

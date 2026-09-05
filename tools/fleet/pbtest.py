@@ -36,10 +36,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+from runtime_paths import (  # noqa: E402
+    fleet_tool, generation_root, tool_candidates,
+)
 
 RUNTIME_ROOT = generation_root(__file__)
-PBRUN = RUNTIME_ROOT / "tools" / "pbrun.py"
+#: The submitter each shard is started through, under whichever layout the
+#: runtime containing this file uses.  ``None`` when neither layout has one.
+PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
 SHARED = Path("/mnt/shared")
 
 #: ``pbrun``'s own transport vocabulary, and its own reader for the default.
@@ -101,6 +105,15 @@ def main() -> int:
     # here would fail every shard at argparse rather than pin an ancestry.
     ap.add_argument("paths", nargs="*", default=["tests"])
     args = ap.parse_args()
+
+    if PBRUN is None:
+        looked = " and ".join(
+            str(candidate)
+            for candidate in tool_candidates("pbrun.py", root=RUNTIME_ROOT)
+        )
+        sys.stderr.write(
+            f"no pbrun.py to submit shards through; looked for {looked}\n")
+        return 2
 
     checkout = Path(args.checkout).resolve()
     files = discover(checkout, args.paths or ["tests"])
