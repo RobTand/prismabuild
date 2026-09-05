@@ -782,3 +782,47 @@ def test_a_live_cutover_under_test_never_runs_a_stop_snippet_on_this_box(
     assert "(this box)" not in result.stdout
     calls = (tmp_path / "calls").read_text(encoding="utf-8")
     assert f"ssh {FAKE_BOX} bash -s" in calls
+
+
+# -- cutover.sh reading a pid that has already gone --------------------------
+
+
+def _stop_functions() -> str:
+    """The snippet cutover.sh ships to every box, as it ships it."""
+
+    text = (FLEET / "cutover.sh").read_text(encoding="utf-8")
+    body = text.split("<<'SNIPPET'\n", 1)[1].split("\nSNIPPET\n", 1)[0]
+    assert "pb_pids()" in body, body[:200]
+    return body
+
+
+def test_a_pid_that_exits_between_pgrep_and_the_read_is_silently_gone(
+    tmp_path: Path,
+) -> None:
+    """`pgrep` lists a pid; by the time its argv is read it may be gone.
+
+    Measured on dl380g10: the cutover printed
+    ``bash: /proc/N/cmdline: No such file or directory``, because bash applies
+    redirections left to right and the `2>/dev/null` came after the input
+    redirect that failed.  Cosmetic, and it printed during the one operation
+    where an unexplained error line is worst.
+    """
+
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    # A pid no process can hold: above this box's own pid_max.
+    dead = int(Path("/proc/sys/kernel/pid_max").read_text()) + 1
+    (fakes / "pgrep").write_text(f"#!/bin/sh\necho {dead}\n", encoding="utf-8")
+    (fakes / "pgrep").chmod(0o755)
+    assert not Path(f"/proc/{dead}").exists()
+
+    environment = dict(os.environ)
+    environment["PATH"] = f"{fakes}{os.pathsep}{environment['PATH']}"
+    result = subprocess.run(
+        ["bash", "-c", _stop_functions() + "\npb_pids supervise.py\n"],
+        capture_output=True, text=True, check=False, env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == "", result.stderr
+    assert result.stdout == "", result.stdout
