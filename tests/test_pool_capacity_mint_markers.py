@@ -127,3 +127,54 @@ def test_retiring_a_token_gives_back_its_mint_right(
     assert ledger.capacity() == {"gpu": 3}
     free, held = _token_names(ledger)
     assert free == ["gpu-0000", "gpu-0001", "gpu-0002"] and held == []
+
+
+def test_a_missed_adoption_leaves_no_permanent_duplicate(
+    queue: pool.PoolQueue,
+) -> None:
+    """The residual the marker scheme accepts is transient, not permanent.
+
+    Adoption is a scan and can miss a token that is in flight, and the mint
+    then creates a second file of that name. The fix accepts that because the
+    duplicate is the free copy of a name whose real token is held, and
+    ``release`` renames a held token onto ``free/<name>``, replacing it. The
+    commit asserts that in prose; this executes it.
+
+    The assertion is the end state, not the duplicate. A later change that
+    closes the adoption gap outright should not fail this test, so the
+    intermediate count is recorded rather than required.
+    """
+
+    ledger = queue.ledger()
+    # A ledger from before the markers, with its only token held.
+    holder = ledger.held_dir / KEY_A
+    holder.mkdir(parents=True, exist_ok=True)
+    ledger.free_dir.mkdir(parents=True, exist_ok=True)
+    (holder / "cpu-0000").write_bytes(b"")
+    assert not ledger.minted_dir.exists()
+    assert ledger.capacity() == {"cpu": 1}
+
+    original_scan = pool._scan
+
+    def scan(path: Path):
+        # The holder is invisible for the whole call, which is the worst this
+        # race can do: adoption misses the token and so does the mint's own
+        # held check.
+        if path == ledger.held_dir:
+            return []
+        return original_scan(path)
+
+    with mock.patch.object(pool, "_scan", scan):
+        ledger.ensure_capacity({"cpu": 1})
+
+    # Today this is 2, the duplicate the fix documents. Either value is a
+    # correct starting point for the assertion that follows.
+    assert ledger.capacity()["cpu"] in (1, 2)
+    assert ledger.held() == {"cpu": 1}
+
+    # The holder finishes. Nothing removed a token it was using, and the
+    # duplicate, if there was one, is gone.
+    assert ledger.release(KEY_A) == 1
+    assert ledger.capacity() == {"cpu": 1}
+    free, held = _token_names(ledger)
+    assert free == ["cpu-0000"] and held == []

@@ -23,6 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from test_pool import _await_pid as await_action_pid  # noqa: E402
 from test_pool_withdraw import _await_pid as await_pool_pid  # noqa: E402
 from test_process_group_termination import _await_marker  # noqa: E402
 from test_withdraw_end_to_end import _await_pid as await_worker_pid  # noqa: E402
@@ -52,6 +53,26 @@ def test_the_pool_withdrawal_reader_waits_for_a_pid(tmp_path: Path) -> None:
     try:
         assert pidfile.exists(), "the empty file is what the reader must not accept"
         assert await_pool_pid(pidfile) == 4242
+    finally:
+        thread.join()
+
+
+def test_the_timeout_reader_waits_for_a_pid(tmp_path: Path) -> None:
+    """``tests/test_pool.py``'s reader, added after it failed on the x86 box.
+
+    The timeout tests there start an action that writes its own pid and then
+    outlives the kill, so the test needs that pid to reap it. The old
+    ``int(pidfile.read_text())`` had no wait at all, which is a wider window
+    than the other three had: it failed
+    ``tests/test_pool.py::test_execute_timeout_returns_even_when_the_action_outlives_the_kill``
+    on dl380g10 while both Sparks passed.
+    """
+
+    pidfile = tmp_path / "action.pid"
+    thread = _write_after(pidfile, "4242\n")
+    try:
+        assert pidfile.exists(), "the empty file is what the reader must not accept"
+        assert await_action_pid(pidfile) == 4242
     finally:
         thread.join()
 

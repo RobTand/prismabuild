@@ -771,6 +771,41 @@ def _relaying_worker(stub: Path, pidfile: Path) -> Path:
     return stub
 
 
+def _await(predicate, *, timeout_s: float = 20.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def _await_pid(path: Path, *, timeout_s: float = 20.0) -> int:
+    """The pid a helper wrote, once the file actually holds one.
+
+    ``write_text`` creates the file before it writes it, so waiting on
+    ``exists()`` and then calling ``int()`` can read an empty file and raise
+    ``invalid literal for int() with base 10: ''``. Waiting for a parsable pid
+    waits for the write instead.
+    """
+
+    pid = 0
+
+    def written() -> bool:
+        nonlocal pid
+        try:
+            text = path.read_text().strip()
+        except OSError:
+            return False
+        if not text.isdigit():
+            return False
+        pid = int(text)
+        return True
+
+    assert _await(written, timeout_s=timeout_s), f"nothing wrote a pid to {path}"
+    return pid
+
+
 def _orphaning_worker(stub: Path, pidfile: Path) -> Path:
     """The same, minus the relay: nothing this side sends can reach the action."""
 
@@ -821,7 +856,7 @@ def test_execute_timeout_reaps_the_action_the_worker_launched(
     assert outcome["returncode"] is None
     assert outcome["launcher_returncode"] == 128 + signal.SIGTERM
     assert elapsed < 5.0
-    action_pid = int(pidfile.read_text())
+    action_pid = _await_pid(pidfile)
     try:
         assert _wait_until_gone(action_pid), "the action outlived the timeout"
     finally:
@@ -849,7 +884,7 @@ def test_execute_timeout_returns_even_when_the_action_outlives_the_kill(
         item, heartbeat_s=0.1, timeout_s=1.0, timeout_grace_s=0.5
     )
     elapsed = time.monotonic() - started
-    action_pid = int(pidfile.read_text())
+    action_pid = _await_pid(pidfile)
     try:
         assert outcome["status"] == "timeout"
         assert outcome["action_survived_kill"] is True
@@ -894,7 +929,7 @@ def test_execute_reaps_the_action_when_the_worker_itself_is_interrupted(
     with pytest.raises(KeyboardInterrupt):
         queue.execute(item, heartbeat_s=0.5, timeout_grace_s=5.0)
 
-    action_pid = int(pidfile.read_text())
+    action_pid = _await_pid(pidfile)
     try:
         assert _wait_until_gone(action_pid), "the action outlived the unwind"
     finally:
@@ -986,7 +1021,7 @@ def test_timeout_bounds_a_real_worker_running_a_real_action(
     assert filed["detail"]["launcher_returncode"] == 128 + signal.SIGTERM
     assert filed["detail"]["action_survived_kill"] is False
 
-    action_pid = int(pidfile.read_text())
+    action_pid = _await_pid(pidfile)
     try:
         assert _wait_until_gone(action_pid), "the action outlived the timeout"
     finally:
