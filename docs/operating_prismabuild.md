@@ -176,6 +176,13 @@ terminal record, so a detached submission has nobody to file one. `pbwait`
 resumes the recorded job, waits on it, and files that ending. Under the pull
 queue the worker files the ending and `pbwait` only watches.
 
+A full key may name work that is not submitted yet, and waiting first is
+supported: while nothing is recorded, each poll looks for a submission as well
+as for an ending, so a detached submission made after the wait began is
+discovered, resumed, and reported by that same wait. Before this, such a wait
+watched only terminal files, spent its whole `--wait-s` on a job that had
+already finished, and exited 75.
+
 ### Exit codes
 
 `pbrun` and `pbwait` use the same codes.
@@ -323,6 +330,18 @@ an omitted field is not passed at all.
 An unknown field is refused when the manifest loads, before any row is sealed:
 a dropped typo would seal an action nobody asked for.
 
+Every field's value shape is refused at load too, and for the same reason: a
+value that cannot become its flag used to raise while a later row was being
+prepared, after the rows before it had been submitted, and their keys went with
+the traceback. A count in `demand` is an integer or a string holding one, a
+name in `demand` and `env` is a string, an `env` value is a string or a number,
+`tags` and `snapshot_ref` are lists of non-empty strings, `timeout_s` is a
+number, `cwd` and `host_class` are strings, and every switch field is `true` or
+`false` rather than anything truthy. Two of those refusals were silent before:
+`"tags": "x86"` sealed three tags, one per character, and `"deterministic":
+"no"` sealed the opposite of what it said. Each refusal names the row index,
+the field, and the value.
+
 Three rows are refused at load as well, each for the reason `pbrun` gives at
 submit:
 
@@ -400,6 +419,29 @@ A refusal outranks a failure and a failure outranks a wait, so 75 means the
 work is still out there and the keys are still worth waiting on. Under
 `--detach` the campaign returns 0, or 1 if any row was refused; it does not
 wait, so it never returns 75.
+
+## Fan a test suite out
+
+`pbtest` shards a test suite across the fleet instead of running it on one box:
+
+    tools/fleet/pbtest.py --checkout /home/rob/prismabuild \
+        --python /home/rob/venvs/pb-cpu/bin/python --shards 20 tests
+
+Each shard is one `pbrun` action, so the checkout travels through the CAS and
+the interpreter is the target box's, not this one's. `--tag` defaults to `x86`,
+which is also the claim that owns the named interpreter.
+
+`--threads-per-shard` sets each shard's BLAS and OMP ceiling, and the same
+number becomes that shard's `pbrun --cpus`, which the lane emits as
+`--cpus-per-task`. The two travel together on purpose: a ceiling without a
+reservation is threads taking turns inside one core, because `ConstrainCores`
+makes the declared demand a cpuset. `--cpus-per-shard N` reserves a different
+number, and it is required with `--threads-per-shard 0`, which sets no ceiling
+and so gives nothing to derive a reservation from. A negative ceiling, a reservation below one core, and a missing
+pairing are all refused with exit 2 before any shard is submitted.
+
+The CPU demand is sealed into each shard's action, so a suite fanned out at a
+different width is a different action rather than a cache hit of the last run.
 
 ## Submit a measurement
 
@@ -577,6 +619,13 @@ it is now.
 
     tools/fleet/pool_reset.py                 # report only
     tools/fleet/pool_reset.py --apply --limit 20
+
+Either invocation works from a checkout and from a published runtime
+generation: the child `pbrun.py` is looked up under both layouts, `tools/fleet`
+first and then the published flat `tools`, which hold the same bytes. A runtime
+with neither is refused by name before anything is submitted. Before this,
+every path-addressed reset run from a checkout exited 2 with the interpreter's
+"can't open file" and left its record failed.
 
 The default only reports, and it sends no deadline unless you pass
 `--timeout-s`. It submits at `--priority -10` by default, behind everything
