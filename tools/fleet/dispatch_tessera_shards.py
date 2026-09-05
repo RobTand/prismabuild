@@ -134,7 +134,9 @@ def build_action(shard, closure, plan_sha):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shards", required=True, help="e.g. 61 or 1-120")
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print the action key each shard would be sealed "
+                         "under and enqueue nothing")
     fleet_submit.add_transport_argument(ap)
     args = ap.parse_args()
 
