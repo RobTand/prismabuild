@@ -2934,6 +2934,22 @@ class PoolQueue:
 
         if existing is None:
             filed = dict(record or {})
+            # A withdrawal is an operator's verb, not an attempt, and the
+            # copied record can carry links a requeue wrote.  Every reader of a
+            # terminal record adopts the immutable attempt whenever
+            # ``attempt_history`` is present, and the attempt it adopts says
+            # ``requeued`` while the directory says ``withdrawn``, so
+            # ``outcome_summary`` refused the record and the operator's
+            # decision reached nobody.  Keep the evidence under a name of its
+            # own: the links still resolve, and no reader mistakes them for
+            # this record's own ending.
+            for field, kept in (
+                ("attempt_history", "attempt_history_before_withdrawal"),
+                ("attempt_history_missing_before",
+                 "attempt_history_missing_before_withdrawal"),
+            ):
+                if field in filed:
+                    filed[kept] = filed.pop(field)
             filed.update(
                 {
                     "schema": POOL_OUTCOME_SCHEMA_V1,
