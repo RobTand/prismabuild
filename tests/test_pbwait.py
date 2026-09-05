@@ -15,8 +15,6 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
-import threading
-import time
 
 import pytest
 
@@ -33,6 +31,19 @@ from test_slurm_lane import fleet, _runnable_action  # noqa: E402,F401
 from test_pbrun_detach import _checkout, _queue, _run_pbrun, _one_json_line  # noqa: E402
 
 __all__ = ["fleet"]
+
+
+def _count_single_poll(monkeypatch):
+    real_look = pbwait._look_once
+    calls = []
+
+    def look(*args, **kwargs):
+        calls.append(None)
+        assert len(calls) == 1, "a terminal verdict must not be polled again"
+        return real_look(*args, **kwargs)
+
+    monkeypatch.setattr(pbwait, "_look_once", look)
+    return calls
 
 
 def _outcome(key: str, generation: float, *, status: str, returncode: int,
@@ -105,19 +116,21 @@ def test_a_wait_on_a_key_with_no_record_yet_blocks_until_it_appears(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     key = "a" * 64
 
-    def _land_it() -> None:
-        time.sleep(0.3)
-        _file(queue, pool.DONE, _outcome(key, 5.0, status="executed",
-                                         returncode=0))
+    real_look = pbwait._look_once
+    observations = []
 
-    lander = threading.Thread(target=_land_it)
-    started = time.monotonic()
-    lander.start()
-    try:
-        rows = pbwait.wait_for_keys(queue, [key], cas=cas, wait_s=30.0)
-    finally:
-        lander.join()
-    assert time.monotonic() - started >= 0.3
+    def look_then_land(*args, **kwargs):
+        row = real_look(*args, **kwargs)
+        observations.append(row)
+        if len(observations) == 1:
+            assert row is None, "the first poll must observe no ending"
+            _file(queue, pool.DONE, _outcome(key, 5.0, status="executed",
+                                           returncode=0))
+        return row
+
+    monkeypatch.setattr(pbwait, "_look_once", look_then_land)
+    rows = pbwait.wait_for_keys(queue, [key], cas=cas, wait_s=30.0)
+    assert len(observations) == 2
     assert rows[0]["status"] == "executed"
     assert pbwait.verdict(rows) == 0
 
@@ -201,9 +214,9 @@ def test_a_terminal_record_nobody_can_read_ends_the_wait(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"action_key": "' + key, encoding="utf-8")
 
-    started = time.monotonic()
+    calls = _count_single_poll(monkeypatch)
     rows = pbwait.wait_for_keys(queue, [key], cas=cas, wait_s=30.0)
-    assert time.monotonic() - started < 10.0
+    assert len(calls) == 1
     assert rows[0]["status"] == "unreadable"
     assert rows[0]["note"] == f"not valid JSON: {path}"
     # 1, not 75. The guide gives 75 to "no verdict yet", whose remedy is to
@@ -334,13 +347,12 @@ def test_the_receipt_outranks_the_controller_when_the_ending_is_missing(
     job_id = str(slurm_lane.recorded_submission(key)["job_id"])
     (fleet / f"{job_id}.state").write_text("RUNNING|0:0\n", encoding="utf-8")
 
-    started = time.monotonic()
+    calls = _count_single_poll(monkeypatch)
     rows = pbwait.wait_for_keys(
         queue, [key], cas=cas, wait_s=30.0, queue_root=queue.root, poll_s=0.0
     )
-    elapsed = time.monotonic() - started
     assert rows[0]["succeeded"] is True, rows
-    assert elapsed < 5.0, f"waited {elapsed:.1f}s on a verdict already in hand"
+    assert len(calls) == 1
 
     record = json.loads(
         queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
