@@ -89,8 +89,42 @@ fi
 
 state_file="${JOB_STATE_ROOT}/${job_id}.job"
 if [ ! -f "$state_file" ]; then
-    # Not a PrismaBuild job, or one whose launcher never got as far as writing
-    # its state file.  Either way there is nothing recorded to clean up.
+    # Three different things reach here and only one of them is "nothing to do".
+    #
+    #  1. Not a PrismaBuild job at all.  Most jobs on these boxes are not, so
+    #     this path says nothing: a line per job would bury the ones below.
+    #  2. A PrismaBuild job whose launcher was killed before it wrote the file
+    #     -- during the CAS lookup, or inside `mkdtemp`.
+    #  3. A job-state root this node cannot read.  dl380g10 rebooting or an
+    #     NFS mount stalled makes every job ending inside the outage look
+    #     exactly like case 1, and each of them takes its containers with it.
+    #
+    # Case 3 gets a line naming the root, because an operator reading
+    # slurmd.log has nothing else to find it by.  Cases 2 and 3 both get the
+    # container sweep below, keyed on the SLURM job id alone.
+    if [ ! -r "$JOB_STATE_ROOT" ] || [ ! -x "$JOB_STATE_ROOT" ]; then
+        log "job-state root $JOB_STATE_ROOT could not be read; cleaning up on the job label alone"
+    fi
+    # The owner label is the ACTION's identity and it is in the file this
+    # script could not read.  The job label is not: the Docker shim reads the
+    # job id out of its own cgroup, which nothing in the job can move itself
+    # out of, and this script gets the same id from SLURM.  So the sweep is
+    # bounded by a fact the scheduler supplied, and it cannot reach another
+    # job's container.
+    #
+    # The checkout is deliberately not swept.  The tree to remove is only ever
+    # the one the state file records, and a sweep that guessed a path would be
+    # an unbounded `rm -rf` with extra steps.  A leaked tree is the smaller
+    # loss and `du` finds it later; a container holds a GPU.
+    orphans="$("$DOCKER" ps -aq --filter "label=${JOB_LABEL}=${job_id}" 2>/dev/null)"
+    if [ -n "$orphans" ]; then
+        # shellcheck disable=SC2086
+        if "$DOCKER" rm -f $orphans >/dev/null 2>&1; then
+            log "no state file; removed containers labelled ${JOB_LABEL}=${job_id}: $(echo "$orphans" | tr '\n' ' ')"
+        else
+            log "no state file; could not remove containers labelled ${JOB_LABEL}=${job_id}"
+        fi
+    fi
     exit 0
 fi
 

@@ -65,6 +65,24 @@ have run on the 25.11.2 rebuild only. What the eleven settle:
   (`removed state file ... as rob`), so the squash-safe path is known to be the
   one that runs -- on a bind mount, which is the part NFS still has to confirm.
   Nothing to do at install: `verify.sh` row 8 reads `jobs/` back out.
+- **A job-state root the node cannot read.** The other side of the same mount.
+  When dl380g10 reboots or the NFS mount stalls, `${JOB_STATE_ROOT}/<id>.job`
+  is absent for every job that ends inside the outage, which used to be
+  indistinguishable from a job that was never PrismaBuild's: the Epilog exited
+  0 with nothing said, and each of those jobs took its containers with it. The
+  script now logs one line naming the root when the root itself is unreadable:
+
+  ```
+  prismabuild-epilog[123]: job-state root /mnt/shared/prismabuild-fleet/slurm/jobs could not be read; cleaning up on the job label alone
+  ```
+
+  and whenever the state file is missing, for any reason, it sweeps containers
+  on `prismabuild.job=<job id>` alone. That label comes from SLURM's own id and
+  the shim's cgroup read, so the sweep cannot reach another job's container.
+  The checkout is not swept: the tree to remove is only ever the one the state
+  file records, a leaked tree is the smaller loss, and a sweep that guessed a
+  path would be an unbounded `rm -rf`. Grep `slurmd.log` for
+  `could not be read` after any shared-mount outage.
 - **`CPUs=` for the two GB10 boxes** (was item 5). Measured and written into
   `slurm.conf`: 20 CPUs as one socket of twenty, one thread per core, measured
   again on 2026-09-05 with `slurmd -C` from the fleet's own 25.11.2 build.

@@ -449,6 +449,15 @@ which filed it: the two writers use distinct schema ids, and only the lane
 writes a `transport` field. `pbstatus` labels its endings table from the schema
 for that reason.
 
+A job's node-side cleanup is the Epilog's, and it reads what to clean out of a
+state file under `.../slurm/jobs/`. When that root is unreadable, which is what
+a shared-mount outage looks like from a compute node, the Epilog logs one line
+naming the root and falls back to removing containers labelled with the SLURM
+job id alone. Materialized checkouts are not removed on that path, because the
+tree to remove is only ever the one the state file records. After an outage,
+grep `slurmd.log` for `could not be read`, then look under
+`/home/rob/tmp/prismabuild-checkouts` for trees the Epilog could not name.
+
 ### Read a terminal record
 
 A terminal record's top level carries `status`, `action_key`, `transport`,

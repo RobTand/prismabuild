@@ -195,16 +195,23 @@ def test_it_refuses_to_match_containers_on_a_malformed_owner(
     assert "64-hex digest" in result.stderr or "64 characters" in result.stderr
 
 
-def test_a_job_that_cleaned_up_after_itself_leaves_nothing_to_do(
+def test_a_job_with_no_state_file_asks_only_about_its_own_containers(
     node: dict[str, Path]
 ) -> None:
-    """The normal ending: the state file is gone because the job removed it,
-    and the Epilog must not go looking for work that is not there."""
+    """No state file means no recorded owner and no recorded tree, so the only
+    thing left to ask is whether this job id labels a container.
+
+    The script used to exit here with nothing said and nothing asked, which is
+    what made an unreachable job-state root indistinguishable from a job that
+    was never PrismaBuild's. The sweep is one `ps` against a label SLURM's own
+    id supplies; nothing else runs, and no tree is touched.
+    """
 
     (node["jobs"]).mkdir(parents=True)
     result = _run(node, "9999")
     assert result.returncode == 0
-    assert not node["calls"].exists()
+    assert node["calls"].read_text().splitlines() == [
+        "ps -aq --filter label=prismabuild.job=9999"]
 
 
 def test_it_never_drains_the_node(node: dict[str, Path]) -> None:
@@ -677,3 +684,96 @@ def test_it_says_so_when_the_controller_names_no_job_uid(
 
     assert result.returncode == 0
     assert "SLURM_JOB_UID=unset" in result.stderr
+
+
+# --------------------------------------------------------------------------
+# An unreachable job-state root
+# --------------------------------------------------------------------------
+
+def test_it_says_so_when_the_job_state_root_cannot_be_read(
+    node: dict[str, Path]
+) -> None:
+    """An outage and "not a PrismaBuild job" used to look identical.
+
+    The script exited 0 with nothing said whenever the state file was absent.
+    When dl380g10 reboots or the NFS mount stalls, that is every job ending
+    inside the outage, and each one takes its containers with it silently.
+    One line naming the root is what turns a silent leak into something
+    `slurmd.log` can be read for.
+    """
+
+    jobs = node["jobs"]
+    jobs.mkdir(parents=True)
+    jobs.chmod(0o000)
+    try:
+        result = _run(node, "1300")
+    finally:
+        jobs.chmod(0o755)
+
+    assert result.returncode == 0
+    assert str(jobs) in result.stderr
+    assert "could not be read" in result.stderr
+
+
+def test_an_ordinary_missing_state_file_is_not_reported_as_an_outage(
+    node: dict[str, Path]
+) -> None:
+    """Most jobs on these boxes are not PrismaBuild's, and a line per job would
+    bury the one that matters."""
+
+    node["jobs"].mkdir(parents=True)
+    result = _run(node, "1301")
+
+    assert result.returncode == 0
+    assert "could not be read" not in result.stderr
+
+
+def test_it_sweeps_containers_by_job_label_with_no_state_file(
+    node: dict[str, Path]
+) -> None:
+    """The containers are found by a label SLURM's own job id supplies.
+
+    `slurm_job` has not written the state file yet, or the root holding it is
+    unreachable, so the action's owner label is unknown. The job label is not:
+    the shim reads the job id out of its own cgroup and stamps it, and this
+    script gets the same id from SLURM. Removing on it alone cannot reach
+    another job's container.
+    """
+
+    node["listed"].write_text("c0ffee03\n")
+    node["jobs"].mkdir(parents=True)
+    result = _run(node, "1302")
+
+    assert result.returncode == 0
+    calls = node["calls"].read_text().splitlines()
+    assert calls[0] == "ps -aq --filter label=prismabuild.job=1302"
+    assert calls[1] == "rm -f c0ffee03"
+
+
+def test_the_no_state_file_sweep_removes_no_checkout(
+    node: dict[str, Path]
+) -> None:
+    """The tree to remove is only ever the one the state file records, and
+    there is no state file. A sweep that guessed a path would be an unbounded
+    `rm -rf` with extra steps."""
+
+    tree = node["checkouts"] / "abcdef012345.tmpdir"
+    (tree / "checkout").mkdir(parents=True)
+    node["jobs"].mkdir(parents=True)
+
+    assert _run(node, "1303").returncode == 0
+    assert tree.is_dir()
+
+
+def test_a_sweep_that_finds_nothing_says_nothing_and_exits_zero(
+    node: dict[str, Path]
+) -> None:
+    """The common case is a job that started no container at all."""
+
+    node["jobs"].mkdir(parents=True)
+    result = _run(node, "1304")
+
+    assert result.returncode == 0
+    calls = node["calls"].read_text().splitlines()
+    assert calls == ["ps -aq --filter label=prismabuild.job=1304"]
+    assert "removed containers" not in result.stderr
