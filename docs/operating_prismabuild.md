@@ -702,6 +702,16 @@ and the action that reaches the scheduler is the snapshot-addressed one the
 node needs. Sealing moves the action key once, and only for an action that
 carried no snapshot; a producer should print `Submission.action_key`.
 
+A producer addresses its own code relative to the tree the action runs in.
+`fleet_submit` runs `pbrun`'s relocation guard over the action's argv and
+environment while it seals, so an absolute path into the submitter's checkout
+is refused before anything is queued. A sealed snapshot the executing process
+never imports is not provenance: the worker verifies the sealed bytes and the
+interpreter loads the shared ones. Both Tessera dispatchers therefore set
+`PYTHONPATH` to `tessera/src`. That is a different action key from the absolute
+spelling they used before 2026-09-05, so receipts published under the old keys
+are misses and those shards re-encode.
+
 `fleet_submit` files no endings. It returns as soon as the scheduler has the
 job, and the lane's submission record is what makes the job findable
 afterwards. Run `pbwait` on the keys to derive and file the terminal records.

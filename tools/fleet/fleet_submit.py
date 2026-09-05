@@ -258,12 +258,46 @@ def seal_checkout_into_action(
         from the caller's, because the snapshot is part of what will run.
 
     Raises:
-        SubmitRefused: The tree cannot be sealed.
+        SubmitRefused: The tree cannot be sealed, or the action addresses the
+            submitter's checkout by an absolute path the snapshot cannot
+            carry.
     """
+
+    import pbrun  # deferred: only the SLURM lane relocates a checkout
 
     snapshot = seal_checkout_snapshot(
         checkout_root, cas=cas, max_bytes=max_bytes
     )
+    # Sealing a tree makes the action portable, and only sealing does not make
+    # it relocatable: an argv token or an environment variable holding an
+    # absolute path into the submitter's checkout still reads the submitter's
+    # bytes on whichever node the scheduler picked.  Both Tessera producers
+    # shipped exactly that as ``PYTHONPATH``, so a worker verified the sealed
+    # encoder in its private checkout, imported the shared one, and published
+    # the result under the sealed key.  ``pbrun`` already refuses this for an
+    # interactive submission; the same guard, not a second one, decides it
+    # here, and it decides before anything is queued.
+    task = action.get("task")
+    environment = action.get("environment")
+    argv = list(task.get("argv") or ()) if isinstance(task, Mapping) else []
+    variables = (
+        environment.get("variables") if isinstance(environment, Mapping) else None
+    )
+    try:
+        pbrun.require_relocatable_checkout(
+            [str(token) for token in argv],
+            {
+                str(name): str(value)
+                for name, value in (
+                    variables.items() if isinstance(variables, Mapping) else ()
+                )
+            },
+            Path(checkout_root),
+        )
+    except SystemExit as exc:
+        raise SubmitRefused(
+            f"{str(action['action_key'])[:12]}: {exc}"
+        ) from None
     body = {name: value for name, value in action.items() if name != "action_key"}
     params = dict(body.get("params") or {})
     params["checkout_snapshot"] = snapshot
