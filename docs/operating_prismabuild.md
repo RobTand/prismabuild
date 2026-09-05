@@ -716,6 +716,16 @@ are misses and those shards re-encode.
 job, and the lane's submission record is what makes the job findable
 afterwards. Run `pbwait` on the keys to derive and file the terminal records.
 
+`tools/fleet/tessera_status.py` reads the export's progress from the CAS
+receipts of the export it names, not from files in the shared checkout. Under
+SLURM a shard writes its manifest inside a private checkout the job removes
+when it ends, so the receipt is the record. The export is identified by the
+digest of the allocation plan the dispatcher hands the exporter, so a receipt
+from a previous plan is counted on its own line instead of deciding the shard
+count. The screen reads the shared results directory only under the pull
+queue, which is the transport that wrote those files. It reports what it could
+not read rather than failing.
+
 Any producer that builds its own actions should do the same: seal the action,
 hand it to `fleet_submit`, print the key, and read the CAS for the verdict.
 
