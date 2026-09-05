@@ -2176,6 +2176,7 @@ def withdraw_slurm_main(
                   f"nothing to withdraw", file=sys.stderr)
             continue
         if slurm_lane.cancel(job_id, scancel=scancel):
+            _stamp_scancel_accepted(queue, record)
             why = f" -- {reason}" if reason else ""
             print(f"pbrun: cancelled slurm job {job_id} for {key[:12]}"
                   f" by {by or 'an operator'}{why}", file=sys.stderr)
@@ -2198,11 +2199,7 @@ def _file_slurm_withdrawal(
     """
 
     key = str(submission["action_key"])
-    published_unix = submission.get("published_unix")
-    if not isinstance(published_unix, (int, float)):
-        # A submission record from before the generation stamp. Withdraw it,
-        # but do not claim to know which request it belonged to.
-        published_unix = float(submission.get("submitted_unix") or 0.0)
+    published_unix = _submission_generation(submission)
     for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         filed = queue_root / state / f"{key}.json"
         if not filed.exists() or not slurm_lane._same_generation(filed, published_unix):
@@ -2216,6 +2213,13 @@ def _file_slurm_withdrawal(
             except (OSError, ValueError):
                 filed_record = None
             if not (isinstance(filed_record, dict) and "detail" in filed_record):
+                continue
+            # The record this verb writes below carries ``detail`` too, and it
+            # is written before ``scancel`` runs.  Until ``scancel`` accepts,
+            # that record is a decision the scheduler has not honoured, not an
+            # ending; a second ask must reach ``scancel`` again rather than
+            # read its own first attempt as "already finished".
+            if _withdrawal_still_in_flight(filed_record):
                 continue
         return None
 
@@ -2270,6 +2274,62 @@ def _file_slurm_withdrawal(
         reason=str(marker.get("reason") or ""),
     )
     return marker
+
+
+def _submission_generation(submission) -> float:
+    """The ``published_unix`` a submission record belongs to."""
+
+    published_unix = submission.get("published_unix")
+    if isinstance(published_unix, (int, float)):
+        return float(published_unix)
+    # A submission record from before the generation stamp. Withdraw it, but
+    # do not claim to know which request it belonged to.
+    return float(submission.get("submitted_unix") or 0.0)
+
+
+def _withdrawal_still_in_flight(record) -> bool:
+    """Whether a ``withdrawn/`` record is one ``--withdraw`` wrote and has not
+    yet seen ``scancel`` accept.
+
+    ``cancelled_with`` is stamped by ``_file_slurm_withdrawal`` before the
+    cancel is attempted; ``scancel_accepted_unix`` only after ``scancel``
+    returned 0.  The submitter's own ending never writes the first, so a record
+    with the first and without the second is a withdrawal whose ``scancel``
+    was refused or never ran.
+    """
+
+    detail = record.get("detail")
+    return (
+        isinstance(detail, dict)
+        and "cancelled_with" in detail
+        and "scancel_accepted_unix" not in detail
+    )
+
+
+def _stamp_scancel_accepted(queue_root: Path, submission) -> None:
+    """Record on the withdrawal that ``scancel`` took the job.
+
+    Rewrites only a record of this generation that ``_file_slurm_withdrawal``
+    wrote; the submitter's ending for the same generation is refused by
+    ``publish_outcome`` while that record exists, so nothing else writes this
+    file in between.
+    """
+
+    key = str(submission["action_key"])
+    filed = queue_root / pool.WITHDRAWN / f"{key}.json"
+    try:
+        record = json.loads(filed.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(record, dict):
+        return
+    if not slurm_lane._same_generation(filed, _submission_generation(submission)):
+        return
+    detail = record.get("detail")
+    if not isinstance(detail, dict) or "cancelled_with" not in detail:
+        return
+    detail["scancel_accepted_unix"] = time.time()
+    slurm_lane._write_json_atomic(filed, record)
 
 
 def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
