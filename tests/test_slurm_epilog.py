@@ -46,8 +46,24 @@ def node(tmp_path: Path) -> dict[str, Path]:
         encoding="utf-8",
     )
     docker.chmod(0o755)
+    # A `runuser` that records who it was asked to become and then does the
+    # work.  The Epilog's deletes under the lane root go through it because
+    # that mount is NFS with root_squash on this fleet, and root's unlink there
+    # fails silently; what has to be asserted is the user it drops to.
+    runuser_calls = tmp_path / "runuser-calls"
+    runuser = binaries / "runuser"
+    runuser.write_text(
+        "#!/bin/bash\n"
+        f'printf "%s\\n" "$*" >> {runuser_calls}\n'
+        'shift 2\n'                       # -u <user>
+        '[ "${1:-}" = "--" ] && shift\n'
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    runuser.chmod(0o755)
     return {
         "bin": binaries, "calls": calls, "listed": listed,
+        "runuser": runuser_calls,
         "lane": tmp_path / "lane", "checkouts": tmp_path / "checkouts",
     }
 
@@ -69,16 +85,23 @@ def _state(node: dict[str, Path], *, job_id: str, owner: str,
     return path
 
 
-def _run(node: dict[str, Path], job_id: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    node: dict[str, Path], job_id: str, *, job_user: str | None = "rob"
+) -> subprocess.CompletedProcess[str]:
+    environment = {
+        **os.environ,
+        "PATH": f"{node['bin']}{os.pathsep}{os.environ['PATH']}",
+        "SLURM_JOB_ID": job_id,
+        "PRISMABUILD_SLURM_LANE_ROOT": str(node["lane"]),
+    }
+    # SLURM sets this in the Epilog's environment.  ``None`` is a controller
+    # that did not, which must not take the script down under ``set -u``.
+    environment.pop("SLURM_JOB_USER", None)
+    if job_user is not None:
+        environment["SLURM_JOB_USER"] = job_user
     return subprocess.run(
         ["/bin/bash", str(EPILOG)],
-        capture_output=True, text=True,
-        env={
-            **os.environ,
-            "PATH": f"{node['bin']}{os.pathsep}{os.environ['PATH']}",
-            "SLURM_JOB_ID": job_id,
-            "PRISMABUILD_SLURM_LANE_ROOT": str(node["lane"]),
-        },
+        capture_output=True, text=True, env=environment,
     )
 
 
@@ -170,3 +193,63 @@ def test_it_never_drains_the_node(node: dict[str, Path]) -> None:
     jobs.mkdir(parents=True)
     (jobs / "1238.job").write_text("garbage\n", encoding="utf-8")
     assert _run(node, "1238").returncode == 0
+
+
+def test_it_deletes_its_state_file_as_the_jobs_user_not_as_root(
+    node: dict[str, Path]
+) -> None:
+    """Because the lane root is NFS and this fleet exports it with root_squash.
+
+    Measured on dl380g10, 2026-09-04::
+
+        /storage_pool/shared 192.168.1.180(rw,async,no_subtree_check) \\
+                             192.168.1.110(rw,async,no_subtree_check)
+
+    No ``no_root_squash``, so the compute node's ``root`` is ``nobody`` on
+    ``/mnt/shared`` and its unlink of a file the job wrote as ``rob`` fails.
+    The Epilog swallows every failure by design, so the symptom is not an error
+    -- it is ``jobs/`` filling up for months while every run looks clean.
+    """
+
+    state = _state(node, job_id="1240", owner="", checkout_dir="",
+                   local_root=str(node["checkouts"]))
+
+    result = _run(node, "1240", job_user="rob")
+
+    assert result.returncode == 0
+    assert not state.exists()
+    calls = node["runuser"].read_text().splitlines()
+    assert calls == [f"-u rob -- rm -f -- {state}"], calls
+
+
+def test_the_checkout_is_still_removed_as_root(node: dict[str, Path]) -> None:
+    """Only the shared mount is squashed.  The materialized checkout is on the
+    node's own disk, where root is root and the job's user may no longer be
+    able to reach a tree a container wrote into."""
+
+    tree = node["checkouts"] / "abcdef012345.tmpdir"
+    (tree / "checkout").mkdir(parents=True)
+    _state(node, job_id="1241", owner="", checkout_dir=str(tree),
+           local_root=str(node["checkouts"]))
+
+    assert _run(node, "1241", job_user="rob").returncode == 0
+    assert not tree.exists()
+    calls = node["runuser"].read_text().splitlines()
+    assert not any("rm -rf" in call for call in calls), calls
+
+
+def test_a_controller_that_names_no_job_user_still_cleans_up(
+    node: dict[str, Path]
+) -> None:
+    """``set -u`` and an absent ``SLURM_JOB_USER`` must not meet.  A lane root
+    that is not on NFS -- a single-box deployment, the container smoke -- has
+    nothing to drop privileges for, and the cleanup still has to happen."""
+
+    state = _state(node, job_id="1242", owner="", checkout_dir="",
+                   local_root=str(node["checkouts"]))
+
+    result = _run(node, "1242", job_user=None)
+
+    assert result.returncode == 0
+    assert not state.exists()
+    assert not node["runuser"].exists()

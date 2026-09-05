@@ -21,9 +21,27 @@
 
 set -u
 
+# Both variables below are overridable for the tests, and for nothing else.
+# SLURM builds this script's environment out of its own SLURM_* variables, so
+# nothing exported to slurmd -- or to the job -- is visible here.  Measured in
+# the container smoke on 2026-09-04: an Epilog run with
+# PRISMABUILD_EPILOG_DOCKER exported to slurmd still ran plain `docker`.  On a
+# node the defaults are therefore what run, which is why they are the fleet's
+# real lane root and the real command name rather than placeholders.
 LANE_ROOT="${PRISMABUILD_SLURM_LANE_ROOT:-/mnt/shared/prismabuild-fleet/slurm}"
 DOCKER="${PRISMABUILD_EPILOG_DOCKER:-docker}"
 LABEL="prismabuild.action"
+# Who owns the files under the lane root.  The job wrote them; this script runs
+# as root; and dl380g10 exports that dataset without no_root_squash --
+# measured 2026-09-04:
+#
+#     /storage_pool/shared 192.168.1.180(rw,async,no_subtree_check) \
+#                          192.168.1.110(rw,async,no_subtree_check)
+#
+# so this root is `nobody` over NFS and its unlink fails.  Silently, because
+# this script swallows every failure by design.  So every write and delete
+# below the lane root is performed as the job's own user instead.
+JOB_USER="${SLURM_JOB_USER:-}"
 
 log() { echo "prismabuild-epilog[${SLURM_JOB_ID:-?}]: $*" >&2; }
 
@@ -94,5 +112,33 @@ if [ -n "$checkout_dir" ] && [ -n "$local_root" ]; then
     esac
 fi
 
-rm -f -- "$state_file" 2>/dev/null || true
+# -- the state file ----------------------------------------------------------
+# On the shared mount, written by the job's user, deleted here.  As the job's
+# user, for the reason above: root's unlink is squashed to `nobody` and fails,
+# and the symptom of that is not an error but a `jobs/` directory that fills up
+# for months.  Falling back to a plain unlink keeps a lane root that is NOT on
+# NFS -- a single-box deployment, the container smoke -- working unchanged.
+lane_delete() {
+    if [ -n "$JOB_USER" ] && command -v runuser >/dev/null 2>&1; then
+        if runuser -u "$JOB_USER" -- rm -f -- "$1" 2>/dev/null; then
+            # Said out loud because the fallback below is silent and correct
+            # on a non-NFS lane root: without this line a run where
+            # SLURM_JOB_USER was never set looks exactly like a run where the
+            # squash-safe path worked, and the smoke could not tell them
+            # apart.
+            log "removed state file $1 as $JOB_USER"
+            return 0
+        fi
+        log "could not remove $1 as $JOB_USER; trying as $(id -un)"
+    fi
+    rm -f -- "$1" 2>/dev/null || true
+}
+
+lane_delete "$state_file"
+if [ -e "$state_file" ]; then
+    # Say it rather than exit non-zero: a non-zero Epilog drains the node, and
+    # a state file nobody could delete is not a reason to take a box out of the
+    # fleet.  It IS a reason for somebody to read this line.
+    log "state file $state_file survived cleanup; check the NFS export"
+fi
 exit 0

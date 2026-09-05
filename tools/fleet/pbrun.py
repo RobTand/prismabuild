@@ -1477,7 +1477,15 @@ def slurm_outcome(
     # Say the thing that is actually wrong.  A job that exits zero without
     # publishing a receipt has not done the work, and reporting its status
     # would report success for an action nothing can look up.
-    if outcome.exit_code == 0:
+    #
+    # `succeeded`, not `exit_code == 0`: SLURM reports a job it killed at the
+    # time limit as `ExitCode=0:15` -- exit code zero, signal fifteen -- so
+    # reading the code alone told an operator whose job was killed by the
+    # scheduler that it "exited 0 but published no receipt", which sends them
+    # to a job log that says nothing while the state that explains it,
+    # TIMEOUT, was already in hand.  Measured in fleet/slurm/smoke row 5 on
+    # 2026-09-04: state=TIMEOUT, returncode=0, signal=15.
+    if outcome.succeeded:
         print(f"pbrun: slurm job {job.job_id} exited 0 but published no "
               f"receipt for {key[:12]}; see {job.stdout_path} and "
               f"{job.stderr_path}", file=sys.stderr)
@@ -1605,9 +1613,15 @@ def _file_slurm_withdrawal(
                 "job_id": job_id,
                 "state": "CANCELLED",
                 "partition": None,
+                # Derived, not spelled: the record is named by generation and
+                # attempt together, because one action key is submitted again
+                # every time somebody asks for the same work again.
                 "submission_record_path": str(
-                    directory / "submissions"
-                    / f"{int(submission.get('attempt') or 1):03d}.json"),
+                    slurm_lane.submission_record_path(
+                        directory,
+                        published_unix=published_unix,
+                        attempt=int(submission.get("attempt") or 1),
+                    )),
                 "stdout_path": str(submission.get("stdout") or ""),
                 "stderr_path": str(submission.get("stderr") or ""),
             },

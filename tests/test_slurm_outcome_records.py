@@ -455,7 +455,10 @@ def test_a_withdrawal_between_attempts_stops_the_next_one(
 
     assert len(result.attempts) == 1
     submissions = result.attempts[0][0].directory / "submissions"
-    assert sorted(x.name for x in submissions.iterdir()) == ["001.json"]
+    # One record, and its name ends in the attempt: the generation in front of
+    # it is what keeps a second run of this key from colliding with this one.
+    names = sorted(x.name for x in submissions.iterdir())
+    assert len(names) == 1 and names[0].endswith("-001.json"), names
     record = _record(queue_root, pool.FAILED, str(action["action_key"]))
     assert record["status"] == "withdrawn"
     assert record["attempts"] == 1

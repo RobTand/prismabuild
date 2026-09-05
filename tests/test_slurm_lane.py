@@ -528,6 +528,49 @@ def test_a_failed_retry_safe_action_is_resubmitted_to_its_declared_bound(
     )
 
 
+def test_one_action_key_can_be_submitted_more_than_once(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Asking for the same work again is the same action key, and the lane has
+    to accept it.
+
+    An action key is a content hash and the lane directory is per key, so the
+    second run of a key writes into the first one's directory.  Naming the
+    sealed submission record by the attempt alone made those two collide:
+    ``submissions/001.json`` already existed with different bytes, the
+    first-writer publish refused, and ``pbrun`` reported ``slurm refused this
+    action`` -- for a refusal that came from this module and not from
+    ``sbatch``.  Measured in the container smoke on 2026-09-04: every re-run of
+    an action failed at submit, which took the CAS hit -- the point of a
+    content-addressed build -- out of reach on this transport entirely.
+    """
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "exit:0")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "resubmitted")
+    request = cas.publish_action_request(action)
+
+    runs = [
+        sl.run(
+            action, cas=cas, request_path=request,
+            resources=sl.LaneResources(), timeout_s=600.0,
+            worker_script=WORKER, job_entry=JOB_ENTRY, poll_s=0.0,
+        )
+        for _ in range(2)
+    ]
+
+    assert [len(run.attempts) for run in runs] == [1, 1]
+    first, second = (run.attempts[0][0] for run in runs)
+    assert first.job_id != second.job_id
+    assert first.directory == second.directory
+    # Two sealed records, neither overwritten, both still readable.
+    assert first.record_path != second.record_path
+    for job in (first, second):
+        recorded = json.loads(job.record_path.read_text(encoding="utf-8"))
+        assert recorded["job_id"] == job.job_id
+    assert len(list((first.directory / "submissions").iterdir())) == 2
+
+
 def test_an_action_that_is_not_retry_safe_is_submitted_exactly_once(
     tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -771,6 +814,30 @@ def test_a_job_that_exits_zero_without_a_receipt_is_not_reported_as_success(
     )
     assert code == 1
     assert "published no receipt" in capsys.readouterr().err
+
+
+def test_a_job_slurm_killed_at_the_time_limit_is_reported_as_a_timeout(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """SLURM reports a job it killed at the time limit as ``ExitCode=0:15``.
+    Reading the exit code alone made that indistinguishable from a job that
+    ran to completion and published nothing, so the operator was pointed at a
+    log that says nothing instead of at the state that explains it."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "TIMEOUT")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "over-time")
+    request = cas.publish_action_request(action)
+    code = pbrun.slurm_outcome(
+        action, cas=cas, request_path=request, tags=[], demand={},
+        exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
+        max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
+    )
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "failed (TIMEOUT)" in err
+    assert "published no receipt" not in err
 
 
 def test_a_cancelled_job_exits_the_way_a_withdrawal_does(

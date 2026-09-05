@@ -8,51 +8,106 @@ The code this configures is already merged and tested: `prismabuild.slurm_lane`
 (submit, wait, cancel), `tools/fleet/slurm_job.py` (what a batch job runs), and
 `pbrun --transport slurm`. The pull queue is untouched and remains the default.
 
-## Not yet verified
+## Verified in a container, 2026-09-04
 
-SLURM is installed on no box in this fleet. Everything below was written against
-the SchedMD documentation, the fleet's measured budgets in
-`tools/fleet/fleet_boxes.json`, and tests that drive fake `sbatch`, `sacct`,
-`scontrol`, `squeue`, and `scancel` executables. Nothing here has run against a
-controller.
+SLURM is still installed on no box in this fleet, but the lane is no longer
+untested against a real scheduler. `fleet/slurm/smoke/` brings up one
+`slurmctld` and one `slurmd` in a privileged container -- the real `epilog.sh`,
+the fleet's scheduler choices, a two-shard node -- and drives eleven named rows
+through it.
 
-These items in particular need checking during the install, because each one has
-a plausible way to be wrong that only a real controller can reveal:
+```bash
+DEB_DIR=/home/rob/slurm-build/arm64-24.04 fleet/slurm/smoke/run.sh
+PRISMABUILD_SLURM_SMOKE=1 PYTHONPATH=src pytest -q tests/test_slurm_smoke.py
+```
 
-1. **The `shard` syntax in `gres.conf`.** The lane asks for `--gres=shard:N`, and
-   `gres.conf` binds shards to a device with
-   `Name=shard Count=N File=/dev/nvidia0`. If `slurmd -C` or the slurmd log
-   rejects that form, the alternative is the same line without `File=`. Check it
-   before starting the daemons, not after.
-2. **The cgroup attestation that the worker performs.**
-   `core._collect_worker_evidence` refuses a partial SLURM environment and then
-   attests `SLURM_JOB_ID` against `/proc/self/cgroup`, requiring exactly one
-   `job_<id>` path component. With `ProctrackType=proctrack/cgroup` that should
-   hold. If it does not, every action fails inside the worker with `SLURM
-   environment is not attested by this process's cgroup membership`, and the
-   failure looks like the action's fault rather than the scheduler's. The
-   hello-world check below is written to catch this.
-3. **`--export=NIL` and Git.** A batch job gets SLURM's own variables and nothing
-   else, so `HOME` and `PATH` are absent while `git` materializes the checkout.
-   Git tolerates a missing `HOME`. If it does not on Ubuntu 26.04, the fix is to
-   add `HOME` to the job through `slurm_lane.job_script_text`.
-4. **The device allowlist.** `cgroup_allowed_devices_file.conf` lists the NVIDIA
-   control devices that CUDA needs to initialize. If a GPU job fails at CUDA
-   init while a non-GPU job runs, that list is the first place to look.
-5. **`CPUs=` for the two GB10 boxes.** `slurm.conf` says `CPUs=20`. Replace it
-   with what `slurmd -C` reports on each box, as the install step below directs.
-6. **Whether 25.11 built from source interoperates with 25.11.2 from apt.** Build
-   the same patch version on the Sparks. A version skew inside 25.11 is not
-   expected to matter, but it has not been observed here.
-7. **Whether the Epilog can delete its own state file over NFS.** The Epilog runs
-   as `root` on the compute node and removes
-   `/mnt/shared/prismabuild-fleet/slurm/jobs/<job id>.job`, which the job wrote
-   as `rob`. If dl380g10 exports that dataset with `root_squash`, the node's
-   `root` maps to `nobody` and the delete fails. The Epilog swallows the error
-   and still exits 0, as it must, so the symptom is silent: state files
-   accumulate in `jobs/`. Check that directory after the validation runs below.
-   The fix is a `no_root_squash` export for that path, or writing the state file
-   world-writable.
+Both SLURMs pass all eleven rows: the fleet's 25.11.2 rebuild (primary) and
+Ubuntu 24.04's own 23.11.4 (secondary). What that settles:
+
+- **The `shard` syntax in `gres.conf`** (was item 1). `File=` is *required*, not
+  optional: a `shard` with no sharing `gpu` bound to a device file is fatal at
+  `slurmd` start (`SHARING configuration lacks "File" specification` /
+  `failed to merge SHARED and SHARING configuration`). The fleet's
+  `Name=gpu File=/dev/nvidia0` plus `Name=shard Count=N File=/dev/nvidia0` is
+  the form that works, and `--gres=shard:1` schedules against it: two jobs run
+  concurrently on a two-shard node and a third waits on `Resources`.
+- **The cgroup attestation the worker performs** (was item 2). With
+  `ProctrackType=proctrack/cgroup` a job's processes land in a `job_<id>`
+  cgroup and `core._verify_slurm_process_membership` accepts it; actions
+  execute and publish receipts. This is not optional -- a fallback to
+  `proctrack/linuxproc` fails *every* action inside the worker, so the smoke
+  refuses to run its rows without cgroup containment rather than reporting a
+  softer result.
+- **`--export=NIL` and Git** (was item 3). A batch job with no `HOME` and no
+  `PATH` materializes the sealed snapshot and runs the worker without
+  complaint. No change to `job_script_text` is needed.
+- **The Epilog over NFS** (was item 7). Answered by measurement rather than by
+  the smoke: dl380g10's `/etc/exports` reads
+  `/storage_pool/shared 192.168.1.180(rw,async,no_subtree_check) 192.168.1.110(rw,async,no_subtree_check)`
+  -- no `no_root_squash` -- so the compute node's `root` is `nobody` there and
+  its unlink of `jobs/<id>.job` fails silently. `epilog.sh` now performs every
+  delete below the lane root as `runuser -u "$SLURM_JOB_USER"`, covered by
+  `tests/test_slurm_epilog.py`, and logs a line if a state file survives
+  anyway. Smoke row 8 reads that delete back out of `slurmd.log`
+  (`removed state file ... as rob`), so the squash-safe path is known to be the
+  one that runs -- on a bind mount, which is the part NFS still has to confirm.
+  Nothing to do at install except read `jobs/` once after the validation runs.
+- **`CPUs=` for the two GB10 boxes** (was item 5). Measured and written into
+  `slurm.conf`: 20 CPUs as two clusters of ten, one thread per core. Step 5's
+  `slurmd -C` is now a cross-check, not the source.
+- **`--timeout-s` enforcement, withdrawal, and the terminal records.** Also
+  covered: `--timeout-s` becomes `--time` and SLURM kills the job (arriving as
+  `detail.slurm.state=TIMEOUT`, not as a `pbrun` timeout); `--withdraw` on a
+  running job `scancel`s it and files both the marker and a `failed/` record;
+  and `done/`/`failed/` records carry the job id, the node and the exit status
+  the pull queue's readers expect.
+
+Two lane defects the fakes could not see were found and fixed here:
+
+- A resubmission of one action key collided with its own sealed submission
+  record and was refused at submit, which put the CAS hit, a re-run of a failed
+  action and `pool_reset` all out of reach.  Submission records are now named
+  `<published_unix>-<attempt>.json`.
+- A job SLURM killed at the time limit arrives as `ExitCode=0:15` -- exit code
+  zero, signal fifteen -- so `pbrun` announced that it "exited 0 but published
+  no receipt" and pointed the operator at an empty job log instead of at
+  `TIMEOUT`.  It reads `Outcome.succeeded` now.
+
+And one thing an operator would have assumed wrongly: the Epilog's environment
+is SLURM's own, built from its `SLURM_*` variables, so
+`PRISMABUILD_EPILOG_DOCKER` and `PRISMABUILD_SLURM_LANE_ROOT` are test-only
+levers and not something to set at install time.  The Epilog finds `docker` on
+`PATH`.
+
+## Still not verified
+
+These need the real install, and the container cannot stand in for any of them:
+
+1. **The cgroup *plugins* as the fleet will run them.** Delegation in the
+   container needs `--privileged`, `--cgroupns=private`, a hand-written
+   `cgroup.subtree_control` and `IgnoreSystemd=yes`. The fleet's boxes have
+   systemd and `slurmd` under it, which is a different arrangement; all three
+   boxes are cgroup v2 (`cgroup2fs`) with `cpuset cpu io memory hugetlb pids
+   rdma misc dmem` available, measured 2026-09-04.
+2. **Device containment and real GPUs.** `ConstrainDevices` is off in the
+   container and the node's GRES binds a `mknod`'d character device nothing
+   opens. Whether `cgroup_allowed_devices_file.conf` admits exactly the right
+   NVIDIA control interfaces -- `/dev/nvidiactl`, the UVM pair,
+   `nvidia-modeset` and `nvidia-caps/nvidia-cap1,2`, all measured present on
+   both GB10 boxes -- is answerable only on a box with a GPU. If a GPU job
+   fails at CUDA init while a non-GPU job runs, that list is the first place to
+   look. Note also that the fleet's 25.11.2 build ships no `gpu_nvml.so`, so
+   `AutoDetect=nvml` is not available at all and `gres.conf` must stay static.
+3. **NFS `root_squash` end to end.** The export is measured and the Epilog is
+   fixed, but the fix has been exercised only against a fake `runuser` and a
+   local bind mount. The first killed job on the real fleet is the test.
+4. **Three-box RPC.** One node cannot show a controller talking to a remote
+   `slurmd`, a node draining and returning under `ReturnToService=2`, or an
+   action landing on a box other than the submitter's.
+5. **Whether 25.11 built from source interoperates with 25.11.2 from apt** (was
+   item 6). The Sparks' packages are a rebuild of Ubuntu 26.04's own source
+   package at the same patch version, and both ends have now been exercised
+   separately; they have not been exercised against each other.
 
 ## What this replaces, and what it does not
 
