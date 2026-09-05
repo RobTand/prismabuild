@@ -55,7 +55,19 @@ FLEET_SCRIPTS = (
     # has producers importing a module that is not there and a batch script
     # execing a path that does not exist.
     "fleet_submit.py", "slurm_job.py",
+    # The commands an operator runs on a box that has no checkout.  The
+    # published pool_reset.py:582 tells them to run ``pbwait.py <key>``, and
+    # neither dl380g10 nor sparklina has a checkout to run it from.
+    # runtime_process_census.py is here for the same reason and is only
+    # useful there: it reads /proc on the box it runs on.
+    "pbstatus.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
 )
+#: Fleet tools deliberately left out of the generation, each with the reason.
+#: Empty: every tool under ``tools/fleet`` is something a box with no checkout
+#: may have to run. The tuple exists so that leaving one out is a decision
+#: somebody wrote down rather than an omission nobody noticed.
+EXCLUDED: tuple[tuple[str, str], ...] = ()
+
 #: Not code, but read by published code: the supervisor on each box reads the
 #: fleet's declared shape from here, so a runtime published without it starts
 #: no workers at all.

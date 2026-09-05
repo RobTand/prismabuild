@@ -176,3 +176,31 @@ def test_a_failure_after_sealing_still_removes_the_staging_tree(
     assert (mirror / "src" / "prismabuild" / "core.py").read_text() == (
         "GENERATION = 'old'\n"
     )
+
+
+def test_every_fleet_tool_is_published_or_excluded_on_purpose() -> None:
+    """A tool nobody added to the list is a tool no box can run.
+
+    Neither dl380g10 nor sparklina has a checkout, so the published
+    generation is the only place a command exists for them. pool_reset.py:582
+    tells the operator to run ``pbwait.py <key>``, and pbwait.py was not
+    published, so that instruction named nothing on two of the three boxes.
+
+    Both directions are checked. A name in FLEET_SCRIPTS with no file behind
+    it is a script quietly not published: ``_publication_manifest`` skips a
+    missing source and says nothing.
+    """
+
+    fleet = ROOT / "tools" / "fleet"
+    on_disk = {source.name for source in fleet.glob("*.py")}
+    published = set(publish_runtime.FLEET_SCRIPTS)
+    excluded = {name for name, _reason in publish_runtime.EXCLUDED}
+
+    assert not published & excluded, sorted(published & excluded)
+    assert on_disk <= published | excluded, sorted(
+        on_disk - (published | excluded)
+    )
+    for name in published:
+        assert (fleet / name).exists() or (ROOT / "tools" / name).exists(), name
+    for name, reason in publish_runtime.EXCLUDED:
+        assert reason.strip(), name
