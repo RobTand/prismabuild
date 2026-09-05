@@ -557,17 +557,31 @@ def _grower(megabytes: int, *, report: bool = False) -> list[str]:
         "print('grew', len(b) >> 20, 'MiB', flush=True)",
     ]
     if report:
+        # The whole chain, not the leaf.  A cgroup v2 limit is hierarchical:
+        # slurmstepd sets `memory.max` on the job's cgroup and the process
+        # runs two levels below it, where `memory.max` reads `max` and
+        # `memory.events` counts nothing.  Reading only the leaf reported the
+        # constraint absent while it was being enforced one level up.
         lines += [
             "import pathlib",
             "rel = open('/proc/self/cgroup').read().strip().rsplit(':', 1)[-1]",
-            "d = pathlib.Path('/sys/fs/cgroup') / rel.lstrip('/')",
-            "for name in ('memory.max', 'memory.swap.max', 'memory.current',",
-            "             'memory.swap.current', 'memory.events'):",
-            "    try:",
-            "        value = (d / name).read_text().split()",
-            "    except OSError as error:",
-            "        value = ['unreadable', str(error)]",
-            "    print(name, '=', ' '.join(value), flush=True)",
+            "root = pathlib.Path('/sys/fs/cgroup')",
+            "node = root / rel.lstrip('/')",
+            "while True:",
+            "    def read(name, node=node):",
+            "        try:",
+            "            return ' '.join((node / name).read_text().split())",
+            "        except OSError:",
+            "            return '-'",
+            "    print('cgroup', node, 'memory.max=' + read('memory.max'),",
+            "          'memory.swap.max=' + read('memory.swap.max'),",
+            "          'memory.current=' + read('memory.current'),",
+            "          'memory.swap.current=' + read('memory.swap.current'),",
+            "          'memory.events=[' + read('memory.events') + ']',",
+            "          flush=True)",
+            "    if node == root:",
+            "        break",
+            "    node = node.parent",
         ]
     return ["python3", "-c", "\n".join(lines) + "\n"]
 
@@ -582,11 +596,28 @@ def _ending(prefix: str) -> tuple[str, dict]:
     return "", {}
 
 
-def _field(text: str, name: str) -> str:
-    """One ``name = value`` line of the cgroup report, or an empty string."""
+_CGROUP_RE = re.compile(
+    r"^cgroup (?P<path>\S+) memory\.max=(?P<limit>\S+) "
+    r"memory\.swap\.max=(?P<swap_limit>\S+) "
+    r"memory\.current=(?P<current>\S+) "
+    r"memory\.swap\.current=(?P<swap_current>\S+) "
+    r"memory\.events=\[(?P<events>[^\]]*)\]$",
+    re.M,
+)
 
-    match = re.search(rf"^{re.escape(name)} = (.*)$", text or "", re.M)
-    return match.group(1).strip() if match else ""
+
+def _binding_cgroup(text: str) -> dict[str, str]:
+    """The nearest ancestor cgroup that names a numeric ``memory.max``.
+
+    A cgroup v2 limit binds the whole subtree, so the level that carries the
+    number is the one that decides the job's fate -- not the leaf the process
+    happens to be in, which reads ``max`` and counts no events.
+    """
+
+    for match in _CGROUP_RE.finditer(text or ""):
+        if match.group("limit").isdigit():
+            return match.groupdict()
+    return {}
 
 
 def row_10_cpu_containment() -> None:
@@ -648,27 +679,30 @@ def row_10c_over_declared_memory() -> None:
     slurm = detail.get("slurm", {}) if isinstance(detail, dict) else {}
     state = str(slurm.get("state") or "")
     text = (completed.stdout or "") + str(detail.get("stdout") or "")
-    limit = _field(text, "memory.max")
-    swap_limit = _field(text, "memory.swap.max")
-    events = _field(text, "memory.events")
-    swap_used = _field(text, "memory.swap.current")
+    binding = _binding_cgroup(text)
+    limit = binding.get("limit", "")
+    events = binding.get("events", "")
     hit = re.search(r"\bmax (\d+)", events)
     killed = state not in ("", "COMPLETED")
     throttled = bool(hit) and int(hit.group(1)) > 0
+    declared_bytes = OVER_DECLARED_GB * 1024 ** 3
     said = f"pbrun: failed ({state})" in (completed.stderr or "")
-    ok = (killed and said) or (throttled and limit.isdigit()
-                               and int(limit) == OVER_DECLARED_GB * 1024**3)
+    ok = (killed and said) or (
+        throttled and limit.isdigit() and int(limit) == declared_bytes
+    )
     record(
         f"10c a job over its mem_gb is constrained, not ignored [{ARM}]",
         ok,
         f"job={job_id} declared mem_gb={OVER_DECLARED_GB}, wrote "
         f"{OVER_GROW_MIB} MiB -> filed {where or 'nothing'}/ state={state!r} "
         f"rc={detail.get('returncode')} signal={detail.get('signal')} "
-        f"pbrun said failed({state})={said}; "
-        f"memory.max={limit or '(unreported)'} "
-        f"memory.swap.max={swap_limit or '(unreported)'} "
-        f"memory.swap.current={swap_used or '(unreported)'} "
-        f"memory.events={events or '(unreported)'}",
+        f"pbrun said failed({state})={said}; binding cgroup "
+        f"{binding.get('path', '(none reported)')} "
+        f"memory.max={limit or '-'} "
+        f"(declared {declared_bytes}) "
+        f"memory.swap.max={binding.get('swap_limit', '-')} "
+        f"memory.swap.current={binding.get('swap_current', '-')} "
+        f"memory.events=[{events}]",
     )
 
 
