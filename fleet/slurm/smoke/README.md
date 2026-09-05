@@ -25,7 +25,7 @@ patched. The host's real `/mnt/shared` is never touched.
 | 1b | a plain `sbatch --wait --wrap=hostname` returns 0 |
 | 2 | `pbrun --transport slurm` runs a git-snapshot action end to end, publishes a CAS receipt, and files `pb-queue/done/<key>.json` with `status=executed`, `detail.receipt_published`, the job id and the node |
 | 3 | the same action submitted again re-executes nothing |
-| 4 | a failing command files `failed/<key>.json` with a non-zero `detail.returncode` and a stderr tail |
+| 4 | a failing command files `failed/<key>.json` with a non-zero `detail.returncode` -- the launcher's 1 -- with the action's own `detail.action_returncode=7` beside it, and a stderr tail |
 | 5 | `--timeout-s` becomes `--time`, and SLURM -- not `pbrun` -- kills the job, which arrives as `detail.slurm.state=TIMEOUT` with `signal=15`, and which `pbrun` reports as `failed (TIMEOUT)` |
 | 6 | `--withdraw` on a running job `scancel`s it, files the `withdrawn/` marker and a `failed/` record carrying `withdrawn_by` |
 | 7a | `--gres=shard:1` schedules two jobs on a two-shard node and holds the third |
