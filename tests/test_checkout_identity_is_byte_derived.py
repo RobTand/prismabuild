@@ -249,3 +249,62 @@ def test_personal_excludes_cannot_hide_unsupported_inodes(
     _git(root, "config", "core.excludesFile", str(personal))
     with pytest.raises(pb.ActionContractError, match="unsupported file type"):
         pb.git_checkout_identity(root)
+
+
+@pytest.mark.parametrize("driver_setting", ["binary", "xfuncname"])
+def test_local_diff_driver_configuration_does_not_move_key(
+    tmp_path: Path, driver_setting: str
+) -> None:
+    root = _text_delta(tmp_path / "checkout")
+    if driver_setting == "xfuncname":
+        original = "aaa\n" + "line\n" * 20 + "before\n" + "tail\n" * 10
+        (root / "doc.dat").write_text(original)
+        _git(root, "add", "doc.dat")
+        _git(root, "commit", "-qm", "function context fixture")
+        (root / "doc.dat").write_text(original.replace("before", "after"))
+    expected = pb.git_checkout_identity(root)
+    (root / ".git/info/attributes").write_text("*.dat diff=personal\n")
+    _git(root, "config", f"diff.personal.{driver_setting}",
+         "true" if driver_setting == "binary" else "^aaa$")
+    assert pb.git_checkout_identity(root) == expected
+
+
+def test_global_attributes_do_not_move_key(tmp_path: Path) -> None:
+    root = _text_delta(tmp_path / "checkout")
+    expected = pb.git_checkout_identity(root)
+    attributes = tmp_path / "personal-attributes"
+    attributes.write_text("*.dat -diff\n")
+    _git(root, "config", "core.attributesFile", str(attributes))
+    assert pb.git_checkout_identity(root) == expected
+
+
+def test_diff_environment_does_not_move_key(tmp_path: Path, monkeypatch) -> None:
+    root = _dirty_tree(tmp_path / "checkout")
+    expected = pb.git_checkout_identity(root)
+    monkeypatch.setenv("GIT_DIFF_OPTS", "--unified=20")
+    assert pb.git_checkout_identity(root) == expected
+
+
+def test_identity_uses_worktree_index_without_modifying_it(tmp_path: Path) -> None:
+    root = _dirty_tree(tmp_path / "checkout")
+    worktree = tmp_path / "linked"
+    _git(root, "worktree", "add", "--detach", str(worktree), "HEAD")
+    (worktree / "a.txt").write_text("staged modification\n")
+    _git(worktree, "add", "a.txt")
+    index = Path(_git(worktree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
+    index_bytes = index.read_bytes()
+    assert pb.git_checkout_identity(worktree)["dirty_sha256"] == _legacy_dirty_sha256(worktree)
+    assert index.read_bytes() == index_bytes
+
+
+def test_sha256_repository_keeps_its_default_identity(tmp_path: Path) -> None:
+    root = tmp_path / "sha256"
+    root.mkdir()
+    _git(root, "init", "--object-format=sha256", "-q")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    (root / "payload").write_text("original\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "initial")
+    (root / "payload").write_text("modified\n")
+    assert pb.git_checkout_identity(root)["dirty_sha256"] == _legacy_dirty_sha256(root)

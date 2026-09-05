@@ -276,8 +276,10 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   `HEAD`, the tracked delta, and the content digest of every untracked regular
   file or the literal link text of every untracked symlink (including members
   below a newly-added directory). The tracked delta uses `diff-index --binary`
-  with external diff and text conversion disabled, preserving default keys
-  while excluding personal diff presentation settings. Personal global
+  with external diff and text conversion disabled, preserving default keys.
+  It reads the source index and object store through a temporary Git directory
+  with canonical configuration, excluding personal diff drivers, attributes,
+  and diff environment settings without modifying the source index. Personal global
   excludes are disabled for both the untracked roster and special-inode screen;
   repository `.gitignore` and `info/exclude` remain effective.
   Git's NUL-delimited, repository-root-relative
@@ -359,7 +361,8 @@ hard link, and fsyncs the blob shard. Each ingest holds an exclusive filesystem
 lock on `.staging/ingest.<random>/.owner.lock` for its complete staging lifetime.
 The directory is initialized under a hidden name and renamed into that namespace
 only after locking. A death during initialization can leave a hidden directory
-with at most its empty marker; no payload is written before publication. Success and ordinary refusal remove it; process death leaves
+with at most its empty marker; no payload is written before publication. Success
+and ordinary refusal remove it; process death leaves
 an attributable directory whose lock is released by the kernel. A reaper must
 acquire the owner lock before removal; local PID absence cannot establish that
 a writer on another host is dead.
