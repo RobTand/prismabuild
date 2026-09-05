@@ -149,6 +149,19 @@ def _recover(record: dict, *, cas_root: Path) -> tuple[dict | None, str]:
     cwd = record.get("checkout_root") or (request.get("task") or {}).get(
         "working_directory")
     if not cwd or not str(cwd).startswith("/"):
+        if str(record.get("transport") or "") == "slurm":
+            # Not the same gap.  A lane record is addressed by a sealed
+            # snapshot, and a snapshot names a commit and a subdirectory --
+            # never the absolute source tree, deliberately, because the path
+            # exists on the submitting box and nowhere the scheduler may place
+            # the job.  So there is no ``--cwd`` to recover, and reporting the
+            # pull queue's missing-field message would send an operator
+            # looking for a field that was never meant to be there.
+            return None, (
+                "a snapshot-addressed lane record seals no source tree, so "
+                "there is no working directory to re-submit against; "
+                "re-dispatch this action from the producer that sealed it"
+            )
         return None, "no absolute working directory on the item or the action"
     if not Path(cwd).is_dir():
         return None, f"working directory is gone: {cwd}"

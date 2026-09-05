@@ -268,3 +268,47 @@ def test_the_command_line_default_sends_no_deadline_either(fleet, capsys) -> Non
     printed = capsys.readouterr().out
     assert "would submit" in printed
     assert "--timeout-s" not in printed
+
+
+def test_a_snapshot_addressed_failure_says_why_it_cannot_be_reset(
+    fleet,
+) -> None:
+    """The real lane record shape, which carries no ``checkout_root`` at all.
+
+    ``_file_ending`` copies the action's addressing onto the record, and for a
+    sealed action that is ``checkout_snapshot``: a commit and a subdirectory,
+    never the absolute source tree, because that path exists on the submitting
+    box and nowhere the scheduler may place the job.  The tool skipped it with
+    the pull queue's own message -- "no absolute working directory on the item
+    or the action" -- which sends an operator looking for a field the lane was
+    never going to write.
+    """
+
+    key = "d" * 64
+    _cas_request(fleet["cas_root"], key, ["/usr/bin/python3", "shard.py"])
+    record = {
+        "schema": "prismaquant.prismabuild.slurm_outcome.v1",
+        "transport": "slurm",
+        "action_key": key,
+        "published_unix": 1000.0,
+        "status": "failed",
+        "attempts": 1,
+        "resources": {"cpu": 8, "gpu": 1, "mem_gb": 16},
+        "tags": ["gb10"],
+        "claimed_by": "4242",
+        "claimed_host": None,
+        "finished_host": None,
+        "checkout_snapshot": {"commit": "a" * 40, "subdirectory": "."},
+        "detail": {"status": "failed", "returncode": 1, "elapsed_s": None,
+                   "slurm": {"job_id": "4242", "state": "FAILED",
+                             "gres": "shard:1"}},
+    }
+    path = fleet["queue_root"] / pool.FAILED / f"{key}.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    plans, skipped = pool_reset.plan_resets(
+        fleet["queue"], cas_root=fleet["cas_root"])
+    assert key not in {plan["key"] for plan in plans}
+    reasons = {stem: why for stem, why in skipped}
+    assert "snapshot-addressed" in reasons[key[:12]]
+    assert "no absolute working directory" not in reasons[key[:12]]
