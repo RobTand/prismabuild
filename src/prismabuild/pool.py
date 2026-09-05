@@ -293,6 +293,28 @@ class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
 
 
+def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
+    """Read the deadline from the sealed request, never mutable queue metadata."""
+    key = str(item["action_key"])
+    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
+    try:
+        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+    except FileNotFoundError:
+        # Legacy/custom launchers can have no request. The canonical worker
+        # independently refuses a missing request before executing any action.
+        return ceiling
+    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    if action["action_key"] != key:
+        raise PoolContractError("pool action request does not match the claimed key")
+    requested = action["params"].get("execution_timeout_s")
+    if requested is None:
+        return ceiling
+    if (type(requested) not in (int, float) or not math.isfinite(requested)
+            or requested <= 0):
+        raise PoolContractError("execution_timeout_s must be a positive finite number")
+    return float(requested) if ceiling is None else min(float(requested), ceiling)
+
+
 @contextmanager
 def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:
     """Yield the live path or a private checkout of the sealed snapshot.
@@ -4170,6 +4192,7 @@ class PoolQueue:
         """
 
         key = str(item["action_key"])
+        timeout_s = _execution_timeout(item, timeout_s)
         argv = [str(python)] + worker_argv(
             worker_script=item["worker_script"],
             action_key=key,
@@ -4178,6 +4201,7 @@ class PoolQueue:
         )
         owner = str(item.get("claimed_by") or "")
         started = _now()
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
         # Withdrawal checkpoint one of three: before the launch.  A cancellation
         # that landed in the microseconds between ``claim``'s rename and this
         # call would otherwise start the work anyway, and then have to stop it.
@@ -4221,7 +4245,10 @@ class PoolQueue:
             # reaped out from under itself.
             while True:
                 try:
-                    out, err = process.communicate(timeout=heartbeat_s)
+                    interval = heartbeat_s if deadline is None else min(
+                        heartbeat_s, max(0.0, deadline - time.monotonic())
+                    )
+                    out, err = process.communicate(timeout=interval)
                     break
                 except subprocess.TimeoutExpired:
                     # Checkpoint two: the cross-box path.  A withdrawal from another
@@ -4245,7 +4272,7 @@ class PoolQueue:
                         container_owner=(str(item["container_owner"])
                                          if item.get("container_owner") else None),
                     )
-                    if timeout_s is not None and _now() - started > timeout_s:
+                    if deadline is not None and time.monotonic() >= deadline:
                         # Worst case this branch spends three grace budgets
                         # -- TERM wait, KILL wait, drain (~45 s) -- without
                         # refreshing the lease, against a 300 s expiry.

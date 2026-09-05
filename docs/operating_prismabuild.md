@@ -316,11 +316,17 @@ stands. A controller that cannot be asked leaves the fate unknown: `pbrun`
 prints the job name, the comment and that `squeue`, files nothing, and exits
 75.
 
-### No deadline exists by default
+### Execution deadlines
 
-`pbrun` sends no `--time` unless you pass `--timeout-s`. A job that is doing
-something runs until it ends. Elapsed time is never treated as evidence that a
-worker is dead.
+`pbrun --timeout-s` seals a positive finite execution budget into the action.
+Changing that budget changes the action key. SLURM receives the corresponding
+`--time`; the pool applies the shorter of that budget and its worker's
+`--timeout-s` safety ceiling (7200 seconds by default). Without an explicit
+budget, SLURM receives no `--time` and the pool retains its worker ceiling.
+Pool execution timing starts after checkout materialization, immediately before
+launching the worker, using a monotonic clock. Queue waiting does not consume
+that budget; `--wait-s` controls the submitter's wait separately. A short budget
+does not wait for the next lease heartbeat before being enforced.
 
 When a `--timeout-s` you asked for does expire, the worker takes the action's
 whole process group down before it reports the timeout: SIGTERM, a grace
@@ -759,7 +765,7 @@ an impossible GRES, is reported for that record, the record stays `failed`, and
 | `executed` | The work ran. Filed under `done/`. The two transports decide it differently: the lane files `executed` only when the receipt is in the CAS, and the pull queue derives it from the launcher exiting 0. |
 | `cache_hit` | The receipt was already there. Counts as done. On the lane, `pbrun` finds it before submitting and submits nothing. A job that starts and finds it -- the second job of a key, held behind the first -- reports it too, before materializing anything. Either way `done/` keeps the record of the run that did the work: a `cache_hit` record is filed only when the key has none. |
 | `failed` | No receipt. Something refused, or the command exited non-zero. Filed under `failed/`. |
-| `timeout` | The action was killed at a deadline. `returncode` is null, because an action that finished inside the tick that crossed the deadline would otherwise report 0 for a record filed as a timeout: read `status`, not `returncode`. Filed under `failed/`. Retriable. Under SLURM the deadline is the `--timeout-s` you asked for and the scheduler enforces it. In the pull queue `pbrun --timeout-s` is parsed and not sent, so the deadline is the worker loop's own `--timeout-s` on the box that claimed the action. |
+| `timeout` | The action was killed at a deadline. `returncode` is null, because an action that finished inside the tick that crossed the deadline would otherwise report 0 for a record filed as a timeout: read `status`, not `returncode`. Filed under `failed/`. Retriable. Under SLURM the deadline is the `--timeout-s` you asked for and the scheduler enforces it. The pool enforces the shorter of the sealed execution budget and the worker loop's own `--timeout-s` safety ceiling. |
 | `withdrawn` | Somebody cancelled the run. Not a defect, and not retried. |
 | `reset` | A `failed` ending that `pool_reset --apply` re-submitted. The record stays under `failed/` with its `detail` intact and a `reset` object beside it, carrying the reason, the time and the host that reset it. The attempt links move to `attempt_history_before_reset`, so a reader does not adopt the old attempt's `failed` as this record's own ending. See "Reset a batch of failures". |
 | `finish_lost_race` | The worker finished work whose claim a reaper had already concluded, and the item's own record was gone, so nothing could be carried forward. Filed under `failed/` with the reason in `detail` and the launcher's own result under `detail.worker_detail`. Only a failing outcome reaches this: a successful one files its real status. |

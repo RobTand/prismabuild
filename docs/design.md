@@ -1025,3 +1025,16 @@ keep streaming regardless.
    `rocm-16g`/`strix-32g`.
 3. Then: shard heavy stages; GLM/Qwen validation fan-outs as the first
    production campaign on the full stack.
+
+### Sealed execution budgets
+
+An explicit `pbrun --timeout-s` is sealed as `params.execution_timeout_s`, a
+positive finite number of seconds. Its value participates in the action key.
+The pool reads and validates this value from the CAS request, not the mutable
+queue record, and applies the shorter of it and the worker's timeout ceiling.
+Without the field, existing actions retain the worker ceiling. The pool starts
+its monotonic budget after checkout materialization and before launcher spawn;
+queue waiting does not consume it. Communication waits are capped by the
+remaining budget independently of lease-heartbeat cadence. Expiry uses the
+existing bounded process-group termination and timeout receipt path. SLURM
+continues enforcing the submitter budget through its scheduler time limit.

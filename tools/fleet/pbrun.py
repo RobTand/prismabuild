@@ -58,6 +58,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import math
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -3118,16 +3119,10 @@ def main() -> int:
         help=("bounded attempts for a --retry-safe action; arbitrary commands "
               "default to one"),
     )
-    # Honoured on the SLURM path, where it becomes --time and the scheduler
-    # enforces it (TERM, then KILL after KillWait).  On the pool path it is
-    # still only parsed: the worker loop's own --timeout-s bounds an action
-    # there, and a submitter-declared bound has nowhere to be recorded.  See
-    # issue #32; the SLURM lane is the half of it that this closes.
     ap.add_argument("--timeout-s", type=float, default=None,
-                    help="an explicit deadline for the action, enforced by "
-                         "SLURM under --transport slurm; unset means the "
-                         "action runs while it is running, because elapsed "
-                         "time is not evidence that a worker is dead")
+                    help="positive execution deadline in seconds, enforced by "
+                         "both transports; the pool worker's safety ceiling "
+                         "also applies. Queue waiting is bounded by --wait-s")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument(
@@ -3171,6 +3166,10 @@ def main() -> int:
                     help="the command to run, after a bare --; every word "
                          "past it belongs to the command and not to pbrun")
     args = ap.parse_args()
+    if args.timeout_s is not None and (
+        not math.isfinite(args.timeout_s) or args.timeout_s <= 0
+    ):
+        raise SystemExit("pbrun: --timeout-s must be a positive finite number")
 
     if args.withdraw:
         # Withdrawing is not a submission and must not need one: the operator
@@ -3538,6 +3537,8 @@ def main() -> int:
         "environment": {"variables": variables, "toolchain": toolchain},
         "execution_scope": execution_scope,
     }
+    if args.timeout_s is not None:
+        body["params"]["execution_timeout_s"] = args.timeout_s
     try:
         action = pb.seal_action(body)
     except pb.ActionContractError as exc:
