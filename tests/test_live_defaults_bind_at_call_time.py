@@ -38,7 +38,8 @@ LIVE_MOUNT = "/mnt/shared"
 #: The fleet tools whose module attributes ``conftest`` repoints, plus every
 #: other tool an operator runs.  Each is already imported by its own tests.
 FLEET_TOOLS = (
-    "fleet_submit", "pool_reset", "pbrun", "pbstatus", "pbwait", "pbcampaign",
+    "fleet_submit", "pool_reset", "pbrun", "pbstatus", "pbsweep", "pbwait",
+    "pbcampaign",
     "pbtest", "worker_loop", "supervise", "require_pool", "seal_and_publish",
     "tessera_status",
 )

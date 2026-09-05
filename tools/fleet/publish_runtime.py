@@ -65,6 +65,10 @@ FLEET_SCRIPTS = (
     # holding the mount, and it reads /proc on the box it runs on to find out
     # what is still live there.
     "pb_gc.py",
+    # The reconcile, for the same reason: the endings it files are the ones
+    # no waiter asked for, and the operator who notices they are missing is
+    # on whichever box has the shared mount rather than the checkout.
+    "pbsweep.py",
 )
 #: Fleet tools deliberately left out of the generation, each with the reason.
 #: Empty: every tool under ``tools/fleet`` is something a box with no checkout
