@@ -84,7 +84,8 @@ def main() -> int:
                     help="BLAS/OMP threads each shard may use; 0 leaves it alone")
     ap.add_argument("--mem-gb", type=int, default=3,
                     help="memory each shard demands of its box")
-    ap.add_argument("--timeout-s", type=float, default=3600.0)
+    ap.add_argument("--timeout-s", type=float, default=None,
+                    help="an explicit deadline for each shard; unset means none")
     ap.add_argument("--wait-s", type=float, default=10800.0)
     ap.add_argument("--json", default="", help="write the per-shard result here")
     ap.add_argument(
@@ -139,9 +140,10 @@ def main() -> int:
             flags += ["--tag", tag]
         flags += [
             "--demand", f"mem_gb={args.mem_gb}",
-            "--timeout-s", str(args.timeout_s),
-            "--wait-s", str(args.wait_s),
         ]
+        if args.timeout_s is not None:
+            flags += ["--timeout-s", str(args.timeout_s)]
+        flags += ["--wait-s", str(args.wait_s)]
         command = flags + [
             "--", "env", "TMPDIR=/home/rob/tmp",
             *threads,

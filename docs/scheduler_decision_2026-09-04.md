@@ -97,7 +97,7 @@ announcement; nativelink README). Everything else is judgment.
 
 | Option | Fit | Cost | Verdict |
 |---|---|---|---|
-| **SLURM** | Rob's spec choice; adapter in tree; `shard` GRES since 22.05 gives fractional GPU slots (**verified**; shards schedule slots and do not fence GPU memory); `sbatch --wait` returns the job's exit code (**verified**); `--constraint` for placement tags; `--time` enforced TERM then KILL after `KillWait` (**verified**); Prolog/Epilog on the node with `SLURM_JOB_ID` (**verified**); backfill scheduler | **Version skew (verified):** 25.11 talks to 25.05/24.11/24.05 only, so 23.11 from the 24.04 archive cannot join a 25.11 controller; the Sparks need a one-time 25.11 source build (in-tree `debian/` since 23.11.0, aarch64 supported, **verified**). SchedMD lists Ubuntu 20.04/22.04/24.04, not 26.04, though the Debian package on 26.04 is what the controller would run. Age-based priority needs `slurmdbd` (**verified**), deferred | **Recommended** |
+| **SLURM** | Rob's spec choice; adapter in tree; `shard` GRES since 22.05 gives fractional GPU slots (**verified**; shards schedule slots and do not fence GPU memory); `sbatch --wait` returns the job's exit code (**verified**); `--constraint` for placement tags; `--time` enforced TERM then KILL after `KillWait` (**verified**); Prolog/Epilog on the node with `SLURM_JOB_ID` (**verified**); backfill scheduler | **Version skew (verified):** 25.11 talks to 25.05/24.11/24.05 only, so 23.11 from the 24.04 archive cannot join a 25.11 controller; the Sparks need 25.11 packages the 24.04 archive does not carry; built once on 2026-09-04 from Ubuntu 26.04's own source package (`25.11.2-1ubuntu2~noble2`, aarch64, staged at `/home/rob/slurm-build/arm64-24.04` on both Sparks with checksums, **verified** to build; not yet installed, no sudo). SchedMD lists Ubuntu 20.04/22.04/24.04, not 26.04, though the Debian package on 26.04 is what the controller would run. Age-based priority needs `slurmdbd` (**verified**), deferred | **Recommended** |
 | **HTCondor** | Official repositories for Ubuntu 24.04 arm64 and 26.04 amd64 at one version (**verified**); adjacent-major mixed versions tolerated (**verified**); docker universe removes the container on completion/hold/eviction (**verified**); memory overrun puts the job on hold with a message (**verified**); partitionable slots; ClassAd requirements make tags trivial; `condor_gpu_discovery -repeat` for shared GPUs (unverified: from memory) | No adapter in tree (about 300 lines either way); a second configuration language for Rob to hold; same cgroup blindness to CUDA on GB10 | Runner-up. Wins if "no source builds anywhere" outranks "already chosen" |
 | Nomad | Simple single binary, GPU device plugin | BSL 1.1 since v1.7.0 (2023-12, **verified**); NVML fingerprint wants memory figures GB10 does not report | No |
 | REAPI (nativelink, buildbarn) | Closest conceptual match to action key + CAS + pull workers; aarch64 binaries (**verified**) | Wrong operational shape: inputs must be uploaded into its CAS, worker `work_directory` must share a filesystem with the local CAS (**verified**), no measurement scope, no GPU fractional slots | No |
@@ -131,7 +131,9 @@ this to `main` deploys nothing: the fleet executes the published runtime
 generation, not `main`.
 
 Phase 1, Rob with sudo, any time: install munge and SLURM per the runbook
-(dl380g10 from apt, Sparks from a 25.11 source build), start `slurmctld` on
+(dl380g10 from apt, Sparks from the prebuilt 25.11.2 debs in
+`/home/rob/slurm-build/arm64-24.04`, rebuilt from the 26.04 source package so
+the version line agrees by construction), start `slurmctld` on
 dl380g10 and `slurmd` on all three, prove `sinfo`, a `sbatch --wait` hello on
 each partition, and `srun --gres=shard:1 nvidia-smi` on a Spark. The pool keeps
 running throughout; nothing changes for campaigns.
@@ -197,16 +199,26 @@ run, branch refs never rewritten). `main` = `44b9f8f`.
 
 ## 9. Not verified, and what would verify it
 
-- SLURM has not run on this fleet. Every SLURM claim above is from SchedMD's
-  documents, not from `sinfo`. Phase 1 verifies them.
+- SLURM has not run on this fleet's boxes. It has run in a privileged
+  container on sparky (`fleet/slurm/smoke/`, 2026-09-04): one `slurmctld` and
+  one `slurmd` from the Sparks' own 25.11.2 debs, the fleet's scheduler
+  choices, the real Epilog, and eleven rows through `pbrun --transport slurm`
+  (execute, CAS hit, failure, `--timeout-s` as `--time`, withdraw, shard
+  admission, unknown Feature refused, Epilog cleanup, `scontrol` provenance).
+  What the container cannot show is listed in the runbook under "Still not
+  verified": device containment on a real GPU, the fleet's systemd cgroup
+  arrangement, `root_squash` end to end, and three-box RPC. Phase 1 verifies
+  those.
 - `condor_gpu_discovery -repeat` as the HTCondor shared-GPU mechanism is from
   memory and matters only if Rob picks HTCondor.
 - The `shard` model has never been measured against real GB10 contention. Two
   shard jobs can still OOM each other; the cooperative device budget is the
   control, exactly as today.
-- Whether Ubuntu 26.04's SLURM 25.11.2 package accepts a self-built 25.11.x
-  `slurmd` from the SchedMD tarball is expected (same minor line) but not yet
-  exercised.
+- The Sparks' 25.11.2 debs are rebuilt from Ubuntu 26.04's own source package,
+  so the controller and the `slurmd`s share one source; that they register
+  with a live controller is not yet exercised on the fleet (the container
+  smoke on `claude/pb-slurm-smoke` is the first check, and it runs the same
+  debs).
 
 ## 10. Provenance
 

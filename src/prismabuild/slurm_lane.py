@@ -295,6 +295,41 @@ class LaneResources:
         return f"shard:{self.gpu_slots}"
 
 
+#: The fleet's partition names, as ``fleet/slurm/slurm.conf`` declares them.
+#: The default partition is deliberately not named here: a tagged action is
+#: sent there and its sealed ``--constraint`` picks the node.
+GPU_PARTITION = "gpu"
+CPU_PARTITION = "cpu"
+
+
+def partition_for(
+    resources: LaneResources, placement: Sequence[str]
+) -> str | None:
+    """Which partition carries an action, read off what it already declares.
+
+    The fleet's rule is that CPU-only work goes to the CPU box.  It is stated
+    here without naming a box, so it holds on a fleet that grows:
+
+    * a GPU demand goes to the GPU partition, the only place shards exist;
+    * no GPU demand and no placement tag goes to the CPU partition;
+    * anything tagged goes to the default partition, where the sealed
+      ``--constraint`` picks the node.  The tag is a hostname pin from a
+      box-local executable or a class the submitter named, and forcing a
+      partition on top of it is how a CPU-only action whose interpreter lives
+      on a GPU box becomes unschedulable: no node in the CPU partition carries
+      that box's feature.
+
+    The answer is a function of two sealed inputs, the demand and the
+    effective placement, so it adds nothing to the action's identity.
+    """
+
+    if resources.gpu_slots:
+        return GPU_PARTITION
+    if not [tag for tag in placement if str(tag)]:
+        return CPU_PARTITION
+    return None
+
+
 @dataclass(frozen=True)
 class JobProvenance:
     """What the scheduler knows about one job, beyond whether it ended.
@@ -479,7 +514,7 @@ def submit(
     request_path: str | Path,
     placement: Sequence[str] = (),
     resources: LaneResources,
-    timeout_s: float,
+    timeout_s: float | None,
     worker_script: str | Path,
     job_entry: str | Path,
     root: str | Path | None = None,
@@ -547,10 +582,16 @@ def submit(
         f"--chdir={directory}",
         f"--output={stdout_template}",
         f"--error={stderr_template}",
-        f"--time={format_time_limit(timeout_s)}",
         f"--mem={resources.memory_mib}M",
         f"--cpus-per-task={resources.cpus}",
     ]
+    if timeout_s is not None:
+        # A deadline is sent only when the submitter asked for one.  Wall-clock
+        # is not evidence of death: a job that is still progressing at any
+        # elapsed time is left running, and the partition's MaxTime is
+        # UNLIMITED so that an unset deadline means exactly that.  An explicit
+        # --timeout-s still becomes --time and SLURM enforces it.
+        argv.append(f"--time={format_time_limit(timeout_s)}")
     gres = resources.gres()
     if gres:
         argv.append(f"--gres={gres}")
@@ -596,7 +637,10 @@ def submit(
         "cas_root": str(cas.root),
         "constraint": tags,
         "gres": gres or "",
-        "time_limit": format_time_limit(timeout_s),
+        # Empty means the default partition: the constraint decided.
+        "partition": partition or "",
+        # Empty means no deadline was requested: the job runs while it runs.
+        "time_limit": "" if timeout_s is None else format_time_limit(timeout_s),
         "cpus": resources.cpus,
         "memory_mib": resources.memory_mib,
         "submitted_unix": time.time(),
@@ -1211,7 +1255,7 @@ def run(
     request_path: str | Path,
     placement: Sequence[str] = (),
     resources: LaneResources,
-    timeout_s: float,
+    timeout_s: float | None,
     worker_script: str | Path,
     job_entry: str | Path,
     retry_safe: bool = False,

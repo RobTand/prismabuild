@@ -1385,7 +1385,7 @@ def slurm_outcome(
     tags: list[str],
     demand: dict,
     exclusive: bool,
-    timeout_s: float,
+    timeout_s: float | None,
     wait_s: float,
     retry_safe: bool,
     max_attempts: int,
@@ -1422,6 +1422,7 @@ def slurm_outcome(
             request_path=request_path,
             placement=tags,
             resources=resources,
+            partition=slurm_lane.partition_for(resources, tags),
             timeout_s=timeout_s,
             worker_script=runtime_root / "tools" / "prismabuild_worker.py",
             job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
@@ -1778,9 +1779,11 @@ def main() -> int:
     # still only parsed: the worker loop's own --timeout-s bounds an action
     # there, and a submitter-declared bound has nowhere to be recorded.  See
     # issue #32; the SLURM lane is the half of it that this closes.
-    ap.add_argument("--timeout-s", type=float, default=7200.0,
-                    help="wall-clock limit for the action itself; enforced by "
-                         "SLURM under --transport slurm")
+    ap.add_argument("--timeout-s", type=float, default=None,
+                    help="an explicit deadline for the action, enforced by "
+                         "SLURM under --transport slurm; unset means the "
+                         "action runs while it is running, because elapsed "
+                         "time is not evidence that a worker is dead")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument("--priority", type=int, default=0)

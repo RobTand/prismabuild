@@ -76,8 +76,62 @@ def test_the_slurm_transport_sbatches_and_never_touches_the_queue(
     argv = rows[0]["argv"]
     assert "--gres=shard:1" in argv
     assert "--constraint=gb10" in argv
+    assert "--partition=gpu" in argv
     assert "--mem=16384M" in argv
     assert _ready(queue_root) == []
+
+
+def test_a_producer_that_asks_for_no_deadline_gets_none(
+    tmp_path: Path, fleet: Path,
+) -> None:
+    cas = _cas(tmp_path)
+    action = _runnable_action(tmp_path, cas)
+    request = cas.publish_action_request(action)
+    fleet_submit.submit(
+        action, cas=cas, request_path=request, transport="slurm",
+        resources={"cpu": 1, "mem_gb": 4}, queue_root=tmp_path / "pb-queue",
+    )
+    argv = _submissions(fleet)[0]["argv"]
+    assert not [flag for flag in argv if flag.startswith("--time")]
+
+
+def test_an_untagged_cpu_action_goes_to_the_cpu_partition(
+    tmp_path: Path, fleet: Path,
+) -> None:
+    """A producer that declares no GPU and names no box is asking for the CPU
+    box, and the lane says so to the scheduler rather than leaving it to the
+    default partition, where the work could land on a GPU box and take the
+    host memory a GPU action is budgeted against."""
+
+    cas = _cas(tmp_path)
+    action = _runnable_action(tmp_path, cas)
+    request = cas.publish_action_request(action)
+
+    fleet_submit.submit(
+        action, cas=cas, request_path=request, transport="slurm",
+        resources={"cpu": 8, "mem_gb": 32},
+        queue_root=tmp_path / "pb-queue", timeout_s=600.0,
+    )
+    argv = _submissions(fleet)[0]["argv"]
+    assert "--partition=cpu" in argv
+    assert not [flag for flag in argv if flag.startswith("--gres")]
+
+
+def test_a_tagged_cpu_action_lets_its_constraint_decide(
+    tmp_path: Path, fleet: Path,
+) -> None:
+    cas = _cas(tmp_path)
+    action = _runnable_action(tmp_path, cas)
+    request = cas.publish_action_request(action)
+
+    fleet_submit.submit(
+        action, cas=cas, request_path=request, transport="slurm",
+        tags=["sparky"], resources={"cpu": 4, "mem_gb": 8},
+        queue_root=tmp_path / "pb-queue", timeout_s=600.0,
+    )
+    argv = _submissions(fleet)[0]["argv"]
+    assert "--constraint=sparky" in argv
+    assert not [flag for flag in argv if flag.startswith("--partition")]
 
 
 def test_the_pool_transport_publishes_and_never_sbatches(
