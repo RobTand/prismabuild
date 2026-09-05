@@ -372,6 +372,98 @@ def test_a_long_job_log_is_tailed_rather_than_inlined_whole(
 # The marker is read, not only written
 # --------------------------------------------------------------------------
 
+def test_a_job_slurm_killed_at_its_limit_files_the_pools_timeout_convention(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SLURM reports a time-limit kill as ``ExitCode=0:15``.  Filed as
+    ``returncode=0`` under ``failed/``, ``merge_suite`` (which scans
+    ``failed/`` too and takes an integer 0 as an observed pass) called a
+    scheduler-killed arm green.  The pool filed a timeout as
+    ``status="timeout"``, ``returncode=None``; so does the lane now."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "TIMEOUT")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "over-time-record")
+    request = cas.publish_action_request(action)
+    queue_root = _queue(tmp_path)
+    key = str(action["action_key"])
+
+    result = sl.run(
+        action, cas=cas, request_path=request, placement=["x86"],
+        resources=sl.LaneResources(), timeout_s=60.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY,
+        queue_root=queue_root, poll_s=0.0,
+    )
+    assert result.receipt is None
+
+    record = _record(queue_root, pool.FAILED, key)
+    assert record["status"] == "failed"
+    detail = record["detail"]
+    assert detail["status"] == "timeout"
+    assert detail["returncode"] is None
+    assert detail["signal"] == 15
+    assert detail["slurm"]["state"] == "TIMEOUT"
+
+
+def test_detail_returncode_follows_the_pull_queues_convention() -> None:
+    """A signalled job carries the negative signal, as ``subprocess`` reports
+    a signalled child and as the pool's records therefore carried it; a plain
+    exit carries its code; a timeout carries ``None`` behind ``timeout``."""
+
+    def outcome(state: str, code: int | None, signal: int | None) -> sl.Outcome:
+        return sl.Outcome(job_id="1", state=state, exit_code=code, signal=signal,
+                          stdout_path=None, stderr_path=None)
+
+    assert sl.detail_status_and_returncode(
+        "executed", outcome("COMPLETED", 0, None)) == ("executed", 0)
+    assert sl.detail_status_and_returncode(
+        "failed", outcome("FAILED", 1, None)) == ("failed", 1)
+    assert sl.detail_status_and_returncode(
+        "failed", outcome("OUT_OF_MEMORY", 0, 9)) == ("failed", -9)
+    assert sl.detail_status_and_returncode(
+        "failed", outcome("TIMEOUT", 0, 15)) == ("timeout", None)
+    assert sl.detail_status_and_returncode(
+        "withdrawn", outcome("CANCELLED", 0, 15)) == ("withdrawn", -15)
+    assert sl.detail_status_and_returncode("failed", None) == ("failed", None)
+
+
+def test_withdraw_without_a_named_transport_still_finds_the_slurm_job(
+    tmp_path: Path, fleet: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The submission record decides the transport.  Before, an operator whose
+    shell did not name SLURM sent the prefix to the pull queue, which found
+    nothing and left the job running with exit status 2."""
+
+    monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action = _paper_action(tmp_path, "routed-withdrawal")
+    request = cas.publish_action_request(action)
+    queue_root = _queue(tmp_path)
+    key = str(action["action_key"])
+    job = sl.submit(
+        action, cas=cas, request_path=request, placement=["gb10"],
+        resources=sl.LaneResources(gpu_slots=1), timeout_s=600.0,
+        worker_script=WORKER, job_entry=JOB_ENTRY,
+        published_unix=1757000000.0, published_by="sparky",
+        retry_safe=False, max_attempts=1,
+    )
+
+    assert pbrun.withdraw_routed(
+        [key[:12]], transport="pool", reason="routed", by="rob@sparky",
+        queue_root=queue_root,
+    ) == 0
+    cancelled = (Path(os.environ["FAKE_SLURM_STATE"]) / "cancelled").read_text()
+    assert job.job_id in cancelled.split()
+    assert _record(queue_root, pool.WITHDRAWN, key)["status"] == "withdrawn"
+
+    # A prefix nobody recorded on the lane still goes to the pull queue, which
+    # says so in its own words.
+    assert pbrun.withdraw_routed(
+        ["deadbeef0000"], transport="pool", reason="", by="rob@sparky",
+        queue=pool.PoolQueue(queue_root),
+    ) == 2
+
+
 def _withdraw_mid_flight(queue_root: Path, job) -> None:
     """File a marker the way ``pbrun --withdraw`` files one, while the job runs.
 

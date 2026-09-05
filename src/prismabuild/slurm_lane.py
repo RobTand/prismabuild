@@ -304,7 +304,7 @@ CPU_PARTITION = "cpu"
 
 
 def partition_for(
-    resources: LaneResources, placement: Sequence[str]
+    resources: LaneResources, placement: Sequence[str], *, anywhere: bool = False
 ) -> str | None:
     """Which partition carries an action, read off what it already declares.
 
@@ -312,7 +312,13 @@ def partition_for(
     here without naming a box, so it holds on a fleet that grows:
 
     * a GPU demand goes to the GPU partition, the only place shards exist;
-    * no GPU demand and no placement tag goes to the CPU partition;
+    * work the submitter asserted portable with ``--anywhere`` goes to the
+      default partition, every box, where node weight prefers the CPU box
+      and a GPU box takes it only when the CPU box is full.  This is the
+      one opt-in to a GPU box's cores, because its memory is one pool
+      shared with its GPU;
+    * otherwise no GPU demand and no placement tag goes to the CPU
+      partition;
     * anything tagged goes to the default partition, where the sealed
       ``--constraint`` picks the node.  The tag is a hostname pin from a
       box-local executable or a class the submitter named, and forcing a
@@ -326,6 +332,8 @@ def partition_for(
 
     if resources.gpu_slots:
         return GPU_PARTITION
+    if anywhere:
+        return None
     if not [tag for tag in placement if str(tag)]:
         return CPU_PARTITION
     return None
@@ -1136,6 +1144,34 @@ def _same_generation(path: Path, published_unix: float) -> bool:
     return isinstance(theirs, (int, float)) and float(theirs) == float(published_unix)
 
 
+def detail_status_and_returncode(
+    status: str, outcome: Outcome | None
+) -> tuple[str, int | None]:
+    """``detail.status`` and ``detail.returncode`` in the pull queue's terms.
+
+    The readers of these records were written against ``PoolQueue.finish``,
+    and two of its conventions carry meaning a scheduler's raw exit fields do
+    not.  SLURM reports a job it killed at its time limit as ``ExitCode=0:15``:
+    exit code zero, signal fifteen.  Filed as ``returncode=0`` under
+    ``failed/``, that zero reads as a pass to any reader that takes zero as
+    success, and Tessera's ``merge_suite`` does.  The pool filed a timeout as
+    ``status="timeout"`` with ``returncode=None`` (status is the authority;
+    ``pbrun`` returns any integer returncode as its own exit status), so that
+    is what a ``TIMEOUT`` job files here.  A job that died by any other signal
+    carries the negative signal number, which is how ``subprocess`` reports a
+    signalled child and therefore what the pool's records carried.  The raw
+    ``code:signal`` pair stays in ``detail.signal`` and ``detail.slurm.state``.
+    """
+
+    if outcome is None:
+        return status, None
+    if status == "failed" and outcome.state == "TIMEOUT":
+        return "timeout", None
+    if outcome.signal:
+        return status, -int(outcome.signal)
+    return status, outcome.exit_code
+
+
 def publish_outcome(
     *,
     queue_root: str | Path,
@@ -1179,9 +1215,10 @@ def publish_outcome(
     if path.exists() and _same_generation(path, published_unix):
         return None
 
+    detail_status, returncode = detail_status_and_returncode(status, outcome)
     body: dict[str, object] = {
-        "status": status,
-        "returncode": outcome.exit_code if outcome is not None else None,
+        "status": detail_status,
+        "returncode": returncode,
         "signal": outcome.signal if outcome is not None else None,
         "elapsed_s": provenance.elapsed_s if provenance is not None else None,
         "stdout": read_stream_tail(job.stdout_path) if job is not None else "",

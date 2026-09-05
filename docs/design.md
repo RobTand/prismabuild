@@ -16,8 +16,11 @@ one the worker builds. A SLURM `COMPLETED` state without a CAS receipt is a
 failed action, and a receipt is success whatever the exit code said. The lane
 routes work by what the action already declares: a GPU demand goes to the
 `gpu` partition (the two GB10 boxes, as `shard` GRES), untagged CPU-only work
-goes to the `cpu` partition (dl380g10), and tagged work goes to the default
-partition, where its sealed constraint picks the node. The lane has run
+goes to the `cpu` partition (dl380g10), tagged work goes to the default
+partition, where its sealed constraint picks the node, and CPU-only work the
+submitter asserted portable with `pbrun --anywhere` goes to the default
+partition too, where node weight prefers dl380g10 and a GB10 box takes it
+only when dl380g10 is full. The lane has run
 against a real `slurmctld` and `slurmd` in a privileged container on sparky
 (`fleet/slurm/smoke/`, eleven rows, on both the fleet's 25.11.2 rebuild and
 Ubuntu 24.04's 23.11.4). It is installed on no box: the install needs root,
