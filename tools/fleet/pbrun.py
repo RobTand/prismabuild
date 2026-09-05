@@ -1320,7 +1320,139 @@ def published_generation(q, key: str, path) -> float | None:
     return None
 
 
-def await_outcome(q, key: str, *, wait_s: float) -> int:
+def terminal_record(path: Path, generation: float | None):
+    """The record filed at ``path``, when it belongs to ``generation``.
+
+    An action key is a content hash, so one key accumulates the endings of
+    every run of the same work.  ``published_unix`` equality is the queue's own
+    generation rule -- ``PoolQueue.terminal_outcome_covers`` states it, and
+    ``slurm_lane._same_generation`` applies it on the other transport -- so a
+    reader waiting for one run must skip the record of another.
+
+    A record carrying no generation stands.  ``PoolQueue.finish`` writes one
+    with no ``published_unix`` when a reaper concluded the claim underneath it,
+    and records filed before generations were stamped have none either;
+    staleness cannot be proved of those, and refusing them would hang a caller
+    on the outcome that is the only account of what happened.
+    """
+
+    try:
+        # Poll by readdir, not by stat.  The queue lives on NFS, where a stat
+        # of a path that did not exist yet is negatively cached: the outcome
+        # landed and a bare ``exists()`` kept answering False.  Listing the
+        # directory revalidates it.
+        if path.name not in os.listdir(path.parent):
+            return None
+    except OSError:
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    if generation is None:
+        return record
+    theirs = record.get("published_unix")
+    if isinstance(theirs, (int, float)) and not isinstance(theirs, bool):
+        return record if float(theirs) == float(generation) else None
+    return record
+
+
+def landed_outcome(
+    q, key: str, *, wait_s: float, generation: float | None = None
+):
+    """Block until this action's ending lands, and return it with its path.
+
+    Watches all THREE terminal directories.  An action whose argv exits
+    non-zero is retried and then filed under ``failed``, never under ``done``
+    -- and this loop used to watch ``done`` alone, so a caller whose suite
+    legitimately failed sat here until ``--wait-s`` expired (a DAY, by default)
+    and then got exit 75 and the words "gave up waiting".  The work had run,
+    three times, and said why each time; none of it reached the person waiting.
+    Sixty-six items sat in ``failed`` when this was found, and the agents who
+    submitted them reported the pool as having never scheduled their work.
+    ``withdrawn`` is the third and is watched for exactly the same reason --
+    and it is the one whose whole point is that a person decided it, so it
+    would be the worst of the three to make somebody wait a day to hear about.
+
+    Returns ``None`` when the caller's patience ran out first.  Split out of
+    ``await_outcome`` so a waiter that reports many actions at once can share
+    one deadline across them instead of spending ``--wait-s`` on each in turn.
+    """
+
+    watched = [q.item_path(state, key)
+               for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
+    deadline = time.monotonic() + wait_s
+    while True:
+        for path in watched:
+            record = terminal_record(path, generation)
+            if record is not None:
+                return path, record
+        if time.monotonic() > deadline:
+            return None
+        time.sleep(POLL_S)
+
+
+def outcome_summary(q, outcome_path, outcome) -> dict:
+    """One ending reduced to the fields a caller reports, after verification.
+
+    The mutable terminal summary is state-machine output.  Where the record
+    links immutable attempt records, the first-writer-published attempt decides
+    what this returns, so a later stale-output refusal cannot replace the
+    causal failure on the submitter's screen.  ``adopted_attempt_summary``
+    verifies every canonical path, digest, byte count and generation on the way
+    through, and refuses a summary that disagrees with the attempt it adopted.
+
+    ``transport`` defaults to the pull queue: the SLURM lane stamps its own
+    records and the pool's predate the field.
+    """
+
+    detail = outcome.get("detail") or {}
+    status = str(outcome.get("status"))
+    adopted = None
+    if (
+        "attempt_history" in outcome
+        or "attempt_history_missing_before" in outcome
+    ):
+        adopted = q.adopted_attempt_summary(outcome)
+        disposition = adopted["disposition"]
+        if disposition != Path(outcome_path).parent.name:
+            raise pool.PoolContractError(
+                "terminal queue directory disagrees with the adopted immutable "
+                f"attempt: {Path(outcome_path).parent.name!r} != {disposition!r}"
+            )
+        for field in ("status", "finished_unix", "finished_host", "detail"):
+            if outcome.get(field) != adopted[field]:
+                raise pool.PoolContractError(
+                    "terminal queue summary disagrees with the adopted "
+                    f"immutable attempt field {field!r}"
+                )
+        detail = adopted["detail"]
+        status = str(adopted["status"])
+    return {
+        "action_key": str(outcome.get("action_key") or ""),
+        "status": status,
+        "detail": detail,
+        "adopted": adopted,
+        # ``executed`` and ``cache_hit`` both mean the work is done; that is
+        # the pull queue's own rule, in ``adopted_attempt_summary``, which
+        # routes both to ``done/``.
+        "succeeded": status in {"executed", "cache_hit"},
+        "transport": str(outcome.get("transport") or "pool"),
+        "finished_host": outcome.get("finished_host"),
+        "elapsed_s": detail.get("elapsed_s"),
+        "returncode": detail.get("returncode"),
+        "receipt_published": detail.get("receipt_published"),
+        "attempts": outcome.get("attempts"),
+        "withdrawn_by": outcome.get("withdrawn_by"),
+        "reason": outcome.get("reason"),
+    }
+
+
+def await_outcome(
+    q, key: str, *, wait_s: float, generation: float | None = None
+) -> int:
     """Block until this action reaches a terminal directory, then report it.
 
     Split out of ``main`` so the outcome half can be tested without a
@@ -1329,73 +1461,17 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
     test would have been least likely to reach.
     """
 
-    # Watch BOTH terminal directories.  An action whose argv exits non-zero is
-    # retried and then filed under ``failed``, never under ``done`` -- and this
-    # loop used to watch ``done`` alone, so a caller whose suite legitimately
-    # failed sat here until ``--wait-s`` expired (a DAY, by default) and then
-    # got exit 75 and the words "gave up waiting".  The work had run, three
-    # times, and said why each time; none of it reached the person waiting.
-    # Sixty-six items sat in ``failed`` when this was found, and the agents who
-    # submitted them reported the pool as having never scheduled their work.
-    # ``withdrawn`` is the third terminal directory and is watched for exactly
-    # the same reason -- and it is the one whose whole point is that a person
-    # decided it, so it would be the worst of the three to make someone wait a
-    # day to hear about.
-    done = q.item_path("done", key)
-    failed = q.item_path("failed", key)
-    withdrawn = q.item_path("withdrawn", key)
-    deadline = time.monotonic() + wait_s
-    # Poll by readdir, not by stat.  The queue lives on NFS, where a stat of a
-    # path that did not exist yet is negatively cached: the outcome landed and
-    # a bare ``done.exists()`` kept answering False.  Listing the directory
-    # revalidates it.
-    def _landed(path) -> bool:
-        try:
-            return path.name in os.listdir(path.parent)
-        except OSError:
-            return False
+    landed = landed_outcome(q, key, wait_s=wait_s, generation=generation)
+    if landed is None:
+        print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
+        return 75
+    outcome_path, outcome = landed
 
-    while True:
-        if _landed(done):
-            outcome_path = done
-            break
-        if _landed(failed):
-            outcome_path = failed
-            break
-        if _landed(withdrawn):
-            outcome_path = withdrawn
-            break
-        if time.monotonic() > deadline:
-            print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
-            return 75
-        time.sleep(POLL_S)
-
-    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
-    detail = outcome.get("detail") or {}
-    adopted_summary = None
-    if (
-        "attempt_history" in outcome
-        or "attempt_history_missing_before" in outcome
-    ):
-        # The terminal summary is mutable state-machine output.  Read the
-        # first-writer-published attempt records it links so a later stale-
-        # output refusal cannot replace the causal failure on the submitter's
-        # screen.  ``attempt_outcomes`` verifies every canonical path, digest,
-        # byte count and generation before returning text.
+    summary = outcome_summary(q, outcome_path, outcome)
+    detail = summary["detail"]
+    status = summary["status"]
+    if summary["adopted"] is not None:
         attempts = q.attempt_outcomes(outcome)
-        adopted_summary = q.adopted_attempt_summary(outcome)
-        disposition = adopted_summary["disposition"]
-        if disposition != outcome_path.parent.name:
-            raise pool.PoolContractError(
-                "terminal queue directory disagrees with the adopted immutable "
-                f"attempt: {outcome_path.parent.name!r} != {disposition!r}"
-            )
-        for field in ("status", "finished_unix", "finished_host", "detail"):
-            if outcome.get(field) != adopted_summary[field]:
-                raise pool.PoolContractError(
-                    "terminal queue summary disagrees with the adopted "
-                    f"immutable attempt field {field!r}"
-                )
         missing = outcome.get("attempt_history_missing_before", 0)
         if isinstance(missing, int) and not isinstance(missing, bool) and missing:
             noun = "attempt" if missing == 1 else "attempts"
@@ -1417,11 +1493,6 @@ def await_outcome(q, key: str, *, wait_s: float) -> int:
         # Backward compatibility for outcomes filed by a pre-history runtime.
         sys.stdout.write(str(detail.get("stdout") or ""))
         sys.stderr.write(str(detail.get("stderr") or ""))
-    if adopted_summary is not None:
-        detail = adopted_summary["detail"]
-        status = str(adopted_summary["status"])
-    else:
-        status = str(outcome.get("status"))
     if status == "withdrawn":
         who = outcome.get("withdrawn_by") or "an operator"
         why = str(outcome.get("reason") or "").strip()
@@ -2393,7 +2464,10 @@ def main() -> int:
         ), flush=True)
         return 0
 
-    return await_outcome(q, key, wait_s=args.wait_s)
+    return await_outcome(
+        q, key, wait_s=args.wait_s,
+        generation=published_generation(q, key, queued_path),
+    )
 
 
 if __name__ == "__main__":
