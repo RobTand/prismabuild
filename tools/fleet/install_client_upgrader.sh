@@ -12,6 +12,7 @@ config=/etc/prismabuild/client-upgrade.json
 if [ ! -e "$config" ]; then
     cat > "$config" <<'CONFIG'
 {
+  "reader_uid": 1000,
   "runtime": "/mnt/shared/prismabuild-fleet/repo",
   "generation_store": "/mnt/shared/prismabuild-fleet/runtime-generations",
   "install_dir": "/opt/prismabuild-resource-broker",

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import socket
 import stat
 import subprocess
+import sys
+import tempfile
 import time
 
 MEMBERS = {
@@ -21,6 +25,8 @@ MEMBERS = {
     'upgrade_client.py': 'tools/upgrade_client.py',
 }
 SERVICE = 'prismabuild-resource-broker.service'
+MAX_MEMBER = 4 * 1024 * 1024
+MAX_EXPORT = 24 * 1024 * 1024
 
 
 def digest(data):
@@ -57,6 +63,14 @@ def trusted(path):
     return path
 
 
+def bounded_read(path, limit):
+    with path.open('rb') as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f'oversized runtime member: {path.name}')
+    return data
+
+
 def desired(config):
     # Root enrollment explicitly delegates publication authority to this store.
     # The manifest hashes detect mixed copies; they are not signatures.
@@ -64,7 +78,7 @@ def desired(config):
     store = Path(config['generation_store']).resolve(strict=True)
     if root.parent != store or root.name.startswith('.'):
         raise ValueError('published runtime is not an authorized sealed generation')
-    receipt = json.loads((root / 'RUNTIME_VERSION.json').read_text())
+    receipt = json.loads(bounded_read(root / 'RUNTIME_VERSION.json', 1024 * 1024))
     if (receipt.get('schema') != 'prismaquant.prismabuild.runtime_version.v1'
             or receipt.get('generation') != root.name
             or not re.fullmatch('[0-9a-f]{40}', str(receipt.get('commit', '')))):
@@ -74,12 +88,63 @@ def desired(config):
         source = root / member
         if source.resolve(strict=True) != source:
             raise ValueError(f'published client member is a symlink: {member}')
-        data = source.read_bytes()
-        if len(data) > 4 * 1024 * 1024 or digest(data) != receipt['files'].get(member):
+        data = bounded_read(source, MAX_MEMBER)
+        if digest(data) != receipt['files'].get(member):
             raise ValueError(f'published client hash mismatch: {member}')
         blobs[name] = data
     return {'generation': root.name, 'commit': receipt['commit'],
             'files': {name: digest(data) for name, data in blobs.items()}}, blobs
+
+
+def encode_export(config):
+    version, blobs = desired(config)
+    return json.dumps({'schema': 'prismabuild.client_export.v1', 'desired': version,
+                       'blobs': {name: base64.b64encode(data).decode('ascii')
+                                 for name, data in blobs.items()}}).encode()
+
+
+def decode_export(data):
+    if len(data) > MAX_EXPORT:
+        raise ValueError('oversized runtime export')
+    value = json.loads(data)
+    if value.get('schema') != 'prismabuild.client_export.v1':
+        raise ValueError('invalid runtime export schema')
+    version = value['desired']
+    if (not re.fullmatch('[0-9a-f]{40}', str(version.get('commit', '')))
+            or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,254}',
+                                str(version.get('generation', '')))
+            or set(version['files']) != set(MEMBERS)
+            or set(value['blobs']) != set(MEMBERS)):
+        raise ValueError('invalid runtime export identity or members')
+    blobs = {}
+    for name in MEMBERS:
+        data = base64.b64decode(value['blobs'][name], validate=True)
+        if len(data) > MAX_MEMBER or digest(data) != version['files'][name]:
+            raise ValueError(f'runtime export hash mismatch: {name}')
+        blobs[name] = data
+    return version, blobs
+
+
+def desired_as_reader(config_path, config):
+    # NFS root_squash intentionally denies root access to UID-owned sealed
+    # generations. Execute only this root-owned program after permanently
+    # dropping the subprocess's credentials; never execute shared Python.
+    uid = config.get('reader_uid', 1000)
+    if type(uid) is not int or uid <= 0:
+        raise ValueError('runtime reader_uid must be an unprivileged UID')
+    gid = pwd.getpwuid(uid).pw_gid
+    script = trusted(Path(__file__).absolute())
+    with tempfile.TemporaryFile() as output:
+        result = subprocess.run(
+            ['/usr/bin/python3', '-I', str(script), '--export-runtime',
+             '--config', str(config_path)], user=uid, group=gid, extra_groups=[],
+            env={'PATH': '/usr/bin:/bin'}, cwd='/', stdout=output,
+            stderr=subprocess.PIPE, timeout=30, check=False)
+        if result.returncode:
+            raise RuntimeError('unprivileged runtime reader failed: ' +
+                               result.stderr.decode(errors='replace')[-2000:])
+        output.seek(0)
+        return decode_export(output.read(MAX_EXPORT + 1))
 
 
 def request(endpoint, operation):
@@ -100,8 +165,9 @@ def request(endpoint, operation):
 
 
 class Upgrader:
-    def __init__(self, config, *, rpc=request, command=subprocess.run, sleep=time.sleep):
+    def __init__(self, config, *, rpc=request, command=subprocess.run, sleep=time.sleep, reader=desired):
         self.config = config
+        self.reader = reader
         self.install = Path(config['install_dir'])
         self.state = Path(config['state_dir'])
         self.endpoint = config.get('socket', '/run/prismabuild/resources.sock')
@@ -187,7 +253,7 @@ class Upgrader:
     def run(self):
         if self.journal.exists():
             return self.recover(json.loads(self.journal.read_text()))
-        version, blobs = desired(self.config)
+        version, blobs = self.reader(self.config)
         installed = self.installed()
         if installed == version['files']:
             # Recover a crash after drain began but before a transaction existed.
@@ -240,8 +306,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default='/etc/prismabuild/client-upgrade.json')
     parser.add_argument('--status', action='store_true')
+    parser.add_argument('--export-runtime', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     config = json.loads(trusted(args.config).read_text())
+    if args.export_runtime:
+        uid = config.get('reader_uid', 1000)
+        if os.getuid() != uid or os.geteuid() != uid or uid == 0:
+            raise SystemExit('runtime export requires the configured unprivileged reader UID')
+        data = encode_export(config)
+        if len(data) > MAX_EXPORT:
+            raise SystemExit('oversized runtime export')
+        sys.stdout.buffer.write(data)
+        return 0
     state = trusted(config['state_dir'])
     if args.status:
         print((state / 'status.json').read_text(), end='')
@@ -255,7 +331,7 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        updater = Upgrader(config)
+        updater = Upgrader(config, reader=lambda value: desired_as_reader(args.config, value))
         try:
             outcome = updater.run()
             return 1 if outcome['state'] == 'rolled_back' else 0

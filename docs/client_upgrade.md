@@ -20,7 +20,15 @@ code. This is an administrative trust delegation: manifest SHA-256 values prove
 copy consistency, **not publisher authenticity**. Access to publish generations
 must therefore be restricted to principals authorized to administer these hosts.
 The updater executes only root-owned local Python under isolated interpreter
-mode; it never imports or executes Python directly from the shared mount.
+mode; it never imports or executes Python directly from the shared mount. To
+preserve NFS `root_squash`, the updater starts its own root-owned export program
+with real/effective/saved UID and primary GID set to the configured `reader_uid`
+(default 1000), with no supplementary groups, before reading shared files. The
+child returns bounded manifest and base64 member bytes through a local temporary
+file; the root parent independently checks member names, identity, sizes and
+hashes. It never changes shared permissions or requires root access to NFS.
+Enrollment on root-squashed clients likewise copies the installer and updater
+to local storage as the authorized publishing user before root installs them.
 
 The desired manifest is the active generation's `RUNTIME_VERSION.json`. Its exact
 hashes select `resource_broker.py`, `resource_payload.py`, `gpu_memory.py` and the

@@ -199,3 +199,55 @@ def test_corrupted_backup_refuses_recovery_without_stopping_service(setup):
         updater.run()
     assert not backend.operations
     assert updater.journal.exists()
+
+
+def test_reader_export_roundtrip_checks_exact_bytes(setup):
+    updater, _, _ = setup
+    assert upgrade.decode_export(upgrade.encode_export(updater.config)) == upgrade.desired(updater.config)
+
+
+@pytest.mark.parametrize('fault', ['bytes', 'members', 'generation', 'schema', 'size'])
+def test_root_rejects_malformed_reader_export(setup, fault):
+    updater, _, _ = setup
+    value = json.loads(upgrade.encode_export(updater.config))
+    if fault == 'bytes':
+        value['blobs']['gpu_memory.py'] = 'YWJj'
+    elif fault == 'members':
+        value['blobs']['unexpected.py'] = 'YWJj'
+    elif fault == 'generation':
+        value['desired']['generation'] = '../../escape'
+    elif fault == 'schema':
+        value['schema'] = 'wrong'
+    data = b' ' * (upgrade.MAX_EXPORT + 1) if fault == 'size' else json.dumps(value).encode()
+    with pytest.raises(ValueError):
+        upgrade.decode_export(data)
+
+
+def test_reader_drops_all_credentials_before_loading_shared_runtime(setup, monkeypatch):
+    updater, _, _ = setup
+    updater.config['reader_uid'] = 1000
+    expected = upgrade.encode_export(updater.config)
+    seen = []
+    monkeypatch.setattr(upgrade, 'trusted', lambda path: Path(path))
+    monkeypatch.setattr(upgrade.pwd, 'getpwuid', lambda uid: SimpleNamespace(pw_gid=1000))
+
+    def run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        assert kwargs['user'] == 1000 and kwargs['group'] == 1000
+        assert kwargs['extra_groups'] == []
+        assert argv[:2] == ['/usr/bin/python3', '-I']
+        assert '--export-runtime' in argv and kwargs['cwd'] == '/'
+        assert kwargs['env'] == {'PATH': '/usr/bin:/bin'}
+        kwargs['stdout'].write(expected)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(upgrade.subprocess, 'run', run)
+    assert upgrade.desired_as_reader('/etc/prismabuild/client-upgrade.json', updater.config) == upgrade.desired(updater.config)
+    assert len(seen) == 1
+
+
+def test_reader_cannot_be_root(setup):
+    updater, _, _ = setup
+    updater.config['reader_uid'] = 0
+    with pytest.raises(ValueError, match='unprivileged UID'):
+        upgrade.desired_as_reader('/unused', updater.config)
