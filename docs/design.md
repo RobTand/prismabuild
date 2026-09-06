@@ -1087,6 +1087,19 @@ whereas a sweep only files an authoritative ending. Sweep before re-running a
 SLURM campaign to preserve its execution record. An unknown job without a CAS
 receipt remains unresolved; neither recovery path invents success.
 
+## Automatic client convergence
+
+The published immutable runtime is the desired client version. Worker loops
+reload at an idle boundary for every generation, including a republish of the
+same commit. Locally installed privileged clients converge through a root timer
+that verifies manifest members, closes new admission under the broker lock,
+waits for active scopes, and validates the replacement before reopening work.
+An interrupted or unhealthy replacement restores verified previous bytes.
+Maintenance refusal before payload launch returns a claim to ready without
+burning an execution attempt. The published store is explicitly authorized to
+supply these privileged bytes; manifest hashes provide copy consistency, not
+an independent signature. See [client upgrades](client_upgrade.md).
+
 ## Preferred, overflow and adaptive CPU admission
 
 The fleet retains `--all-cores` so all usable CPU capacity remains available.

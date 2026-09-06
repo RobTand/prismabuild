@@ -31,11 +31,23 @@ requires observing the OOM and stopping the remaining owned scope. A healthy
 attempt in another slice is not selected. Live qualification must demonstrate
 that behavior rather than infer it from configuration.
 
-GB10 CUDA allocations are not reliably charged to `memory.current`. A cgroup
-ceiling alone therefore provides no device-memory guarantee. Per-process GPU
-accounting and selective termination require separate qualification; GPU
-utilization percentage is not a capacity or memory measurement. Consult the
-readiness record for the measured scope and remaining limits.
+GB10 CUDA allocations are not reliably charged to `memory.current`. The broker
+therefore samples NVIDIA per-process memory and binds each observation to a
+stable process start time and exact cgroup identity. Two confirming observations
+of a job's proven memory lower bound above its budget select only that scope.
+The lower bound is the larger of host memory and the largest individual GPU
+report; summed GPU reports remain diagnostic because shared/IPC allocations can
+overlap. This avoids guessing ownership or double-counting shared memory, but
+can miss aggregate excess spread across several small GPU processes.
+
+Predictive host-pressure handling additionally requires repeated pressure,
+dominant attributable growth and projected excess of that job's own budget.
+It can stop a rapidly growing job before current usage crosses its budget.
+This forecast can misclassify a bounded allocation; it does not select static
+healthy neighbors or foreign work. Polling cannot prevent every instantaneous
+allocation spike or guarantee a response during a kernel stall. The budget
+path has a real GB10 daemon qualification; projected-pressure behavior has
+synthetic coverage without inducing a real host OOM.
 
 ## Installation and upgrades
 
@@ -46,6 +58,13 @@ overwrite an active service: an upgrade must first drain submissions for that
 host, verify its attempts and job groups are idle, and stop the old service.
 Then install the new revision and verify the service and installed file hashes.
 Do not restart the broker merely because its process name matches a search.
+
+After the initial installation, enroll the host with
+`tools/fleet/install_client_upgrader.sh`. The automatic updater closes admission
+through the broker's root-only maintenance API, waits for existing attempts,
+and verifies the new running code before reopening admission. Failed upgrades
+restore verified previous bytes. See [client upgrades](client_upgrade.md) for
+the publication authority, status and recovery contract.
 
 The service protects its own modest memory allocation from host OOM. Payloads
 explicitly reset that OOM preference before dropping privileges. They retain
