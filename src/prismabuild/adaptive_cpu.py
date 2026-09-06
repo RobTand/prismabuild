@@ -139,6 +139,27 @@ class AdmissionBusy(RuntimeError):
             'PrismaBuild admission is held by another loop on this box')
 
 
+def _device_and_inode(field):
+    """``(major, minor, inode)`` from a ``/proc/locks`` device field, or None.
+
+    Parsed rather than formatted-and-compared.  The kernel prints the device as
+    ``%02x:%02x``, so a key built by formatting has to reproduce that padding
+    exactly, and getting it wrong yields a silent false negative that reads as
+    good news: #264 matched nothing at all on dl380g10, whose ``/tmp`` is tmpfs
+    with major 0, while looking correct on sparky, whose major 259 prints the
+    same either way.  Reading the numbers back out cannot have that bug, for
+    any padding the kernel might choose.
+    """
+
+    parts = field.split(':')
+    if len(parts) != 3:
+        return None
+    try:
+        return (int(parts[0], 16), int(parts[1], 16), int(parts[2]))
+    except ValueError:
+        return None
+
+
 def _holder_of(descriptor):
     """The pid holding the flock on ``descriptor``, or ``None`` if unreadable.
 
@@ -150,17 +171,22 @@ def _holder_of(descriptor):
     """
 
     try:
-        inode = os.fstat(descriptor).st_ino
+        info = os.fstat(descriptor)
     except OSError:
         return None
+    wanted = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
     try:
         with open('/proc/locks') as handle:
             for line in handle:
                 fields = line.split()
-                # "<n>: FLOCK ADVISORY WRITE <pid> <maj>:<min>:<ino> 0 EOF"
+                # "<n>: FLOCK ADVISORY WRITE <pid> <maj>:<min>:<ino> 0 EOF",
+                # where the device numbers are hex and the inode is decimal.
+                # A waiter's line begins "<n>: -> FLOCK", which fails the test
+                # below and is skipped, so only the holder is ever named.
                 if len(fields) < 6 or fields[1] != 'FLOCK':
                     continue
-                if fields[5].rsplit(':', 1)[-1] != str(inode):
+                found = _device_and_inode(fields[5])
+                if found != wanted:
                     continue
                 held_by = int(fields[4])
                 # -1 is the kernel's "no owning process" (an OFD lock); it is
