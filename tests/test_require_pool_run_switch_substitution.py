@@ -67,6 +67,8 @@ WORK = f"{CUDA} train.py"
     f"bash -c \"$(cat <<X\n{WORK}\nX\n)\"",
     # A wrapper reaching a shell with no shell of its own in front of it.
     f"sudo bash -c \"$(cat <<'X'\n{WORK}\nX\n)\"",
+    # ``--`` ends option parsing; the word after it is still the code.
+    f"bash -c -- \"$(cat <<'X'\n{WORK}\nX\n)\"",
 ])
 def test_a_body_a_run_switch_executes_is_refused(tmp_path, command):
     assert _verdict(_armed(tmp_path, None), command) == 2
@@ -110,6 +112,11 @@ def test_a_body_a_run_switch_executes_is_refused(tmp_path, command):
     "echo $(cat f)",
     # A body a shell really does run, carrying nothing this guard refuses.
     f"bash -c \"$(cat <<'X'\necho hello\nX\n)\"",
+    # ``bash -- file`` names a script to read, not code to run: dropping the
+    # separator must not leave a run switch behind that was never typed.
+    f"bash -- \"$(cat <<'X'\n{WORK}\nX\n)\"",
+    # The separator with no switch in front of it is the same shape again.
+    f"bash \"$(cat <<'X'\n{WORK}\nX\n)\"",
 ])
 def test_the_shapes_that_run_no_body_still_pass(tmp_path, command):
     assert _verdict(_armed(tmp_path, None), command) == 0

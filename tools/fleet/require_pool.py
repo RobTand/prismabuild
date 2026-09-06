@@ -615,6 +615,13 @@ def _runs_substitution_output(prefix: str) -> bool:
             return False
     else:
         return False
+    if rest and rest[-1] == "--":
+        # ``bash -c -- "$(...)"``: the separator ends option parsing, so the
+        # next word is still the code the shell runs.  Without this the rule
+        # reads ``--`` as the last switch and finds no ``c`` in it.  A bare
+        # ``bash -- "$(...)"`` is unaffected: the list empties and the word is
+        # a file name, not code.
+        rest = rest[:-1]
     return bool(rest) and _runs_argument(rest[-1])
 
 
