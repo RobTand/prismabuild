@@ -104,6 +104,7 @@ from __future__ import annotations
 
 from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+import errno
 import fcntl
 import hashlib
 import json
@@ -353,11 +354,40 @@ def _publish_immutable(path: Path, raw: bytes, *, where: str) -> None:
         )
 
 
-def _read_json(path: Path) -> dict[str, object] | None:
+def _read_json(
+    path: Path, *, tolerate_stale: bool = False
+) -> dict[str, object] | None:
+    """The record at ``path``, or ``None`` if it is not there to read.
+
+    ``tolerate_stale`` extends "not there" to cover ``ESTALE``, and belongs
+    only to a caller enumerating a directory whose entries come and go.  A
+    worker offer is exactly that: it appears when a loop starts and is gone
+    when the box leaves, so a file that vanishes between the ``glob`` and the
+    read is ordinary.  ``ENOENT`` has always been read that way here; on NFS
+    the same event arrives as ``ESTALE`` through a directory handle the client
+    had already cached, and untreated it left this function, ``offers()`` and
+    ``placeable_hosts()`` and killed a submission before it queued anything --
+    a whole ``pbtest`` shard, 74 tests never run, for two offer files an
+    operator had tidied away (#208).
+
+    It is opt-in because ``ESTALE`` is not only "this file vanished": it is
+    also what a dead mount or a stale parent handle returns.  An enumerator
+    has already had its ``glob`` succeed, so it holds the evidence that the
+    directory is live and the entry is not.  A caller addressing one record by
+    key holds no such evidence -- ``reclaim`` asserting exactly one terminal
+    record, a lease read, a pass record -- and answering "absent" there would
+    turn a broken mount into a confident wrong verdict.  Those callers keep
+    the default and stay loud.
+    """
+
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
         return None
+    except OSError as exc:
+        if tolerate_stale and exc.errno == errno.ESTALE:
+            return None
+        raise
     if not raw:
         return None
     try:
@@ -1579,7 +1609,13 @@ class PoolQueue:
         now = _now()
         live: list[dict[str, object]] = []
         for path in sorted(directory.glob("*.json")):
-            record = _read_json(path)
+            # An offer that went away while we were reading the list is a box
+            # that left, which is the same answer as an offer that expired:
+            # not currently placeable.  It is never a reason to refuse the
+            # submission -- the box it described was at worst one candidate
+            # among several.  ``tolerate_stale`` is what makes that true on
+            # the shared filesystem the pool actually lives on (#208).
+            record = _read_json(path, tolerate_stale=True)
             if record is None:
                 continue
             announced = record.get("announced_unix")
