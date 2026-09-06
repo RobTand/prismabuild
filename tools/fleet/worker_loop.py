@@ -289,17 +289,28 @@ def _run_loop(stop_requested):
     # against the currently published one below.
     observer = None
     observer_initialized = False
+    def offered_tags(name: str) -> list[str]:
+        """What this box offers, for the name it currently has.
+
+        A box offers its own hostname as well as its class.  Item tags must be
+        a subset of the worker's, so without the hostname an action pinned to
+        one box -- which is every action whose checkout is a box-local worktree
+        rather than shared storage -- matches no worker and never runs.
+
+        Built from a name passed in rather than read here, because the name can
+        change while this loop runs; see the re-read at the top of the poll.
+        """
+
+        tags = [args.klass, name, *args.tag]
+        if not gpu_capable:
+            # A box with no GPU must say so, or an action demanding gpu=1
+            # matches it on tags and then fails at run time instead of waiting
+            # for a box that can serve it.
+            tags.append("cpu")
+        return tags
+
     host = socket.gethostname()
-    # A box offers its own hostname as well as its class.  Item tags must be a
-    # subset of the worker's, so without this an action pinned to one box --
-    # which is every action whose checkout is a box-local worktree rather than
-    # shared storage -- matches no worker and never runs.
-    offered = [args.klass, host, *args.tag]
-    if not gpu_capable:
-        # A box with no GPU must say so, or an action demanding gpu=1 matches
-        # it on tags and then fails at run time instead of waiting for a box
-        # that can serve it.
-        offered.append("cpu")
+    offered = offered_tags(host)
     if pinned is not None:
         print(f"[{host}] pinned to {cpu_topology.as_range(pinned)} "
               f"({len(pinned)} of {len(cpu_topology.classify()[0]) + len(cpu_topology.classify()[1])} cpus)",
@@ -327,6 +338,24 @@ def _run_loop(stop_requested):
         # operation; this local fence only closes the much larger window in
         # which a loop that already observes the successor keeps touching the
         # queue before exiting.
+        # The name is re-read every poll, not read once at startup.  A box can
+        # be renamed under a running loop, and a loop that cached the name it
+        # started with kept announcing the old one for the rest of its life:
+        # after sparklina was renamed, twenty loops went on offering
+        # `gx10-6b77`, which showed as a second live node whose admission was
+        # permanently `unavailable` because nothing published counters under
+        # that name.  Every action that matched only that name would have
+        # starved.  The offer follows the box.
+        #
+        # The old name's `workers/<name>.json` is left to expire on its own
+        # rather than removed here: this loop is one of many on the box and
+        # cannot know whether a sibling still answers to the old name.
+        renamed_to = socket.gethostname()
+        if renamed_to != host:
+            print(f"[{host}] renamed to {renamed_to}; announcing under the new "
+                  f"name from this poll on", flush=True)
+            host = renamed_to
+            offered = offered_tags(host)
         current = published_commit()
         current_generation = _generation_at(RUNTIME_VERSION)
         if (current and current != loaded_commit) or (
