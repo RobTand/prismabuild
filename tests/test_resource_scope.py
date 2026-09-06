@@ -164,6 +164,8 @@ def test_proxy_sends_only_stdio_fds_and_never_executes_payload(tmp_path, approve
     assert seen['request']['op'] == 'run'
     assert seen['request']['cwd'] == os.getcwd()
     assert seen['request']['affinity'] == sorted(os.sched_getaffinity(0))
+    assert seen['request']['umask'] == int(next(line.split()[1] for line in
+        Path('/proc/self/status').read_text().splitlines() if line.startswith('Umask:')), 8)
     assert seen['request']['argv'][-1] == str(marker)
     assert len(seen['fds']) == 3
     assert seen['fds'][0] == '/dev/null'

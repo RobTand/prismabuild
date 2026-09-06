@@ -23,6 +23,16 @@ sys.path.insert(0, str(_source))
 from prismabuild.resource_scope import MAX_MESSAGE_BYTES, broker_request
 
 
+def process_umask() -> int:
+    # /proc exposes the inherited mask without mutating process-global state.
+    for line in Path('/proc/self/status').read_text().splitlines():
+        if line.startswith('Umask:'):
+            value = int(line.split()[1], 8)
+            if 0 <= value <= 0o777:
+                return value
+    raise OSError('cannot read this launcher process umask')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--socket', required=True, type=Path)
@@ -54,7 +64,7 @@ def main() -> int:
     try:
         request = {'op': 'run', **identity, 'argv': argv,
                    'cwd': os.getcwd(), 'env': dict(os.environ),
-                   'affinity': sorted(os.sched_getaffinity(0))}
+                   'affinity': sorted(os.sched_getaffinity(0)), 'umask': process_umask()}
         message = json.dumps(request, separators=(',', ':')).encode() + b'\n'
         if len(message) > MAX_MESSAGE_BYTES:
             raise OSError('resource launch request exceeds 64 KiB')
