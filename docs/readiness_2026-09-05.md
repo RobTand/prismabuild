@@ -125,8 +125,9 @@ current result authority. Their sizes, hashes and disposition are recorded in
 NFS cache visibility can still cause redundant work;
 immutable first-writer publication decides the result. The earlier SLURM adapter
 and its optional Dagster integration remain until the documented Phase 3.
-Native cgroup/GPU containment, power-loss recovery and an observability-service
-rollout are not silently certified by this qualification.
+This baseline alone did not certify native cgroup/GPU containment. Subsequent
+containment evidence is recorded below; power-loss recovery and a complete
+observability-service rollout remain outside these live proofs.
 
 ## Mandatory agent routing
 
@@ -142,3 +143,65 @@ This is a working policy plus a command guard, not an OS security boundary.
 Already-admitted children execute directly. Further tests and GPU work use
 published PB entrypoints, declare combined CPU/memory/GPU demand, and verify
 terminal records and CAS output. New workers must receive the same policy.
+
+## Adaptive admission, containment and unattended clients
+
+The adaptive controller admits cheap CPU work beyond declared physical capacity
+when fresh host and per-action telemetry supports lending. On sparky, a declared
+20-CPU donor ran alongside three one-CPU borrowers. During the donor's busy
+phase, measured host activity reached 20/20 CPUs and CPU pressure reached
+0.99993; a new sentinel stayed queued and ran after pressure subsided. Existing
+cheap actions survived. Borrowing an idle preferred CPU preceded using a free
+fallback CPU. Measurement actions retained exclusive placement. The observer
+recorded 302 host samples and Netdata snapshots; this is an admission and
+isolation result, not a throughput speedup claim. Evidence is
+`adaptive-qualification-report.md` and `adaptive-live-sparky-4a5da96e4ddb/` in
+`/home/rob/pb-logs/primetime`.
+
+The supervisor grew from five to six workers when six admitted waiters could
+run, and shrank to five after completion. All six successful CAS outputs,
+leases, reservations and kernel-scope removals were checked. Across all three
+hosts, adopting a new supervisor generation preserved PID, process start
+identity, the held file lock and active worker leases. Evidence is
+`elastic-proof-1788655679/manifest.json` and `supervisor-reexec-*.jsonl`.
+
+Each admitted action receives an owned cgroup with its declared hard memory
+budget and zero swap allowance. The earlier 90% soft watermark caused heavy
+reclaim before the hard limit; it was removed after live measurement. A direct
+96-MiB scope and a Docker-backed 96-MiB scope reached exactly that peak and
+killed only their greedy work. The Docker case verified cleanup of both owned
+containers, while a neighboring healthy scope survived. Action
+`312e7d2bcf3b6fddb88f8cc2c9cda4125cc293c575740580f8f9763292c59cdc`
+holds the checked result.
+
+The running GPU monitor also stopped a process whose observed GPU allocation
+exceeded its one-GiB scope budget after two confirmed samples. A separate
+128-MiB tensor job kept making progress afterward. Action
+`f2444b3bb856e02b1baf62a09ae4c89e0f17f069e82e2aba8585c97693b30403`
+holds the checked result. GPU monitoring is sampled and uses a conservative
+per-process lower bound to avoid double-counting shared memory. Aggregate
+excess across several smaller GPU processes can escape that bound. Predictive
+host-memory protection has deterministic test coverage; these live proofs do
+not certify every impending host OOM or instantaneous GPU allocation burst.
+
+All three hosts have the automatic client-upgrade timer. Publication occurred
+while one witness action per host was active: brokers retained their original
+process identity while draining and every witness completed successfully.
+Timers then installed the new clients 23–27 seconds after release. Installed
+file hashes matched the manifest, timers were active, and transaction journals
+and witness cgroups were absent. Root-squashed NFS remained enabled. Evidence
+is `/mnt/shared/prismabuild-fleet/qualification/client-upgrade-20260905/summary.json`.
+
+The shared PrismaBuild skill is installed for Codex and Claude on all three
+hosts; global instructions also guide Gemini and Pi. Skill validation through
+PB passed in action
+`aad50963e7ce660639222874f1b83bfed364202dba631a589d51602a6e8cde62`.
+Rob explicitly selected guidance and the existing command guard for routing:
+no GPU device permissions, user identities or Docker access were tightened.
+
+Sparky's one-second Docker/containerd pulses came from Netdata's Docker
+inventory collector. Changing that collector alone from one to ten seconds
+reduced measured combined daemon consumption from 0.9192 to 0.076 CPU cores
+in paired 25-second observations, freeing 0.8432 cores (91.7% reduction).
+Docker and containerd were not restarted. The profiler and observations are
+retained under `docker-pulses/` in the qualification artifact directory.
