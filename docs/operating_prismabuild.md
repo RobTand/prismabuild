@@ -1385,6 +1385,46 @@ No loop-count tuning is required for ordinary operation. `--loops N` is the
 operator opt-out that fixes the count at `N`; `--once` retains deterministic
 one-shot behavior and tops up only to the configured floor.
 
+### Keeping a supervisor alive across a reboot
+
+Each box runs its supervisor as a systemd **user** unit,
+`prismabuild-supervisor.service`, installed by
+`tools/fleet/install_supervisor_unit.sh` and enabled under the linger every box
+already has. Install it as `rob`; it takes no `sudo`.
+
+The unit runs the same `supervise.py --ensure` the crontab runs, and the
+crontab line stays in place behind it. Neither can double up: one supervisor
+per box is enforced by an exclusive `flock` on
+`/home/rob/tmp/prismabuild-supervisor.claim`, and `--ensure` exits 0 quietly
+when it loses that lock. What the unit adds is an owner. `cron` starts nothing
+at boot and its finest useful granularity is minutes, so before the unit a
+reboot left a box out of the pool until the next five-minute tick -- on
+2026-09-06 all three boxes booted at 10:59 and rejoined at 11:05, with every
+offer reading `stale` in between and nothing reporting it. `Restart=always`
+with `RestartSec=30` makes that a thirty-second gap, and boot start makes it
+seconds.
+
+Two directives are load-bearing and neither is a default:
+
+- `KillMode=process`. Worker loops are spawned by the supervisor and land in
+  its cgroup, but they are not children to recycle -- a loop finishes its
+  action under the generation that claimed it, and a replacement supervisor
+  adopts the census instead of respawning. The default `control-group` would
+  `SIGTERM` every loop mid-action on any restart of the unit.
+- `StartLimitIntervalSec=0`, in `[Unit]`. The supervisor exits 0 by design in
+  the `--ensure` no-op case and again when it re-execs onto a newly published
+  generation, so no restart budget may retire the unit. The directive is
+  honoured only in `[Unit]`; in `[Service]` systemd ignores it silently and the
+  10s/5 default stays in force.
+
+Installing the unit on a box whose supervisor is already running under `cron`
+means handing the claim over. Stop the running supervisor by pid, using the
+argv-shape search the runbook describes rather than `pkill -f`, then
+`systemctl --user start prismabuild-supervisor.service`. The handover is
+correct when the log's next line is `supervising N loops` with no `spawned
+loop` lines after it: the new supervisor adopted every existing loop, and no
+running action was disturbed.
+
 ## Export a complete Tessera model
 
 Use `dispatch_tessera_model.py` for new full-model serving exports, including
