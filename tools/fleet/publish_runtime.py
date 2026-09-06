@@ -180,6 +180,14 @@ def _publication_manifest() -> dict[str, str]:
     skill = CHECKOUT / "skills" / "prismabuild" / "SKILL.md"
     if skill.is_file():
         published["skills/prismabuild/SKILL.md"] = _sha256(skill)
+    # The installed skill requires the policy and operating guide. Keep the
+    # small documentation tree and root guides together so their relative
+    # references resolve within this same sealed generation, without a checkout.
+    guides = [CHECKOUT / "README.md", CHECKOUT / "AGENTS.md",
+              *sorted((CHECKOUT / "docs").rglob("*.md"))]
+    for source in guides:
+        if source.is_file():
+            published[source.relative_to(CHECKOUT).as_posix()] = _sha256(source)
     worker = CHECKOUT / "tools" / "prismabuild_worker.py"
     if worker.is_file():
         published["tools/prismabuild_worker.py"] = _sha256(worker)

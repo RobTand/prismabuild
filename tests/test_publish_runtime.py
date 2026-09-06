@@ -79,6 +79,51 @@ def test_untracked_published_files_make_the_runtime_tree_dirty(monkeypatch) -> N
     assert publish_runtime._working_tree_dirty() is True
 
 
+def test_published_skill_companion_documents_resolve_inside_the_generation(
+    tmp_path, monkeypatch,
+) -> None:
+    """Following the installed skill must not require a mutable checkout."""
+    import hashlib
+    import json
+    import re
+    from urllib.parse import unquote, urlsplit
+
+    mirror = tmp_path / "fleet" / "repo"
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    assert publish_runtime.main() == 0
+    generation = mirror.resolve()
+    receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
+    skill = generation / "skills/prismabuild/SKILL.md"
+    text = skill.read_text()
+    references = {generation / name for name in re.findall(r"`(docs/[^`]+\.md)`", text)}
+    references.update(
+        (skill.parent / link).resolve()
+        for link in re.findall(r"\]\(([^)]+\.md)\)", text)
+    )
+    required = {generation / "docs/agent_execution_policy.md",
+                generation / "docs/operating_prismabuild.md"}
+    assert required <= references, "the skill no longer identifies both companion policies"
+    pending = list(references)
+    visited = set()
+    while pending:
+        document = pending.pop().resolve()
+        if document in visited:
+            continue
+        visited.add(document)
+        assert document.is_relative_to(generation), document
+        name = document.relative_to(generation).as_posix()
+        assert document.is_file(), f"published guide references an absent file: {name}"
+        assert hashlib.sha256(document.read_bytes()).hexdigest() == receipt["files"][name]
+        assert document.stat().st_mode & 0o222 == 0, f"published guide is writable: {name}"
+        for link in re.findall(r"\]\(([^)]+)\)", document.read_text()):
+            parsed = urlsplit(link)
+            if not parsed.scheme and not parsed.netloc and parsed.path.endswith(".md"):
+                pending.append(document.parent / unquote(parsed.path))
+
+
 def test_publish_never_exposes_a_mixed_generation(tmp_path, monkeypatch) -> None:
     commit = "a" * 40
     checkout = _checkout(tmp_path / "checkout", "new")

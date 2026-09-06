@@ -104,7 +104,9 @@ processes by a loose name match or release held tokens while owned work lives.
 Runtime and locally installed client versions should be checked through the
 published status and upgrade evidence, not inferred from the checkout's HEAD.
 
-Read the repository's `docs/agent_execution_policy.md` and
-`docs/operating_prismabuild.md` for campaign/recovery contracts. This skill is
-execution guidance, not an OS access-control boundary or new authorization to
-change administrative privileges.
+Read the [execution policy](../../docs/agent_execution_policy.md) and
+[operating guide](../../docs/operating_prismabuild.md) for campaign/recovery
+contracts. These relative links resolve inside the same sealed generation as
+this skill; use that generation's documents rather than a mutable checkout.
+This skill is execution guidance, not an OS access-control boundary or new
+authorization to change administrative privileges.
