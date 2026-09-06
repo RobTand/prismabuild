@@ -173,6 +173,34 @@ All 24 retained observations during the 24.828-second interval between compute
 holder exits preserved the plateau, with the remaining GPU context and
 81.02–86.84 W device readings. The next action was claimed 0.169 seconds after
 the last holder's terminal. `plateau-exit-persistence.json` records this live
-undersubscription interval. Recovery after all holders clear is live-proven;
-same-holder recovery after sustained power reduction has modeled regression
-coverage, not a separate live qualification claim.
+undersubscription interval. Recovery after all holders clear is live-proven. A separate live phase-change
+qualification below also verifies recovery while the same holders remain.
+
+The initial failed pre-CUDA calibration deliberately retains the empty frozen
+scope `prismabuild-jobd3c6002f82352acc91a2998304cbe0e2.slice` on Sparklina.
+Its failed terminal (`da9ea6029203c2793683eb8e7976a65562a97c64310b594ccd1c1702c704749c`)
+records completed cleanup with `retired: true`. Independent kernel inspection
+found `populated 0`, `frozen 1`, and no PIDs. This is the pending-Docker-ticket
+safety fence specified in [resource_authority.md](resource_authority.md), not
+running work or an unowned orphan. It is retained as bounded recovery evidence;
+removal would require proving a quiescent daemon boundary. Successful later
+qualification scopes were removed normally.
+
+
+## Recovery when running jobs become lighter
+
+The separate `after-same-holder-phase-drop-sparklina-9b01bf6259/` proof first
+established a compute plateau, then switched both existing processes to real
+CPU-prepared, lower-duty GPU inference. Device power fell from 77.54 W to
+15.51 W while both original claims remained live. Their GPU PID/start ticks,
+device UUID, scope identity and attempt nonce were identical before and after.
+The queued GPU sentinel began useful work 9.15 seconds after the phase change,
+before either original holder exited. No controller or queue state was edited.
+
+All three normal outputs and actual CAS receipts were verified. The retained
+`phase-drop-survival.json` proves identity continuity and observed power change;
+`phase-drop-root-independent-verification.json` independently checks the payloads.
+This is an admission-behavior proof, not an additional throughput comparison.
+The final audit verified 31 successful GPU action outputs across qualification
+and classified the one pre-CUDA failed calibration's frozen empty group as the
+intentional safety fence above. Unrelated work on Sparky was preserved.
