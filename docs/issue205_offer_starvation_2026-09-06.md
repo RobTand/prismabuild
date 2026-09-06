@@ -77,6 +77,29 @@ This is not throughput and not contention for the disk or the wire. The server
 was idle (ZFS ~3 MB/s, 200 GB free, zero processes in `D`) and `nfsstat -c` on
 `sparky` showed 16,673,766 calls with **0** retransmits.
 
+A second sample, taken per directory to find out which records stall, says the
+lease is not the only one:
+
+| directory | reads | slowest | over 1 s |
+| --- | --- | --- | --- |
+| `workers/` | 3 | 0.000 s | 0 |
+| `claimed/*.lease` | 8 | 9.95 s | 2 |
+| `passes/` | 12 | 45.001 s | 1 |
+| `ready/` | 12 | 45.001 s | 3 |
+
+Every stalling directory holds records another box rewrites: a lease from its
+heartbeat, a `passes` sidecar from `record_pass` on every refused poll, and a
+`ready` record from every requeue. `workers/` is written by the reading box
+itself and never stalls. The repeated **45.001 s** is a ceiling, not a
+coincidence — a delegation recall that ran out its timeout rather than being
+answered.
+
+So the poll has two readers of remotely-written records, not one.
+`reap_stale` reads `claimed/` and its leases. `ready_items` reads every
+`ready/*.json` **and** calls `passes()` on each of them
+(`pool.py`, `ready_items`), because the ready ordering sorts on the denial
+count. Only the first is throttled below.
+
 ## The change
 
 `serve_once` now sweeps at most once per `HEARTBEAT_S` per box, through a
@@ -94,6 +117,18 @@ heartbeat of expiring, by this box or by any other box polling the same pool.
 The marker is unlocked on purpose: deciding whether to sweep must not sit
 behind the NFS waits it exists to prevent, and losing the race costs one extra
 sweep, which is what the code did before.
+
+The derivation covers the reaper's lease conclusions and not its
+`finish_pending` branch, whose input is cgroup state on its own clock. That
+branch's capacity return is delayed by up to `HEARTBEAT_S`, accepted rather
+than derived, and recorded as such in the code.
+
+**What this does not fix.** The ready scan still reads every `ready/*.json`
+and every `passes/*.json` on every poll, and the table above measures those at
+the same 45 s ceiling as the lease. This change removes one of the two
+readers; it is a measured reduction, not a restored offer. Do not read it as
+"the box is visible again" until an after-measurement of the offer cadence
+says so.
 
 Pinned by `tests/test_pool_sweep_is_throttled_to_the_heartbeat.py`: the
 throttle is per box rather than per process (the storm is loops times polls,
@@ -121,7 +156,60 @@ interpreter that does not exist on x86, and `pbrun.placement_tags` kept the
 source-host pin as designed. That is a work-supply fact. It is not why the box
 took nothing once x86-tagged work existed.
 
+## The same stall loses work, not only capacity
+
+`sparklina` claimed action `0a44f2e0f62c…` and never filed an outcome:
+`lease_lost_max_attempts`, empty `stdout` and `stderr`, `lease_age_s: null`,
+attempt `00000001`. Its sibling shard ran on `sparky` and passed.
+
+`lease_age_s: null` is not "the lease was old". `reap_stale` sets it from
+`lease_age`, which returns `None` when there is **no lease file**, and it takes
+that branch only once `_now() - claimed_unix` is past `grace_s`. So the record
+carried `claimed_unix` — `_write_json_atomic(dst, claimed)` had landed — and
+the next statement in `_claim`, `write_lease`, had still produced nothing
+thirty seconds later.
+
+That window is the one `reap_stale`'s own docstring reasons about: *"the
+claimed file … on NFS that stretch spans two directory scans and is hundreds
+of milliseconds wide"*, and the grace is set to `HEARTBEAT_S` as *"longer than
+the window actually spans"*. The measurement above falsifies that premise on
+this fleet: a single pool-record operation reached 45.001 s, and the flock
+holder was caught as `DELEG BREAKER WRITE` on exactly a `claimed/<key>.lease`.
+The grace is shorter than the operation it waits for, so a claimant that is
+slow is filed as dead, its work is taken back, and its attempt is burned.
+
+**Does anything gate claiming on a freshness that admission does not have?**
+No, and the arrow runs the other way. Admission is not a separate check next
+to the claim: `claim()` builds the `Controller`, takes the lock, and calls
+`_claim`, which runs `controller.decision(item, demand)` *before* the rename
+and skips the item when it returns `None`. There is no path that renames an
+item without an admission decision. And `decision()`'s freshness gate is
+reached only when the box is borrowing; when free tokens exist it is not
+consulted at all, and a box whose sampler has gone quiet **skips** the PSI and
+headroom refusals rather than failing them. A stale box is admitted more
+easily, not less.
+
+So this is not a claim-versus-admission disagreement. It is the same NFS stall
+as the offer half, met at a different place in the same poll — and it needs its
+own change, because widening a grace is not the fix: the window it guards has
+no upper bound on this filesystem, and there is no liveness signal between the
+rename and the first lease write for a longer grace to consult.
+
 ## Still open
+
+**The ready scan is the other half of the storm.** `ready_items` reads every
+`ready/*.json` and its `passes/*.json` on every poll of every loop, both
+measured at the same 45 s ceiling as the lease. It cannot be throttled the way
+the reaper was — claiming is what the poll is for — but the `passes` read is
+only there to order the scan, and it is paid for items this box has already
+been shown it cannot place: the placement filter runs *after* `ready_items`
+returns. Deferring the sidecar read until after placement would have cost
+`dl380g10` nothing at all in the observed pool, where every ready item was
+tagged for another box.
+
+**A claimant blocked between the rename and its lease is filed as dead.**
+Measured above; needs its own change and its own issue, since a wider grace
+guards a window with no upper bound on this filesystem.
 
 **The admission sample can be stale *within* a single scan.** `decision()`
 caches its host sample once per `Controller`, and a `Controller` is built once

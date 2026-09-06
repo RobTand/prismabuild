@@ -2894,15 +2894,26 @@ class PoolQueue:
         aged past ``OFFER_TIMEOUT_S`` -- an idle 80-CPU box invisible to
         placement because its poll could not get back to ``announce``.
 
-        The interval is not a tuning choice.  Everything the reaper concludes
-        is a statement about a lease, and a lease's own writer refreshes it
-        every ``HEARTBEAT_S``; the grace this method's caller applies to a
-        claim with no lease at all is ``HEARTBEAT_S`` (see ``reap_stale``).
-        So no input to the sweep can change more often than that, and a
-        second sweep inside one heartbeat re-reads bytes that cannot have
-        moved.  Detection is unaffected in kind: a lease expires at
-        ``LEASE_TIMEOUT_S`` and is noticed within one heartbeat of expiring,
-        by this box or by any other box polling the same pool.
+        The interval is derived, for the conclusions the reaper draws from
+        leases.  Every one of those is a statement about a lease, and a
+        lease's own writer refreshes it every ``HEARTBEAT_S``; the grace
+        ``reap_stale`` applies to a claim with no lease at all is
+        ``HEARTBEAT_S`` too.  So no lease input to the sweep can change more
+        often than that, and a second sweep inside one heartbeat re-reads
+        bytes that cannot have moved.  Detection is unaffected in kind: a
+        lease expires at ``LEASE_TIMEOUT_S`` and is noticed within one
+        heartbeat of expiring, by this box or by any other box polling the
+        same pool.
+
+        One branch of ``reap_stale`` is not derived and is accepted instead.
+        ``finish_pending`` retries the saved outcome of a payload that has
+        already returned but whose kernel scope has not drained; its input is
+        cgroup state, which moves on its own clock, and its capacity return is
+        therefore delayed by up to ``HEARTBEAT_S``.  That is a bounded delay
+        in giving tokens back, weighed against a poll cycle that measured
+        longer than ``OFFER_TIMEOUT_S`` and cost the box all of its capacity.
+        Retrying it off this schedule needs a host-local record of which keys
+        are pending, which is the enumeration this method exists to avoid.
 
         The marker is host-local and unlocked on purpose.  Taking the
         admission lock to decide whether to sweep would put this decision

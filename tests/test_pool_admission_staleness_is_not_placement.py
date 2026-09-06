@@ -67,7 +67,7 @@ def _publish(queue: pool.PoolQueue, seed: str, *, tags: list[str],
              resources: dict | None = None) -> str:
     key = seed * 64
     queue.publish(action_key=key, cas_root=queue.root / "cas",
-                  checkout_root=None,
+                  checkout_root=str(queue.root),
                   worker_script=ROOT / "tools/prismabuild_worker.py",
                   resources=dict(resources or SMALL_CPU_WORK),
                   tags=tags, needs_gpu=False)
