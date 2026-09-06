@@ -1,0 +1,11 @@
+[Unit]
+Description=Check PrismaBuild issues every ten minutes
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+RandomizedDelaySec=30
+Unit=prismabuild-issues.service
+
+[Install]
+WantedBy=timers.target
