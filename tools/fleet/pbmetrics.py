@@ -42,6 +42,14 @@ OUTCOMES = frozenset({
     "executed", "cache_hit", "failed", "timeout", "withdrawn", "reset",
     "finish_lost_race", "unreadable", "unknown",
 })
+#: What ``_file_superseded`` names an unstarted-claim release: the action key,
+#: the epoch second it was filed at, and the kind.  The timestamp is IN the
+#: name, so the window can be applied without stat'ing a record the scan is
+#: about to discard -- the same reason ``_ending_paths`` stats entries rather
+#: than reading them.
+RELEASE_FILING = re.compile(
+    r"\A(?P<key>[0-9a-f]{64})\.(?P<when>[0-9]+\.[0-9]{6})\.unstarted-claim\.json\Z")
+
 RESOURCE_NAMES = {
     "cpu": ("cpu", 1),
     "gpu": ("gpu", 1),
@@ -375,6 +383,80 @@ def _terminal_metrics(
     return readable
 
 
+def _release_metrics(
+    metrics: Metrics,
+    queue_root: Path,
+    *,
+    now: float,
+    window_seconds: float,
+    limit: int,
+) -> bool:
+    """Count the unstarted-claim releases each box produced in the window.
+
+    Issue #263.  ``reap_stale`` releases a claim whose lease never appeared
+    and whose attempt was never published: the action returns to ``ready``
+    unrunnable-through-no-fault-of-its-own, uncharged, and counted.  A rising
+    release rate on ONE box is the signal, because the window it comes out of
+    -- between the claim rename and the first lease write -- is filesystem
+    latency on that box, measured at 45 s against a 30 s grace (issue #222).
+
+    The box is not on the requeued item.  ``_shape_as_ready_item`` pops every
+    claim-scoped field, ``claimed_host`` included, so by the time the counter
+    is readable in ``ready`` the record no longer says who was holding it.
+    The filing under ``withdrawn/superseded/`` does: ``_file_superseded`` is
+    called with the claimed record, before the pops.  So the per-box series is
+    read there and the queue-wide one from the census.
+
+    Bounded exactly as ``_terminal_metrics`` is, and for the same reason: this
+    directory keeps every release this fleet has ever filed, and a scrape that
+    reads all of them to report a handful is the slow path.  ``complete`` says
+    whether the window was proved rather than truncated.
+    """
+
+    directory = Path(queue_root) / pool.WITHDRAWN / "superseded"
+    selected: list[tuple[float, str]] = []
+    readable = True
+    try:
+        with os.scandir(directory) as scan:
+            for entry in scan:
+                match = RELEASE_FILING.match(entry.name)
+                if match is None:
+                    continue
+                age = now - float(match.group("when"))
+                if -_SKEW_S <= age <= window_seconds:
+                    selected.append((float(match.group("when")), entry.path))
+    except FileNotFoundError:
+        pass                     # a fleet that has never released a claim
+    except OSError:
+        readable = False
+    selected.sort(reverse=True)
+    complete = readable and len(selected) <= limit
+
+    counts: dict[str, int] = defaultdict(int)
+    for _, path in selected[:limit]:
+        try:
+            record = pool._read_json(Path(path))
+        except (OSError, ValueError):
+            record = None
+        if not isinstance(record, dict):
+            readable = False
+            continue
+        owner = str(record.get("claimed_by") or "").split(":", 1)[0]
+        counts[_host(record.get("claimed_host")) or _host(owner) or "unknown"] += 1
+
+    events = metrics.family(
+        "prismabuild_unstarted_release_events",
+        "Claims released without an attempt in the bounded recent window, by the box that held the claim; this is a restart-safe gauge, not a counter.",
+    )
+    for host, count in counts.items():
+        events.add(count, host=host)
+    metrics.family(
+        "prismabuild_unstarted_release_events_complete",
+        "Whether the unstarted-release scan proved the configured window was not truncated by its record limit and every selected filing was readable.",
+    ).add(1 if complete and readable else 0)
+    return readable
+
+
 def collect_metrics(
     queue_root: str | Path = DEFAULT_QUEUE_ROOT,
     *,
@@ -415,6 +497,10 @@ def collect_metrics(
         "Age of the oldest readable record in each active queue state; zero means that readable state is empty.",
     )
     jobs = census.get("jobs", []) if isinstance(census.get("jobs"), list) else []
+    releases = metrics.family(
+        "prismabuild_queue_unstarted_releases",
+        "Releases without an attempt carried by readable records now in each active queue state; this counts what the queue is still holding, not what happened in a window.",
+    )
     for state in ("ready", "claimed"):
         count = queue_summary.get(state) if isinstance(queue_summary, Mapping) else None
         if _number(count) is None:
@@ -422,6 +508,8 @@ def collect_metrics(
             continue
         queue_items.add(count, state=state)
         state_jobs = [row for row in jobs if row.get("state") == state.upper()]
+        releases.add(sum(int(row.get("unstarted_releases") or 0) for row in state_jobs),
+                     state=state)
         if not state_jobs:
             oldest.add(0, state=state)
         else:
@@ -606,6 +694,18 @@ def collect_metrics(
         metrics.family(
             "prismabuild_terminal_collection_success",
             "Whether terminal directories and every selected terminal record were readable for this snapshot.",
+        ).add(0)
+
+    try:
+        success = _release_metrics(
+            metrics, root, now=sampled,
+            window_seconds=terminal_window_seconds, limit=terminal_limit,
+        ) and success
+    except Exception:  # A scrape reports the failure rather than dropping HTTP.
+        success = False
+        metrics.family(
+            "prismabuild_unstarted_release_events_complete",
+            "Whether the unstarted-release scan proved the configured window was not truncated by its record limit and every selected filing was readable.",
         ).add(0)
 
     metrics.family(

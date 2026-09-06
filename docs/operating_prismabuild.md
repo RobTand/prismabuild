@@ -646,8 +646,14 @@ It prints three tables:
     admission denial counts and lease age. Ready jobs use the pool's existing
     placement rules to name matching live workers; matching is capability,
     not a promise of immediate admission. Missing/stale leases explicitly say
-    process liveness is unknown. For SLURM, queued/running jobs joined against
-    lane submission records, including constraints and submitting hosts.
+    process liveness is unknown. The `RELEASES` column counts the times this
+    action was returned to `ready` without starting — a claim whose lease
+    never appeared and whose attempt was never published is released uncharged
+    rather than concluded — and a ready job's note repeats it, because a key
+    the reaper keeps handing back otherwise reads exactly like a key nobody
+    has got to yet. A blank column is an action that has never been released.
+    For SLURM, queued/running jobs joined against lane submission records,
+    including constraints and submitting hosts.
 *   **endings** — how the last actions ended, newest first, each labelled with
     the transport that produced it. `--recent N` changes how many are read; the
     default is 20.

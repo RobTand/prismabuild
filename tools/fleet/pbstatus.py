@@ -500,6 +500,21 @@ def _pool_records(directory: Path) -> tuple[dict[str, dict | None], list[str]]:
     return records, notes
 
 
+def _releases(record: Mapping[str, object]) -> int | None:
+    """How often this action was returned to the queue without starting.
+
+    ``reap_stale`` releases a claim that never wrote a lease and never
+    published an attempt: the action leaves ``ready``, nothing runs, and it
+    comes back with its attempt count untouched and this counter raised
+    (issue #222).  The release is right; the silence was not.  ``None`` when
+    the record has never been released, so an untouched action reads as absent
+    rather than as a measured zero.
+    """
+
+    count = record.get("unstarted_releases")
+    return count if type(count) is int and count > 0 else None
+
+
 def _age(timestamp: object, now: float) -> float | None:
     if type(timestamp) not in (int, float) or not math.isfinite(timestamp):
         return None
@@ -580,6 +595,7 @@ def read_pool(queue_root: str | Path) -> dict:
                     raise ValueError('invalid action record')
                 row.update(resources=queue.demand_of(record), constraint=record.get('tags'),
                            submitted_host=record.get('published_by'),
+                           unstarted_releases=_releases(record),
                            age_s=_age(record.get('claimed_unix') if state == pool.CLAIMED
                                       else record.get('published_unix'), now))
                 if state == pool.READY:
@@ -592,6 +608,17 @@ def read_pool(queue_root: str | Path) -> dict:
                     row['reason'] = ('no fresh worker offers; placement unknown' if not live
                                      else 'no matching live worker' if not hosts
                                      else 'awaiting admission; matching worker capacity is not a grant')
+                    if row['unstarted_releases']:
+                        # A key the reaper keeps handing back reads exactly
+                        # like a key nobody has got to yet, and the reason
+                        # above is the one an operator acts on.  Issue #263:
+                        # the count was on the record and no reader said it,
+                        # so a bouncing action looked like a quiet queue for
+                        # the whole of ``pbrun --wait-s``.
+                        row['reason'] += (
+                            f"; released {row['unstarted_releases']} time"
+                            f"{'' if row['unstarted_releases'] == 1 else 's'} "
+                            "before starting")
                 else:
                     row.update(node=record.get('claimed_host'), owner=record.get('claimed_by'),
                                cpu_allocation=record.get('cpu_allocation'),
@@ -630,9 +657,11 @@ def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
 def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, object]) -> list[str]:
     if not jobs:
         return ["no jobs ready or claimed" if summary.get('empty') is True else "pool job state unavailable"]
-    return render_table(("KEY", "STATE", "NODE", "RESOURCES", "AGE", "PASSES", "MATCHING", "NOTE"), (
+    return render_table(("KEY", "STATE", "NODE", "RESOURCES", "AGE", "PASSES", "RELEASES",
+                         "MATCHING", "NOTE"), (
         (j['action_key_prefix'], j['state'], j.get('node'), j.get('resources'), j.get('age_s'),
-         j.get('admission_passes'), j.get('placeable_hosts'), j.get('reason')) for j in jobs))
+         j.get('admission_passes'), j.get('unstarted_releases'), j.get('placeable_hosts'),
+         j.get('reason')) for j in jobs))
 
 
 def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:

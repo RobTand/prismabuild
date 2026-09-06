@@ -68,7 +68,12 @@ retry with `max_attempts: 1`, and a release is not counted against that limit,
 so the stamp is what stops a cancelled action returning to the queue.
 Releases are counted, not bounded: the measured stall between the rename and
 the lease has no upper bound on this filesystem, so a bound would be a guess
-about a delegation recall. Unparseable ready records are
+about a delegation recall. Both readers surface the count, because a release
+nobody can see is indistinguishable from a quiet queue: `pbstatus` carries it
+as a `RELEASES` column and repeats it in a ready job's note, and `pbmetrics`
+exports the queue-wide sum per active state plus a per-box count over its
+bounded recent window. The box comes from the `withdrawn/superseded/` filing
+rather than from the requeued item, which no longer names one. Unparseable ready records are
 isolated under `withdrawn/superseded/` with their original bytes and a bounded
 diagnostic; healthy records continue through the queue. A quarantine restores
 a concurrently repaired record without replacing another submission and never
