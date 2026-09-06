@@ -46,6 +46,14 @@ admitted CPU action. On GB10, GPU utilization percentage is not evidence of
 saturation; use power, host activity, residency and useful throughput for a
 performance claim.
 
+GPU admission uses physical devices and attributed broker telemetry rather
+than a manually tuned job-slot count. Each current GB10 has one physical GPU.
+Missing, stale, incomplete or unattributed telemetry admits no GPU work;
+multiple CUDA processes belonging to one verified action remain that action's
+work, while an unattributed GPU process blocks another claim. Host `mem_gb` and
+discrete VRAM budgets are separate. Worker loops share the broker snapshot and
+retry a nonempty queue promptly instead of running their own GPU probes.
+
 Per-attempt telemetry must cover the whole execution scope, including direct
 children and daemon-created containers, before adaptive CPU lending is enabled
 on a worker. The privileged scope broker is the architectural boundary for that

@@ -1276,6 +1276,25 @@ Treat this paragraph as the activation requirement; it does not by itself prove
 that the broker is installed or qualified on a given worker. Consult the current
 readiness record before relying on lending in a live campaign.
 
+### Adaptive GPU admission
+
+Sparky and sparklina each advertise one detected physical GPU. Their worker
+configuration uses `--gpu`; there is no per-host two-versus-three concurrency
+setting to tune. A root-owned broker snapshot attributes GPU processes and
+residency to exact action scopes and supplies one shared reading to all worker
+loops. Missing, stale, incomplete, unattributed, or unknown-memory-domain
+telemetry closes GPU admission. A pool job may open several CUDA processes
+without being charged as foreign work, while any process the broker cannot
+attribute closes the current single-device host to new GPU claims.
+
+GPU memory and host memory remain different reservations. On GB10 the snapshot
+labels memory `shared_system`, so residency already contributes to host memory
+pressure. A future discrete device reports `discrete` VRAM, which is monitored
+against its GPU budget without changing the action's `mem_gb` cgroup limit.
+The lack of a programmable GPU-only power limit on GB10 does not invalidate an
+otherwise complete snapshot; the record identifies its 140 W reference as SoC
+TDP. Do not infer saturation from GPU utilization percentage.
+
 ### Elastic worker loops
 
 The supervisor treats each box's `fleet_boxes.json` loop count as a floor. With
@@ -1292,6 +1311,11 @@ does not replace adaptive admission. Busy or backlogged boxes are revisited on a
 short bounded interval; idle boxes keep the ordinary interval. Spawns are
 batched, and log indices are never reused, so contraction and later growth do
 not mix two live workers' append evidence.
+
+An idle loop with waiting work retries at a bounded one-second cadence so a
+fresh adaptive CPU or GPU verdict is used promptly. With no ready work it
+returns to the box's configured 10--20 second delay. The fast path reads the
+shared broker snapshot and does not launch per-worker GPU probes.
 
 No loop-count tuning is required for ordinary operation. `--loops N` is the
 operator opt-out that fixes the count at `N`; `--once` retains deterministic

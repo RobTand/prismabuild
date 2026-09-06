@@ -119,7 +119,7 @@ def test_a_running_action_keeps_the_tokens_it_is_executing_under(
 
 
 def test_a_grown_offer_still_mints_the_new_tokens(tmp_path: Path) -> None:
-    """Retiring must not turn the ledger into a ratchet in the other direction."""
+    """A legacy concurrency value grows only to one physical GPU token."""
 
     host = socket.gethostname()
     _drifted(tmp_path, host, {"gpu": 1, "mem_gb": 8})
@@ -128,7 +128,7 @@ def test_a_grown_offer_still_mints_the_new_tokens(tmp_path: Path) -> None:
                             "--class", "gb10", "--all-cores"])
 
     total = queue.ledger(host).capacity()
-    assert (total["gpu"], total["mem_gb"]) == (2, 48)
+    assert (total["gpu"], total["mem_gb"]) == (1, 48)
 
 
 def test_the_retire_is_not_conditional_on_anything(tmp_path: Path) -> None:
@@ -151,7 +151,8 @@ def test_the_retire_is_not_conditional_on_anything(tmp_path: Path) -> None:
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
          mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
-         mock.patch.object(box_capacity, "gpu_compute_apps", return_value=[]), \
+         mock.patch.object(box_capacity.CapacityObserver, "offer",
+                           side_effect=lambda declared, _held, **_kw: dict(declared)), \
          mock.patch.object(box_capacity, "mem_available_gb", return_value=512), \
          mock.patch.object(box_capacity, "run_queue", return_value=0.0), \
          mock.patch.object(sys, "argv", ["worker_loop.py", "--once", "--gpu-slots",

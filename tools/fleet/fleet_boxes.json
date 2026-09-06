@@ -7,8 +7,7 @@
       "args": [
         "--class",
         "gb10",
-        "--gpu-slots",
-        "2",
+        "--gpu",
         "--mem-gb",
         "72",
         "--timeout-s",
@@ -31,8 +30,7 @@
         "sparklina",
         "--tag",
         "gx10-6b77",
-        "--gpu-slots",
-        "3",
+        "--gpu",
         "--mem-gb",
         "80",
         "--timeout-s",
@@ -51,8 +49,6 @@
       "args": [
         "--class",
         "x86",
-        "--gpu-slots",
-        "0",
         "--mem-gb",
         "60",
         "--all-cores",
@@ -67,6 +63,6 @@
       ]
     }
   },
-  "_measured_2026_09_04": "Both GB10 boxes are 121 GB unified. sparklina announced 40 of them and one GPU slot, and its only GPU token was held by a legitimate long out-of-pool encode drawing 14 W of a ~140 W envelope -- so a queued GPU action waited 30 minutes on a box that was, by power, one tenth loaded, with 111 GB available and load 3.0 across 10 cores. gpu-slots 1 -> 2, mem-gb 40 -> 80. sparky was the mirror case on memory alone: 96 GB available behind a 48 GB offer, so its 40 GB queue head could not pair with anything; mem-gb 48 -> 72, and gpu-slots stays 2 because load was already 14.5 across 10 cores and GPU concurrency, not memory, is what serialises that box. The caps stay well under available memory on purpose: the offer is the admission bound that keeps concurrent agent compute from taking a box down.  Later, 06:35: gx10-6b77 held both GPU tokens while one-tenth loaded -- 111 GB of 121 available, load 2.65 across 20 cores, GPU drawing 13.9 W of a ~140 W envelope, one token being the out-of-pool ts60 encode, which is single-stream and does not fill the box.  A token prices an envelope nobody measures, and at 2 it read 'full' with the SMs idle: a queued 12-minute suite waited ten minutes for a machine that could have run three of it.  gpu-slots 2 -> 3 on that measurement.  sparky stays at 2, its load already 14.5 across 10 cores.",
-  "_capacity_policy_2026_09_05": "All three hosts retain full inherited CPU capacity. PB allocates physical performance cores first, with SMT siblings and efficiency cores as lower-tier overflow; each action receives the CPU identities it reserves. Compatible free preferred capacity on another host receives bounded advisory preference. CPU slots count logical CPUs, not equivalent performance. Memory and GPU budgets retain their measured bounds."
+  "_measured_2026_09_04": "Both GB10 boxes are 121 GB unified. The historical gpu-slots values of two and three were concurrency guesses rather than hardware: each box has one physical GPU. They are retained here only as the measurement that exposed why fixed slots strand light jobs and stack heavy jobs; adaptive admission now consumes attributed broker telemetry instead. The RAM bounds remain 72 GiB on sparky and 80 GiB on sparklina because host-memory containment is a separate hard limit.",
+  "_capacity_policy_2026_09_05": "Both GB10 boxes use the same --gpu policy. A trusted fresh broker snapshot detects physical devices and reports one on each current host; missing, stale, incomplete or unattributed evidence offers zero. The snapshot distinguishes shared-system memory from discrete VRAM, while the existing mem-gb values remain host-RAM budgets. All hosts retain full inherited CPU capacity, with physical performance cores preferred and fallback CPUs allocated last."
 }

@@ -1,155 +1,32 @@
 """What this box can honestly offer the pool *now*, not what it offers at rest.
 
-The ledger is exact about the work the pool scheduled and blind to everything
-else.  Measured on sparklina (``gx10-6b77``) 2026-09-04 01:06, six hours into
-an out-of-pool encode campaign:
+Host memory still comes from ``MemAvailable`` and retains a fixed operating
+margin. GPU state comes from one root-published broker snapshot. The snapshot
+joins device counters to kernel-verified PrismaBuild scopes, so a job opening
+several CUDA contexts remains one attributed job rather than several pieces of
+"foreign" work. Worker loops never run ``nvidia-smi`` themselves.
 
-    gx10-6b77 offer {'cpu': 10, 'gpu': 1, 'mem_gb': 40}  ledger free 51  held 0
+GPU evidence is fail closed. A missing, stale, incomplete or unattributed
+snapshot offers zero GPU tokens. A fresh snapshot reports the physical device
+count, distinguishes shared-system memory from discrete VRAM, and explicitly
+lists foreign processes. Any foreign GPU process closes the offer on today's
+single-device GB10 workers. The adaptive admission controller makes the final
+claim decision under its host lock; this module keeps the public worker offer
+and ledger from contradicting that evidence.
 
-    $ nvidia-smi --query-compute-apps=pid,used_memory --format=csv
-    794915, 1145 MiB
-    805673, 1543 MiB
-    831002, 1477 MiB
-    1242245, 1321 MiB
+**Host-memory falling is slow and recovery is fast.** ``MemAvailable`` can
+move briefly and a retire outlives the loop that made it while that loop runs
+an action. The memory offer therefore falls only after the configured sample
+window agrees and recovers on the first larger reading. ``rejoin`` discards
+pre-action memory samples and caps the first new reading at the ledger total.
+GPU evidence does not use that window: broker attribution and freshness are
+current safety facts, so GPU capacity changes immediately.
 
-Four GPU processes, every token free, nothing held.  One GPU action placed
-there would have stacked on top of them -- the shape of the 2026-09-03
-sparklina OOM, reached without anyone doing anything wrong: those processes
-were started by ``ssh box 'setsid nohup ...'``, and the ``require_pool``
-PreToolUse hook can only make ``pbrun`` the sole GPU path for the Bash calls of
-the session it is installed in.  It cannot cover a subagent's ssh, a cron, or a
-person at a prompt.
+The two memory domains remain separate. ``shared_system`` GPU residency is
+already reflected in host ``MemAvailable``. ``discrete`` VRAM is recorded for
+the GPU admission and budget controllers and is never added to or subtracted
+from the host ``mem_gb`` reservation.
 
-So the box observes itself, and what it offers is the remainder.
-
-**Two kinds are clamped, one is only recorded.**  The pool prices its own work
-at one token per action, and those tokens are the whole of what there is to
-subtract with, so a kind is clamped when one action shows up as about one unit
-on the instrument.  ``MemAvailable`` is exact: a ``mem_gb`` token is a
-gigabyte and the reading is in gigabytes.  A GPU compute app is an
-approximation: one context per action is what the pool *prices*, and the one
-action measured here opened one (sparky 01:33, below).  Whether that holds for
-a pytest suite or a container that spawns its own children is not measured,
-which is what the next section is for.  The run queue is not an
-approximation at all: a ``cpu`` token is a SLOT, load counts THREADS, and one
-action legitimately runs twenty of them, so the error is unbounded and it is
-made on every action rather than on some.  Measured on sparky 2026-09-04:
-load1 22.47 against 5 held cpu tokens, every runnable task a pool-scheduled
-action, which the subtraction scored as 17 foreign cpu and would have taken
-the box from ten slots to zero for being busy with the pool's own work.  So
-the load travels in ``detail`` for a human to read and clamps nothing, until
-an instrument exists that can attribute a thread to a reservation.
-
-**What the gpu clamp gets wrong, and by how much.**  ``len(apps) -
-held_gpu`` is the whole of the arithmetic, and it is wrong in both directions
-by an amount the ledger cannot know, because the ledger records how many
-tokens an action holds and never how many CUDA contexts it opens.
-
-* An action that opens *k* contexts reads as *k*-1 foreign, so the box
-  under-offers itself for that action's length.  Pool GPU actions on this
-  fleet are pytest suites and bash wrappers that spawn their own children, so
-  *k* >= 2 is realistic.  On sparky -- 2 gpu slots, the only box on the fleet
-  with more than one -- *k* = 2 costs the second slot until the action ends
-  and *k* >= 3 takes the offer to zero.
-* A held gpu token whose action has no live context -- before the context is
-  created, after it is torn down, or a reservation standing in for something
-  else -- forgives one foreign app.  ``out-of-pool-ts60-encode-sparklina``,
-  the hand reservation the issue describes, is exactly that shape: while it
-  stands, one real foreign encode is invisible to this reading.  So is an
-  exclusive campaign between two of its phases -- read live on sparky
-  2026-09-04, ``held {'cpu': 1, 'gpu': 2, 'mem_gb': 48}`` against zero compute
-  apps.  On sparklina the masking costs nothing, because that box offers one
-  gpu slot and the reservation holds it, so the offer is zero either way.  On
-  sparky it would cost a slot:
-  one context-less reservation beside one foreign process reads ``foreign``
-  0, offers both slots and holds one, and a GPU action is placed on top of
-  the foreign process.
-
-Both errors end when the holder does, neither can raise the offer above the
-declaration, and neither invents a constant.  The alternative -- attribute
-apps by walking the process tree -- is measured not to work on this fleet, for
-the reason below.
-
-**Attribution is by ledger, not by process tree.**  The obvious implementation
--- walk the GPU compute apps and forgive the ones descended from a pool worker
--- does not work on this fleet and cannot be made to.  Measured on sparky
-2026-09-04 01:33, while the pool was running a GPU action of its own:
-
-    claimed 6b4a32b1cb9c   resources {'cpu': 1, 'gpu': 1, 'mem_gb': 16}
-    lease   pid 156863     (the worker loop that claimed it)
-    nvidia-smi app 261917  ppid 260764 -> ppid 260728
-                           containerd-shim-runc-v2, a different session
-
-The action's GPU process is a docker container's child, reparented away from
-the worker that started it; a ``setsid`` action would be equally invisible.
-Ancestry would therefore call the pool's *own* scheduled work foreign and
-retire capacity against it, for as long as that action ran -- the failure this
-module exists to prevent, inverted, and self-reinforcing.
-
-What *is* exactly knowable is what the pool has claimed on this host: its held
-tokens.  So foreign work is what the box is doing minus what the pool has
-reserved, counted in the ledger's own units, and containers, ``setsid`` and
-reparenting are all irrelevant to it.
-
-**Falling is slow, recovering is fast.**  A retire deletes free tokens, and the
-loop that retired them re-mints them at its next poll -- but a worker loop
-spends the whole of an action *inside* ``serve_once``, up to two hours, and
-does not poll while it is there.  A single unlucky reading taken just before a
-long action therefore retires capacity for the length of that action, which is
-the "momentary spike permanently starves the box" failure.  So the offer is the
-elementwise **maximum** over the last few observations: it falls only when
-every one of them agrees, and it recovers on the first reading that says the
-foreign work is gone.  A worker's first polls still correct ledger drift
-whatever the window says, because the offer is capped by the declaration
-either way.
-
-**A window only holds evidence, and evidence expires.**  The same two hours
-inside ``serve_once`` make the window a liability at the other end of the
-action.  Its samples describe the box *before* the action; the maximum is
-still taken over them for ``samples`` - 1 polls after the action returns, and
-those polls are the moment the loop is about to claim again.  Measured with
-these classes 2026-09-04: a loop that polled an idle box three times, claimed
-a GPU action, and came back to two foreign encodes went on offering 2 gpu for
-two more polls, re-minted the token a sibling loop had retired, and acquired
-against it twice.  That is this whole blindness, on a timer tied to the end of
-every action.
-
-So ``rejoin`` empties the window, and the first offer after it is capped by
-what the ledger already totals for this host.  A loop coming back from an
-action believes neither of the two things that would lie to it: not its own
-samples, which have expired, and not the token it has just released, which is
-why the ledger total is a cap and not a seed.  The price is one poll of
-possible under-offer, paid at the end of each action; a retire deletes free
-tokens only, and the three to sixteen other loops on a box re-mint them from
-their own next claim.
-
-What the cap does not do is make the first poll back *safer* than an ordinary
-one.  The ledger total it caps at still counts the token this loop released,
-so a reading that lands between two foreign processes can still take that
-token -- it just cannot mint a new one.  After ``rejoin`` the first poll back
-is exactly as trustworthy as any other single poll, and no more.
-
-Restarting is the same situation with one difference, and it is why the seed
-survives beside the cap: a starting loop has never read the box, so there is
-nothing to empty.  Several loops share one box and one ledger, and
-``ensure_capacity`` is increase-only, so the box's effective offer is the most
-optimistic *live* loop's -- which is why a starting loop must not prime its
-window with the declaration.  A loop exits on ``--max-idle`` and the
-supervisor replaces it, so on a box with three to five loops one of them
-restarts every half hour or so; priming from the declaration would have each
-restart re-mint, for the length of its window, every free token the other
-loops had retired, and any loop on the box could then acquire one.  So an
-observer is seeded with what the ledger already totals for this host, capped
-by the declaration, and only a box the ledger has never heard of is seeded
-with the declaration itself.  The seed can only ever *lower* the offer,
-because the offer is a maximum: one reading of an idle box restores it in a
-single poll.
-
-Nothing here reads a GPU's memory as a *pool* of its own.  On GB10 the GPU and
-the host share one physical memory, so a compute app's resident bytes are
-already inside ``MemAvailable``; counting them twice would clamp a box for work
-it had already subtracted.  The per-app figure is still read and recorded, as
-the evidence for why an offer fell.
 """
 
 from __future__ import annotations
@@ -157,68 +34,108 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+import math
 import os
 from pathlib import Path
-import subprocess
+import time
 
 #: Memory the box keeps for itself rather than offering the queue its last
 #: byte.  Carried over from the ``--honest-memory`` flag this replaces.
 MEMORY_MARGIN_GB = 8
 
-#: How many consecutive observations must agree before the offer falls.  The
-#: only property required of it is "more than one", so that no single reading
-#: can retire capacity a loop may then sit on for the length of an action; the
-#: value is a policy knob, and at the fleet's 10-20 s polls three of them is
-#: 20-60 s of sustained foreign work.
+#: How many consecutive host-memory observations must agree before that offer
+#: falls. GPU evidence bypasses this window because its freshness and exact
+#: attribution are already bounded by the broker snapshot.
 DEFAULT_SAMPLES = 3
 
-NVIDIA_SMI = Path("/usr/bin/nvidia-smi")
 MEMINFO = Path("/proc/meminfo")
+GPU_CAPACITY_SCHEMA = "prismabuild.gpu_capacity.v1"
+GPU_SAMPLE_MAX_AGE_S = 5.0
+GPU_MEMORY_DOMAINS = frozenset(("shared_system", "discrete"))
 
 #: Sentinel for "read this from the box".  ``None`` is a real answer -- it means
 #: the reading was attempted and failed -- so it cannot double as "unset".
 _READ: object = object()
 
 
-def gpu_compute_apps(*, timeout_s: float = 5.0) -> list[tuple[int, int]] | None:
-    """``(pid, MiB)`` per live GPU compute app; ``None`` if unreadable.
+def trusted_gpu_sample() -> Mapping[str, object] | None:
+    """Read the broker-owned snapshot through its security-checking reader."""
 
-    Unreadable is not evidence of foreign work, so the caller treats ``None``
-    as "no observation" and leaves the declaration alone.  A wedged GPU whose
-    ``nvidia-smi`` hangs must not be able to stall a worker loop either, which
-    is what the timeout is for.
-    """
+    try:
+        from prismabuild import adaptive_gpu
+        value = adaptive_gpu.trusted_sample()
+    except (ImportError, OSError, ValueError, TypeError):
+        return None
+    return value if isinstance(value, Mapping) and value else None
 
-    if not NVIDIA_SMI.exists():
+
+def _number(value: object, *, positive: bool = False) -> float | None:
+    if isinstance(value, bool):
         return None
     try:
-        done = subprocess.run(
-            [str(NVIDIA_SMI), "--query-compute-apps=pid,used_gpu_memory",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=timeout_s, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
         return None
-    if done.returncode != 0:
+    if not math.isfinite(number) or number < 0.0 or positive and number <= 0.0:
         return None
-    apps: list[tuple[int, int]] = []
-    for line in done.stdout.splitlines():
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) < 2:
-            continue
-        try:
-            pid = int(parts[0])
-        except ValueError:
-            continue
-        # A process can report ``[N/A]`` for its memory while still holding the
-        # device.  Losing the pid over an unreadable byte count would be the
-        # blindness this module exists to remove, so the pid wins.
-        try:
-            used = int(parts[1])
-        except ValueError:
-            used = 0
-        apps.append((pid, used))
-    return apps
+    return number
+
+
+def _gpu_evidence(
+    sample: object, *, now: float | None = None,
+) -> tuple[list[Mapping[str, object]], list[object], list[object], str | None]:
+    """Validate the admission fields a worker consumes from one snapshot."""
+
+    if not isinstance(sample, Mapping):
+        return [], [], [], "missing trusted GPU capacity snapshot"
+    if (sample.get("schema") != GPU_CAPACITY_SCHEMA
+            or sample.get("complete") is not True
+            or sample.get("attributed") is not True):
+        return [], [], [], "incomplete or unattributed GPU capacity snapshot"
+    sampled = _number(sample.get("sampled_unix"), positive=True)
+    current = time.time() if now is None else float(now)
+    if sampled is None or not 0.0 <= current - sampled <= GPU_SAMPLE_MAX_AGE_S:
+        return [], [], [], "stale or future GPU capacity snapshot"
+    devices = sample.get("devices")
+    foreign = sample.get("foreign_processes")
+    jobs = sample.get("jobs")
+    if (not isinstance(devices, list) or not devices
+            or not isinstance(foreign, list) or not isinstance(jobs, list)):
+        return [], [], [], "malformed GPU device or attribution inventory"
+    host_total = _number(sample.get("host_total_bytes"), positive=True)
+    host_available = _number(sample.get("host_available_bytes"))
+    if host_total is None or host_available is None or host_available > host_total:
+        return [], [], [], "invalid host memory bounds in GPU snapshot"
+    for key in ("memory_pressure_some", "memory_pressure_full",
+                "cpu_pressure_some", "cpu_pressure_full"):
+        pressure = _number(sample.get(key))
+        if pressure is None or pressure > 100.0:
+            return [], [], [], f"invalid {key} in GPU snapshot"
+    identities: set[str] = set()
+    typed_devices: list[Mapping[str, object]] = []
+    for device in devices:
+        if not isinstance(device, Mapping):
+            return [], [], [], "malformed GPU device record"
+        identity = device.get("uuid")
+        domain = device.get("memory_domain")
+        total = _number(device.get("memory_total_bytes"), positive=True)
+        free = _number(device.get("memory_free_bytes"))
+        used = _number(device.get("memory_used_bytes"))
+        if (not isinstance(identity, str) or not identity.startswith("GPU-")
+                or identity in identities or domain not in GPU_MEMORY_DOMAINS
+                or total is None or free is None or used is None
+                or free > total or used > total):
+            return [], [], [], "unknown GPU identity, memory domain or bounds"
+        identities.add(identity)
+        typed_devices.append(device)
+    return typed_devices, foreign, jobs, None
+
+
+def physical_gpu_count(sample: object, *, now: float | None = None) -> int:
+    """Physical devices in one fresh trusted snapshot; zero means unknown."""
+
+    devices, _foreign, _jobs, error = _gpu_evidence(sample, now=now)
+    return 0 if error is not None else len(devices)
 
 
 def mem_available_gb() -> int | None:
@@ -267,17 +184,18 @@ def observe(
     held: Mapping[str, int] | None = None,
     *,
     margin_gb: int = MEMORY_MARGIN_GB,
-    gpu_apps: object = _READ,
+    gpu_sample: object = _READ,
     mem_gb: object = _READ,
     load1: object = _READ,
+    now: float | None = None,
 ) -> Observation:
     """What the box can honestly offer, given what the pool already holds here.
 
     ``declared`` is what this worker was configured to offer; the result never
     exceeds it, because observing the box is how an offer *falls*, never how it
-    grows past its configuration.  ``held`` is the pool's own consumption, read
-    from the ledger -- see the module docstring for why that, and not a process
-    tree, is the attribution.
+    grows past its configuration. ``held`` accounts for the pool's reserved
+    host memory. GPU ownership comes only from the broker's attributed job and
+    foreign-process inventories; process counts are never inferred here.
 
     A kind nothing here knows how to read passes through untouched: an
     unobservable resource is not a busy one.
@@ -298,20 +216,34 @@ def observe(
         capacity[kind] = max(0, wanted[kind] - foreign_units)
 
     if wanted.get("gpu", 0) > 0:
-        if gpu_apps is _READ:
-            gpu_apps = gpu_compute_apps()
-        if gpu_apps is not None:
-            apps = list(gpu_apps)                     # type: ignore[arg-type]
-            detail["gpu_compute_apps"] = len(apps)
-            detail["gpu_used_mib"] = sum(int(used) for _, used in apps)
-            # One slot per process the pool did not claim.  The pool prices its
-            # own GPU work at one token per action whatever it spawns, so an
-            # action running several processes reads as foreign above the first
-            # and the box under-offers itself for the length of that action.
-            # That is the conservative direction, it recovers when the action
-            # finishes, and it is the only mapping from a device to a slot
-            # count that does not invent a constant.
-            clamp("gpu", len(apps) - max(0, ours.get("gpu", 0)))
+        if gpu_sample is _READ:
+            gpu_sample = trusted_gpu_sample()
+        devices, foreign_processes, jobs, error = _gpu_evidence(
+            gpu_sample, now=now)
+        detail["gpu_capacity_trusted"] = error is None
+        if error is not None:
+            detail["gpu_capacity_error"] = error
+            capacity["gpu"] = 0
+        else:
+            domains = [str(device["memory_domain"]) for device in devices]
+            detail.update({
+                "physical_gpus": len(devices),
+                "gpu_memory_domains": domains,
+                "gpu_memory_total_bytes": sum(
+                    int(device["memory_total_bytes"]) for device in devices),
+                "gpu_memory_free_bytes": sum(
+                    int(device["memory_free_bytes"]) for device in devices),
+                "gpu_memory_used_bytes": sum(
+                    int(device["memory_used_bytes"]) for device in devices),
+                "gpu_attributed_jobs": len(jobs),
+                "foreign_gpu_processes": len(foreign_processes),
+            })
+            capacity["gpu"] = min(wanted["gpu"], len(devices))
+            if foreign_processes:
+                # The public inventory is already the broker's exact
+                # attribution result. Do not subtract job process counts or
+                # ledger slots from it: one job may own many CUDA processes.
+                clamp("gpu", wanted["gpu"])
 
     if "mem_gb" in wanted:
         if mem_gb is _READ:
@@ -400,12 +332,10 @@ class CapacityObserver:
 
         A worker loop spends the whole of an action inside ``serve_once`` --
         up to ``--timeout-s`` 7200 -- and takes no readings while it is there.
-        Its samples then describe the box before the action, and ``offer`` is
-        an elementwise maximum, so they would go on deciding the offer for
-        ``samples`` - 1 polls after the action returns: exactly the polls in
-        which the loop claims again.  Measured with these classes, that lets a
-        loop re-mint a gpu token a sibling had retired and acquire against it
-        twice, on top of the foreign work the retire was about.
+        Its host-memory samples then describe the box before the action, and
+        ``offer`` uses their maximum, so they would go on deciding that offer
+        for ``samples`` - 1 polls after the action returns: exactly the polls
+        in which the loop claims again.
 
         ``ledger_total`` caps the first offer taken after this call, and is
         the host's ledger total read after the action released its tokens.  It
@@ -456,6 +386,13 @@ class CapacityObserver:
         # that has already been spent.
         self._history.append(sample)
         return {
-            kind: min(value, max(s.get(kind, value) for s in self._history))
+            # Root-published GPU attribution is a current admission fact, not
+            # a noisy per-process estimate. Apply it immediately in both
+            # directions; the adaptive controller independently checks the
+            # same fresh snapshot under its host lock. Host-memory readings
+            # retain the conservative multi-sample fall used before this
+            # telemetry existed.
+            kind: min(value, sample.get(kind, value)) if kind == "gpu"
+            else min(value, max(s.get(kind, value) for s in self._history))
             for kind, value in wanted.items()
         }

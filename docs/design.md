@@ -1100,6 +1100,41 @@ burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not
 an independent signature. See [client upgrades](client_upgrade.md).
 
+## Physical and adaptive GPU admission
+
+Both current GB10 workers have one physical GPU. Their fleet shape uses the
+same `--gpu` policy and contains no hand-tuned GPU concurrency count. At each
+idle claim boundary the worker reads the broker's root-owned
+`/run/prismabuild/gpu-capacity.json` through the trusted reader. A complete,
+attributed snapshot supplies physical device identities, memory domains and
+bounds, device power evidence, host memory and CPU pressure, exact active job
+scopes, and processes the broker could not attribute. The worker never starts
+one `nvidia-smi` process per loop.
+
+Missing, malformed, stale, incomplete or unattributed GPU evidence offers zero
+GPU capacity and must refuse a GPU claim. A fresh snapshot with one known
+device and no foreign work may admit the first action even when GB10 exposes no
+programmable GPU-only power limit: its actual draw and explicitly scoped 140 W
+SoC reference remain evidence, while utilization percentage is not treated as
+a saturation measure. Any foreign GPU process closes admission on these
+single-device hosts. Processes attributed to one broker attempt do not consume
+extra capacity when that attempt opens multiple CUDA contexts or uses a daemon
+container.
+
+The pool ledger represents one physical GPU token per current GB10. A legacy
+action whose sealed demand says `gpu>1` is conservatively normalized by the GPU
+controller to that one token plus exclusive intent; its original declaration
+remains part of action identity. Memory is not normalized across domains.
+`shared_system` residency is already part of GB10 host memory, while `discrete`
+VRAM is monitored and budgeted separately from the action's host `mem_gb`
+cgroup limit. Unknown domains refuse admission.
+
+Worker cadence follows pressure. When `ready` is nonempty, an idle loop retries
+at most once per second so a fresh capacity decision can admit work promptly.
+When the queue is empty it uses the configured 10--20 second backoff, avoiding
+an NFS scan and telemetry read per loop per second. GPU telemetry itself is
+collected once by the broker and shared by all loops.
+
 ## Preferred, overflow and adaptive CPU admission
 
 The fleet retains `--all-cores` so all usable CPU capacity remains available.
