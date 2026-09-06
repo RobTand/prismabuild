@@ -9,6 +9,7 @@ import argparse
 import array
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ import socketserver
 import stat
 import struct
 import subprocess
+import sys
 import threading
 import time
 
@@ -40,6 +42,25 @@ def _atomic(path, value):
         try:os.fsync(directory)
         finally:os.close(directory)
     finally:temp.unlink(missing_ok=True)
+
+
+def _trusted_file(path):
+    path=Path(path).resolve(strict=True)
+    info=path.stat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022
+            or any(q.stat().st_uid!=0 or q.stat().st_mode&0o022 for q in path.parents)):
+        raise ValueError('privileged module must be root-owned and immutable to callers')
+    return path
+
+
+def _load_gpu_module():
+    path=_trusted_file(Path(__file__).resolve().with_name('gpu_memory.py'))
+    name='_prismabuild_privileged_gpu_memory'
+    spec=importlib.util.spec_from_file_location(name,path)
+    module=importlib.util.module_from_spec(spec)
+    sys.modules[name]=module
+    spec.loader.exec_module(module)
+    return module
 
 class SystemdBackend:
     def __init__(self, root=Path('/sys/fs/cgroup')):self.root=Path(root)
@@ -69,13 +90,13 @@ class SystemdBackend:
         if not {'cpu','memory'}<=available:raise ValueError('CPU/memory controllers unavailable')
         (group/'cgroup.subtree_control').write_text('+cpu +memory')
         leaf=group/'payload';leaf.mkdir(exist_ok=True)
-        return {'cgroup_path':str(group),'leaf_path':str(leaf)}
+        info=group.stat()
+        events=dict(line.split() for line in (group/'memory.events').read_text().splitlines())
+        return {'cgroup_path':str(group),'leaf_path':str(leaf),
+                'cgroup_identity':[info.st_dev,info.st_ino],
+                'memory_oom_kill_baseline':int(events.get('oom_kill',0))}
     def run(self, scope, uid, command, stdio):
-        helper=Path(__file__).resolve().with_name('resource_payload.py')
-        info=helper.stat()
-        if info.st_uid!=0 or info.st_mode&0o022 or any(
-                q.stat().st_uid!=0 or q.stat().st_mode&0o022 for q in helper.parents):
-            raise ValueError('privileged payload helper must be root-owned and immutable to callers')
+        helper=_trusted_file(Path(__file__).resolve().with_name('resource_payload.py'))
         read_fd=os.memfd_create('pb-user-command',os.MFD_CLOEXEC)
         write_fd=-1;ready_read,ready_write=os.pipe()
         process=None
@@ -111,6 +132,10 @@ class SystemdBackend:
     def empty(self, scope):
         group=self.path(scope)
         return not group.exists() or 'populated 1' not in (group/'cgroup.events').read_text()
+    def exists(self, scope):
+        try:self.path(scope).stat()
+        except FileNotFoundError:return False
+        return True
     def release(self, scope):
         group=self.path(scope)
         if group.exists():
@@ -182,15 +207,21 @@ class Authority:
             record=self.records.get(scope)
             token=request.get('token')
             if not isinstance(token,str) or HEX64.fullmatch(token) is None:raise PermissionError('invalid attempt token')
+            if record is None and not self.backend.exists(scope):
+                # Reboot loses /run authority and kernel groups together. Only
+                # absence is sufficient; never operate on an unknown group.
+                return {'ok':True,'scope_id':scope,'released':True}
             if record is None or not hmac.compare_digest(token,record['token']):
                 raise PermissionError('attempt authority does not match')
             if record.get('released_unix'):
                 # Recovery after a worker crash may repeat cleanup. Retain
                 # authority, but never touch a subsequently recreated group.
-                return {'ok':True,'scope_id':scope,'released':True}
+                return {'ok':True,'scope_id':scope,'released':True,**self._stop_details(record)}
             if record.get('pending'):raise ValueError('scope setup incomplete')
             if op=='stop':
-                record['stopped_unix']=time.time();record['stop_reason']=str(request.get('reason','requested'))[:1000]
+                reason=str(request.get('reason','requested'))[:1000]
+                if record.get('stopped_unix'):record['last_cleanup_reason']=reason
+                else:record['stopped_unix']=time.time();record['stop_reason']=reason
                 _atomic(self.state_dir/(scope+'.json'),record)
                 self.backend.stop(scope)
             elif op=='release':
@@ -211,12 +242,22 @@ class Authority:
                 self.backend.release(scope)
                 record['released_unix']=time.time()
                 _atomic(self.state_dir/(scope+'.json'),record)
-            return {'ok':True,'scope_id':scope}
+            return {'ok':True,'scope_id':scope,**self._stop_details(record)}
+
+    @staticmethod
+    def _stop_details(record):
+        return {key:record[key] for key in ('stop_reason','stopped_unix',
+                'termination_evidence','last_cleanup_reason') if key in record}
 
     def run(self,uid,pid,request,stdio):
-        allowed={'op','action_key','nonce','token','argv','cwd','env','affinity'}
+        allowed={'op','action_key','nonce','token','argv','cwd','env','affinity','umask'}
         if not isinstance(request,dict) or set(request)-allowed:raise ValueError('unknown run field')
         command={k:request.get(k) for k in ('argv','cwd','env')}
+        if 'umask' in request:
+            mask=request['umask']
+            if type(mask) is not int or not 0<=mask<=0o777:
+                raise ValueError('invalid inherited umask')
+            command['umask']=mask
         if 'affinity' in request:
             mask=request['affinity']
             if (not isinstance(mask,list) or not mask or len(mask)!=len(set(mask))
@@ -234,7 +275,8 @@ class Authority:
             raise ValueError('invalid bounded command or stdio descriptors')
         with self.lock:
             identity={k:request[k] for k in ('action_key','nonce','token')}
-            self.handle(uid,pid,{'op':'status',**identity})
+            if self.handle(uid,pid,{'op':'status',**identity}).get('released'):
+                raise ValueError('attempt is released')
             record=self.records[scope_id(identity['action_key'],identity['nonce'])]
             if record.get('released_unix'):raise ValueError('attempt is released')
             if record.get('stopped_unix'):raise ValueError('attempt is stopped')
@@ -272,6 +314,106 @@ class Authority:
             record['container_tickets'].remove(ticket)
             _atomic(self.state_dir/(scope+'.json'),record)
             return {'ok':True}
+
+class ResourceMonitor:
+    """Sample outside admission locks; stop only the same recorded kernel group."""
+    identity_fields=('action_key','nonce','token','memory_max_bytes','cgroup_identity')
+
+    def __init__(self,authority,gpu_module,*,interval_s=1.0,timeout_s=1.0):
+        self.authority=authority;self.gpu=gpu_module;self.guard=gpu_module.Guard()
+        self.interval_s=interval_s;self.timeout_s=timeout_s
+        self.stopping=threading.Event();self.thread=None
+
+    def _records(self):
+        with self.authority.lock:
+            return {scope:{key:value for key,value in record.items() if key in {
+                    *self.identity_fields,'memory_oom_kill_baseline','monitor_stop_pending',
+                    'termination_evidence','stop_reason'}}
+                for scope,record in self.authority.records.items()
+                if not record.get('pending') and not record.get('released_unix')
+                and (not record.get('stopped_unix') or record.get('monitor_stop_pending'))
+                and isinstance(record.get('cgroup_identity'),list)
+                and len(record['cgroup_identity'])==2}
+
+    def _stop(self,scope,expected,identity,reason,evidence):
+        with self.authority.lock:
+            current=self.authority.records.get(scope)
+            if (current is None or current.get('pending') or current.get('released_unix')
+                    or (current.get('stopped_unix') and not current.get('monitor_stop_pending'))
+                    or any(current.get(key)!=expected.get(key) for key in self.identity_fields)
+                    or tuple(current['cgroup_identity'])!=tuple(identity)):
+                return False
+            info=self.authority.backend.path(scope).stat()
+            if (info.st_dev,info.st_ino)!=tuple(identity):return False
+            current.setdefault('stopped_unix',time.time())
+            current.setdefault('stop_reason',reason)
+            current.setdefault('termination_evidence',evidence)
+            current['monitor_stop_pending']=True
+            path=self.authority.state_dir/(scope+'.json')
+            _atomic(path,current)
+            self.authority.backend.stop(scope)
+            current['monitor_stop_pending']=False
+            _atomic(path,current)
+            return True
+
+    def poll_once(self):
+        records=self._records();stopped=[];errors=[]
+        # memory.events covers direct allocations and every Docker descendant.
+        # Systemd can reset oom.group while creating Docker units, so finish an
+        # OOM-affected attempt even when the kernel selected just one child.
+        for scope,record in records.items():
+            try:
+                path=self.authority.backend.path(scope);info=path.stat()
+                identity=(info.st_dev,info.st_ino)
+                if identity!=tuple(record['cgroup_identity']):continue
+                if record.get('monitor_stop_pending'):
+                    if self._stop(scope,record,identity,record['stop_reason'],record['termination_evidence']):
+                        stopped.append(scope)
+                    continue
+                events=dict(line.split() for line in (path/'memory.events').read_text().splitlines())
+                after=path.stat()
+                if (after.st_dev,after.st_ino)!=identity:continue
+                count=int(events.get('oom_kill',0))
+                baseline=int(record.get('memory_oom_kill_baseline',0))
+                if count>baseline:
+                    evidence={'source':'cgroup.memory.events','scope_id':scope,
+                              'cgroup_identity':list(identity),'oom_kill':count,
+                              'oom_kill_baseline':baseline,'sampled_unix':time.time()}
+                    if self._stop(scope,record,identity,'memory_limit_oom',evidence):stopped.append(scope)
+            except (OSError,ValueError,KeyError) as exc:errors.append({'scope_id':scope,'error':str(exc)[:1500]})
+        scopes=[self.gpu.Scope(scope,self.authority.backend.path(scope),record['memory_max_bytes'])
+                for scope,record in records.items() if scope not in stopped and not record.get('monitor_stop_pending')]
+        snapshot=None
+        if scopes:
+            snapshot=self.gpu.collect(scopes,timeout_s=self.timeout_s)
+            for decision in self.guard.observe(snapshot):
+                expected=records.get(decision.scope_id)
+                if expected is None:continue
+                try:
+                    if self._stop(decision.scope_id,expected,decision.cgroup_identity,
+                                  decision.reason,decision.as_dict()):stopped.append(decision.scope_id)
+                except (OSError,ValueError,KeyError) as exc:
+                    errors.append({'scope_id':decision.scope_id,'error':str(exc)[:1500]})
+        status={'sampled_unix':time.time(),'active_scopes':len(records),'stopped':stopped,
+                'errors':errors,'gpu':snapshot.as_dict() if snapshot is not None else None}
+        _atomic(self.authority.state_dir/'monitor.status',status)
+        return status
+
+    def _loop(self):
+        while not self.stopping.is_set():
+            try:self.poll_once()
+            except Exception as exc:
+                print('resource monitor sample failed: '+str(exc)[:1500],flush=True)
+            self.stopping.wait(self.interval_s)
+
+    def start(self):
+        self.thread=threading.Thread(target=self._loop,name='resource-monitor',daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.stopping.set()
+        if self.thread is not None:self.thread.join(timeout=self.timeout_s+self.interval_s+1)
+
 
 class Handler(socketserver.BaseRequestHandler):
     def handle(self):
@@ -349,7 +491,10 @@ def main():
     with Server(str(endpoint),Handler) as server:
         server.authority=authority
         os.chown(endpoint,0,pwd.getpwuid(args.uid).pw_gid);endpoint.chmod(0o660)
+        monitor=ResourceMonitor(authority,_load_gpu_module())
+        monitor.start()
         print('PrismaBuild resource broker ready',flush=True)
-        server.serve_forever(poll_interval=0.5)
+        try:server.serve_forever(poll_interval=0.5)
+        finally:monitor.close()
 
 if __name__=='__main__':main()

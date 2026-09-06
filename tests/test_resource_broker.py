@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import socket
 import threading
+from types import SimpleNamespace
 import pytest
 
 PATH = Path(__file__).resolve().parents[1] / 'tools/fleet/resource_broker.py'
@@ -22,6 +23,7 @@ class Backend:
         self.groups[scope]['populated']=True;self.attached.append((scope,uid));return object()
     def stop(self, scope):self.groups[scope]['populated']=False;self.stopped.append(scope)
     def empty(self, scope):return not self.groups[scope]['populated']
+    def exists(self, scope):return scope in self.groups
     def release(self, scope):
         if self.groups[scope]['populated']:raise ValueError('scope still populated')
         self.groups.pop(scope)
@@ -241,3 +243,161 @@ def test_socket_handler_rejects_invalid_protocol_without_backend_work(authority,
             thread.join(timeout=5)
     assert not b.groups
     assert not a.records
+
+
+@pytest.mark.parametrize('mask', [True, -1, 0o1000, '022', [], None])
+def test_invalid_umask_never_launches_payload(authority, mask):
+    a, b = authority; request, record = create(a)
+    run = {'op': 'run', 'action_key': request['action_key'], 'nonce': request['nonce'],
+           'token': record['token'], 'argv': ['/usr/bin/true'], 'cwd': '/',
+           'env': {}, 'umask': mask}
+    with pytest.raises(ValueError, match='umask'):
+        a.run(os.getuid(), os.getpid(), run, [0, 1, 2])
+    assert not b.attached
+    assert 'launched_unix' not in a.records[record['scope_id']]
+
+
+@pytest.mark.parametrize('mask', [0, 0o022, 0o777])
+def test_valid_umask_is_forwarded_to_privilege_dropping_helper(authority, monkeypatch, mask):
+    a, b = authority; request, record = create(a)
+    commands = []
+    monkeypatch.setattr(b, 'run', lambda scope, uid, command, stdio: commands.append(command))
+    a.run(os.getuid(), os.getpid(),
+          {'op': 'run', 'action_key': request['action_key'], 'nonce': request['nonce'],
+           'token': record['token'], 'argv': ['/usr/bin/true'], 'cwd': '/',
+           'env': {}, 'umask': mask}, [0, 1, 2])
+    assert commands[0]['umask'] == mask
+
+
+@pytest.mark.parametrize('operation', ['stop', 'release', 'status'])
+def test_unknown_attempt_after_reboot_only_accepts_proven_absence(authority, operation):
+    a, b = authority; request, record = create(a)
+    a.records.clear()
+    b.groups.clear()
+    assert a.handle(os.getuid(), os.getpid(), auth(request, record, operation))['released'] is True
+    # An unknown existing group must not be adopted or stopped, even if empty.
+    b.groups[record['scope_id']] = {'budget': 1, 'populated': False}
+    with pytest.raises(PermissionError):
+        a.handle(os.getuid(), os.getpid(), auth(request, record, operation))
+    assert b.groups[record['scope_id']]['populated'] is False
+    assert not b.stopped
+    assert not a.records
+
+
+class GpuSamples:
+    def __init__(self):self.decisions=[];self.calls=[];self.during_collect=None
+    def Scope(self, scope_id, cgroup_path, budget_bytes):
+        return SimpleNamespace(scope_id=scope_id,cgroup_path=cgroup_path,budget_bytes=budget_bytes)
+    def Guard(self):return self
+    def collect(self, scopes, *, timeout_s):
+        self.calls.append((scopes,timeout_s))
+        if self.during_collect:self.during_collect()
+        return self
+    def observe(self, snapshot):return self.decisions
+    def as_dict(self):return {'source':'fake-gpu-counter'}
+
+
+@pytest.fixture
+def monitored(authority, tmp_path, monkeypatch):
+    a,b=authority;rows=[]
+    monkeypatch.setattr(b,'path',lambda scope:tmp_path/'groups'/scope,raising=False)
+    for nonce in ('b'*32,'c'*32):
+        request,record=create(a,nonce)
+        path=b.path(record['scope_id']);path.mkdir(parents=True)
+        (path/'memory.events').write_text('oom_kill 0\n')
+        info=path.stat()
+        a.records[record['scope_id']]['cgroup_identity']=[info.st_dev,info.st_ino]
+        a.records[record['scope_id']]['memory_oom_kill_baseline']=0
+        rows.append((request,record,path))
+    gpu=GpuSamples();monitor=module().ResourceMonitor(a,gpu)
+    return a,b,rows,gpu,monitor
+
+
+def decision(record, path, *, scope=None, identity=None):
+    info=path.stat()
+    data={'scope_id':scope or record['scope_id'],'reason':'gpu_budget_exceeded',
+          'cgroup_identity':identity or (info.st_dev,info.st_ino),
+          'evidence':{'lower_bound_bytes':128*1024**2}}
+    return SimpleNamespace(**data,as_dict=lambda:data)
+
+
+def test_gpu_monitor_stops_only_attributed_attempt_and_preserves_first_cause(monitored):
+    a,b,rows,gpu,monitor=monitored
+    request,record,path=rows[0];gpu.decisions=[decision(record,path)]
+    status=monitor.poll_once()
+    assert status['stopped']==[record['scope_id']]
+    assert b.stopped==[record['scope_id']]
+    first=a.records[record['scope_id']]['stopped_unix']
+    a.handle(os.getuid(),os.getpid(),{**auth(request,record,'stop'),'reason':'completion cleanup'})
+    status=a.handle(os.getuid(),os.getpid(),auth(request,record,'status'))
+    assert status['stop_reason']=='gpu_budget_exceeded'
+    assert status['stopped_unix']==first
+    assert status['last_cleanup_reason']=='completion cleanup'
+    assert status['termination_evidence']['evidence']['lower_bound_bytes']==128*1024**2
+    assert 'stopped_unix' not in a.records[rows[1][1]['scope_id']]
+
+
+@pytest.mark.parametrize('change', ['token','inode','released','foreign_decision'])
+def test_gpu_monitor_revalidates_authority_and_kernel_identity_after_sampling(monitored, change):
+    a,b,rows,gpu,monitor=monitored
+    request,record,path=rows[0];gpu.decisions=[decision(record,path)]
+    def mutate():
+        if change=='token':a.records[record['scope_id']]['token']='f'*64
+        elif change=='released':a.records[record['scope_id']]['released_unix']=1
+        elif change=='inode':
+            path.rename(path.with_name(path.name+'.old'))
+            path.mkdir();(path/'memory.events').write_text('oom_kill 0\n')
+        else:gpu.decisions=[decision(record,path,scope='system.slice')]
+    gpu.during_collect=mutate
+    assert monitor.poll_once()['stopped']==[]
+    assert b.stopped==[]
+
+
+def test_gpu_census_does_not_hold_authority_lock(monitored):
+    a,b,rows,gpu,monitor=monitored
+    acquired=threading.Event()
+    def census():
+        def other_request():
+            with a.lock:acquired.set()
+        thread=threading.Thread(target=other_request,daemon=True);thread.start()
+        assert acquired.wait(1), 'GPU census blocked ordinary broker requests'
+        thread.join(timeout=1)
+    gpu.during_collect=census
+    monitor.poll_once()
+    assert gpu.calls[0][1]==1.0
+
+
+def test_memory_oom_finishes_entire_attempt_before_gpu_sampling(monitored):
+    a,b,rows,gpu,monitor=monitored
+    request,record,path=rows[0]
+    (path/'memory.events').write_text('oom_kill 1\n')
+    assert monitor.poll_once()['stopped']==[record['scope_id']]
+    assert b.stopped==[record['scope_id']]
+    assert [scope.scope_id for scope in gpu.calls[0][0]]==[rows[1][1]['scope_id']]
+    evidence=a.records[record['scope_id']]['termination_evidence']
+    assert evidence['source']=='cgroup.memory.events'
+    assert evidence['oom_kill']==1
+
+
+def test_preexisting_oom_counter_is_not_a_new_failure(monitored):
+    a,b,rows,gpu,monitor=monitored
+    _,record,path=rows[0]
+    a.records[record['scope_id']]['memory_oom_kill_baseline']=7
+    (path/'memory.events').write_text('oom_kill 7\n')
+    assert monitor.poll_once()['stopped']==[]
+    assert not b.stopped
+
+
+def test_failed_monitor_stop_is_retried_with_persisted_evidence(monitored, monkeypatch):
+    a,b,rows,gpu,monitor=monitored
+    _,record,path=rows[0];(path/'memory.events').write_text('oom_kill 1\n')
+    original=b.stop
+    def fail(scope):raise OSError('temporary cgroup failure')
+    monkeypatch.setattr(b,'stop',fail)
+    assert monitor.poll_once()['errors']
+    stored=json.loads((a.state_dir/(record['scope_id']+'.json')).read_text())
+    assert stored['monitor_stop_pending'] is True
+    assert stored['stop_reason']=='memory_limit_oom'
+    monkeypatch.setattr(b,'stop',original)
+    assert monitor.poll_once()['stopped']==[record['scope_id']]
+    assert a.records[record['scope_id']]['monitor_stop_pending'] is False
