@@ -191,9 +191,9 @@ easily, not less.
 
 So this is not a claim-versus-admission disagreement. It is the same NFS stall
 as the offer half, met at a different place in the same poll — and it needs its
-own change, because widening a grace is not the fix: the window it guards has
-no upper bound on this filesystem, and there is no liveness signal between the
-rename and the first lease write for a longer grace to consult.
+own change (filed as #222), because widening a grace is not the fix: the window
+it guards has no upper bound on this filesystem, and there is no liveness signal
+between the rename and the first lease write for a longer grace to consult.
 
 ## Still open
 
@@ -208,8 +208,8 @@ returns. Deferring the sidecar read until after placement would have cost
 tagged for another box.
 
 **A claimant blocked between the rename and its lease is filed as dead.**
-Measured above; needs its own change and its own issue, since a wider grace
-guards a window with no upper bound on this filesystem.
+Measured above; filed as #222, since a wider grace guards a window with no
+upper bound on this filesystem.
 
 **The admission sample can be stale *within* a single scan.** `decision()`
 caches its host sample once per `Controller`, and a `Controller` is built once
