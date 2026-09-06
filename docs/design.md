@@ -1314,7 +1314,9 @@ DRAM and remain inside that existing aggregate budget. On a `discrete` device,
 VRAM is an independent pool: each action reserves its full GPU budget, the sum
 cannot exceed device VRAM, and currently free VRAM must cover a new reservation.
 Missing VRAM counters are unknown, never free. The pool-only `--gpu-memory-gb`
-option seals `params.gpu_memory_gb`; without it the GPU budget conservatively
+option seals `params.gpu_memory_gb`; its GiB value must convert to between 1
+and 2**63 - 1 integer bytes. Submission, admission, and execution use the same
+bounded conversion. Without it the GPU budget conservatively
 defaults to `mem_gb`. RAM-heavy, GPU-light jobs should declare their separate
 VRAM budget. On shared-memory devices this explicit GPU cap is an additional
 subset cap, not a second reservation of the same physical DRAM. The exact

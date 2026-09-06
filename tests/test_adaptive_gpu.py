@@ -285,13 +285,14 @@ def test_action_contract_seals_exclusivity_and_memory_budget(tmp_path):
     assert contract()[2:] == (True, 512*1024**2)
 
 
-@pytest.mark.parametrize('fault', ['absent','stale','unknown','incomplete','discrete_missing'])
+@pytest.mark.parametrize('fault', ['absent','stale','unknown','unified_alias','incomplete','discrete_missing'])
 def test_even_cold_start_needs_trusted_memory_and_device_evidence(gpu_rig, fault):
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
     publish(1)
     if fault == 'absent': sample.clear()
     elif fault == 'stale': sample['sampled_unix'] -= 10
     elif fault == 'unknown': sample['devices'][0]['memory_domain'] = 'unknown'
+    elif fault == 'unified_alias': sample['devices'][0]['memory_domain'] = 'unified'
     elif fault == 'incomplete': sample['complete'] = False
     elif fault == 'discrete_missing': sample['devices'][0]['memory_domain'] = 'discrete'
     assert claim() is None
@@ -376,3 +377,27 @@ def test_a_telemetry_gap_cannot_reuse_old_plateau_recovery_samples(gpu_rig):
     tick(10); assert claim() is None
     tick(1); assert claim() is None
     tick(1); assert claim()
+
+
+@pytest.mark.parametrize('budget', [1e300, 1e-12, 2**33])
+def test_invalid_sealed_gpu_budget_cannot_overflow_or_enable_sharing(tmp_path, budget):
+    from prismabuild import adaptive_gpu, core
+    from test_core import _body
+    (tmp_path / 'task_code.py').write_text('print(1)\n')
+    body = _body(tmp_path)
+    demand = {'gpu': 1, 'mem_gb': 4, 'cpu': 1}
+    body['params'] = {'demand': demand, 'gpu_exclusive': False, 'gpu_memory_gb': budget}
+    action = core.seal_action(body)
+    cas = core.PrismaBuildCAS(tmp_path / 'cas')
+    cas.publish_action_request(action)
+    contract = adaptive_gpu.action_contract(
+        {'action_key': action['action_key'], 'cas_root': str(cas.root), 'resources': demand}, demand)
+    assert contract[0] is None
+    assert contract[2:] == (True, 4 * 1024**3)
+
+
+@pytest.mark.parametrize('budget,expected', [(2**-30, 1), (.5, 512*1024**2),
+                                           (2**33 - 2**-20, 2**63 - 1024)])
+def test_gpu_budget_byte_boundaries_remain_representable(budget, expected):
+    from prismabuild import adaptive_gpu
+    assert adaptive_gpu.memory_budget_bytes(budget) == expected

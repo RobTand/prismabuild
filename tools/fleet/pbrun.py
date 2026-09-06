@@ -81,7 +81,7 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
+from prismabuild import adaptive_gpu, core as pb, pool, slurm_lane  # noqa: E402
 
 POLL_S = 5.0
 #: Which transport carries a submission.  The pull queue is still the default:
@@ -3508,9 +3508,11 @@ def main() -> int:
         caller_variables[key] = value
 
     demand = _parse_demand(args.demand)
-    if args.gpu_memory_gb is not None and (not math.isfinite(args.gpu_memory_gb)
-                                            or args.gpu_memory_gb <= 0):
-        ap.error("--gpu-memory-gb must be positive and finite")
+    if args.gpu_memory_gb is not None:
+        try:
+            adaptive_gpu.memory_budget_bytes(args.gpu_memory_gb)
+        except ValueError as exc:
+            ap.error(f"--gpu-memory-gb: {exc}")
     if args.gpu:
         demand.setdefault("gpu", 1)
         demand.setdefault("mem_gb", 16)

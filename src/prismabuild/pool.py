@@ -2262,11 +2262,12 @@ class PoolQueue:
         gpu_memory = action["params"].get("gpu_memory_gb")
         gpu_kwargs = {}
         if gpu_memory is not None:
-            if (not demand.get("gpu") or type(gpu_memory) not in (int, float)
-                    or not math.isfinite(gpu_memory) or gpu_memory <= 0
-                    or int(gpu_memory * 1024 ** 3) <= 0):
-                raise PoolContractError("gpu_memory_gb needs a positive finite GPU budget")
-            gpu_kwargs["gpu_memory_max_bytes"] = int(gpu_memory * 1024 ** 3)
+            if not demand.get("gpu"):
+                raise PoolContractError("gpu_memory_gb requires GPU demand")
+            try:
+                gpu_kwargs["gpu_memory_max_bytes"] = gpu_admission.memory_budget_bytes(gpu_memory)
+            except ValueError as exc:
+                raise PoolContractError(f"gpu_memory_gb: {exc}") from exc
         if item.get("resource_scope") is not None or item.get("resource_scope_intent") is not None:
             raise PoolContractError("claim already owns a resource scope or creation intent")
         scope = resource_scope.ResourceScope(

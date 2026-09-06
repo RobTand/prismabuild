@@ -43,6 +43,9 @@ def test_discrete_gpu_budget_does_not_rewrite_host_ram(tmp_path,monkeypatch):
 
 @pytest.mark.parametrize('argv', [['--gpu','--gpu-memory-gb','0'],
                                  ['--gpu','--gpu-memory-gb','nan'],
+                                 ['--gpu','--gpu-memory-gb','1e300'],
+                                 ['--gpu','--gpu-memory-gb','1e-12'],
+                                 ['--gpu','--gpu-memory-gb','8589934592'],
                                  ['--gpu-memory-gb','1'],
                                  ['--gpu','--gpu-memory-gb','1','--transport','slurm']])
 def test_invalid_or_unsupported_gpu_budget_is_rejected(tmp_path,monkeypatch,argv):

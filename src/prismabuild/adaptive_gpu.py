@@ -28,6 +28,18 @@ FEEDBACK_WINDOW = 6
 GIB = 1024 ** 3
 
 
+def memory_budget_bytes(value):
+    """Convert GiB to kernel-representable positive bytes without float overflow."""
+    # Comparing before multiplication also handles huge ints, infinities and NaN.
+    # The upper bound is exclusive: 2**33 GiB is one byte above signed int64.
+    if type(value) not in (int, float) or not 0 < value < 2**33:
+        raise ValueError('GPU budget must represent between 1 and 9223372036854775807 bytes')
+    result = int(value * GIB)
+    if not 0 < result <= 2**63 - 1:
+        raise ValueError('GPU budget must represent between 1 and 9223372036854775807 bytes')
+    return result
+
+
 def _number(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
@@ -129,9 +141,8 @@ def action_contract(item, demand):
         # Explicit false is the new shared-generation contract.
         exclusive = params.get('gpu_exclusive') is not False
         budget = params.get('gpu_memory_gb', demand.get('mem_gb', 0))
-        if not _number(budget) or budget <= 0:
-            raise ValueError('invalid GPU memory budget')
-        return shape, measurement, exclusive or int(demand.get('gpu', 0)) > 1, int(budget * GIB)
+        budget_bytes = memory_budget_bytes(budget)
+        return shape, measurement, exclusive or int(demand.get('gpu', 0)) > 1, budget_bytes
     except (TypeError, ValueError, KeyError):
         return None, measurement, True, int(demand.get('mem_gb', 0)) * GIB
 
@@ -211,7 +222,7 @@ class Controller:
                          if device.get('power_reference_scope') == 'soc_tdp' else None)
         valid = (valid and _number(device.get('power_w')) and _number(reference)
                  and reference > 0 and isinstance(device.get('uuid'), str) and bool(device['uuid'])
-                 and device.get('memory_domain') in ('shared_system', 'unified', 'discrete'))
+                 and device.get('memory_domain') in ('shared_system', 'discrete'))
         state = adaptive_cpu.read_json(self.base / 'gpu-state.json')
         low = False
         feedback_allowed = False
