@@ -84,6 +84,9 @@ HOST_LOCAL: dict[tuple[str, str], str] = {
     ("mount_latency", "ADMISSION_LOCK_DIR"): (
         "the same directory, named separately by the latency probe"
     ),
+    # Both are also env-backed (PRISMABUILD_BOX_STATE_ROOT), because the
+    # attribute repoint reaches only this process and the suite runs real
+    # workers as children.
 }
 
 

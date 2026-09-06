@@ -140,7 +140,8 @@ CLAIM_PATH_OPS = ("GETATTR", "LOOKUP", "ACCESS", "RENAME", "CREATE",
 #: hash is the lock's business and duplicating it here would make this file
 #: wrong the day that changes.  Whatever admission locks exist on this box are
 #: what we measure.
-ADMISSION_LOCK_DIR = Path("/tmp") / f"prismabuild-admission-{os.getuid()}"
+ADMISSION_LOCK_DIR = Path(os.environ.get("PRISMABUILD_BOX_STATE_ROOT")
+                          or Path("/tmp") / f"prismabuild-admission-{os.getuid()}")
 
 #: Reading ``/proc/<pid>/wchan`` for an unbounded waiter list would make the
 #: cost of this leg a function of how bad the incident is.  Beyond this many we

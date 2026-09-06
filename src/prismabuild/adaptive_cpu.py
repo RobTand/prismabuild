@@ -243,7 +243,16 @@ def _holder_of(descriptor):
 #: holding an inode nobody else can reach -- which is a lapse of the mutual
 #: exclusion the file exists for.  Not writing them is the fix; the ones
 #: already on a box are cleared by the reboot that clears ``/tmp``.
-BOX_STATE_ROOT = Path('/tmp') / f'prismabuild-admission-{os.getuid()}'
+#: Env-backed as well as an attribute, because the attribute alone reaches
+#: only the modules already imported in *this* process.  The suite runs real
+#: workers and real ``pbrun`` invocations as child processes, and each of those
+#: imports this module fresh, past any ``monkeypatch``: with the attribute
+#: repoint alone, one suite run still left three ``.sweep`` markers in the
+#: fleet's directory (measured on sparky, 2026-09-06, against 132 files for the
+#: same suite with neither).  ``LOCAL_CHECKOUT_ROOT`` is env-backed for exactly
+#: this reason and says so.
+BOX_STATE_ROOT = Path(os.environ.get('PRISMABUILD_BOX_STATE_ROOT')
+                      or Path('/tmp') / f'prismabuild-admission-{os.getuid()}')
 
 
 def box_state(base):

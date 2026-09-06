@@ -131,6 +131,10 @@ LIVE_ENV = (
     # and a child process such as ``slurm_job``; the attributes above reach
     # the modules already imported.
     ("PRISMABUILD_LOCAL_CHECKOUT_ROOT", "checkouts"),
+    # Same reason, and the same directory as the two BOX_STATE_ROOT
+    # attributes below: a child worker imports ``adaptive_cpu`` fresh and
+    # would otherwise sweep-mark the fleet's own directory.
+    ("PRISMABUILD_BOX_STATE_ROOT", "box-state"),
 )
 
 
