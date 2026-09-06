@@ -63,10 +63,12 @@ def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None,
     })
     if docker_env:
         environment.update(docker_env)
-    if cgroup is not None:
-        path = tmp_path / "cgroup"
-        path.write_text(cgroup, encoding="utf-8")
-        environment["PRISMABUILD_CGROUP_FILE"] = str(path)
+    # This CLI is fake: its kernel input must also be explicit. Otherwise a
+    # suite admitted under PB accidentally tests its real outer scope and may
+    # register fake container requests with the live resource broker.
+    path = tmp_path / "cgroup"
+    path.write_text(cgroup if cgroup is not None else "0::/test-unscoped\n", encoding="utf-8")
+    environment["PRISMABUILD_CGROUP_FILE"] = str(path)
     broker_thread = None
     broker_stop = None
     broker = None

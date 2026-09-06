@@ -1,3 +1,4 @@
+#!/bin/bash
 # Shared image identity check for admitted smoke harnesses. Source this file.
 pb_smoke_verify_image() {
     local wanted="$1" actual

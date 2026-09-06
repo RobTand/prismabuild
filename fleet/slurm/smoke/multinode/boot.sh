@@ -30,7 +30,8 @@ die() { say "FATAL: $*"; exit 1; }
 # inside the accounted container, where apt/ssh work shares its PB budget.
 if [ -d /pb-smoke-keys ]; then
     if [ ! -x /usr/sbin/sshd ]; then
-        apt-get update && apt-get install -y --no-install-recommends openssh-server openssh-client \
+        apt-get update || die "could not refresh packages inside the smoke container"
+        apt-get install -y --no-install-recommends openssh-server openssh-client \
             || die "could not install SSH inside the smoke container"
     fi
     install -o munge -g munge -m 0400 /pb-smoke-keys/munge.key /etc/munge/munge.key || die "munge key install failed"

@@ -32,6 +32,7 @@ RUN_ROOT="${PB_SMOKE_RUN_ROOT:-/home/rob/slurm-build/smoke}"
 DEB_DIR="${DEB_DIR:-}"
 KEEP="${PB_SMOKE_KEEP:-0}"
 PREBUILT_IMAGE_ID="${PB_SMOKE_PREBUILT_IMAGE_ID:-}"
+# shellcheck source=fleet/slurm/smoke/image.sh
 source "$HERE/image.sh"
 
 if [ -n "$DEB_DIR" ]; then

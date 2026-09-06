@@ -31,6 +31,7 @@ REPO="$(cd "$HERE/../../../.." && pwd)"
 RUN_ROOT="${PB_SMOKE_RUN_ROOT:-/home/rob/slurm-build/smoke}"
 KEEP="${PB_SMOKE_KEEP:-0}"
 PREBUILT_IMAGE_ID="${PB_SMOKE3_PREBUILT_IMAGE_ID:-}"
+# shellcheck source=fleet/slurm/smoke/image.sh
 source "$HERE/../image.sh"
 #: The fleet's own packages are the primary; the archive's 23.11.4 is the
 #: secondary.  Both are images `fleet/slurm/smoke/run.sh` already knows how to

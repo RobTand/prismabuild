@@ -16,11 +16,6 @@ import signal
 import socket
 import sys
 
-_source = Path(__file__).resolve().parents[1] / 'src'
-if not _source.is_dir():
-    _source = Path(__file__).resolve().parents[2] / 'src'
-sys.path.insert(0, str(_source))
-from prismabuild.resource_scope import MAX_MESSAGE_BYTES, broker_request
 
 
 def process_umask() -> int:
@@ -34,12 +29,19 @@ def process_umask() -> int:
 
 
 def main() -> int:
+    # Resolve source versus published layout only when executing the proxy.
+    source = Path(__file__).resolve().parents[1] / 'src'
+    if not source.is_dir():
+        source = Path(__file__).resolve().parents[2] / 'src'
+    sys.path.insert(0, str(source))
+    from prismabuild.resource_scope import MAX_MESSAGE_BYTES, broker_request
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--socket', required=True, type=Path)
-    parser.add_argument('--action-key', required=True)
-    parser.add_argument('--nonce', required=True)
-    parser.add_argument('--token', required=True)
-    parser.add_argument('argv', nargs=argparse.REMAINDER)
+    parser.add_argument('--socket', required=True, type=Path, help='Local resource broker Unix socket.')
+    parser.add_argument('--action-key', required=True, help='Full action key owning this execution.')
+    parser.add_argument('--nonce', required=True, help='Unique 32-hex nonce for this execution attempt.')
+    parser.add_argument('--token', required=True, help='Broker-issued capability for this attempt.')
+    parser.add_argument('argv', nargs=argparse.REMAINDER, help='Command and arguments to execute inside the owned scope; precede with --.')
     args = parser.parse_args()
     argv = args.argv[1:] if args.argv[:1] == ['--'] else args.argv
     if not argv:
