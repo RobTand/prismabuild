@@ -74,6 +74,7 @@ FLEET_SCRIPTS = (
     # storage rather than executing it from this shared runtime.
     "resource_exec.py", "resource_broker.py", "resource_payload.py",
     "qualify_resource_scope.py", "install_resource_broker.sh",
+    "upgrade_client.py", "install_client_upgrader.sh",
 )
 #: Fleet tools deliberately left out of the generation, each with the reason.
 #: Empty: every tool under ``tools/fleet`` is something a box with no checkout
@@ -168,6 +169,9 @@ def _publication_manifest() -> dict[str, str]:
         if source.is_file():
             published[f"tools/{name}"] = _sha256(source)
             published[f"tools/fleet/{name}"] = published[f"tools/{name}"]
+    skill = CHECKOUT / "skills" / "prismabuild" / "SKILL.md"
+    if skill.is_file():
+        published["skills/prismabuild/SKILL.md"] = _sha256(skill)
     worker = CHECKOUT / "tools" / "prismabuild_worker.py"
     if worker.is_file():
         published["tools/prismabuild_worker.py"] = _sha256(worker)
