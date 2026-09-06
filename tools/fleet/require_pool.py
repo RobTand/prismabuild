@@ -995,7 +995,15 @@ def submits(command: str) -> bool:
 # The standing agent policy covers indirect test/GPU execution too.
 TEST_WORK = re.compile(
     r"(?<![\w.-])(?:pytest|py.test|ctest|tox|nox)(?![\w.-])"
-    r"|(?:^|\s)-m\s+unittest\b"
+    # ``-m`` takes its value attached as readily as spaced -- ``python3
+    # -mpytest`` is what the interpreter documents -- and the runner names
+    # above are matched with a ``(?<![\w.-])`` guard that the ``m`` in front
+    # of them defeats.  So the attached spelling ran the whole matrix off-pool
+    # while the spaced one was refused (issue #225).  Two clauses rather than
+    # one, because ``unittest`` is a module the interpreter runs and never a
+    # command by itself, so it is only ever reachable through ``-m``.
+    r"|(?:^|\s)-m\s*unittest\b"
+    r"|(?:^|\s)-m(?:pytest|py.test|ctest|tox|nox)(?![\w.-])"
     r"|\b(?:cargo|go)\s+test\b"
     r"|\b(?:npm|pnpm|yarn)\s+(?:run\s+)?test(?:[ :\s]|$)"
 )
