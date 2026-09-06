@@ -125,6 +125,30 @@ on the exporter, ordinary shared-mount metadata latency on the clients
 multiplier — loops × polls × records — and that is what the change below
 reduces. Read the fix as being about the cadence, not about a box.
 
+### The before-measurement
+
+Watching all three `workers/*.json` from one place for 600 s, recording every
+change of `announced_unix` (1 Hz sampling, read-only):
+
+| box | rewrites | intervals (s) | over `OFFER_TIMEOUT_S` |
+| --- | --- | --- | --- |
+| dl380g10 | 3 | 184.3, 475.2 | 2 of 2 |
+| sparklina | 3 | 361.4, 432.7 | 2 of 2 |
+| sparky | 9 | 28.8, 92.9, 45.7, 92.9, 26.5, 20.1, 136.9, 117.5 | 1 of 8 |
+
+Every box overshoots. `sparky` re-announces four times as often as the other
+two and still exceeded the timeout once in ten minutes, with two more intervals
+inside 3 s of it. The nominal cadence is the poll, ~1 Hz.
+
+Note what this rules out as the remedy: `dl380g10` runs eighteen loops and
+`sparklina` three, and both fail the same way. "Fewer loops" is not the axis.
+Fewer *reads per poll* is, which is what the change below does.
+
+The script is kept at `tools/fleet/` scope in the PR discussion rather than
+committed; re-running it after a generation carrying this change is published is
+the after-measurement, and the claim to make then is the interval distribution,
+not a wall-clock anecdote.
+
 ## The same thing, seen from the queue
 
 At 17:30 UTC ten x86-tagged items had been READY for ~1520 s with
