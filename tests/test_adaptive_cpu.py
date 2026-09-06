@@ -355,3 +355,73 @@ def test_proven_idle_preferred_is_borrowed_before_free_fallback(tmp_path, monkey
     assert second['cpu_allocation'] == {'preferred': [0], 'fallback': []}
     assert queue.ledger().free_preferred(tiers) == 0
     assert queue.ledger().available()['cpu'] == 1  # SMT remains unused
+
+
+@pytest.mark.parametrize('measurement', [False, True])
+def test_legacy_gpu_only_holder_cannot_overlap_cpu_work_or_measurement(tmp_path, monkeypatch, measurement):
+    from prismabuild import adaptive_cpu
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    tiers = {'preferred': [0], 'fallback': [1]}
+    queue.ledger().configure_cpu_tiers(tiers)
+    queue.ledger().ensure_capacity({'cpu': 2, 'gpu': 2})
+    assert queue.ledger().acquire('a' * 64, {'gpu': 1})
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', measurement))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+        'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
+        'busy_cpus': 0., 'psi_some': 0.})
+    controller = adaptive_cpu.Controller(queue.ledger(), tiers)
+    with controller.locked():
+        assert controller.decision({'action_key': 'b' * 64, 'cas_root': str(tmp_path)},
+                                   {'cpu': 1}) is None
+
+
+def test_legacy_incoming_cpu_zero_is_charged_as_unknown_whole_host(tmp_path, monkeypatch):
+    from prismabuild import adaptive_cpu
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    tiers = {'preferred': [0], 'fallback': [1]}
+    queue.ledger().configure_cpu_tiers(tiers)
+    queue.ledger().ensure_capacity({'cpu': 2, 'gpu': 2})
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+        'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
+        'busy_cpus': .05, 'psi_some': 0.})
+    controller = adaptive_cpu.Controller(queue.ledger(), tiers)
+    with controller.locked():
+        decision = controller.decision({'action_key': 'b' * 64, 'cas_root': str(tmp_path)},
+                                       {'gpu': 1})
+    assert decision['unbounded_cpu'] is True
+    assert decision['cost'] == 2
+    assert not decision['borrowing']
+
+
+@pytest.mark.parametrize('measurement', [False, True])
+def test_incoming_legacy_cpu_zero_cannot_overlap_claimed_cpu_work(tmp_path, monkeypatch, measurement):
+    from prismabuild import adaptive_cpu
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    tiers = {'preferred': [0], 'fallback': [1]}
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', measurement))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+        'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
+        'busy_cpus': 0., 'psi_some': 0.})
+    queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 1})
+    capacity = {'cpu': 2, 'gpu': 1}
+    first = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    assert first
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    queue.publish(action_key='b' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'gpu': 1})
+    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True) is None
+    assert queue.item_path(pool.CLAIMED, first['action_key']).exists()
+
+
+def test_adaptive_empty_demand_is_refused_while_static_legacy_remains_supported(tmp_path):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py')
+    tiers = {'preferred': [0], 'fallback': []}
+    assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers, adaptive_cpu=True) is None
+    assert not queue.ledger().held_keys()
+    assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers)

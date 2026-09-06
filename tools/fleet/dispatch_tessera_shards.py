@@ -60,6 +60,9 @@ def sha256_file(path):
 #: move the export's domain with it.
 OF_SHARDS = 120
 
+# One GPU driver, with native CPU work bounded to one thread below.
+RESOURCE_DEMAND = {"cpu": 1, "gpu": 1, "mem_gb": 16}
+
 
 def shard_range(text):
     """``N`` or ``LO-HI``, inclusive, within ``1..OF_SHARDS``.
@@ -128,6 +131,7 @@ def build_action(shard, closure, plan_sha):
         # into the key means a re-allocated plan is a different action, not a
         # silent overwrite of one that looks the same.
         "params": {
+            "demand": dict(RESOURCE_DEMAND),
             "source_model": SOURCE,
             "plan_sha256": plan_sha,
             "grid": "E2M1_K2",
@@ -140,6 +144,9 @@ def build_action(shard, closure, plan_sha):
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
                 "HOME": "/home/rob",
                 "LANG": "C.UTF-8",
+                "OMP_NUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+                "OPENBLAS_NUM_THREADS": "1",
                 # Relative to the tree this action runs in, not to the
                 # submitter's copy of it.  An absolute path into the shared
                 # checkout survives the SLURM lane's re-seal, so the worker
@@ -216,7 +223,7 @@ def main():
             # Measured: one exporter holds ~8 GB resident, and four concurrent
             # took a GB10 from 116 GB free to 55 GB.  16 GB is the honest cost
             # of one, so the ledger admits by what a shard actually takes.
-            resources={"gpu": 1, "mem_gb": 16},
+            resources=dict(RESOURCE_DEMAND),
         )
         published += 1
         # The submitted key, not the sealed one: under SLURM the lane

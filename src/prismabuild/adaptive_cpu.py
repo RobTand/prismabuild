@@ -187,10 +187,18 @@ class Controller:
         if fresh and (sample['psi_some'] >= .10 or sample['busy_cpus'] >= .95 * len(self.cpus)):
             return None
         shape, measurement = action_identity(item)
+        unbounded_cpu = not int(demand.get('cpu', 0))
         if measurement and (not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
             return None
         holders = [p for p in self.ledger.held_dir.iterdir() if p.is_dir()]
         if len(holders) >= MAX_ACTIONS:
+            return None
+        # Legacy producers sometimes reserved only GPU/memory. Their children
+        # inherit the whole worker affinity, so zero tokens are unknown CPU
+        # use, never evidence of zero use. Keep that historical demand intact
+        # but serialize it on a freshly idle host until the producer declares
+        # an enforceable CPU allocation.
+        if unbounded_cpu and (holders or not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
             return None
         profiles = read_json(self.base / 'profiles.json')
         recent = read_json(self.base / 'jobs.json')
@@ -205,6 +213,8 @@ class Controller:
             physical = len(list(holder.glob('cpu-*')))
             reserved = meta.get('declared_cpu', physical)
             if not reserved:
+                if meta or any(holder.iterdir()):
+                    return None
                 continue
             if measurement or meta.get('measurement'):
                 return None
@@ -264,8 +274,13 @@ class Controller:
         learned = profiles.get(shape, {}) if shape else {}
         learned_valid = (learned.get('samples', 0) >= 3
                          and 0 <= now - learned.get('sampled_unix', 0) < 86400)
-        cost = max(.05, min(float(declared), learned['cpu'])) if learned_valid else float(declared)
-        if fresh and max(sample['busy_cpus'] + pending, active_cost) + cost > len(self.cpus) + .01:
+        cost = (float(len(self.cpus)) if unbounded_cpu else
+                max(.05, min(float(declared), learned['cpu'])) if learned_valid else float(declared))
+        # The unbounded legacy case already proved an otherwise empty, idle
+        # host above. Its whole-host budget is exclusive accounting; adding
+        # incidental idle CPU activity would prevent it ever starting.
+        if (fresh and not unbounded_cpu
+                and max(sample['busy_cpus'] + pending, active_cost) + cost > len(self.cpus) + .01):
             return None
         available = self.ledger.available().get('cpu', 0)
         borrowable = lending_cpus - protected_cpus
@@ -281,6 +296,7 @@ class Controller:
                     or sample['sampled_unix'] <= last):
                 return None
         return {'declared_cpu': declared, 'cost': cost, 'shape': shape,
+                'unbounded_cpu': unbounded_cpu,
                 'measurement': measurement, 'admitted_unix': now,
                 'preferred_borrow': preferred_borrow,
                 'sampled_unix': sample.get('sampled_unix', 0), 'borrowing': borrowing,
