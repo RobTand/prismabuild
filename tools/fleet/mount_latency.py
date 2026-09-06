@@ -458,13 +458,26 @@ def _load1() -> float | None:
 
 
 def lock_key(path: Path) -> str | None:
-    """``/proc/locks`` spells a file as ``major:minor:inode``, major in hex."""
+    """``/proc/locks`` spells a file as ``major:minor:inode``.
+
+    Both numbers are hex, and both are zero-padded to two digits -- the kernel
+    prints ``%02x:%02x:%ld``.  The padding is not cosmetic: ``/tmp`` on tmpfs
+    is major 0, which the kernel writes ``00`` and an unpadded ``{:x}`` writes
+    ``0``.  The key would then match nothing, and this leg would report a gate
+    with no holders and no waiters -- *healthy* -- on precisely the box that
+    was stalled.  Verified against a live ``/proc/locks`` entry on a major-0
+    device (``00:1e:104``) rather than read off the format string.
+
+    Widths are minimums, so a major above 255 still prints in full: sparky's
+    ``/tmp`` is major 259 and appears as ``103``.
+    """
 
     try:
         info = os.stat(path)
     except OSError:
         return None
-    return f"{os.major(info.st_dev):x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
+    return (f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}"
+            f":{info.st_ino}")
 
 
 def read_proc_locks(keys: set[str], text: str | None = None) -> dict[str, dict]:
@@ -500,20 +513,29 @@ def read_proc_locks(keys: set[str], text: str | None = None) -> dict[str, dict]:
     return found
 
 
-def process_status(pid: int) -> tuple[str, str]:
-    """``(state, wchan)`` for one pid, or ``("?", "?")`` if it has gone.
+def process_status(pid: int, want_wchan: bool = True) -> tuple[str, str | None]:
+    """``(state, wchan)`` for one pid, or ``("?", ...)`` if it has gone.
 
     The state answers "would load average have seen this?" and the wchan
     answers "waiting on what?".  Together they separate a holder stuck in the
     kernel on NFS from a holder that is simply doing slow work, which is the
     difference between blaming the mount and blaming the code holding the lock.
+
+    The two are not equally available.  ``/proc/<pid>/stat`` is world-readable;
+    ``wchan`` is gated by ``ptrace_may_access``, so a reader running as another
+    uid without ``CAP_SYS_PTRACE`` -- the packaged netdata plugin, for one --
+    gets ``"0"`` for every process it does not own.  The state, and therefore
+    the headline, survives that; the attribution does not.  ``want_wchan``
+    exists so the caller can skip the more expensive half.
     """
 
     try:
         stat_line = Path(f"/proc/{pid}/stat").read_text()
         state = stat_line[stat_line.rindex(")") + 2]
     except (OSError, ValueError, IndexError):
-        return "?", "?"
+        return "?", ("?" if want_wchan else None)
+    if not want_wchan:
+        return state, None
     try:
         wchan = Path(f"/proc/{pid}/wchan").read_text().strip() or "?"
     except OSError:
@@ -569,12 +591,18 @@ def lock_contention(lock_dir: Path = ADMISSION_LOCK_DIR,
     for token in [token for token in held_since if token not in live]:
         del held_since[token]
 
+    # State is read for every waiter and the wchan only for the first few.
+    # The headline number is a count of waiters, so capping it would make a
+    # chart of 200 waiters and 32 invisible ones read as "168 of them were in
+    # the load average" -- the opposite of the finding.  ``/proc/PID/stat`` is
+    # one small read; ``wchan`` is the one worth bounding.
     states: dict[str, int] = {}
     wchans: dict[str, int] = {}
-    for _key, pid in waiters[:MAX_ATTRIBUTED_WAITERS]:
-        state, wchan = process_status(pid)
+    for index, (_key, pid) in enumerate(waiters):
+        state, wchan = process_status(pid, want_wchan=index < MAX_ATTRIBUTED_WAITERS)
         states[state] = states.get(state, 0) + 1
-        wchans[wchan] = wchans.get(wchan, 0) + 1
+        if wchan is not None:
+            wchans[wchan] = wchans.get(wchan, 0) + 1
 
     return {
         "present": True,
@@ -584,6 +612,8 @@ def lock_contention(lock_dir: Path = ADMISSION_LOCK_DIR,
         "holder_detail": holders,
         "waiter_states": states,
         "waiter_wchans": wchans,
+        # Every waiter is counted and stated; only the wchan attribution is
+        # capped, so this names what the wchan histogram covers.
         "attributed_waiters": min(len(waiters), MAX_ATTRIBUTED_WAITERS),
         # The headline.  Waiters that load average cannot see, which on this
         # fleet is nearly all of them, and the reason this leg exists.
