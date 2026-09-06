@@ -618,7 +618,7 @@ def _next_log_index() -> int:
 
     highest = -1
     try:
-        entries = LOG_DIR.iterdir()
+        entries = list(LOG_DIR.iterdir())
     except OSError:
         return 0
     for path in entries:

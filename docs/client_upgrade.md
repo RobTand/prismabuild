@@ -1,15 +1,21 @@
 # Automatic worker client upgrades
 
-Every worker follows the published immutable runtime generation. Worker loops
-finish their current action before adopting a replacement generation. Privileged
+Every worker follows the published immutable runtime generation. Supervisors
+re-execute from the new generation while preserving their PID and held lock;
+active worker leases survive this transition. Worker loops finish their current
+action before adopting a replacement generation. Privileged
 clients live separately under `/opt/prismabuild-resource-broker`; publication
 alone cannot replace those root-owned files.
 
-Enroll each host once, as root, after installing a resource broker that supports
-the maintenance protocol:
+Enroll each host once after installing a resource broker that supports the
+maintenance protocol. As the authorized publishing user, stage both files on
+local storage so NFS root squashing remains enabled:
 
 ```sh
-bash /mnt/shared/prismabuild-fleet/repo/tools/install_client_upgrader.sh
+pb_enrollment_dir=$(mktemp -d /tmp/pb-client-enrollment.XXXXXX)
+cp /mnt/shared/prismabuild-fleet/repo/tools/fleet/{install_client_upgrader.sh,upgrade_client.py} "$pb_enrollment_dir/"
+# Run this local installer using the host's authorized root administration method:
+sudo bash "$pb_enrollment_dir/install_client_upgrader.sh"
 ```
 
 This installs `prismabuild-client-upgrade.timer`, which checks after boot and every

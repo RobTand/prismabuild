@@ -42,7 +42,7 @@ def _await(predicate, *, timeout_s: float = 30.0) -> bool:
             return True
         time.sleep(0.02)
     return predicate()
-def _await_pid(path: Path, *, worker: subprocess.Popen, timeout_s: float = 30.0) -> int:
+def _await_pid(path: Path, *, worker: subprocess.Popen | None = None, timeout_s: float = 30.0) -> int:
     """The pid a helper wrote, once the file actually holds one.
 
     ``write_text`` creates the file before it writes it, so waiting on
@@ -55,7 +55,7 @@ def _await_pid(path: Path, *, worker: subprocess.Popen, timeout_s: float = 30.0)
 
     def written() -> bool:
         nonlocal pid
-        if worker.poll() is not None:
+        if worker is not None and worker.poll() is not None:
             output, _ = worker.communicate(timeout=5)
             pytest.fail(f"worker exited before the action started:\n{output}")
         try:
