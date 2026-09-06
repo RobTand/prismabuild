@@ -53,8 +53,20 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 
 def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
-                  forget_intent: bool = False) -> tuple[Path, dict]:
-    """Claim on one box, reap on this one, and return the terminal record."""
+                  forget_intent: bool = False,
+                  never_leased: bool = False) -> tuple[Path, dict]:
+    """Claim on one box, reap on this one, and return the terminal record.
+
+    By default the claim keeps its lease and the lease goes stale, which is the
+    ordinary shape of the loss this issue is about: a box took the work, ran
+    it, and stopped refreshing.  ``never_leased`` builds the other shape --
+    a lease that never arrived at all -- and stamps the withdrawal that a
+    cancelled claim carries, because an un-withdrawn claim with no lease and no
+    published attempt is not a lost claim at all: nothing ever ran under it,
+    and #222 releases it back to ``ready/`` rather than filing an ending for
+    it.  Asking for a terminal record from that shape would be asking the
+    reaper to charge an attempt nobody made.
+    """
 
     q.publish(
         action_key=KEY, cas_root=q.root / "cas", checkout_root=q.root / "co",
@@ -63,9 +75,17 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
     )
     with mock.patch.object(pool.socket, "gethostname", lambda: HELD_BY):
         assert q.claim(owner=f"{HELD_BY}:1:abc", capacity={"cpu": 1}) is not None
-    # The lease is what says the claimant is alive; a lost claim has none.
-    q.lease_path(KEY).unlink()
     path = q.item_path(pool.CLAIMED, KEY)
+    if never_leased:
+        # The lease is what says a payload was launched; this one has none.
+        q.lease_path(KEY).unlink()
+        # ``withdraw`` closes the retry by writing these two onto the live
+        # claim.  Written directly here: the subject is what ``pbrun`` renders
+        # from the record, not how the record came to be stamped.
+        record = json.loads(path.read_text())
+        record["max_attempts"] = 1
+        record["withdrawn_unix"] = pool._now()
+        pool._write_json_atomic(path, record)
     intent_path = q.item_path(pool.INTENT, KEY)
     if forget_claimed_host:
         # The shape of a claim lost between the rename and the record rewrite:
@@ -138,7 +158,7 @@ def test_an_unknown_holder_is_said_to_be_unknown(queue: pool.PoolQueue) -> None:
 def test_a_claim_lost_before_any_lease_says_so(queue: pool.PoolQueue) -> None:
     """``lease_age_s: null`` is not "the lease was old"; it is "there was none"."""
 
-    path, record = _lose_a_claim(queue)
+    path, record = _lose_a_claim(queue, never_leased=True)
     summary = pbrun.outcome_summary(queue, path, record)
 
     assert summary["detail"]["lease_age_s"] is None
