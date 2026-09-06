@@ -27,6 +27,16 @@ DEFAULT_CACHE_SECONDS = 10.0
 DEFAULT_TERMINAL_WINDOW_SECONDS = 3600.0
 DEFAULT_TERMINAL_LIMIT = 500
 GIB = 1024 ** 3
+#: How far ahead of this reader another box's clock may be before its sample
+#: stops being credible. A telemetry record is stamped by the box executing the
+#: action and read by whichever box runs the exporter, so their clocks are not
+#: the same clock: dl380g10's runs milliseconds ahead of sparky's, and a record
+#: written "in the future" was being rejected as unusable. Rejecting the
+#: freshest record is the wrong way round -- and it fell hardest on the busiest
+#: box, whose records are the ones most likely to be seconds old rather than
+#: minutes. The bound is the sampler's own period rather than a new constant:
+#: a stamp further ahead than one sampling interval is not skew, it is wrong.
+_SKEW_S = pool.cpu_admission.MAX_SAMPLE_AGE_S
 HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 OUTCOMES = frozenset({
     "executed", "cache_hit", "failed", "timeout", "withdrawn", "reset",
@@ -201,8 +211,12 @@ def _attempt_telemetry(
             # Age is reported for any record whose timestamp is credible, even
             # one too old for the aggregate -- that is precisely the reading a
             # reader wants when the aggregate is missing.
-            if sampled is not None and now >= sampled:
-                age = now - sampled
+            if sampled is not None and now - sampled >= -_SKEW_S:
+                # Floored at zero: a stamp from a clock a few milliseconds ahead
+                # is as new as this reader can tell, and a negative age is not a
+                # reading anyone can act on. The tolerance above is what decides
+                # whether the sample counts; this only decides how it reads.
+                age = max(0.0, now - sampled)
                 if (host_attempts.oldest_age_s is None
                         or age > host_attempts.oldest_age_s):
                     host_attempts.oldest_age_s = age
@@ -213,7 +227,7 @@ def _attempt_telemetry(
                 host_attempts.counters[(key, str(nonce))] = (cpu_seconds, wall_seconds)
             if (not isinstance(record, dict) or record.get("complete") is not True
                     or not matched or sampled is None
-                    or not 0 <= now - sampled <= pool.cpu_admission.MAX_SAMPLE_AGE_S
+                    or not -_SKEW_S <= now - sampled <= pool.cpu_admission.MAX_SAMPLE_AGE_S
                     or cpu_seconds is None or wall_seconds is None or wall_seconds <= 0
                     or current is None):
                 host_attempts.unavailable += 1

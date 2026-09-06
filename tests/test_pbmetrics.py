@@ -275,6 +275,49 @@ class MetricsFixture(unittest.TestCase):
         self.assertFalse(any('host="sparky"' in line for line in _samples(
             text, "prismabuild_attempt_observed_resources")))
 
+    def test_a_sample_from_a_clock_slightly_ahead_is_still_fresh(self) -> None:
+        """The freshest record must not be the one that gets thrown away.
+
+        A telemetry record is stamped by the box executing the action and read
+        by whichever box runs the exporter. Those are different clocks --
+        dl380g10 runs milliseconds ahead of sparky -- so a record written a
+        moment "in the future" is ordinary, and rejecting it inverted the test
+        the check exists to make. It fell hardest on the busiest box, whose
+        records are the ones most likely to be a fraction of a second old, and
+        under the all-or-nothing aggregate a single such record erased its whole
+        host: fourteen live claims on dl380g10 reported as unusable while every
+        one of them was fresh, matched and complete on disk.
+        """
+
+        path = self.queue / "reservations" / "sparky" / "telemetry" / f"{GPU_KEY}.json"
+        record = json.loads(path.read_text())
+        record["sampled_unix"] = NOW + 0.02
+        _write(path, record)
+
+        text = self.collect()
+
+        self.assertIn('prismabuild_attempt_telemetry_unavailable_jobs{host="sparky"} 0',
+                      text)
+        self.assertTrue(any('host="sparky"' in line for line in _samples(
+            text, "prismabuild_attempt_observed_resources")))
+        self.assertTrue(any('host="sparky"' in line for line in _samples(
+            text, "prismabuild_attempt_telemetry_age_seconds")))
+
+    def test_a_stamp_further_ahead_than_one_sampling_period_is_not_skew(self) -> None:
+        """Tolerating skew is not tolerating a wrong clock."""
+
+        path = self.queue / "reservations" / "sparky" / "telemetry" / f"{GPU_KEY}.json"
+        record = json.loads(path.read_text())
+        record["sampled_unix"] = NOW + pool.cpu_admission.MAX_SAMPLE_AGE_S + 60
+        _write(path, record)
+
+        text = self.collect()
+
+        self.assertIn('prismabuild_attempt_telemetry_unavailable_jobs{host="sparky"} 1',
+                      text)
+        self.assertFalse(any('host="sparky"' in line for line in _samples(
+            text, "prismabuild_attempt_observed_resources")))
+
     def test_recent_cores_tells_a_blocked_claim_from_a_working_one(self) -> None:
         """Lifetime average cannot see a job that has just stopped moving.
 
