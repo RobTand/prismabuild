@@ -91,6 +91,11 @@ def test_probes_exceed_old_slots_without_minting_or_discounts(gpu_rig):
     admitted = [claim()]
     assert admitted[0]
     for index in range(3):
+        if index:
+            sample['devices'][0]['power_w'] += 5
+            for _ in range(2):
+                tick()
+                assert claim() is None  # collect the probe response first
         tick()
         admitted.append(claim())
         assert admitted[-1]
@@ -163,8 +168,10 @@ def test_probe_startup_cannot_be_hidden_by_a_new_sample(gpu_rig):
     assert claim(); tick(); assert claim()
     tick(.5)
     assert claim() is None
-    tick(2)
-    assert claim()
+    sample['devices'][0]['power_w'] += 5
+    tick(2); assert claim() is None
+    tick(1); assert claim() is None
+    tick(1); assert claim()
 
 
 def test_probe_credit_persists_across_controller_restart_and_release(gpu_rig):
@@ -300,3 +307,72 @@ def test_concurrent_claimants_share_one_probe_credit(gpu_rig):
         claims=list(threads.map(lambda _: claim(), range(4)))
     assert sum(item is not None for item in claims) == 1
     assert queue.ledger().held()['mem_gb'] == 2
+
+
+def test_power_plateau_closes_below_soc_fraction_and_survives_departure(gpu_rig):
+    """Extra contexts at an 81 W plateau must not keep spending a 140 W TDP."""
+    from prismabuild import adaptive_gpu
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    for index in range(4): publish(index)
+    sample['devices'][0]['power_w'] = 81.
+    first = claim(); assert first
+    tick(); second = claim(); assert second
+    for watts in (80.5, 81., 81.5):
+        sample['devices'][0]['power_w'] = watts
+        tick(); assert claim() is None
+    state = adaptive_cpu.read_json(queue.ledger().base / 'adaptive/gpu-state.json')
+    assert state['power_feedback']['status'] == 'plateau'
+    # A fresh Controller instance and a holder exit must not forget saturation.
+    queue.finish(first['action_key'], status='executed', detail={})
+    sample['devices'][0]['power_w'] = 81.
+    for _ in range(3):
+        tick(); assert claim() is None
+    assert len(queue.ledger().held_keys()) == 1
+    # The remaining workload's sustained activity drop permits exploration.
+    sample['devices'][0]['power_w'] = 40.
+    resumed = None
+    for _ in range(6):
+        tick()
+        resumed = claim()
+        if resumed: break
+    assert resumed
+    assert resumed['gpu_admission']['probe'] is True
+
+
+def test_power_plateau_is_cleared_when_the_gpu_busy_period_ends(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    for index in range(3): publish(index)
+    first=claim(); assert first; tick(); second=claim(); assert second
+    for _ in range(3):
+        tick(); assert claim() is None
+    queue.finish(first['action_key'], status='executed', detail={})
+    queue.finish(second['action_key'], status='executed', detail={})
+    tick()
+    cold=claim(); assert cold
+    assert cold['gpu_admission']['probe'] is False
+
+
+def test_noisy_power_response_does_not_authorize_an_unbounded_probe(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    for index in range(3): publish(index)
+    sample['devices'][0]['power_w']=50
+    assert claim(); tick(); assert claim()
+    # Mean power rises slightly, but noise is much larger than the response.
+    for watts in (42, 60, 55):
+        sample['devices'][0]['power_w']=watts
+        tick(); assert claim() is None
+    state=adaptive_cpu.read_json(queue.ledger().base/'adaptive/gpu-state.json')
+    assert state['power_feedback']['status']=='plateau'
+
+
+def test_a_telemetry_gap_cannot_reuse_old_plateau_recovery_samples(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    for index in range(3): publish(index)
+    sample['devices'][0]['power_w']=80
+    assert claim(); tick(); assert claim()
+    for _ in range(3):
+        tick(); assert claim() is None
+    sample['devices'][0]['power_w']=40
+    tick(10); assert claim() is None
+    tick(1); assert claim() is None
+    tick(1); assert claim()

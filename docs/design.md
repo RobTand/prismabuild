@@ -1276,6 +1276,16 @@ attribution and at least two seconds to start. Sample credit is persisted before
 reservation mutation: crashes may lose a probe opportunity but cannot reuse it.
 Released or retried actions cannot reset that sample's spent credit.
 
+After each concurrency probe, at least three fresh samples after startup must
+show how device power responds before another probe is allowed. The controller
+compares the mean change with observed sample noise and a relative deadband,
+not a benchmark-specific wattage limit. No measurable increase latches an
+activity plateau and closes further admission. That state survives restarts and
+individual holder exits, allowing concurrency to fall while remaining work
+still sustains the plateau. Sustained power reduction or the end of the GPU busy
+period permits new exploration. This is a conservative admission heuristic;
+useful throughput and energy measurements must qualify its practical effect.
+
 GPU concurrency uses the same host admission lock as CPU lending. Additional
 GPU reservations live in each claimant's `.gpu.json`; they never mint physical
 GPU or host memory tokens. Failure, abandonment and release remove the metadata

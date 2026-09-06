@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import stat
+import statistics
 import time
 
 from . import adaptive_cpu
@@ -22,11 +23,95 @@ SAMPLE_PATH = Path('/run/prismabuild/gpu-capacity.json')
 MAX_SAMPLE_AGE_S = 5.0
 SETTLE_S = 2.0
 MAX_ACTIONS = 256
+FEEDBACK_SAMPLES = 3
+FEEDBACK_WINDOW = 6
 GIB = 1024 ** 3
 
 
 def _number(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+def _power_estimate(rows):
+    values = [row['power_w'] for row in rows]
+    mean = statistics.mean(values)
+    error = statistics.stdev(values) / math.sqrt(len(values)) if len(values) > 1 else 0.
+    return mean, error
+
+
+def _separated_power(before, after):
+    """Require response above observed sample noise and a relative deadband.
+
+    This is a conservative activity proxy, not a throughput measurement or a
+    model-specific power ceiling. The deadband prevents tiny power movements
+    from authorizing endless probes on a saturated plateau.
+    """
+    old, old_error = _power_estimate(before)
+    new, new_error = _power_estimate(after)
+    margin = max(.03 * max(old, new), 2 * math.hypot(old_error, new_error))
+    return new - old, margin
+
+
+def observe_feedback(state, sample, members):
+    """Update probe response under the host lock; return permission to probe.
+
+    Saturation survives an individual holder's departure: remaining work may
+    still sustain the same plateau, so concurrency can fall naturally. A
+    sustained activity drop or the end of the whole GPU busy period reopens
+    exploration. No holder is killed, migrated or stripped of its reservation.
+    """
+    device = sample['devices'][0]
+    if not members:
+        state.pop('power_feedback', None)
+        state['power_window'] = []
+        state['power_members'] = []
+        return True
+    if state.get('power_members') != members:
+        state['power_window'] = []
+        state['power_members'] = members
+    window = [row for row in state.get('power_window', [])
+              if 0 <= sample['sampled_unix'] - row['sampled_unix'] <= MAX_SAMPLE_AGE_S]
+    state['power_window'] = window
+    row = {'sample_id': sample['sample_id'], 'sampled_unix': sample['sampled_unix'],
+           'power_w': device['power_w'], 'sm_clock_mhz': device.get('sm_clock_mhz')}
+    if not window or row['sampled_unix'] - window[-1]['sampled_unix'] >= 1.:
+        window = (window + [row])[-FEEDBACK_WINDOW:]
+        state['power_window'] = window
+    feedback = state.get('power_feedback')
+    if not feedback:
+        return True
+    if feedback['device_uuid'] != device['uuid']:
+        # A device identity change invalidates the baseline, not its memory
+        # reservation. Ordinary attribution and memory checks still apply.
+        state.pop('power_feedback', None)
+        return True
+    if feedback['status'] == 'plateau':
+        recent = [r for r in window if r['sampled_unix'] > feedback['evaluated_unix']]
+        if len(recent) >= FEEDBACK_SAMPLES:
+            difference, margin = _separated_power(feedback['observed'], recent)
+            if difference < -margin:
+                state.pop('power_feedback', None)
+                return True
+        return False
+    if members != feedback['expected_members']:
+        # A failed acquisition or an exit before the response window completed
+        # cannot support a controlled before/after inference.
+        state.pop('power_feedback', None)
+        return True
+    recent = [r for r in window if r['sampled_unix'] >= feedback['admitted_unix'] + SETTLE_S]
+    if len(recent) < FEEDBACK_SAMPLES:
+        return False
+    difference, margin = _separated_power(feedback['baseline'], recent)
+    if abs(difference) > margin:
+        # A sustained fall is a phase change, not evidence that adding work
+        # reached a stable saturation plateau.
+        state.pop('power_feedback', None)
+        return True
+    feedback.update(status='plateau', observed=recent,
+                    evaluated_unix=sample['sampled_unix'], power_delta_w=difference,
+                    uncertainty_margin_w=margin)
+    state['power_feedback'] = feedback
+    return False
 
 
 def action_contract(item, demand):
@@ -129,6 +214,8 @@ class Controller:
                  and device.get('memory_domain') in ('shared_system', 'unified', 'discrete'))
         state = adaptive_cpu.read_json(self.base / 'gpu-state.json')
         low = False
+        feedback_allowed = False
+        members = sorted(f"{holder.name}:{meta.get('admitted_unix')}" for holder, meta in holders)
         if valid:
             reserve = max(2 * GIB, .02 * sample['host_total_bytes'])
             pressure = (sample['memory_pressure_some'] >= 1.
@@ -142,11 +229,12 @@ class Controller:
             congested = (pressure or bool(sample['foreign_processes'])
                          or device['power_w'] >= .80 * reference or limited is True)
             low = valid and not congested and device['power_w'] <= .65 * reference
+            feedback_allowed = observe_feedback(state, sample, members)
             if sample['sample_id'] != state.get('sample_id'):
                 continuous = 0 < sample['sampled_unix'] - state.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
                 state.update(sample_id=sample['sample_id'], sampled_unix=sample['sampled_unix'],
                              low_samples=min(3, state.get('low_samples', 0) + 1) if low and continuous else int(low))
-                adaptive_cpu.write_json(self.base / 'gpu-state.json', state)
+            adaptive_cpu.write_json(self.base / 'gpu-state.json', state)
             if congested:
                 return None
             if device.get('memory_domain') == 'discrete':
@@ -164,7 +252,7 @@ class Controller:
         if measurement and (not valid or not low or sample['foreign_processes']):
             return None
         if holders:
-            if (not valid or not low or not shape or state.get('low_samples', 0) < 2
+            if (not valid or not low or not shape or not feedback_allowed or state.get('low_samples', 0) < 2
                     or state.get('consumed_sample_id') == sample['sample_id']
                     or sample['sampled_unix'] <= state.get('consumed_sampled_unix', 0)):
                 return None
@@ -172,7 +260,8 @@ class Controller:
             for holder, meta in holders:
                 record = adaptive_cpu.read_json(self.ledger.base / 'telemetry' / f'{holder.name}.json')
                 job = jobs.get(holder.name, {})
-                if (not meta.get('shape') or record.get('complete') is not True
+                if (not meta.get('shape') or meta.get('device_uuid') != device['uuid']
+                        or record.get('complete') is not True
                         or job.get('complete') is not True
                         or job.get('nonce') != record.get('nonce') or not job.get('nonce')
                         or job.get('scope_id') != record.get('scope_unit')
@@ -182,6 +271,7 @@ class Controller:
                         or sample['sampled_unix'] < meta['admitted_unix'] + SETTLE_S):
                     return None
         return {'declared_gpu': int(demand['gpu']), 'exclusive': exclusive,
+                'action_key': str(item['action_key']), 'members_before': members,
                 'measurement': measurement, 'shape': shape, 'admitted_unix': now,
                 'probe': bool(holders), 'sample_id': sample.get('sample_id'),
                 'sampled_unix': sample.get('sampled_unix'),
@@ -194,4 +284,9 @@ class Controller:
             state = adaptive_cpu.read_json(self.base / 'gpu-state.json')
             state['consumed_sample_id'] = metadata['sample_id']
             state['consumed_sampled_unix'] = metadata['sampled_unix']
+            state['power_feedback'] = {
+                'status': 'pending', 'device_uuid': metadata['device_uuid'],
+                'baseline': state['power_window'], 'admitted_unix': metadata['admitted_unix'],
+                'expected_members': sorted(metadata['members_before'] + [
+                    f"{metadata['action_key']}:{metadata['admitted_unix']}"])}
             adaptive_cpu.write_json(self.base / 'gpu-state.json', state)

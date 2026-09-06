@@ -54,3 +54,44 @@ real discrete GPU behavior. The sibling broker/device telemetry and memory guard
 changes must be integrated before live qualification. Explicit scope VRAM budget
 creation/recovery depends on that sibling ResourceScope protocol extension.
 Multi-device worker allocation remains unsupported by this controller.
+
+## Follow-up: measured plateau below the SoC power reference
+
+The first controller's low-power permission alone was insufficient. The sibling
+readiness experiment ran the same 20.48 million BF16 embeddings on Sparklina
+with one context and two contexts; the two-context starts differed by 7.8 ms.
+One context took 44.356 seconds, two took 45.997 seconds: useful throughput fell
+3.57%. Sampled GPU energy rose from 3408.7 J to 3570.2 J (4.74%). Mean sampled
+steady power was 78.86 W versus 79.39 W, both below the initial 91 W probe
+threshold. CUDA event time per batch rose from 4.006 ms to 7.117–7.937 ms.
+The one-context samples included a 43.13 W outlier; it was retained.
+
+Measured summary inspected:
+`/home/rob/pb-logs/gpu-adaptive/before-compute-curve-synchronized.json`.
+Raw run directories:
+`/home/rob/pb-logs/gpu-adaptive/before-compute-one-sparklina-119e759266` and
+`/home/rob/pb-logs/gpu-adaptive/before-compute-two-barrier-sparklina-2ccce530b6`.
+This qualifies the need for a plateau gate on that workload; it does not prove
+that power is a universal throughput metric. NVML GPM activity metrics were
+reported unsupported on both GB10 devices by the telemetry agent.
+
+The controller now waits for three fresh post-startup observations after a
+probe. It compares the mean power response with observed standard error and a
+relative deadband. No measurable response latches a plateau; the latch persists
+across restart and individual holder departure, so unnecessary concurrency can
+fall naturally. A sustained power reduction or the end of the whole busy period
+reopens exploration. Old samples cannot bridge a telemetry gap.
+
+The three plateau regressions were run against `020b8a6` with only the new tests
+in `/home/rob/prismabuild-gpu-plateau-red`, retained as bounded regression evidence.
+All three failed by admitting another action at a plateau/noisy response.
+PB action: `70dabbfabc388be410aaebf3a7dfd8c5d5bdab332f8cf5008be42d9ca22cb0e3`;
+terminal failed, return code 1, no success receipt.
+
+After the change, the focused GPU/CPU admission, claimant reservation and GPU
+producer contract suite passed **86 tests in 1.99 seconds**, no skips, on the
+same dl380g10 CPU-only eight-worker/eight-GiB PrismaBuild mode.
+PB action: `052bc056bff2945212cc0a20a3b266040a12f77c37b600eae15d0b70650798e2`.
+CAS receipt: `/mnt/shared/prismabuild-fleet/cas/actions/v3/05/052bc056bff2945212cc0a20a3b266040a12f77c37b600eae15d0b70650798e2.json`.
+The integrated live low-duty AFTER workload must still establish whether the
+controller's more conservative feedback cadence improves useful throughput.
