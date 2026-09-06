@@ -1384,3 +1384,11 @@ shared broker snapshot and does not launch per-worker GPU probes.
 No loop-count tuning is required for ordinary operation. `--loops N` is the
 operator opt-out that fixes the count at `N`; `--once` retains deterministic
 one-shot behavior and tops up only to the configured floor.
+
+## Export a complete Tessera model
+
+Use `dispatch_tessera_model.py` for new full-model serving exports, including
+single-file checkpoints. Supply the full source, plan, scales and immutable
+producer identity; PrismaBuild selects whole-layer work quanta and runs the
+receipt-gated merge. See [the model dispatcher guide](tessera_model_dispatch.md).
+The legacy `dispatch_tessera_shards.py` remains the GLM input-shard interface.
