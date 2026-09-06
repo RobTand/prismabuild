@@ -32,6 +32,13 @@ SPEC = importlib.util.spec_from_file_location(
 pbtest = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pbtest)  # type: ignore[union-attr]
 
+#: The real ``Popen``, bound before any test replaces it.  ``pbtest`` calls it
+#: through the ``subprocess`` module, which is the same module object this file
+#: imported, so patching ``pbtest.subprocess.Popen`` patches it for everyone --
+#: including the ``git init`` a later shard runs to build its own checkout.  The
+#: stand-in below therefore answers for the submission and delegates the rest.
+REAL_POPEN = subprocess.Popen
+
 
 def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
                *, run: str = "run") -> dict:
@@ -57,7 +64,12 @@ def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
         def communicate(self):
             return output, None
 
-    monkeypatch.setattr(pbtest.subprocess, "Popen", lambda command, **_k: FinishedProcess())
+    def popen(command, **kwargs):
+        if str(pbtest.PBRUN) in [str(part) for part in command]:
+            return FinishedProcess()
+        return REAL_POPEN(command, **kwargs)
+
+    monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
     report = tmp_path / run / "shards.json"
     monkeypatch.setattr(
         sys, "argv",
