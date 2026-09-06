@@ -20,6 +20,19 @@ builds its own pool under ``tmp_path``, and the peer that holds admission is
 this process, on a second file descriptor of the same lock file.  ``flock`` is
 held per open file description, so a second ``os.open`` of one file contends
 with the first exactly as a second process would.
+
+That last property is also this file's one hazard, and the reason every call
+into admission below runs through ``_bounded``.  A peer that is this same
+process can hold the lock, but it can never *release* it while the main thread
+is blocked waiting for it -- so under the regression these tests exist to
+catch, a call made on the main thread does not fail, it hangs forever.  It did:
+on 2026-09-06 a mutation arm that stripped ``LOCK_NB`` from
+``adaptive_cpu.py`` ran for 23 minutes, holding a PrismaBuild reservation,
+with ``/proc/locks`` showing one pid as both the holder and the blocked waiter
+on the same inode.  The lease heartbeat comes from the worker loop, not the
+action, so the queue read ``CLAIMED`` and healthy throughout.  A test that
+hangs proves nothing and costs a worker; ``_bounded`` turns the same
+regression into a named failure.
 """
 from __future__ import annotations
 
@@ -71,31 +84,71 @@ def peer(rig):
         os.close(descriptor)
 
 
+def _bounded(call, what, seconds=30.):
+    """Run *call* off the main thread, and fail by name if it does not return.
+
+    Returns what *call* returned and re-raises what it raised, so a caller
+    still reads as an ordinary call -- ``pytest.raises`` around this behaves
+    exactly as it would around the call itself.
+
+    The bound is not a timeout on slowness.  Correct code answers here in
+    microseconds, because refusing is a syscall that cannot block; the bound
+    is reached only when the acquisition became blocking again, and in that
+    state it can never be satisfied at all.  So it separates a hang from a
+    result, which is the one thing the main thread cannot do for itself.
+    """
+
+    outcome = {}
+
+    def run():
+        try:
+            outcome['value'] = call()
+        except BaseException as exc:      # re-raised below, on the main thread
+            outcome['error'] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    started = time.monotonic()
+    thread.start()
+    thread.join(timeout=seconds)
+    assert not thread.is_alive(), (
+        f'{what} is still inside the kernel after {seconds:.0f}s, waiting for '
+        f'a lock this same process holds and cannot release while it waits. '
+        f'Admission is blocking again: one slow loop takes its whole box down')
+    if 'error' in outcome:
+        raise outcome['error']
+    assert time.monotonic() - started < seconds
+    return outcome['value']
+
+
+def _acquire_and_release(controller):
+    """Take box admission and give it straight back."""
+
+    with controller.locked():
+        pass
+
+
+def _attempt(controller):
+    """Enter and leave box admission, failing loudly if it was granted.
+
+    Every caller already holds the lock on another descriptor, so being let in
+    is the exclusivity failure, not a pass.
+    """
+
+    with controller.locked():
+        pytest.fail('two loops were inside box admission at once')
+
+
 def test_a_claim_refuses_at_once_rather_than_waiting_for_the_holder(rig, peer):
     """The whole defect, in one assertion: this must come back.
 
-    Run on a thread with a bounded join so that a regression reports as a
-    failure with a name on it, rather than hanging the suite the way it hung
-    the box.  A blocking acquisition never returns while ``peer`` holds the
-    lock, so the thread being alive *is* the regression.
+    A blocking acquisition never returns while ``peer`` holds the lock, so the
+    call being unfinished *is* the regression -- which is why it runs through
+    ``_bounded`` rather than on the main thread.
     """
 
-    answer = {}
-
-    def claim():
-        answer['item'] = rig.claim(capacity=CAPACITY, cpu_tiers=TIERS,
-                                   adaptive_cpu=True)
-
-    loop = threading.Thread(target=claim, daemon=True)
-    started = time.monotonic()
-    loop.start()
-    loop.join(timeout=30)
-    assert not loop.is_alive(), (
-        'claim is still inside the kernel waiting for a peer to finish; '
-        'one slow loop is taking the box down with it')
-    assert answer['item'] is None, (
-        'a claim that never held admission returned an item')
-    assert time.monotonic() - started < 30
+    item = _bounded(lambda: rig.claim(capacity=CAPACITY, cpu_tiers=TIERS,
+                                      adaptive_cpu=True), 'claim')
+    assert item is None, 'a claim that never held admission returned an item'
 
 
 def test_nothing_is_claimed_or_reserved_by_a_refused_admission(rig, peer):
@@ -107,8 +160,8 @@ def test_nothing_is_claimed_or_reserved_by_a_refused_admission(rig, peer):
     claimed by a loop which then declined to run it.
     """
 
-    assert rig.claim(capacity=CAPACITY, cpu_tiers=TIERS,
-                     adaptive_cpu=True) is None
+    assert _bounded(lambda: rig.claim(capacity=CAPACITY, cpu_tiers=TIERS,
+                                      adaptive_cpu=True), 'claim') is None
     assert not rig.ledger().held(), 'a refused admission held tokens'
     assert rig.ledger().available() == rig.ledger().capacity()
     assert [p.name for p in (rig.root / 'ready').iterdir()] == ['a' * 64 + '.json'], (
@@ -125,8 +178,9 @@ def test_the_box_still_announces_while_a_peer_holds_admission(rig, peer):
     thing it does there.
     """
 
-    rig.announce(host='testbox', tags=['x86', 'testbox'], has_gpu=False,
-                 capacity=CAPACITY, cpu_tiers=TIERS)
+    _bounded(lambda: rig.announce(host='testbox', tags=['x86', 'testbox'],
+                                  has_gpu=False, capacity=CAPACITY,
+                                  cpu_tiers=TIERS), 'announce')
     offers = {offer['host']: offer for offer in rig.offers()}
     assert 'testbox' in offers, 'the box could not say what it was'
     assert 0 <= time.time() - offers['testbox']['announced_unix'] < 30
@@ -142,8 +196,7 @@ def test_admission_is_still_exclusive(rig, peer):
 
     controller = adaptive_cpu.Controller(rig.ledger(), TIERS)
     with pytest.raises(adaptive_cpu.AdmissionBusy):
-        with controller.locked():
-            pytest.fail('two loops were inside box admission at once')
+        _bounded(lambda: _attempt(controller), 'locked()')
 
 
 def test_admission_is_free_again_once_the_holder_leaves(rig):
@@ -153,11 +206,12 @@ def test_admission_is_free_again_once_the_holder_leaves(rig):
     fcntl.flock(descriptor, fcntl.LOCK_EX)
     controller = adaptive_cpu.Controller(rig.ledger(), TIERS)
     with pytest.raises(adaptive_cpu.AdmissionBusy):
-        with controller.locked():
-            pass
+        _bounded(lambda: _attempt(controller), 'locked()')
     os.close(descriptor)
-    with controller.locked():
-        pass  # acquired; the refusal was the peer, not a latch
+    # Acquired, so the refusal above was the peer and not a latch.  Bounded
+    # too: with nobody holding the lock this cannot block, and if it does the
+    # lock is stuck rather than busy -- a different defect, reported not hung.
+    _bounded(lambda: _acquire_and_release(controller), 'locked() when free')
 
 
 def test_the_refusal_names_the_holder(rig, peer):
@@ -170,8 +224,7 @@ def test_the_refusal_names_the_holder(rig, peer):
 
     controller = adaptive_cpu.Controller(rig.ledger(), TIERS)
     with pytest.raises(adaptive_cpu.AdmissionBusy) as refusal:
-        with controller.locked():
-            pass
+        _bounded(lambda: _attempt(controller), 'locked()')
     assert refusal.value.holder == os.getpid(), (
         f'named pid {refusal.value.holder}, but this process holds the lock')
     assert str(os.getpid()) in str(refusal.value)
@@ -194,8 +247,7 @@ def test_an_unreadable_proc_locks_still_refuses(rig, peer, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, 'open', no_proc_locks, raising=False)
     controller = adaptive_cpu.Controller(rig.ledger(), TIERS)
     with pytest.raises(adaptive_cpu.AdmissionBusy) as refusal:
-        with controller.locked():
-            pass
+        _bounded(lambda: _attempt(controller), 'locked()')
     assert refusal.value.holder is None
     assert 'another loop' in str(refusal.value)
 
@@ -228,7 +280,9 @@ def test_a_completion_is_not_learned_while_admission_is_busy(rig, peer, monkeypa
                  'cpu_seconds': 1.0, 'wall_seconds': 2.0,
                  'memory_peak_bytes': 10}
 
-    learned = adaptive_cpu.record_completion(ledger, item, telemetry)
+    learned = _bounded(
+        lambda: adaptive_cpu.record_completion(ledger, item, telemetry),
+        'record_completion')
 
     assert learned is False, 'a completion was learned without holding admission'
     assert adaptive_cpu.read_json(controller.base / 'profiles.json') == before, (
