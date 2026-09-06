@@ -62,6 +62,10 @@ FLEET_SCRIPTS = (
     # runtime_process_census.py is here for the same reason and is only
     # useful there: it reads /proc on the box it runs on.
     "pbstatus.py", "pbmetrics.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
+    # retire_worker.py belongs to the same set for a sharper reason: the name
+    # it retires is a name whose box stopped answering, and the operator who
+    # notices is on whichever box is holding the mount.
+    "retire_worker.py",
     # The exporter's installer travels with it for the same reason: the box
     # best placed to run it is a box with no checkout.
     "install_pbmetrics.sh",
