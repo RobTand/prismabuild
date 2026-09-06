@@ -1,0 +1,27 @@
+[Unit]
+Description=PrismaBuild read-only fleet metrics
+After=network-online.target remote-fs.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/shared/prismabuild-fleet
+
+[Service]
+Type=simple
+User=rob
+Group=rob
+WorkingDirectory=/mnt/shared/prismabuild-fleet
+# Install a committed observability release here; do not edit sealed PB runtime
+# generations or stop active worker loops to deploy a monitoring service.
+ExecStart=/usr/bin/python3 /opt/prismabuild-observability/tools/fleet/pbmetrics.py --listen 0.0.0.0 --port 9877
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/mnt/shared/prismabuild-fleet
+MemoryMax=512M
+TasksMax=32
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
