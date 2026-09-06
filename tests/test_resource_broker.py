@@ -1,5 +1,6 @@
 """Privileged resource authority must isolate each exact caller-owned attempt."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,10 @@ class Backend:
     def stop(self, scope):self.groups[scope]['populated']=False;self.stopped.append(scope)
     def empty(self, scope):return not self.groups[scope]['populated']
     def exists(self, scope):return scope in self.groups
+    def healthy(self):return True
+    def inventory(self):
+        return {scope:{'populated':row['populated'],'frozen':scope in self.stopped}
+                for scope,row in self.groups.items()}
     def release(self, scope):
         if self.groups[scope]['populated']:raise ValueError('scope still populated')
         self.groups.pop(scope)
@@ -401,3 +406,160 @@ def test_failed_monitor_stop_is_retried_with_persisted_evidence(monitored, monke
     monkeypatch.setattr(b,'stop',original)
     assert monitor.poll_once()['stopped']==[record['scope_id']]
     assert a.records[record['scope_id']]['monitor_stop_pending'] is False
+
+
+@pytest.mark.parametrize('operation',['maintenance_begin','maintenance_status','maintenance_end'])
+def test_maintenance_requires_root_without_changing_admission(authority,operation):
+    a,b=authority
+    with pytest.raises(PermissionError,match='root'):
+        a.handle(1000,os.getpid(),{'op':operation})
+    assert not a.maintenance['draining']
+    assert not a.maintenance_path.exists()
+    assert not b.groups
+
+
+def test_drain_survives_restart_and_existing_scope_can_finish(authority):
+    a,b=authority;request,record=create(a)
+    status=a.handle(0,os.getpid(),{'op':'maintenance_begin'})
+    assert status['draining'] and status['active_scopes']==1 and status['health']
+    assert a.maintenance_path.stat().st_mode&0o777==0o644
+    restored=type(a)(a.state_dir,os.getuid(),b,max_memory_bytes=1024**3)
+    blocked=restored.handle(os.getuid(),os.getpid(),{**request,'nonce':'c'*32})
+    assert blocked['ok'] is False and blocked['maintenance'] is True and blocked['retryable'] is True
+    assert restored.handle(os.getuid(),os.getpid(),request)['token']==record['token']
+    with pytest.raises(ValueError,match='budget'):
+        restored.handle(os.getuid(),os.getpid(),{**request,'memory_max_bytes':128*1024**2})
+    launch(restored,request,record)
+    assert b.stopped==[]
+    restored.handle(os.getuid(),os.getpid(),auth(request,record,'stop'))
+    restored.handle(os.getuid(),os.getpid(),auth(request,record,'release'))
+    assert restored.handle(0,os.getpid(),{'op':'maintenance_status'})['active_scopes']==0
+    assert restored.handle(0,os.getpid(),{'op':'maintenance_end'})['draining'] is False
+    assert json.loads(a.maintenance_path.read_text())['draining'] is False
+    assert restored.handle(os.getuid(),os.getpid(),{**request,'nonce':'c'*32})['ok'] is True
+
+
+def test_failed_gate_persistence_does_not_acknowledge_drain(authority,monkeypatch):
+    a,b=authority
+    globals_=type(a).admin.__globals__;original=globals_['_atomic']
+    def fail_gate(path,value,**kwargs):
+        if path==a.maintenance_path:raise OSError('gate write failed')
+        return original(path,value,**kwargs)
+    monkeypatch.setitem(globals_,'_atomic',fail_gate)
+    with pytest.raises(OSError,match='gate write failed'):
+        a.handle(0,os.getpid(),{'op':'maintenance_begin'})
+    assert not a.maintenance['draining']
+    assert create(a)[1]['ok'] is True
+
+
+def test_drain_safely_retires_empty_failed_creation_without_restart_or_kill(authority,monkeypatch):
+    a,b=authority;original=b.create
+    def partial(scope,budget):
+        original(scope,budget)
+        raise OSError('controller setup failed')
+    monkeypatch.setattr(b,'create',partial)
+    with pytest.raises(OSError):create(a)
+    scope=next(iter(a.records))
+    assert a.records[scope]['pending'] is True
+    status=a.handle(0,os.getpid(),{'op':'maintenance_begin'})
+    assert status['active_scopes']==0 and status['health'] is True
+    assert a.records[scope]['released_unix']>0
+    assert not b.groups and not b.stopped
+
+
+@pytest.mark.parametrize('ambiguity',['populated','launched','docker'])
+def test_drain_preserves_ambiguous_pending_scopes(authority,monkeypatch,ambiguity):
+    a,b=authority;original=b.create
+    def partial(scope,budget):
+        original(scope,budget)
+        raise OSError('controller setup failed')
+    monkeypatch.setattr(b,'create',partial)
+    with pytest.raises(OSError):create(a)
+    scope=next(iter(a.records))
+    if ambiguity=='populated':b.groups[scope]['populated']=True
+    elif ambiguity=='launched':a.records[scope]['launched_unix']=1
+    else:a.records[scope]['container_tickets']=['d'*64]
+    status=a.handle(0,os.getpid(),{'op':'maintenance_begin'})
+    assert status['active_scopes']==1
+    assert scope in b.groups and not b.stopped
+    assert not a.records[scope].get('released_unix')
+
+
+def test_retired_scope_only_allows_upgrade_while_empty_and_frozen(authority,monkeypatch):
+    a,b=authority;request,record=create(a)
+    container_ticket(a,record,monkeypatch)
+    a.handle(os.getuid(),os.getpid(),auth(request,record,'stop'))
+    a.handle(os.getuid(),os.getpid(),auth(request,record,'release'))
+    assert a.handle(0,os.getpid(),{'op':'maintenance_begin'})['active_scopes']==0
+    b.groups[record['scope_id']]['populated']=True
+    assert a.handle(0,os.getpid(),{'op':'maintenance_status'})['active_scopes']==1
+    b.groups[record['scope_id']]['populated']=False;b.stopped.clear()
+    assert a.handle(0,os.getpid(),{'op':'maintenance_status'})['active_scopes']==1
+
+
+@pytest.mark.parametrize('population',[False,True])
+def test_unknown_kernel_group_blocks_upgrade_without_adoption(authority,population):
+    a,b=authority;b.groups['foreign.scope']={'populated':population,'budget':1}
+    status=a.handle(0,os.getpid(),{'op':'maintenance_begin'})
+    assert status['active_scopes']==1 and status['health'] is False
+    assert status['active_scope_ids']==['foreign.scope']
+    assert not a.records and not b.stopped
+    with pytest.raises(ValueError,match='not healthy'):
+        a.handle(0,os.getpid(),{'op':'maintenance_end'})
+    assert a.maintenance['draining'] is True
+
+
+def test_monitor_health_failure_keeps_maintenance_gate_closed(authority):
+    a,b=authority
+    a.handle(0,os.getpid(),{'op':'maintenance_begin'})
+    a.health_check=lambda:False
+    assert a.handle(0,os.getpid(),{'op':'maintenance_status'})['health'] is False
+    with pytest.raises(ValueError,match='not healthy'):
+        a.handle(0,os.getpid(),{'op':'maintenance_end'})
+    assert json.loads(a.maintenance_path.read_text())['draining'] is True
+
+
+def test_changed_installed_bytes_fail_health_and_do_not_reopen_gate(authority,tmp_path,monkeypatch):
+    a,b=authority;path=tmp_path/'installed.py';path.write_bytes(b'original bytes')
+    expected=hashlib.sha256(path.read_bytes()).hexdigest()
+    a.installation_paths={'resource_broker.py':path}
+    a.installed_sha256={'resource_broker.py':expected}
+    monkeypatch.setitem(type(a)._maintenance_status.__globals__,'_trusted_file',lambda p:p)
+    status=a.handle(0,os.getpid(),{'op':'maintenance_begin'})
+    assert status['health'] and status['installed_sha256']=={'resource_broker.py':expected}
+    path.write_bytes(b'changed after startup')
+    status=a.handle(0,os.getpid(),{'op':'maintenance_status'})
+    assert status['health'] is False
+    assert status['installed_sha256']['resource_broker.py']==expected
+    with pytest.raises(ValueError,match='not healthy'):
+        a.handle(0,os.getpid(),{'op':'maintenance_end'})
+    assert a.maintenance['draining'] is True
+
+
+def test_unreadable_kernel_inventory_never_reports_safe_upgrade(authority,monkeypatch):
+    a,b=authority
+    def unreadable():raise OSError('kernel inventory unavailable')
+    monkeypatch.setattr(b,'inventory',unreadable)
+    status=a.handle(0,os.getpid(),{'op':'maintenance_begin'})
+    assert status['active_scopes']>0 and status['health'] is False
+    assert not b.stopped
+
+
+def test_pending_scope_identity_change_blocks_admin_cleanup(authority):
+    a,b=authority;_,record=create(a)
+    stored=a.records[record['scope_id']]
+    stored.update(pending=True,cgroup_identity=[1,2])
+    status=a.handle(0,os.getpid(),{'op':'maintenance_begin'})
+    assert status['active_scopes']==1 and status['health'] is False
+    assert record['scope_id'] in b.groups
+    assert not stored.get('released_unix') and not b.stopped
+
+
+def test_maintenance_status_is_bounded_without_undercounting_unknown_groups(authority):
+    a,b=authority
+    for index in range(1000):
+        b.groups[f'unknown-{index:04d}.scope']={'budget':1,'populated':False}
+    status=a.handle(0,os.getpid(),{'op':'maintenance_begin'})
+    assert status['active_scopes']==1000 and status['health'] is False
+    assert status['active_scopes_truncated'] and status['errors_truncated']
+    assert len(json.dumps(status).encode())<65536

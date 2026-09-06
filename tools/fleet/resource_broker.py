@@ -31,10 +31,11 @@ HEX64=re.compile(r'[0-9a-f]{64}\Z');HEX32=re.compile(r'[0-9a-f]{32}\Z')
 def scope_id(key, nonce):
     return 'prismabuild-job'+hashlib.sha256((key+nonce).encode()).hexdigest()[:32]+'.slice'
 
-def _atomic(path, value):
+def _atomic(path, value, *, mode=0o600):
     temp=path.with_name('.'+path.name+'.'+secrets.token_hex(8))
     try:
         fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        os.fchmod(fd,mode)
         with os.fdopen(fd,'w') as out:
             json.dump(value,out,sort_keys=True);out.write('\n');out.flush();os.fsync(out.fileno())
         os.replace(temp,path)
@@ -136,6 +137,23 @@ class SystemdBackend:
         try:self.path(scope).stat()
         except FileNotFoundError:return False
         return True
+    def healthy(self):
+        return {'cpu','memory'}<=set((self.root/'cgroup.controllers').read_text().split())
+    def inventory(self):
+        parent=self.root/'prismabuild.slice'
+        try:entries=list(parent.iterdir())
+        except FileNotFoundError:return {}
+        result={}
+        for path in entries:
+            info=path.lstat()
+            if not stat.S_ISDIR(info.st_mode):continue
+            events=dict(line.split() for line in (path/'cgroup.events').read_text().splitlines())
+            populated=events.get('populated')
+            if populated not in {'0','1'}:raise ValueError('invalid cgroup population evidence')
+            result[path.name]={'populated':populated=='1',
+                'frozen':(path/'cgroup.freeze').read_text().strip()=='1',
+                'identity':[info.st_dev,info.st_ino]}
+        return result
     def release(self, scope):
         group=self.path(scope)
         if group.exists():
@@ -148,6 +166,9 @@ class Authority:
     def __init__(self,state_dir,uid,backend,*,max_memory_bytes):
         self.state_dir=Path(state_dir);self.uid=int(uid);self.backend=backend
         self.max_memory_bytes=int(max_memory_bytes);self.lock=threading.RLock();self.records={}
+        self.maintenance_path=self.state_dir.parent/'maintenance.json'
+        self.maintenance={'schema':'prismabuild.resource-maintenance.v1','draining':False}
+        self.installed_sha256={};self.installation_paths={};self.health_check=lambda:True
         self.state_dir.mkdir(parents=True,exist_ok=True,mode=0o700)
         info=self.state_dir.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o077:
@@ -163,6 +184,15 @@ class Authority:
             if record.get('uid')!=self.uid or not HEX64.fullmatch(str(record.get('token',''))):
                 raise ValueError('invalid stored resource owner')
             self.records[path.stem]=record
+        try:info=self.maintenance_path.lstat()
+        except FileNotFoundError:pass
+        else:
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o022:
+                raise ValueError('unsafe maintenance gate')
+            value=json.loads(self.maintenance_path.read_text())
+            if (not isinstance(value,dict) or value.get('schema')!='prismabuild.resource-maintenance.v1'
+                    or type(value.get('draining')) is not bool):raise ValueError('invalid maintenance gate')
+            self.maintenance=value
     @staticmethod
     def identity(request):
         key=request.get('action_key');nonce=request.get('nonce')
@@ -170,10 +200,12 @@ class Authority:
         if not isinstance(nonce,str) or not HEX32.fullmatch(nonce):raise ValueError('invalid attempt nonce')
         return key,nonce
     def handle(self,uid,pid,request):
-        if uid!=self.uid:raise PermissionError('caller UID is not authorized')
         if not isinstance(request,dict):raise ValueError('request must be an object')
         op=request.get('op')
         if not isinstance(op,str):raise ValueError('operation must be a string')
+        if op in {'maintenance_begin','maintenance_status','maintenance_end'}:
+            return self.admin(uid,request)
+        if uid!=self.uid:raise PermissionError('caller UID is not authorized')
         if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
         allowed={'op','action_key','nonce','memory_max_bytes'} if op=='create' else {'op','action_key','nonce','token','reason','memory_max_bytes'}
@@ -183,6 +215,9 @@ class Authority:
                 budget=request.get('memory_max_bytes')
                 if type(budget) is not int or not 0<budget<=self.max_memory_bytes:raise ValueError('memory budget outside host bounds')
                 existing=self.records.get(scope)
+                if self.maintenance['draining'] and (existing is None or existing.get('pending')):
+                    return {'ok':False,'maintenance':True,'retryable':True,
+                            'error':'resource broker is draining for maintenance'}
                 if existing:
                     if existing['memory_max_bytes']!=budget:raise ValueError('attempt budget cannot change')
                     if existing.get('released_unix'):raise ValueError('attempt is released')
@@ -195,13 +230,14 @@ class Authority:
                         'memory_max_bytes':budget,'token':secrets.token_hex(32),'created_unix':time.time()}
                 # Persist authority before OS creation so a broker restart can
                 # retain exact recovery ownership even after partial setup.
-                path=self.state_dir/(scope+'.json');_atomic(path,{**record,'pending':True})
+                path=self.state_dir/(scope+'.json');record['pending']=True
+                _atomic(path,record);self.records[scope]=record
                 try:record.update(self.backend.create(scope,budget))
                 except Exception:
                     # No payload was attached. Retain pending evidence; do not
                     # silently treat a partially configured scope as runnable.
                     raise
-                _atomic(path,record);self.records[scope]=record
+                record.pop('pending',None);_atomic(path,record)
                 return {'ok':True,**record}
             if op not in {'stop','release','status'}:raise ValueError('unknown operation')
             record=self.records.get(scope)
@@ -248,6 +284,76 @@ class Authority:
     def _stop_details(record):
         return {key:record[key] for key in ('stop_reason','stopped_unix',
                 'termination_evidence','last_cleanup_reason') if key in record}
+
+    def admin(self,uid,request):
+        if uid!=0:raise PermissionError('maintenance requires root')
+        op=request['op']
+        allowed={'op','reason'} if op=='maintenance_begin' else {'op'}
+        if set(request)-allowed or ('reason' in request and not isinstance(request['reason'],str)):
+            raise ValueError('invalid maintenance fields')
+        with self.lock:
+            if op=='maintenance_begin':
+                value={'schema':'prismabuild.resource-maintenance.v1','draining':True,
+                       'changed_unix':time.time(),'reason':request.get('reason','automatic upgrade')[:1000]}
+                _atomic(self.maintenance_path,value,mode=0o644);self.maintenance=value
+            status=self._maintenance_status()
+            if op=='maintenance_end':
+                if not status['health']:raise ValueError('resource broker is not healthy; maintenance remains active')
+                value={'schema':'prismabuild.resource-maintenance.v1','draining':False,'changed_unix':time.time()}
+                _atomic(self.maintenance_path,value,mode=0o644);self.maintenance=value
+                status['draining']=False
+            return status
+
+    def _maintenance_status(self):
+        errors=[];active=set();inventory={}
+        try:
+            if not self.backend.healthy():errors.append('kernel resource controllers unavailable')
+            inventory=self.backend.inventory()
+        except (OSError,ValueError) as exc:errors.append(str(exc)[:1500]);active.add('unreadable kernel inventory')
+        for scope,record in self.records.items():
+            kernel=inventory.get(scope)
+            if (kernel is not None and record.get('cgroup_identity')
+                    and record['cgroup_identity']!=kernel.get('identity')):
+                active.add(scope);errors.append('kernel scope identity changed: '+scope)
+                continue
+            if record.get('released_unix'):
+                if kernel is not None:
+                    active.add(scope);errors.append('released scope has an unknown kernel group: '+scope)
+                continue
+            # A failed create has no launcher or Docker RPC. Retire only exact
+            # owned empty setup remnants, without signalling any processes.
+            if (self.maintenance['draining'] and record.get('pending')
+                    and not record.get('launched_unix') and not record.get('container_tickets')
+                    and not errors and (kernel is None or not kernel['populated'])):
+                try:
+                    if kernel is None:
+                        if self.backend.exists(scope):raise ValueError('pending scope appeared during inventory')
+                    else:
+                        if not self.backend.empty(scope):raise ValueError('pending scope became populated')
+                        self.backend.release(scope)
+                    record['released_unix']=time.time();record['maintenance_cleanup']='unlaunched empty setup'
+                    _atomic(self.state_dir/(scope+'.json'),record)
+                    inventory.pop(scope,None)
+                    continue
+                except (OSError,ValueError) as exc:errors.append(str(exc)[:1500])
+            if record.get('retired_unix') and kernel is not None and not kernel['populated'] and kernel['frozen']:
+                if not record.get('cgroup_identity') or record['cgroup_identity']==kernel.get('identity'):
+                    continue
+            active.add(scope)
+        for scope in inventory:
+            if scope not in self.records:
+                active.add(scope);errors.append('unknown broker namespace group: '+scope)
+        try:
+            for name,path in self.installation_paths.items():
+                if hashlib.sha256(_trusted_file(path).read_bytes()).hexdigest()!=self.installed_sha256[name]:
+                    errors.append('installed privileged file changed: '+name)
+            if not self.health_check():errors.append('resource monitor is not healthy')
+        except (OSError,ValueError,KeyError) as exc:errors.append(str(exc)[:1500])
+        return {'ok':True,'draining':self.maintenance['draining'],'active_scopes':len(active),
+                'active_scope_ids':sorted(active)[:128],'active_scopes_truncated':len(active)>128,
+                'health':not errors,'errors':[error[:500] for error in errors[:32]],
+                'errors_truncated':len(errors)>32,
+                'installed_sha256':dict(self.installed_sha256)}
 
     def run(self,uid,pid,request,stdio):
         allowed={'op','action_key','nonce','token','argv','cwd','env','affinity','umask'}
@@ -322,7 +428,7 @@ class ResourceMonitor:
     def __init__(self,authority,gpu_module,*,interval_s=1.0,timeout_s=1.0):
         self.authority=authority;self.gpu=gpu_module;self.guard=gpu_module.Guard()
         self.interval_s=interval_s;self.timeout_s=timeout_s
-        self.stopping=threading.Event();self.thread=None
+        self.stopping=threading.Event();self.thread=None;self.last_success_monotonic=None
 
     def _records(self):
         with self.authority.lock:
@@ -397,7 +503,13 @@ class ResourceMonitor:
         status={'sampled_unix':time.time(),'active_scopes':len(records),'stopped':stopped,
                 'errors':errors,'gpu':snapshot.as_dict() if snapshot is not None else None}
         _atomic(self.authority.state_dir/'monitor.status',status)
+        self.last_success_monotonic=time.monotonic()
         return status
+
+    def healthy(self):
+        return (self.thread is not None and self.thread.is_alive()
+                and self.last_success_monotonic is not None
+                and time.monotonic()-self.last_success_monotonic<15)
 
     def _loop(self):
         while not self.stopping.is_set():
@@ -492,6 +604,11 @@ def main():
         server.authority=authority
         os.chown(endpoint,0,pwd.getpwuid(args.uid).pw_gid);endpoint.chmod(0o660)
         monitor=ResourceMonitor(authority,_load_gpu_module())
+        for name in ('resource_broker.py','resource_payload.py','gpu_memory.py'):
+            path=_trusted_file(Path(__file__).resolve().with_name(name))
+            authority.installation_paths[name]=path
+            authority.installed_sha256[name]=hashlib.sha256(path.read_bytes()).hexdigest()
+        authority.health_check=monitor.healthy
         monitor.start()
         print('PrismaBuild resource broker ready',flush=True)
         try:server.serve_forever(poll_interval=0.5)
