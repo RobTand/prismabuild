@@ -94,6 +94,36 @@ def pytest_summary(lines: list[str]) -> str:
             return line.strip()
     return ""
 
+def replayed_output(out: str) -> str:
+    """The shard's own stdout, when ``pbrun`` printed a receipt instead of it.
+
+    A submission whose action is already in the CAS comes back as
+    ``"status": "cache_hit"``, and what ``pbrun`` prints then is the receipt --
+    not the shard's stdout, which sits in the result payload the receipt names.
+    Scanning the receipt for a pytest summary finds none, so a cached run of a
+    clean suite read as four shards that never started a test.  A re-run of an
+    unchanged control arm is precisely the case that hits the cache, which made
+    the baseline half of every comparison the half most likely to report
+    nothing.
+
+    Returns "" when there is nothing to recover, so the caller keeps what it
+    already had.
+    """
+
+    if '"status": "cache_hit"' not in out:
+        return ""
+    match = re.search(r'"payload_path": "([^"]+)"', out)
+    if match is None:
+        return ""
+    try:
+        return Path(match.group(1)).read_text(errors="replace")
+    except OSError:
+        # The blob is gone or unreadable.  Recovering nothing is the honest
+        # answer: the caller then reports a shard whose result it cannot read,
+        # which is true, rather than a green one.
+        return ""
+
+
 #: ``pbrun``'s own transport vocabulary, and its own reader for the default.
 #: This tool builds pbrun's argv rather than importing it, so every flag a
 #: shard needs has to be forwarded here -- a flag that is not forwarded is a
@@ -287,7 +317,10 @@ def main() -> int:
     results = []
     for index, bucket, proc in procs:
         out, _ = proc.communicate()
-        tail = [line for line in (out or "").strip().splitlines() if line.strip()]
+        # A cache hit prints the receipt where the shard's stdout would be, so
+        # look through it to the payload before asking whether pytest reported.
+        out = replayed_output(out or "") or (out or "")
+        tail = [line for line in out.strip().splitlines() if line.strip()]
         summary = pytest_summary(tail)
         # A shard whose pytest never reported is a shard whose tests never
         # ran, and it is not the same event as a shard that ran clean -- but
@@ -315,7 +348,13 @@ def main() -> int:
         state = "ok" if proc.returncode == 0 else f"rc={proc.returncode}"
         print(f"shard {index:>3} {state:<8} {summary}", flush=True)
 
-    failed = [r for r in results if r["returncode"] != 0]
+    # A shard is green when it exited 0 AND pytest reported a terminal summary.
+    # ``ran`` has been computed, printed and written to the JSON since #213, and
+    # the verdict never read it: ``returncode != 0`` alone called a shard that
+    # started no test green, and returned 0 to whoever was deciding a merge on
+    # it.  That is the #208 defect one level in -- the diagnostic improved and
+    # the thing acting on it did not read the diagnostic.
+    failed = [r for r in results if r["returncode"] != 0 or not r["ran"]]
     print(f"\n{len(results) - len(failed)}/{len(results)} shards green")
     for r in failed:
         print(f"\n--- shard {r['shard']} ({', '.join(r['files'])})")
