@@ -241,3 +241,68 @@ OOM, parent exhaustion with descendant victims, and exhaustion before a victim
 is killed. The withdrawn negative run retains an empty frozen cgroup tombstone
 for an ambiguous Docker RPC; its exact container census is empty. This retained
 safety record is not active work.
+
+## Qualified CPU admission and containment baseline
+
+Production source `55178b0c8f1de9d0f625a25d7d6f4e31b55b3d51` was published as
+`55178b0c8f1d-1788657440-9e867203c29a`. All 244 file hashes matched; publication
+receipt SHA-256 is `a55e10ede4dacb3215d4a9035dd44ec590a53112dda45e40f20b022bbe778cb1`.
+All three worker fleets and installed privileged clients converged. Installed
+file hashes, live updater status, active timers and absent transaction journals
+were checked in `client-adoption-55178b0c8f1d-1788657440-9e867203c29a.json`.
+
+| Host | Test processes / native threads each | Full-suite result | Action |
+|---|---|---|---|
+| dl380g10 | 72 / 1 | 2,179 passed, 3 skipped; 15.82 s | `52296b88bf9977639acc342dc570490694f90587bdc404995ce89b9cd8197c3c` |
+| sparky | 18 / 1 | 2,179 passed, 3 skipped; 15.01 s | `a3e002c52f4d1ba2d5103edba06df425e6c6dd037f062722291d292bb393c7df` |
+| sparklina | 18 / 1 | 2,179 passed, 3 skipped; 12.13 s | `fdad5dfde4bbd548346413a91180c25771d5a9801c55d08b5aefd6135c9e64ac` |
+
+Receipts, their canonical digests, payload sizes/hashes and executed terminal
+records were independently checked. The three skips remain optional Dagster
+and the separately executed container smoke harnesses. Resource telemetry is
+retained in `primetime-qualified-resource-use.json`; allocated processes do not
+imply continuous full CPU occupancy. The separate host sampler started after
+the suites had finished and is not evidence of their peak utilization.
+
+The `pbtest` fanout passed **10/10 shards, 2,179 tests and 3 skips** on x86 with
+seven test workers and one native thread per worker. Its first run exposed a
+100-ms rendezvous test deadline expiring during manifest validation under load.
+The test now advances its clock at the arrival wait, preserving the exact
+refusal and no-task-execution assertions. The 169 core tests passed, followed
+by the complete fanout. This change is test-only (`ffb260f`); production code
+remains the qualified baseline above. All ten CAS results are indexed in
+`adaptive-final-fanout-receipts.json`; the failed run is retained separately.
+
+The final live OOM action
+`9892987ebf66679be9a6924adb9f1929bcfc8047edcbf7d7c34901a7f96d7a4c`
+filed a normal failed-137 outcome with `memory_limit_oom`, local OOM count one,
+five killed descendants and a one-GiB peak at its one-GiB limit. Its healthy
+companion `21f444e17b23b66ac1b59d05c3ba25db547f1eeedb502e765a8e4bf969ed2dfa`
+kept the same PID after that ending and completed successfully. Both owned
+scopes, payload PIDs, claims and reservations were absent afterward. An
+unrelated admitted job invalidated the harness's global-idle assertion; the
+independent exact-owned verification passed and preserved that unrelated work.
+
+The aggregate direct/Docker probe
+`b287219b25f034cbd327ea2125042d207752003ed94e0ec57a0f02302290625b`
+passed again with parent-local OOM attribution. Both 96-MiB greedy groups were
+stopped, their healthy witnesses survived, and all four scopes and their exact
+Docker inventories were empty/absent. The final single-node smoke
+`f497582321b282483835196f4828f662168276504b88fe460bb09f372b065ab9`
+passed **23/23** rows. Its intentionally OOM-killed child left the enclosing
+job healthy: hierarchical kill count one, parent local OOM zero, peak
+1,184,915,456 bytes below its eight-GiB cap. The subsequent healthy job and
+singleton checks passed. Its CAS output and final container/scope cleanup were
+verified. The multinode **12/12** result is recorded above.
+
+Both GB10 hosts also repeated actual CUDA correctness through this broker
+version: actions `dc833860b658dd8c8cddb36ae43cd9806dabcf11da67127e366ad84c3ea948a9`
+and `e2a514811f815bc045999fa655fbe53e70d56c2d510df2a439f4c1d7280154ad`.
+Each produced the expected matrix values and sum, with actual Docker affinity
+matching admission. These are correctness checks, not saturation benchmarks.
+
+This baseline qualifies adaptive CPU admission, containment, client upgrades,
+and agent routing. GPU admission still uses historical concurrency slots in
+this version. Rob has prioritized replacing those with adaptive GPU admission
+and separate physical VRAM/system-RAM accounting; that follow-up is not
+certified by these baseline results.
