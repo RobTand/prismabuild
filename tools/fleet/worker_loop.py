@@ -15,17 +15,14 @@ capacity below is measured, not guessed -- one exporter holds ~8 GB resident
 and four concurrent ones took a GB10 from 116 GB free to 55 GB, so 16 GB per
 action is the honest figure and 96 GB leaves the box its working headroom.
 
-**What the box offers is observed, not only declared.**  The ledger is exact
-about what the pool scheduled and was blind to everything else, so a box six
-hours into an out-of-pool encode campaign reported every token free
-(sparklina, 2026-09-04 01:06: four GPU processes, ``ledger free 51 held 0``).
-Every poll now subtracts what else is running -- the GPU's compute apps and
-``MemAvailable``, each minus what the pool's own held tokens account for -- and
-retires free tokens to the remainder, so a busy box looks busy whoever made it
-busy.  Cores are read and recorded but deliberately not charged: a ``cpu``
-token is a slot and the run queue counts threads, so clamping on it charges the
-box for its own multithreaded actions.  ``prismabuild.box_capacity`` holds the
-arithmetic and the reasons for both.
+**What the box offers is observed, not only declared.** Host memory comes from
+``MemAvailable`` with the pool's held reservation added back once. GPU state
+comes from the broker's single root-owned, attributed snapshot; worker loops
+never launch their own device query. Missing, stale or incomplete evidence
+offers no GPU capacity, and a multi-process pool job remains one attributed
+job rather than being mistaken for foreign demand. Cores are read and recorded
+but deliberately not clamped: a ``cpu`` token is a slot and the run queue
+counts threads, so host load is handled by adaptive CPU admission instead.
 
 ``serve_once`` returning ``None`` can now mean "denied admission" as well as
 "queue empty", including the deliberate case where a starved item is
@@ -73,6 +70,11 @@ from prismabuild import box_capacity, cpu_topology, pool  # noqa: E402
 #: Consecutive ``serve_once`` failures before the loop gives up and lets the
 #: supervisor replace it.  Survive the items; do not survive a broken box.
 MAX_CONSECUTIVE_ERRORS = 5
+
+# Reconsider work promptly while the queue is nonempty. The configured poll
+# remains the empty-queue backoff, so idle workers do not turn one shared NFS
+# directory into a per-second fleet-wide scan.
+PRESSURE_POLL_S = 1.0
 
 #: The receipt beside these imported bytes proves what this process loaded.
 GENERATION_VERSION = RUNTIME_ROOT / "RUNTIME_VERSION.json"
@@ -142,26 +144,33 @@ def inherited_cpus() -> int:
         return os.cpu_count() or 1
 
 
-def census_line(queue) -> str:
-    """The fleet's width, or why it is missing -- and never an exception.
-
-    ``3711b29`` bought this loop the contract that one bad item must not take
-    the worker with it, and it bought it by wrapping ``serve_once``.  A
-    diagnostic added beside that handler is outside it: ``placement_census``
-    reads EVERY ready item, including the ones tagged for other boxes that
-    ``claim`` skips at ``_placement_matches`` before ``demand_of`` is ever
-    reached, so one corrupted or out-of-band write became a raw traceback and
-    an immediate exit on a box that was otherwise fine -- once per supervisor
-    cycle, against an item that is still there.
-
-    The census now counts an unreadable item instead of raising, which fixes
-    the case that was found.  This exists for the ones that are not: a line
-    of telemetry has no business deciding whether this box keeps working.
-    """
+def idle_census(
+    queue,
+) -> tuple[dict[str, object] | None, float, str | None]:
+    """Read queue pressure once and choose the next idle polling delay."""
 
     try:
-        return pool.describe_placement_census(queue.placement_census())
-    except Exception as exc:                                     # noqa: BLE001
+        census = queue.placement_census()
+    except Exception as exc:                                    # noqa: BLE001
+        # An unreadable queue is not evidence of ready work. Back off instead
+        # of amplifying an NFS fault at one request per second per loop.
+        return None, 0.0, (f"fleet width unavailable "
+                           f"({type(exc).__name__}: {exc})")
+    return (census,
+            PRESSURE_POLL_S if int(census.get("ready", 0)) > 0 else 0.0,
+            None)
+
+
+def describe_census(
+    census: dict[str, object] | None, error: str | None = None,
+) -> str:
+    if error is not None:
+        return error
+    if census is None:
+        return "fleet width unavailable"
+    try:
+        return pool.describe_placement_census(census)
+    except Exception as exc:                                    # noqa: BLE001
         return f"fleet width unavailable ({type(exc).__name__}: {exc})"
 
 
@@ -198,8 +207,14 @@ def _run_loop(stop_requested):
                     help="seconds to sleep between queue polls")
     ap.add_argument("--max-idle", type=int, default=6,
                     help="consecutive empty polls before exiting")
-    ap.add_argument("--gpu-slots", type=int, default=4,
-                    help="concurrent GPU actions this box admits; 0 = no GPU")
+    gpu = ap.add_mutually_exclusive_group()
+    gpu.add_argument(
+        "--gpu", action="store_true",
+        help="detect physical GPU capacity from trusted broker telemetry")
+    gpu.add_argument(
+        "--gpu-slots", type=int, default=0,
+        help="legacy capability flag; 0 means CPU-only and any positive "
+             "value is conservatively one physical GPU")
     ap.add_argument("--class", dest="klass", default="gb10",
                     help="hardware class this box offers, e.g. gb10 or x86")
     ap.add_argument("--python", default="/usr/bin/python3",
@@ -211,8 +226,8 @@ def _run_loop(stop_requested):
     ap.add_argument("--tag", action="append", default=[],
                     help="extra placement tag this box offers")
     ap.add_argument("--assume-idle", action="store_true",
-                    help="offer the declared numbers without looking at what "
-                         "else is running on this box (debug)")
+                    help="offer declared CPU and host memory without observing "
+                         "them (debug); GPU evidence remains mandatory")
     ap.add_argument("--observe-samples", type=int,
                     default=box_capacity.DEFAULT_SAMPLES,
                     help="consecutive observations that must agree before the "
@@ -221,6 +236,8 @@ def _run_loop(stop_requested):
                     help="cores this box offers the queue; 0 = the cores this "
                          "loop is actually pinned to")
     args = ap.parse_args()
+    if args.gpu_slots < 0:
+        ap.error("--gpu-slots cannot be negative")
     pinned = None if args.all_cores else cpu_topology.pin_to_preferred()
     # Cores are a resource, and until now they were the only one the ledger
     # could not see.  A ``pytest -n 24`` action declaring ``mem_gb=4`` was
@@ -247,9 +264,19 @@ def _run_loop(stop_requested):
         enabled = set(ordered[:cores])
         cpu_tiers = {kind: [c for c in values if c in enabled]
                      for kind, values in cpu_tiers.items()}
-    # What this box offers when the pool is the only thing on it.  What it can
-    # offer *now* is that minus whatever else is running, read at every poll.
-    declared = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb, "cpu": cores}
+    # Memory and CPU are stable box bounds. GPU capacity is a physical device
+    # count from the root-published snapshot, refreshed on every idle pass.
+    # Positive legacy slot values are normalized to one device during rollout;
+    # they no longer encode a hand-tuned concurrency ceiling.
+    base_declared = {"mem_gb": args.mem_gb, "cpu": cores}
+    gpu_capable = args.gpu or args.gpu_slots > 0
+    # Capability and current admission are distinct. ``--gpu`` says this host
+    # has a GPU so submissions remain queueable through a telemetry outage;
+    # the observed offer below is still zero until trusted evidence returns.
+    # A fresh snapshot replaces this one-device bootstrap with its exact
+    # physical count, which also supports later multi-device workers without
+    # a per-host concurrency knob.
+    known_physical_gpus = 1 if gpu_capable else 0
 
     queue = pool.PoolQueue(SH / "pb-queue")
     # Read once, not per poll: it seeds the observer's window so a loop that
@@ -268,7 +295,7 @@ def _run_loop(stop_requested):
     # which is every action whose checkout is a box-local worktree rather than
     # shared storage -- matches no worker and never runs.
     offered = [args.klass, host, *args.tag]
-    if args.gpu_slots <= 0:
+    if not gpu_capable:
         # A box with no GPU must say so, or an action demanding gpu=1 matches
         # it on tags and then fails at run time instead of waiting for a box
         # that can serve it.
@@ -320,35 +347,32 @@ def _run_loop(stop_requested):
             time.sleep(args.poll_s)
             continue
         if not observer_initialized:
-            observer = None if args.assume_idle else box_capacity.CapacityObserver(
-                samples=args.observe_samples,
-                ledger_total=queue.ledger().capacity(),
-            )
+            observer = (None if args.assume_idle and not gpu_capable else
+                        box_capacity.CapacityObserver(
+                            samples=args.observe_samples,
+                            ledger_total=queue.ledger().capacity(),
+                        ))
             observer_initialized = True
-        # Every kind, every poll -- not just memory, and not just under a flag.
-        #
-        # Two things make the ledger disagree with the box, and one call
-        # answers both.  ``ensure_capacity`` is increase-only by design and
-        # runs on every claim attempt, so a ledger remembers the LARGEST
-        # capacity any worker ever declared for this host while the offer file
-        # is last-writer-wins and falls: measured 2026-09-04, sparklina offered
-        # ``gpu: 1`` with FOUR free gpu tokens and three worker processes able
-        # to claim against them.  And the ledger is exact about what the pool
-        # scheduled and blind to everything else: at 01:06 the same box read
-        # every token free while four out-of-pool GPU processes held the card.
-        # Admission is by token, so either shape admits work the box cannot
-        # run, which is how sparklina went down on 2026-09-03.
-        #
-        # So the offer is the declaration minus what else is running, and the
-        # ledger is retired to it.  ``box_capacity`` explains the attribution
-        # (held tokens, not a process tree) and the asymmetry (falls slowly,
-        # recovers at once).  Retiring is safe to do bluntly: it deletes FREE
-        # tokens only, so a running action never loses the reservation it is
-        # executing under, and the total falls the rest of the way as holders
-        # finish.  Nothing here is a ratchet: ``ensure_capacity`` re-mints
-        # inside ``claim`` on the next poll once the foreign work is gone.
+        gpu_sample = box_capacity.trusted_gpu_sample() if gpu_capable else None
+        if args.gpu:
+            detected = box_capacity.physical_gpu_count(gpu_sample)
+            if detected > 0:
+                known_physical_gpus = detected
+        declared = {"gpu": known_physical_gpus, **base_declared}
+
+        # The announcement records the stable physical capability while the
+        # ledger receives only the capacity justified at this claim boundary.
+        # That distinction keeps temporarily blocked GPU work placeable without
+        # permitting a claim from missing or stale telemetry. Retiring deletes
+        # free tokens only, so it never removes an active action's reservation;
+        # a later fresh observation can restore capacity on a subsequent claim.
+        observe_overrides = {"gpu_sample": gpu_sample}
+        if args.assume_idle:
+            # This diagnostic may bypass noisy CPU and host-memory readings,
+            # but it is not an escape hatch from the trusted GPU boundary.
+            observe_overrides.update(mem_gb=None, load1=None)
         capacity = dict(declared) if observer is None else observer.offer(
-            declared, queue.ledger().held())
+            declared, queue.ledger().held(), **observe_overrides)
         queue.ledger().retire_free_capacity(capacity)
         if capacity != announced:
             seen = observer.last if observer is not None else None
@@ -369,7 +393,7 @@ def _run_loop(stop_requested):
         # A box occupied by someone else's encode is a slow submission, and
         # publishing the live figure there would make ``pbrun`` refuse it.
         queue.announce(
-            host=host, tags=offered, has_gpu=args.gpu_slots > 0,
+            host=host, tags=offered, has_gpu=gpu_capable,
             capacity=declared, observed_capacity=capacity,
             foreign=(observer.last.foreign if observer is not None
                      and observer.last is not None else None),
@@ -391,7 +415,7 @@ def _run_loop(stop_requested):
             return 0
         try:
             outcome = queue.serve_once(
-                tags=offered, has_gpu=args.gpu_slots > 0, python=args.python,
+                tags=offered, has_gpu=gpu_capable, python=args.python,
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
                 adaptive_cpu=not args.assume_idle, containment=True,
             )
@@ -430,6 +454,7 @@ def _run_loop(stop_requested):
             observer.rejoin(queue.ledger().capacity())
         if outcome is None:
             idle += 1
+            census, pressure_delay, census_error = idle_census(queue)
             # Entering an idle streak is the moment this box starts paying for
             # the fleet's WIDTH, so say how much of the waiting queue no other
             # box could take.  Box-local worktrees pin an action to one box,
@@ -443,14 +468,16 @@ def _run_loop(stop_requested):
             # on this fleet, so an exit-only line would appear about twice a
             # day per loop.
             if idle == 1:
-                print(f"[{host}] idle; {census_line(queue)}", flush=True)
+                print(f"[{host}] idle; {describe_census(census, census_error)}", flush=True)
             if args.once or idle >= args.max_idle:
                 free = queue.ledger().available()
                 print(f"[{host}] nothing admissible ({idle} idle polls); "
-                      f"served {served}; free {free}; {census_line(queue)}",
+                      f"served {served}; free {free}; "
+                      f"{describe_census(census, census_error)}",
                       flush=True)
                 return 0
-            time.sleep(args.poll_s)
+            time.sleep(min(args.poll_s, pressure_delay)
+                       if pressure_delay > 0 else args.poll_s)
             continue
         idle = 0
         served += 1

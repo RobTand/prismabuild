@@ -25,11 +25,17 @@ if [ -z "$gpu_source" ]; then
     echo 'missing resource monitor module; refusing an incomplete installation' >&2
     exit 1
 fi
+gpu_capacity_source=$(dirname -- "$gpu_source")/gpu_capacity.py
+if [ ! -f "$gpu_capacity_source" ]; then
+    echo 'missing GPU capacity module; refusing an incomplete installation' >&2
+    exit 1
+fi
 install -d -o root -g root -m 0755 /opt/prismabuild-resource-broker
 for source_file in resource_broker.py resource_payload.py; do
     install -o root -g root -m 0644 "$source_dir/$source_file" "/opt/prismabuild-resource-broker/$source_file"
 done
 install -o root -g root -m 0644 "$gpu_source" /opt/prismabuild-resource-broker/gpu_memory.py
+install -o root -g root -m 0644 "$gpu_capacity_source" /opt/prismabuild-resource-broker/gpu_capacity.py
 unit=/etc/systemd/system/prismabuild-resource-broker.service
 if [ -e "$unit" ]; then
     cp -a "$unit" "$unit.backup-$(date +%s)"

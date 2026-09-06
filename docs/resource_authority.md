@@ -40,17 +40,36 @@ already proves exhaustion of its aggregate budget. A healthy attempt in another
 slice is not selected. Live qualification must demonstrate that behavior rather
 than infer it from configuration.
 
+The scope carries immutable `memory_max_bytes` and `gpu_memory_max_bytes`
+budgets. The latter defaults to the former for compatibility; an explicit
+GPU allowance can exceed system RAM on a discrete GPU host. Create retries and
+lost-reply recovery must present the same two budgets. Clients defer explicit
+GPU-budget creation when an older broker rejects the new field before creation.
+
 GB10 CUDA allocations are not reliably charged to `memory.current`. The broker
 therefore samples NVIDIA per-process memory and binds each observation to a
-stable process start time and exact cgroup identity. Two confirming observations
-of a job's proven memory lower bound above its budget select only that scope.
-The lower bound is the larger of host memory and the largest individual GPU
-report; summed GPU reports remain diagnostic because shared/IPC allocations can
-overlap. This avoids guessing ownership or double-counting shared memory, but
-can miss aggregate excess spread across several small GPU processes.
+stable process start time and exact cgroup identity. Hardware telemetry supplies
+each GPU UUID's physical memory domain: `shared_system`, `discrete`, or
+`unknown`. CUDA unified virtual addressing is not evidence of shared DRAM.
+On shared-system hardware, the system-memory lower bound is the larger of the
+host cgroup charge and the largest known shared-GPU process report. On discrete
+hardware, GPU VRAM never contributes to the system-RAM charge. Unknown devices
+do not authorize a shared-memory inference. A mixed-device job includes only
+its known shared-system GPU observations in its system-memory lower bound.
+
+Two confirming observations above either the system/shared budget or the
+separate GPU allowance select only that scope. Each budget has its own
+confirmation counter; one violation of each is not two violations of either.
+GPU allowance comparisons use the largest individual process/device report;
+summed GPU reports remain diagnostic because shared/IPC allocations can overlap.
+This avoids guessing ownership or double-counting shared memory, but can miss
+aggregate excess spread across several small GPU processes. On shared-system
+hardware the explicit GPU allowance is an additional cap within the physical
+shared-memory budget, not another physical-memory reservation.
 
 Predictive host-pressure handling additionally requires repeated pressure,
 dominant attributable growth and projected excess of that job's own budget.
+Discrete VRAM growth never enters this system-memory pressure calculation.
 It can stop a rapidly growing job before current usage crosses its budget.
 This forecast can misclassify a bounded allocation; it does not select static
 healthy neighbors or foreign work. Polling cannot prevent every instantaneous

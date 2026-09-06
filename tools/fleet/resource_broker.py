@@ -54,9 +54,10 @@ def _trusted_file(path):
     return path
 
 
-def _load_gpu_module():
-    path=_trusted_file(Path(__file__).resolve().with_name('gpu_memory.py'))
-    name='_prismabuild_privileged_gpu_memory'
+def _load_gpu_module(filename='gpu_memory.py'):
+    if filename not in {'gpu_memory.py','gpu_capacity.py'}:raise ValueError('invalid GPU module')
+    path=_trusted_file(Path(__file__).resolve().with_name(filename))
+    name='_prismabuild_privileged_'+Path(filename).stem
     spec=importlib.util.spec_from_file_location(name,path)
     module=importlib.util.module_from_spec(spec)
     sys.modules[name]=module
@@ -212,10 +213,17 @@ class Authority:
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
         if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
-        allowed=({'op','action_key','nonce','memory_max_bytes','recovery_protocol'} if op=='create'
-                 else {'op','action_key','nonce','memory_max_bytes'} if op=='recover_create'
+        allowed=({'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','recovery_protocol'} if op=='create'
+                 else {'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes'} if op=='recover_create'
                  else {'op','action_key','nonce','token','reason','memory_max_bytes'})
         if set(request)-allowed:raise ValueError('unknown request field')
+        if op in {'create','recover_create'}:
+            gpu_budget=request.get('gpu_memory_max_bytes',request.get('memory_max_bytes'))
+            # VRAM can exceed system RAM on a discrete host. Host RAM bounds
+            # do not describe this independent logical budget; admission uses
+            # trusted device capacity. Keep RPC values within signed byte range.
+            if type(gpu_budget) is not int or not 0<gpu_budget<=2**63-1:
+                raise ValueError('GPU memory budget outside supported bounds')
         with self.lock:
             if op=='recover_create':
                 budget=request.get('memory_max_bytes')
@@ -227,11 +235,16 @@ class Authority:
                     # A timed-out create may still be queued on this lock.
                     # Fence it durably before declaring this attempt absent.
                     record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
-                            'memory_max_bytes':budget,'token':secrets.token_hex(32),
+                            'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,'token':secrets.token_hex(32),
                             'released_unix':time.time(),'creation_cancelled_unix':time.time()}
                     _atomic(self.state_dir/(scope+'.json'),record);self.records[scope]=record
                     return {'ok':True,'scope_id':scope,'missing':True}
-                if record['memory_max_bytes']!=budget:raise ValueError('attempt budget cannot change')
+                if (record['memory_max_bytes']!=budget
+                        or record.get('gpu_memory_max_bytes',record['memory_max_bytes'])!=gpu_budget):
+                    raise ValueError('attempt budget cannot change')
+                if 'gpu_memory_max_bytes' not in record:
+                    record['gpu_memory_max_bytes']=gpu_budget
+                    _atomic(self.state_dir/(scope+'.json'),record)
                 return {'ok':True,**record,'cgroup_path':str(self.backend.path(scope))}
             if op=='create':
                 if 'recovery_protocol' in request and (type(request['recovery_protocol']) is not int
@@ -243,7 +256,12 @@ class Authority:
                     return {'ok':False,'maintenance':True,'retryable':True,
                             'error':'resource broker is draining for maintenance'}
                 if existing:
-                    if existing['memory_max_bytes']!=budget:raise ValueError('attempt budget cannot change')
+                    if (existing['memory_max_bytes']!=budget
+                            or existing.get('gpu_memory_max_bytes',existing['memory_max_bytes'])!=gpu_budget):
+                        raise ValueError('attempt budget cannot change')
+                    if 'gpu_memory_max_bytes' not in existing:
+                        existing['gpu_memory_max_bytes']=gpu_budget
+                        _atomic(self.state_dir/(scope+'.json'),existing)
                     if existing.get('released_unix'):raise ValueError('attempt is released')
                     if existing.get('stopped_unix'):raise ValueError('attempt is stopped')
                     if existing.get('pending'):
@@ -251,7 +269,8 @@ class Authority:
                         _atomic(self.state_dir/(scope+'.json'),existing)
                     return {'ok':True,**existing}
                 record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
-                        'memory_max_bytes':budget,'token':secrets.token_hex(32),'created_unix':time.time()}
+                        'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,
+                        'token':secrets.token_hex(32),'created_unix':time.time()}
                 # Persist authority before OS creation so a broker restart can
                 # retain exact recovery ownership even after partial setup.
                 path=self.state_dir/(scope+'.json');record['pending']=True
@@ -460,9 +479,10 @@ class Authority:
 
 class ResourceMonitor:
     """Sample outside admission locks; stop only the same recorded kernel group."""
-    identity_fields=('action_key','nonce','token','memory_max_bytes','cgroup_identity')
+    identity_fields=('action_key','nonce','token','memory_max_bytes','gpu_memory_max_bytes','cgroup_identity')
 
-    def __init__(self,authority,gpu_module,*,interval_s=1.0,timeout_s=1.0):
+    def __init__(self,authority,gpu_module,*,capacity_module=None,interval_s=1.0,timeout_s=1.0):
+        self.capacity=capacity_module
         self.authority=authority;self.gpu=gpu_module;self.guard=gpu_module.Guard()
         self.interval_s=interval_s;self.timeout_s=timeout_s
         self.stopping=threading.Event();self.thread=None;self.last_success_monotonic=None
@@ -470,7 +490,7 @@ class ResourceMonitor:
     def _records(self):
         with self.authority.lock:
             return {scope:{key:value for key,value in record.items() if key in {
-                    *self.identity_fields,'memory_oom_kill_baseline','memory_oom_local_baseline','monitor_stop_pending',
+                    *self.identity_fields,'gpu_memory_max_bytes','memory_oom_kill_baseline','memory_oom_local_baseline','monitor_stop_pending',
                     'termination_evidence','stop_reason'}}
                 for scope,record in self.authority.records.items()
                 if not record.get('pending') and not record.get('released_unix')
@@ -530,11 +550,17 @@ class ResourceMonitor:
                               'oom_kill_baseline':baseline,'sampled_unix':time.time()}
                     if self._stop(scope,record,identity,'memory_limit_oom',evidence):stopped.append(scope)
             except (OSError,ValueError,KeyError) as exc:errors.append({'scope_id':scope,'error':str(exc)[:1500]})
-        scopes=[self.gpu.Scope(scope,self.authority.backend.path(scope),record['memory_max_bytes'])
+        scopes=[self.gpu.Scope(scope,self.authority.backend.path(scope),record['memory_max_bytes'],
+                    **({'gpu_budget_bytes':record.get('gpu_memory_max_bytes',record['memory_max_bytes'])}
+                       if self.capacity is not None or record.get('gpu_memory_max_bytes') is not None else {}))
                 for scope,record in records.items() if scope not in stopped and not record.get('monitor_stop_pending')]
-        snapshot=None
-        if scopes:
-            snapshot=self.gpu.collect(scopes,timeout_s=self.timeout_s)
+        snapshot=None;device_readings=None;memory_options={}
+        if self.capacity is not None:
+            device_readings=self.capacity.devices(timeout_s=self.timeout_s)
+            memory_options['gpu_memory_domains']={device['uuid']:device['memory_domain']
+                                                 for device in device_readings[0]}
+        if scopes or self.capacity is not None:
+            snapshot=self.gpu.collect(scopes,timeout_s=self.timeout_s,**memory_options)
             for decision in self.guard.observe(snapshot):
                 expected=records.get(decision.scope_id)
                 if expected is None:continue
@@ -545,6 +571,16 @@ class ResourceMonitor:
                     errors.append({'scope_id':decision.scope_id,'error':str(exc)[:1500]})
         status={'sampled_unix':time.time(),'active_scopes':len(records),'stopped':stopped,
                 'errors':errors,'gpu':snapshot.as_dict() if snapshot is not None else None}
+        if self.capacity is not None and snapshot is not None:
+            # This sanitized root-owned sibling is readable by pool workers;
+            # private monitor/authority records retain their mode 0600.
+            active={scope:record for scope,record in records.items() if scope not in stopped}
+            public=self.capacity.collect(snapshot.as_dict(),active,timeout_s=self.timeout_s,
+                                         device_readings=device_readings)
+            if stopped or errors:
+                public['complete']=False
+                public['errors'].append('scope inventory changed or monitor errors during sample')
+            _atomic(self.authority.state_dir.parent/'gpu-capacity.json',public,mode=0o644)
         _atomic(self.authority.state_dir/'monitor.status',status)
         self.last_success_monotonic=time.monotonic()
         return status
@@ -649,8 +685,8 @@ def main():
     with Server(str(endpoint),Handler) as server:
         server.authority=authority
         os.chown(endpoint,0,pwd.getpwuid(args.uid).pw_gid);endpoint.chmod(0o660)
-        monitor=ResourceMonitor(authority,_load_gpu_module())
-        for name in ('resource_broker.py','resource_payload.py','gpu_memory.py'):
+        monitor=ResourceMonitor(authority,_load_gpu_module(),capacity_module=_load_gpu_module('gpu_capacity.py'))
+        for name in ('resource_broker.py','resource_payload.py','gpu_memory.py','gpu_capacity.py'):
             path=_trusted_file(Path(__file__).resolve().with_name(name))
             authority.installation_paths[name]=path
             authority.installed_sha256[name]=hashlib.sha256(path.read_bytes()).hexdigest()

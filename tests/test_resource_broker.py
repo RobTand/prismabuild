@@ -59,6 +59,51 @@ def test_two_attempts_are_distinct_and_stopping_one_preserves_the_other(authorit
     assert x['scope_id']!=y['scope_id']
     assert b.attached==[(x['scope_id'],os.getuid()),(y['scope_id'],os.getuid())]
 
+
+def test_separate_gpu_budget_can_exceed_host_ram_and_survives_recovery(authority):
+    a,b=authority
+    request={'op':'create','action_key':'a'*64,'nonce':'b'*32,
+             'memory_max_bytes':64*1024**2,'gpu_memory_max_bytes':4*1024**3}
+    record=a.handle(os.getuid(),os.getpid(),request)
+    assert record['gpu_memory_max_bytes']==4*1024**3
+    assert b.groups[record['scope_id']]['budget']==64*1024**2
+    restored=module().Authority(a.state_dir,os.getuid(),b,max_memory_bytes=1024**3)
+    recovery=restored.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create'})
+    assert recovery['token']==record['token']
+    assert recovery['gpu_memory_max_bytes']==4*1024**3
+    for operation in ['create','recover_create']:
+        with pytest.raises(ValueError,match='budget cannot change'):
+            restored.handle(os.getuid(),os.getpid(),
+                            {**request,'op':operation,'gpu_memory_max_bytes':8*1024**3})
+
+
+def test_legacy_gpu_budget_defaults_to_system_budget(authority):
+    a,b=authority
+    request,record=create(a)
+    assert record['gpu_memory_max_bytes']==record['memory_max_bytes']
+    assert a.handle(os.getuid(),os.getpid(),
+                    {**request,'gpu_memory_max_bytes':request['memory_max_bytes']})['token']==record['token']
+
+
+def test_recovery_of_pre_gpu_budget_record_restores_legacy_default(authority):
+    a,b=authority
+    request,record=create(a)
+    del a.records[record['scope_id']]['gpu_memory_max_bytes']
+    recovered=a.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create',
+                                              'gpu_memory_max_bytes':request['memory_max_bytes']})
+    assert recovered['gpu_memory_max_bytes']==record['memory_max_bytes']
+    stored=json.loads((a.state_dir/(record['scope_id']+'.json')).read_text())
+    assert stored['gpu_memory_max_bytes']==record['memory_max_bytes']
+
+
+@pytest.mark.parametrize('budget',[True,0,-1,1.5,2**63])
+def test_invalid_gpu_budget_never_creates_kernel_scope(authority,budget):
+    a,b=authority
+    with pytest.raises(ValueError,match='GPU memory budget'):
+        a.handle(os.getuid(),os.getpid(),{'op':'create','action_key':'a'*64,'nonce':'b'*32,
+                                       'memory_max_bytes':1024,'gpu_memory_max_bytes':budget})
+    assert not b.groups
+
 def test_numeric_process_migration_is_not_exposed(authority):
     a,b=authority;r,x=create(a);request=auth(r,x,'attach');request['pid']=1
     with pytest.raises(ValueError,match='field'):a.handle(os.getuid(),os.getpid(),request)
@@ -292,8 +337,9 @@ def test_unknown_attempt_after_reboot_only_accepts_proven_absence(authority, ope
 
 class GpuSamples:
     def __init__(self):self.decisions=[];self.calls=[];self.during_collect=None
-    def Scope(self, scope_id, cgroup_path, budget_bytes):
-        return SimpleNamespace(scope_id=scope_id,cgroup_path=cgroup_path,budget_bytes=budget_bytes)
+    def Scope(self, scope_id, cgroup_path, budget_bytes, *, gpu_budget_bytes=None):
+        return SimpleNamespace(scope_id=scope_id,cgroup_path=cgroup_path,budget_bytes=budget_bytes,
+                               gpu_budget_bytes=gpu_budget_bytes)
     def Guard(self):return self
     def collect(self, scopes, *, timeout_s):
         self.calls.append((scopes,timeout_s))
@@ -344,12 +390,13 @@ def test_gpu_monitor_stops_only_attributed_attempt_and_preserves_first_cause(mon
     assert 'stopped_unix' not in a.records[rows[1][1]['scope_id']]
 
 
-@pytest.mark.parametrize('change', ['token','inode','released','foreign_decision'])
+@pytest.mark.parametrize('change', ['token','gpu_budget','inode','released','foreign_decision'])
 def test_gpu_monitor_revalidates_authority_and_kernel_identity_after_sampling(monitored, change):
     a,b,rows,gpu,monitor=monitored
     request,record,path=rows[0];gpu.decisions=[decision(record,path)]
     def mutate():
         if change=='token':a.records[record['scope_id']]['token']='f'*64
+        elif change=='gpu_budget':a.records[record['scope_id']]['gpu_memory_max_bytes']*=2
         elif change=='released':a.records[record['scope_id']]['released_unix']=1
         elif change=='inode':
             path.rename(path.with_name(path.name+'.old'))

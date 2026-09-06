@@ -5,12 +5,13 @@ privileged broker supplies all its active scopes and must revalidate both its
 attempt authority and the cgroup inode before acting on a Decision. Install a
 root-owned copy beside that broker, never import writable action/runtime code.
 
-NVML process memory can overlap memory.current (managed allocations), and GPU
-IPC can overlap between processes. We therefore expose the reported sum but
-use max(host charge, largest single GPU process observation) as a conservative
-lower bound. The upper_bound_bytes field sums observed counters; it is not a
-guarantee that the driver reported every allocation. The sum is diagnostic,
-never license to kill a healthy job.
+On physical shared-system-memory devices, GPU bytes can overlap memory.current;
+on discrete devices, VRAM is a separate budget and never added to system RAM.
+Only broker-supplied hardware domains identify shared physical memory, never
+CUDA unified virtual addressing. GPU IPC can overlap between processes, so
+reported sums are diagnostic and the largest individual report is a proven
+lower bound. Unknown hardware disables shared-memory inference. Host-pressure
+decisions use only system-memory charges, not discrete VRAM growth.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from pathlib import Path
 import re
 import subprocess
 import time
-from typing import Sequence
+from typing import Mapping, Sequence
 
 MIB = 1024**2
 GIB = 1024**3
@@ -32,12 +33,16 @@ class Scope:
     scope_id: str
     cgroup_path: str | Path
     budget_bytes: int
+    gpu_budget_bytes: int | None = None
 
     def __post_init__(self):
         if not SCOPE_RE.fullmatch(self.scope_id):
             raise ValueError("invalid broker scope identity")
         if type(self.budget_bytes) is not int or self.budget_bytes <= 0:
             raise ValueError("scope budget must be positive bytes")
+        if self.gpu_budget_bytes is not None and (type(self.gpu_budget_bytes) is not int
+                or self.gpu_budget_bytes <= 0):
+            raise ValueError("GPU scope budget must be positive bytes")
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,10 @@ class JobSample:
     complete: bool
     processes: tuple[dict, ...] = ()
     errors: tuple[str, ...] = ()
+    gpu_budget_bytes: int | None = None
+    memory_domain: str = "unknown"
+    shared_gpu_lower_bound_bytes: int | None = None
+    system_lower_bound_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +77,7 @@ class Snapshot:
     gpu_query_complete: bool
     foreign_gpu_reported_bytes: int | None = None
     errors: tuple[str, ...] = ()
+    foreign_processes: tuple[dict, ...] = ()
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -165,7 +175,8 @@ def _host(proc: Path):
 
 def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
             cgroup_root: Path = Path("/sys/fs/cgroup"), timeout_s: float = 1.0,
-            max_collect_s: float = 3.0) -> Snapshot:
+            max_collect_s: float = 3.0,
+            gpu_memory_domains: Mapping[str, str] | None = None) -> Snapshot:
     """Sample all active broker scopes without holding its authority lock.
 
     Caller must run in the host PID/cgroup namespaces. GPU rows are attributed
@@ -180,6 +191,8 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
     if not math.isfinite(max_collect_s) or not timeout_s <= max_collect_s <= 10:
         raise ValueError("collection deadline must cover query and be <=10 seconds")
     proc_root, cgroup_root = Path(proc_root), Path(cgroup_root)
+    domains = {uuid: domain if domain in {"shared_system", "discrete"} else "unknown"
+               for uuid, domain in (gpu_memory_domains or {}).items()}
     started = time.monotonic()
     deadline = started + max_collect_s
     timed_out = False
@@ -219,6 +232,7 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
         errors.append("process census exceeded collection deadline")
     attributed = {scope.scope_id: [] for scope in scopes}
     foreign = 0
+    foreign_processes = []
     foreign_unknown = False
     for (pid, device), used in (rows or {}).items():
         if time.monotonic() >= deadline:
@@ -238,6 +252,9 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
                 owner = scope.scope_id
                 break
         if owner is None:
+            foreign_processes.append({"pid": pid, "start_ticks": identity[0],
+                                      "cgroup": identity[1], "gpu_uuid": device,
+                                      "used_bytes": used})
             if used is None:
                 foreign_unknown = True
             else:
@@ -245,7 +262,8 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
         else:
             attributed[owner].append({"pid": pid, "start_ticks": identity[0],
                                       "cgroup": identity[1], "gpu_uuid": device,
-                                      "used_bytes": used})
+                                      "used_bytes": used,
+                                      "memory_domain": domains.get(device, "unknown")})
     jobs = []
     for scope in scopes:
         failures = []
@@ -261,21 +279,27 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
             host = None
             failures.append("scope identity or host charge unavailable")
         processes = tuple(attributed[scope.scope_id])
+        observed_domains = {row['memory_domain'] for row in processes} or set(domains.values())
+        domain = next(iter(observed_domains)) if len(observed_domains) == 1 else "unknown"
         known = complete and all(row["used_bytes"] is not None for row in processes)
         gpu_sum = sum(row["used_bytes"] for row in processes) if known else None
         gpu_min = max((row["used_bytes"] for row in processes), default=0) if known else None
-        lower = max(host, gpu_min) if host is not None and gpu_min is not None else None
-        upper = host + gpu_sum if host is not None and gpu_sum is not None else None
+        shared = [row['used_bytes'] for row in processes if row['memory_domain'] == 'shared_system']
+        shared_min = max(shared, default=0) if known else None
+        shared_sum = sum(shared) if known else None
+        lower = max(host, shared_min) if host is not None and shared_min is not None else None
+        upper = host + shared_sum if host is not None and shared_sum is not None else None
         if not known:
             failures.append("GPU ownership or memory incomplete")
         jobs.append(JobSample(scope.scope_id, identity, scope.budget_bytes, host, gpu_sum,
                               gpu_min, lower, upper, known and host is not None,
-                              processes, tuple(failures)))
+                              processes, tuple(failures), scope.gpu_budget_bytes or scope.budget_bytes,
+                              domain, shared_min, lower))
     total, available, some, full, host_errors = _host(proc_root)
     return Snapshot(time.monotonic(), time.time(), time.monotonic() - started,
                     total, available, some, full, tuple(jobs), complete,
                     None if foreign_unknown or not complete else foreign,
-                    tuple(errors + host_errors))
+                    tuple(errors + host_errors), tuple(foreign_processes))
 
 
 @dataclass(frozen=True)
@@ -305,6 +329,25 @@ class Policy:
             raise ValueError("invalid guard fractions")
 
 
+def _system_charge(job: JobSample) -> int | None:
+    if job.host_bytes is None:
+        return None
+    shared = job.shared_gpu_lower_bound_bytes
+    if shared is None:
+        # Compatibility for an explicitly classified shared-system sample.
+        # An old max(host, GPU) lower bound is never trusted on unknown or
+        # discrete hardware.
+        shared = job.gpu_lower_bound_bytes if job.memory_domain == "shared_system" else 0
+    return max(job.host_bytes, shared) if shared is not None else None
+
+
+def _budget_identity(job: JobSample) -> tuple:
+    domains = tuple(sorted({(row.get("gpu_uuid", ""), row.get("memory_domain", "unknown"))
+                            for row in job.processes}))
+    return (job.scope_id, job.cgroup_identity, job.budget_bytes,
+            job.gpu_budget_bytes or job.budget_bytes, job.memory_domain, domains)
+
+
 class Guard:
     """Stateful conservative decision maker; broker serializes observe calls."""
     def __init__(self, policy: Policy | None = None):
@@ -323,23 +366,33 @@ class Guard:
             self.over_budget.clear()
             self.pressure.clear()
         prior = {j.scope_id: j for j in previous.jobs} if continuous else {}
-        active = {(j.scope_id, j.cgroup_identity, j.budget_bytes) for j in snapshot.jobs}
-        self.over_budget = {k: v for k, v in self.over_budget.items() if k in active}
+        active = {_budget_identity(j) for j in snapshot.jobs}
+        self.over_budget = {k: v for k, v in self.over_budget.items() if k[:-1] in active}
         self.pressure = {k: v for k, v in self.pressure.items() if k in active}
         decisions = []
         growth = {}
         for job in snapshot.jobs:
-            key = job.scope_id, job.cgroup_identity, job.budget_bytes
-            valid = job.complete and job.lower_bound_bytes is not None and job.cgroup_identity is not None
-            excess = valid and job.lower_bound_bytes > job.budget_bytes
-            self.over_budget[key] = self.over_budget.get(key, 0) + 1 if excess else 0
-            if self.over_budget[key] >= policy.budget_samples:
-                decisions.append(Decision(job.scope_id, job.cgroup_identity, "memory_budget_exceeded",
-                                          {"job": asdict(job), "consecutive_samples": self.over_budget[key]}))
+            key = _budget_identity(job)
+            charge = _system_charge(job)
+            valid = job.complete and charge is not None and job.cgroup_identity is not None
+            gpu_budget = job.gpu_budget_bytes or job.budget_bytes
+            metrics = (("system", charge, job.budget_bytes, "memory_budget_exceeded"),
+                       ("gpu", job.gpu_lower_bound_bytes, gpu_budget, "gpu_memory_budget_exceeded"))
+            for domain, used, budget, reason in metrics:
+                counter = (*key, domain)
+                excess = valid and used is not None and used > budget
+                self.over_budget[counter] = self.over_budget.get(counter, 0) + 1 if excess else 0
+                if (self.over_budget[counter] >= policy.budget_samples
+                        and not any(d.scope_id == job.scope_id for d in decisions)):
+                    decisions.append(Decision(job.scope_id, job.cgroup_identity, reason,
+                        {"job": asdict(job), "budget_domain": domain,
+                         "used_lower_bound_bytes": used, "budget_bytes": budget,
+                         "consecutive_samples": self.over_budget[counter]}))
             old = prior.get(job.scope_id)
-            if (valid and old and old.complete and old.cgroup_identity == job.cgroup_identity
-                    and old.budget_bytes == job.budget_bytes and old.lower_bound_bytes is not None):
-                growth[job.scope_id] = max(0., (job.lower_bound_bytes - old.lower_bound_bytes) / dt)
+            old_charge = _system_charge(old) if old is not None else None
+            if (valid and old and old.complete and _budget_identity(old) == key
+                    and old_charge is not None):
+                growth[job.scope_id] = max(0., (charge - old_charge) / dt)
         host_valid = (continuous and snapshot.host_available_bytes is not None
                       and previous.host_available_bytes is not None
                       and snapshot.host_total_bytes is not None
@@ -360,10 +413,10 @@ class Guard:
                     and (snapshot.psi_some_avg10 >= policy.psi_some_avg10
                          or snapshot.psi_full_avg10 >= policy.psi_full_avg10)):
                 job = next(j for j in snapshot.jobs if j.scope_id == largest)
-                if job.lower_bound_bytes + rate * policy.projection_s > job.budget_bytes:
+                if _system_charge(job) + rate * policy.projection_s > job.budget_bytes:
                     candidate = largest
         for job in snapshot.jobs:
-            key = job.scope_id, job.cgroup_identity, job.budget_bytes
+            key = _budget_identity(job)
             self.pressure[key] = self.pressure.get(key, 0) + 1 if job.scope_id == candidate else 0
             if (self.pressure[key] >= policy.pressure_samples - 1
                     and not any(d.scope_id == job.scope_id for d in decisions)):

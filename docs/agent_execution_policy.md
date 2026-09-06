@@ -39,11 +39,20 @@ freshly attributed, lightly used preferred capacity from another generation
 action; it may also admit beyond the physical token count when the same evidence
 and current host headroom support it. Host CPU use and pressure include work
 outside PrismaBuild and can stop further admission. Missing, stale or incomplete
-attempt telemetry grants no lending credit. Memory and GPU demand are never
-discounted, and measurements do not borrow CPU capacity or overlap another
+attempt telemetry grants no lending credit. Memory demand is never discounted. GPU concurrency uses its own trusted device
+admission policy rather than CPU lending; measurements do not borrow CPU
+capacity or overlap another
 admitted CPU action. On GB10, GPU utilization percentage is not evidence of
 saturation; use power, host activity, residency and useful throughput for a
 performance claim.
+
+GPU admission uses physical devices and attributed broker telemetry rather
+than a manually tuned job-slot count. Each current GB10 has one physical GPU.
+Missing, stale, incomplete or unattributed telemetry admits no GPU work;
+multiple CUDA processes belonging to one verified action remain that action's
+work, while an unattributed GPU process blocks another claim. Host `mem_gb` and
+discrete VRAM budgets are separate. Worker loops share the broker snapshot and
+retry a nonempty queue promptly instead of running their own GPU probes.
 
 Per-attempt telemetry must cover the whole execution scope, including direct
 children and daemon-created containers, before adaptive CPU lending is enabled
@@ -87,3 +96,11 @@ and a GPU action for GPU workers, including their CAS receipts. Install the
 same global policy and hook before using agents on the new worker. Expand
 capacity through these offers; agents must not invent an independent queue or
 bypass resource reservations.
+
+GPU admission requires fresh broker evidence even for its first action. Both GB10
+workers advertise one physical device and use the same adaptive sharing policy.
+`--exclusive` and measurements remain exclusive. On discrete GPUs, declare the
+separate VRAM budget with pool `--gpu-memory-gb N`; it defaults conservatively
+to `mem_gb`. Host RAM and VRAM are reserved independently. On GB10, `mem_gb`
+remains the shared physical budget and an explicit GPU budget is a subset cap.
+Unknown memory domains or missing counters grant no admission credit.

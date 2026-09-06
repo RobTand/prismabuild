@@ -77,3 +77,55 @@ broker's health; preserve transaction and journal evidence on failure.
 The service unit and enrollment configuration remain root-managed. Changing
 those requires an explicit installer update. This mechanism upgrades PrismaBuild
 clients; it does not upgrade Python, system packages, drivers or unrelated tools.
+
+## Introducing a new privileged dependency
+
+A deployed updater's recognized member set is part of the rollout contract.
+Publishing a broker that requires a new file together with an updater that knows
+that file does not suffice: the old updater copies only its known members, the
+new broker cannot start, and rollback restores the old updater again.
+
+Use an expand/converge sequence for `gpu_capacity.py`:
+
+1. Publish a **bridge generation** containing this dependency-aware updater and
+   the existing broker, payload helper and GPU-memory module. The bridge must
+   not publish `src/prismabuild/gpu_capacity.py`. Existing four-member updaters
+   can adopt this generation through their normal drain/health transaction.
+2. Verify every enrolled worker's actual `upgrade_client.py` SHA-256 equals the
+   bridge receipt and its timer/status is healthy. A generation pointer or a
+   single worker's success is insufficient. Do not publish the dependent broker
+   while any worker still has the old updater.
+3. Publish the generation containing the new broker and
+   `src/prismabuild/gpu_capacity.py`. The bridge updater recognizes the module
+   only when that exact source path is present in the desired receipt, exports
+   and rehashes it through the existing unprivileged reader, and installs the
+   entire member set while the drained broker is stopped. The new broker's
+   health response must include `gpu_capacity.py` in its loaded module hashes.
+
+This requires two ordinary runtime publications and automatic timer convergence;
+it does not require another per-host installer or manual client copy. Existing
+work remains protected during both transactions. A future dependency unknown to
+this updater requires an analogous bridge before its first dependent broker.
+
+The transaction journals the union of old and desired members. A `null` previous
+hash means that an explicitly recognized optional file was absent before the
+upgrade; no fabricated empty-file backup is used. Rollback restores verified
+previous bytes and removes newly introduced optional files before starting the
+old broker. Conversely, a failed downgrade restores any removed dependency.
+Required core members may never be journaled as absent. This existence state
+survives interruption and is checked before service mutation. Health compares
+exactly the modules actually installed: the old three-module broker is checked
+without requiring the optional module, and the new four-module broker must
+attest it. Activating a generation without the optional dependency removes it
+inside the same stopped-service transaction.
+
+A transaction involving an optional file also requires both the installed and candidate updaters to
+declare `CLIENT_UPGRADE_PROTOCOL = 2`. The transaction can restart into its candidate or restored previous
+updater after a crash, so its ability to interpret optional-file absence must
+be established before closing admission. A candidate without this declaration
+is refused before any service mutation, including a downgrade to a pre-bridge
+updater while the optional file is installed. Use a dependency-aware bridge
+with the old broker and no optional source as the rollback generation. Once
+that removes the optional file safely, a separate later publication can restore
+a pre-bridge updater if explicitly intended; reintroducing the dependency would
+then require bridge convergence again.

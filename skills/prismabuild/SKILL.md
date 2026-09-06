@@ -33,20 +33,33 @@ universal setting. Use `pbtest.py` for suite fanout and `pbcampaign.py` for a
 manifest of independent actions. Prefer portable placement; add a host tag only
 for a real dependency or a controlled measurement.
 
-GPU work must declare `--gpu` or the appropriate GPU demand through the client.
-Use the PB Docker shim and preserve the admitted CPU mask and container parent.
-Never replace the shim, widen affinity, or run directly over SSH to bypass a
-queue. A CPU-only job must not turn GPU visibility back on.
+GPU work declares `--gpu` or the appropriate GPU demand. The live pool shares
+one physical GPU among generation actions when fresh broker observations show
+headroom; let admission choose concurrency rather than tuning GPU job slots.
+Missing, stale, incomplete or unattributed telemetry defers GPU admission,
+including the first action. Check the broker/worker evidence when work waits.
+
+Use pool `--gpu-memory-gb N` for the GPU memory budget in GiB. On a discrete
+device, it reserves VRAM independently of host `--demand mem_gb=M`; both must
+fit. On GB10 (`shared_system`), `mem_gb` covers total physical DRAM and the GPU
+budget caps its GPU subset. The GPU cap defaults to `mem_gb` when omitted.
+The option requires GPU demand and is unsupported with `--transport slurm`.
+
+The live pool contains each attempt's payload, descendants and Docker
+containers in a broker-owned scope. Use the ordinary `docker` command so PB's
+shim preserves its CPU mask and container parent. Keep children inside that
+scope and retain CPU-only jobs' disabled GPU visibility.
 
 The scheduler prefers physical performance cores and uses SMT siblings and
 efficiency cores last. It may share lightly used CPU reservations based on
 fresh measured demand, and stop admitting work as host pressure rises. Declare
-honest peak CPU demand; do not inflate it to force overflow. Memory and GPU
-reservations are not discounted by CPU oversubscription.
+honest peak CPU demand. Memory budgets remain fully reserved; CPU lending does
+not authorize GPU sharing.
 
-Use `--measurement` for measurements: the pool pins the submitting host and
-seals platform/toolchain identity; SLURM measurements require `--host-class`.
-Retain exclusive GPU capacity where competing work would invalidate results.
+Use `--measurement` for measurements: the pool pins the submitting host, seals
+platform/toolchain identity and keeps GPU measurements exclusive. `--exclusive`
+also prevents GPU sharing for ordinary work. Optional SLURM measurements require
+`--host-class`; reserve its GPU exclusively when overlap would invalidate results.
 On GB10, GPU utilization percentage is not a saturation measure; collect power,
 CPU activity, residency and useful throughput with before/after profiling.
 

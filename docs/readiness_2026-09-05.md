@@ -306,3 +306,12 @@ and agent routing. GPU admission still uses historical concurrency slots in
 this version. Rob has prioritized replacing those with adaptive GPU admission
 and separate physical VRAM/system-RAM accounting; that follow-up is not
 certified by these baseline results.
+
+## GPU follow-up qualification
+
+The historical GPU-slot limitation above is superseded by the separately
+recorded [adaptive GPU fleet qualification](gpu_readiness_2026-09-05.md).
+That report identifies the deployed source, independent RAM/VRAM contract,
+all-host test receipts, paired useful-work measurements and exact GPU-budget
+containment evidence. Its hardware limits remain explicit: current live
+qualification covers GB10; discrete desktop GPUs require onboarding checks.

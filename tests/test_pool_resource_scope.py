@@ -295,3 +295,22 @@ def test_reaper_preserves_original_resource_failure_in_attempt_history(scoped, m
     ready = json.loads(queue.item_path(pool.READY, item['action_key']).read_text())
     assert ready['detail']['termination_reason'] == 'gpu_budget_exceeded'
     assert ready['detail']['termination_evidence'] == {'source': 'broker-resource-monitor'}
+
+
+@pytest.mark.parametrize('budget', [1e300, 1e-12, 2**33])
+def test_invalid_sealed_gpu_budget_is_rejected_before_scope_creation(tmp_path, monkeypatch, budget):
+    from test_core import _body
+    (tmp_path / 'task_code.py').write_text('print(1)\n')
+    body = _body(tmp_path)
+    demand = {'gpu': 1, 'mem_gb': 4, 'cpu': 1}
+    body['params'] = {'demand': demand, 'gpu_memory_gb': budget}
+    action = pb.seal_action(body)
+    cas = pb.PrismaBuildCAS(tmp_path / 'cas')
+    cas.publish_action_request(action)
+    def forbidden(*args, **kwargs):
+        pytest.fail('invalid GPU budget reached the resource broker')
+    monkeypatch.setattr(resource_scope.ResourceScope, '_request', forbidden)
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    with pytest.raises(pool.PoolContractError, match='gpu_memory_gb'):
+        queue._start_resource_scope({'action_key': action['action_key'],
+                                    'cas_root': str(cas.root), 'resources': demand})

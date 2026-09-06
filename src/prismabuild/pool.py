@@ -128,6 +128,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
 )
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
+from . import adaptive_gpu as gpu_admission
 from . import resource_scope
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
@@ -1077,6 +1078,7 @@ class ResourceLedger:
     def begin_acquire(
         self, action_key: str, demand: Mapping[str, int], *,
         adaptive: dict | None = None, cpu_tiers: Mapping | None = None,
+        adaptive_gpu: dict | None = None,
     ) -> str | None:
         """Take the whole demand into a directory only this claimant owns.
 
@@ -1123,9 +1125,15 @@ class ResourceLedger:
                     except (FileNotFoundError, NotADirectoryError):
                         continue      # another worker took it first
                     taken += 1
-                if taken < need and not (kind == "cpu" and adaptive is not None
-                                          and adaptive.get("borrowing")):
+                if taken < need and not ((kind == "cpu" and adaptive is not None
+                                           and adaptive.get("borrowing"))
+                                          or (kind == "gpu" and adaptive_gpu is not None
+                                              and adaptive_gpu.get("probe"))):
                     raise _Insufficient(kind)
+            if adaptive_gpu:
+                metadata = dict(adaptive_gpu, borrowed_gpu=max(
+                    0, wanted.get("gpu", 0) - len(_glob(destination, "gpu-*"))))
+                _write_json_atomic(destination / gpu_admission.METADATA, metadata)
             if adaptive is not None and cpu_tiers is not None:
                 allocation = self.cpu_allocation(handle, cpu_tiers)
                 assigned = set(allocation["preferred"] + allocation["fallback"])
@@ -1197,6 +1205,8 @@ class ResourceLedger:
                 continue
             if token.name == cpu_admission.METADATA:
                 moved += int((_read_json(landing) or {}).get("borrowed_cpu", 0))
+            elif token.name == gpu_admission.METADATA:
+                moved += int((_read_json(landing) or {}).get("borrowed_gpu", 0))
             else:
                 moved += 1
         try:
@@ -1290,7 +1300,7 @@ class ResourceLedger:
         released = 0
         self.free_dir.mkdir(parents=True, exist_ok=True)
         for token in _scan(holder):
-            if token.name == cpu_admission.METADATA:
+            if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
                 token.unlink(missing_ok=True)
                 continue
             try:
@@ -1940,7 +1950,7 @@ class PoolQueue:
     #: is claimed by nobody and holds no tokens, so none of it may survive a
     #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
     _CLAIM_SCOPED_FIELDS = (
-        "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes",
+        "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes", "gpu_admission",
         "cpu_allocation",
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
@@ -2155,6 +2165,8 @@ class PoolQueue:
             self.ledger().base / "telemetry" / f"{key}.json",
             docker_owner=record.get("container_owner"),
             shape_key=cpu_admission.shape_key(record) if record.get("cas_root") else None,
+            **({"gpu_memory_max_bytes": control["gpu_memory_max_bytes"]}
+               if control.get("gpu_memory_max_bytes") is not None else {}),
         )
         scope.unit, scope.token = unit, control["token"]
         scope.cgroup_path = Path(control["cgroup_path"])
@@ -2181,6 +2193,8 @@ class PoolQueue:
             key, intent.get("nonce"), intent.get("memory_max_bytes"),
             self.ledger().base / "telemetry" / f"{key}.json",
             docker_owner=record.get("container_owner"),
+            **({"gpu_memory_max_bytes": intent["gpu_memory_max_bytes"]}
+               if intent.get("gpu_memory_max_bytes") is not None else {}),
         )
         if not scope.recover_create():
             return False
@@ -2245,6 +2259,15 @@ class PoolQueue:
         memory = demand.get("mem_gb")
         if type(memory) is not int or memory <= 0:
             raise PoolContractError("contained action needs a positive sealed mem_gb demand")
+        gpu_memory = action["params"].get("gpu_memory_gb")
+        gpu_kwargs = {}
+        if gpu_memory is not None:
+            if not demand.get("gpu"):
+                raise PoolContractError("gpu_memory_gb requires GPU demand")
+            try:
+                gpu_kwargs["gpu_memory_max_bytes"] = gpu_admission.memory_budget_bytes(gpu_memory)
+            except ValueError as exc:
+                raise PoolContractError(f"gpu_memory_gb: {exc}") from exc
         if item.get("resource_scope") is not None or item.get("resource_scope_intent") is not None:
             raise PoolContractError("claim already owns a resource scope or creation intent")
         scope = resource_scope.ResourceScope(
@@ -2252,6 +2275,7 @@ class PoolQueue:
             self.ledger().base / "telemetry" / f"{key}.json",
             docker_owner=item.get("container_owner"),
             shape_key=cpu_admission.shape_key(item),
+            **gpu_kwargs,
         )
         path = self.item_path(CLAIMED, key)
         live = _read_json(path)
@@ -2259,7 +2283,7 @@ class PoolQueue:
             raise PoolContractError("claim changed before scope creation")
         intent = {"action_key": key, "nonce": scope.nonce,
                   "memory_max_bytes": scope.memory_max_bytes,
-                  "socket_path": str(scope.socket_path)}
+                  "socket_path": str(scope.socket_path), **gpu_kwargs}
         live["resource_scope_intent"] = intent
         _write_json_atomic(path, live)
         if isinstance(item, dict):
@@ -2461,7 +2485,8 @@ class PoolQueue:
             with controller.locked():
                 return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                                    capacity=capacity, cpu_tiers=tiers,
-                                   controller=controller)
+                                   controller=controller,
+                                   gpu_controller=gpu_admission.Controller(ledger) if has_gpu else None)
         return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                            capacity=capacity, cpu_tiers=cpu_tiers)
 
@@ -2474,6 +2499,7 @@ class PoolQueue:
         capacity: Mapping[str, int] | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         controller: cpu_admission.Controller | None = None,
+        gpu_controller: gpu_admission.Controller | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -2557,8 +2583,15 @@ class PoolQueue:
                 self.item_path(READY, key).unlink(missing_ok=True)
                 continue
             demand = self.demand_of(item)
+            reservation_demand = dict(demand)
+            if gpu_controller is not None and demand.get("gpu"):
+                # Historical slot counts expressed sharing, not device count.
+                # Preserve the sealed demand but reserve this worker's single
+                # physical GPU; the controller keeps multi-slot work exclusive.
+                reservation_demand["gpu"] = 1
             handle: str | None = None
             adaptive = None
+            adaptive_gpu = None
             if controller is not None and not demand:
                 # Adaptive admission needs a durable reservation to make an
                 # unknown CPU consumer visible to subsequent measurements.
@@ -2566,16 +2599,27 @@ class PoolQueue:
                 self.record_pass(key)
                 continue
             if ledger is not None and demand:
-                if any(total.get(kind, 0) < need for kind, need in demand.items()):
+                if any(total.get(kind, 0) < need for kind, need in reservation_demand.items()):
                     continue      # never fits this box; not this box's to hold
                 if controller is not None:
                     adaptive = controller.decision(item, demand)
                     if adaptive is None:
                         self.record_pass(key)
                         continue
-                handle = (ledger.begin_acquire(key, demand) if adaptive is None else
-                          ledger.begin_acquire(key, demand, adaptive=adaptive,
-                                               cpu_tiers=cpu_tiers))
+                if gpu_controller is not None and demand.get("gpu"):
+                    adaptive_gpu = gpu_controller.decision(item, demand)
+                    if adaptive_gpu is None:
+                        self.record_pass(key)
+                        continue
+                    gpu_controller.reserve_probe(adaptive_gpu)
+                if adaptive_gpu is not None:
+                    handle = ledger.begin_acquire(key, reservation_demand, adaptive=adaptive,
+                                                  cpu_tiers=cpu_tiers,
+                                                  adaptive_gpu=adaptive_gpu)
+                else:
+                    handle = (ledger.begin_acquire(key, demand) if adaptive is None else
+                              ledger.begin_acquire(key, demand, adaptive=adaptive,
+                                                   cpu_tiers=cpu_tiers))
                 if handle is None:
                     denials = self.record_pass(key)
                     if (denials >= STARVATION_FLOOR
@@ -2628,9 +2672,11 @@ class PoolQueue:
                 # claimant and starts belonging to the action.  Every branch
                 # below releases by action key, which is correct only once the
                 # tokens are filed under it.
-                if (ledger.commit_acquire(key, handle) < sum(demand.values())
+                if (ledger.commit_acquire(key, handle) < sum(reservation_demand.values())
                         or (adaptive is not None and _read_json(
-                            ledger.held_dir / key / cpu_admission.METADATA) is None)):
+                            ledger.held_dir / key / cpu_admission.METADATA) is None)
+                        or (adaptive_gpu is not None and _read_json(
+                            ledger.held_dir / key / gpu_admission.METADATA) is None)):
                     # A stale-acquisition sweep took part of the reservation,
                     # or tokens of an earlier incarnation are filed under this
                     # key.  Fail closed rather than run unreserved: ``dst`` is
@@ -2708,12 +2754,15 @@ class PoolQueue:
             # ever reads.
             claimed.pop("passes", None)
             claimed.pop("cpu_allocation", None)
+            claimed.pop("gpu_admission", None)
             self._cpu_deferrals.pop((key, repr(moved.get("published_unix"))), None)
             claimed["claimed_by"] = owner
             claimed["claimed_unix"] = _now()
             claimed["claimed_host"] = socket.gethostname()
             if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
                 claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
+            if adaptive_gpu is not None:
+                claimed["gpu_admission"] = _read_json(ledger.held_dir / key / gpu_admission.METADATA)
             claimed["reserved_on"] = socket.gethostname() if demand else None
             _write_json_atomic(dst, claimed)
             self.write_lease(

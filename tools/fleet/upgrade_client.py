@@ -24,9 +24,13 @@ MEMBERS = {
     'gpu_memory.py': 'src/prismabuild/gpu_memory.py',
     'upgrade_client.py': 'tools/upgrade_client.py',
 }
+# This reader must converge fleet-wide in a bridge generation before a
+# broker starts requiring a newly listed optional module.
+OPTIONAL_MEMBERS = {'gpu_capacity.py': 'src/prismabuild/gpu_capacity.py'}
 SERVICE = 'prismabuild-resource-broker.service'
 MAX_MEMBER = 4 * 1024 * 1024
-MAX_EXPORT = 24 * 1024 * 1024
+MAX_EXPORT = 32 * 1024 * 1024
+CLIENT_UPGRADE_PROTOCOL = 2
 
 
 def digest(data):
@@ -84,7 +88,9 @@ def desired(config):
             or not re.fullmatch('[0-9a-f]{40}', str(receipt.get('commit', '')))):
         raise ValueError('invalid published runtime receipt')
     blobs = {}
-    for name, member in MEMBERS.items():
+    selected = {**MEMBERS, **{name: member for name, member in OPTIONAL_MEMBERS.items()
+                              if member in receipt['files']}}
+    for name, member in selected.items():
         source = root / member
         if source.resolve(strict=True) != source:
             raise ValueError(f'published client member is a symlink: {member}')
@@ -113,11 +119,12 @@ def decode_export(data):
     if (not re.fullmatch('[0-9a-f]{40}', str(version.get('commit', '')))
             or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,254}',
                                 str(version.get('generation', '')))
-            or set(version['files']) != set(MEMBERS)
-            or set(value['blobs']) != set(MEMBERS)):
+            or not set(MEMBERS) <= set(version['files'])
+            or not set(version['files']) <= set(MEMBERS) | set(OPTIONAL_MEMBERS)
+            or set(value['blobs']) != set(version['files'])):
         raise ValueError('invalid runtime export identity or members')
     blobs = {}
-    for name in MEMBERS:
+    for name in version['files']:
         data = base64.b64decode(value['blobs'][name], validate=True)
         if len(data) > MAX_MEMBER or digest(data) != version['files'][name]:
             raise ValueError(f'runtime export hash mismatch: {name}')
@@ -206,10 +213,29 @@ class Upgrader:
             self.sleep(1)
         raise RuntimeError(f'broker did not become healthy while drained: {last}')
 
-    def copy_files(self, source):
-        for name in MEMBERS:
-            data = (source / name).read_bytes()
+    @staticmethod
+    def validate_files(files):
+        if (not isinstance(files, dict) or not set(MEMBERS) <= set(files)
+                or not set(files) <= set(MEMBERS) | set(OPTIONAL_MEMBERS)):
+            raise ValueError('invalid installed client member set')
+        for name, value in files.items():
+            if value is None and name in OPTIONAL_MEMBERS:
+                continue
+            if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value):
+                raise ValueError('invalid installed client hash or absent required member')
+
+    def copy_files(self, source, files):
+        self.validate_files(files)
+        for name, expected in files.items():
             target = self.install / name
+            if expected is None:
+                # Only an explicitly journaled optional member may be absent.
+                # This restores absence after a failed dependency introduction.
+                target.unlink(missing_ok=True)
+                continue
+            data = (source / name).read_bytes()
+            if digest(data) != expected:
+                raise RuntimeError(f'staged client hash mismatch: {name}')
             temporary = self.install / ('.' + name + '.upgrade')
             with temporary.open('wb') as stream:
                 stream.write(data)
@@ -220,9 +246,11 @@ class Upgrader:
         sync_dir(self.install)
 
     def recover(self, transaction):
-        previous = {name: digest((self.state / 'previous' / name).read_bytes())
-                    for name in MEMBERS}
-        if previous != transaction.get('previous'):
+        previous = transaction.get('previous')
+        self.validate_files(previous)
+        actual = {name: digest((self.state / 'previous' / name).read_bytes())
+                  if expected is not None else None for name, expected in previous.items()}
+        if actual != previous:
             raise RuntimeError('previous client hash mismatch; recovery requires operator repair')
         # The persisted broker gate survives restart. If the service is alive,
         # independently prove the gate and idleness again before stopping it.
@@ -231,8 +259,8 @@ class Upgrader:
             if status.get('active_scopes') != 0 or status.get('draining') is not True:
                 raise RuntimeError('rollback deferred: broker still owns active work')
             self.ctl('stop')
-        self.copy_files(self.state / 'previous')
-        if self.installed() != previous:
+        self.copy_files(self.state / 'previous', previous)
+        if self.installed(previous) != previous:
             raise RuntimeError('restored client hash mismatch')
         self.ctl('start')
         self.healthy()
@@ -247,8 +275,18 @@ class Upgrader:
                     if name != 'upgrade_client.py'}
         return reply.get('installed_sha256') == expected
 
-    def installed(self):
-        return {name: digest((self.install / name).read_bytes()) for name in MEMBERS}
+    def installed(self, names=None):
+        if names is None:
+            names = [*MEMBERS, *(name for name in OPTIONAL_MEMBERS
+                                if (self.install / name).exists())]
+        result = {}
+        for name in names:
+            path = self.install / name
+            if name in OPTIONAL_MEMBERS and not path.exists():
+                result[name] = None
+            else:
+                result[name] = digest(path.read_bytes())
+        return result
 
     def run(self):
         if self.journal.exists():
@@ -263,12 +301,31 @@ class Upgrader:
             if status.get('draining') is True:
                 self.call('end')
             return self.report('current', desired=version, installed=installed)
+        # Keep an explicit union so additions and removals both carry their
+        # previous existence through failures and process restarts.
+        names = sorted(set(installed) | set(version['files']))
+        if set(names) & set(OPTIONAL_MEMBERS):
+            # A crash can execute the newly copied updater while this journal
+            # still exists. Never replace it with a pre-bridge recovery reader
+            # during a transaction that records optional member existence.
+            pattern = rb'(?m)^CLIENT_UPGRADE_PROTOCOL[ \t]*=[ \t]*2[ \t]*$'
+            for code in (blobs['upgrade_client.py'],
+                         (self.install / 'upgrade_client.py').read_bytes()):
+                if re.search(pattern, code) is None:
+                    raise ValueError('optional client transaction requires dependency-aware recovery protocol 2')
+        previous = self.installed(names)
+        target_files = {name: version['files'].get(name) for name in names}
+        self.validate_files(target_files)
         for directory in ('staged', 'previous'):
             path = self.state / directory
             path.mkdir(exist_ok=True, mode=0o700)
-            for name in MEMBERS:
-                data = blobs[name] if directory == 'staged' else (self.install / name).read_bytes()
+            for name in names:
+                hashes = target_files if directory == 'staged' else previous
                 target = path / name
+                if hashes[name] is None:
+                    target.unlink(missing_ok=True)
+                    continue
+                data = blobs[name] if directory == 'staged' else (self.install / name).read_bytes()
                 with target.open('wb') as stream:
                     stream.write(data)
                     stream.flush()
@@ -283,11 +340,11 @@ class Upgrader:
         if status.get('active_scopes') != 0:
             return self.report('draining', desired=version, installed=installed,
                                active_scopes=status.get('active_scopes'))
-        transaction = {'desired': version, 'previous': installed}
+        transaction = {'desired': version, 'previous': previous}
         atomic(self.journal, transaction)
         try:
             self.ctl('stop')
-            self.copy_files(self.state / 'staged')
+            self.copy_files(self.state / 'staged', target_files)
             if self.installed() != version['files']:
                 raise RuntimeError('installed client hash mismatch')
             self.ctl('start')
