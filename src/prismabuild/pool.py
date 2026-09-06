@@ -3165,6 +3165,38 @@ class PoolQueue:
                 pending["container_cleanup_checked_unix"] = _now()
                 _write_json_atomic(path, pending)
                 continue
+            # One holder, resolved once, before any branch below concludes
+            # this claim -- because every one of them releases the claim's
+            # tokens, and tokens are filed under the ledger of the box that
+            # committed them.  ``claim`` commits them the moment it wins the
+            # rename and rewrites the record with ``claimed_host`` only after
+            # that, so a claim lost in between is holding real capacity on a
+            # box this record does not name.  Releasing that against the
+            # default ledger names the reaper instead, whose ``held/<key>``
+            # does not exist: the release returns 0 and moves nothing, the
+            # holder keeps its tokens, and a reservation outlives its holder
+            # -- the starvation shape, reached by an accounting error rather
+            # than by a missed call (#261).
+            #
+            # The intent marker precedes the rename and does name the box, so
+            # the recovery is the one #227 added; what changes is that its
+            # answer now reaches the release as well as the record.  Both, so
+            # the ledger this loop debits and the hostname its terminal record
+            # carries are the same box.
+            #
+            # Read here for the second reason too: the requeue branch below
+            # strips ``claimed_host`` on its way to ``ready``, so this is the
+            # last point at which every path can still ask.
+            #
+            # After the container-cleanup gate rather than before it.  That
+            # gate decides who may prove a payload stopped, and in this window
+            # no payload was ever launched -- no container marker, no resource
+            # scope -- so the identity recovered here is not one it reads.
+            holder = record.get("claimed_host")
+            if not isinstance(holder, str) or not holder:
+                holder = self.claim_intent_host(key, record)
+                if holder is not None:
+                    record["claimed_host"] = holder
             terminal = self.terminal_outcome_covers(
                 record, action_key=key, terminal=terminal_keys
             )
@@ -3173,7 +3205,6 @@ class PoolQueue:
                 # directory view or a cycle racing the final unlink may still
                 # expose its old claim, but that copy is cleanup, not a retry.
                 state, outcome = terminal
-                holder = record.get("claimed_host")
                 self._file_superseded(
                     record, key=key, kind="terminal-claim", status="dropped",
                     dropped_unix=_now(), dropped_host=socket.gethostname(),
@@ -3194,24 +3225,10 @@ class PoolQueue:
                 # thing withdrawal exists to prevent, so conclude it here
                 # instead: capacity back, records gone, nothing counted as
                 # reaped because nothing was returned to the pool.
-                holder = record.get("claimed_host")
                 self.ledger(holder if isinstance(holder, str) else None).release(key)
                 path.unlink(missing_ok=True)
                 self.lease_path(key).unlink(missing_ok=True)
                 continue
-            # Read the holder's identity BEFORE the requeue branch strips it.
-            # The reaper is frequently NOT the dead claimant's box, and its
-            # tokens live under the claimant's ledger, not the reaper's.
-            holder = record.get("claimed_host")
-            if not isinstance(holder, str) or not holder:
-                # Lost between the rename and the record rewrite, so the box
-                # never named itself here.  The intent marker precedes the
-                # rename and does name it; stamping it on the record is what
-                # keeps the attempt archive and the terminal record from
-                # carrying the reaper's hostname as their only one (#227).
-                intent_host = self.claim_intent_host(key, record)
-                if intent_host is not None:
-                    record["claimed_host"] = intent_host
             # The filename is the identity; a record that disagrees with it, or
             # has lost it, must not be written back to a queue directory where
             # every consumer addresses items by key.
