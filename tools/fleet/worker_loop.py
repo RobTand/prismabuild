@@ -226,8 +226,8 @@ def _run_loop(stop_requested):
     ap.add_argument("--tag", action="append", default=[],
                     help="extra placement tag this box offers")
     ap.add_argument("--assume-idle", action="store_true",
-                    help="offer the declared numbers without looking at what "
-                         "else is running on this box (debug)")
+                    help="offer declared CPU and host memory without observing "
+                         "them (debug); GPU evidence remains mandatory")
     ap.add_argument("--observe-samples", type=int,
                     default=box_capacity.DEFAULT_SAMPLES,
                     help="consecutive observations that must agree before the "
@@ -347,10 +347,11 @@ def _run_loop(stop_requested):
             time.sleep(args.poll_s)
             continue
         if not observer_initialized:
-            observer = None if args.assume_idle else box_capacity.CapacityObserver(
-                samples=args.observe_samples,
-                ledger_total=queue.ledger().capacity(),
-            )
+            observer = (None if args.assume_idle and not gpu_capable else
+                        box_capacity.CapacityObserver(
+                            samples=args.observe_samples,
+                            ledger_total=queue.ledger().capacity(),
+                        ))
             observer_initialized = True
         gpu_sample = box_capacity.trusted_gpu_sample() if gpu_capable else None
         if args.gpu:
@@ -365,8 +366,13 @@ def _run_loop(stop_requested):
         # permitting a claim from missing or stale telemetry. Retiring deletes
         # free tokens only, so it never removes an active action's reservation;
         # a later fresh observation can restore capacity on a subsequent claim.
+        observe_overrides = {"gpu_sample": gpu_sample}
+        if args.assume_idle:
+            # This diagnostic may bypass noisy CPU and host-memory readings,
+            # but it is not an escape hatch from the trusted GPU boundary.
+            observe_overrides.update(mem_gb=None, load1=None)
         capacity = dict(declared) if observer is None else observer.offer(
-            declared, queue.ledger().held(), gpu_sample=gpu_sample)
+            declared, queue.ledger().held(), **observe_overrides)
         queue.ledger().retire_free_capacity(capacity)
         if capacity != announced:
             seen = observer.last if observer is not None else None

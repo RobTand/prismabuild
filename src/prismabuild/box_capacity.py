@@ -122,10 +122,23 @@ def _gpu_evidence(
         free = _number(device.get("memory_free_bytes"))
         used = _number(device.get("memory_used_bytes"))
         if (not isinstance(identity, str) or not identity.startswith("GPU-")
-                or identity in identities or domain not in GPU_MEMORY_DOMAINS
-                or total is None or free is None or used is None
-                or free > total or used > total):
+                or identity in identities or domain not in GPU_MEMORY_DOMAINS):
             return [], [], [], "unknown GPU identity, memory domain or bounds"
+        raw_memory = tuple(device.get(f"memory_{kind}_bytes")
+                           for kind in ("total", "free", "used"))
+        if domain == "discrete":
+            # Framebuffer counters are the admission budget for a discrete
+            # device, so every counter and their joint bound must be known.
+            if (total is None or free is None or used is None
+                    or free > total or used > total or free + used > total):
+                return [], [], [], "unknown GPU identity, memory domain or bounds"
+        elif any(value is not None for value in raw_memory):
+            # GB10 normally reports N/A for all three counters because the GPU
+            # uses host RAM. If a future driver reports them, accept only a
+            # complete internally bounded set; host memory remains authoritative.
+            if (total is None or free is None or used is None
+                    or free > total or used > total or free + used > total):
+                return [], [], [], "unknown GPU identity, memory domain or bounds"
         identities.add(identity)
         typed_devices.append(device)
     return typed_devices, foreign, jobs, None
@@ -226,15 +239,17 @@ def observe(
             capacity["gpu"] = 0
         else:
             domains = [str(device["memory_domain"]) for device in devices]
+            def memory_sum(kind: str) -> int | None:
+                values = [device.get(f"memory_{kind}_bytes") for device in devices]
+                return (sum(int(value) for value in values)
+                        if all(_number(value) is not None for value in values)
+                        else None)
             detail.update({
                 "physical_gpus": len(devices),
                 "gpu_memory_domains": domains,
-                "gpu_memory_total_bytes": sum(
-                    int(device["memory_total_bytes"]) for device in devices),
-                "gpu_memory_free_bytes": sum(
-                    int(device["memory_free_bytes"]) for device in devices),
-                "gpu_memory_used_bytes": sum(
-                    int(device["memory_used_bytes"]) for device in devices),
+                "gpu_memory_total_bytes": memory_sum("total"),
+                "gpu_memory_free_bytes": memory_sum("free"),
+                "gpu_memory_used_bytes": memory_sum("used"),
                 "gpu_attributed_jobs": len(jobs),
                 "foreign_gpu_processes": len(foreign_processes),
             })

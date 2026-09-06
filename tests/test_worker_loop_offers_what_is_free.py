@@ -134,7 +134,18 @@ def test_legacy_positive_gpu_slots_normalize_to_one_physical_token(tmp_path):
     legacy = ["--class", "gb10", "--gpu-slots", "3", "--mem-gb", "72",
               "--cpu-slots", "10", "--all-cores", "--poll-s", "0",
               "--once", "--assume-idle"]
-    queue = _run(tmp_path, legacy, gpu_sample=None)
+    queue = _run(tmp_path, legacy, gpu_sample=sample())
 
     assert _offer(queue, host)["capacity"]["gpu"] == 1
     assert queue.ledger(host).capacity()["gpu"] == 1
+
+
+def test_assume_idle_cannot_bypass_missing_gpu_evidence(tmp_path):
+    host = socket.gethostname()
+    queue = _run(tmp_path, [*BASE, "--once", "--assume-idle"],
+                 gpu_sample=None)
+
+    offer = _offer(queue, host)
+    assert offer["capacity"]["gpu"] == 1
+    assert offer["observed_capacity"]["gpu"] == 0
+    assert queue.ledger(host).capacity().get("gpu", 0) == 0

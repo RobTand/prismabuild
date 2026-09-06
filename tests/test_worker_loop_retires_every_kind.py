@@ -22,6 +22,7 @@ import importlib.util
 from pathlib import Path
 import socket
 import sys
+import time
 from unittest import mock
 
 import pytest
@@ -31,6 +32,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool  # noqa: E402
 
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
+
+
+def _gpu_sample():
+    return {
+        "schema": "prismabuild.gpu_capacity.v1", "sample_id": "fresh",
+        "sampled_unix": time.time(), "complete": True, "attributed": True,
+        "devices": [{
+            "uuid": "GPU-1", "memory_domain": "shared_system",
+            "memory_total_bytes": None, "memory_free_bytes": None,
+            "memory_used_bytes": None,
+        }],
+        "host_total_bytes": 120 * 1024**3,
+        "host_available_bytes": 100 * 1024**3,
+        "memory_pressure_some": 0, "memory_pressure_full": 0,
+        "cpu_pressure_some": 0, "cpu_pressure_full": 0,
+        "foreign_processes": [], "jobs": [],
+    }
 
 
 def _worker_loop():
@@ -54,6 +72,8 @@ def _run(tmp_path: Path, argv: list[str]):
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
          mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(wl.box_capacity, "trusted_gpu_sample",
+                           return_value=_gpu_sample()), \
          mock.patch.object(sys, "argv",
                            ["worker_loop.py", "--assume-idle", *argv]):
         assert wl.main() == 0

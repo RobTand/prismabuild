@@ -5,7 +5,6 @@ import math
 from pathlib import Path
 import sys
 import time
-from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +50,25 @@ def test_fresh_exact_gpu_evidence_reports_the_physical_device():
     assert seen.detail["gpu_capacity_trusted"] is True
     assert seen.detail["physical_gpus"] == 1
     assert seen.detail["gpu_memory_domains"] == ["shared_system"]
+
+
+def test_gb10_shared_memory_accepts_unavailable_framebuffer_counters():
+    """GB10 nvidia-smi reports N/A because its memory is host shared RAM."""
+
+    sample = gpu_sample(domain="shared_system")
+    sample["devices"][0].update(
+        memory_total_bytes=None,
+        memory_free_bytes=None,
+        memory_used_bytes=None,
+    )
+
+    seen = bc.observe(DECLARED, {}, gpu_sample=sample, mem_gb=100, load1=0)
+
+    assert seen.capacity["gpu"] == 1
+    assert seen.detail["gpu_capacity_trusted"] is True
+    assert seen.detail["gpu_memory_total_bytes"] is None
+    assert seen.detail["gpu_memory_free_bytes"] is None
+    assert seen.detail["gpu_memory_used_bytes"] is None
 
 
 def test_a_pool_job_with_many_processes_is_not_foreign():
@@ -110,6 +128,18 @@ def test_discrete_vram_does_not_reduce_the_separate_host_memory_offer():
     assert seen.capacity["mem_gb"] == 52
     assert seen.detail["gpu_memory_free_bytes"] == 80 * GIB
     assert seen.detail["mem_available_gb"] == 60
+
+
+@pytest.mark.parametrize("missing", ["memory_total_bytes", "memory_free_bytes",
+                                      "memory_used_bytes"])
+def test_discrete_vram_requires_every_framebuffer_counter(missing):
+    sample = gpu_sample(domain="discrete")
+    sample["devices"][0][missing] = None
+
+    seen = bc.observe(DECLARED, {}, gpu_sample=sample, mem_gb=100, load1=0)
+
+    assert seen.capacity["gpu"] == 0
+    assert seen.detail["gpu_capacity_trusted"] is False
 
 
 def test_memory_is_bounded_by_physical_free_memory_minus_margin():
@@ -183,9 +213,9 @@ def test_memavailable_reader_uses_kernel_field_and_gib_scale(tmp_path, monkeypat
 
 
 def test_trusted_reader_delegates_to_adaptive_gpu(monkeypatch):
+    from prismabuild import adaptive_gpu
     sample = gpu_sample()
-    monkeypatch.setitem(sys.modules, "prismabuild.adaptive_gpu",
-                        SimpleNamespace(trusted_sample=lambda: sample))
+    monkeypatch.setattr(adaptive_gpu, "trusted_sample", lambda: sample)
     assert bc.trusted_gpu_sample() is sample
 
 
