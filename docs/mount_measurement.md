@@ -55,15 +55,25 @@ time everything except the operation the queue depends on.
 waiters, with each process's state and `wchan`.
 
 This leg is not about the mount at all, and that is why it is here. PrismaBuild's
-admission gate is a *local* `flock` (`adaptive_cpu.py` `locked()`) held across
-the whole of `pool.py` `_claim` — the `ready/` scan, the record rename, the
-lease write, the token renames, every one of them on NFS. It is the conversion
-point. A mount that is merely slow becomes a local queue, and one process
-waiting on one remote peer starves every other loop on the box.
+admission gate is a *local* `flock` (`adaptive_cpu.py` `locked()`) around the
+whole of `pool.py` `_claim` — the `ready/` scan, the record rename, the lease
+write, the token renames, every one of them on NFS (#266). It *was* the
+conversion point: a mount that was merely slow became a local queue, and one
+process waiting on one remote peer starved every other loop on the box.
 
-That is what happened to dl380g10 on 2026-09-06: 15 of 16 worker loops in
-`locks_lock_inode_wait`, one holder in `__break_lease` waiting for a remote
-client to return an NFS delegation, nothing served at all. **Its load average
+#267 closed that conversion. The acquisition is now `LOCK_NB`: a loop that
+finds admission busy raises `AdmissionBusy`, returns to the top of its poll and
+announces, and tries again on the next tick. The critical section is unchanged
+and still on the mount, so this leg still matters — but it has swapped which
+number carries the signal. A long-held lock is the mount doing something to
+this box; a *waiter* is a regression, because nothing should be queueing here
+any more.
+
+That is what happened to dl380g10 on 2026-09-06, and it is the incident #267
+fixed: 15 of 16 worker loops in `locks_lock_inode_wait`, one holder in
+`__break_lease` waiting for a remote client to return an NFS delegation,
+nothing served at all. The box announced nothing while it waited, so a box that
+was merely blocked looked exactly like a box that had died. **Its load average
 read 1.13.**
 
 Not bad luck — structural. A blocking `flock` sleeps *interruptibly*, and load

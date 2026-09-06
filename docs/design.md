@@ -1310,9 +1310,15 @@ chosen margin. The syscall leg runs in a forked child abandoned at a deadline,
 because a hard mount blocks uninterruptibly and no signal reaches it, and at
 most one such child is ever outstanding: a wedged mount suppresses the next
 probe instead of accumulating one blocked process per scrape. The third
-reading is not about the mount: admission is gated by a local `flock` held
-across the whole of a claim, so a slow mount converts into a local queue and
-one process waiting on one remote peer starves every other loop on the box.
+reading is not about the mount: admission is gated by a local `flock` whose
+critical section is still entirely on the shared mount, so a slow mount still
+makes the *holder* slow. What it no longer does is convert into a local queue.
+Until #267 the acquisition blocked, and one process waiting on one remote peer
+starved every other loop on the box; `locked()` now takes `LOCK_NB` and raises
+`AdmissionBusy`, and the caller returns to the top of its poll and announces.
+The reading is kept for two reasons: the holder's dwell time is still the thing
+the mount is doing to this box, and a *waiter* now means the blocking
+acquisition has come back.
 `/proc/locks` is filtered to the admission lock files and split into holders and
 waiters, each with its state and `wchan`, and the hold age is accumulated across
 samples as a lower bound. The count of waiters not in a running or
