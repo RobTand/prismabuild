@@ -431,16 +431,20 @@ number, `cwd` and `host_class` are strings, and every switch field is `true` or
 "no"` sealed the opposite of what it said. Each refusal names the row index,
 the field, and the value.
 
-Three rows are refused at load as well, each for the reason `pbrun` gives at
+These rows are refused at load as well, each for the reason `pbrun` gives at
 submit:
 
-*   `measurement` without `host_class`. A measurement's numerics do not
-    transfer across architectures, so its result is keyed on the class that
-    produced it.
+*   `measurement` without `host_class` under `--transport slurm`. A SLURM
+    measurement is keyed on the scheduler-attested class that produced it.
+    Under `--transport pool`, omitting `host_class` is the supported form: the
+    submitter's platform/toolchain is sealed and its hostname is added to
+    placement implicitly.
+*   `measurement` with `anywhere` under `--transport pool`. Pool measurements
+    run on the submitting host whose platform/toolchain is sealed, so portable
+    placement contradicts their execution scope.
 *   `host_class` under `--transport pool`. The class is attested through the
     SLURM controller, so a pull-queue worker refuses the action at preflight.
-    This is the one refusal that depends on the campaign's transport rather
-    than on the row.
+    This refusal depends on the campaign's transport rather than on the row.
 *   `max_attempts` greater than 1. A campaign submits every row detached,
     which is what lets one command hold N actions open, and a retry needs
     somebody alive to see the attempt fail.
@@ -463,6 +467,20 @@ cache hit on the second run:
     ]
 
 Run it with `--transport slurm`, from a box of that class.
+
+For the pool, omit `host_class`; every row is implicitly pinned to the host
+running `pbcampaign`, and its platform/toolchain becomes part of the action:
+
+    [
+      {
+        "argv": ["./probe.sh", "--shard", "0"],
+        "cwd": "/home/rob/mypkg",
+        "measurement": true,
+        "retry_safe": true
+      }
+    ]
+
+Run that form with `--transport pool`. Do not set `anywhere` on those rows.
 
 `--transport` is a flag on the campaign, not a row field, because which
 dispatcher carries the work is a fact about the fleet. One caveat travels with
@@ -542,8 +560,24 @@ different width is a different action rather than a cache hit of the last run.
 
 ## Submit a measurement
 
-A measurement's numerics do not transfer across architectures, so a measurement
-is keyed on the host class that produced it:
+A measurement's numerics do not transfer across architectures, so every
+measurement has a nonportable execution scope. The two transports establish it
+differently.
+
+For the live pull queue, submit from the box whose platform should produce the
+result:
+
+    tools/fleet/pbrun.py --transport pool --measurement -- ./probe.sh
+
+This seals `execution_scope.portability=platform_keyed`, with the platform key,
+executable digest, ABI and accelerator facts derived from the submitting box's
+live evidence. `pbrun` also adds that box's hostname to effective placement
+without requiring `--here`. The worker re-derives and verifies the platform and
+toolchain before execution. `--anywhere` is refused because it contradicts the
+implicit host pin, and `--host-class` is refused because the pool has no SLURM
+controller evidence with which to attest a class.
+
+For SLURM, retain the explicit host-class form:
 
     tools/fleet/pbrun.py --transport slurm --measurement --host-class gb10 -- ./probe.sh
 
@@ -551,10 +585,10 @@ is keyed on the host class that produced it:
 host_class_keyed`, joins the effective placement so the action key moves with
 it, and the SLURM lane sends it as `--constraint=CLASS`.
 
-Three constraints follow, and each is enforced rather than advised:
+The SLURM constraints are enforced rather than advised:
 
-*   **`--measurement` refuses without `--host-class`.** A portable measurement
-    would let any box's KL stand in for another's.
+*   **A SLURM `--measurement` refuses without `--host-class`.** Its class must
+    be present in the sealed scope and scheduler constraint.
 *   **`--host-class` refuses without `--transport slurm`.** The class is
     attested through the SLURM controller, so a pull-queue worker refuses the
     action at preflight.
@@ -672,6 +706,15 @@ ending and a pull-queue ending appear side by side. The `schema` field says
 which filed it: the two writers use distinct schema ids, and only the lane
 writes a `transport` field. `pbstatus` labels its endings table from the schema
 for that reason.
+
+In the pull queue, a payload that has returned but whose scope cleanup is
+still pending retains its claim, lease and reservation. The claim's
+`finish_pending` field preserves the original status and detail, including
+timeout or OOM evidence. The claiming host retries that finish on each queue
+poll even while the lease is fresh; foreign hosts leave it alone. Once the
+broker proves the exact attempt's scope empty, the original outcome is
+archived once and capacity returns. A cleanup retry does not count as another
+attempt or turn a completed action into a lease-loss failure.
 
 A job's node-side cleanup is the Epilog's, and it reads what to clean out of a
 state file under `.../slurm/jobs/`. When that root is unreadable, which is what
@@ -1188,3 +1231,68 @@ evidence, remove that map, then restart with the new shape. Never delete a map
 while claims or loops can still use its CPU-token interpretation. Adding a new
 host creates a separate map. Ordinary runtime publication with an unchanged
 map uses the existing idle-queue procedure.
+
+### Adaptive CPU admission
+
+The declared CPU demand remains an upper bound the action may actually use.
+PrismaBuild measures current host CPU activity and pressure, including unrelated
+processes, and combines that with consumption attributed to each running pool
+attempt. Startup and any unaccounted interval are charged at the full declared
+demand. Repeated executions of the same exact workload shape may establish a
+conservative CPU-cost profile; a phase that consumes more CPU raises that cost
+promptly, while old evidence decays slowly and expires.
+
+Free preferred CPU tokens remain the first choice. When those are exhausted but
+a running generation action has fresh, complete telemetry showing that it uses
+less CPU than it reserved, the next generation action may share those reserved
+preferred CPU IDs before taking free SMT siblings or efficiency cores. The same
+evidence can support admission beyond the nominal physical-token count when the
+box still has measured headroom. This is borrowing, not a smaller declaration:
+continue to request the action's real peak CPU use.
+
+Borrowing stops when host activity or CPU pressure reaches the admission bound,
+when a donor becomes busy, or when any required observation is stale, malformed
+or incomplete. Unknown startup work is protected at its full reservation, and
+one host sample can authorize at most one new borrowing decision. Memory and GPU
+tokens are always acquired in full; CPU evidence never relaxes either budget.
+An ordinary action may still acquire physically free tokens when per-attempt
+telemetry cannot be read, but it receives no borrowing credit.
+
+Measurements are stricter. They require a fresh nearly idle CPU observation,
+do not share CPU reservations, and wait while another CPU action is held on the
+host. Use the pool's implicit platform-keyed submitting-host form or SLURM's
+explicit `--host-class CLASS` form described above. Use an exclusive GPU
+reservation whenever competing GPU work would invalidate the result. GB10 GPU
+utilization percentage is not a saturation measure; performance evidence should
+include device power, CPU activity, residency and useful work over time.
+
+Adaptive lending requires aggregate attempt telemetry for the complete execution
+scope: the direct payload, descendants and daemon-created Docker containers.
+The resource-broker design creates an exact-attempt cgroup, applies the action's
+memory ceiling there, launches the payload inside it, attaches owned containers,
+and releases the reservation only after the scope is empty. Missing broker
+attachment, an unaccounted container or incomplete telemetry must refuse lending.
+Treat this paragraph as the activation requirement; it does not by itself prove
+that the broker is installed or qualified on a given worker. Consult the current
+readiness record before relying on lending in a live campaign.
+
+### Elastic worker loops
+
+The supervisor treats each box's `fleet_boxes.json` loop count as a floor. With
+ready work and every current loop occupied, it starts a bounded batch of
+additional queue pollers. A poller that remains idle shows that queue admission
+has refused more work, so the supervisor does not keep multiplying processes.
+After the ready backlog clears, it sends `SIGTERM` only to attributable loops
+that a single claim census and the local process tree both prove idle; a loop
+holding or launching an action is retained.
+
+The automatic ceiling is derived from CPU affinity and visible memory and limits
+only cheap housekeeping processes. It is not an action-concurrency setting and
+does not replace adaptive admission. Busy or backlogged boxes are revisited on a
+short bounded interval; idle boxes keep the ordinary interval. Spawns are
+batched, and log indices are never reused, so contraction and later growth do
+not mix two live workers' append evidence.
+
+No loop-count tuning is required for ordinary operation. `--loops N` is the
+operator opt-out that fixes the count at `N`; `--once` retains deterministic
+one-shot behavior and tops up only to the configured floor.

@@ -1017,7 +1017,7 @@ def row_14_cpu_containment() -> None:
     sizes its own parallelism from ``nproc`` is reading that 4.
     """
 
-    node_cpus = int((sh(["nproc"]).stdout or "0").strip() or 0)
+    node_cpus = len(os.sched_getaffinity(0))
     for label, declared in (("14a", 1), ("14b", 2)):
         completed = pbrun(
             ["bash", "-c", "echo nproc=$(nproc); taskset -cp $$"],

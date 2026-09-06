@@ -33,6 +33,7 @@ wl.SH = Path({str(tmp_path)!r})
 wl.loaded_runtime_commit = lambda: "test"
 wl.published_commit = lambda: "test"
 def execute(self, item, **kwargs):
+    assert kwargs.get("containment") is True
     os.kill(os.getpid(), signal.SIGTERM)
     if {fails!r}:
         raise RuntimeError("action failed after shutdown request")

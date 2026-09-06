@@ -4,6 +4,9 @@
 #   fleet/slurm/smoke/run.sh                             # Ubuntu 24.04's 23.11.4
 #   DEB_DIR=/home/rob/slurm-build/arm64-24.04 .../run.sh # the fleet's 25.11.2
 #
+# PB_SMOKE_PREBUILT_IMAGE_ID=sha256:<64hex> uses that verified local image
+# without a daemon build; use this mode inside a PB resource scope.
+#
 # PB_SMOKE_CONSTRAIN_CORES=no runs the same rows with the container's
 # cgroup.conf ConstrainCores off and task/affinity dropped, which is what
 # docs/resource_enforcement_2026-09-05.md calls option B.
@@ -28,6 +31,9 @@ REPO="$(cd "$HERE/../../.." && pwd)"
 RUN_ROOT="${PB_SMOKE_RUN_ROOT:-/home/rob/slurm-build/smoke}"
 DEB_DIR="${DEB_DIR:-}"
 KEEP="${PB_SMOKE_KEEP:-0}"
+PREBUILT_IMAGE_ID="${PB_SMOKE_PREBUILT_IMAGE_ID:-}"
+# shellcheck source=fleet/slurm/smoke/image.sh
+source "$HERE/image.sh"
 
 if [ -n "$DEB_DIR" ]; then
     IMAGE="${PB_SMOKE_IMAGE:-prismabuild-slurm-smoke:25.11}"
@@ -44,6 +50,11 @@ stamp="$(date +%Y%m%dT%H%M%S)"
 run="$RUN_ROOT/run-$stamp"
 ctx="$RUN_ROOT/ctx"
 vol="$run/vol"
+mkdir -p "$vol" || exit 2
+if [ -n "$PREBUILT_IMAGE_ID" ]; then
+    IMAGE="$(pb_smoke_verify_image "$PREBUILT_IMAGE_ID")" || exit 2
+    echo "smoke: using verified prebuilt image $IMAGE"
+else
 mkdir -p "$vol" "$ctx/debs" || exit 2
 rm -f "$ctx"/debs/*.deb
 cp "$HERE/Dockerfile" "$HERE/fake_docker.sh" "$ctx/" || exit 2
@@ -65,6 +76,8 @@ docker build -q -t "$IMAGE" "$ctx" >"$run/build.log" 2>&1 || {
     tail -n 40 "$run/build.log" >&2
     exit 2
 }
+
+fi
 
 name="pb-slurm-smoke-$stamp"
 echo "smoke: running $name (repo read-only, volume $vol)"

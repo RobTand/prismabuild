@@ -105,7 +105,7 @@ if ! prepare_cgroups; then
 fi
 
 # -- configuration -----------------------------------------------------------
-CPUS="$(nproc)"
+CPUS="$(nproc --all)"
 # `task/affinity` is what writes a job's cpuset, so it goes when
 # ConstrainCores does.  `task/cgroup` stays either way: proctrack and the
 # memory constraint both live there, and the lane's process attestation needs
@@ -232,6 +232,7 @@ export PB_SMOKE_DOCKER_LOG="$VOL/docker.log"
 : >"$PB_SMOKE_DOCKER_LOG"
 chmod 0666 "$PB_SMOKE_DOCKER_LOG"
 
+python3 "$REPO/fleet/slurm/smoke/topology.py" /etc/slurm/slurm.conf || die "CPU topology setup failed"
 /usr/sbin/slurmctld >>"$LOGDIR/slurmctld.stdout" 2>&1 \
     || die "slurmctld did not start; see /var/log/slurm/slurmctld.log"
 /usr/sbin/slurmd >>"$LOGDIR/slurmd.stdout" 2>&1 \

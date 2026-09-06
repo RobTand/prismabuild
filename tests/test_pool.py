@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import threading
+import uuid
 from unittest import mock
 
 import pytest
@@ -21,8 +22,10 @@ import pathlib
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
-KEY_A = "a" * 64
-KEY_B = "b" * 64
+# Real fixture launchers are visible to the host-wide cancellation census.
+# Fixed keys let another xdist worker's private queue cancel this one's action.
+KEY_A = uuid.uuid4().hex + uuid.uuid4().hex
+KEY_B = uuid.uuid4().hex + uuid.uuid4().hex
 
 
 @pytest.fixture()
@@ -347,7 +350,7 @@ def test_worker_argv_matches_slurms_canonical_launch_minus_its_gate() -> None:
         "/w.py",
         "run-local",
         "--action",
-        f"/cas/requests/aa/{KEY_A}.json",
+        f"/cas/requests/{KEY_A[:2]}/{KEY_A}.json",
         "--cas-root",
         "/cas",
         "--checkout-root",
@@ -1763,3 +1766,36 @@ def test_the_first_denial_stamp_is_the_age_of_the_block_not_of_the_last_denial(
 
 def test_an_item_never_denied_has_no_withhold_age(queue: pool.PoolQueue) -> None:
     assert queue.withhold_age(KEY_A) == 0.0
+
+
+def test_fixture_action_is_not_selected_by_an_unrelated_queue_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A private queue does not isolate a shared action key from the PID census."""
+    pidfile = tmp_path / 'fixture-action.pid'
+    stub = _orphaning_worker(tmp_path / 'fixture_worker.py', pidfile)
+    launcher = subprocess.Popen(
+        [sys.executable, *pool.worker_argv(worker_script=stub, action_key=KEY_A,
+                                         cas_root='/cas', checkout_root=tmp_path)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True,
+    )
+    action_pid = None
+    try:
+        action_pid = _await_pid(pidfile)
+        other = pool.PoolQueue(tmp_path / 'unrelated-queue')
+        _publish(other, 'a' * 64)
+        census = pool.find_launcher_pids
+        # Exercise the real key matching, but never let this regression signal
+        # another agent's process if that agent also has an old fixture key.
+        monkeypatch.setattr(pool, 'find_launcher_pids',
+                            lambda key: [pid for pid in census(key) if pid == launcher.pid])
+        decision = other.withdraw('a' * 64, reason='cancel an unrelated fixture')
+        assert decision['signalled'] is None
+        assert launcher.poll() is None
+        assert pool._process_alive(action_pid)
+    finally:
+        if action_pid is not None:
+            _reap(action_pid)
+        if launcher.poll() is None:
+            launcher.kill()
+        launcher.communicate(timeout=5)

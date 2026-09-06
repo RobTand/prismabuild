@@ -26,6 +26,26 @@ ETC="$VOL/etc"
 say() { printf '%s\n' "boot[$NODE]: $*"; }
 die() { say "FATAL: $*"; exit 1; }
 
+# Prebuilt mode uses an immutable base image and performs this small setup
+# inside the accounted container, where apt/ssh work shares its PB budget.
+if [ -d /pb-smoke-keys ]; then
+    if [ ! -x /usr/sbin/sshd ]; then
+        apt-get update || die "could not refresh packages inside the smoke container"
+        apt-get install -y --no-install-recommends openssh-server openssh-client \
+            || die "could not install SSH inside the smoke container"
+    fi
+    install -o munge -g munge -m 0400 /pb-smoke-keys/munge.key /etc/munge/munge.key || die "munge key install failed"
+    ssh-keygen -A || die "SSH host key generation failed"
+    install -d -m 0755 /run/sshd
+    install -d -o rob -g rob -m 0700 /home/rob/.ssh
+    install -o rob -g rob -m 0600 /pb-smoke-keys/id_smoke /home/rob/.ssh/id_ed25519
+    install -o rob -g rob -m 0600 /pb-smoke-keys/id_smoke.pub /home/rob/.ssh/authorized_keys
+    printf 'StrictHostKeyChecking no\nUserKnownHostsFile /dev/null\nLogLevel ERROR\n' > /home/rob/.ssh/config
+    chown rob:rob /home/rob/.ssh/config
+    chmod 0600 /home/rob/.ssh/config
+    usermod -p '*' rob || die "could not enable smoke SSH identity"
+fi
+
 # The daemons log as root onto a volume the host reads back as `rob`, and a
 # transcript nobody outside the container can read is not evidence.  The log
 # directory is a symlink into the volume rather than a config change, which is
@@ -71,6 +91,7 @@ for name in slurm.conf gres.conf cgroup.conf; do
     [ -f "$ETC/$name" ] || die "$ETC/$name is missing; run.sh generates it"
     install -m 0644 "$ETC/$name" "/etc/slurm/$name"
 done
+python3 "$REPO/fleet/slurm/smoke/topology.py" /etc/slurm/slurm.conf || die "CPU topology setup failed"
 cp "$REPO/fleet/slurm/epilog.sh" /etc/slurm/epilog.sh
 chmod 0755 /etc/slurm/epilog.sh
 say "config sha256 $(sha256sum /etc/slurm/slurm.conf | cut -d' ' -f1)"

@@ -79,6 +79,25 @@ GENERATION_VERSION = RUNTIME_ROOT / "RUNTIME_VERSION.json"
 #: The stable name crosses the generation boundary on every idle poll, which
 #: is how a loop notices that the publisher activated a successor.
 RUNTIME_VERSION = SH / "repo" / "RUNTIME_VERSION.json"
+MAINTENANCE_GATE = Path("/run/prismabuild/maintenance.json")
+
+
+def maintenance_requested() -> bool:
+    try:
+        value = json.loads(MAINTENANCE_GATE.read_text())
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+    return not isinstance(value, dict) or value.get("draining") is not False
+
+
+def _generation_at(path: Path) -> str:
+    try:
+        value = json.loads(path.read_text())
+        return str(value.get("generation") or "") if isinstance(value, dict) else ""
+    except (OSError, ValueError):
+        return ""
 
 
 def _commit_at(path: Path) -> str:
@@ -263,6 +282,7 @@ def _run_loop(stop_requested):
     errors = 0
     announced: dict[str, int] | None = None
     loaded_commit = loaded_runtime_commit()
+    loaded_generation = _generation_at(GENERATION_VERSION)
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}", flush=True)
     while True:
         if stop_requested():
@@ -281,12 +301,24 @@ def _run_loop(stop_requested):
         # which a loop that already observes the successor keeps touching the
         # queue before exiting.
         current = published_commit()
-        if current and current != loaded_commit:
+        current_generation = _generation_at(RUNTIME_VERSION)
+        if (current and current != loaded_commit) or (
+                loaded_generation and current_generation
+                and loaded_generation != current_generation):
             print(f"[{host}] runtime moved "
                   f"{loaded_commit[:12] or '(unversioned)'} -> "
-                  f"{current[:12]}; exiting so the supervisor reloads it",
+                  f"{current[:12]}"
+                  + (f"; generation {loaded_generation} -> {current_generation}"
+                     if loaded_generation and current_generation != loaded_generation else "")
+                  + "; exiting so the supervisor reloads it",
                   flush=True)
             return 0
+        if maintenance_requested():
+            print(f"[{host}] resource broker draining for maintenance; admission paused", flush=True)
+            if args.once:
+                return 0
+            time.sleep(args.poll_s)
+            continue
         if not observer_initialized:
             observer = None if args.assume_idle else box_capacity.CapacityObserver(
                 samples=args.observe_samples,
@@ -361,6 +393,7 @@ def _run_loop(stop_requested):
             outcome = queue.serve_once(
                 tags=offered, has_gpu=args.gpu_slots > 0, python=args.python,
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
+                adaptive_cpu=not args.assume_idle, containment=True,
             )
         except Exception as exc:                                 # noqa: BLE001
             # The raise may have come two hours into an action, so this loop

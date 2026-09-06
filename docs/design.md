@@ -33,8 +33,8 @@ which is Rob's. `fleet/slurm/install.sh`, `verify.sh`,
 `cutover.sh` and `rollback.sh` are the operator's four steps, in that order.
 `tools/fleet/pbcampaign.py` fans a manifest out over the lane and
 `pbwait.py` waits for the keys, whichever transport filed their endings;
-`pbrun --measurement --host-class` seals a class-keyed action the worker
-attests through the controller. `src/prismabuild/slurm.py` is the earlier durable-state SLURM
+`pbrun --transport slurm --measurement --host-class` seals a class-keyed action
+the worker attests through the controller. `src/prismabuild/slurm.py` is the earlier durable-state SLURM
 adapter, superseded by the lane and retained until the decision record's
 Phase 3. `tools/prismabuild_worker.py` is the direct batch-script entry point.
 `docs/operating_prismabuild.md` is the usage guide for operators and agents.
@@ -170,9 +170,11 @@ matters). Rules:
 - **Generation vs measurement tasks**: ordinary generation (encodes,
   permutation/gauge searches — discrete outputs re-scored later) may exclude
   host from the key → any box's result is valid ("surrogates generate, real KL
-  selects" applied to hardware). Measurement (KL, PPL, probe)
-  INCLUDES host-class + toolchain — numerics don't transfer across
-  architectures; gold path pinned to `gb10`. Codebook generation is also
+  selects" applied to hardware). Measurement (KL, PPL, probe) includes verified
+  platform and toolchain identity because numerics do not transfer across
+  architectures. The pool seals a `platform_keyed` action and an implicit
+  submitting-host placement pin. SLURM seals an explicit `host_class_keyed`
+  action; the gold path remains pinned to `gb10`. Codebook generation is also
   nonportable because D29 records cross-architecture row-scale byte drift.
 - **Artifact family is explicit** — action schema
   `prismaquant.prismabuild.action.v2` requires the closed
@@ -217,6 +219,12 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   single visible NVIDIA compute capability, when present (for example,
   `linux-aarch64-sm121`). Heterogeneous visible capabilities are ambiguous and
   refuse.
+- A pool `pbrun --measurement` derives that platform key and its executable/ABI
+  toolchain from the submitter's live evidence, seals both, and implicitly adds
+  the submitter's hostname to effective placement. The claiming worker derives
+  its own evidence and must match. `--anywhere` is refused because it contradicts
+  that host pin; `--host-class` remains unavailable on the pool because no SLURM
+  controller attests it.
 - `worker_id` is the live hostname locally or SLURM's node name inside an
   allocation. Inside an allocation the job id is derived from the `job_<id>`
   cgroup the kernel placed the process in; `SLURM_JOB_ID`, `SLURMD_NODENAME`
@@ -238,7 +246,8 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   `evidence.slurm.controller`, optional in the persisted shape so earlier
   receipts keep validating, and a receipt re-derives the class from that
   record alone.
-- `pbrun --measurement --host-class CLASS` seals such an action: the class
+- `pbrun --transport slurm --measurement --host-class CLASS` seals such an
+  action: the class
   joins the effective placement, so the SLURM lane sends `--constraint=CLASS`
   and the action key moves with it. The submission binds the submitting
   box's argv[0] and ABI facts, as every nonportable action must, so it has to
@@ -669,7 +678,9 @@ entries can be audited by recompute-and-compare.
 Honest caveats: stochastic tasks (probe backward is recorded
 non-bit-reproducible) get run-once/first-result-wins — their entry is the
 *canonical* result, pinned but not re-derivable; and a cached measurement is
-valid only under its host-class key (a gb10 KL never answers an x86 query).
+valid only under its exact nonportable scope. A pool measurement retains its
+platform, toolchain and host placement; a SLURM measurement retains its host
+class (a gb10 KL never answers an x86 query).
 
 ### Durable SLURM submission, polling, and cancellation (superseded, never live-validated)
 
@@ -1076,7 +1087,20 @@ whereas a sweep only files an authoritative ending. Sweep before re-running a
 SLURM campaign to preserve its execution record. An unknown job without a CAS
 receipt remains unresolved; neither recovery path invents success.
 
-## Preferred and overflow CPU admission
+## Automatic client convergence
+
+The published immutable runtime is the desired client version. Worker loops
+reload at an idle boundary for every generation, including a republish of the
+same commit. Locally installed privileged clients converge through a root timer
+that verifies manifest members, closes new admission under the broker lock,
+waits for active scopes, and validates the replacement before reopening work.
+An interrupted or unhealthy replacement restores verified previous bytes.
+Maintenance refusal before payload launch returns a claim to ready without
+burning an execution attempt. The published store is explicitly authorized to
+supply these privileged bytes; manifest hashes provide copy consistency, not
+an independent signature. See [client upgrades](client_upgrade.md).
+
+## Preferred, overflow and adaptive CPU admission
 
 The fleet retains `--all-cores` so all usable CPU capacity remains available.
 Within each worker's inherited affinity, physical performance cores form the
@@ -1091,8 +1115,10 @@ Each host's immutable `reservations/<host>/cpu-map.json` maps CPU token ordinals
 to preferred CPU IDs followed by fallback IDs. Admission acquires those ordered
 tokens, and the canonical worker launches through `taskset` with exactly its
 held CPU set. The launcher checks the reservation, CPU count and inherited
-mask before execution. Concurrent reservations therefore select disjoint CPU
-IDs; children inherit the assigned affinity. The action's Docker shim carries
+mask before execution. Physical-token baseline reservations therefore select
+disjoint CPU IDs. The adaptive lending contract below may deliberately share
+an attributed, lightly used CPU; unknown or busy reservations remain disjoint.
+Children inherit the assigned affinity. The action's Docker shim carries
 that kernel mask into local `run`/`create` containers with `--cpuset-cpus`,
 intersects an explicit requested mask, and refuses an empty intersection.
 It resolves and pins the selected Unix daemon endpoint; remote or unresolved
@@ -1111,6 +1137,80 @@ tokens. This is bounded advisory deferral over distributed observations, not
 an atomic global scheduling order. An incompatible host, an undersized host,
 or a stale offer does not strand host-specific or wide work. Local ordered
 allocation remains effective after the deferral expires.
+
+Physical CPU tokens are the conservative baseline, not a fixed concurrency
+gate. The adaptive controller samples busy time for every CPU in the worker's
+inherited mask and host CPU pressure. That host-level view includes processes
+outside PrismaBuild, so unrelated load can close admission even when the pool
+ledger appears free. Samples are short-lived; pressure or near-saturation stops
+new CPU claims. A local lock serializes each host's adaptive decisions, while
+the shared queue's rename still decides ownership.
+
+Every held action begins at its full declared CPU cost. A complete, fresh
+aggregate telemetry interval may lower the estimated cost of a generation
+action, with a safety margin. Repeated completions of the same exact workload
+shape build a bounded, expiring profile so short cheap jobs can benefit too.
+Consumption increases take effect immediately; decreases decay slowly. Shape
+identity retains command, code, environment, inputs, parameters and resources,
+while excluding result bookkeeping. Custom or unverifiable launch shapes never
+borrow. Declared CPU remains the peak contract and is not rewritten by learning.
+
+When preferred tokens are exhausted, freshly attributed low use may make a
+running generation action's preferred CPU IDs lendable. Admission shares those
+IDs before consuming free fallback CPUs. If total free tokens are insufficient,
+the same evidence may lend reserved IDs, but only while the fresh host sample
+shows enough aggregate headroom. Unknown startup intervals are charged in full,
+protected and excluded from the lending set. CPUs assigned to any busy, unknown
+or measurement action remain protected. One sample cannot authorize an
+unbounded burst: a successful borrowing decision consumes its freshness for the
+next borrower.
+
+Memory and GPU resources always retain ordinary all-or-nothing token admission;
+CPU telemetry cannot discount either. Measurements require a fresh nearly idle
+host, never lend or borrow CPU IDs, and do not overlap another held CPU action.
+Measurement placement and identity remain transport-specific: the pool uses an
+implicit submitting-host pin with platform/toolchain identity, while SLURM uses
+an explicit host class. Any required exclusive GPU reservation remains a
+separate contract. In particular, GB10 GPU utilization
+percentage is not accepted as saturation evidence; device power, CPU activity,
+residency and useful work per unit time are the relevant host view.
+
+Safe lending requires complete attribution of the entire attempt, including
+direct descendants and Docker containers created through a daemon. The resource
+scope architecture assigns each attempt one broker-owned cgroup, launches the
+payload inside it, attaches owned containers, enforces the declared memory limit
+over the aggregate, records CPU time and memory peak, and proves the scope empty
+before releasing its reservation. Parent-local `memory.events.local` `oom`
+identifies exhaustion of this aggregate limit and authorizes exact-attempt
+termination even before a victim is counted. Hierarchical OOM victim counters
+remain diagnostic: an independently capped descendant can OOM without exhausting
+the enclosing attempt's budget or causing its termination. A missing broker, failed attachment,
+ambiguous container operation or incomplete/stale telemetry grants no lending
+credit. This is the activation contract, not evidence that broker deployment or
+cross-host qualification is complete; live status is recorded separately.
+
+The pool persists the creation key, nonce, memory budget and broker endpoint in
+both claim and lease before requesting a scope. A lost reply is reconciled by
+`recover_create` using that exact identity, without creating a kernel group.
+When the group and authority are absent, recovery persists a cancelled attempt
+tombstone before reporting absence, so a delayed original create cannot revive
+the attempt. Known pending setup can be released only when unlaunched, without
+Docker intents, and provably empty. Creation-recovery telemetry is incomplete
+and grants no CPU lending credit. Creates carry a recovery protocol marker;
+older brokers refuse it before mutation, and workers defer without consuming an
+attempt until the installed authority has upgraded.
+
+Worker-loop count supplies enough claimants to exercise this admission policy
+without becoming a second scheduler. `fleet_boxes.json` declares an automatic
+floor. When ready work exists and every owned loop is busy, the supervisor grows
+in bounded batches up to a housekeeping ceiling derived from visible CPU and
+memory. Idle loops are feedback that admission has stopped, so they prevent
+continued growth. Once the backlog clears, only excess loops proven idle by one
+batched claim census plus local process state receive `SIGTERM`; active work is
+never selected. Busy or backlogged cycles use a short bounded tick, spawning is
+amortized, and monotonically allocated log slots preserve append evidence across
+shrink and growth. `--loops` explicitly selects fixed mode, while `--once` tops
+up only to the configured floor.
 
 Initial activation requires drained legacy reservations. Changing an existing
 host's topology map requires draining reservations, stopping that host's worker

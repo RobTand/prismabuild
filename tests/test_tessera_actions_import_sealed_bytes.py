@@ -193,3 +193,26 @@ def test_an_action_that_escapes_its_snapshot_is_refused_before_submission(
     assert str(checkout) in str(refusal.value)
     assert _submissions(fleet) == []
     assert sl.resolve_recorded(str(escaping["action_key"])[:12]) == []
+
+
+@pytest.mark.parametrize('producer', [ladder, shards], ids=['ladder', 'shards'])
+def test_dispatchers_seal_and_submit_the_same_bounded_cpu_demand(tmp_path, monkeypatch, producer):
+    import types
+    checkout = _shared_checkout(tmp_path / 'shared-checkout', producer)
+    _producer(producer, checkout, tmp_path, monkeypatch)
+    monkeypatch.setattr(producer, 'SH', tmp_path / 'fleet')
+    if producer is shards:
+        Path(producer.PLAN).write_text('{}')
+    captured = []
+    def submit(action, **kwargs):
+        captured.append((action, kwargs))
+        return types.SimpleNamespace(action_key=action['action_key'], describe=lambda: 'queued')
+    monkeypatch.setattr(producer.fleet_submit, 'submit', submit)
+    monkeypatch.setattr(sys, 'argv', ['dispatch', '--shards', '1', '--transport', 'pool'])
+    producer.main()
+    action, submission = captured[0]
+    assert action['params']['demand'] == submission['resources']
+    assert submission['resources']['cpu'] == 1
+    assert submission['resources']['gpu'] == 1
+    for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
+        assert action['environment']['variables'][name] == '1'

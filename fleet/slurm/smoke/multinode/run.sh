@@ -1,5 +1,7 @@
 #!/bin/bash
 # Three SLURM nodes, in three containers, on this box.
+# PB_SMOKE3_PREBUILT_IMAGE_ID=sha256:<64hex> uses a verified base image,
+# then installs SSH and fresh per-run identity inside the owned containers.
 #
 #   fleet/slurm/smoke/multinode/run.sh                    # the fleet's 25.11.2
 #   PB_SMOKE3_SLURM=24.04 fleet/slurm/smoke/multinode/run.sh   # Ubuntu's 23.11.4
@@ -28,6 +30,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../../.." && pwd)"
 RUN_ROOT="${PB_SMOKE_RUN_ROOT:-/home/rob/slurm-build/smoke}"
 KEEP="${PB_SMOKE_KEEP:-0}"
+PREBUILT_IMAGE_ID="${PB_SMOKE3_PREBUILT_IMAGE_ID:-}"
+# shellcheck source=fleet/slurm/smoke/image.sh
+source "$HERE/../image.sh"
 #: The fleet's own packages are the primary; the archive's 23.11.4 is the
 #: secondary.  Both are images `fleet/slurm/smoke/run.sh` already knows how to
 #: build, and this harness only adds a munge key to one of them.
@@ -49,6 +54,7 @@ ctx="$run/ctx"
 vol="$run/vol"
 net="pb-smoke3-net-$stamp"
 image="prismabuild-slurm-smoke3:$stamp"
+built_image=0
 NODES=(dl380g10 sparky gx10-6b77)
 declare -A ROLE=([dl380g10]=ctld [sparky]=node [gx10-6b77]=node)
 # The fleet's friendly name for gx10-6b77, which is what verify.sh's ssh row
@@ -67,12 +73,16 @@ cleanup() {
     docker network rm "$net" >/dev/null 2>&1
     # Only the image this run built.  The base image belongs to the one-node
     # harness and is left alone.
-    docker rmi "$image" >/dev/null 2>&1
+    if [ "$built_image" = "1" ]; then docker rmi "$image" >/dev/null 2>&1; fi
+    rm -f "$ctx/munge.key" "$ctx/id_smoke" "$ctx/id_smoke.pub"
 }
 trap cleanup EXIT
 
 # -- the base image ----------------------------------------------------------
-if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
+if [ -n "$PREBUILT_IMAGE_ID" ]; then
+    image="$(pb_smoke_verify_image "$PREBUILT_IMAGE_ID")" || exit 2
+    echo "smoke3: using verified prebuilt image $image; identity setup runs in owned containers"
+elif ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
     echo "smoke3: building the base image $BASE_IMAGE via the one-node harness"
     base_ctx="$RUN_ROOT/ctx-smoke3-$stamp"
     mkdir -p "$base_ctx/debs" || exit 2
@@ -98,6 +108,7 @@ chmod 0400 "$ctx/munge.key"
 # other boxes' /etc/slurm/slurm.conf over ssh and a stub would test the stub.
 rm -f "$ctx/id_smoke" "$ctx/id_smoke.pub"
 ssh-keygen -q -t ed25519 -N "" -C "pb-smoke3-$stamp" -f "$ctx/id_smoke" || exit 2
+if [ -z "$PREBUILT_IMAGE_ID" ]; then
 echo "smoke3: building $image from $BASE_IMAGE"
 docker build -q --build-arg "BASE_IMAGE=$BASE_IMAGE" -t "$image" "$ctx" \
     >"$run/build.log" 2>&1 || {
@@ -107,8 +118,11 @@ docker build -q --build-arg "BASE_IMAGE=$BASE_IMAGE" -t "$image" "$ctx" \
 }
 rm -f "$ctx/munge.key" "$ctx/id_smoke" "$ctx/id_smoke.pub"
 
+    built_image=1
+fi
+
 # -- the configuration, generated once from the fleet's files ----------------
-python3 "$HERE/genconf.py" "$REPO/fleet/slurm" "$vol/etc" "$(nproc)" \
+python3 "$HERE/genconf.py" "$REPO/fleet/slurm" "$vol/etc" "$(nproc --all)" \
     | tee "$run/deviations.txt" || exit 2
 echo
 
@@ -137,6 +151,7 @@ for node in "${NODES[@]}"; do
         -v "$REPO":/repo:ro \
         ${GITDIR:+-v "$GITDIR":"$GITDIR":ro} \
         -v "$vol":/mnt/shared \
+        ${PREBUILT_IMAGE_ID:+-v "$ctx":/pb-smoke-keys:ro} \
         -e PB_SMOKE_REPO=/repo \
         -e PB_SMOKE_VOL=/mnt/shared \
         "$image" bash /repo/fleet/slurm/smoke/multinode/boot.sh "${ROLE[$node]}" \

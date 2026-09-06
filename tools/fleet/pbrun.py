@@ -2306,11 +2306,17 @@ def detached_attempts_refusal(max_attempts: int) -> str:
 
 
 def require_host_class_scope(
-    *, measurement: bool, host_class: str | None, transport: str
+    *, measurement: bool, host_class: str | None, transport: str, anywhere: bool = False
 ) -> None:
     """Refuse a scope the design cannot honour, before anything is sealed."""
 
-    if measurement and host_class is None:
+    if measurement and transport == "pool" and anywhere:
+        raise SystemExit(
+            "pbrun: pool measurements run on the submitting host whose "
+            "platform/toolchain is sealed; --anywhere contradicts that placement."
+        )
+
+    if measurement and host_class is None and transport != "pool":
         raise SystemExit(
             "pbrun: --measurement requires --host-class CLASS.\n"
             "A measurement's numerics do not transfer across architectures, "
@@ -2329,11 +2335,13 @@ def require_host_class_scope(
 
 
 def host_class_scope(
-    host_class: str | None,
+    host_class: str | None, *, measurement: bool = False, transport: str = "slurm",
 ) -> tuple[dict[str, object], dict[str, str]]:
     """The execution scope and the toolchain a submission seals.
 
-    A portable action declares no toolchain.  A host-class-keyed one is
+    Ordinary portable generation declares no toolchain. Pool measurements
+    seal the submitting platform and toolchain; main pins their placement to
+    that host. A host-class-keyed action is
     nonportable, and the core requires a nonportable action to bind the
     executable behind argv[0] and the ABI and accelerator facts of the box
     that runs it -- facts pbrun can read only from the box it runs on.  So a
@@ -2342,6 +2350,19 @@ def host_class_scope(
     another class is refused there, naming the field that differs.
     """
 
+    if measurement and transport == "pool" and host_class is None:
+        # A pool worker can attest its platform and executable/ABI directly.
+        # It cannot attest a SLURM host class, and no caller-supplied class is
+        # reinterpreted as one. Main pins this measurement to the host whose
+        # live evidence is sealed here.
+        evidence = pb._collect_worker_evidence()
+        return (
+            {"portability": "platform_keyed",
+             "platform_key": pb._platform_key_from_evidence(evidence),
+             "host_class": None},
+            {**pb.executable_toolchain_contract(SEALED_ARGV0),
+             **pb.live_platform_toolchain_contract()},
+        )
     if host_class is None:
         return (
             {"portability": "portable", "platform_key": None, "host_class": None},
@@ -3268,9 +3289,9 @@ def main() -> int:
     ap.add_argument("--tag", action="append", default=[],
                     help="require a box offering this tag (e.g. a hardware class)")
     ap.add_argument("--measurement", action="store_true",
-                    help="seal task_class=measurement: the result is numerics "
-                         "that do not transfer across architectures, so it "
-                         "requires --host-class")
+                    help="seal task_class=measurement (pool: verified local platform; "
+                         "SLURM: --host-class required): the result is numerics "
+                         "that do not transfer across architectures")
     ap.add_argument("--host-class", default=None, metavar="CLASS",
                     help="key the action on a host class, a node Feature name "
                          "(e.g. gb10): seals execution_scope host_class_keyed, "
@@ -3510,13 +3531,14 @@ def main() -> int:
         )
     require_host_class_scope(
         measurement=args.measurement, host_class=args.host_class,
-        transport=args.transport,
+        transport=args.transport, anywhere=args.anywhere,
     )
+    pool_measurement = args.measurement and args.transport == "pool"
     tags = pool.normalize_placement_tags(
         placement_tags(
             cwd,
             explicit=list(args.tag),
-            here=args.here,
+            here=args.here or pool_measurement,
             hostname=socket.gethostname(),
             portable_checkout=portable_checkout,
             command=command,
@@ -3645,7 +3667,8 @@ def main() -> int:
         expected_identity=identity,
         snapshot_refs=list(args.snapshot_ref),
     )
-    execution_scope, toolchain = host_class_scope(args.host_class)
+    execution_scope, toolchain = host_class_scope(
+        args.host_class, measurement=args.measurement, transport=args.transport)
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {

@@ -46,6 +46,9 @@ WRAPPER = "tessera_ladder_probe.py"
 #: move the export's domain with it.
 OF_SHARDS = 120
 
+# One GPU driver, with native CPU work bounded to one thread below.
+RESOURCE_DEMAND = {"cpu": 1, "gpu": 1, "mem_gb": 12}
+
 
 def shard_range(text):
     """``N`` or ``LO-HI``, inclusive, within ``1..OF_SHARDS``.
@@ -117,6 +120,7 @@ def build_action(shard, closure, rung, calibrate_every, *, wrapper=None):
         "inputs": [],
         "code_closure": closure,
         "params": {
+            "demand": dict(RESOURCE_DEMAND),
             "source_model": SOURCE,
             "grid": "E2M1_K2",
             "rung": rung,
@@ -129,6 +133,9 @@ def build_action(shard, closure, rung, calibrate_every, *, wrapper=None):
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
                 "HOME": "/home/rob",
                 "LANG": "C.UTF-8",
+                "OMP_NUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+                "OPENBLAS_NUM_THREADS": "1",
                 # Relative to the tree this action runs in: see the same
                 # entry in ``dispatch_tessera_shards``.  An absolute path
                 # into the submitter's checkout escapes the sealed snapshot
@@ -258,7 +265,7 @@ def main():
             # place -- lighter than an export shard, which streams a whole
             # file.  Re-measure before trusting this if the rung changes: a
             # lower rung means a wider descendant table.
-            resources={"gpu": 1, "mem_gb": 12},
+            resources=dict(RESOURCE_DEMAND),
         )
         published += 1
         # The submitted key, not the sealed one: under SLURM the lane

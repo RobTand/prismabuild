@@ -1,5 +1,14 @@
 # Resource enforcement at the cutover: a decision for Rob
 
+> Historical SLURM comparison, retained as measurement evidence. The subsequent
+> pool implementation uses preferred CPU affinity, adaptive CPU admission, and
+> per-attempt memory containment. Rob authorized selective termination of
+> runaway work; the choice below is no longer awaiting approval. See
+> [resource authority operations](resource_authority.md) and the
+> [readiness record](readiness_2026-09-05.md) for implementation and qualification.
+> The GB10 finding that CUDA allocations escape cgroup memory accounting still
+> matters: a host-memory ceiling alone does not bound device allocations.
+
 Under the pull queue, `pbrun --cpus` and `--demand mem_gb=N` were declarations
 that nothing enforced. `pool.py` weighed them at admission and no worker ever
 held a job to them: an action that declared `mem_gb=4` and used 40 GiB got 40

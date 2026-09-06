@@ -15,6 +15,8 @@ import sys
 OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 LABEL = "prismabuild.action"
+SCOPE_LABEL = "prismabuild.scope"
+SCOPE_RE = re.compile(r"prismabuild-job[a-f0-9]{32}\.slice")
 
 #: A second label naming the SLURM job this container was created inside.
 #:
@@ -196,7 +198,7 @@ def _label_values(argv: list[str]):
 
 def _has_reserved_label(argv: list[str]) -> bool:
     for value in _label_values(argv):
-        if value.split("=", 1)[0] in {LABEL, JOB_LABEL}:
+        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL}:
             return True
     return False
 
@@ -228,7 +230,7 @@ CONTAINER_FLAGS = frozenset("""
 """.split())
 
 
-def _container_options(argv: list[str]) -> tuple[list[str], list[str], str | None]:
+def _container_options(argv: list[str], *, memory_limit: int | None = None) -> tuple[list[str], list[str], str | None]:
     """Retain argv verbatim except cpuset options before IMAGE.
 
     Return retained argv, normalized label options for ownership checks, and the
@@ -278,6 +280,28 @@ def _container_options(argv: list[str]) -> tuple[list[str], list[str], str | Non
                     break  # Explicit short boolean value, left for Docker to validate.
         if name in {"--label", "-l"}:
             options.extend(["--label", value])
+        if memory_limit is not None and name == "--oom-score-adj":
+            try:
+                adjustment = int(value)
+            except ValueError as exc:
+                raise Refused("invalid --oom-score-adj value") from exc
+            if adjustment == -1000:
+                raise Refused("containers may not opt out of the PB group OOM boundary")
+        if memory_limit is not None and name == "--restart" and value != "no":
+            raise Refused("container restart policies cannot resurrect a completed PB job")
+        if memory_limit is not None and name in {"--cgroup-parent", "--oom-kill-disable"}:
+            raise Refused(f"{name} cannot override the PB aggregate memory boundary")
+        if memory_limit is not None and name in {"--memory", "-m", "--memory-swap"}:
+            # A PB parent provides the aggregate hard limit. Preserve any
+            # stricter container limit, but never permit unlimited swap.
+            if name in {"--memory", "-m"}:
+                requested_bytes = _memory_bytes(value)
+                options.extend(["--memory", str(min(memory_limit, requested_bytes)
+                                                if requested_bytes else memory_limit)])
+            if name == "-m" and offset > 2:
+                kept.append(token[:offset - 1])
+            index = end
+            continue
         if name == "--cpuset-cpus":
             cpuset = value
         else:
@@ -355,6 +379,143 @@ def _local_daemon(real: str, global_options: list[str]) -> tuple[list[str], dict
     return [*retained, "--host", endpoint], environment
 
 
+def _memory_bytes(value: str) -> int:
+    match = re.fullmatch(r"([0-9]+)([bkmgBKMG]?)", value)
+    if match is None:
+        raise Refused(f"invalid Docker memory value: {value!r}")
+    return int(match[1]) * {"": 1, "b": 1, "k": 1024, "m": 1024**2,
+                           "g": 1024**3}[match[2].lower()]
+
+
+def _resource_scope() -> tuple[str, int] | None:
+    """Use kernel ancestry, never caller env, for the PB attempt boundary."""
+    proc = Path("/proc/self/cgroup")
+    root = Path("/sys/fs/cgroup")
+    if os.environ.get("PRISMABUILD_DOCKER_TESTING") == "1":
+        proc = Path(os.environ.get("PRISMABUILD_CGROUP_FILE") or proc)
+        root = Path(os.environ.get("PRISMABUILD_CGROUP_ROOT") or root)
+    try:
+        raw = proc.read_text()
+        for line in raw.splitlines():
+            if not line.startswith("0::"):
+                continue
+            relative = Path(line[3:].lstrip("/"))
+            for parent in (relative, *relative.parents):
+                if SCOPE_RE.fullmatch(parent.name):
+                    limit = int((root / parent / "memory.max").read_text())
+                    if limit <= 0:
+                        raise ValueError("memory.max is not a positive limit")
+                    return parent.name, limit
+    except (OSError, ValueError) as exc:
+        raise Refused(f"cannot establish the PB cgroup memory boundary: {exc}") from exc
+    return None
+
+
+def _refuse_unaccounted_work(sub: list[str], *, scope: tuple[str, int] | None) -> None:
+    if scope is None or not sub:
+        return
+    verb = sub[0]
+    active = verb in {"build", "restart", "unpause", "update"}
+    if verb == "container" and len(sub) > 1:
+        active = sub[1] in {"restart", "unpause", "update"}
+    if verb == "builder" and len(sub) > 1:
+        active = sub[1] == "build"
+    if verb == "buildx":
+        active = not (len(sub) > 1 and sub[1] in {"version", "ls", "inspect"}
+                      and not any(token.split("=", 1)[0] == "--bootstrap" for token in sub))
+    if verb == "service" and len(sub) > 1:
+        active = sub[1] in {"create", "update", "scale", "rollback"}
+    if verb == "stack" and len(sub) > 1:
+        active = sub[1] in {"deploy", "up"}
+    if verb == "compose":
+        index = _verb_index(sub[1:], COMPOSE_VALUE_OPTIONS, COMPOSE_FLAGS, what="compose")
+        active = index is not None and sub[index + 1] in {"build", "exec", "restart", "unpause", "watch"}
+    if active:
+        raise Refused("this Docker command can start work outside the PB job's memory slice; "
+                      "use docker run/create, including an owned container for a builder")
+
+
+def _owned_exec(real: str, globals: list[str], sub: list[str], scope: tuple[str, int]) -> tuple[list[str], dict]:
+    relative = 2 if sub[:2] == ["container", "exec"] else 1
+    values = {"--detach-keys", "--env", "--env-file", "--user", "--workdir", "-e", "-u", "-w"}
+    flags = {"--detach", "--interactive", "--tty", "-d", "-i", "-t"}
+    index = relative
+    while index < len(sub):
+        token = sub[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith("-") or token == "-":
+            break
+        name, equals, _ = token.partition("=")
+        if name == "--privileged":
+            raise Refused("docker exec may not add privileged execution")
+        if name in values:
+            index += 1 if equals else 2
+        elif name in flags:
+            index += 1
+        elif not token.startswith("--"):
+            offset = 1
+            while offset < len(token):
+                short = "-" + token[offset]
+                offset += 1
+                if short in values:
+                    if offset == len(token):
+                        index += 1
+                    break
+                if short not in flags:
+                    raise Refused(f"unknown docker exec option {short}")
+            index += 1
+        else:
+            raise Refused(f"unknown docker exec option {name}")
+    if index >= len(sub):
+        raise Refused("docker exec requires this job's container and a command")
+    global_options, environment = _local_daemon(real, globals)
+    if global_options[-1] not in {"unix:///var/run/docker.sock", "unix:///run/docker.sock"}:
+        raise Refused("PB resource scopes require the local system Docker daemon")
+    try:
+        result = subprocess.run([real, *global_options, "inspect", sub[index]],
+                                capture_output=True, text=True, env=environment, timeout=10, check=False)
+        rows = json.loads(result.stdout) if result.returncode == 0 else []
+        row = rows[0] if isinstance(rows, list) and len(rows) == 1 else {}
+        labels = row.get("Config", {}).get("Labels") or {}
+        cid = row.get("Id", "")
+        if (not re.fullmatch(r"[a-f0-9]{64}", cid)
+                or labels.get(SCOPE_LABEL) != scope[0]
+                or labels.get(LABEL) != os.environ.get(OWNER_ENV)
+                or row.get("HostConfig", {}).get("CgroupParent") != scope[0]
+                or row.get("State", {}).get("Running") is not True):
+            raise Refused("docker exec target is not a running container in this exact PB memory slice")
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise Refused(f"cannot verify docker exec container ownership: {exc}") from exc
+    # Pin the immutable id after inspection; a recycled container name must not
+    # redirect this command into another job between inspect and exec.
+    return [*global_options, *sub[:index], cid, *sub[index + 1:]], environment
+
+
+def _container_intent(scope: str, *, ticket: str | None = None) -> dict:
+    # Published fleet tools are flattened; source checkouts retain tools/fleet.
+    source = Path(__file__).resolve().parents[1] / "src"
+    if not source.is_dir():
+        source = Path(__file__).resolve().parents[2] / "src"
+    sys.path.insert(0, str(source))
+    from prismabuild.resource_scope import BROKER_SOCKET, broker_request
+    endpoint = BROKER_SOCKET
+    if os.environ.get("PRISMABUILD_DOCKER_TESTING") == "1":
+        endpoint = Path(os.environ.get("PRISMABUILD_RESOURCE_SOCKET") or endpoint)
+    request = {"op": "container_begin" if ticket is None else "container_end",
+               "scope_id": scope}
+    if ticket is not None:
+        request["ticket"] = ticket
+    try:
+        response = broker_request(request, socket_path=endpoint)
+        if ticket is None and re.fullmatch(r"[a-f0-9]{64}", str(response.get("ticket", ""))) is None:
+            raise OSError("broker returned no valid container intent ticket")
+        return response
+    except (OSError, ValueError) as exc:
+        raise Refused(f"cannot register container creation with the PB resource broker: {exc}") from exc
+
+
 def main() -> int:
     argv = sys.argv[1:]
     owner = os.environ.get(OWNER_ENV, "")
@@ -382,12 +543,22 @@ def main() -> int:
             "label; use docker run/create inside this action\n")
         return 125
 
+    try:
+        scope = _resource_scope()
+        _refuse_unaccounted_work(sub, scope=scope)
+        if scope and (sub[:1] == ["exec"] or sub[:2] == ["container", "exec"]):
+            forwarded, environment = _owned_exec(real, argv[:command], sub, scope)
+            os.execvpe(real, [real, *forwarded], environment)
+    except Refused as refusal:
+        sys.stderr.write(f"docker shim: {refusal}\n")
+        return 125
     relative = _creation_index(sub)
     if relative is None:
         os.execv(real, [real, *argv])
     insertion = command + relative
     try:
-        creation, options, requested = _container_options(argv[insertion:])
+        creation, options, requested = _container_options(
+            argv[insertion:], memory_limit=scope[1] if scope else None)
         cpuset = _reserved_cpuset(requested)
     except Refused as refusal:
         sys.stderr.write(f"docker shim: {refusal}\n")
@@ -400,6 +571,8 @@ def main() -> int:
 
     try:
         global_options, environment = _local_daemon(real, argv[:command])
+        if scope and global_options[-1] not in {"unix:///var/run/docker.sock", "unix:///run/docker.sock"}:
+            raise Refused("PB resource scopes require the local system Docker daemon")
     except Refused as refusal:
         sys.stderr.write(f"docker shim: {refusal}\n")
         return 125
@@ -419,10 +592,30 @@ def main() -> int:
         job = _slurm_job_id()
         if job:
             labels += ["--label", f"{JOB_LABEL}={job}"]
-        labelled = [*global_options, *sub[:relative], *labels,
+        containment = []
+        if scope:
+            unit, limit = scope
+            labels += ["--label", f"{SCOPE_LABEL}={unit}"]
+            memory_options = [value for index, value in enumerate(options)
+                              if index and options[index - 1] == "--memory"]
+            limit = int(memory_options[-1]) if memory_options else limit
+            containment = ["--cgroup-parent", unit, "--memory", str(limit),
+                           "--memory-swap", str(limit)]
+        labelled = [*global_options, *sub[:relative], *labels, *containment,
                     "--cpuset-cpus", cpuset, *creation]
-        return subprocess.run([real, *labelled], env=environment,
-                              check=False).returncode
+        try:
+            ticket = _container_intent(scope[0])["ticket"] if scope else None
+            result = subprocess.run([real, *labelled], env=environment, check=False)
+            # Only CLI success proves the daemon operation settled. A nonzero
+            # exit can follow a connection failure after daemon acceptance.
+            # Retain its pending ticket (also for an ordinary user-command
+            # failure), so release keeps a frozen tombstone for late creation.
+            if ticket is not None and result.returncode == 0:
+                _container_intent(scope[0], ticket=ticket)
+            return result.returncode
+        except Refused as refusal:
+            sys.stderr.write(f"docker shim: {refusal}\n")
+            return 125
     finally:
         os.close(descriptor)
 
