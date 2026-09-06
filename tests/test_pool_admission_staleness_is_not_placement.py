@@ -53,6 +53,18 @@ X86 = {"cpu": 80, "gpu": 0, "mem_gb": 192}
 SMALL_CPU_WORK = {"cpu": 1, "mem_gb": 8}
 
 
+def _tiers(capacity: dict) -> dict:
+    """A CPU map big enough for the capacity the box declares.
+
+    ``_claim`` refuses a capacity larger than the inherited map, so a two-CPU
+    map under an eighty-CPU offer raises before the scan this test is about.
+    """
+
+    count = int(capacity["cpu"])
+    half = count // 2
+    return {"preferred": list(range(half)), "fallback": list(range(half, count))}
+
+
 def _fleet(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "q")
     queue.ensure_layout()
@@ -164,15 +176,13 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     queue = _fleet(tmp_path)
     _publish(queue, "a", tags=["sparky"])
     _publish(queue, "b", tags=["sparky"])
-    tiers = {"preferred": [0], "fallback": [1]}
-
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "dl380g10")
     sample = _stale_admission(queue, "dl380g10")
     before = json.loads(sample.read_text())["sampled_unix"]
     for _ in range(3):
         assert queue.claim(tags=["cpu", "dl380g10", "x86"], has_gpu=False,
-                           owner="dl380g10", capacity=X86, cpu_tiers=tiers,
-                           adaptive_cpu=True) is None
+                           owner="dl380g10", capacity=X86,
+                           cpu_tiers=_tiers(X86), adaptive_cpu=True) is None
 
     assert json.loads(sample.read_text())["sampled_unix"] == before
     # ...and no pass was recorded either: the item was skipped before the
@@ -194,5 +204,5 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     matched = _stale_admission(queue, "sparky")
     stale_on_sparky = json.loads(matched.read_text())["sampled_unix"]
     queue.claim(tags=["gb10", "sparky"], has_gpu=False, owner="sparky",
-                capacity=GB10, cpu_tiers=tiers, adaptive_cpu=True)
+                capacity=GB10, cpu_tiers=_tiers(GB10), adaptive_cpu=True)
     assert json.loads(matched.read_text())["sampled_unix"] > stale_on_sparky

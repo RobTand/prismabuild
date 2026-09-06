@@ -173,9 +173,13 @@ def test_an_expired_lease_is_still_requeued_within_one_heartbeat(
 
     queue = _queue(tmp_path, "q")
     key = "d" * 64
+    # Tagged for a box this poll is not, so the requeue is observable: without
+    # that, ``serve_once`` reaps the claim and then immediately claims and runs
+    # the very item it just returned, and the assertion below has nothing left
+    # in ``ready`` to look at.
     queue.publish(action_key=key, cas_root=str(tmp_path / "cas"),
                   checkout_root=str(tmp_path), worker_script="worker.py",
-                  resources={"cpu": 1, "mem_gb": 1})
+                  tags=["another-box"], resources={"cpu": 1, "mem_gb": 1})
     claimed = queue.item_path(pool.READY, key).rename(queue.item_path(pool.CLAIMED, key))
     record = json.loads(claimed.read_text())
     record["claimed_unix"] = clock[0] - (pool.LEASE_TIMEOUT_S + pool.HEARTBEAT_S)
