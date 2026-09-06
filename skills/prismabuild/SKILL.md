@@ -11,6 +11,34 @@ stale checkout does not become a stale submission client. Read-only inspection,
 source edits and Git operations may run locally. Children already executing
 inside an admitted job run directly; do not recursively submit them.
 
+## Tiny work quanta; PrismaBuild owns distribution
+
+Rob's explicit instruction (2026-09-05): supply enough useful GPU work for the
+fleet to balance it, and make work available as tiny, independently verifiable
+and retryable quanta. Prefer the smallest useful units that preserve required
+calibration identity, residency, dependency order and measurement isolation;
+avoid opaque long-running wrappers around otherwise independent work.
+
+Use PrismaBuild's supported fanout and campaign interfaces. Give `pbtest.py`
+the suite and let it partition tests; give `pbcampaign.py` independent logical
+actions, and submit dependent work only after its inputs are complete. Keep
+enough authorized, runnable work queued to occupy all eligible GPUs and CPUs.
+Choose granularity so startup and transfer overhead do not overwhelm useful
+work; use actual receipts and telemetry to assess it.
+
+Sharding, distribution, placement and balancing are solely PrismaBuild's job.
+Agents must not manually divide test files, layers or tensors among hosts,
+write a second dispatcher, assign a GPU job to Sparky just to light it up, or
+invent shard/worker counts in application code. Declare real dependencies and
+resource requirements through PB; leave eligible-worker selection to PB. If
+PB lacks a needed subdivision capability, report that concrete gap in PB
+instead of building an application-side workaround.
+
+When a device is idle, inspect PB's ready queue, active claims and admission
+reasons. Distinguish insufficient runnable work from an admission failure or
+a status-view defect. An empty queue is a work-supply gap; do not manufacture
+load, duplicate completed measurements, weaken gates or bypass isolation.
+
 ## Submit work
 
 `pbrun.py --cwd CHECKOUT` snapshots the checkout, including relevant dirty work,
