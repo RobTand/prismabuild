@@ -12,11 +12,45 @@ Print one snapshot:
 python3 tools/fleet/pbmetrics.py --once
 ```
 
-Serve the planned Grafana scrape endpoint:
+Serve it:
 
 ```bash
 python3 tools/fleet/pbmetrics.py --listen 0.0.0.0 --port 9877
 ```
+
+## Running it, and keeping what it says
+
+A snapshot answers "what is true right now". Every queue question that costs
+real time is a question about change, so the exporter is only useful once
+something runs it and something retains it. Install both on a box:
+
+```bash
+sudo /mnt/shared/prismabuild-fleet/repo/tools/fleet/install_pbmetrics.sh
+```
+
+That installs `prismabuild-metrics.service`, bound to `127.0.0.1:9469` and
+running as the queue's owner, and appends a Netdata scrape job for it at
+`/etc/netdata/go.d/prometheus.conf` (any existing file is copied aside first).
+`PBMETRICS_PORT`, `PBMETRICS_QUEUE`, `PBMETRICS_USER`, `PBMETRICS_PYTHON` and
+`PBMETRICS_RUNTIME` override the defaults. The script proves the exporter can
+read the queue before it installs a unit that would otherwise restart-loop.
+
+Netdata is the store, rather than a series appended under the queue, for the
+reason the queue is being observed at all: writing history onto the shared mount
+adds load to the resource whose contention is the most common thing you are
+trying to see, and loses that history exactly when the mount is the problem.
+Netdata is already on these boxes, already retains, and already runs anomaly
+detection on what it holds.
+
+The exporter reports the *whole fleet's* queue from whichever box runs it, so
+one instance is enough for the queue-wide series and the `host` label is the
+claiming box, not the observing one. Anything that must be measured *from* each
+box -- shared-mount latency, local process counts -- is a per-box measurement
+and does not belong to this exporter.
+
+One refresh over the live queue measured 0.09-0.10s wall (708 `openat`,
+47 `getdents64`). Reads are cached for ten seconds, so a scrape faster than that
+buys repetition rather than resolution; the installed job scrapes every ten.
 
 The default bind is `127.0.0.1:9469`. `GET /metrics` returns Prometheus text
 format; other paths return 404. Reads are cached for 10 seconds by default so
