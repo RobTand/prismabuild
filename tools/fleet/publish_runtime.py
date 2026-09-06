@@ -65,6 +65,11 @@ FLEET_SCRIPTS = (
     # The exporter's installer travels with it for the same reason: the box
     # best placed to run it is a box with no checkout.
     "install_pbmetrics.sh",
+    # mount_latency.py measures the medium from the box it runs on, so it has
+    # to be present on a box with no checkout -- and most of all on the box
+    # whose mount is the one in question, which is the box least able to fetch
+    # it at the time somebody wants it.
+    "mount_latency.py",
     # pb_gc.py is the same case: it sweeps a store from whichever box is
     # holding the mount, and it reads /proc on the box it runs on to find out
     # what is still live there.

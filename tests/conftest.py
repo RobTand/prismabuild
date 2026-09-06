@@ -82,6 +82,11 @@ LIVE_DEFAULTS = (
     # cost was a test that depended on the fleet's state and a suite that hung
     # for as long as the mount was unreachable.
     ("supervise", "MIRROR", "fleet"),
+    # The mount probe times real syscalls against whatever this names, and
+    # creates a directory under it.  Left pointed at the live store, the suite
+    # would write to the fleet's mount on every run and block on it whenever
+    # it was the thing being diagnosed.
+    ("mount_latency", "DEFAULT_MOUNT", "fleet"),
     ("publish_runtime", "MIRROR", "fleet/repo"),
     ("seal_and_publish", "SH", "fleet"),
     ("pbtest", "SHARED", "mount"),
