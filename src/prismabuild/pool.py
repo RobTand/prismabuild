@@ -2524,11 +2524,27 @@ class PoolQueue:
         tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
         if adaptive_cpu and capacity is not None and tiers is not None:
             controller = cpu_admission.Controller(ledger, tiers)
-            with controller.locked():
-                return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
-                                   capacity=capacity, cpu_tiers=tiers,
-                                   controller=controller,
-                                   gpu_controller=gpu_admission.Controller(ledger) if has_gpu else None)
+            try:
+                with controller.locked():
+                    return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
+                                       capacity=capacity, cpu_tiers=tiers,
+                                       controller=controller,
+                                       gpu_controller=gpu_admission.Controller(ledger) if has_gpu else None)
+            except cpu_admission.AdmissionBusy:
+                # Another loop on this box is mid-decision.  Everything under
+                # that lock -- the headroom read, the ``ready`` scan, the
+                # record rename, the lease, the tokens -- is on the shared
+                # mount, so waiting here means waiting on a filesystem a
+                # different machine controls, and the whole box waits with us.
+                #
+                # ``None`` is already this method's answer for "nothing this
+                # box may admit right now", and ``serve_once`` documents it as
+                # back-pressure to poll against rather than an empty queue.
+                # Returning it hands the loop straight back to its own poll
+                # cadence, where announcing lives: the box keeps saying what
+                # it is while a sibling is slow, instead of going silent and
+                # letting its offer expire.
+                return None
         return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                            capacity=capacity, cpu_tiers=cpu_tiers)
 
