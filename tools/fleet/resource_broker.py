@@ -95,9 +95,11 @@ class SystemdBackend:
         leaf=group/'payload';leaf.mkdir(exist_ok=True)
         info=group.stat()
         events=dict(line.split() for line in (group/'memory.events').read_text().splitlines())
+        local_events=dict(line.split() for line in (group/'memory.events.local').read_text().splitlines())
         return {'cgroup_path':str(group),'leaf_path':str(leaf),
                 'cgroup_identity':[info.st_dev,info.st_ino],
-                'memory_oom_kill_baseline':int(events.get('oom_kill',0))}
+                'memory_oom_kill_baseline':int(events.get('oom_kill',0)),
+                'memory_oom_local_baseline':int(local_events['oom'])}
     def run(self, scope, uid, command, stdio):
         helper=_trusted_file(Path(__file__).resolve().with_name('resource_payload.py'))
         read_fd=os.memfd_create('pb-user-command',os.MFD_CLOEXEC)
@@ -468,7 +470,7 @@ class ResourceMonitor:
     def _records(self):
         with self.authority.lock:
             return {scope:{key:value for key,value in record.items() if key in {
-                    *self.identity_fields,'memory_oom_kill_baseline','monitor_stop_pending',
+                    *self.identity_fields,'memory_oom_kill_baseline','memory_oom_local_baseline','monitor_stop_pending',
                     'termination_evidence','stop_reason'}}
                 for scope,record in self.authority.records.items()
                 if not record.get('pending') and not record.get('released_unix')
@@ -499,9 +501,11 @@ class ResourceMonitor:
 
     def poll_once(self):
         records=self._records();stopped=[];errors=[]
-        # memory.events covers direct allocations and every Docker descendant.
-        # Systemd can reset oom.group while creating Docker units, so finish an
-        # OOM-affected attempt even when the kernel selected just one child.
+        # Only a local OOM identifies exhaustion of this aggregate limit.
+        # Hierarchical victim counts also include safely contained child OOMs.
+        # Stop at local exhaustion even before a victim appears: allocation
+        # failure itself proves the attempt exhausted its budget. Docker victims
+        # can be charged to descendants, so local oom_kill is not the trigger.
         for scope,record in records.items():
             try:
                 path=self.authority.backend.path(scope);info=path.stat()
@@ -512,13 +516,17 @@ class ResourceMonitor:
                         stopped.append(scope)
                     continue
                 events=dict(line.split() for line in (path/'memory.events').read_text().splitlines())
+                local_events=dict(line.split() for line in (path/'memory.events.local').read_text().splitlines())
                 after=path.stat()
                 if (after.st_dev,after.st_ino)!=identity:continue
                 count=int(events.get('oom_kill',0))
                 baseline=int(record.get('memory_oom_kill_baseline',0))
-                if count>baseline:
-                    evidence={'source':'cgroup.memory.events','scope_id':scope,
+                local_count=int(local_events['oom'])
+                local_baseline=int(record.get('memory_oom_local_baseline',0))
+                if local_count>local_baseline:
+                    evidence={'source':'cgroup.memory.events.local','scope_id':scope,
                               'cgroup_identity':list(identity),'oom_kill':count,
+                              'oom_local':local_count,'oom_local_baseline':local_baseline,
                               'oom_kill_baseline':baseline,'sampled_unix':time.time()}
                     if self._stop(scope,record,identity,'memory_limit_oom',evidence):stopped.append(scope)
             except (OSError,ValueError,KeyError) as exc:errors.append({'scope_id':scope,'error':str(exc)[:1500]})

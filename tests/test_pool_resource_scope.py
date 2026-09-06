@@ -141,11 +141,22 @@ def test_kernel_oom_is_failure_even_if_launcher_reports_zero(scoped, monkeypatch
     _process(monkeypatch, queue, item, calls)
     original = resource_scope.ResourceScope.sample
     monkeypatch.setattr(resource_scope.ResourceScope, 'sample',
-                        lambda scope: {**original(scope), 'oom_kill': 1})
+                        lambda scope: {**original(scope), 'oom_kill': 1, 'oom_local': 1})
     outcome = queue.execute(item, containment=True)
     assert outcome['status'] == 'failed'
     assert outcome['returncode'] != 0
     assert outcome['termination_reason'] == 'memory_limit_oom'
+
+
+def test_contained_child_oom_does_not_fail_a_successful_parent(scoped, monkeypatch):
+    queue, item, calls = scoped
+    _process(monkeypatch, queue, item, calls)
+    original = resource_scope.ResourceScope.sample
+    monkeypatch.setattr(resource_scope.ResourceScope, 'sample',
+                        lambda scope: {**original(scope), 'oom_kill': 1, 'oom_local': 0})
+    outcome = queue.execute(item, containment=True)
+    assert outcome['status'] == 'executed'
+    assert outcome['returncode'] == 0
 
 
 def test_withdraw_stops_scope_and_releases_only_after_broker_proof(scoped, monkeypatch):
@@ -210,7 +221,7 @@ def test_live_oom_stops_remaining_payload_before_waiting_for_exit(scoped, monkey
     _process(monkeypatch, queue, item, calls, ticks=1)
     original = resource_scope.ResourceScope.sample
     monkeypatch.setattr(resource_scope.ResourceScope, 'sample',
-                        lambda scope: {**original(scope), 'oom_kill': 1})
+                        lambda scope: {**original(scope), 'oom_kill': 1, 'oom_local': 1})
     monkeypatch.setattr(pool.pb, '_terminate_process_group',
                         lambda *args, **kwargs: calls.append('proxy-signal'))
     outcome = queue.execute(item, containment=True, heartbeat_s=30)

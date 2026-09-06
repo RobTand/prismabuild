@@ -55,11 +55,13 @@ def read_cgroup(path: Path) -> dict[str, Any]:
     """Read hierarchical counters for the whole job, including its containers."""
     cpu = dict(line.split() for line in (path / 'cpu.stat').read_text().splitlines())
     events = dict(line.split() for line in (path / 'memory.events').read_text().splitlines())
+    local_events = dict(line.split() for line in (path / 'memory.events.local').read_text().splitlines())
     return {
         'cpu_seconds': int(cpu['usage_usec']) / 1_000_000,
         'memory_current_bytes': int((path / 'memory.current').read_text()),
         'memory_peak_bytes': int((path / 'memory.peak').read_text()),
         'oom_kill': int(events.get('oom_kill', 0)),
+        'oom_local': int(local_events['oom']),
     }
 
 
@@ -164,7 +166,7 @@ class ResourceScope:
         except (OSError, ValueError, KeyError) as exc:
             errors.append(str(exc))
             direct = self._last or dict(cpu_seconds=0.0, memory_current_bytes=0,
-                                        memory_peak_bytes=0, oom_kill=0)
+                                        memory_peak_bytes=0, oom_kill=0, oom_local=0)
         record = {
             'action_key': self.action_key, 'nonce': self.nonce,
             'host': socket.gethostname(), 'scope_unit': self.unit,

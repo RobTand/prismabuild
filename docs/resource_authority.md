@@ -29,9 +29,16 @@ routes. Missing or incomplete telemetry cannot authorize CPU lending.
 Direct process group OOM uses the kernel's `memory.oom.group` setting. The
 supported systemd version can reset that setting when Docker creates child
 units; the aggregate memory ceiling still applies, but whole-attempt cleanup
-requires observing the OOM and stopping the remaining owned scope. A healthy
-attempt in another slice is not selected. Live qualification must demonstrate
-that behavior rather than infer it from configuration.
+requires observing exhaustion of the parent limit and stopping the remaining
+owned scope. The authority is an increase in the parent's
+`memory.events.local` `oom` counter, recorded against the baseline at creation.
+Hierarchical `memory.events` `oom_kill` counts remain diagnostic: a descendant
+can safely hit its own smaller limit while the outer attempt stays within its
+budget. Such a child failure does not terminate the outer attempt. A local OOM
+stops the attempt even before a victim is counted, because allocation failure
+already proves exhaustion of its aggregate budget. A healthy attempt in another
+slice is not selected. Live qualification must demonstrate that behavior rather
+than infer it from configuration.
 
 GB10 CUDA allocations are not reliably charged to `memory.current`. The broker
 therefore samples NVIDIA per-process memory and binds each observation to a

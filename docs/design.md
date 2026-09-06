@@ -1180,7 +1180,11 @@ direct descendants and Docker containers created through a daemon. The resource
 scope architecture assigns each attempt one broker-owned cgroup, launches the
 payload inside it, attaches owned containers, enforces the declared memory limit
 over the aggregate, records CPU time and memory peak, and proves the scope empty
-before releasing its reservation. A missing broker, failed attachment,
+before releasing its reservation. Parent-local `memory.events.local` `oom`
+identifies exhaustion of this aggregate limit and authorizes exact-attempt
+termination even before a victim is counted. Hierarchical OOM victim counters
+remain diagnostic: an independently capped descendant can OOM without exhausting
+the enclosing attempt's budget or causing its termination. A missing broker, failed attachment,
 ambiguous container operation or incomplete/stale telemetry grants no lending
 credit. This is the activation contract, not evidence that broker deployment or
 cross-host qualification is complete; live status is recorded separately.

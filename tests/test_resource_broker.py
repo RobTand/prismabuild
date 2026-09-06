@@ -311,6 +311,7 @@ def monitored(authority, tmp_path, monkeypatch):
         request,record=create(a,nonce)
         path=b.path(record['scope_id']);path.mkdir(parents=True)
         (path/'memory.events').write_text('oom_kill 0\n')
+        (path/'memory.events.local').write_text('oom 0\n')
         info=path.stat()
         a.records[record['scope_id']]['cgroup_identity']=[info.st_dev,info.st_ino]
         a.records[record['scope_id']]['memory_oom_kill_baseline']=0
@@ -377,12 +378,45 @@ def test_memory_oom_finishes_entire_attempt_before_gpu_sampling(monitored):
     a,b,rows,gpu,monitor=monitored
     request,record,path=rows[0]
     (path/'memory.events').write_text('oom_kill 1\n')
+    (path/'memory.events.local').write_text('oom 1\noom_kill 0\n')
     assert monitor.poll_once()['stopped']==[record['scope_id']]
     assert b.stopped==[record['scope_id']]
     assert [scope.scope_id for scope in gpu.calls[0][0]]==[rows[1][1]['scope_id']]
     evidence=a.records[record['scope_id']]['termination_evidence']
-    assert evidence['source']=='cgroup.memory.events'
+    assert evidence['source']=='cgroup.memory.events.local'
+    assert evidence['oom_local']==1
     assert evidence['oom_kill']==1
+
+
+def test_child_local_oom_does_not_kill_the_parent_attempt(monitored):
+    a,b,rows,gpu,monitor=monitored
+    _,record,path=rows[0]
+    # A child capped at 1GiB failed inside a PB attempt capped at 8GiB.
+    # Victim counts propagate; the ancestor's own limit did not trigger OOM.
+    (path/'memory.events').write_text('max 23\noom 1\noom_kill 1\n')
+    (path/'memory.events.local').write_text('max 0\noom 0\noom_kill 0\n')
+    assert monitor.poll_once()['stopped']==[]
+    assert not b.stopped
+    assert 'stopped_unix' not in a.records[record['scope_id']]
+
+
+def test_parent_limit_exhaustion_stops_before_a_victim_is_counted(monitored):
+    a,b,rows,gpu,monitor=monitored
+    _,record,path=rows[0]
+    (path/'memory.events.local').write_text('oom 1\noom_kill 0\n')
+    assert monitor.poll_once()['stopped']==[record['scope_id']]
+    assert b.stopped==[record['scope_id']]
+    assert a.records[record['scope_id']]['termination_evidence']['oom_kill']==0
+
+
+def test_old_parent_oom_plus_new_child_victim_is_not_new_exhaustion(monitored):
+    a,b,rows,gpu,monitor=monitored
+    _,record,path=rows[0]
+    a.records[record['scope_id']]['memory_oom_local_baseline']=3
+    (path/'memory.events.local').write_text('oom 3\noom_kill 0\n')
+    (path/'memory.events').write_text('oom 4\noom_kill 1\n')
+    assert monitor.poll_once()['stopped']==[]
+    assert not b.stopped
 
 
 def test_preexisting_oom_counter_is_not_a_new_failure(monitored):
@@ -397,6 +431,7 @@ def test_preexisting_oom_counter_is_not_a_new_failure(monitored):
 def test_failed_monitor_stop_is_retried_with_persisted_evidence(monitored, monkeypatch):
     a,b,rows,gpu,monitor=monitored
     _,record,path=rows[0];(path/'memory.events').write_text('oom_kill 1\n')
+    (path/'memory.events.local').write_text('oom 1\n')
     original=b.stop
     def fail(scope):raise OSError('temporary cgroup failure')
     monkeypatch.setattr(b,'stop',fail)

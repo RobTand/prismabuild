@@ -57,7 +57,7 @@ def test_oom_cleanup_retry_preserves_kernel_evidence(scoped, monkeypatch):
     pool._write_json_atomic(queue.item_path(pool.CLAIMED, key), item)
     sample = resource_scope.ResourceScope.sample
     monkeypatch.setattr(resource_scope.ResourceScope, 'sample',
-                        lambda scope: {**sample(scope), 'oom_kill': 5, 'memory_peak_bytes': 2 * 1024**3})
+                        lambda scope: {**sample(scope), 'oom_kill': 5, 'oom_local': 1, 'memory_peak_bytes': 2 * 1024**3})
     outcome = queue.execute(item, containment=True)
     assert outcome['termination_reason'] == 'memory_limit_oom'
     release = resource_scope.ResourceScope.release

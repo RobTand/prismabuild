@@ -11,6 +11,7 @@ def _group(path, cpu=2000000, memory=1234):
     (path / 'memory.current').write_text(str(memory))
     (path / 'memory.peak').write_text(str(memory + 1))
     (path / 'memory.events').write_text('oom 0\noom_kill 0\n')
+    (path / 'memory.events.local').write_text('oom 0\noom_kill 0\n')
     return path
 
 
@@ -39,6 +40,20 @@ def test_cgroup_reads_whole_tree_counters(tmp_path):
     assert result['cpu_seconds'] == 2
     assert result['memory_current_bytes'] == 1234
     assert result['memory_peak_bytes'] == 1235
+
+
+def test_telemetry_separates_parent_exhaustion_from_descendant_victims(tmp_path):
+    path = _group(tmp_path / 'cg')
+    (path / 'memory.events').write_text('oom 1\noom_kill 1\n')
+    child_only = read_cgroup(path)
+    assert child_only['oom_kill'] == 1
+    assert child_only['oom_local'] == 0
+    # An aggregate OOM can select a descendant victim: the parent local
+    # victim count stays zero, but its local OOM count identifies the limit.
+    (path / 'memory.events.local').write_text('oom 1\noom_kill 0\n')
+    aggregate = read_cgroup(path)
+    assert aggregate['oom_local'] == 1
+    assert aggregate['oom_kill'] == 1
 
 
 def test_missing_scope_is_incomplete_not_idle(tmp_path):

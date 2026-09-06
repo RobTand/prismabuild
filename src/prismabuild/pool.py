@@ -2221,7 +2221,9 @@ class PoolQueue:
     def _resource_failure(telemetry: Mapping[str, object]) -> str | None:
         if telemetry.get("termination_evidence") and telemetry.get("termination_reason"):
             return str(telemetry["termination_reason"])
-        if telemetry.get("oom_kill", 0) > 0:
+        # Descendant OOM victims do not prove this attempt exhausted its cap.
+        # Parent-local OOM does, even before the kernel accounts a victim.
+        if telemetry.get("oom_local", 0) > 0:
             return "memory_limit_oom"
         return None
 
