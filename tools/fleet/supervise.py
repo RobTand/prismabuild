@@ -18,6 +18,12 @@ so the shape of the fleet is a versioned file rather than three command lines
 nobody wrote down; and elastic housekeeping width driven by real claims and
 ready work.  ``--loops`` remains a fixed-count operator override.
 
+A long-lived supervisor also follows the immutable runtime generation at a
+cycle boundary.  It validates the new generation and its own loaded bytes,
+then preserves its exclusive local claim across ``exec``.  Worker loops are
+not children to recycle during that handoff: active work finishes under the
+generation that claimed it, and idle loops upgrade independently.
+
 The claim is deliberately box-local.  It says "a supervisor owns THIS box",
 which is a fact about one machine's processes; on shared storage it would let
 one box's supervisor silence another's.  It is not a scheduling primitive and
@@ -32,20 +38,25 @@ that idempotence is what makes a five-minute timer a sufficient answer.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
-from typing import Collection
+from typing import Collection, TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
-sys.path.insert(0, str(generation_root(__file__) / "src"))
+RUNTIME_ROOT = generation_root(__file__)
+sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import pool  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
@@ -83,6 +94,185 @@ IDLE_RESERVE = 2
 BUSY_INTERVAL_S = 5.0
 LOOPS_PER_VISIBLE_CPU = 4
 BYTES_PER_HOUSEKEEPING_LOOP = 256 * 1024 * 1024
+INHERITED_CLAIM_FD_ENV = "PRISMABUILD_SUPERVISOR_CLAIM_FD"
+RUNTIME_VERSION_SCHEMA = "prismaquant.prismabuild.runtime_version.v1"
+
+
+@dataclass(frozen=True)
+class PublishedGeneration:
+    root: Path
+    name: str
+    commit: str
+    supervisor: Path
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _published_generation(
+    root: Path | None = None, *, entrypoint: Path | None = None,
+) -> PublishedGeneration | None:
+    """Return one fully validated published generation, or ``None``.
+
+    A receipt-shaped directory is insufficient.  The root must be a direct,
+    non-staging child of this fleet's generation store, its receipt must name
+    that generation, and the supervisor bytes must match the sealed manifest.
+    Transient or damaged publication state leaves the current supervisor in
+    charge and is retried on the next boundary.
+    """
+
+    try:
+        store = (MIRROR / "runtime-generations").resolve(strict=True)
+        candidate = (_current_root() if root is None else root).resolve(strict=True)
+        if (candidate.parent != store or candidate.name.startswith(".")
+                or candidate.name in ("", ".", "..")):
+            return None
+        receipt = json.loads(
+            (candidate / "RUNTIME_VERSION.json").read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict):
+            return None
+        commit = receipt.get("commit")
+        files = receipt.get("files")
+        if (receipt.get("schema") != RUNTIME_VERSION_SCHEMA
+                or receipt.get("generation") != candidate.name
+                or not isinstance(commit, str)
+                or re.fullmatch(r"[0-9a-f]{40}", commit) is None
+                or not isinstance(files, dict)):
+            return None
+        supervisor = (
+            candidate / "tools" / "supervise.py" if entrypoint is None
+            else entrypoint
+        ).resolve(strict=True)
+        relative = supervisor.relative_to(candidate).as_posix()
+        if relative not in ("tools/supervise.py", "tools/fleet/supervise.py"):
+            return None
+        expected = files.get(relative)
+        if (not isinstance(expected, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+                or _sha256(supervisor) != expected):
+            return None
+        return PublishedGeneration(candidate, candidate.name, commit, supervisor)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _loaded_published_generation() -> PublishedGeneration | None:
+    """The receipt identity of the exact supervisor bytes now executing."""
+
+    return _published_generation(RUNTIME_ROOT, entrypoint=Path(__file__))
+
+
+def _inherited_claim_handle() -> TextIO | None:
+    """Validate and adopt the flock description preserved across ``exec``."""
+
+    raw = os.environ.pop(INHERITED_CLAIM_FD_ENV, None)
+    if raw is None:
+        return None
+    if re.fullmatch(r"[0-9]+", raw) is None:
+        raise SystemExit("invalid inherited PrismaBuild supervisor claim fd")
+    try:
+        descriptor = int(raw)
+    except (ValueError, OverflowError) as exc:
+        raise SystemExit(
+            "invalid inherited PrismaBuild supervisor claim fd") from exc
+    if descriptor <= 2:
+        raise SystemExit("invalid inherited PrismaBuild supervisor claim fd")
+    try:
+        held = os.fstat(descriptor)
+        named = CLAIM.stat()
+        if (not stat.S_ISREG(held.st_mode) or held.st_uid != os.getuid()
+                or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)):
+            raise OSError("descriptor does not name the supervisor claim")
+        # This succeeds only when this open-file description owns the lock (or
+        # can acquire an otherwise unowned one).  The fresh description below
+        # must then be excluded, proving the lock survived the exec boundary.
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        contender = CLAIM.open("r+")
+        try:
+            try:
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                raise OSError("inherited claim does not exclude a contender")
+        finally:
+            contender.close()
+        os.set_inheritable(descriptor, False)
+        return os.fdopen(descriptor, "r+", encoding="utf-8", closefd=True)
+    except (OSError, OverflowError) as exc:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise SystemExit(
+            f"invalid inherited PrismaBuild supervisor claim fd: {exc}") from exc
+
+
+def _claim_handle(*, ensure: bool) -> TextIO | None:
+    """Adopt an exec-preserved lock or acquire the box-local supervisor lock."""
+
+    inherited = _inherited_claim_handle()
+    if inherited is not None:
+        return inherited
+    CLAIM.parent.mkdir(parents=True, exist_ok=True)
+    handle = CLAIM.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        if ensure:
+            return None
+        raise SystemExit(f"another supervisor owns {CLAIM}")
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+    return handle
+
+
+def _reexec_if_published(
+    loaded: PublishedGeneration | None, claim_handle: TextIO,
+) -> bool:
+    """Exec a different trusted live generation at a cycle boundary.
+
+    Worker loops are separate owned processes and are deliberately untouched.
+    They finish active jobs under their immutable generation and perform their
+    own idle upgrade; the replacement supervisor merely adopts their census.
+    """
+
+    if loaded is None:
+        return False
+    try:
+        live_root = _current_root().resolve(strict=True)
+    except OSError:
+        return False
+    if live_root == loaded.root:
+        return False
+    replacement = _published_generation(live_root)
+    if replacement is None:
+        return False
+    descriptor = claim_handle.fileno()
+    argv = [sys.executable, str(replacement.supervisor), *sys.argv[1:]]
+    environment = {**os.environ, INHERITED_CLAIM_FD_ENV: str(descriptor)}
+    print(f"[{socket.gethostname()}] supervisor generation {loaded.name} -> "
+          f"{replacement.name}; preserving pid {os.getpid()} and worker loops",
+          flush=True)
+    os.set_inheritable(descriptor, True)
+    try:
+        os.execve(sys.executable, argv, environment)
+    except OSError as exc:
+        os.set_inheritable(descriptor, False)
+        print(f"[{socket.gethostname()}] supervisor re-exec refused: {exc}",
+              flush=True)
+        return False
+    # Test doubles can return even though a real successful exec never does.
+    os.set_inheritable(descriptor, False)
+    return True
 
 
 def _current_root() -> Path:
@@ -550,16 +740,10 @@ def main() -> int:
               f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
         return 0
 
-    CLAIM.parent.mkdir(parents=True, exist_ok=True)
-    handle = CLAIM.open("w")
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        if args.ensure:
-            return 0                       # somebody else already owns this box
-        raise SystemExit(f"another supervisor owns {CLAIM}")
-    handle.write(f"{os.getpid()}\n")
-    handle.flush()
+    loaded_generation = _loaded_published_generation()
+    handle = _claim_handle(ensure=args.ensure)
+    if handle is None:
+        return 0                           # somebody else already owns this box
 
     print(f"[{host}] supervising {target} loops: {' '.join(loop_args)}",
           flush=True)
@@ -577,6 +761,8 @@ def main() -> int:
         print(f"[{host}] cycled {len(stopped)} idle loop(s) onto "
               f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
     while True:
+        if not args.once and _reexec_if_published(loaded_generation, handle):
+            return 0                       # reached only under an exec test double
         target, loop_args = declared_shape(
             host, args.loops, (target, loop_args))
 
