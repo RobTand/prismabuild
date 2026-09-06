@@ -2043,7 +2043,13 @@ class PoolQueue:
             return out
         for path in sorted(ready.glob("*.json")):
             try:
-                record = _read_json(path)
+                # An item claimed out from under this listing is one this poll
+                # does not offer, which is the answer ``None`` already gives.
+                # ``tolerate_stale`` is what keeps that true when the vanishing
+                # reaches a cached directory handle as ``ESTALE`` rather than
+                # ``ENOENT`` (#212, following #208).  The ``glob`` has already
+                # succeeded, so the directory is live and the entry is not.
+                record = _read_json(path, tolerate_stale=True)
             except PoolContractError:
                 # A record nobody can parse is nobody's work.  Raising it out
                 # of here took ``claim`` down on every box at once for one
@@ -2989,6 +2995,26 @@ class PoolQueue:
         The default grace is the heartbeat interval: longer than the window
         actually spans, far shorter than the lease timeout that governs the
         normal case.
+
+        **This loop reads its records loudly, and the sibling sweeps do not.**
+        ``ready_items`` and ``quarantine_orphans`` treat an entry that goes
+        away under the ``glob`` as ordinary, including when it arrives as
+        ``ESTALE`` through a cached directory handle (#212).  Here ``None`` is
+        not "skip an entry", it is a verdict about whether a claim concluded,
+        and ``ESTALE`` can carry a state ``ENOENT`` cannot: ``finish()``
+        publishes ``finish_pending`` by atomically *replacing* this file, so a
+        stale handle can answer "absent" for a record that is present and
+        newer.  The ``finish_pending`` guard above deliberately precedes the
+        lease check, because a payload awaiting container cleanup is no longer
+        heartbeating -- ``execute`` refreshes the lease only while the child
+        runs -- so an expired lease is that state's steady condition, not
+        evidence against it.  A tolerated ``ESTALE`` on the first read would
+        walk past the guard and reap a completed action as ``lease_lost``.
+        Tolerating only the first read and skipping the entry would be sound,
+        but it is an asymmetry inside the reaper bought for a race nobody has
+        observed on this path, and it invites the next reader to "finish" it
+        on the read below, where it is not sound.  So the reaper stays loud
+        and says why.
         """
 
         grace_s = HEARTBEAT_S
@@ -3485,6 +3511,23 @@ class PoolQueue:
                 key = self._file_unreadable(path, reason=str(exc))
                 if key is not None:
                     filed.append(key)
+                continue
+            except OSError as exc:
+                if exc.errno != errno.ESTALE:
+                    raise
+                # The same race the branch below calls ordinary, arriving
+                # through a directory handle the client had cached (#208).
+                # It is caught here rather than through ``_read_json``'s
+                # ``tolerate_stale`` because this sweep *discriminates*
+                # ``None``, and the flag would throw away the errno that tells
+                # the two cases apart: a record still on disk answers
+                # ``path.exists()`` with ``True`` and would be filed as a torn
+                # write and unlinked -- a live queue item destroyed on the
+                # evidence of a read that never reached it.  (``Path.exists``
+                # would not even survive the attempt: ``pathlib._ignore_error``
+                # covers ``ENOENT/ENOTDIR/EBADF/ELOOP``, so ``ESTALE`` comes
+                # straight back out of it.)  Filing is this sweep's only
+                # verb, and it may not be exercised on bytes it has not read.
                 continue
             if record is None:
                 # ``None`` covers two different things.  The file vanishing
