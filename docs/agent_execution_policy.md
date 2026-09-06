@@ -28,16 +28,17 @@ of the tool: a wider fanout multiplies small-file traffic against the shared
 `/mnt/shared` mount, and RobTand/prismabuild#217 records the contention that
 follows. Raise it only against a measurement showing the mount has room.
 
-Declare aggregate CPU and memory use, bound native threads per subprocess, and specify GPU demand. Use tags for
-actual dependencies and architecture, allowing any eligible worker to claim
-portable work. Reserve the CPU count the workload actually uses; do not inflate
-reservations to force access to additional cores. Physical performance cores are
-the preferred tier; SMT siblings and efficiency cores are overflow capacity.
-The pool selects CPUs, and agents must preserve its assigned affinity, including
-inside containers. A pool measurement implicitly retains the submitting host
-and its platform/toolchain identity; `--anywhere` is invalid for it. A SLURM
-measurement must retain its explicit host-class identity. Reserve exclusive GPU
-capacity when competing work would invalidate either kind of measurement.
+Declare aggregate CPU and memory use, bound native threads per subprocess, and
+specify GPU demand. Use tags for actual dependencies and architecture, allowing
+any eligible worker to claim portable work. Reserve the CPU count the workload
+actually uses; do not inflate reservations to force access to additional cores.
+Physical performance cores are the preferred tier; SMT siblings and efficiency
+cores are overflow capacity. The pool selects CPUs, and agents must preserve its
+assigned affinity, including inside containers. A pool measurement implicitly
+retains the submitting host and its platform/toolchain identity; `--anywhere` is
+invalid for it. A SLURM measurement must retain its explicit host-class
+identity. Reserve exclusive GPU capacity when competing work would invalidate
+either kind of measurement.
 
 CPU admission is adaptive, so a declared CPU count remains the action's honest
 peak demand rather than a promise that every reserved core will stay busy. The
