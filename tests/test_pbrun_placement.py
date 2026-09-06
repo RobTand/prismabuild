@@ -1284,6 +1284,50 @@ def test_portable_checkout_refuses_a_submitter_local_path_in_argv(tmp_path) -> N
         )
 
 
+@pytest.mark.parametrize("field", ["argv", "environment"])
+@pytest.mark.parametrize("form", [
+    "{path}", "--out={path}", "'{path}'", '"{path}"',
+    'open("{path}")', r'open(\"{path}\")', "/external:{path}:/other",
+])
+@pytest.mark.parametrize("suffix", ["-results", "_results", ".results", "2"])
+def test_portable_checkout_allows_sibling_path_prefixes(tmp_path, field, form, suffix):
+    checkout = tmp_path / "repo"
+    value = form.format(path=str(checkout) + suffix + "/result.json")
+    pbrun.require_relocatable_checkout(
+        ["true", value] if field == "argv" else ["true"],
+        {"OUTPUT": value} if field == "environment" else {},
+        checkout, repository_root=checkout,
+    )
+
+
+@pytest.mark.parametrize("field", ["argv", "environment"])
+@pytest.mark.parametrize("form", [
+    "{path}", "--out={path}", "'{path}'", '"{path}"',
+    'open("{path}")', r'open(\"{path}\")', "/external:{path}:/other",
+])
+@pytest.mark.parametrize("suffix", ["", "/", "/src/task.py"])
+def test_portable_checkout_refuses_embedded_exact_and_descendant_paths(
+    tmp_path, field, form, suffix,
+):
+    checkout = tmp_path / "repo"
+    value = form.format(path=str(checkout) + suffix)
+    with pytest.raises(SystemExit, match="submitter repository path"):
+        pbrun.require_relocatable_checkout(
+            ["true", value] if field == "argv" else ["true"],
+            {"OUTPUT": value} if field == "environment" else {},
+            checkout, repository_root=checkout,
+        )
+
+
+def test_portable_checkout_checks_every_path_list_component(tmp_path):
+    checkout = tmp_path / "repo"
+    with pytest.raises(SystemExit, match="environment PYTHONPATH"):
+        pbrun.require_relocatable_checkout(
+            ["true"], {"PYTHONPATH": f"{checkout}-results:{checkout}/src"},
+            checkout, repository_root=checkout,
+        )
+
+
 def test_portable_subdirectory_refuses_an_absolute_repository_sibling(
     tmp_path: Path,
 ) -> None:

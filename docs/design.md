@@ -336,7 +336,10 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   Thus `HEAD~1` and `BASE...HEAD`
   are facts a diff-derived gate can rely on rather than a
   `fatal: ambiguous argument`. Absolute submitter-repository paths in argv or
-  environment are refused because they would escape the snapshot. New
+  environment are refused because they would escape the snapshot. The lexical
+  screen requires a boundary after the repository directory name, so sibling
+  names such as `repo-results` remain external paths. It also checks embedded
+  `--out=<path>`, quoted command strings, and colon-separated path lists. New
   submissions from non-Git directories refuse: there is no mutable-path
   override. The command executable is resolved exactly from argv[0] and the
   declared `PATH`. An executable outside the repository and shared storage
