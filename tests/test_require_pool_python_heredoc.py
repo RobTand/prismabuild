@@ -102,6 +102,12 @@ def test_the_pair_this_change_is_measured_against() -> None:
      f"cat <<'EOF' | bash\n{CUDA} train.py\nEOF"),
     ("a body piped into a shell over ssh",
      "cat <<'EOF' | ssh lina bash\nsbatch job.sh\nEOF"),
+    # The question this change invites: python opens the body, so the body is
+    # not scanned as shell -- but python's OUTPUT is handed to a shell, and
+    # the downstream clause sees that shell one command further along.  What
+    # the interpreter prints is a program either way, so this stays refused.
+    ("a python body whose output is piped into a shell",
+     f"python3 - <<'PY' | bash\n{CUDA} train.py\nPY"),
     # The other four spellings of a shell, so removing any one of them from
     # ``SHELLS`` is a failing test rather than a silent widening.
     ("sh", f"sh <<'EOF'\n{CUDA} train.py\nEOF"),
