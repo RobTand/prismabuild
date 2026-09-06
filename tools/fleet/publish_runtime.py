@@ -46,6 +46,7 @@ CHECKOUT = Path(__file__).resolve().parents[2]
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
 FLEET_SCRIPTS = (
+    "dispatch_tessera_model.py",
     "docker", "pbrun.py", "pbtest.py", "require_pool.py", "worker_loop.py", "worker.py",
     "render_identity.py", "seal_and_publish.py", "tessera_status.py",
     "dispatch_tessera_shards.py", "dispatch_tessera_ladder.py",
@@ -188,6 +189,10 @@ def _publication_manifest() -> dict[str, str]:
     for source in guides:
         if source.is_file():
             published[source.relative_to(CHECKOUT).as_posix()] = _sha256(source)
+    # The published push-guard test depends on its repository-owned hook.
+    hook = CHECKOUT / ".githooks" / "pre-push"
+    if hook.is_file():
+        published[".githooks/pre-push"] = _sha256(hook)
     worker = CHECKOUT / "tools" / "prismabuild_worker.py"
     if worker.is_file():
         published["tools/prismabuild_worker.py"] = _sha256(worker)

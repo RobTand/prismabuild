@@ -1341,3 +1341,14 @@ VRAM budget. On shared-memory devices this explicit GPU cap is an additional
 subset cap, not a second reservation of the same physical DRAM. The exact
 GPU budget follows scope creation, durable recovery and release. SLURM refuses
 this option until its execution contract supports separate VRAM budgets.
+
+## Model-level Tessera dispatch
+
+The [full-model dispatcher](tessera_model_dispatch.md) owns decomposition into
+Tessera's whole-layer serving-part domain. It delegates admission/distribution
+to the existing campaign interface, seals the producer/source/plan/scale/image
+identity, and admits assembly only behind an exact complete CAS-receipt barrier.
+The assembler uses the producer's checked merge and revalidates part bytes.
+Per-worker source-hash reuse requires unchanged filesystem identity and matching
+expected digests, with before/after export checks. It is cooperative cache
+validation, not a claim of hostile-writer immutability or cross-action residency.
