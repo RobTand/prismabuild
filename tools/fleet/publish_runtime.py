@@ -188,6 +188,10 @@ def _publication_manifest() -> dict[str, str]:
     for source in guides:
         if source.is_file():
             published[source.relative_to(CHECKOUT).as_posix()] = _sha256(source)
+    # The published push-guard test depends on its repository-owned hook.
+    hook = CHECKOUT / ".githooks" / "pre-push"
+    if hook.is_file():
+        published[".githooks/pre-push"] = _sha256(hook)
     worker = CHECKOUT / "tools" / "prismabuild_worker.py"
     if worker.is_file():
         published["tools/prismabuild_worker.py"] = _sha256(worker)
