@@ -41,6 +41,8 @@ def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None,
         "    pathlib.Path(os.environ['INSPECTED']).write_text(json.dumps(sys.argv[1:]))\n"
         "    print(json.dumps(os.environ['FAKE_ENDPOINT']))\n"
         "    sys.exit(0)\n"
+        "if 'inspect' in sys.argv and os.environ.get('PRISMABUILD_DOCKER_TEST_INSPECT'):\n"
+        "    print(os.environ['PRISMABUILD_DOCKER_TEST_INSPECT']); sys.exit(0)\n"
         "pathlib.Path(os.environ['CALLED']).write_text(json.dumps(sys.argv[1:]))\n"
         "if os.environ.get('PRISMABUILD_DOCKER_TEST_KILL_SHIM') == '1':\n"
         "    os.kill(os.getppid(), 9)\n"

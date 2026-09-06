@@ -68,7 +68,7 @@ import pytest
 
 @pytest.mark.parametrize('command', [
     ['build', '.'], ['buildx', 'build', '.'], ['buildx', 'inspect', '--bootstrap'],
-    ['exec', 'another-container', 'sh'], ['container', 'restart', 'another-container'],
+    ['container', 'restart', 'another-container'],
     ['compose', '-f', 'compose.yml', 'build'], ['service', 'create', 'image'],
     ['stack', 'deploy', 'stack'], ['update', '--restart=always', 'container'],
 ])
@@ -135,3 +135,44 @@ def test_nonzero_cli_result_retains_ambiguous_intent(tmp_path, status):
     assert result.returncode == int(status), result.stderr
     assert forwarded is not None
     assert [call['op'] for call in json.loads((tmp_path / 'broker.json').read_text())] == ['container_begin']
+
+
+@pytest.mark.parametrize('prefix', [['exec'], ['container', 'exec']])
+def test_exec_verifies_and_pins_exact_owned_container(tmp_path, prefix):
+    import json
+    from test_docker_shim_global_options import OWNER
+    environment, cgroup = _environment(tmp_path)
+    scope = 'prismabuild-job0123456789abcdef0123456789abcdef.slice'
+    environment['PRISMABUILD_DOCKER_TEST_INSPECT'] = json.dumps([{
+        'Id': 'c'*64, 'Config': {'Labels': {'prismabuild.scope': scope, 'prismabuild.action': OWNER}},
+        'HostConfig': {'CgroupParent': scope}, 'State': {'Running': True},
+    }])
+    result, _, forwarded = _shim(tmp_path, [*prefix, '-ituroot', 'friendly-name', 'sh', '-c', 'echo --privileged'],
+                                cgroup=cgroup, docker_env=environment)
+    assert result.returncode == 0, result.stderr
+    assert forwarded == ['--host', 'unix:///var/run/docker.sock', *prefix, '-ituroot', 'c'*64, 'sh', '-c', 'echo --privileged']
+
+
+@pytest.mark.parametrize('changed', ['parent', 'label', 'owner', 'running', 'id'])
+def test_exec_refuses_foreign_or_unverifiable_container(tmp_path, changed):
+    import json
+    from test_docker_shim_global_options import OWNER
+    environment, cgroup = _environment(tmp_path)
+    scope = 'prismabuild-job0123456789abcdef0123456789abcdef.slice'
+    row = {'Id': 'c'*64, 'Config': {'Labels': {'prismabuild.scope': scope, 'prismabuild.action': OWNER}},
+           'HostConfig': {'CgroupParent': scope}, 'State': {'Running': True}}
+    if changed == 'parent': row['HostConfig']['CgroupParent'] = 'other.slice'
+    if changed == 'label': row['Config']['Labels']['prismabuild.scope'] = 'other.slice'
+    if changed == 'owner': row['Config']['Labels']['prismabuild.action'] = 'd'*64
+    if changed == 'running': row['State']['Running'] = False
+    if changed == 'id': row['Id'] = 'friendly-name'
+    environment['PRISMABUILD_DOCKER_TEST_INSPECT'] = json.dumps([row])
+    result, _, forwarded = _shim(tmp_path, ['exec', 'target', 'sh'], cgroup=cgroup, docker_env=environment)
+    assert result.returncode == 125
+    assert forwarded is None
+
+
+def test_exec_cannot_add_privileged_execution(tmp_path):
+    environment, cgroup = _environment(tmp_path)
+    result, _, _ = _shim(tmp_path, ['exec', '--privileged', 'target', 'sh'], cgroup=cgroup, docker_env=environment)
+    assert result.returncode == 125

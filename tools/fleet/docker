@@ -415,9 +415,9 @@ def _refuse_unaccounted_work(sub: list[str], *, scope: tuple[str, int] | None) -
     if scope is None or not sub:
         return
     verb = sub[0]
-    active = verb in {"build", "exec", "restart", "unpause", "update"}
+    active = verb in {"build", "restart", "unpause", "update"}
     if verb == "container" and len(sub) > 1:
-        active = sub[1] in {"exec", "restart", "unpause", "update"}
+        active = sub[1] in {"restart", "unpause", "update"}
     if verb == "builder" and len(sub) > 1:
         active = sub[1] == "build"
     if verb == "buildx":
@@ -433,6 +433,64 @@ def _refuse_unaccounted_work(sub: list[str], *, scope: tuple[str, int] | None) -
     if active:
         raise Refused("this Docker command can start work outside the PB job's memory slice; "
                       "use docker run/create, including an owned container for a builder")
+
+
+def _owned_exec(real: str, globals: list[str], sub: list[str], scope: tuple[str, int]) -> tuple[list[str], dict]:
+    relative = 2 if sub[:2] == ["container", "exec"] else 1
+    values = {"--detach-keys", "--env", "--env-file", "--user", "--workdir", "-e", "-u", "-w"}
+    flags = {"--detach", "--interactive", "--tty", "-d", "-i", "-t"}
+    index = relative
+    while index < len(sub):
+        token = sub[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith("-") or token == "-":
+            break
+        name, equals, _ = token.partition("=")
+        if name == "--privileged":
+            raise Refused("docker exec may not add privileged execution")
+        if name in values:
+            index += 1 if equals else 2
+        elif name in flags:
+            index += 1
+        elif not token.startswith("--"):
+            offset = 1
+            while offset < len(token):
+                short = "-" + token[offset]
+                offset += 1
+                if short in values:
+                    if offset == len(token):
+                        index += 1
+                    break
+                if short not in flags:
+                    raise Refused(f"unknown docker exec option {short}")
+            index += 1
+        else:
+            raise Refused(f"unknown docker exec option {name}")
+    if index >= len(sub):
+        raise Refused("docker exec requires this job's container and a command")
+    global_options, environment = _local_daemon(real, globals)
+    if global_options[-1] not in {"unix:///var/run/docker.sock", "unix:///run/docker.sock"}:
+        raise Refused("PB resource scopes require the local system Docker daemon")
+    try:
+        result = subprocess.run([real, *global_options, "inspect", sub[index]],
+                                capture_output=True, text=True, env=environment, timeout=10, check=False)
+        rows = json.loads(result.stdout) if result.returncode == 0 else []
+        row = rows[0] if isinstance(rows, list) and len(rows) == 1 else {}
+        labels = row.get("Config", {}).get("Labels") or {}
+        cid = row.get("Id", "")
+        if (not re.fullmatch(r"[a-f0-9]{64}", cid)
+                or labels.get(SCOPE_LABEL) != scope[0]
+                or labels.get(LABEL) != os.environ.get(OWNER_ENV)
+                or row.get("HostConfig", {}).get("CgroupParent") != scope[0]
+                or row.get("State", {}).get("Running") is not True):
+            raise Refused("docker exec target is not a running container in this exact PB memory slice")
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise Refused(f"cannot verify docker exec container ownership: {exc}") from exc
+    # Pin the immutable id after inspection; a recycled container name must not
+    # redirect this command into another job between inspect and exec.
+    return [*global_options, *sub[:index], cid, *sub[index + 1:]], environment
 
 
 def _container_intent(scope: str, *, ticket: str | None = None) -> dict:
@@ -488,6 +546,9 @@ def main() -> int:
     try:
         scope = _resource_scope()
         _refuse_unaccounted_work(sub, scope=scope)
+        if scope and (sub[:1] == ["exec"] or sub[:2] == ["container", "exec"]):
+            forwarded, environment = _owned_exec(real, argv[:command], sub, scope)
+            os.execvpe(real, [real, *forwarded], environment)
     except Refused as refusal:
         sys.stderr.write(f"docker shim: {refusal}\n")
         return 125

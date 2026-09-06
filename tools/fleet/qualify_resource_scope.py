@@ -90,6 +90,9 @@ for _ in range(2):
                         sys.argv[2], '-c', sys.argv[3]], capture_output=True, text=True)
  if result.returncode: raise RuntimeError(result.stderr)
  ids.append(result.stdout.strip())
+checked=subprocess.run([sys.argv[1], 'exec', ids[0], '/usr/bin/python3', '-c', 'print(42)'],
+                       capture_output=True, text=True)
+if checked.returncode or checked.stdout.strip() != '42': raise RuntimeError(checked.stderr)
 print(json.dumps(ids), flush=True)
 time.sleep(30)
 """
@@ -140,7 +143,7 @@ time.sleep(30)
         return {'mode': mode, 'greedy': evidence, 'healthy': well_behaved,
                 'healthy_survived': True, 'samples': len(samples), 'container_ids': container_ids,
                 'payload_privilege': privilege, 'whole_job_stopped': stopped,
-                'kernel_oom_group_after_creation': kernel_oom_group}
+                'kernel_oom_group_after_creation': kernel_oom_group, 'owned_docker_exec': mode == 'docker'}
     finally:
         host_tmp.close()
         mode_file.unlink(missing_ok=True)
