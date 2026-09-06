@@ -120,6 +120,57 @@ def counters(cpus):
     return {'cpus': values, 'psi_total': pressure, 'sampled_unix': time.time()}
 
 
+class AdmissionBusy(RuntimeError):
+    """Another loop on this box is inside the admission decision right now.
+
+    Raised instead of waiting.  A caller that sees this has learned something
+    true about the box -- admission is occupied -- and its correct response is
+    to come back on its own schedule, not to sit in the kernel until the
+    holder is done.  ``holder`` is the pid still in there when that could be
+    read from ``/proc/locks``, and ``None`` when it could not; a missing
+    holder is "unknown", never "nobody".
+    """
+
+    def __init__(self, holder=None):
+        self.holder = holder
+        super().__init__(
+            f'PrismaBuild admission is held by pid {holder} on this box'
+            if holder is not None else
+            'PrismaBuild admission is held by another loop on this box')
+
+
+def _holder_of(descriptor):
+    """The pid holding the flock on ``descriptor``, or ``None`` if unreadable.
+
+    Best effort and local: ``/proc/locks`` is procfs, so asking costs no I/O
+    on the shared mount -- which matters, because the reason this is being
+    asked at all is that something on the shared mount is slow.  Every failure
+    answers ``None`` rather than raising: a diagnostic must never be able to
+    turn a refusal into a crash.
+    """
+
+    try:
+        inode = os.fstat(descriptor).st_ino
+    except OSError:
+        return None
+    try:
+        with open('/proc/locks') as handle:
+            for line in handle:
+                fields = line.split()
+                # "<n>: FLOCK ADVISORY WRITE <pid> <maj>:<min>:<ino> 0 EOF"
+                if len(fields) < 6 or fields[1] != 'FLOCK':
+                    continue
+                if fields[5].rsplit(':', 1)[-1] != str(inode):
+                    continue
+                held_by = int(fields[4])
+                # -1 is the kernel's "no owning process" (an OFD lock); it is
+                # not a pid and must not be reported as one.
+                return held_by if held_by > 0 else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def box_state(base):
     """Return ``(directory, digest)`` naming host-local state for ONE box.
 
@@ -158,6 +209,39 @@ class Controller:
 
     @contextmanager
     def locked(self):
+        """Hold box admission for the block, or raise ``AdmissionBusy`` at once.
+
+        The acquisition is non-blocking, and that is the whole point.  What
+        this lock guards is not a short local update: ``decision`` reads
+        ``cpu-sample.json``, ``profiles.json``, ``jobs.json``, every holder's
+        metadata and every holder's telemetry, and all of those live under
+        ``reservations/<host>/`` on the shared mount, while the ``_claim`` this
+        wraps then scans ``ready/``, renames a record, writes a lease and
+        renames tokens -- also on the mount.  So the holder's time inside is
+        bounded by a filesystem another machine controls, and a blocking
+        ``LOCK_EX`` made every other loop on the box wait for it.
+
+        That is not a worst case, it is a measurement.  On 2026-09-06 one
+        client was slow to return an NFS read delegation; the holder sat in
+        ``__break_lease`` against a 45-second ``lease-break-time``, and 15 of
+        dl380g10's 16 loops were in ``locks_lock_inode_wait`` behind it.  The
+        box announced nothing for the duration -- offer age climbed past
+        ``OFFER_TIMEOUT_S`` -- so a box that was merely waiting was
+        indistinguishable, to everything watching, from a box that was gone.
+
+        Refusing instead of waiting keeps every loser on its own poll cadence,
+        which is where announcing lives, so the box keeps saying what it is
+        while one loop is slow.  There is no timeout here and no deadline
+        constant: the poll interval already is the retry.
+
+        The cost is fairness.  A refused loop loses its place -- the kernel's
+        FIFO wait queue was the only ordering these loops had -- so under
+        steady contention the same fast poller can win repeatedly.  Per-box
+        admission throughput is unchanged either way, since it is one critical
+        section wide in both designs; what changes is that nobody is ever
+        parked in the kernel for a remote filesystem's lease timer.
+        """
+
         # Never unlink: two generations must not lock different inodes. The
         # private directory and O_NOFOLLOW prevent another uid redirecting it.
         directory, digest = box_state(self.ledger.base)
@@ -167,7 +251,12 @@ class Controller:
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
                 raise RuntimeError('unsafe PrismaBuild admission lock file')
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                # Read the holder before releasing anything, so the pid named
+                # is the one that was actually in the way.
+                raise AdmissionBusy(holder=_holder_of(descriptor)) from None
             yield
         finally:
             os.close(descriptor)
@@ -358,19 +447,32 @@ def record_completion(ledger, item, telemetry):
     if not shape or measurement or not tiers:
         return False
     controller = Controller(ledger, tiers)
-    with controller.locked():
-        profiles = read_json(controller.base / 'profiles.json')
-        previous = profiles.get(shape, {})
-        completion_id = hashlib.sha256(json.dumps([item['action_key'], telemetry.get('nonce', item.get('claimed_unix'))]).encode()).hexdigest()
-        completed = previous.get('completions', [])
-        if completion_id in completed:
-            return False
-        cpu = telemetry['cpu_seconds'] / telemetry['wall_seconds']
-        profiles[shape] = {'completions': (completed + [completion_id])[-32:], 'cpu': max(cpu * 1.25, previous.get('cpu', cpu) * .98),
-                           'sampled_unix': now,
-                           'samples': min(1000, previous.get('samples', 0) + 1),
-                           'memory_peak_bytes': max(telemetry['memory_peak_bytes'],
-                                                    previous.get('memory_peak_bytes', 0))}
-        profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
-        write_json(controller.base / 'profiles.json', profiles)
+    # Learning a shape is worth having and never worth waiting for.  This runs
+    # on a scope owner that has just finished its action, so blocking here
+    # would hold that process open on another loop's NFS latency -- and this
+    # function's own contract already covers the outcome: failure to attribute
+    # produces no learned credit.  A busy box learns this shape the next time
+    # an action of it completes.
+    #
+    # The whole read-modify-write stays inside the lock; nothing within it
+    # locks again, so the handler can only be catching this box's own refusal
+    # to wait.
+    try:
+        with controller.locked():
+            profiles = read_json(controller.base / 'profiles.json')
+            previous = profiles.get(shape, {})
+            completion_id = hashlib.sha256(json.dumps([item['action_key'], telemetry.get('nonce', item.get('claimed_unix'))]).encode()).hexdigest()
+            completed = previous.get('completions', [])
+            if completion_id in completed:
+                return False
+            cpu = telemetry['cpu_seconds'] / telemetry['wall_seconds']
+            profiles[shape] = {'completions': (completed + [completion_id])[-32:], 'cpu': max(cpu * 1.25, previous.get('cpu', cpu) * .98),
+                               'sampled_unix': now,
+                               'samples': min(1000, previous.get('samples', 0) + 1),
+                               'memory_peak_bytes': max(telemetry['memory_peak_bytes'],
+                                                        previous.get('memory_peak_bytes', 0))}
+            profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
+            write_json(controller.base / 'profiles.json', profiles)
+    except AdmissionBusy:
+        return False
     return True
