@@ -249,9 +249,19 @@ def main() -> int:
         tail = [line for line in (out or "").strip().splitlines() if line.strip()]
         summary = next((l for l in reversed(tail)
                         if " passed" in l or " failed" in l or " error" in l), "")
+        # A shard whose pytest never reported is a shard whose tests never
+        # ran, and it is not the same event as a shard that ran clean -- but
+        # with an empty summary it printed the same blank space, which is how
+        # a submission killed before it queued anything (#208) cost 74 tests
+        # silently.  Say the count that did not run; do not let the reader
+        # infer it from an absence.
+        ran = bool(summary)
+        if not ran:
+            summary = (f"NO PYTEST SUMMARY -- {len(bucket)} file(s) did not run "
+                       f"(the shard died before or outside pytest)")
         results.append({"shard": index, "files": bucket,
                         "returncode": proc.returncode, "summary": summary,
-                        "output": out})
+                        "ran": ran, "output": out})
         state = "ok" if proc.returncode == 0 else f"rc={proc.returncode}"
         print(f"shard {index:>3} {state:<8} {summary}", flush=True)
 
