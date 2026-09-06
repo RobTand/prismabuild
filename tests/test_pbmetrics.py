@@ -248,6 +248,94 @@ class MetricsFixture(unittest.TestCase):
         self.assertTrue(any('host="dl380"' in line for line in _samples(
             text, "prismabuild_attempt_observed_resources")))
 
+    def test_a_claim_that_stopped_reporting_does_not_erase_its_host(self) -> None:
+        """The host in trouble must not be the host that reports nothing.
+
+        A claim blocked on the shared mount keeps its lease -- the worker loop
+        is alive and heartbeating -- while the sampler that writes its
+        telemetry does not run, so its record goes stale. Withholding the
+        aggregate is right; withholding it silently is what made this morning's
+        diagnosis start from scratch, because a box whose claims had all
+        stopped reporting looked exactly like a box with nothing running.
+        """
+
+        stale = self.queue / "reservations" / "sparky" / "telemetry" / f"{GPU_KEY}.json"
+        record = json.loads(stale.read_text())
+        record["sampled_unix"] = NOW - pool.cpu_admission.MAX_SAMPLE_AGE_S - 300
+        _write(stale, record)
+
+        text = self.collect()
+
+        self.assertIn('prismabuild_attempt_telemetry_unavailable_jobs{host="sparky"} 1',
+                      text)
+        self.assertIn('prismabuild_attempt_telemetry_unavailable_jobs{host="dl380"} 0',
+                      text)
+        age = _samples(text, "prismabuild_attempt_telemetry_age_seconds")
+        self.assertTrue(any('host="sparky"' in line for line in age), age)
+        self.assertFalse(any('host="sparky"' in line for line in _samples(
+            text, "prismabuild_attempt_observed_resources")))
+
+    def test_recent_cores_tells_a_blocked_claim_from_a_working_one(self) -> None:
+        """Lifetime average cannot see a job that has just stopped moving.
+
+        The blocked claim here has burned 20 CPU-seconds over 10 wall-seconds
+        and then advances only its wall clock, which is the shape of a worker
+        waiting on a lock. Its lifetime average stays high and says nothing;
+        the difference between two readings says it is doing nothing now, with
+        no deadline and no threshold consulted.
+        """
+
+        store: dict = {}
+        pbmetrics.collect_metrics(self.queue, now=NOW, previous=store)
+
+        later = NOW + 4.0
+        for key, host, cpu in ((CPU_KEY, "dl380", 20.0), (GPU_KEY, "sparky", 16.0)):
+            path = self.queue / "reservations" / host / "telemetry" / f"{key}.json"
+            record = json.loads(path.read_text())
+            record.update(sampled_unix=later - 1, cpu_seconds=cpu,
+                          wall_seconds=record["wall_seconds"] + 4.0)
+            _write(path, record)
+        text = pbmetrics.collect_metrics(self.queue, now=later, previous=store)
+
+        self.assertIn('prismabuild_attempt_recent_cores{host="dl380"} 0', text)
+        self.assertIn('prismabuild_attempt_recent_cores{host="sparky"} 1', text)
+        self.assertIn('prismabuild_attempt_recent_cores_jobs{host="dl380"} 1', text)
+
+    def test_one_moment_reports_no_rate(self) -> None:
+        """A first reading has nothing to difference, and says so by absence."""
+
+        self.assertEqual([], _samples(self.collect(), "prismabuild_attempt_recent_cores"))
+        self.assertEqual(
+            [], _samples(pbmetrics.collect_metrics(self.queue, now=NOW, previous={}),
+                         "prismabuild_attempt_recent_cores"))
+
+    def test_a_later_attempt_is_not_differenced_against_an_earlier_one(self) -> None:
+        """An action key outlives one attempt; a cgroup counter does not.
+
+        Reusing a key after a retry would otherwise difference the new
+        attempt's counters against the old attempt's, which is a subtraction
+        between two unrelated cgroups and can produce any number at all. The
+        scope nonce is what makes the identity an attempt rather than an action.
+        """
+
+        store: dict = {}
+        pbmetrics.collect_metrics(self.queue, now=NOW, previous=store)
+
+        later = NOW + 4.0
+        claim = self.queue / "claimed" / f"{CPU_KEY}.json"
+        record = json.loads(claim.read_text())
+        record["resource_scope"] = {"nonce": "9" * 32}
+        _write(claim, record)
+        path = self.queue / "reservations" / "dl380" / "telemetry" / f"{CPU_KEY}.json"
+        telemetry = json.loads(path.read_text())
+        telemetry.update(nonce="9" * 32, sampled_unix=later - 1,
+                         cpu_seconds=1.0, wall_seconds=2.0)
+        _write(path, telemetry)
+        text = pbmetrics.collect_metrics(self.queue, now=later, previous=store)
+
+        self.assertFalse(any('host="dl380"' in line for line in _samples(
+            text, "prismabuild_attempt_recent_cores")))
+
     def test_prometheus_format_and_no_sensitive_labels(self) -> None:
         text = self.collect()
         metric_names = [line.split()[2] for line in text.splitlines()

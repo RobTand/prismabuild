@@ -28,7 +28,15 @@ different pull queue.
 ## Metric contract
 
 All metrics are gauges. The exporter deliberately has no process-lifetime
-counters because they would reset on every exporter restart. Labels are drawn
+counters because they would reset on every exporter restart. The one rate it
+reports, `prismabuild_attempt_recent_cores`, is not such a counter: the counters
+differenced belong to each attempt's own cgroup, they are differenced only
+against a previous reading of that same attempt -- identified by action key and
+scope nonce together, so a key reused by a later attempt is never differenced
+against an earlier one -- and a restart simply produces no sample until a second
+refresh. Nothing is exposed per action key; the store is keyed by it in memory
+and pruned each refresh to the claims that are live, so it cannot grow with the
+queue's history. Labels are drawn
 from bounded sets: worker host, resource, CPU/GPU job kind, terminal outcome,
 timing statistic, timing phase, and memory domain. Action keys, command lines,
 nonces, tokens, and result digests are never labels.
@@ -45,8 +53,12 @@ nonces, tokens, and result digests are never labels.
 | `prismabuild_worker_memory_available_bytes` | `host` | Coarse host-available memory reported by a fresh offer, converted from its integer GiB observation. |
 | `prismabuild_active_jobs` | `host,kind=cpu\|gpu` | Claims with fresh leases. A GPU-demanding claim is classified as GPU even though it also reserves CPU. A host with any stale or invalid claim has no active-job samples because its process liveness is unknown. |
 | `prismabuild_reserved_resources` | `host,resource` | Sum of declared demand in valid claimed records, including stale and cleanup-pending claims that may retain reservations. Fresh workers emit zero for each resource dimension they declare when nothing is claimed. |
-| `prismabuild_attempt_observed_resources` | `host,resource` | Aggregate telemetry only when every live claim on the host has a complete, fresh, nonce-matched resource-scope record. CPU is lifetime-average cores (`cpu_seconds / wall_seconds`); memory is current cgroup bytes. The host is omitted rather than partially summed if any live claim is unavailable. |
+| `prismabuild_attempt_observed_resources` | `host,resource` | Aggregate telemetry only when every live claim on the host has a complete, fresh, nonce-matched resource-scope record. CPU is lifetime-average cores (`cpu_seconds / wall_seconds`); memory is current cgroup bytes. The host is omitted rather than partially summed if any live claim is unavailable -- read it beside `prismabuild_attempt_telemetry_unavailable_jobs`, which says whether an absent aggregate means an idle host or an unreadable one. Lifetime average cannot see a job that has stopped moving; `prismabuild_attempt_recent_cores` is the reading that can. |
 | `prismabuild_attempt_telemetry_jobs` | `host` | Number of live claims covered by the corresponding aggregate telemetry. |
+| `prismabuild_attempt_telemetry_unavailable_jobs` | `host` | Live claims whose resource-scope record could not be used. Emitted for every host with live claims, including zero, so a withheld aggregate is legible rather than indistinguishable from an idle box. |
+| `prismabuild_attempt_telemetry_age_seconds` | `host` | Age of the oldest credible resource-scope sample among the host's live claims. Reported even when the aggregate is withheld, which is when it matters: a claim blocked on the shared mount keeps its lease while its sampler stops running. |
+| `prismabuild_attempt_recent_cores` | `host` | Cores used since the exporter's previous refresh, differenced per attempt and summed over the host. Absent on the first refresh and whenever nothing could be differenced. |
+| `prismabuild_attempt_recent_cores_jobs` | `host` | Live claims the recent-cores figure was differenced over. It is that figure's denominator, not a total. |
 | `prismabuild_admission_evidence_age_seconds` | `host,resource=cpu\|gpu` | Age of persisted scheduler evidence. This is the last recorded evidence, not a live hardware sample. |
 | `prismabuild_admission_plateau` | `host,resource=gpu` | Whether persisted GPU `power_feedback.status` last recorded a plateau. The age metric must be consulted with it. |
 | `prismabuild_collection_success` | none | `1` when critical active-queue inputs and the selected terminal records were readable and valid, otherwise `0`. A stale valid worker offer does not make collection fail. |

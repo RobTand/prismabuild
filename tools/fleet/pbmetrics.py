@@ -129,21 +129,60 @@ def _read_claim(queue: pool.PoolQueue, key: str) -> dict | None:
         return None
 
 
+@dataclass
+class _HostAttempts:
+    """What one host's live claims reported, including what they did not.
+
+    The aggregate is deliberately all-or-nothing, but the counts beside it are
+    not: a host whose aggregate is withheld still says how many live claims it
+    has and how stale the oldest of them is, so "nothing running here" and
+    "the claim that would have told you is the one that stopped reporting" stop
+    rendering identically.
+    """
+
+    cpu: float = 0.0
+    memory_bytes: float = 0.0
+    jobs: int = 0
+    unavailable: int = 0
+    oldest_age_s: float | None = None
+    #: ``(action_key, nonce) -> (cpu_seconds, wall_seconds)`` for the claims
+    #: whose counters were readable, whether or not the aggregate qualified.
+    counters: dict[tuple[str, str], tuple[float, float]] = field(default_factory=dict)
+
+    @property
+    def complete(self) -> bool:
+        return self.jobs > 0 and self.unavailable == 0
+
+
 def _attempt_telemetry(
     queue: pool.PoolQueue,
     live_jobs: Mapping[str, list[Mapping[str, object]]],
     now: float,
-) -> dict[str, dict[str, float]]:
-    """Aggregate complete, fresh exact-scope observations by claiming host.
+) -> dict[str, _HostAttempts]:
+    """Read each live claim's resource-scope telemetry, by claiming host.
 
-    A host is omitted unless every live claim on it has matching telemetry.
-    This prevents a partial sum from looking like a low whole-host total.
+    The aggregate a host publishes stays all-or-nothing: a partial sum reads as
+    a low whole-host total, which is worse than no number. What changed is that
+    withholding it is no longer silent. Every live claim is examined rather than
+    abandoning the host at the first unusable record, and the count that could
+    not be used is reported beside the count that could.
+
+    That distinction is the whole point. A claim blocked on the shared mount
+    keeps its lease -- the loop is alive and heartbeating -- while the sampler
+    that writes its telemetry does not run, so its record goes stale. Under the
+    old early exit that claim erased its host from the observation entirely, and
+    the box in the most trouble was the box that reported nothing. The signal
+    was strongest exactly where it was being deleted.
+
+    Raw counters come back too, per claim, because the ratio the aggregate
+    carries is a lifetime average: a job that ran hot for fifty minutes and has
+    been blocked for ten still averages high. Differencing consecutive readings
+    is what tells those apart, and that is done by the caller, which is the only
+    party that has a previous reading.
     """
-    answer: dict[str, dict[str, float]] = {}
+    answer: dict[str, _HostAttempts] = {}
     for host, jobs in live_jobs.items():
-        cpu = 0.0
-        memory = 0.0
-        valid = bool(jobs)
+        host_attempts = _HostAttempts(jobs=len(jobs))
         for job in jobs:
             key = str(job.get("action_key") or "")
             claim = _read_claim(queue, key)
@@ -159,18 +198,75 @@ def _attempt_telemetry(
             cpu_seconds = _number(record.get("cpu_seconds")) if isinstance(record, dict) else None
             wall_seconds = _number(record.get("wall_seconds")) if isinstance(record, dict) else None
             current = _number(record.get("memory_current_bytes")) if isinstance(record, dict) else None
+            # Age is reported for any record whose timestamp is credible, even
+            # one too old for the aggregate -- that is precisely the reading a
+            # reader wants when the aggregate is missing.
+            if sampled is not None and now >= sampled:
+                age = now - sampled
+                if (host_attempts.oldest_age_s is None
+                        or age > host_attempts.oldest_age_s):
+                    host_attempts.oldest_age_s = age
+            matched = (isinstance(record, dict) and record.get("action_key") == key
+                       and bool(nonce) and record.get("nonce") == nonce)
+            if (matched and cpu_seconds is not None and wall_seconds is not None
+                    and wall_seconds > 0):
+                host_attempts.counters[(key, str(nonce))] = (cpu_seconds, wall_seconds)
             if (not isinstance(record, dict) or record.get("complete") is not True
-                    or record.get("action_key") != key or not nonce
-                    or record.get("nonce") != nonce or sampled is None
+                    or not matched or sampled is None
                     or not 0 <= now - sampled <= pool.cpu_admission.MAX_SAMPLE_AGE_S
                     or cpu_seconds is None or wall_seconds is None or wall_seconds <= 0
                     or current is None):
-                valid = False
-                break
-            cpu += cpu_seconds / wall_seconds
-            memory += current
-        if valid:
-            answer[host] = {"cpu": cpu, "memory_bytes": memory, "jobs": float(len(jobs))}
+                host_attempts.unavailable += 1
+                continue
+            host_attempts.cpu += cpu_seconds / wall_seconds
+            host_attempts.memory_bytes += current
+        answer[host] = host_attempts
+    return answer
+
+
+def _recent_cores(
+    observations: Mapping[str, _HostAttempts],
+    previous: dict[tuple[str, str], tuple[float, float]] | None,
+) -> dict[str, tuple[float, int]]:
+    """Cores used since the previous reading of the same claim, by host.
+
+    The exporter carries no counter of its own, by design -- one would reset on
+    every restart and lie about a rate. This is not that: the counters belong to
+    the attempt's cgroup and are differenced only against a previous reading of
+    *that same attempt*, identified by action key and scope nonce together, so a
+    key reused by a later attempt cannot be differenced against an earlier one.
+
+    The first refresh after a start has nothing to difference and reports
+    nothing, which is the honest answer to "what has been happening" when the
+    answer is "I have seen one moment". ``previous`` is replaced in place with
+    the current reading, and only for claims that are live now, so it cannot
+    grow with the queue's history.
+    """
+    answer: dict[str, tuple[float, int]] = {}
+    if previous is None:
+        return answer
+    current: dict[tuple[str, str], tuple[float, float]] = {}
+    for host, host_attempts in observations.items():
+        cores = 0.0
+        covered = 0
+        for identity, (cpu_seconds, wall_seconds) in host_attempts.counters.items():
+            current[identity] = (cpu_seconds, wall_seconds)
+            before = previous.get(identity)
+            if before is None:
+                continue
+            cpu_delta = cpu_seconds - before[0]
+            wall_delta = wall_seconds - before[1]
+            # A counter that went backwards is not this attempt's; a wall that
+            # did not advance gives no rate. Neither is an error worth a false
+            # zero, so the claim simply is not covered this refresh.
+            if wall_delta <= 0 or cpu_delta < 0:
+                continue
+            cores += cpu_delta / wall_delta
+            covered += 1
+        if covered:
+            answer[host] = (cores, covered)
+    previous.clear()
+    previous.update(current)
     return answer
 
 
@@ -271,8 +367,17 @@ def collect_metrics(
     now: float | None = None,
     terminal_window_seconds: float = DEFAULT_TERMINAL_WINDOW_SECONDS,
     terminal_limit: int = DEFAULT_TERMINAL_LIMIT,
+    previous: dict[tuple[str, str], tuple[float, float]] | None = None,
 ) -> str:
-    """Collect one non-atomic, read-only snapshot in Prometheus text format."""
+    """Collect one non-atomic, read-only snapshot in Prometheus text format.
+
+    ``previous`` is the caller's store of the last refresh's per-attempt
+    counters, replaced in place. Passing it opts into the recent-cores rate;
+    omitting it -- which ``--once`` does, having only one moment to report --
+    simply leaves that family out. The store belongs to the caller rather than
+    to this module so that two collectors cannot silently difference against
+    each other's readings.
+    """
     sampled = time.time() if now is None else float(now)
     root = Path(queue_root).absolute()
     metrics = Metrics()
@@ -446,10 +551,36 @@ def collect_metrics(
         "prismabuild_attempt_telemetry_jobs",
         "Live claims represented in the host's complete aggregate attempt telemetry.",
     )
-    for host, values in observations.items():
-        observed.add(values["cpu"], host=host, resource="cpu")
-        observed.add(values["memory_bytes"], host=host, resource="memory_bytes")
-        observed_jobs.add(values["jobs"], host=host)
+    unavailable_jobs = metrics.family(
+        "prismabuild_attempt_telemetry_unavailable_jobs",
+        "Live claims on the host whose resource-scope telemetry could not be used; the aggregate is withheld whenever this is above zero.",
+    )
+    telemetry_age = metrics.family(
+        "prismabuild_attempt_telemetry_age_seconds",
+        "Age of the oldest credible resource-scope sample among the host's live claims; reported even when the aggregate is withheld.",
+    )
+    recent = metrics.family(
+        "prismabuild_attempt_recent_cores",
+        "Cores used by the host's live claims since the previous refresh, differenced per attempt; absent until a second refresh has something to difference.",
+    )
+    recent_jobs = metrics.family(
+        "prismabuild_attempt_recent_cores_jobs",
+        "Live claims the host's recent-cores figure was differenced over; it is the denominator, not a total.",
+    )
+    for host, values in sorted(observations.items()):
+        # The count of live claims and how stale the oldest is are reported for
+        # every host that has any, so a withheld aggregate is legible as a
+        # withheld aggregate rather than as an absent host.
+        unavailable_jobs.add(values.unavailable, host=host)
+        if values.oldest_age_s is not None:
+            telemetry_age.add(values.oldest_age_s, host=host)
+        if values.complete:
+            observed.add(values.cpu, host=host, resource="cpu")
+            observed.add(values.memory_bytes, host=host, resource="memory_bytes")
+            observed_jobs.add(float(values.jobs), host=host)
+    for host, (cores, covered) in sorted(_recent_cores(observations, previous).items()):
+        recent.add(cores, host=host)
+        recent_jobs.add(float(covered), host=host)
 
     try:
         success = _terminal_metrics(
@@ -477,6 +608,9 @@ class MetricsCache:
         self.cache_seconds = cache_seconds
         self.terminal_window_seconds = terminal_window_seconds
         self.terminal_limit = terminal_limit
+        # One store per collector, so the rate is differenced only against
+        # this collector's own previous reading.
+        self.previous: dict[tuple[str, str], tuple[float, float]] = {}
         self._lock = threading.Lock()
         self._expires = 0.0
         self._text = ""
@@ -490,6 +624,7 @@ class MetricsCache:
                 self.queue_root,
                 terminal_window_seconds=self.terminal_window_seconds,
                 terminal_limit=self.terminal_limit,
+                previous=self.previous,
             )
             self._expires = now + self.cache_seconds
             return self._text
