@@ -1,6 +1,7 @@
 """The issue-link check accepts a body reference or a sidebar link, and nothing else."""
 from pathlib import Path
 import json
+import os
 import shutil
 import subprocess
 
@@ -11,7 +12,7 @@ WORKFLOW = Path(__file__).resolve().parents[1] / '.github/workflows/issue-link.y
 NODE = shutil.which('node')
 
 HARNESS = """
-const scenario = JSON.parse(process.argv[2]);
+const scenario = JSON.parse(process.env.PB202_SCENARIO);
 const core = {
     failed: null,
     info() {},
@@ -43,8 +44,8 @@ A_PULL = {'number': 203, 'pull_request': {}}
 def run(scenario):
     script = yaml.safe_load(WORKFLOW.read_text())['jobs']['issue-link']['steps'][0]['with']['script']
     harness = HARNESS.replace('SCRIPT', script)
-    result = subprocess.run([NODE, '-e', harness, '--', json.dumps(scenario)],
-                            text=True, capture_output=True)
+    result = subprocess.run([NODE, '-e', harness], text=True, capture_output=True,
+                            env={**os.environ, 'PB202_SCENARIO': json.dumps(scenario)})
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)['failed']
 
