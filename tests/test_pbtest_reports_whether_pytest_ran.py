@@ -246,3 +246,28 @@ def test_a_cache_hit_whose_payload_is_gone_is_not_green(
 
     assert record["ran"] is False
     assert exit_code == 1
+
+
+@pytest.mark.parametrize("output", [
+    # pytest-subtests adds two-word parts to pytest's own one-word grammar.
+    # This exact line came off sparklina (prismabuild#256): 16 cases passed
+    # and the shard read as "did not run".
+    "16 passed, 14 warnings, 6 subtests passed in 2.91s\n",
+    "1 failed, 3 passed, 2 subtests failed, 4 subtests passed in 0.40s\n",
+    "2 passed, 1 subtests skipped in 0.02s\n",
+])
+def test_a_summary_with_subtests_parts_is_a_summary(
+    tmp_path: Path, monkeypatch, output: str,
+) -> None:
+    """A shard that ran under pytest-subtests ran.
+
+    ``N subtests passed`` is two words where every other counted part is one,
+    so the grammar built from ``_pytest.terminal`` alone rejected the whole
+    line and a green shard printed ``NO PYTEST SUMMARY`` -- the mirror of the
+    defect the grammar was tightened for.
+    """
+
+    record = _one_shard(tmp_path, monkeypatch, output, 0)
+
+    assert record["ran"] is True
+    assert record["summary"] == output.strip()
