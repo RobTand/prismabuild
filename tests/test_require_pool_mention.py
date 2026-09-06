@@ -83,6 +83,15 @@ def test_prose_in_a_script_argument_is_allowed(tmp_path, command):
     'sbatch --wrap "srun train.sh"',
     # The interpreter is not running a script here, so nothing is data.
     f'python3 -m pytest --junitxml "{CUDA}.xml" tests',
+    # A clustered code switch is refused by the rule's positive half rather
+    # than by naming it: the first word that is not a switch has to be a
+    # script file, and the string handed to -Bc is not one.
+    'python3 -Bc "import pytest; pytest.main()"',
+    # A wrapper in front of the script run is still a wrapper.
+    f'nohup python3 {MBOX} send --body "the pytest runner died"',
+    # A quoted value BEFORE the script path is not yet an argument of the
+    # script, so it falls to the refusing side.
+    f'python3 -W "ignore::DeprecationWarning" {MBOX} --body "pytest died"',
 ])
 def test_work_is_still_refused(tmp_path, command):
     assert _verdict(_armed(tmp_path, None), command) == 2
