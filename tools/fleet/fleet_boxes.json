@@ -50,7 +50,7 @@
         "--class",
         "x86",
         "--mem-gb",
-        "60",
+        "192",
         "--all-cores",
         "--timeout-s",
         "3600",
@@ -64,5 +64,6 @@
     }
   },
   "_measured_2026_09_04": "Both GB10 boxes are 121 GB unified. The historical gpu-slots values of two and three were concurrency guesses rather than hardware: each box has one physical GPU. They are retained here only as the measurement that exposed why fixed slots strand light jobs and stack heavy jobs; adaptive admission now consumes attributed broker telemetry instead. The RAM bounds remain 72 GiB on sparky and 80 GiB on sparklina because host-memory containment is a separate hard limit.",
-  "_capacity_policy_2026_09_05": "Both GB10 boxes use the same --gpu policy. A trusted fresh broker snapshot detects physical devices and reports one on each current host; missing, stale, incomplete or unattributed evidence offers zero. The snapshot distinguishes shared-system memory from discrete VRAM, while the existing mem-gb values remain host-RAM budgets. All hosts retain full inherited CPU capacity, with physical performance cores preferred and fallback CPUs allocated last."
+  "_capacity_policy_2026_09_05": "Both GB10 boxes use the same --gpu policy. A trusted fresh broker snapshot detects physical devices and reports one on each current host; missing, stale, incomplete or unattributed evidence offers zero. The snapshot distinguishes shared-system memory from discrete VRAM, while mem-gb values remain host-RAM budgets. All hosts retain full inherited CPU capacity, with physical performance cores preferred and fallback CPUs allocated last.",
+  "_dl380_memory_2026_09_05": "Raised the stale 60 GiB fleet ceiling to 192 GiB after measuring 294.5 GiB physical RAM, 230.6 GiB available, zero memory PSI and 48 GiB of active PB reservations using about 5 GiB. The 192 GiB aggregate budget leaves over 100 GiB outside PB's maximum reservation, including unrelated services and host margin. Live host observation can lower the offer; each action still reserves and enforces its full declared memory. See docs/dl380_memory_capacity_2026-09-05.md and issue #191."
 }

@@ -1214,6 +1214,13 @@ separate contract. In particular, GB10 GPU utilization
 percentage is not accepted as saturation evidence; device power, CPU activity,
 residency and useful work per unit time are the relevant host view.
 
+Configured host memory is an aggregate fleet budget, not physical RAM or an
+individual action's limit. The dl380g10 budget is 192 GiB against 294.5 GiB of
+physical RAM, with measured allowance for unrelated services and host margin;
+see [the capacity evidence](dl380_memory_capacity_2026-09-05.md). Live host
+observation may lower advertised capacity. Increasing the configured ceiling
+does not resize existing reservations or their cgroup limits.
+
 Safe lending requires complete attribution of the entire attempt, including
 direct descendants and Docker containers created through a daemon. The resource
 scope architecture assigns each attempt one broker-owned cgroup, launches the
