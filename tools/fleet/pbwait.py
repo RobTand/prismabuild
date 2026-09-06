@@ -230,7 +230,14 @@ def _from_record(q, outcome_path, outcome) -> dict:
         # that is the job id, and under the pull queue there is no such handle
         # -- the worker ran it in a process that is gone.
         job=str(scheduler.get("job_id") or "-"),
-        host=summary["finished_host"] or "-",
+        # Where the work was, not who wrote the record.  The reaper files
+        # most of the fleet's lost claims under its own ``finished_host``, so
+        # a waiter that printed that field told the operator the failure
+        # belonged to whichever box swept (#262).  ``outcome_summary``
+        # already recovers ``claimed_host`` from the immutable attempt when
+        # the terminal record does not carry it, so the fallback here is
+        # reached only by an ending that names no claimant anywhere.
+        host=summary["claimed_host"] or summary["finished_host"] or "-",
         elapsed_s=summary["elapsed_s"],
         returncode=summary["returncode"],
         action_returncode=summary["action_returncode"],
