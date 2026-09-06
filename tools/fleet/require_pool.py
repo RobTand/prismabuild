@@ -290,20 +290,37 @@ def _heredoc_tag(match: re.Match[str]) -> tuple[str, bool]:
             return match.group(group), True
     return match.group("bare"), False
 
-#: Programs that execute their standard input.  A here-document fed to one of
-#: these is a script, not data on its way to a file, and scanning it is the
-#: whole point rather than the mistake: ``bash <<'EOF'`` with the CUDA
+#: Programs that read their standard input as SHELL.  A here-document fed to
+#: one of these is a script in the language this module parses, so scanning it
+#: is the whole point rather than the mistake: ``bash <<'EOF'`` with the CUDA
 #: interpreter inside it starts exactly the work this hook refuses.
-INTERPRETERS = ("bash", "sh", "dash", "zsh", "ksh")
+#:
+#: An interpreter of some other language does NOT belong here, and ``python``
+#: used to (issue #223).  Its body is not shell, so segmenting it produced
+#: Python tokens where commands go -- ``print`` and a variable name read as
+#: two commands, a runner's name inside a string literal read as the runner
+#: being run -- and the hook refused, in one session, a script that evaluated
+#: its own predicates, the test cases for issue #209's fix, and that pull
+#: request's body.  Nor did the scan buy enforcement: ``cat > x.py <<'EOF'``
+#: writes the same program and ``python3 x.py`` runs it, and both are allowed
+#: today.  So a here-document fed to ``python3 -`` is treated as the file it
+#: stands in for, which is what this module means when it says of itself that
+#: it is a command-line guard and not a proof of arbitrary program behavior.
+#:
+#: The delimiter still decides the rest: an UNQUOTED body is expanded by the
+#: shell before the interpreter ever sees the text, so its ``$( ... )`` and
+#: backquotes are shell the shell really runs and are still scanned, whichever
+#: program reads the body.  See ``_heredocs``.
+SHELLS = ("bash", "sh", "dash", "zsh", "ksh")
 
 
-def _is_interpreter(name: str) -> bool:
-    return name in INTERPRETERS or re.fullmatch(r"python[0-9.]*", name) is not None
+def _is_shell(name: str) -> bool:
+    return name in SHELLS
 
 
-#: Commands that run another command given to them as an argument.  The
-#: interpreter reading a here-document is not always the command word of the
-#: segment that owns it: ``ssh box bash``, ``sudo bash`` and ``docker exec -i
+#: Commands that run another command given to them as an argument.  The shell
+#: reading a here-document is not always the command word of the segment that
+#: owns it: ``ssh box bash``, ``sudo bash`` and ``docker exec -i
 #: c bash`` all end in a shell that reads the body, and the first of those is
 #: how routine work reaches the other boxes here.  Looking past the command
 #: word only for these keeps ``grep -c python`` and ``cat bash_notes`` what
@@ -446,17 +463,21 @@ def _mentions_elided(segment: str) -> str:
                     + [QUOTED.sub(" ", word) for word in words[start:]])
 
 
-def _feeds_an_interpreter(segment: str) -> bool:
-    """True when this segment hands its standard input to an interpreter."""
+def _feeds_a_shell(segment: str) -> bool:
+    """True when this segment hands its standard input to a shell.
+
+    A shell, not an interpreter of any language: what makes a body worth
+    scanning is that the body is shell, and only a shell makes it so.
+    """
 
     tokens = _command_tokens(segment)
     if not tokens:
         return False
-    if _is_interpreter(_name_of(tokens[0])):
+    if _is_shell(_name_of(tokens[0])):
         return True
     if _name_of(tokens[0]) not in WRAPPERS:
         return False
-    return any(_is_interpreter(_name_of(token)) for token in tokens[1:])
+    return any(_is_shell(_name_of(token)) for token in tokens[1:])
 
 
 def _substitution(text: str, start: int) -> tuple[str, int]:
@@ -780,16 +801,32 @@ def _heredocs(command: str) -> tuple[str, list[str]]:
     bodies contribute.  Three cases, and the difference between them is what
     the shell does with the body, not what the body looks like:
 
-    * Fed to an interpreter (``bash <<EOF``): the body is a script, so all of
-      it is scanned.
-    * An unquoted delimiter (``cat >f <<EOF``): the body is data, but the
-      shell expands it first, so its substitutions are scanned.
-    * A quoted delimiter to anything else (``cat >f <<'EOF'``): the shell
-      copies bytes to a file and nothing in the body runs, so it is dropped.
+    * Fed to a shell (``bash <<EOF``): the body is a script in the language
+      this module parses, so all of it is scanned.
+    * An unquoted delimiter (``cat >f <<EOF``, ``python3 - <<EOF``): the body
+      is data, but the shell expands it before handing it on, so its
+      substitutions are scanned whatever reads the body afterwards.
+    * A quoted delimiter to anything else (``cat >f <<'EOF'``, ``python3 -
+      <<'EOF'``): the shell copies bytes to a file or to another program's
+      standard input and runs nothing in the body itself, so it is dropped.
       This is the case the exemption was written for, and it stays: the file
       that starts the fleet's workers names the CUDA interpreter as a
       ``--python`` argument by construction, and the hook refused that write
-      four times.
+      four times.  ``python3 - <<'EOF'`` joined it in issue #223 -- its body
+      is Python, and reading Python tokens as commands refused prose about
+      the rule rather than the rule being broken.
+
+    The second and third cases are decided by ``_feeds_a_shell``, which asks
+    for a shell rather than for an interpreter.  That is the whole of the
+    #223 change, and it moves only bodies fed to ``python``: every other
+    language's interpreter was already in the third case.
+
+    A body fed to a shell is scanned by ``_commands_in``, deliberately, not by
+    ``_scan``.  A here-document opened INSIDE an executed body is text the
+    outer shell never reads -- the inner program does -- so its own body stays
+    in the segments where the enclosing script's commands are judged, and
+    ``bash <<'SH'`` wrapping ``python3 - <<'PY'`` cannot hide work in the
+    inner body.
 
     Only the opener TOKENS leave the command line, not the rest of the line
     they sit on.  Dropping everything from the opener to the newline is the
@@ -817,14 +854,14 @@ def _heredocs(command: str) -> tuple[str, list[str]]:
             break
         # Every opener on this command line, in the order the shell reads
         # their bodies, and the spans to excise from the line itself.
-        openers = [(tag, quoted)]
+        openers = [(tag, quoted, start)]
         spans = [(start, end)]
         cursor = end
         while cursor < line_end:
             more = _find_heredoc(rest[cursor:line_end])
             if more is None:
                 break
-            openers.append((more[2], more[3]))
+            openers.append((more[2], more[3], cursor + more[0]))
             spans.append((cursor + more[0], cursor + more[1]))
             cursor += more[1]
         line = ""
@@ -835,23 +872,27 @@ def _heredocs(command: str) -> tuple[str, list[str]]:
         after_openers = len(line)
         line += rest[at:line_end]
         kept.append(line)
-        # The command the here-document is attached to is the last one before
-        # it, not the first one on the line: ``cd x && bash <<EOF`` feeds bash.
-        owner_segments = _commands_in(rest[:start])
-        owner = owner_segments[-1] if owner_segments else ""
-        # A pipeline hands that command's output to the next one as input, so
+        # A pipeline hands a command's output to the next one as input, so
         # ``cat <<'EOF' | bash`` executes the body just as ``bash <<'EOF'``
         # does, one command further along.  Only the pipeline counts: after a
         # ``&&`` the next command reads its own standard input, and treating
         # ``cat > f <<'EOF' && bash other.sh`` as executable would refuse the
         # file write this exemption exists for.
         downstream = _pipeline_after(line, after_openers)
-        executed = _feeds_an_interpreter(owner) or (
-            "|" in downstream
-            and any(_feeds_an_interpreter(part)
-                    for part in _commands_in(downstream)))
+        piped_to_shell = "|" in downstream and any(
+            _feeds_a_shell(part) for part in _commands_in(downstream))
         body_text = rest[line_end + 1:]
-        for tag, quoted in openers:
+        for tag, quoted, opens_at in openers:
+            # The command a here-document is attached to is the last one
+            # before ITS OWN opener, not the first one on the line: ``cd x &&
+            # bash <<EOF`` feeds bash.  Per opener rather than per line,
+            # because one line can open two bodies for two different readers:
+            # ``cat > f <<'A' ; bash <<'B'`` writes the first and executes the
+            # second, and deciding both from the first owner dropped a shell
+            # script as if it were a file write.
+            owner_segments = _commands_in(rest[:opens_at])
+            owner = owner_segments[-1] if owner_segments else ""
+            executed = _feeds_a_shell(owner) or piped_to_shell
             lines = body_text.split("\n")
             body: list[str] = []
             remainder = ""

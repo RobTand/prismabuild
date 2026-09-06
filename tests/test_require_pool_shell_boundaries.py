@@ -259,10 +259,14 @@ def test_shapes_the_shell_never_runs_are_not_refused(
      f"echo start & {CUDA} train.py"),
     ("a backgrounded command in front of a submission",
      "echo start & sbatch job.sh"),
-    # An interpreter body is inspected whatever the delimiter's quoting, which
-    # is what the issue asks for.
-    ("python executing its standard input",
-     "python3 - <<'EOF'\nimport subprocess; subprocess.run(['sbatch','j.sh'])\nEOF"),
+    # A SHELL body is inspected whatever the delimiter's quoting, which is
+    # what this issue asks for.  It asked the same of ``python3 - <<'EOF'``
+    # and issue #223 reversed that half: the body of a python here-document is
+    # Python, not shell, and reading its tokens as commands refused prose
+    # about the rule rather than the rule being broken.  Both sides of that
+    # boundary are pinned in ``test_require_pool_python_heredoc.py``.
+    ("a shell executing its standard input, unquoted delimiter",
+     "sh <<EOF\nsbatch j.sh\nEOF"),
     ("a substitution body that chains past the message",
      f"git commit -m \"$(cat <<'EOF'\nprose\nEOF\n)\" && {CUDA} t.py"),
 ])
