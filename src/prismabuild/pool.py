@@ -1944,6 +1944,7 @@ class PoolQueue:
         "cpu_allocation",
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
+        "finish_pending",
     )
 
     def _shape_as_ready_item(
@@ -2742,6 +2743,11 @@ class PoolQueue:
     def reap_stale(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
         """Return claims whose lease has expired to ``ready``.
 
+        Completed payloads awaiting cleanup carry ``finish_pending``. Their
+        claiming host retries the saved outcome on every poll, even with a
+        fresh lease: asynchronous scope termination is not a lost lease or a
+        new attempt. Capacity remains held until cleanup is proved complete.
+
         A missing lease file also counts as stale: it means the claimant died
         between the rename and the first heartbeat.  A stale claim is returned
         only while its generation has no filed outcome.  Once ``done`` or
@@ -2776,6 +2782,25 @@ class PoolQueue:
         terminal_keys = self.terminal_keys()
         for path in sorted(claimed.glob("*.json")):
             key = path.stem
+            record = _read_json(path)
+            pending_finish = (record or {}).get("finish_pending")
+            if pending_finish is not None:
+                # Only the owner host can prove its kernel scope is empty.
+                # A payload has already returned here, so lease freshness is
+                # irrelevant; preserve that result rather than file lease_lost.
+                if record.get("claimed_host") != socket.gethostname():
+                    continue
+                if (not isinstance(pending_finish, dict)
+                        or not isinstance(pending_finish.get("status"), str)
+                        or not isinstance(pending_finish.get("detail"), dict)):
+                    raise PoolContractError(f"invalid pending finish for {key}")
+                result = self.finish(
+                    key, status=pending_finish["status"],
+                    detail=pending_finish["detail"], claim_snapshot=record,
+                )
+                if result == self.item_path(READY, key):
+                    requeued.append(key)
+                continue
             age = self.lease_age(key)
             if age is not None and age <= timeout_s:
                 continue
@@ -3697,6 +3722,7 @@ class PoolQueue:
                 action_key, status=status, detail=detail,
                 snapshot=claim_snapshot, live=record,
             )
+        read_claim = dict(record) if record is not None else None
         effective_record = record or claim_snapshot or {}
         container_cleanup = self.cleanup_action_containers(
             effective_record, reason=str((detail or {}).get("termination_reason") or status))
@@ -3709,7 +3735,12 @@ class PoolQueue:
             pending["action_key"] = action_key
             pending["container_cleanup_pending"] = container_cleanup
             pending["container_cleanup_checked_unix"] = _now()
-            _write_json_atomic(src, pending)
+            pending["finish_pending"] = {
+                "status": status, "detail": dict(detail or {}),
+            }
+            live = _read_json(src)
+            if live is not None and _same_claim(live, effective_record):
+                _write_json_atomic(src, pending)
             return src
         scope_cleanup = container_cleanup.get("resource_scope") or {}
         telemetry = scope_cleanup.get("telemetry") or {}
@@ -3834,6 +3865,8 @@ class PoolQueue:
                         filed[field] = snapshot[field]
                 _write_json_atomic(lost, filed)
             return lost
+        record.pop("finish_pending", None)
+        record.pop("container_cleanup_pending", None)
         host = record.get("claimed_host")
         prior_attempts = int(record.get("attempts", 0))
         attempts = prior_attempts + 1
@@ -3891,9 +3924,12 @@ class PoolQueue:
         # visible: the claim to a tombstone, then its own lease.  A retry
         # published while either still stood was claimed by the next poll, and
         # the unlinks below then deleted that new claim and its lease.
-        # No ``expect``: ``finish`` has already established, above, that the
-        # claim at this key is the one this worker executed.
-        tombstone, _mine = self._entomb_claim(action_key)
+        # Another cleanup retry can finish and re-claim this key during the
+        # archive write. Compare the original identity at the atomic move,
+        # not just at entry, before touching the lease or reservation.
+        tombstone, mine = self._entomb_claim(action_key, expect=read_claim)
+        if not mine or tombstone is None:
+            return self.attempt_path(record, attempts)
         self.lease_path(action_key).unlink(missing_ok=True)
         # Capacity is released before the item is filed, so the next worker to
         # look sees the tokens free rather than racing this rename.

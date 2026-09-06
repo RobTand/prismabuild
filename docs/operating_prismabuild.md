@@ -707,6 +707,15 @@ which filed it: the two writers use distinct schema ids, and only the lane
 writes a `transport` field. `pbstatus` labels its endings table from the schema
 for that reason.
 
+In the pull queue, a payload that has returned but whose scope cleanup is
+still pending retains its claim, lease and reservation. The claim's
+`finish_pending` field preserves the original status and detail, including
+timeout or OOM evidence. The claiming host retries that finish on each queue
+poll even while the lease is fresh; foreign hosts leave it alone. Once the
+broker proves the exact attempt's scope empty, the original outcome is
+archived once and capacity returns. A cleanup retry does not count as another
+attempt or turn a completed action into a lease-loss failure.
+
 A job's node-side cleanup is the Epilog's, and it reads what to clean out of a
 state file under `.../slurm/jobs/`. When that root is unreadable, which is what
 a shared-mount outage looks like from a compute node, the Epilog logs one line
