@@ -159,6 +159,18 @@ Dagster, and the listed telemetry services are not installed.
    is graphable, not just machine health. It would remain orchestrator-
    independent.
 
+The current fleet dashboard implementation is versioned in
+`fleet/observability/`, targeting the existing Grafana instance on beelink.
+Its read-only Prometheus collector observes pool records and saved admission
+evidence; existing Netdata agents supply whole-host activity. Neither path
+participates in admission or changes reservations. Missing or stale evidence
+is distinguished from idle capacity. Retained terminal-window gauges describe
+recorded outcomes, not independent CAS verification or a permanent event ledger.
+See [the deployment guide](../fleet/observability/README.md) for datasource,
+worker-target and qualification requirements. This supersedes the proposed
+dashboard host above; it does not claim the other proposed telemetry services
+are installed.
+
 ## Cache/action-key semantics (the Bazel steal)
 
 Result address = hash(input artifacts, **code closure**, params, env-that-
