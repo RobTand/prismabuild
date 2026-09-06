@@ -41,7 +41,7 @@ REAL_POPEN = subprocess.Popen
 
 
 def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
-               *, run: str = "run") -> dict:
+               *, run: str = "run", with_exit: bool = False):
     """Run one shard whose pbrun produced ``output``, and read its record.
 
     The shard is mocked at ``Popen`` because the endings under test are
@@ -77,10 +77,10 @@ def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
          "--shards", "1", "--json", str(report), "tests"],
     )
 
-    pbtest.main()
+    exit_code = pbtest.main()
     records = json.loads(report.read_text())
     assert len(records) == 1
-    return records[0]
+    return (exit_code, records[0]) if with_exit else records[0]
 
 
 #: Endings that are not a terminal summary.  Each is a real line: pytest's
@@ -167,3 +167,82 @@ def test_a_shard_that_did_not_run_says_how_it_ended(
 
     assert "signal 9" in killed["summary"]
     assert "rc=2" in refused["summary"]
+
+
+def test_a_shard_that_started_no_test_is_not_green(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Exiting 0 is not the same claim as having run.
+
+    `ran` was computed, printed in the shard line and written to the --json
+    record from the moment #213 added it, and the verdict read none of that:
+    `failed` was `returncode != 0` alone.  A shard killed before it reached
+    pytest, or one whose output never carried a summary, therefore counted
+    green and `pbtest` returned 0 -- which is the answer an agent deciding a
+    merge acts on.  Measured on a real run: four shards, every one reported
+    `NO PYTEST SUMMARY`, and the tool printed `4/4 shards green`.
+    """
+
+    exit_code, record = _one_shard(tmp_path, monkeypatch, "", 0, with_exit=True)
+
+    assert record["ran"] is False, record["summary"]
+    assert record["returncode"] == 0, "the case is a shard that exited cleanly"
+    assert exit_code == 1, "a shard that started no test was reported green"
+
+
+def test_a_shard_that_ran_is_still_green(tmp_path: Path, monkeypatch) -> None:
+    """The other side of the same line: reading `ran` must not fail a pass."""
+
+    exit_code, record = _one_shard(
+        tmp_path, monkeypatch, "1 passed in 0.01s\n", 0, with_exit=True)
+
+    assert record["ran"] is True
+    assert exit_code == 0
+
+
+def test_a_cache_hit_is_read_through_to_the_shards_own_output(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A replayed action is a result, not a shard that never ran.
+
+    An action already in the CAS comes back as `"status": "cache_hit"`, and
+    what pbrun prints then is the receipt -- the shard's stdout is in the
+    result payload the receipt names.  Reading the receipt for a summary finds
+    none, so a cached run of a clean suite reported that no test had run at
+    all.  A re-run of an unchanged control arm is exactly the case that hits
+    the cache, so the baseline half of a comparison was the half most likely
+    to report nothing.
+    """
+
+    payload = tmp_path / "payload.txt"
+    payload.write_text("......   [100%]\n\n561 passed, 1 skipped in 28.51s\n")
+    receipt = ('{"payload_path": "%s", "receipt": {"worker_id": "dl380g10"}, '
+               '"status": "cache_hit"}\n' % payload)
+
+    exit_code, record = _one_shard(
+        tmp_path, monkeypatch, "pbrun: executed on dl380g10 in 0s\n" + receipt,
+        0, with_exit=True)
+
+    assert record["ran"] is True, record["summary"]
+    assert record["summary"] == "561 passed, 1 skipped in 28.51s"
+    assert exit_code == 0
+
+
+def test_a_cache_hit_whose_payload_is_gone_is_not_green(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Recovering nothing must report nothing, never a pass.
+
+    If the blob has been reaped, the honest answer is a shard whose result
+    cannot be read -- which is what `ran is False` says -- and not the green
+    that reading no summary used to produce.
+    """
+
+    receipt = ('{"payload_path": "%s", "status": "cache_hit"}\n'
+               % (tmp_path / "reaped.txt"))
+
+    exit_code, record = _one_shard(
+        tmp_path, monkeypatch, receipt, 0, with_exit=True)
+
+    assert record["ran"] is False
+    assert exit_code == 1
