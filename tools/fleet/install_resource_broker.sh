@@ -12,10 +12,24 @@ if systemctl is-active --quiet prismabuild-resource-broker.service; then
     exit 1
 fi
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+gpu_source=
+for candidate in "$source_dir/gpu_memory.py" \
+    "$source_dir/../../src/prismabuild/gpu_memory.py" \
+    "$source_dir/../src/prismabuild/gpu_memory.py"; do
+    if [ -f "$candidate" ]; then
+        gpu_source=$candidate
+        break
+    fi
+done
+if [ -z "$gpu_source" ]; then
+    echo 'missing resource monitor module; refusing an incomplete installation' >&2
+    exit 1
+fi
 install -d -o root -g root -m 0755 /opt/prismabuild-resource-broker
 for source_file in resource_broker.py resource_payload.py; do
     install -o root -g root -m 0644 "$source_dir/$source_file" "/opt/prismabuild-resource-broker/$source_file"
 done
+install -o root -g root -m 0644 "$gpu_source" /opt/prismabuild-resource-broker/gpu_memory.py
 unit=/etc/systemd/system/prismabuild-resource-broker.service
 if [ -e "$unit" ]; then
     cp -a "$unit" "$unit.backup-$(date +%s)"
@@ -36,7 +50,7 @@ RuntimeDirectoryPreserve=yes
 UMask=0077
 NoNewPrivileges=yes
 MemoryMax=256M
-TasksMax=128
+TasksMax=1024
 OOMScoreAdjust=-900
 
 [Install]
