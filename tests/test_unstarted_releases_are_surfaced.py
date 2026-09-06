@@ -45,6 +45,7 @@ import pbmetrics  # noqa: E402
 BOUNCING = "d" * 64
 QUIET = "e" * 64
 BOX = "sparklina"
+REAPER = "some-other-box"
 
 
 @pytest.fixture()
@@ -75,6 +76,11 @@ def released(tmp_path, monkeypatch):
     queue.lease_path(BOUNCING).unlink()
 
     later = pool._now() + pool.LEASE_TIMEOUT_S
+    # The box that reaps is not the box that claimed: any box may notice a
+    # dead lease, and the box worth naming is the one whose filesystem was
+    # too slow to write it.  Reaping under a different hostname is what makes
+    # the difference legible to a test.
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: REAPER)
     with mock.patch.object(pool, "_now", lambda: later):
         assert queue.reap_stale(timeout_s=pool.LEASE_TIMEOUT_S) == [BOUNCING]
 
@@ -141,6 +147,7 @@ def test_pbmetrics_names_the_box_that_held_the_claim(released):
     assert _samples(text, "prismabuild_unstarted_release_events") == [
         f'prismabuild_unstarted_release_events{{host="{BOX}"}} 1',
     ]
+    assert REAPER not in text, "the label named the box that noticed, not the box that held"
     assert "prismabuild_unstarted_release_events_complete 1" in text
 
 
