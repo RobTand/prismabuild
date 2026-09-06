@@ -128,6 +128,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
 )
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
+from . import resource_scope
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -1942,7 +1943,7 @@ class PoolQueue:
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes",
         "cpu_allocation",
         "container_cleanup_pending", "container_cleanup_checked_unix",
-        "stop_pending",
+        "stop_pending", "resource_scope", "resource_scope_cleanup",
     )
 
     def _shape_as_ready_item(
@@ -2112,6 +2113,11 @@ class PoolQueue:
             }
         if container_owner is not None:
             lease["container_owner"] = str(container_owner)
+        claim = _read_json(self.item_path(CLAIMED, action_key))
+        if claim is not None and claim.get("claimed_by") == owner:
+            for field in ("resource_scope", "resource_scope_cleanup", "claimed_unix"):
+                if field in claim:
+                    lease[field] = claim[field]
         _write_json_atomic(self.lease_path(action_key), lease)
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
@@ -2126,7 +2132,157 @@ class PoolQueue:
                 "container_owner must be a 64-character hex digest")
         return self.root / CONTAINER_OWNERS / f"{owner}.used"
 
+    def _scope_from_record(self, record: Mapping[str, object]) -> resource_scope.ResourceScope:
+        control = record.get("resource_scope")
+        if not isinstance(control, dict):
+            raise PoolContractError("resource scope control must be an object")
+        key = str(record.get("action_key") or "")
+        if (record.get("claimed_host") or record.get("host")) != socket.gethostname():
+            raise PoolContractError("resource scope cleanup must run on its claiming host")
+        nonce = control.get("nonce")
+        unit = "prismabuild-job" + hashlib.sha256(
+            (key + str(nonce)).encode()).hexdigest()[:32] + ".slice"
+        if (control.get("action_key") != key or control.get("scope_id") != unit
+                or control.get("cgroup_path") != "/sys/fs/cgroup/prismabuild.slice/" + unit
+                or control.get("socket_path") != str(resource_scope.BROKER_SOCKET)
+                or not isinstance(control.get("token"), str)
+                or len(control["token"]) != 64
+                or any(c not in "0123456789abcdef" for c in control["token"])):
+            raise PoolContractError("invalid resource scope recovery identity")
+        scope = resource_scope.ResourceScope(
+            key, nonce, control.get("memory_max_bytes"),
+            self.ledger().base / "telemetry" / f"{key}.json",
+            docker_owner=record.get("container_owner"),
+            shape_key=cpu_admission.shape_key(record) if record.get("cas_root") else None,
+        )
+        scope.unit, scope.token = unit, control["token"]
+        scope.cgroup_path = Path(control["cgroup_path"])
+        started = control.get("started_monotonic")
+        valid = (type(started) in (int, float) and math.isfinite(started)
+                 and 0 <= started <= time.monotonic()
+                 and control.get("boot_id") == Path("/proc/sys/kernel/random/boot_id").read_text().strip())
+        # A reboot invalidates elapsed-time accounting, not exact broker
+        # authority. Recovery must still stop/release the old scope safely.
+        scope._pool_accounting_valid = valid
+        if valid:
+            scope.started = started
+        return scope
+
+    @staticmethod
+    def _sample_resource_scope(scope: resource_scope.ResourceScope) -> dict:
+        telemetry = scope.sample()
+        try:
+            status = scope._request("status")
+            if status.get("stop_reason"):
+                telemetry["termination_reason"] = status["stop_reason"]
+            if status.get("termination_evidence"):
+                telemetry["termination_evidence"] = status["termination_evidence"]
+        except (OSError, ValueError) as exc:
+            telemetry["complete"] = False
+            telemetry["errors"] = [*telemetry.get("errors", []),
+                                   f"scope broker status unavailable: {exc}"]
+        if not getattr(scope, "_pool_accounting_valid", True):
+            telemetry["complete"] = False
+            telemetry["errors"] = [*telemetry.get("errors", []),
+                                   "scope accounting start belongs to another boot or is invalid"]
+        resource_scope._atomic_json(scope.telemetry_path, telemetry)
+        return telemetry
+
+    @staticmethod
+    def _resource_failure(telemetry: Mapping[str, object]) -> str | None:
+        if telemetry.get("termination_evidence") and telemetry.get("termination_reason"):
+            return str(telemetry["termination_reason"])
+        if telemetry.get("oom_kill", 0) > 0:
+            return "memory_limit_oom"
+        return None
+
+    def _start_resource_scope(self, item: Mapping[str, object]) -> resource_scope.ResourceScope:
+        key = str(item["action_key"])
+        request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
+        raw = pb._read_regular_file_nofollow(request, where="contained pool action request")
+        action = pb.validate_action(pb._decode_strict_json(raw, where="contained pool action request"))
+        demand = action["params"].get("demand")
+        if action["action_key"] != key:
+            raise PoolContractError("contained action request differs from claimed key")
+        if demand is None and action["task"]["definition_id"] != "fleet/pbrun":
+            # Existing generic producers (including Tessera) declare resources
+            # through publish rather than action params. Preserve that trusted
+            # producer contract; pbrun always binds demand into the sealed key.
+            demand = item.get("resources")
+        if not isinstance(demand, dict) or demand != item.get("resources"):
+            raise PoolContractError("pool resource demand differs from sealed action demand")
+        memory = demand.get("mem_gb")
+        if type(memory) is not int or memory <= 0:
+            raise PoolContractError("contained action needs a positive sealed mem_gb demand")
+        if item.get("resource_scope") is not None:
+            raise PoolContractError("claim already owns a resource scope")
+        scope = resource_scope.ResourceScope(
+            key, uuid.uuid4().hex, memory * 1024 ** 3,
+            self.ledger().base / "telemetry" / f"{key}.json",
+            docker_owner=item.get("container_owner"),
+            shape_key=cpu_admission.shape_key(item),
+        )
+        control = scope.create()
+        control["started_monotonic"] = scope.started
+        control["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        path = self.item_path(CLAIMED, key)
+        try:
+            live = _read_json(path)
+            if live is None or not _same_claim(live, item):
+                raise PoolContractError("claim changed before scope launch")
+            live["resource_scope"] = control
+            _write_json_atomic(path, live)
+            if isinstance(item, dict):
+                item["resource_scope"] = control
+            self.write_lease(key, owner=str(item.get("claimed_by") or ""),
+                             container_owner=item.get("container_owner"))
+        except BaseException:
+            # Nothing has launched yet, so this scope can be stopped without
+            # any process census. Broker failures remain visible to recovery.
+            scope.terminate_owned("scope ownership could not be persisted")
+            scope.release()
+            raise
+        return scope
+
     def cleanup_action_containers(
+        self, record: Mapping[str, object], *, reason: str = "completion"
+    ) -> dict[str, object]:
+        """Prove both direct and Docker payloads stopped before tokens return."""
+        if record.get("resource_scope") is None:
+            return self._cleanup_action_containers(record)
+        prior = record.get("resource_scope_cleanup")
+        if (isinstance(prior, dict) and prior.get("complete") is True
+                and prior.get("nonce") == record["resource_scope"].get("nonce")):
+            return {"complete": True, "used": True, "removed": [], "remaining": [],
+                    "resource_scope": prior}
+        try:
+            scope = self._scope_from_record(record)
+            scope.terminate_owned(reason)
+            containers = self._cleanup_action_containers(record)
+            if not containers["complete"]:
+                return containers
+            telemetry = self._sample_resource_scope(scope)
+            released = scope.release()
+            cleanup = {"complete": True, "released": released, "telemetry": telemetry,
+                       "checked_unix": _now(), "nonce": scope.nonce}
+            key = str(record["action_key"])
+            path = self.item_path(CLAIMED, key)
+            live = _read_json(path)
+            if live is not None and _same_claim(live, record):
+                live["resource_scope_cleanup"] = cleanup
+                _write_json_atomic(path, live)
+            if isinstance(record, dict):
+                record["resource_scope_cleanup"] = cleanup
+            try:
+                cpu_admission.record_completion(self.ledger(), record, telemetry)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                cleanup["learning_error"] = str(exc)
+            return {**containers, "resource_scope": cleanup}
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return {"complete": False, "used": True, "removed": [], "remaining": [],
+                    "error": f"resource scope cleanup incomplete: {type(exc).__name__}: {exc}"}
+
+    def _cleanup_action_containers(
         self, record: Mapping[str, object]
     ) -> dict[str, object]:
         """Remove and verify this action's detached Docker payloads.
@@ -2650,7 +2806,7 @@ class PoolQueue:
                 # the winner filed the item and released its capacity -- so the
                 # loser's only correct move is to leave it alone.
                 continue
-            container_cleanup = self.cleanup_action_containers(record)
+            container_cleanup = self.cleanup_action_containers(record, reason="lease_lost")
             if not container_cleanup["complete"]:
                 pending = dict(record)
                 pending["container_cleanup_pending"] = container_cleanup
@@ -2722,15 +2878,25 @@ class PoolQueue:
                     "finished_host": finished_host,
                 }
             )
+            telemetry = (container_cleanup.get("resource_scope") or {}).get("telemetry") or {}
+            resource_failure = self._resource_failure(telemetry)
+            recovery_detail = {
+                "reason": "claim lease expired before an outcome was filed",
+                "lease_age_s": age,
+            }
+            if telemetry:
+                recovery_detail["resource_telemetry"] = telemetry
+            if resource_failure:
+                recovery_detail.update(termination_reason=resource_failure,
+                                       termination_evidence=telemetry.get("termination_evidence"),
+                                       returncode=137)
             record["attempt_history"] = self.archive_attempt(
                 attempt_record,
                 attempt=attempts,
-                status="lease_lost_max_attempts" if terminal else "lease_lost",
+                status="failed" if resource_failure else (
+                    "lease_lost_max_attempts" if terminal else "lease_lost"),
                 disposition=FAILED if terminal else "requeued",
-                detail={
-                    "reason": "claim lease expired before an outcome was filed",
-                    "lease_age_s": age,
-                },
+                detail=recovery_detail,
             )
             record["attempts"] = attempts
             adopted = self.adopted_attempt_summary(record)
@@ -3526,7 +3692,8 @@ class PoolQueue:
                 snapshot=claim_snapshot, live=record,
             )
         effective_record = record or claim_snapshot or {}
-        container_cleanup = self.cleanup_action_containers(effective_record)
+        container_cleanup = self.cleanup_action_containers(
+            effective_record, reason=str((detail or {}).get("termination_reason") or status))
         if not container_cleanup["complete"]:
             # A detached container is still the action even after its launcher
             # has returned.  Keep the claim as the durable owner of both the
@@ -3538,6 +3705,14 @@ class PoolQueue:
             pending["container_cleanup_checked_unix"] = _now()
             _write_json_atomic(src, pending)
             return src
+        scope_cleanup = container_cleanup.get("resource_scope") or {}
+        telemetry = scope_cleanup.get("telemetry") or {}
+        resource_failure = self._resource_failure(telemetry)
+        if resource_failure:
+            status, succeeded = "failed", False
+            detail = {**dict(detail or {}), "status": "failed", "returncode": 137,
+                      "termination_reason": resource_failure, "resource_telemetry": telemetry,
+                      "termination_evidence": telemetry.get("termination_evidence")}
         if self.withdrawal_covers(record, action_key=action_key) is not None:
             # An operator cancelled this while it was running.  Filing it under
             # ``done`` or ``failed`` would put the pool's opinion of the work on
@@ -4235,7 +4410,7 @@ class PoolQueue:
                 "still_alive": any(one["still_alive"] for one in stopped),
             }
 
-        container_cleanup = self.cleanup_action_containers(record or lease)
+        container_cleanup = self.cleanup_action_containers(record or lease, reason="withdrawn")
         # Why the action is known to have stopped, or why it is not.  A claim
         # is the only state with a payload to stop; ``ready`` never started.
         stop_pending: dict[str, object] | None = None
@@ -4319,18 +4494,28 @@ class PoolQueue:
         timeout_s: float | None = None,
         heartbeat_s: float = HEARTBEAT_S,
         timeout_grace_s: float = TIMEOUT_GRACE_S,
+        containment: bool = False,
     ) -> dict[str, object]:
-        """Materialize a sealed checkout when present, then execute it."""
-
+        """Materialize a sealed checkout and optionally contain the worker."""
+        if not isinstance(item, dict):
+            item = dict(item)
         with _execution_checkout(item) as checkout_root:
-            return self._execute_in_checkout(
-                item,
-                checkout_root=checkout_root,
-                python=python,
-                timeout_s=timeout_s,
-                heartbeat_s=heartbeat_s,
-                timeout_grace_s=timeout_grace_s,
+            outcome = self._execute_in_checkout(
+                item, checkout_root=checkout_root, python=python,
+                timeout_s=timeout_s, heartbeat_s=heartbeat_s,
+                timeout_grace_s=timeout_grace_s, containment=containment,
             )
+        if item.get("resource_scope") is not None:
+            telemetry = self._sample_resource_scope(self._scope_from_record(item))
+            outcome["resource_telemetry"] = telemetry
+            resource_failure = self._resource_failure(telemetry)
+            if resource_failure:
+                outcome.update(status="failed", returncode=137,
+                               termination_reason=resource_failure,
+                               termination_evidence=telemetry.get("termination_evidence"))
+                outcome["stderr"] = str(outcome.get("stderr") or "") + (
+                    f"\nPrismaBuild: action resource containment stopped this attempt: {resource_failure}.\n")
+        return outcome
 
     def _execute_in_checkout(
         self,
@@ -4341,6 +4526,7 @@ class PoolQueue:
         timeout_s: float | None = None,
         heartbeat_s: float = HEARTBEAT_S,
         timeout_grace_s: float = TIMEOUT_GRACE_S,
+        containment: bool = False,
     ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
 
@@ -4398,6 +4584,11 @@ class PoolQueue:
                 "argv": argv,
                 "cpu_allocation": allocation,
             }
+        scope = self._start_resource_scope(item) if containment else None
+        if scope is not None:
+            # The broker launches taskset inside the aggregate slice. The
+            # stdio proxy itself is not an attributed action process.
+            argv = scope.wrap_argv(argv)
         process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -4427,19 +4618,39 @@ class PoolQueue:
             )
             # Refresh the lease while the child runs; a long action must not be
             # reaped out from under itself.
+            next_heartbeat = time.monotonic() + heartbeat_s
             while True:
                 try:
-                    interval = heartbeat_s if deadline is None else min(
-                        heartbeat_s, max(0.0, deadline - time.monotonic())
-                    )
+                    interval = min(heartbeat_s, 2.0) if scope is not None else heartbeat_s
+                    if deadline is not None:
+                        interval = min(interval, max(0.0, deadline - time.monotonic()))
                     out, err = process.communicate(timeout=interval)
                     break
                 except subprocess.TimeoutExpired:
+                    if scope is not None:
+                        telemetry = self._sample_resource_scope(scope)
+                        resource_failure = self._resource_failure(telemetry)
+                        if resource_failure:
+                            scope.terminate_owned(resource_failure)
+                            pb._terminate_process_group(process, grace_s=timeout_grace_s)
+                            out, err, survived = _drain(process, timeout_s=timeout_grace_s)
+                            return {
+                                "status": "failed", "returncode": 137,
+                                "termination_reason": resource_failure,
+                                "termination_evidence": telemetry.get("termination_evidence"),
+                                "resource_telemetry": telemetry,
+                                "stdout": out, "stderr": err,
+                                "action_survived_kill": survived,
+                                "elapsed_s": _now() - started,
+                                "argv": argv, "cpu_allocation": allocation,
+                            }
                     # Checkpoint two: the cross-box path.  A withdrawal from another
                     # box cannot signal anything on this one, so this poll is what
                     # makes the verb correct from anywhere -- at a cost of at most
                     # one heartbeat, and none at all when the operator is here.
                     if self.withdrawal_covers(item) is not None:
+                        if scope is not None:
+                            scope.terminate_owned("withdrawn")
                         out, err = self._stop_action(process)
                         return {
                             "status": "withdrawn",
@@ -4450,17 +4661,19 @@ class PoolQueue:
                             "argv": argv,
                             "cpu_allocation": allocation,
                         }
-                    self.write_lease(
-                        key,
-                        owner=owner,
-                        child_pid=process.pid,
-                        container_owner=(str(item["container_owner"])
-                                         if item.get("container_owner") else None),
-                    )
+                    if time.monotonic() >= next_heartbeat:
+                        self.write_lease(
+                            key, owner=owner, child_pid=process.pid,
+                            container_owner=(str(item["container_owner"])
+                                             if item.get("container_owner") else None),
+                        )
+                        next_heartbeat = time.monotonic() + heartbeat_s
                     if deadline is not None and time.monotonic() >= deadline:
                         # Worst case this branch spends three grace budgets
                         # -- TERM wait, KILL wait, drain (~45 s) -- without
                         # refreshing the lease, against a 300 s expiry.
+                        if scope is not None:
+                            scope.terminate_owned("timeout")
                         pb._terminate_process_group(
                             process, grace_s=timeout_grace_s
                         )
@@ -4550,6 +4763,7 @@ class PoolQueue:
         capacity: Mapping[str, int] | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         adaptive_cpu: bool = False,
+        containment: bool = False,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -4566,7 +4780,8 @@ class PoolQueue:
             return None
         key = str(item["action_key"])
         try:
-            outcome = self.execute(item, python=python, timeout_s=timeout_s)
+            outcome = self.execute(item, python=python, timeout_s=timeout_s,
+                                   **({"containment": True} if containment else {}))
         except BaseException as exc:                      # noqa: BLE001
             # Never leave a claim dangling: an unexpected failure is recorded as
             # a terminal state, not left for the reaper 300 s later.
