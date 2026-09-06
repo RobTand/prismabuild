@@ -425,3 +425,34 @@ def test_adaptive_empty_demand_is_refused_while_static_legacy_remains_supported(
     assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers, adaptive_cpu=True) is None
     assert not queue.ledger().held_keys()
     assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers)
+
+
+@pytest.mark.parametrize('measurement', [False, True])
+def test_full_width_job_starts_on_empty_host_with_incidental_idle_activity(tmp_path, monkeypatch, measurement):
+    from prismabuild import adaptive_cpu
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', measurement))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+        'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
+        'busy_cpus': .05, 'psi_some': 0.})
+    queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 2})
+    item = queue.claim(capacity={'cpu': 2}, cpu_tiers={'preferred': [0, 1], 'fallback': []},
+                       adaptive_cpu=True)
+    assert item and item['cpu_allocation']['preferred'] == [0, 1]
+
+
+@pytest.mark.parametrize('busy,psi', [(.2, 0.), (.05, .10)])
+def test_full_width_exception_does_not_ignore_foreign_work_or_pressure(tmp_path, monkeypatch, busy, psi):
+    from prismabuild import adaptive_cpu
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+        'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
+        'busy_cpus': busy, 'psi_some': psi})
+    queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 2})
+    assert queue.claim(capacity={'cpu': 2}, cpu_tiers={'preferred': [0, 1], 'fallback': []},
+                       adaptive_cpu=True) is None

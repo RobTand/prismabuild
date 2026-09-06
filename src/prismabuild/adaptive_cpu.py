@@ -276,10 +276,14 @@ class Controller:
                          and 0 <= now - learned.get('sampled_unix', 0) < 86400)
         cost = (float(len(self.cpus)) if unbounded_cpu else
                 max(.05, min(float(declared), learned['cpu'])) if learned_valid else float(declared))
-        # The unbounded legacy case already proved an otherwise empty, idle
-        # host above. Its whole-host budget is exclusive accounting; adding
-        # incidental idle CPU activity would prevent it ever starting.
-        if (fresh and not unbounded_cpu
+        # A solitary full-width reservation must not wait forever for every
+        # background daemon to consume exactly zero CPU. The fresh idle-host
+        # test permits only incidental activity, never real foreign load or a
+        # competing reservation; PSI pressure was refused before this point.
+        full_width_idle = (fresh and not holders and declared == len(self.cpus)
+                           and sample['busy_cpus'] <= .05 * len(self.cpus))
+        # Unbounded legacy work already proved the same exclusive idle host.
+        if (fresh and not unbounded_cpu and not full_width_idle
                 and max(sample['busy_cpus'] + pending, active_cost) + cost > len(self.cpus) + .01):
             return None
         available = self.ledger.available().get('cpu', 0)
