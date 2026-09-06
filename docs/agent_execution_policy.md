@@ -115,6 +115,24 @@ RobTand/prismabuild#205 tracks that staleness. Wait for the action, or measure
 when the fleet is quiet. Dropping `--measurement` to get admitted yields a number
 that describes the fleet rather than the change.
 
+## Inference serving is exempt; its load is not
+
+Running vLLM for inference serving is exempt from submission. Start and operate
+a serve directly, including its GPU containers, without a PrismaBuild action and
+without bootstrap approval. A serve is a long-lived interactive service, not a
+batch job: submitted as an action it would hold a reservation for the life of the
+service and hand the scheduler something it cannot size, retry or schedule
+around.
+
+The exemption covers serving and nothing else. Tests, benchmarks and other batch
+GPU work still route through PrismaBuild, including work that happens to use the
+same image.
+
+A directly started serve remains **external load for batch admission**. It is
+outside the ledger, so no reservation accounts for the CPU, memory and GPU it
+holds, and a box that looks idle in the queue view can be fully committed to it.
+Read a serve's own resource use before concluding that admission is at fault.
+
 ## Persistent instructions and command guard
 
 The same requirement belongs in each host's global agent instruction files
