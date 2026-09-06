@@ -203,3 +203,34 @@ def test_hook_process_ignores_malformed_event(tmp_path):
         timeout=30,
     )
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, "", "")
+
+
+@pytest.mark.parametrize('command', [
+    # Issue #224: asking whether a run this agent already submitted is alive.
+    'pgrep -f pytest',
+    'pgrep -af pytest',
+    'pgrep -f prismaquant-cu130',
+    'ps -eo state,pid,args',
+    'pidof pytest',
+    'pstree -p 1234',
+])
+def test_reading_the_process_table_is_not_running_what_it_finds(tmp_path, command):
+    """A name searched for is not a name started.
+
+    These commands cannot start anything: they read /proc and print.  The
+    argument that names a runner is the SEARCH TERM, so scanning it as if it
+    were a command refuses the submitter's own follow-up question.
+    """
+    assert _verdict(_armed(tmp_path, None), command) == 0
+
+
+@pytest.mark.parametrize('command', [
+    # The acting spellings stay refused -- they do something to what they find.
+    'pkill -f pytest',
+    # And a segment that merely BEGINS with a reader still gets its own
+    # segments scanned: the exemption is per segment, not per command line.
+    'pgrep -f pytest && pytest tests',
+    'ps aux; pytest tests',
+])
+def test_acting_on_or_chaining_past_a_reader_is_still_refused(tmp_path, command):
+    assert _verdict(_armed(tmp_path, None), command) != 0
