@@ -4,15 +4,16 @@ This guide is for the operator or agent who puts work on the fleet. It covers
 submitting a command, waiting for it, running a campaign, watching what the
 fleet is doing, stopping work, and reading a failure.
 
-To install SLURM, see the [SLURM install
-runbook](slurm_runbook_2026-09-04.md). For why the fleet moved from its own pull
-queue to SLURM, see the [scheduler decision](scheduler_decision_2026-09-04.md).
-For the system's own map, see [the design document](design.md).
+The live fleet uses the pull queue (`pool`), with per-attempt containment and
+adaptive CPU and GPU admission. SLURM (`slurm`) is an optional transport; its
+[install runbook](slurm_runbook_2026-09-04.md) and historical
+[scheduler decision](scheduler_decision_2026-09-04.md) describe that deployment
+path. See [the design document](design.md) for the current system contracts.
 
-Two dispatchers carry work: the pull queue (`pool`) and SLURM (`slurm`). The
-result does not depend on which one carried it. Examples below name the
-transport explicitly with `--transport slurm` where SLURM behaviour is the
-point. You can set `PRISMABUILD_TRANSPORT=slurm` instead, and the published
+Both transports publish the same verifiable CAS results. Their placement and
+resource enforcement differ, as described below. Examples name
+`--transport slurm` where SLURM behaviour is the point. You can set
+`PRISMABUILD_TRANSPORT=slurm` instead, and the published
 runtime generation carries a default that applies when neither is set. See
 "Publish the runtime the fleet executes" for what a generation is and who
 may publish one.
@@ -82,10 +83,11 @@ These flags say what the action needs and where it may run.
 
 | Flag | What it means | What SLURM gets |
 |---|---|---|
-| `--gpu` | Shorthand for `gpu=1,mem_gb=16`. | `--gres=shard:1`, partition `gpu`. |
-| `--demand gpu=2,cpu=8,mem_gb=32` | The full demand. `mem_gb` defaults to 4, `cpu` to `--cpus`. | `--gres=shard:2 --cpus-per-task=8 --mem=32768M`. |
-| `--exclusive` | The whole GPU of one box. Requires a GPU demand. | `--gres=gpu:1` rather than a larger shard count. |
-| `--gpu-capacity N` | Slots to demand for `--exclusive`. | Under SLURM, only `1` is accepted: `--gres=gpu:1` is the whole device, so a larger count would be read and discarded. |
+| `--gpu` | Defaults to `gpu=1,mem_gb=16`; explicit demand overrides the defaults. Pool generation actions permit adaptive sharing. | `--gres=shard:1`, partition `gpu`. |
+| `--demand gpu=1,cpu=8,mem_gb=32` | Aggregate resource demand. Without `--gpu`, `mem_gb` defaults to 4; `cpu` defaults to `--cpus`. | `--gres=shard:1 --cpus-per-task=8 --mem=32768M`. |
+| `--gpu-memory-gb N` | GPU memory budget in GiB; requires GPU demand. Pool only. See the memory-domain rules below. | Refused: this lane does not enforce a separate VRAM budget. |
+| `--exclusive` | Reserve one box's whole GPU capacity; implies GPU demand and at least 16 GiB host memory. | `--gres=gpu:1` rather than a larger shard count. |
+| `--gpu-capacity N` | Explicit capacity override for `--exclusive`; normally leave it unset so worker offers supply the physical capacity. It does not set shared job concurrency. | Under SLURM, only `1` is accepted: `--gres=gpu:1` is the whole device, so a larger count would be read and discarded. |
 | `--cpus N` | Cores the action will actually use. Defaults to 1. | `--cpus-per-task=N`. |
 | `--tag NAME` | Require a box offering this tag. Repeatable. | `--constraint=NAME`, ANDed with `&`. |
 | `--here` | Pin the action to this box. Combines with `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
@@ -106,10 +108,10 @@ whichever is not true.
 `--priority` is a queue hint and nothing more. It is not part of the action
 identity, so two submissions that differ only in priority are the same action.
 
-### Which partition an action lands in
+### SLURM partitions
 
-The lane derives the partition from the demand and the placement, so it adds
-nothing to the action's identity:
+The optional SLURM lane derives the partition from demand and placement, so it
+adds nothing to the action's identity:
 
 *   A GPU demand goes to the `gpu` partition, the only place shards exist.
 *   `--anywhere` on CPU-only work goes to the default partition `all`, where
@@ -119,9 +121,9 @@ nothing to the action's identity:
 *   Tagged work goes to the default partition, where the sealed `--constraint`
     picks the node.
 
-### What every submission sends
+### What a SLURM submission sends
 
-Every job is submitted with `--no-requeue`, `--export=NIL` and
+Every SLURM job is submitted with `--no-requeue`, `--export=NIL` and
 `--dependency=singleton`, under the job name `pb-<first 12 characters of the
 key>` and with `--comment=pb:<key>:<attempt>:<nonce>`. Only SLURM's own variables reach the job; the action's environment is
 the sealed one the worker builds. `--chdir`, `--output` and `--error` point at
@@ -129,7 +131,7 @@ the action's own lane directory. Retries are new submissions with new job ids,
 never `--requeue`. The [install runbook](slurm_runbook_2026-09-04.md) shows a
 full `sbatch` line.
 
-### One job per action key at a time
+### SLURM singleton submissions
 
 SLURM scopes `--dependency=singleton` by job name and user, and the job name is
 the action key. So the controller runs one job of a key at a time and holds the
@@ -154,15 +156,24 @@ refused, and nothing is cancelled.
 A held job costs a job id and a node slot for as long as it takes to read one
 receipt. It does not cost a checkout or a second execution.
 
-### Demand is enforced under SLURM
+### Demand and containment
 
-On the pull queue, a demand decided what could be placed and nothing stopped an
-action from using more. On 2026-09-04 four `pytest -n 24` runs each declaring
-`mem_gb=4` were admitted to one 80-core box together, and its load average
-reached 371.
+Live pool workers launch each attempt inside its own broker-owned cgroup. The
+scope includes direct payloads, descendants and owned Docker containers, with
+an admitted CPU mask and a hard host-memory limit. The broker stops an attempt
+that exhausts its aggregate limit; its reservation stays held until exact-scope
+cleanup completes. GPU allocations also need broker accounting: on GB10, CUDA
+memory can escape ordinary cgroup charging, so the GPU memory guard enforces the
+shared physical budget. See "Adaptive GPU admission and memory budgets" below.
 
-Under SLURM the same demand becomes `--cpus-per-task` and `--mem`, and
-`cgroup.conf` contains cores, memory, and devices. Declare what the work uses.
+Under optional SLURM, CPU and host-memory demand become `--cpus-per-task` and
+`--mem`, while `cgroup.conf` constrains cores, memory and devices. Its configured
+GPU shards are a SLURM scheduling resource, independent of the live pool's
+adaptive sharing. This lane does not implement `--gpu-memory-gb` enforcement.
+
+Declare the aggregate peak CPU and memory used by the entire action. A test run
+with eight pytest processes should reserve their combined resources and bound
+native threads per process; admission cannot infer those needs from argv.
 
 ## Wait, detach, and give up
 
@@ -1253,8 +1264,9 @@ continue to request the action's real peak CPU use.
 Borrowing stops when host activity or CPU pressure reaches the admission bound,
 when a donor becomes busy, or when any required observation is stale, malformed
 or incomplete. Unknown startup work is protected at its full reservation, and
-one host sample can authorize at most one new borrowing decision. Memory and GPU
-tokens are always acquired in full; CPU evidence never relaxes either budget.
+one host sample can authorize at most one new borrowing decision. Memory
+reservations remain fully charged; CPU evidence never relaxes a memory budget or
+authorizes GPU sharing. GPU admission uses its own broker evidence below.
 An ordinary action may still acquire physically free tokens when per-attempt
 telemetry cannot be read, but it receives no borrowing credit.
 
@@ -1268,32 +1280,60 @@ include device power, CPU activity, residency and useful work over time.
 
 Adaptive lending requires aggregate attempt telemetry for the complete execution
 scope: the direct payload, descendants and daemon-created Docker containers.
-The resource-broker design creates an exact-attempt cgroup, applies the action's
-memory ceiling there, launches the payload inside it, attaches owned containers,
-and releases the reservation only after the scope is empty. Missing broker
-attachment, an unaccounted container or incomplete telemetry must refuse lending.
-Treat this paragraph as the activation requirement; it does not by itself prove
-that the broker is installed or qualified on a given worker. Consult the current
-readiness record before relying on lending in a live campaign.
+Live pool workers use the resource broker to create an exact-attempt cgroup,
+apply the action's memory ceiling, launch the payload inside it and attach owned
+containers. The reservation is released only after the scope is empty. Missing
+broker attachment, an unaccounted container or incomplete telemetry refuses
+lending. A new worker needs broker installation and qualification before it can
+join this execution path; runtime publication alone does not install the broker.
 
-### Adaptive GPU admission
+### Adaptive GPU admission and memory budgets
 
-Sparky and sparklina each advertise one detected physical GPU. Their worker
-configuration uses `--gpu`; there is no per-host two-versus-three concurrency
-setting to tune. A root-owned broker snapshot attributes GPU processes and
-residency to exact action scopes and supplies one shared reading to all worker
-loops. Missing, stale, incomplete, unattributed, or unknown-memory-domain
-telemetry closes GPU admission. A pool job may open several CUDA processes
-without being charged as foreign work, while any process the broker cannot
-attribute closes the current single-device host to new GPU claims.
+Each current GB10 worker advertises one physical GPU. Normal pool generation
+work submitted with `--gpu` permits sharing; concurrency is chosen from fresh,
+trusted broker observations rather than a per-host job-slot count. The broker
+attributes all CUDA processes and residency to exact attempt scopes, and worker
+loops share its snapshot. Several processes belonging to one action remain
+that action's work. Missing, stale, incomplete or unattributed telemetry, or an
+unknown memory domain, refuses even the first GPU claim; an unattributed process
+blocks new work on the current single-device hosts.
 
-GPU memory and host memory remain different reservations. On GB10 the snapshot
-labels memory `shared_system`, so residency already contributes to host memory
-pressure. A future discrete device reports `discrete` VRAM, which is monitored
-against its GPU budget without changing the action's `mem_gb` cgroup limit.
-The lack of a programmable GPU-only power limit on GB10 does not invalidate an
-otherwise complete snapshot; the record identifies its 140 W reference as SoC
-TDP. Do not infer saturation from GPU utilization percentage.
+With suitable device and host headroom, the pool admits one additional sharing
+action at a time, waits for its activity response, and checks fresh observations
+before expanding again. Power or thermal limits, host pressure and foreign work
+stop new admission. If adding work produces no activity response above observed
+noise, further probes pause until activity drops or the busy period ends.
+Existing healthy actions keep running; the admission controller does not stop
+them just because load rises. The separate memory guard may stop an exact
+attempt that exceeds its budget or threatens shared memory.
+
+`--exclusive` and GPU measurements do not share the device. Use `--measurement`
+for performance results: the pool pins the submitting host and seals its
+platform/toolchain identity. Optional SLURM measurements require `--host-class`;
+use its `--exclusive` GPU reservation when overlapping work would invalidate a
+result. Historical pool requests lacking explicit sharing intent remain
+exclusive until they finish.
+
+Declare GPU memory with pool `--gpu-memory-gb N`, a positive finite GiB value.
+It requires GPU demand, is sealed into action identity, and does not rewrite
+host `--demand mem_gb=M`. The two memory domains have different accounting:
+
+| Memory domain | Budget contract |
+|---|---|
+| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. The GPU budget limits its GPU subset; omitting it defaults that cap to `mem_gb`. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
+| `discrete` | Host RAM and VRAM are independent reservations. `mem_gb` limits host memory, while `--gpu-memory-gb` limits VRAM and defaults to `mem_gb` when omitted. Both budgets must fit; unused RAM does not provide VRAM capacity. |
+
+For example, `--gpu --demand mem_gb=32 --gpu-memory-gb=8` reserves 32 GiB host
+RAM and 8 GiB VRAM on a discrete device; on GB10 it permits 32 GiB aggregate
+DRAM with an 8 GiB GPU subset cap. Missing VRAM counters refuse discrete GPU
+admission. Unknown memory domains grant no capacity. `--gpu-memory-gb` is
+refused with `--transport slurm`, whose separate VRAM enforcement is unsupported.
+
+On GB10 the broker identifies its 140 W reference as SoC TDP, not a programmable
+GPU-only power limit. It is an admission reference, not a saturation target.
+GPU utilization percentage and an activity response alone do not prove useful
+throughput; use profiling, power, CPU activity, residency and useful work per
+joule when assessing a performance result.
 
 ### Elastic worker loops
 
@@ -1320,21 +1360,3 @@ shared broker snapshot and does not launch per-worker GPU probes.
 No loop-count tuning is required for ordinary operation. `--loops N` is the
 operator opt-out that fixes the count at `N`; `--once` retains deterministic
 one-shot behavior and tops up only to the configured floor.
-
-
-## Adaptive GPU sharing and GPU memory budgets
-
-Pool GPU workers advertise physical devices: both GB10 hosts offer one GPU.
-A fresh trusted broker observation permits one action, then low-load samples
-may admit one further generation action at a time within unchanged memory
-reservations. GPU power/thermal limits, foreign work and host pressure stop new
-admission. Missing telemetry stops admission too. Use `--exclusive` or
-`--measurement` when overlapping GPU work would invalidate a result. Historical
-requests without explicit sharing intent remain exclusive during migration.
-
-For a discrete GPU, `--gpu-memory-gb N` declares VRAM separately from host
-`--demand mem_gb=M`; both budgets must fit. If omitted, the VRAM budget defaults
-to the host memory demand. On GB10 shared DRAM, the host memory demand remains
-the aggregate physical budget and an explicit GPU cap limits its GPU subset.
-The GPU memory option requires GPU demand and pool transport; unsupported SLURM
-VRAM enforcement is rejected at submission.
