@@ -14,7 +14,7 @@ def panel(kind, title, x, y, w, h, queries=(), unit="short", description="", **e
         "gridPos": {"x": x, "y": y, "w": w, "h": h},
         "description": description, "datasource": DS,
         "fieldConfig": {"defaults": {"unit": unit, "color": {"mode": "palette-classic"},
-            "noValue": "No observation", "decimals": 1}, "overrides": []},
+            "noValue": "No observation", "decimals": 1, "min": 0}, "overrides": []},
         "targets": [{"refId": chr(65 + i), "expr": expr, "legendFormat": legend,
                      "datasource": DS, "range": kind == "timeseries", "instant": kind != "timeseries"}
                     for i, (expr, legend) in enumerate(queries)],
@@ -26,6 +26,8 @@ def panel(kind, title, x, y, w, h, queries=(), unit="short", description="", **e
             "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10,
             "showPoints": "never", "spanNulls": False, "axisBorderShow": False,
         }
+        if unit == "short":
+            result["fieldConfig"]["defaults"]["custom"]["axisSoftMax"] = 1
     if kind == "stat":
         result["options"] = {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
                              "orientation": "auto", "textMode": "auto", "colorMode": "value",
@@ -127,6 +129,10 @@ def build():
           "- **GB10 framebuffer panel is empty:** expected. Its GPU shares system RAM.\n"
           "- **Failure ≠ scheduler failure:** inspect the action log, terminal record and CAS receipt.\n\n"
           "The collector is read-only. It cannot admit, cancel or resize work. Queue metrics refresh every 10 seconds; host telemetry is sampled independently. Retained terminal history is bounded and is not a permanent audit ledger."})
+    # Leave room for the introduction at ordinary laptop/desktop widths.
+    PANELS[0]["gridPos"]["h"] = 5
+    for item in PANELS[1:]:
+        item["gridPos"]["y"] += 2
     return {
         "uid": "prismabuild-fleet", "title": "PrismaBuild · Fleet & Work", "description": "Queue, adaptive admission, worker activity and outcomes across the PrismaBuild fleet.",
         "tags": ["prismabuild", "fleet", "gpu"], "schemaVersion": 41, "version": 1,

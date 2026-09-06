@@ -206,6 +206,31 @@ def _generation_store(tmp_path: Path) -> Path:
     return store
 
 
+def test_observability_runs_from_only_the_published_generation(tmp_path, monkeypatch):
+    """Workers without a checkout can import the collector and dashboard tool."""
+    import shutil
+    import subprocess
+    import sys
+
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
+    release = tmp_path / "release"
+    for name in publish_runtime._publication_manifest():
+        target = release / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(publish_runtime._source_for(name), target)
+    result = subprocess.run([
+        sys.executable, "-c",
+        "import sys,json,importlib.util; from pathlib import Path; "
+        "root=Path(sys.argv[1]); sys.path.insert(0,str(root/'tools')); "
+        "import pbmetrics; "
+        "spec=importlib.util.spec_from_file_location('dashboard',root/'fleet/observability/deploy_dashboard.py'); "
+        "module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+        "assert json.loads((root/'fleet/observability/prismabuild.json').read_text())['uid']=='prismabuild-fleet'",
+        str(release),
+    ], cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_a_staging_tree_is_not_a_generation(tmp_path, monkeypatch) -> None:
     """An interrupted publish can leave one behind, receipt and all.
 

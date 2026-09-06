@@ -114,17 +114,23 @@ def main():
                     report["queries"].append({"panel": panel["title"], "expression": expression, "series": len(data["data"]["result"])})
             if args.screenshot:
                 venv = temp / "browser-venv"
-                subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+                # The fleet's x86 Python may lack the distro ensurepip package.
+                # Reuse the admitted interpreter's pip to seed an isolated env.
+                subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
                 browser_python = str(venv / "bin/python")
-                subprocess.run([browser_python, "-m", "pip", "install", "--quiet", "playwright"], check=True)
+                subprocess.run([sys.executable, "-m", "pip", "--python", browser_python, "install", "--quiet", "playwright"], check=True)
                 subprocess.run([browser_python, "-m", "playwright", "install", "firefox"], check=True)
                 browser_script = temp / "render.py"
-                browser_script.write_text('''import json,os,sys,time
+                browser_script.write_text('''import base64,json,os,sys,time
+from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
 with sync_playwright() as p:
  browser=p.firefox.launch(headless=True)
- context=browser.new_context(viewport={"width":1600,"height":1100},http_credentials={"username":"admin","password":os.environ["PB_PREVIEW_PASSWORD"]})
+ context=browser.new_context(viewport={"width":1600,"height":3600},http_credentials={"username":"admin","password":os.environ["PB_PREVIEW_PASSWORD"]})
  page=context.new_page()
+ authorization="Basic "+base64.b64encode(("admin:"+os.environ["PB_PREVIEW_PASSWORD"]).encode()).decode()
+ origin=urlsplit(sys.argv[1]).netloc
+ page.route("**/*",lambda route:route.continue_(headers={**route.request.headers,**({"Authorization":authorization} if urlsplit(route.request.url).netloc==origin else {})}))
  errors=[]
  page.on("pageerror",lambda error:errors.append(str(error)))
  page.goto(sys.argv[1],wait_until="networkidle",timeout=90000)

@@ -516,13 +516,19 @@ def _handler(cache: MetricsCache) -> type[BaseHTTPRequestHandler]:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--queue-root", type=Path, default=DEFAULT_QUEUE_ROOT)
-    result.add_argument("--listen", default=DEFAULT_LISTEN)
-    result.add_argument("--port", type=int, default=DEFAULT_PORT)
-    result.add_argument("--cache-seconds", type=float, default=DEFAULT_CACHE_SECONDS)
+    result.add_argument("--queue-root", type=Path, default=DEFAULT_QUEUE_ROOT,
+                        help="shared pull-queue directory to observe without writing")
+    result.add_argument("--listen", default=DEFAULT_LISTEN,
+                        help="HTTP bind address (default: loopback only)")
+    result.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help="HTTP port serving /metrics")
+    result.add_argument("--cache-seconds", type=float, default=DEFAULT_CACHE_SECONDS,
+                        help="reuse a snapshot for this many seconds between scrapes")
     result.add_argument("--terminal-window-seconds", type=float,
-                        default=DEFAULT_TERMINAL_WINDOW_SECONDS)
-    result.add_argument("--terminal-limit", type=int, default=DEFAULT_TERMINAL_LIMIT)
+                        default=DEFAULT_TERMINAL_WINDOW_SECONDS,
+                        help="lookback interval for retained terminal outcome gauges")
+    result.add_argument("--terminal-limit", type=int, default=DEFAULT_TERMINAL_LIMIT,
+                        help="maximum newest terminal records read in one snapshot")
     result.add_argument("--once", action="store_true",
                         help="print one Prometheus snapshot and exit")
     return result

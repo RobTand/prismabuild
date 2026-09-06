@@ -60,7 +60,7 @@ FLEET_SCRIPTS = (
     # neither dl380g10 nor sparklina has a checkout to run it from.
     # runtime_process_census.py is here for the same reason and is only
     # useful there: it reads /proc on the box it runs on.
-    "pbstatus.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
+    "pbstatus.py", "pbmetrics.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
     # pb_gc.py is the same case: it sweeps a store from whichever box is
     # holding the mount, and it reads /proc on the box it runs on to find out
     # what is still live there.
@@ -86,6 +86,14 @@ EXCLUDED: tuple[tuple[str, str], ...] = ()
 #: fleet's declared shape from here, so a runtime published without it starts
 #: no workers at all.
 FLEET_DATA = ("fleet_boxes.json",)
+
+# The dashboard deploy tests travel with the runtime, so their implementation
+# and maintained dashboard must travel too. This does not start monitoring or
+# modify an existing Grafana deployment during worker publication.
+OBSERVABILITY_FILES = (
+    "README.md", "build_dashboard.py", "deploy_dashboard.py", "prismabuild.json",
+    "prismabuild-metrics.service", "prometheus.scrape.yml", "qualify_dashboard.py",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -177,6 +185,10 @@ def _publication_manifest() -> dict[str, str]:
         published["tools/prismabuild_worker.py"] = _sha256(worker)
     for source in sorted((CHECKOUT / "tests").glob("*.py")):
         published[f"tests/{source.name}"] = _sha256(source)
+    for name in OBSERVABILITY_FILES:
+        source = CHECKOUT / "fleet" / "observability" / name
+        if source.is_file():
+            published[f"fleet/observability/{name}"] = _sha256(source)
     return published
 
 
