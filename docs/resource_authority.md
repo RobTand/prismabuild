@@ -18,8 +18,10 @@ distributes source files; privileged execution uses installed copies under
 
 ## Memory and accounting
 
-Each parent slice receives the declared host-memory ceiling, a high watermark
-at 90%, and no swap allowance. Its hierarchical CPU and memory counters include
+Each parent slice receives the declared host-memory ceiling and no swap
+allowance. There is no lower soft-throttle watermark: live qualification found
+that it could stall allocations still below the declared ceiling. Its
+hierarchical CPU and memory counters include
 the payload and its Docker children. The Docker shim fixes the parent slice,
 container memory ceiling and inherited CPU mask and refuses unaccounted launch
 routes. Missing or incomplete telemetry cannot authorize CPU lending.

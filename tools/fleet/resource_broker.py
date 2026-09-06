@@ -79,13 +79,15 @@ class SystemdBackend:
         # No process enters until the complete aggregate envelope is installed.
         self.command('start',scope)
         self.command('set-property','--runtime',scope,
-                     f'MemoryMax={budget}',f'MemoryHigh={max(1,budget*9//10)}',
+                     f'MemoryMax={budget}','MemoryHigh=infinity',
                      'MemorySwapMax=0','CPUAccounting=yes','CPUWeight=100','MemoryAccounting=yes')
         group=self.path(scope)
         # Older supported systemd releases lack a MemoryOOMGroup property.
         # Install and verify the kernel contract directly before any launch.
         (group/'memory.oom.group').write_text('1')
-        if int((group/'memory.max').read_text())!=budget or (group/'memory.oom.group').read_text().strip()!='1':
+        if (int((group/'memory.max').read_text())!=budget
+                or (group/'memory.high').read_text().strip()!='max'
+                or (group/'memory.oom.group').read_text().strip()!='1'):
             raise ValueError('kernel memory envelope differs from requested scope')
         available=set((group/'cgroup.controllers').read_text().split())
         if not {'cpu','memory'}<=available:raise ValueError('CPU/memory controllers unavailable')
