@@ -2,11 +2,11 @@
 
 Rob requires every change to `main` to go through a GitHub issue and pull request
 (2026-09-06). Create or use an issue, work on a separate branch/worktree, link it
-in the PR using `Fixes #NUMBER`, validate through PrismaBuild, review the diff and
+in the PR using `Refs #NUMBER` or `Fixes #NUMBER`, validate through PrismaBuild, review the diff and
 merge the PR. Do not push commits directly to `main`, including fixes to policy
 or automation. Existing dirty work must be retained until it follows this path.
 
-The `Issue link / issue-link` workflow verifies that a closing reference names an
+The `Issue link / issue-link` workflow verifies that a reference names an
 actual issue in this repository, rather than another pull request. It does not
 execute PR code. Install the local direct-push guard with:
 
