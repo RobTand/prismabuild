@@ -150,6 +150,14 @@ and container launches, and direct scheduler submissions when
 this command parser is a guard, not an operating-system security boundary or a
 proof of arbitrary program behavior.
 
+It refuses instances of that work, not mentions of it. A quoted argument to an
+interpreter running a script file -- a message body, a subject line -- is prose
+and is not scanned; anything that executes an argument, including `python -c`,
+`python -m`, a shell, a wrapper such as `ssh` or `docker`, and a launcher that
+forwards its trailing argv, is scanned as before. Prose the lexical reader
+would still misread, such as a body carrying an escaped quote, belongs in a
+file argument rather than on the command line.
+
 ## Adding workers
 
 Mount the same CAS/queue at `/mnt/shared`, provision the declared architecture's
