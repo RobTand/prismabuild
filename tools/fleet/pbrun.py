@@ -51,6 +51,7 @@ import inspect
 import json
 import os
 import posixpath
+import re
 import shlex
 import shutil
 import socket
@@ -1135,11 +1136,18 @@ def require_relocatable_checkout(
             "pbrun: cannot verify relocation outside a Git checkout"
         )
     source = str(root.resolve())
-    offenders = [f"argv: {token}" for token in command if source in str(token)]
+    # Keep scanning embedded shell/application strings (including escaped
+    # quotes), but require the checkout's last component to end. A hyphen,
+    # dot, underscore or other filename continuation names a sibling instead.
+    # Colons delimit path lists; quotes and shell punctuation delimit values.
+    source_path = re.compile(
+        re.escape(source) + r'''(?=$|[/\s:=,;'"`()\[\]{}<>|&]|\\['"])'''
+    )
+    offenders = [f"argv: {token}" for token in command if source_path.search(str(token))]
     offenders.extend(
         f"environment {name}: {value}"
         for name, value in variables.items()
-        if source in str(value)
+        if source_path.search(str(value))
     )
     if offenders:
         rendered = "\n".join(f"  - {value}" for value in offenders)
