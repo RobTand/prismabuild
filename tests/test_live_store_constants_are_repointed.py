@@ -59,6 +59,37 @@ EXEMPT: dict[tuple[str, str], str] = {
 }
 
 
+#: Repointed constants the mount scan cannot see, because they do not name the
+#: mount. They are exempt from the staleness scan only, never from repointing.
+#: ``test_every_repointed_exemption_names_a_constant_that_still_exists`` keeps
+#: them honest: an entry here that outlives its constant would exempt a name
+#: nothing repoints.
+ENV_BACKED: dict[tuple[str, str], str] = {
+    ("prismabuild.materialize", "LOCAL_CHECKOUT_ROOT"): (
+        "reads an environment variable whose default is a local path, so it "
+        "never names the mount; repointed anyway because a test must not write "
+        "to the real local checkout root"
+    ),
+    ("prismabuild.pool", "LOCAL_CHECKOUT_ROOT"): (
+        "import-time copy of the above, with the same reason"
+    ),
+}
+
+HOST_LOCAL: dict[tuple[str, str], str] = {
+    ("prismabuild.adaptive_cpu", "BOX_STATE_ROOT"): (
+        "under /tmp, so not the live store -- but live *state* owned by the "
+        "loops running on this box, and the suite was minting a permanent lock "
+        "file into it per temp queue root (#265)"
+    ),
+    ("mount_latency", "ADMISSION_LOCK_DIR"): (
+        "the same directory, named separately by the latency probe"
+    ),
+    # Both are also env-backed (PRISMABUILD_BOX_STATE_ROOT), because the
+    # attribute repoint reaches only this process and the suite runs real
+    # workers as children.
+}
+
+
 def _module_name(path: Path) -> str:
     if path.parent.name == "prismabuild":
         return f"prismabuild.{path.stem}"
@@ -103,6 +134,26 @@ def _live_constants(path: Path) -> list[tuple[str, str, int]]:
     return [(module, name, lineno) for name, lineno in live.items()]
 
 
+def _module_level_names(path: Path) -> set[str]:
+    """Every name assigned at module level, read rather than imported.
+
+    ``_live_constants`` reports only the constants that name the mount, so it
+    cannot answer "does this attribute still exist?" for one that does not --
+    which is exactly what an exemption needs, since an exemption's whole job is
+    to name a constant the scan will not report. Importing would answer it, and
+    is what this file must not do.
+    """
+
+    tree = ast.parse(path.read_text(), filename=str(path))
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
 def _declared() -> set[tuple[str, str]]:
     return {(module, attr) for module, attr, _sub in LIVE_DEFAULTS}
 
@@ -133,13 +184,17 @@ def test_the_repoint_list_names_only_constants_that_exist() -> None:
     # they never name the mount and the scan is right not to report them. The
     # fixture still repoints them, because a test must not write to the real
     # local checkout root either.
-    env_backed = {
-        ("prismabuild.materialize", "LOCAL_CHECKOUT_ROOT"),
-        ("prismabuild.pool", "LOCAL_CHECKOUT_ROOT"),
-    }
+    env_backed = ENV_BACKED
+    # The box-state directory is under ``/tmp``, so it is not the live store
+    # and the scan is right not to report it either -- but it is live *state*,
+    # belonging to the loops running on this box, and the suite was minting a
+    # permanent lock file into it per temp queue root (#265). Repointing it is
+    # the fix, so these have to survive this test the same way the two above
+    # do: named here with the reason, rather than left out of LIVE_DEFAULTS.
+    host_local = HOST_LOCAL
     stale = sorted(
         f"{module}.{attr}"
-        for module, attr in _declared() - live - env_backed
+        for module, attr in _declared() - live - env_backed.keys() - host_local.keys()
     )
     assert stale == [], (
         "LIVE_DEFAULTS names constants that no longer exist or no longer name "
@@ -182,4 +237,27 @@ def test_no_exemption_is_also_repointed() -> None:
     assert both == [], (
         "these are exempted as classifiers and repointed as destinations: "
         + ", ".join(both)
+    )
+
+
+def test_every_repointed_exemption_names_a_constant_that_still_exists() -> None:
+    """A rename must not slip through the staleness scan's own exemptions.
+
+    ``test_the_repoint_list_names_only_constants_that_exist`` subtracts these
+    two sets before reporting, so an entry whose constant was renamed away would
+    take its LIVE_DEFAULTS partner out of the report with it -- the fixture
+    would then repoint nothing and the test would still pass. ``EXEMPT`` is
+    already covered by its own version of this; these were not.
+    """
+
+    assigned = {
+        (_module_name(path), name) for path in SOURCES for name in _module_level_names(path)
+    }
+    stale = sorted(
+        f"{module}.{attr}" for module, attr in (ENV_BACKED | HOST_LOCAL) if (module, attr) not in assigned
+    )
+    assert stale == [], (
+        "these exemptions name constants that no longer exist, so the "
+        "staleness scan is now blind to their LIVE_DEFAULTS entries: "
+        + ", ".join(stale)
     )

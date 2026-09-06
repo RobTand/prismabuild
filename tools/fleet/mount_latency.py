@@ -127,15 +127,21 @@ CLAIM_PATH_OPS = ("GETATTR", "LOOKUP", "ACCESS", "RENAME", "CREATE",
 #: PrismaBuild's admission gate is a local ``flock`` (``adaptive_cpu.py``
 #: ``locked()``), taken on a file in this box-private directory and held across
 #: the whole of ``pool.py`` ``_claim`` -- a ``ready/`` scan, a record rename, a
-#: lease write and the token renames, all of them on NFS.  That makes it the
-#: conversion point: a mount that is merely slow becomes a local queue, and one
-#: process waiting on a remote peer starves every other loop on the box.
+#: lease write and the token renames, all of them on NFS.  That *was* the
+#: conversion point: a mount that was merely slow became a local queue, and one
+#: process waiting on a remote peer starved every other loop on the box.  #267
+#: made the acquisition non-blocking, so a loop that finds admission held now
+#: refuses and returns to its poll instead of queueing.  The critical section
+#: is unchanged and still on the mount, so this leg still measures something
+#: real -- but the signal moved: a long hold is the mount doing something to
+#: this box, and a *waiter* is now a regression.
 #:
 #: Found by globbing rather than by recomputing the identity hash, because the
 #: hash is the lock's business and duplicating it here would make this file
 #: wrong the day that changes.  Whatever admission locks exist on this box are
 #: what we measure.
-ADMISSION_LOCK_DIR = Path("/tmp") / f"prismabuild-admission-{os.getuid()}"
+ADMISSION_LOCK_DIR = Path(os.environ.get("PRISMABUILD_BOX_STATE_ROOT")
+                          or Path("/tmp") / f"prismabuild-admission-{os.getuid()}")
 
 #: Reading ``/proc/<pid>/wchan`` for an unbounded waiter list would make the
 #: cost of this leg a function of how bad the incident is.  Beyond this many we
