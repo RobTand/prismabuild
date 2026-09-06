@@ -103,6 +103,7 @@ nonces, tokens, and result digests are never labels.
 | `prismabuild_attempt_recent_cores_jobs` | `host` | Live claims the recent-cores figure was differenced over. It is that figure's denominator, not a total. |
 | `prismabuild_admission_evidence_age_seconds` | `host,resource=cpu\|gpu` | Age of persisted scheduler evidence. This is the last recorded evidence, not a live hardware sample. |
 | `prismabuild_admission_plateau` | `host,resource=gpu` | Whether persisted GPU `power_feedback.status` last recorded a plateau. The age metric must be consulted with it. |
+| `prismabuild_queue_unstarted_releases` | `state=ready\|claimed` | Sum of `unstarted_releases` over readable records now in that state. A claim whose lease never appeared and whose attempt was never published is released back to `ready` uncharged and counted on the item (issue #222); this reports what the queue is still holding, so it is not windowed and does not fall as records age. |
 | `prismabuild_collection_success` | none | `1` when critical active-queue inputs and the selected terminal records were readable and valid, otherwise `0`. A stale valid worker offer does not make collection fail. |
 
 A telemetry record is stamped by the box executing the action and read by
@@ -137,6 +138,8 @@ Terminal history is a bounded, restart-safe window rather than a counter:
 | `prismabuild_terminal_outcomes_window_seconds` | none | Configured lookback, 3600 seconds by default. |
 | `prismabuild_terminal_outcomes_window_jobs` | none | Records actually included. This is a gauge and may fall as records age out. |
 | `prismabuild_terminal_outcomes_window_complete` | none | `1` when all terminal directories were accessible and the record cap was not reached; `0` means the window may be truncated or partly inaccessible. |
+| `prismabuild_unstarted_release_events` | `host` | Claims released without an attempt in the selected window, by the box that HELD the claim. The box is read from the filing under `withdrawn/superseded/`, not from the requeued item: the requeue pops every claim-scoped field, `claimed_host` included. A filing naming no credible host uses the single `unknown` host value. A rising rate on one box is that box's shared-mount latency. |
+| `prismabuild_unstarted_release_events_complete` | none | `1` when the release scan was accessible, the record cap was not reached, and every selected filing was readable; `0` means the window may be truncated or partly unreadable. An absent `withdrawn/superseded/` directory is a fleet that has released nothing and reads `1`. |
 | `prismabuild_terminal_collection_success` | none | `1` when all terminal directories and selected records were readable. This distinguishes read failure from an otherwise valid cap-truncated window. |
 | `prismabuild_queue_wait_seconds` | `host,stat=mean\|max` | Publish-to-claim duration for records with both timestamps. |
 | `prismabuild_execution_seconds` | `host,stat=mean\|max` | Claim-to-finish duration for records with both timestamps. |
