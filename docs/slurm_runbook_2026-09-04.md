@@ -731,6 +731,14 @@ Then, in this order, and the order is not arrangeable:
    Killing a supervisor without removing that line buys five minutes. The whole
    crontab is backed up verbatim to `~/.prismabuild/crontab.pre-cutover` on each
    box, so rollback restores what was there rather than reconstructing it.
+
+   Superseded on 2026-09-06 by `prismabuild-supervisor.service`, a systemd user
+   unit carrying the same `--ensure` invocation with `Restart=always` and
+   `RestartSec=30`; the crontab line remains behind it as a backstop. Killing a
+   supervisor now buys thirty seconds, not five minutes, and this step must
+   `systemctl --user stop prismabuild-supervisor.service` on each box before it
+   stops anything by pid. See "Keeping a supervisor alive across a reboot" in
+   the operating guide.
 2. **The supervisors.** Killing worker loops while a supervisor lives buys
    thirty seconds; it respawns them to the count `fleet_boxes.json` declares.
 3. **The worker loops.** SIGTERM, a bounded wait, then SIGKILL.
