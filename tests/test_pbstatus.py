@@ -131,6 +131,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     return {
         "bin": binaries, "state": state, "lane": lane, "queue": queue,
         "argv": [
+            "--transport", "slurm",
             "--lane-root", str(lane), "--queue-root", str(queue),
             "--sinfo", str(binaries / "sinfo"),
             "--squeue", str(binaries / "squeue"),
@@ -584,7 +585,8 @@ def test_json_is_one_object_with_the_three_lists(fleet, capsys):
     _queue_rows(fleet)
     _pool_ending(fleet, "d4" * 32)
     payload = _run_json(fleet, capsys)
-    assert set(payload) == {"schema", "nodes", "jobs", "endings", "scheduler"}
+    assert set(payload) == {"schema", "transport", "pool", "nodes", "jobs", "endings", "scheduler"}
+    assert payload["transport"] == "slurm" and payload["pool"] is None
     assert payload["scheduler"] == []
     assert len(payload["nodes"]) == 3
     assert len(payload["jobs"]) == 4

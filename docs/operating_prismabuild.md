@@ -622,30 +622,48 @@ receipt under `evidence.slurm.controller`.
 
     tools/fleet/pbstatus.py
 
+It follows `--transport pool|slurm`, then `PRISMABUILD_TRANSPORT`, then the
+deployed runtime's default, just like submission. With pool transport it reads
+the shared queue and needs no SLURM binaries. `--transport slurm` explicitly
+selects the controller view.
+
 It prints three tables:
 
-*   **nodes** — what the controller can reach, with partitions, state, allocated and
-    idle CPUs, memory, GRES in use out of GRES declared, features, load, and a flag naming why any node is
-    not schedulable.
-*   **jobs** — what is queued or running, joined against the lane's submission
-    records so each row also carries the action key prefix, the resources the
-    action asked for, the constraint it was placed under, and the box that
-    submitted it.
+*   **nodes** — for pool, each worker's declared and observed capacity, offer
+    age, and freshness of persisted CPU/GPU admission evidence. Expired offers
+    remain visible as stale. For SLURM, the controller's nodes, partitions,
+    CPU/memory allocation, GRES, features, load and reachability.
+*   **jobs** — for pool, ready and claimed action keys, resources, placement,
+    admission denial counts and lease age. Ready jobs use the pool's existing
+    placement rules to name matching live workers; matching is capability,
+    not a promise of immediate admission. Missing/stale leases explicitly say
+    process liveness is unknown. For SLURM, queued/running jobs joined against
+    lane submission records, including constraints and submitting hosts.
 *   **endings** — how the last actions ended, newest first, each labelled with
     the transport that produced it. `--recent N` changes how many are read; the
     default is 20.
 
-`pbstatus` never blocks, never writes, and never fails. A controller that is not
+`pbstatus` never writes and reports unavailable state without failing the
+screen. Scheduler commands have bounded timeouts; shared-filesystem reads
+remain subject to mount availability. A selected SLURM controller that is not
 installed prints one line saying so, and the endings table still prints, because
 those records are files on the shared mount. A record it cannot read prints as an
 `unreadable` row whose note names the path and the reason, so a truncated or
 unreadable newest record does not read as a fleet that filed nothing. `--json`
-prints one object with the three lists and any scheduler notes.
+prints one object with the selected `transport`, three lists and any scheduler
+notes. In pool mode its `pool` summary carries ready/claimed counts and an
+`empty` field: `true` means both active directories were read and contain no
+jobs, `null` means state could not be established. Corrupt active records stay
+visible as `UNREADABLE` rows. The census is not atomic, and persisted admission
+samples are historical evidence with explicit freshness, not newly computed
+admission decisions.
 
 Two flags say where `pbstatus` looks. `--lane-root` is the SLURM lane root that
 job names are resolved against, and it defaults to `$PRISMABUILD_SLURM_LANE_ROOT`, or
 to the fleet lane root when that is unset. `--queue-root` is the queue root
-holding `done/` and `failed/`, which is where the endings table is read from.
+holding worker offers, ready/claimed state and the `done/` and `failed/`
+endings. Pool status reads admission records beneath this same root rather
+than probing a different host's local GPU.
 Point them at a test fleet to read one without touching the live store.
 
 The underlying commands are `sinfo` for nodes, `squeue` for jobs, and `sacct`

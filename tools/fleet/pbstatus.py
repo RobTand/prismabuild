@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Show the fleet under SLURM: its nodes, its jobs, and how work ended.
+"""Show the selected fleet transport: workers, active jobs, and endings.
 
 An operator looking at this fleet has three questions and, without this
-command, three places to look them up.  ``sinfo`` says which boxes the
+command, three places to look them up. Pool status reads worker offers,
+ready/claimed records and persisted admission evidence from the shared queue.
+Explicit SLURM status uses ``sinfo`` to say which boxes the
 controller can still reach.  ``squeue`` says what is waiting and why.  The
 terminal records under ``pb-queue/done`` and ``pb-queue/failed`` say how the
 last few actions ended, and they are the only one of the three that survives
@@ -22,29 +24,34 @@ vocabulary, so the tables join rather than transcribe:
     and a pull-queue ending appear side by side, each labelled with the
     transport that produced it.
 
-The command never blocks and never fails.  Every scheduler call has a bounded
+Every scheduler call has a bounded
 timeout, the endings are read newest-first with a cap, and a table that cannot
 be read prints why instead of raising.  A controller that is not installed --
 the state of every box in this fleet until the install runs -- prints one line
 saying so and the endings table still prints, because those records are files
 on the shared mount and do not need a scheduler to be read.
 
-Nothing here writes.  The queue directories are read with ``os.scandir`` and
-are treated as empty when absent, rather than created.
+Nothing here writes. Missing or inaccessible active pool directories report
+unknown state rather than an empty queue. File reads are a diagnostic census,
+not an atomic scheduler snapshot or a process-liveness proof.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
+import time
 from collections.abc import Iterable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
+from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
@@ -468,6 +475,166 @@ def _name_the_job_ahead(jobs: list[dict]) -> None:
         job["note"] = f"{job['note']}; {note}" if job.get("note") else note
 
 
+def _pool_records(directory: Path) -> tuple[dict[str, dict | None], list[str]]:
+    """Audit a live directory without treating failed reads as an empty queue."""
+    records: dict[str, dict | None] = {}
+    notes: list[str] = []
+    try:
+        with os.scandir(directory) as entries:
+            paths = sorted(Path(entry.path) for entry in entries if entry.name.endswith('.json'))
+    except OSError as exc:
+        return records, [f"pool {directory}: {_unreadable_reason(exc)}"]
+    for path in paths:
+        try:
+            if not stat.S_ISREG(path.lstat().st_mode):
+                raise ValueError("not a regular queue record")
+            record = pool._read_json(path)
+            if record is None:
+                # A rename may have raced this census. Unknown, rather than
+                # a confident empty answer; a later screen can settle it.
+                raise ValueError("record disappeared or is empty")
+            records[path.stem] = record
+        except (OSError, ValueError) as exc:
+            records[path.stem] = None
+            notes.append(f"pool {path}: {exc}")
+    return records, notes
+
+
+def _age(timestamp: object, now: float) -> float | None:
+    if type(timestamp) not in (int, float) or not math.isfinite(timestamp):
+        return None
+    return now - timestamp
+
+
+def _admission_sample(path: Path, *, now: float, max_age_s: float) -> dict:
+    """Read persisted evidence only; controller decisions can write state."""
+    try:
+        record = pool._read_json(path)
+        if record is None:
+            return {"state": "unavailable", "note": "no sample recorded"}
+        age = _age(record.get("sampled_unix"), now)
+        return {"state": "fresh" if age is not None and 0 <= age <= max_age_s else "stale",
+                "age_s": age, "record": record}
+    except (OSError, ValueError) as exc:
+        return {"state": "unavailable", "note": str(exc)}
+
+
+def read_pool(queue_root: str | Path) -> dict:
+    """Read worker offers, active records and existing admission evidence.
+
+    This is a non-atomic diagnostic census, never a new admission decision.
+    File errors retain unknown counts and unreadable rows. PoolQueue supplies
+    the resource, placement, denial-count and lease rules used by workers.
+    """
+    queue = pool.PoolQueue(Path(queue_root).absolute())
+    now = time.time()
+    workers, worker_notes = _pool_records(queue.root / pool.WORKERS)
+    ready, ready_notes = _pool_records(queue.dir(pool.READY))
+    claimed, claim_notes = _pool_records(queue.dir(pool.CLAIMED))
+    notes = [*worker_notes, *ready_notes, *claim_notes]
+    nodes: list[dict] = []
+    live: list[dict] = []
+    for host, offer in workers.items():
+        if (offer is None or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', host) is None
+                or offer.get("schema") != pool.POOL_OFFER_SCHEMA_V1
+                or offer.get("host") != host or not isinstance(offer.get("capacity"), dict)
+                or not isinstance(offer.get("tags"), list)
+                or any(type(v) is not int or v < 0 for v in offer['capacity'].values())):
+            nodes.append({"node": host, "state": "unreadable", "healthy": False,
+                          "reason": "invalid worker offer"})
+            notes.append(f"pool worker {host}: invalid worker offer")
+            continue
+        age = _age(offer.get("announced_unix"), now)
+        fresh = age is not None and 0 <= age <= pool.OFFER_TIMEOUT_S
+        if fresh:
+            live.append(offer)
+        else:
+            notes.append(f"pool worker {host}: stale or invalid offer timestamp")
+        base = queue.ledger(host).base / 'adaptive'
+        nodes.append({
+            "node": host, "transport": "pool", "state": "live" if fresh else "stale",
+            "healthy": fresh, "age_s": age, "capacity": offer.get("capacity"),
+            "observed_capacity": offer.get("observed_capacity"),
+            "foreign": offer.get("foreign"), "observed_detail": offer.get("observed_detail"),
+            "features": offer.get("tags"), "has_gpu": offer.get("has_gpu"),
+            "runtime_commit": offer.get("runtime_commit"),
+            "reason": None if fresh else "offer expired or timestamp invalid",
+            "admission": {
+                "cpu": _admission_sample(base / 'cpu-sample.json', now=now,
+                                         max_age_s=pool.cpu_admission.MAX_SAMPLE_AGE_S),
+                "gpu": _admission_sample(base / 'gpu-state.json', now=now,
+                                         max_age_s=pool.gpu_admission.MAX_SAMPLE_AGE_S)
+                       if offer.get('has_gpu') else {"state": "not applicable"},
+            },
+        })
+    jobs: list[dict] = []
+    valid_counts = {pool.READY: len(ready) if not ready_notes else None,
+                    pool.CLAIMED: len(claimed) if not claim_notes else None}
+    for state, records in ((pool.READY, ready), (pool.CLAIMED, claimed)):
+        for key, record in records.items():
+            row = {"action_key": key, "action_key_prefix": key[:12], "transport": "pool",
+                   "state": state.upper(), "node": None, "reason": None}
+            try:
+                if (record is None or re.fullmatch('[a-f0-9]{64}', key) is None
+                        or record.get('action_key') != key or record.get('schema') != pool.POOL_ITEM_SCHEMA_V1):
+                    raise ValueError('invalid action record')
+                row.update(resources=queue.demand_of(record), constraint=record.get('tags'),
+                           submitted_host=record.get('published_by'),
+                           age_s=_age(record.get('claimed_unix') if state == pool.CLAIMED
+                                      else record.get('published_unix'), now))
+                if state == pool.READY:
+                    hosts = sorted({str(offer['host']) for offer in queue._matching_offers(record, live=live)})
+                    if pool.is_box_local_path(record.get('checkout_root')):
+                        hosts = [host for host in hosts if host == record.get('published_by')]
+                    row.update(placeable_hosts=hosts if live else None,
+                               admission_passes=queue.passes(key),
+                               admission_wait_s=queue.withhold_age(key))
+                    row['reason'] = ('no fresh worker offers; placement unknown' if not live
+                                     else 'no matching live worker' if not hosts
+                                     else 'awaiting admission; matching worker capacity is not a grant')
+                else:
+                    row.update(node=record.get('claimed_host'), owner=record.get('claimed_by'),
+                               cpu_allocation=record.get('cpu_allocation'),
+                               gpu_admission=record.get('gpu_admission'),
+                               cleanup_pending=bool(record.get('finish_pending') or record.get('stop_pending')
+                                                    or record.get('container_cleanup_pending')))
+                    age = queue.lease_age(key)
+                    row['lease_age_s'] = age
+                    row['stale'] = age is None or not math.isfinite(age) or not 0 <= age <= pool.LEASE_TIMEOUT_S
+                    if row['stale']:
+                        row['reason'] = 'lease missing, stale or invalid; process liveness unknown'
+                    elif row['cleanup_pending']:
+                        row['reason'] = 'cleanup pending; reservation retained'
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                row.update(state='UNREADABLE', reason=str(exc))
+                valid_counts[state] = None
+                notes.append(f"pool {state}/{key}: {exc}")
+            jobs.append(row)
+    empty = (valid_counts[pool.READY] == 0 and valid_counts[pool.CLAIMED] == 0)
+    return {"nodes": nodes, "jobs": jobs, "notes": notes,
+            "queue": {"ready": valid_counts[pool.READY], "claimed": valid_counts[pool.CLAIMED],
+                      "empty": empty if all(v is not None for v in valid_counts.values()) else None,
+                      "complete": not notes, "live_workers": len(live),
+                      "sampled_unix": now}}
+
+
+def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
+    if not nodes:
+        return ["no worker offers recorded"]
+    return render_table(("NODE", "STATE", "OFFER AGE", "CAPACITY", "OBSERVED", "ADMISSION", "NOTE"), (
+        (n['node'], n['state'], n.get('age_s'), n.get('capacity'), n.get('observed_capacity'),
+         ', '.join(f"{k}: {v['state']}" for k, v in n.get('admission', {}).items()), n.get('reason'))
+        for n in nodes))
+
+
+def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, object]) -> list[str]:
+    if not jobs:
+        return ["no jobs ready or claimed" if summary.get('empty') is True else "pool job state unavailable"]
+    return render_table(("KEY", "STATE", "NODE", "RESOURCES", "AGE", "PASSES", "MATCHING", "NOTE"), (
+        (j['action_key_prefix'], j['state'], j.get('node'), j.get('resources'), j.get('age_s'),
+         j.get('admission_passes'), j.get('placeable_hosts'), j.get('reason')) for j in jobs))
+
+
 def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
     """The ``limit`` newest terminal records by modification time.
 
@@ -832,6 +999,8 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Show the fleet's nodes, its jobs, and how work ended.")
+    parser.add_argument("--transport", choices=TRANSPORTS, default=None,
+                        help="active scheduler (default: environment, then deployed runtime)")
     parser.add_argument(
         "--json", action="store_true",
         help="print one JSON object with the three lists and any scheduler "
@@ -851,6 +1020,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--squeue", default="squeue", help=argparse.SUPPRESS)
     parser.add_argument("--scontrol", default="scontrol", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    transport = args.transport or default_transport()
     if args.recent < 0:
         parser.error("--recent cannot be negative")
 
@@ -858,18 +1028,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     nodes: list[dict] = []
     jobs: list[dict] = []
     node_note = job_note = detail_note = None
-    try:
-        nodes, detail_note = read_nodes(sinfo=args.sinfo, scontrol=args.scontrol)
-    except SchedulerUnavailable as exc:
-        node_note = str(exc)
-    except Exception as exc:                       # noqa: BLE001 - diagnostic
-        node_note = f"sinfo: unavailable ({type(exc).__name__})"
-    try:
-        jobs = read_jobs(squeue=args.squeue, lane_root=args.lane_root)
-    except SchedulerUnavailable as exc:
-        job_note = str(exc)
-    except Exception as exc:                       # noqa: BLE001 - diagnostic
-        job_note = f"squeue: unavailable ({type(exc).__name__})"
+    pool_summary = None
+    if transport == "pool":
+        try:
+            result = read_pool(args.queue_root)
+            nodes, jobs, pool_summary = result['nodes'], result['jobs'], result['queue']
+            notes.extend(result['notes'])
+        except Exception as exc:                   # noqa: BLE001 - diagnostic
+            node_note = job_note = f"pool: unavailable ({type(exc).__name__}: {exc})"
+            pool_summary = {"ready": None, "claimed": None, "empty": None, "complete": False}
+    else:
+        try:
+            nodes, detail_note = read_nodes(sinfo=args.sinfo, scontrol=args.scontrol)
+        except SchedulerUnavailable as exc:
+            node_note = str(exc)
+        except Exception as exc:                   # noqa: BLE001 - diagnostic
+            node_note = f"sinfo: unavailable ({type(exc).__name__})"
+        try:
+            jobs = read_jobs(squeue=args.squeue, lane_root=args.lane_root)
+        except SchedulerUnavailable as exc:
+            job_note = str(exc)
+        except Exception as exc:                   # noqa: BLE001 - diagnostic
+            job_note = f"squeue: unavailable ({type(exc).__name__})"
     for note in (node_note, detail_note, job_note):
         if note:
             notes.append(note)
@@ -894,6 +1074,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.json:
         print(json.dumps({
             "schema": "prismabuild.pbstatus.v1",
+            "transport": transport,
+            "pool": pool_summary,
             "nodes": nodes,
             "jobs": jobs,
             "endings": endings,
@@ -902,14 +1084,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     print("== nodes")
-    print("\n".join([node_note] if node_note else node_lines(nodes)))
+    print("\n".join([node_note] if node_note else
+                    pool_node_lines(nodes) if transport == "pool" else node_lines(nodes)))
     # Under the table, not instead of it: `sinfo` answered, and the two columns
     # `scontrol` fills read unknown for a reason the operator needs stated.
     if detail_note:
         print(detail_note)
     print()
     print("== jobs")
-    print("\n".join([job_note] if job_note else job_lines(jobs)))
+    print("\n".join([job_note] if job_note else
+                    pool_job_lines(jobs, pool_summary) if transport == "pool" else job_lines(jobs)))
+    if transport == "pool":
+        for note in notes:
+            print(note)
     print()
     print(f"== endings (newest {args.recent})")
     print("\n".join([ending_note] if ending_note
