@@ -22,6 +22,12 @@ needs to go through the lane was the one shape the hook let through.
 ``scancel`` is deliberately left alone: cancelling a job is not starting work,
 and a guard that refuses the cleanup strands the person complying with it.
 
+A here-document body is read as shell in two circumstances, and they are two
+rules rather than one.  A shell reading its standard input makes the body a
+script (``_feeds_a_shell``).  So does a shell being handed the substitution
+the body printed: ``bash -c "$(cat <<'X'`` ... ``X)"`` executes that text, and
+``_runs_substitution_output`` is the rule that says so.
+
 Two carve-outs, and both are the same lesson.  A guard that can refuse its own
 repair, or refuse the alternative it names, is worse than no guard: it strands
 the person trying to comply.  So commands that never start GPU work are let
@@ -189,10 +195,10 @@ RESERVED_WORDS = frozenset({
 })
 
 
-def _command_tokens(segment: str) -> list[str]:
-    """The segment's words, past the prefixes that are not the command."""
+def _past_prefixes(words: list[str]) -> list[str]:
+    """The words past the prefixes that are not the command."""
 
-    tokens = segment.split()
+    tokens = list(words)
     while tokens:
         head = tokens[0]
         if head in RESERVED_WORDS:
@@ -203,6 +209,12 @@ def _command_tokens(segment: str) -> list[str]:
             continue
         break
     return tokens
+
+
+def _command_tokens(segment: str) -> list[str]:
+    """The segment's words, past the prefixes that are not the command."""
+
+    return _past_prefixes(segment.split())
 
 
 def _first_token(command: str) -> str:
@@ -311,11 +323,38 @@ def _heredoc_tag(match: re.Match[str]) -> tuple[str, bool]:
 #: shell before the interpreter ever sees the text, so its ``$( ... )`` and
 #: backquotes are shell the shell really runs and are still scanned, whichever
 #: program reads the body.  See ``_heredocs``.
+#:
+#: This list answers "who reads the body".  It does not answer "who runs what
+#: the body printed", which is a separate question with a separate rule:
+#: ``_runs_substitution_output`` and ``PASS_THROUGH`` below (issue #247).
 SHELLS = ("bash", "sh", "dash", "zsh", "ksh")
 
 
 def _is_shell(name: str) -> bool:
     return name in SHELLS
+
+
+#: Programs that copy their standard input to their standard output.  The same
+#: kind of enumeration as ``SHELLS`` above -- a fact about what a named program
+#: does with a body, not a guess about an arbitrary command line -- and it is
+#: what makes a here-document body reach the output of the ``$( ... )`` it sits
+#: in.  It is only ever consulted for a substitution whose output a shell RUNS
+#: (issue #247); everywhere else the body is still data.
+#:
+#: Narrow on purpose.  ``bash -c "$(sed 's/a/b/' <<'X' ... X)"`` also runs a
+#: body, transformed, and is not matched: the module is a command-line guard,
+#: not a proof of what ``sed`` emits, and the standing agent policy covers the
+#: indirect shapes it cannot read.
+PASS_THROUGH = frozenset({"cat", "tee"})
+
+
+#: An output redirection that takes the body away from the substitution's own
+#: standard output.  ``cat > f <<'X'`` and ``cat <<'X' > f`` write a file and
+#: emit nothing, so the ``-c`` that runs the substitution runs an empty string
+#: -- and the fleet's own worker-start script is written exactly that way.
+#: ``2>`` is excluded because it moves the other stream; ``1>``, ``>>`` and
+#: ``&>`` are not, because they all move this one.
+REDIRECTS_STDOUT = re.compile(r"(?<![2-9<>])>")
 
 
 #: Commands that run another command given to them as an argument.  The shell
@@ -351,11 +390,14 @@ CODE_SWITCHES = frozenset({
 QUOTED = re.compile(r"""'[^']*'|"[^"]*\"""")
 
 
-def _words(segment: str) -> list[str]:
-    """The segment's words, with their quotes kept.
+def _split_words(segment: str) -> tuple[list[str], str]:
+    """The segment's finished words, and the unfinished one it ends inside.
 
-    ``shlex`` would strip them, and the quotes are the signal: they are what
-    separates a word that carries prose from a word that carries a path.
+    Splitting the two apart is what lets a caller ask where a word BEGINS
+    rather than only what the words are.  ``bash -c "`` ends inside a word
+    that has nothing in it yet but an opening quote, and ``bash -c echo `` ends
+    between words; the word list is the same length either way, so only the
+    remainder tells them apart.  See ``_runs_substitution_output``.
     """
 
     words: list[str] = []
@@ -377,9 +419,18 @@ def _words(segment: str) -> list[str]:
                 current = []
             continue
         current.append(char)
-    if current:
-        words.append("".join(current))
-    return words
+    return words, "".join(current)
+
+
+def _words(segment: str) -> list[str]:
+    """The segment's words, with their quotes kept.
+
+    ``shlex`` would strip them, and the quotes are the signal: they are what
+    separates a word that carries prose from a word that carries a path.
+    """
+
+    words, partial = _split_words(segment)
+    return [*words, partial] if partial else words
 
 
 def _prose_start(segment: str) -> int | None:
@@ -478,6 +529,117 @@ def _feeds_a_shell(segment: str) -> bool:
     if _name_of(tokens[0]) not in WRAPPERS:
         return False
     return any(_is_shell(_name_of(token)) for token in tokens[1:])
+
+
+#: A SHELL's run switch: the one that makes the shell execute an argument
+#: instead of reading a script or its standard input.  ``CODE_SWITCHES`` above
+#: is the wider vocabulary -- it carries python's ``-m`` and ``sbatch``'s
+#: ``--wrap`` -- and this is deliberately not it.  What makes a body worth
+#: reading as commands is that the body is SHELL, which is the same line
+#: ``_feeds_a_shell`` draws and the same one issue #223 settled: ``python3 -c
+#: "$(cat <<'X' ... X)"`` runs Python, and ``cat > x.py <<'X' ... X; python3
+#: x.py`` writes and runs the same program and is allowed today.
+#:
+#: Matched as a cluster rather than as a literal, because a shell takes its
+#: options clustered and the argument still follows: ``bash -lc``, ``bash
+#: -xc`` and ``bash -euc`` all run the next word.
+def _runs_argument(token: str) -> bool:
+    """True when this switch makes a shell run the word that follows it."""
+
+    if token == "--command":
+        return True
+    return (len(token) > 1 and token.startswith("-")
+            and not token.startswith("--") and "c" in token[1:])
+
+
+#: Where the value of a shell's run switch stops being the substitution and
+#: starts being something else.  ``bash -c "$( ... )"`` and ``bash -c "cd x;
+#: $( ... )"`` both run the substitution's output as a command; ``bash -c
+#: "echo $( ... )"`` prints it, and ``bash -c echo $( ... )`` never gives the
+#: switch the substitution at all.  So the test is not "the value contains a
+#: substitution" -- it is "the value reaches the substitution at a point where
+#: a command may begin".
+COMMAND_MAY_BEGIN = re.compile(r"(?:^|[;&|\n])\s*\Z")
+
+
+def _runs_substitution_output(prefix: str) -> bool:
+    """True when a shell will RUN what the ``$( ... )`` after ``prefix`` prints.
+
+    Issue #247.  A ``-c`` switch runs the text a command substitution
+    produced, and until this the body that became that text was never scanned:
+    ``_heredocs`` asked who owned the opener and got ``cat``, which is a
+    writer, so the body was dropped as data.  It is not data.  It is the
+    script the shell in front of the substitution is about to execute.
+
+    This is a rule about ``-c``, not about standard input, which is why it is
+    separate from ``_feeds_a_shell``: the body is shell because the ENCLOSING
+    command hands its argument to an interpreter to run, not because an
+    interpreter reads the body itself.
+
+    Three things have to hold, and each is one of the ways the shape can be
+    mistaken for a neighbour that runs nothing:
+
+    * The command word is a shell, reached directly or through a wrapper
+      (``ssh lina bash -c``, ``sudo bash -c``).  An interpreter of another
+      language is not one; see ``_runs_argument``.
+    * Its last finished word is a run switch, so the switch's value has not
+      been supplied yet.  ``bash -c echo $(...)`` fails this, and it must:
+      ``-c`` takes ``echo``, and the substitution is the argument a printed
+      script never reads.
+    * The value word reaches the substitution where a command may begin.
+      ``bash -c "echo $(...)"`` fails this and prints its body.
+
+    The pool's own submissions are excluded by the mechanism that already
+    excludes them elsewhere: if ``_drop_pool_payload`` would cut this prefix,
+    the substitution is inside a payload another process execs under a
+    reservation, and the entrypoint in front of it is what vouches for it.
+    """
+
+    if _drop_pool_payload(prefix) != prefix:
+        return False
+    words, partial = _split_words(prefix)
+    if COMMAND_MAY_BEGIN.search(partial.lstrip("'\"")) is None:
+        return False
+    tokens = _past_prefixes(words)
+    if not tokens:
+        return False
+    if _is_shell(_name_of(tokens[0])):
+        rest = tokens[1:]
+    elif _name_of(tokens[0]) in WRAPPERS:
+        rest = None
+        for index, token in enumerate(tokens[1:], 1):
+            if _is_shell(_name_of(token)):
+                rest = tokens[index + 1:]
+                break
+        if rest is None:
+            return False
+    else:
+        return False
+    return bool(rest) and _runs_argument(rest[-1])
+
+
+def _copies_body_to_output(owner: str, downstream: str) -> bool:
+    """True when this command puts a here-document body on its own output.
+
+    Only asked of a substitution whose output a shell runs.  The redirection
+    test is the half that keeps the existing carve-out: ``cat > f <<'X'``
+    and ``cat <<'X' > f`` both write a file and print nothing, so what the
+    ``-c`` runs is an empty string, and the fleet's own worker-start script is
+    written in exactly that shape.  ``downstream`` is the rest of the line
+    after the opener tokens, cut at the first pipe, because a pipeline is
+    already decided by ``piped_to_shell``.
+    """
+
+    tokens = _command_tokens(owner)
+    if not tokens:
+        return False
+    if _name_of(tokens[0]) not in PASS_THROUGH:
+        if _name_of(tokens[0]) not in WRAPPERS:
+            return False
+        if not any(_name_of(token) in PASS_THROUGH for token in tokens[1:]):
+            return False
+    return not (REDIRECTS_STDOUT.search(owner)
+                or REDIRECTS_STDOUT.search(downstream.split("|", 1)[0]))
 
 
 def _substitution(text: str, start: int) -> tuple[str, int]:
@@ -678,13 +840,15 @@ def _commands_in(text: str) -> list[str]:
             index += 2
             continue
         if text.startswith("$(", index):
+            runs = _runs_substitution_output("".join(buffer))
             inner, index = _substitution(text, index)
-            segments.extend(_scan(inner))
+            segments.extend(_scan(inner, output_run=runs))
             buffer.append(" ")
             continue
         if char == "`":
+            runs = _runs_substitution_output("".join(buffer))
             inner, index = _backquoted(text, index)
-            segments.extend(_scan(inner))
+            segments.extend(_scan(inner, output_run=runs))
             buffer.append(" ")
             continue
         if quote == '"':
@@ -778,6 +942,11 @@ def _find_heredoc(text: str) -> tuple[int, int, str, bool] | None:
     The ordering matches ``_commands_in``: a substitution is recognized inside
     a double-quoted string, because the shell expands it there, and not inside
     a single-quoted one, because it does not.
+
+    Leaving the span to ``_commands_in`` is also what gives the ``-c`` rule
+    somewhere to stand: that is the pass which knows the text in FRONT of the
+    substitution, and so the only one that can tell whether a shell is about
+    to run what the substitution prints (issue #247).
     """
 
     quote = ""
@@ -818,7 +987,7 @@ def _find_heredoc(text: str) -> tuple[int, int, str, bool] | None:
     return None
 
 
-def _heredocs(command: str) -> tuple[str, list[str]]:
+def _heredocs(command: str, *, output_run: bool = False) -> tuple[str, list[str]]:
     """Split the here-document bodies out, and say what each one is.
 
     Returns the command text with every body removed, and the segments those
@@ -844,6 +1013,17 @@ def _heredocs(command: str) -> tuple[str, list[str]]:
     for a shell rather than for an interpreter.  That is the whole of the
     #223 change, and it moves only bodies fed to ``python``: every other
     language's interpreter was already in the third case.
+
+    ``output_run`` adds a reader the third case cannot see.  When a shell is
+    about to run what this text PRINTS -- the ``$( ... )`` in the value of a
+    ``-c`` switch -- a body that reaches the output is the script that shell
+    executes, however quoted its delimiter is.  ``cat`` is a writer in every
+    other context and is the program that carries the body there in this one,
+    so the third case dropped it: ``bash -c "$(cat <<'X'`` ... ``X)"`` started
+    GPU work and nothing scanned it (issue #247).  ``_copies_body_to_output``
+    is the half that says the body reaches the output, and it declines a
+    redirected write, because ``cat > f <<'X'`` prints nothing and the ``-c``
+    then runs an empty string.
 
     A body fed to a shell is scanned by ``_commands_in``, deliberately, not by
     ``_scan``.  A here-document opened INSIDE an executed body is text the
@@ -926,7 +1106,9 @@ def _heredocs(command: str) -> tuple[str, list[str]]:
             # script as if it were a file write.
             owner_segments = _commands_in(rest[:opens_at])
             owner = owner_segments[-1] if owner_segments else ""
-            executed = _feeds_a_shell(owner) or piped_to_shell
+            executed = (_feeds_a_shell(owner) or piped_to_shell
+                        or (output_run
+                            and _copies_body_to_output(owner, downstream)))
             lines = body_text.split("\n")
             body: list[str] = []
             remainder = ""
@@ -950,16 +1132,22 @@ def _heredocs(command: str) -> tuple[str, list[str]]:
     return "\n".join(part for part in kept if part), extra
 
 
-def _scan(text: str) -> list[str]:
+def _scan(text: str, *, output_run: bool = False) -> list[str]:
     """Every command one piece of shell text runs, here-documents included.
 
     One function rather than two calls at the top level, because a command
     substitution is a shell context in its own right: its body can open a
     here-document, and reading that body without this pass turned a commit
     message into commands.
+
+    ``output_run`` says that a shell will execute what this text PRINTS -- the
+    ``$( ... )`` in the value of a ``-c`` switch -- so a here-document body
+    that reaches the output is the script, not data.  It is set only by
+    ``_commands_in``, from the text in front of the substitution, and never
+    inherited: a substitution nested inside this one decides for itself.
     """
 
-    kept, extra = _heredocs(text)
+    kept, extra = _heredocs(text, output_run=output_run)
     return [*_commands_in(kept), *extra]
 
 
