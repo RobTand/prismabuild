@@ -9,7 +9,12 @@ where the owner is read from text with no substitution in front of it.
 
 This narrows a guard, so the shapes it must still refuse are written out
 below rather than assumed, and the one shape that stops being refused for the
-wrong reason is pinned as a known gap (issue #247) rather than as a contract.
+wrong reason is kept as its own case.
+
+The gap this file recorded as a gap -- a ``-c`` switch running what a
+substitution produced -- is closed.  Its enumeration lives in
+``test_require_pool_run_switch_substitution.py`` (issue #247); the two
+spellings that named it here stay, now as the refusals they are.
 
 ``RUNNER`` is assembled rather than written because this file is edited by
 agents whose own Bash commands go through the hook it tests.
@@ -119,17 +124,19 @@ def test_a_body_the_substitution_only_prints_is_no_longer_refused(tmp_path):
     assert _verdict(_armed(tmp_path, None), command) == 0
 
 
-# --- a gap, recorded as a gap ----------------------------------------------
+# --- the gap this file recorded, now closed --------------------------------
+#
+# Issue #247.  Both spellings hand the body to ``bash -c`` as the script it
+# runs, and neither was scanned: the quoted one had never been refused, and
+# the unquoted one was refused before this change by the wrong-owner accident
+# rather than by any rule about ``-c``.  They agree now because the rule that
+# refuses them is true of both.  The full enumeration -- including the shapes
+# that must NOT move -- is in
+# ``test_require_pool_run_switch_substitution.py``.
 
-@pytest.mark.xfail(strict=True, reason="issue #247: a -c switch runs what a "
-                                       "substitution produced, and nothing "
-                                       "scans the body that became it")
 @pytest.mark.parametrize('command', [
-    # Always allowed, before this change and after it.
     f"bash -c \"$(cat <<'X'\n{WORK}\nX\n)\"",
-    # Refused before this change, by the accident above rather than by a rule
-    # about ``-c``, and allowed after it.  Both spellings run the body.
     f"bash -c $(cat <<'X'\n{WORK}\nX\n)",
 ])
-def test_a_substitution_that_c_runs_is_not_scanned(tmp_path, command):
+def test_a_substitution_that_c_runs_is_refused(tmp_path, command):
     assert _verdict(_armed(tmp_path, None), command) == 2
