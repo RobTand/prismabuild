@@ -33,7 +33,8 @@ pbtest = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pbtest)  # type: ignore[union-attr]
 
 
-def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int) -> dict:
+def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
+               *, run: str = "run") -> dict:
     """Run one shard whose pbrun produced ``output``, and read its record.
 
     The shard is mocked at ``Popen`` because the endings under test are
@@ -41,7 +42,9 @@ def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int) -> dic
     kill a real shard to observe them tests the kill.
     """
 
-    checkout = tmp_path / "checkout"
+    # One directory per call: a test that shards twice must not have the
+    # second call trip over the first call's checkout.
+    checkout = tmp_path / run / "checkout"
     test_file = checkout / "tests" / "test_one.py"
     test_file.parent.mkdir(parents=True)
     test_file.write_text("def test_one():\n    assert True\n")
@@ -55,7 +58,7 @@ def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int) -> dic
             return output, None
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", lambda command, **_k: FinishedProcess())
-    report = tmp_path / "shards.json"
+    report = tmp_path / run / "shards.json"
     monkeypatch.setattr(
         sys, "argv",
         ["pbtest.py", "--checkout", str(checkout), "--python", "/target/python",
@@ -147,8 +150,8 @@ def test_a_shard_that_did_not_run_says_how_it_ended(
     returncode elsewhere to tell a starved shard from a rejected one.
     """
 
-    killed = _one_shard(tmp_path, monkeypatch, "", -9)
-    refused = _one_shard(tmp_path, monkeypatch, "", 2)
+    killed = _one_shard(tmp_path, monkeypatch, "", -9, run="killed")
+    refused = _one_shard(tmp_path, monkeypatch, "", 2, run="refused")
 
     assert "signal 9" in killed["summary"]
     assert "rc=2" in refused["summary"]
