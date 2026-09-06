@@ -106,7 +106,10 @@ def test_a_directory_this_uid_does_not_own_is_still_refused(tmp_path, monkeypatc
     root = tmp_path / 'box-state'
     monkeypatch.setattr(adaptive_cpu, 'BOX_STATE_ROOT', root)
     adaptive_cpu.box_state(tmp_path / 'reservations' / 'h')
-    monkeypatch.setattr(adaptive_cpu.os, 'getuid', lambda: os.getuid() + 1)
+    # Read the real uid BEFORE patching: ``adaptive_cpu.os`` is this module's
+    # ``os`` too, so a lambda that called ``os.getuid()`` would call itself.
+    somebody_else = os.getuid() + 1
+    monkeypatch.setattr(adaptive_cpu.os, 'getuid', lambda: somebody_else)
 
     with pytest.raises(RuntimeError, match='unsafe'):
         adaptive_cpu.box_state(tmp_path / 'reservations' / 'h')
