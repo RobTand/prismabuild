@@ -23,8 +23,9 @@ class Backend:
     def run(self, scope, uid, command, stdio):
         self.groups[scope]['populated']=True;self.attached.append((scope,uid));return object()
     def stop(self, scope):self.groups[scope]['populated']=False;self.stopped.append(scope)
-    def empty(self, scope):return not self.groups[scope]['populated']
+    def empty(self, scope):return scope not in self.groups or not self.groups[scope]['populated']
     def exists(self, scope):return scope in self.groups
+    def path(self, scope):return Path('/sys/fs/cgroup/prismabuild.slice')/scope
     def healthy(self):return True
     def inventory(self):
         return {scope:{'populated':row['populated'],'frozen':scope in self.stopped}
@@ -563,3 +564,55 @@ def test_maintenance_status_is_bounded_without_undercounting_unknown_groups(auth
     assert status['active_scopes']==1000 and status['health'] is False
     assert status['active_scopes_truncated'] and status['errors_truncated']
     assert len(json.dumps(status).encode())<65536
+
+
+def test_creation_recovery_returns_same_authority_without_recreating(authority):
+    a,b=authority;request,record=create(a)
+    recovered=a.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create'})
+    assert recovered['token']==record['token']
+    assert list(b.groups)==[record['scope_id']]
+    assert not b.stopped
+    with pytest.raises(ValueError,match='budget'):
+        a.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create','memory_max_bytes':1})
+
+
+def test_absent_creation_recovery_fences_a_delayed_create_across_restart(authority):
+    a,b=authority
+    request={'op':'create','action_key':'a'*64,'nonce':'b'*32,'memory_max_bytes':64*1024**2}
+    recovered=a.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create'})
+    assert recovered['missing'] is True and not b.groups
+    restored=type(a)(a.state_dir,os.getuid(),b,max_memory_bytes=1024**3)
+    with pytest.raises(ValueError,match='released'):
+        restored.handle(os.getuid(),os.getpid(),request)
+    assert not b.groups and not b.stopped
+
+
+def test_creation_recovery_refuses_unknown_existing_group(authority):
+    a,b=authority;request,record=create(a);a.records.clear()
+    with pytest.raises(PermissionError,match='unknown kernel'):
+        a.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create'})
+    assert not a.records and record['scope_id'] in b.groups and not b.stopped
+
+
+def test_partial_creation_can_be_recovered_and_empty_setup_released(authority,monkeypatch):
+    a,b=authority;original=b.create
+    def partial(scope,budget):
+        original(scope,budget)
+        raise OSError('controller creation failed')
+    monkeypatch.setattr(b,'create',partial)
+    with pytest.raises(OSError):create(a)
+    request={'op':'recover_create','action_key':'a'*64,'nonce':'b'*32,'memory_max_bytes':64*1024**2}
+    record=a.handle(os.getuid(),os.getpid(),request)
+    assert record['pending'] is True
+    a.handle(os.getuid(),os.getpid(),{**request,'op':'stop','token':record['token']})
+    assert a.handle(os.getuid(),os.getpid(),{**request,'op':'release','token':record['token']})['released']
+    assert not b.groups and not b.stopped
+
+
+@pytest.mark.parametrize('version',[0,2,True,'1'])
+def test_unsupported_creation_protocol_never_creates_authority(authority,version):
+    a,b=authority
+    with pytest.raises(ValueError,match='protocol'):
+        a.handle(os.getuid(),os.getpid(),{'op':'create','action_key':'a'*64,'nonce':'b'*32,
+                 'memory_max_bytes':64*1024**2,'recovery_protocol':version})
+    assert not a.records and not b.groups

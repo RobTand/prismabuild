@@ -1944,7 +1944,7 @@ class PoolQueue:
         "cpu_allocation",
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
-        "finish_pending",
+        "finish_pending", "resource_scope_intent",
     )
 
     def _shape_as_ready_item(
@@ -2116,7 +2116,7 @@ class PoolQueue:
             lease["container_owner"] = str(container_owner)
         claim = _read_json(self.item_path(CLAIMED, action_key))
         if claim is not None and claim.get("claimed_by") == owner:
-            for field in ("resource_scope", "resource_scope_cleanup", "claimed_unix"):
+            for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup", "claimed_unix"):
                 if field in claim:
                     lease[field] = claim[field]
         _write_json_atomic(self.lease_path(action_key), lease)
@@ -2159,7 +2159,7 @@ class PoolQueue:
         scope.unit, scope.token = unit, control["token"]
         scope.cgroup_path = Path(control["cgroup_path"])
         started = control.get("started_monotonic")
-        valid = (type(started) in (int, float) and math.isfinite(started)
+        valid = (not control.get("create_recovered") and type(started) in (int, float) and math.isfinite(started)
                  and 0 <= started <= time.monotonic()
                  and control.get("boot_id") == Path("/proc/sys/kernel/random/boot_id").read_text().strip())
         # A reboot invalidates elapsed-time accounting, not exact broker
@@ -2168,6 +2168,34 @@ class PoolQueue:
         if valid:
             scope.started = started
         return scope
+
+    def _recover_resource_scope_creation(self, record: Mapping[str, object]) -> bool:
+        """Reconcile durable pre-create identity; never create a kernel group."""
+        intent = record.get("resource_scope_intent")
+        key = str(record.get("action_key") or "")
+        if (not isinstance(intent, dict) or intent.get("action_key") != key
+                or intent.get("socket_path") != str(resource_scope.BROKER_SOCKET)
+                or (record.get("claimed_host") or record.get("host")) != socket.gethostname()):
+            raise PoolContractError("invalid resource scope creation recovery identity")
+        scope = resource_scope.ResourceScope(
+            key, intent.get("nonce"), intent.get("memory_max_bytes"),
+            self.ledger().base / "telemetry" / f"{key}.json",
+            docker_owner=record.get("container_owner"),
+        )
+        if not scope.recover_create():
+            return False
+        control = {**scope.control_record(), "create_recovered": True}
+        path = self.item_path(CLAIMED, key)
+        live = _read_json(path)
+        if live is not None and _same_claim(live, record):
+            live["resource_scope"] = control
+            _write_json_atomic(path, live)
+            self.write_lease(key, owner=str(record.get("claimed_by") or ""),
+                             container_owner=record.get("container_owner"))
+        if not isinstance(record, dict):
+            raise PoolContractError("resource scope recovery record must be mutable")
+        record["resource_scope"] = control
+        return True
 
     @staticmethod
     def _sample_resource_scope(scope: resource_scope.ResourceScope) -> dict:
@@ -2215,18 +2243,32 @@ class PoolQueue:
         memory = demand.get("mem_gb")
         if type(memory) is not int or memory <= 0:
             raise PoolContractError("contained action needs a positive sealed mem_gb demand")
-        if item.get("resource_scope") is not None:
-            raise PoolContractError("claim already owns a resource scope")
+        if item.get("resource_scope") is not None or item.get("resource_scope_intent") is not None:
+            raise PoolContractError("claim already owns a resource scope or creation intent")
         scope = resource_scope.ResourceScope(
             key, uuid.uuid4().hex, memory * 1024 ** 3,
             self.ledger().base / "telemetry" / f"{key}.json",
             docker_owner=item.get("container_owner"),
             shape_key=cpu_admission.shape_key(item),
         )
+        path = self.item_path(CLAIMED, key)
+        live = _read_json(path)
+        if live is None or not _same_claim(live, item):
+            raise PoolContractError("claim changed before scope creation")
+        intent = {"action_key": key, "nonce": scope.nonce,
+                  "memory_max_bytes": scope.memory_max_bytes,
+                  "socket_path": str(scope.socket_path)}
+        live["resource_scope_intent"] = intent
+        _write_json_atomic(path, live)
+        if isinstance(item, dict):
+            item["resource_scope_intent"] = intent
+        self.write_lease(key, owner=str(item.get("claimed_by") or ""),
+                         container_owner=item.get("container_owner"))
+        # The broker may finish after a client timeout or worker crash. Both
+        # claim and lease now retain the exact nonce needed for reconciliation.
         control = scope.create()
         control["started_monotonic"] = scope.started
         control["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-        path = self.item_path(CLAIMED, key)
         try:
             live = _read_json(path)
             if live is None or not _same_claim(live, item):
@@ -2249,6 +2291,12 @@ class PoolQueue:
         self, record: Mapping[str, object], *, reason: str = "completion"
     ) -> dict[str, object]:
         """Prove both direct and Docker payloads stopped before tokens return."""
+        if record.get("resource_scope") is None and record.get("resource_scope_intent") is not None:
+            try:
+                self._recover_resource_scope_creation(record)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                return {"complete": False, "used": True, "removed": [], "remaining": [],
+                        "error": f"resource scope creation reconciliation incomplete: {type(exc).__name__}: {exc}"}
         if record.get("resource_scope") is None:
             return self._cleanup_action_containers(record)
         prior = record.get("resource_scope_cleanup")

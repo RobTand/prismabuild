@@ -1185,6 +1185,17 @@ ambiguous container operation or incomplete/stale telemetry grants no lending
 credit. This is the activation contract, not evidence that broker deployment or
 cross-host qualification is complete; live status is recorded separately.
 
+The pool persists the creation key, nonce, memory budget and broker endpoint in
+both claim and lease before requesting a scope. A lost reply is reconciled by
+`recover_create` using that exact identity, without creating a kernel group.
+When the group and authority are absent, recovery persists a cancelled attempt
+tombstone before reporting absence, so a delayed original create cannot revive
+the attempt. Known pending setup can be released only when unlaunched, without
+Docker intents, and provably empty. Creation-recovery telemetry is incomplete
+and grants no CPU lending credit. Creates carry a recovery protocol marker;
+older brokers refuse it before mutation, and workers defer without consuming an
+attempt until the installed authority has upgraded.
+
 Worker-loop count supplies enough claimants to exercise this admission policy
 without becoming a second scheduler. `fleet_boxes.json` declares an automatic
 floor. When ready work exists and every owned loop is busy, the supervisor grows

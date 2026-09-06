@@ -210,10 +210,30 @@ class Authority:
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
         if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
-        allowed={'op','action_key','nonce','memory_max_bytes'} if op=='create' else {'op','action_key','nonce','token','reason','memory_max_bytes'}
+        allowed=({'op','action_key','nonce','memory_max_bytes','recovery_protocol'} if op=='create'
+                 else {'op','action_key','nonce','memory_max_bytes'} if op=='recover_create'
+                 else {'op','action_key','nonce','token','reason','memory_max_bytes'})
         if set(request)-allowed:raise ValueError('unknown request field')
         with self.lock:
+            if op=='recover_create':
+                budget=request.get('memory_max_bytes')
+                if type(budget) is not int or not 0<budget<=self.max_memory_bytes:
+                    raise ValueError('memory budget outside host bounds')
+                record=self.records.get(scope)
+                if record is None:
+                    if self.backend.exists(scope):raise PermissionError('unknown kernel scope cannot be recovered')
+                    # A timed-out create may still be queued on this lock.
+                    # Fence it durably before declaring this attempt absent.
+                    record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
+                            'memory_max_bytes':budget,'token':secrets.token_hex(32),
+                            'released_unix':time.time(),'creation_cancelled_unix':time.time()}
+                    _atomic(self.state_dir/(scope+'.json'),record);self.records[scope]=record
+                    return {'ok':True,'scope_id':scope,'missing':True}
+                if record['memory_max_bytes']!=budget:raise ValueError('attempt budget cannot change')
+                return {'ok':True,**record,'cgroup_path':str(self.backend.path(scope))}
             if op=='create':
+                if 'recovery_protocol' in request and (type(request['recovery_protocol']) is not int
+                        or request['recovery_protocol']!=1):raise ValueError('unsupported creation recovery protocol')
                 budget=request.get('memory_max_bytes')
                 if type(budget) is not int or not 0<budget<=self.max_memory_bytes:raise ValueError('memory budget outside host bounds')
                 existing=self.records.get(scope)
@@ -255,7 +275,20 @@ class Authority:
                 # Recovery after a worker crash may repeat cleanup. Retain
                 # authority, but never touch a subsequently recreated group.
                 return {'ok':True,'scope_id':scope,'released':True,**self._stop_details(record)}
-            if record.get('pending'):raise ValueError('scope setup incomplete')
+            if record.get('pending'):
+                if (op not in {'stop','release'} or record.get('launched_unix')
+                        or record.get('container_tickets') or not self.backend.empty(scope)):
+                    raise ValueError('scope setup incomplete')
+                # No payload or daemon RPC was admitted. Close exact pending
+                # authority without signalling processes or recreating a group.
+                record.setdefault('stopped_unix',time.time())
+                record.setdefault('stop_reason',str(request.get('reason','incomplete scope setup'))[:1000])
+                if op=='release':
+                    if self.backend.exists(scope):self.backend.release(scope)
+                    record['released_unix']=time.time()
+                _atomic(self.state_dir/(scope+'.json'),record)
+                return {'ok':True,'scope_id':scope,'released':bool(record.get('released_unix')),
+                        **self._stop_details(record)}
             if op=='stop':
                 reason=str(request.get('reason','requested'))[:1000]
                 if record.get('stopped_unix'):record['last_cleanup_reason']=reason

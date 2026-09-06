@@ -28,7 +28,7 @@ def test_scope_identity_separates_attempts(tmp_path, monkeypatch):
     one.create()
     two.create()
     assert one.unit != two.unit
-    assert calls[0] == ('1'*32, 'create', {'memory_max_bytes': 1024**3})
+    assert calls[0] == ('1'*32, 'create', {'memory_max_bytes': 1024**3, 'recovery_protocol': 1})
     argv = one.wrap_argv(['/bin/true'])
     assert argv[-2:] == ['--', '/bin/true']
     assert argv[argv.index('--token')+1] == 'b'*64
@@ -265,3 +265,27 @@ def test_create_refuses_broker_scope_for_another_attempt(tmp_path, monkeypatch):
     scope = ResourceScope('a'*64, '1'*32, 1024**3, tmp_path / 'sample.json')
     with pytest.raises(OSError, match='invalid scope identity'):
         scope.create()
+
+
+@pytest.mark.parametrize('tagged',[False,True])
+def test_legacy_create_schema_refusal_only_defers_tagged_requests(tmp_path,tagged):
+    import json
+    import socket
+    import threading
+    from prismabuild.resource_scope import broker_request
+    path=tmp_path/'legacy.sock';seen=[]
+    with socket.socket(socket.AF_UNIX) as server:
+        server.bind(str(path));server.listen(1)
+        def respond():
+            connection,_=server.accept()
+            with connection:
+                seen.append(json.loads(connection.recv(65536)))
+                connection.sendall(b'{"ok":false,"error":"unknown request field"}\n')
+        thread=threading.Thread(target=respond,daemon=True);thread.start()
+        request={'op':'create','action_key':'a'*64,'nonce':'b'*32,'memory_max_bytes':1024}
+        if tagged:request['recovery_protocol']=1
+        with pytest.raises(ResourceUnavailable if tagged else OSError) as caught:
+            broker_request(request,socket_path=path)
+        if not tagged:assert not isinstance(caught.value,ResourceUnavailable)
+        thread.join(timeout=5)
+    assert seen==[request]

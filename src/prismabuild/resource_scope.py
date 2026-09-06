@@ -22,7 +22,7 @@ MAX_MESSAGE_BYTES = 65536
 
 
 class ResourceUnavailable(OSError):
-    """Broker explicitly deferred new work for maintenance before launch."""
+    """Broker deferred unstarted work for maintenance or a protocol upgrade."""
 
 
 def broker_request(request: dict, *, socket_path: Path = BROKER_SOCKET) -> dict:
@@ -39,6 +39,10 @@ def broker_request(request: dict, *, socket_path: Path = BROKER_SOCKET) -> dict:
             if len(data) > MAX_MESSAGE_BYTES:
                 raise OSError('resource broker response exceeds 64 KiB')
     response = json.loads(data.split(b'\n', 1)[0])
+    if (request.get('op') == 'create' and request.get('recovery_protocol') == 1
+            and isinstance(response, dict) and response.get('ok') is False
+            and response.get('error') == 'unknown request field'):
+        raise ResourceUnavailable('installed broker needs durable creation recovery support')
     if (isinstance(response, dict) and response.get('ok') is False
             and response.get('maintenance') is True and response.get('retryable') is True):
         raise ResourceUnavailable(f'resource broker is in maintenance: {response}')
@@ -106,7 +110,22 @@ class ResourceScope:
     def create(self) -> dict:
         if self.token is not None:
             raise RuntimeError('resource scope is already created')
-        response = self._request('create', memory_max_bytes=self.memory_max_bytes)
+        response = self._request('create', memory_max_bytes=self.memory_max_bytes, recovery_protocol=1)
+        self._adopt_created_scope(response)
+        return self.control_record()
+
+    def recover_create(self) -> bool:
+        """Recover authority or fence a missing attempt against delayed creation."""
+        response = self._request('recover_create', memory_max_bytes=self.memory_max_bytes)
+        if response.get('missing') is True:
+            expected = 'prismabuild-job' + hashlib.sha256((self.action_key + self.nonce).encode()).hexdigest()[:32] + '.slice'
+            if response.get('scope_id') != expected:
+                raise OSError('resource broker returned invalid creation absence evidence')
+            return False
+        self._adopt_created_scope(response)
+        return True
+
+    def _adopt_created_scope(self, response: dict) -> None:
         unit = response.get('scope_id', '')
         token = response.get('token', '')
         path = Path(response.get('cgroup_path', ''))
@@ -116,7 +135,6 @@ class ResourceScope:
                 or path != Path('/sys/fs/cgroup/prismabuild.slice') / unit):
             raise OSError('resource broker returned an invalid scope identity')
         self.unit, self.token, self.cgroup_path = unit, token, path
-        return self.control_record()
 
     def control_record(self) -> dict:
         """Lease metadata for exact-attempt recovery; retain with the reservation."""
