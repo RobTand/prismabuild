@@ -1287,6 +1287,25 @@ amortized, and monotonically allocated log slots preserve append evidence across
 shrink and growth. `--loops` explicitly selects fixed mode, while `--once` tops
 up only to the configured floor.
 
+Every claim, offer, receipt and CAS read crosses one shared filesystem, and
+the fleet measures it per box. `tools/fleet/mount_latency.py` samples two
+things that answer different questions: NFS per-operation queue time and
+round-trip time differenced from `/proc/self/mountstats`, which costs the mount
+no operation and therefore keeps reporting when the mount does not, and a
+bounded set of timed syscalls including the create/rename/unlink the claim path
+performs. The queue/rtt split is the attribution -- time at the server against
+time this client could not send -- and it separates a healthy mount from a
+client in a state-recovery storm by two orders of magnitude rather than by a
+chosen margin. The syscall leg runs in a forked child abandoned at a deadline,
+because a hard mount blocks uninterruptibly and no signal reaches it, and at
+most one such child is ever outstanding: a wedged mount suppresses the next
+probe instead of accumulating one blocked process per scrape. Readings are a
+per-box property and the three boxes are not symmetric, since the host that
+exports the filesystem reaches it as local storage and has no RPC statistics.
+Nothing in it decides anything; deprioritising admission on a box whose
+latency is out of line with the fleet needs the fleet-relative view the
+recorded series exists to provide, and is not built.
+
 Initial activation requires drained legacy reservations. Changing an existing
 host's topology map requires draining reservations, stopping that host's worker
 loops and supervisor, and then removing only its `cpu-map.json` before restart;
