@@ -33,7 +33,7 @@ def _no_controller(tmp_path: Path) -> list[str]:
     """
 
     absent = str(tmp_path / "absent")
-    return ["--sinfo", absent, "--squeue", absent, "--scontrol", absent]
+    return ["--transport", "slurm", "--sinfo", absent, "--squeue", absent, "--scontrol", absent]
 
 
 def _queue(root: Path) -> Path:
