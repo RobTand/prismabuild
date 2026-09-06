@@ -4759,6 +4759,32 @@ class PoolQueue:
         except subprocess.TimeoutExpired:
             return "", ""
 
+    def _defer_unstarted_claim(self, item: Mapping[str, object]) -> None:
+        """Return a broker-refused launch without recording an execution attempt."""
+        key = str(item["action_key"])
+        record = _read_json(self.item_path(CLAIMED, key))
+        if record is None or not _same_claim(record, item):
+            return
+        if record.get("resource_scope") is not None:
+            raise PoolContractError("cannot defer an attempt that already owns a resource scope")
+        tombstone, mine = self._entomb_claim(key, expect=record)
+        if tombstone is None or not mine:
+            return
+        host = record.get("claimed_host")
+        self.lease_path(key).unlink(missing_ok=True)
+        self.ledger(host if isinstance(host, str) else None).release(key)
+        destination = self._shape_as_ready_item(record, action_key=key)
+        record["maintenance_deferred_unix"] = _now()
+        _write_json_atomic(tombstone, record)
+        try:
+            os.link(tombstone, destination)
+        except FileExistsError:
+            self._file_superseded(
+                record, key=key, kind="maintenance-deferred", status="dropped",
+                reason="a newer publication already owns ready after maintenance deferral",
+            )
+        tombstone.unlink(missing_ok=True)
+
     def serve_once(
         self,
         *,
@@ -4788,6 +4814,11 @@ class PoolQueue:
         try:
             outcome = self.execute(item, python=python, timeout_s=timeout_s,
                                    **({"containment": True} if containment else {}))
+        except resource_scope.ResourceUnavailable:
+            # Only create emits this typed maintenance refusal: no payload or
+            # scope has been created, so capacity returns without an attempt.
+            self._defer_unstarted_claim(item)
+            return None
         except BaseException as exc:                      # noqa: BLE001
             # Never leave a claim dangling: an unexpected failure is recorded as
             # a terminal state, not left for the reaper 300 s later.
