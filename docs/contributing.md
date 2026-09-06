@@ -6,9 +6,14 @@ in the PR using `Refs #NUMBER` or `Fixes #NUMBER`, validate through PrismaBuild,
 merge the PR. Do not push commits directly to `main`, including fixes to policy
 or automation. Existing dirty work must be retained until it follows this path.
 
-The `Issue link / issue-link` workflow verifies that a reference names an
-actual issue in this repository, rather than another pull request. It does not
-execute PR code. Install the local direct-push guard with:
+The `Issue link / issue-link` workflow accepts a pull request that links an
+issue in this repository either way: a `Refs #NUMBER` reference in the pull
+request body (`Fixes`, `Closes` and `Resolves` also count, and close the issue
+on merge), or the issue linked under **Development** in the pull request
+sidebar. Use `Refs #NUMBER` when the issue must stay open after the merge. The
+workflow verifies that the reference names an actual issue in this repository
+rather than another pull request, and it does not execute PR code. Install the
+local direct-push guard with:
 
 ```bash
 git config core.hooksPath .githooks
