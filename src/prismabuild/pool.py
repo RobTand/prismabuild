@@ -3015,6 +3015,15 @@ class PoolQueue:
         observed on this path, and it invites the next reader to "finish" it
         on the read below, where it is not sound.  So the reaper stays loud
         and says why.
+
+        The guard is also re-asked on the read this loop acts from (#215).
+        The first read decides whether to guard; the later read is what
+        container cleanup, the superseded filing, the attempt archive and the
+        requeue all hang off, and an atomic replace publishing
+        ``finish_pending`` between the two was an ordinary claim to the guard
+        and a pending finish to nothing.  Re-asking there costs one comparison
+        on a record already in hand, and makes the guard describe the bytes
+        this loop is about to act on rather than the bytes that sent it here.
         """
 
         grace_s = HEARTBEAT_S
@@ -3079,6 +3088,17 @@ class PoolQueue:
                 # every worker that polls past it.  There is nothing to reap --
                 # the winner filed the item and released its capacity -- so the
                 # loser's only correct move is to leave it alone.
+                continue
+            if record.get("finish_pending") is not None:
+                # The claim became a pending finish under us.  ``finish``
+                # publishes that state by atomically *replacing* this file, so
+                # it can land after the guard above read an ordinary claim --
+                # and the guard is where the owner-host rule lives.  Acting on
+                # this read without re-asking would run a foreign box's
+                # container cleanup and file ``lease_lost`` over a payload that
+                # has already returned.  Leave it: the next cycle's first read
+                # is the guard's read, and it decides on the owner's box under
+                # the rule that belongs to it.
                 continue
             container_cleanup = self.cleanup_action_containers(record, reason="lease_lost")
             if not container_cleanup["complete"]:
