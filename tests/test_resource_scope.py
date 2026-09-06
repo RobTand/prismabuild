@@ -18,7 +18,8 @@ def test_scope_identity_separates_attempts(tmp_path, monkeypatch):
     calls = []
     def request(self, op, **extra):
         calls.append((self.nonce, op, extra))
-        unit = 'prismabuild-job' + self.nonce + '.slice'
+        import hashlib
+        unit = 'prismabuild-job' + hashlib.sha256((self.action_key + self.nonce).encode()).hexdigest()[:32] + '.slice'
         return {'ok': True, 'scope_id': unit, 'token': 'b' * 64,
                 'cgroup_path': '/sys/fs/cgroup/prismabuild.slice/' + unit}
     monkeypatch.setattr(ResourceScope, '_request', request)
@@ -250,3 +251,13 @@ def test_proxy_signal_stops_exact_scope_and_returns_signal_status(tmp_path):
     assert process.returncode == 143, error
     assert seen[1] == {'op': 'stop', 'action_key': 'a'*64, 'nonce': '1'*32,
                        'token': 'b'*64, 'reason': 'launcher received signal 15'}
+
+
+def test_create_refuses_broker_scope_for_another_attempt(tmp_path, monkeypatch):
+    unit = 'prismabuild-job' + 'e'*32 + '.slice'
+    monkeypatch.setattr(ResourceScope, '_request', lambda *a, **kw: {
+        'ok': True, 'scope_id': unit, 'token': 'b'*64,
+        'cgroup_path': '/sys/fs/cgroup/prismabuild.slice/' + unit})
+    scope = ResourceScope('a'*64, '1'*32, 1024**3, tmp_path / 'sample.json')
+    with pytest.raises(OSError, match='invalid scope identity'):
+        scope.create()
