@@ -1277,15 +1277,25 @@ attempt until the installed authority has upgraded.
 
 Worker-loop count supplies enough claimants to exercise this admission policy
 without becoming a second scheduler. `fleet_boxes.json` declares an automatic
-floor. When ready work exists and every owned loop is busy, the supervisor grows
-in bounded batches up to a housekeeping ceiling derived from visible CPU and
-memory. Idle loops are feedback that admission has stopped, so they prevent
-continued growth. Once the backlog clears, only excess loops proven idle by one
-batched claim census plus local process state receive `SIGTERM`; active work is
-never selected. Busy or backlogged cycles use a short bounded tick, spawning is
-amortized, and monotonically allocated log slots preserve append evidence across
-shrink and growth. `--loops` explicitly selects fixed mode, while `--once` tops
-up only to the configured floor.
+floor. Above that floor the supervisor sizes on the claims the box is holding:
+the target is the loops with a lease or a running child, plus the loops whose
+local process state is unreadable, plus a fixed idle reserve, bounded by a
+housekeeping ceiling derived from visible CPU and memory. Ready work does not
+enter the sizing law. A ready record does not say why work is waiting, so it
+cannot distinguish a box with no free poller from a box whose pollers cannot
+convert, and sizing on it made growth a fraction of the ceiling per busy tick
+while requiring an empty backlog to shrink -- a ratchet on any queue that does
+not fully drain, in which each poller added load to the shared metadata path
+the queue itself depends on. Sizing on held claims makes growth self-limiting
+without a batch, since a new claim is what earns the spare that lets the next
+one be taken without a process start, and makes shrink independent of the
+queue, since an idle poller is idle whether or not work is waiting. An
+unreadable claim census freezes the count in both directions. Only excess loops
+proven idle by one batched claim census plus local process state receive
+`SIGTERM`; active work is never selected. Busy or backlogged cycles use a short
+bounded tick, spawning is amortized, and monotonically allocated log slots
+preserve append evidence across shrink and growth. `--loops` explicitly selects
+fixed mode, while `--once` tops up only to the configured floor.
 
 Initial activation requires drained legacy reservations. Changing an existing
 host's topology map requires draining reservations, stopping that host's worker

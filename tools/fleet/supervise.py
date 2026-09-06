@@ -15,8 +15,10 @@ So: one supervisor per box, holding an exclusive advisory claim on a
 box-local file so a second invocation is a no-op rather than a doubling; the
 floor count and loop arguments read from ``fleet_boxes.json`` in the checkout,
 so the shape of the fleet is a versioned file rather than three command lines
-nobody wrote down; and elastic housekeeping width driven by real claims and
-ready work.  ``--loops`` remains a fixed-count operator override.
+nobody wrote down; and elastic housekeeping width driven by the claims this
+box is actually holding, which is the one signal about its own load the
+supervisor can attribute.  ``--loops`` remains a fixed-count operator
+override.
 
 A long-lived supervisor also follows the immutable runtime generation at a
 cycle boundary.  It validates the new generation and its own loaded bytes,
@@ -90,6 +92,14 @@ LOOP_SCRIPT = "worker_loop.py"
 # Worker loops are queue pollers, not CPU reservations.  Keep a couple ready
 # to claim without a process-start round trip, while the queue's admission
 # controller remains the sole authority over whether an action may run.
+#
+# The reserve is also what absorbs the gap between two actions.  A loop that
+# has just served one does not sleep: only ``worker_loop``'s idle and error
+# branches wait ``--poll-s``, and the served branch falls straight back into
+# ``serve_once``.  So a working loop is unclaimed for one claim round trip,
+# not one poll interval, and two spares cover more of those than a 5 s
+# supervision tick can land in.  That is why the sizing law below needs no
+# smoothing window: there is no long transient to smooth.
 IDLE_RESERVE = 2
 BUSY_INTERVAL_S = 5.0
 LOOPS_PER_VISIBLE_CPU = 4
@@ -593,8 +603,16 @@ def _visible_memory_bytes() -> int:
 def housekeeping_ceiling(floor: int) -> int:
     """Bound cheap queue pollers from visible CPU and memory.
 
-    This is a process-count safety ceiling, not an action concurrency limit.
-    Resource admission still happens in the queue immediately before claim.
+    This is a process-count safety ceiling, not an action concurrency limit,
+    and since the sizing law became evidence-driven it is not the operative
+    bound either: reaching it now requires that many loops to be genuinely
+    holding claims, which admission decides.  It was operative while growth
+    was a fraction of it -- ``LOOPS_PER_VISIBLE_CPU = 4`` made it 80 on a
+    20-CPU Spark and a growth batch 20 -- and these pollers are metadata-bound
+    on a shared network filesystem rather than CPU-bound, so the number was
+    never derived from the medium it actually loads.  Deriving it needs a
+    measurement of that medium; until there is one, a different unmeasured
+    constant would not be an improvement.
     """
 
     try:
@@ -605,12 +623,6 @@ def housekeeping_ceiling(floor: int) -> int:
     memory = _visible_memory_bytes()
     by_memory = memory // BYTES_PER_HOUSEKEEPING_LOOP if memory else by_cpu
     return max(floor, min(by_cpu, max(1, by_memory)))
-
-
-def _growth_batch(ceiling: int) -> int:
-    """Add enough pollers per busy tick to fill a large box promptly."""
-
-    return max(IDLE_RESERVE, min(32, max(1, ceiling // 4)))
 
 
 def _next_log_index() -> int:
@@ -802,22 +814,44 @@ def main() -> int:
                 else:
                     unknown += 1
 
+        # The sizing law, and the one thing to keep in mind reading it: the
+        # backlog is not in it.  A ready record says work is waiting; it does
+        # not say why, and the supervisor cannot tell "no poller is free to
+        # take it" from "no poller can take it" -- the second is what a slow
+        # shared mount, a stuck client or a resource refusal all look like
+        # from here.  Sizing on it made the response unbounded in exactly the
+        # direction that hurts: growth was a fraction of the ceiling per busy
+        # tick, shrink required the backlog to empty, and a backlog that is
+        # not draining is at once the thing that forbids shrink and the thing
+        # that authorises twenty more readers of the metadata path that is
+        # not draining it.  Sparky reached twelve loops that way on
+        # 2026-09-06 and had no path back down (issue #231).
+        #
+        # So size on the one signal that is attributable: a claim this box is
+        # holding.  ``busy`` is loops with a lease or a running child, and
+        # every poller above ``busy + IDLE_RESERVE`` is a reader the evidence
+        # does not pay for.  Growth is then self-limiting without a batch --
+        # each new claim earns the spare that lets the next one be taken
+        # without a process start -- and shrink needs no permission from the
+        # queue, because an idle poller is idle whether or not work is
+        # waiting.  ``backlog`` survives only below, choosing the tick rate.
         desired = target
         if not fixed_target and not args.once:
-            ceiling = housekeeping_ceiling(target)
-            if backlog is True and unknown == 0:
-                add = (_growth_batch(ceiling) if not idle else
-                       max(0, IDLE_RESERVE - len(idle)))
-                desired = min(ceiling, max(target, len(live) + add))
-            elif backlog is False and holders is not None:
-                desired = max(target, busy + unknown)
+            if holders is None:
+                # Silence never licenses a signal, and it does not license a
+                # spawn either: hold the count and ask again next tick.
+                desired = max(target, len(live))
+            else:
+                desired = min(housekeeping_ceiling(target),
+                              max(target, busy + unknown + IDLE_RESERVE))
                 excess = max(0, len(live) - desired)
-                if excess:
+                if excess and idle:
                     stopped = _stop_idle_loops(
                         idle[-excess:], holders=holders)
                     live = [pid for pid in live if pid not in stopped]
-                    print(f"[{host}] backlog clear; stopped {len(stopped)} "
-                          f"proven-idle excess loop(s) {stopped}", flush=True)
+                    print(f"[{host}] {busy} claim(s) held; sized to "
+                          f"{desired} and stopped {len(stopped)} proven-idle "
+                          f"loop(s) {stopped}", flush=True)
 
         missing = max(0, desired - len(live))
         for offset in range(missing):
