@@ -23,11 +23,23 @@ sys.path.insert(0, str(ROOT / 'src'))
 from prismabuild import core, pool, tessera_model as model
 # Development dispatchers still submit through the published client contract.
 PUBLISHED_TOOLS = Path('/mnt/shared/prismabuild-fleet/repo/tools')
-if PUBLISHED_TOOLS.is_dir():
-    sys.path.insert(0, str(PUBLISHED_TOOLS))
-import pbcampaign
-import pbrun
-import pbwait
+
+
+def published_client():
+    """Import the published client tools, and return them.
+
+    Reading this directory is reaching the live fleet, so it happens when a
+    command runs and not when the module is imported: importing a tool must
+    not depend on the mount being up, and a test that imports this one must
+    not read or write the real store.
+    """
+
+    if PUBLISHED_TOOLS.is_dir() and str(PUBLISHED_TOOLS) not in sys.path:
+        sys.path.insert(0, str(PUBLISHED_TOOLS))
+    import pbcampaign
+    import pbrun
+    import pbwait
+    return pbcampaign, pbrun, pbwait
 
 
 def stage_checkout(encoder, revision, workspace, plan, scales):
@@ -84,6 +96,7 @@ def receipt_result(key, cas):
 
 def run_stage(rows, workspace, stage, wait_s):
     # Existing campaign and wait interfaces own all placement and admission.
+    pbcampaign, pbrun, pbwait = published_client()
     submissions = pbcampaign.submit(rows, transport='pool')
     model.atomic_json(workspace / '.pb-state' / f'{stage}-submissions.json', submissions)
     if any(row['status'] == 'refused' for row in submissions):
@@ -115,22 +128,22 @@ def run_stage(rows, workspace, stage, wait_s):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source', type=Path)
-    parser.add_argument('--plan', type=Path)
-    parser.add_argument('--input-scales', type=Path)
-    parser.add_argument('--encoder-checkout', type=Path)
-    parser.add_argument('--encoder-revision')
+    parser.add_argument('--source', type=Path, help='the complete Tessera source export to dispatch')
+    parser.add_argument('--plan', type=Path, help='the layer plan the campaign partitions into quanta')
+    parser.add_argument('--input-scales', type=Path, help='optional pre-computed scales to seal into the workspace')
+    parser.add_argument('--encoder-checkout', type=Path, help='Git checkout the pinned encoder is archived from')
+    parser.add_argument('--encoder-revision', help='full immutable commit ID of the encoder to pin')
     parser.add_argument('--image', help='qualified producer repository@sha256 digest')
-    parser.add_argument('--out', type=Path)
-    parser.add_argument('--workspace', type=Path, required=True)
-    parser.add_argument('--resume', action='store_true')
-    parser.add_argument('--cpus', type=int, default=1)
-    parser.add_argument('--mem-gb', type=int, default=16)
-    parser.add_argument('--assembly-mem-gb', type=int, default=4)
-    parser.add_argument('--tag', action='append', dest='tags', default=None)
-    parser.add_argument('--grid', default='E4M3')
-    parser.add_argument('--q256', type=int, default=1024)
-    parser.add_argument('--wait-s', type=float, default=86400.)
+    parser.add_argument('--out', type=Path, help='shared path the assembled model is written to')
+    parser.add_argument('--workspace', type=Path, required=True, help='directory this dispatch seals its job, receipts and state into')
+    parser.add_argument('--resume', action='store_true', help='continue the dispatch already sealed in --workspace')
+    parser.add_argument('--cpus', type=int, default=1, help='CPU reservation for each layer quantum')
+    parser.add_argument('--mem-gb', type=int, default=16, help='memory reservation for each layer quantum, in GB')
+    parser.add_argument('--assembly-mem-gb', type=int, default=4, help='memory reservation for the assembly action, in GB')
+    parser.add_argument('--tag', action='append', dest='tags', default=None, help='placement tag; repeatable, defaults to gb10')
+    parser.add_argument('--grid', default='E4M3', help='quantization grid the encoder is run with')
+    parser.add_argument('--q256', type=int, default=1024, help='quanta per 256 rows the plan is partitioned at')
+    parser.add_argument('--wait-s', type=float, default=86400., help='seconds to wait for a stage\'s actions before giving up')
     args = parser.parse_args(argv)
     workspace = args.workspace.resolve()
     if args.resume:
@@ -162,6 +175,7 @@ def main(argv=None):
                 'tags': args.tags or ['gb10'], 'grid': args.grid, 'q256': args.q256}
         model.atomic_json(workspace / 'job.json', spec)
     if 'contract' not in spec:
+        _, pbrun, _ = published_client()
         queue = pool.PoolQueue(pbrun.SH / 'pb-queue')
         offers = queue._matching_offers(
             {'tags': spec['tags'], 'resources': {'gpu': 1, 'cpu': spec['cpus'], 'mem_gb': spec['mem_gb']},
