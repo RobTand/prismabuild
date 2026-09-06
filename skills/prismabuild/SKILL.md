@@ -85,8 +85,11 @@ honest peak CPU demand. Memory budgets remain fully reserved; CPU lending does
 not authorize GPU sharing.
 
 Use `--measurement` for measurements: the pool pins the submitting host, seals
-platform/toolchain identity and keeps GPU measurements exclusive. `--exclusive`
-also prevents GPU sharing for ordinary work. Optional SLURM measurements require
+platform/toolchain identity, admits only against a fresh near-idle host, and
+keeps GPU measurements exclusive. Interleave the arms of a timing comparison and
+record the load per arm; see `docs/agent_execution_policy.md`. `--exclusive`
+reserves one box's whole GPU capacity and is not CPU isolation; it also prevents
+GPU sharing for ordinary work. Optional SLURM measurements require
 `--host-class`; reserve its GPU exclusively when overlap would invalidate results.
 On GB10, GPU utilization percentage is not a saturation measure; collect power,
 CPU activity, residency and useful throughput with before/after profiling.
