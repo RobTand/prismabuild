@@ -56,7 +56,19 @@ names two boxes and never conflates them: `claimed_host` is the box the action
 was on, filled from the claim-intent marker of the same generation when the
 claimant was lost before it rewrote the record, and `finished_host` is the box
 that filed the ending. Readers report the first as where the work was; the
-second reaps most of the fleet's work and would otherwise absorb its failures. Unparseable ready records are
+second reaps most of the fleet's work and would otherwise absorb its failures. An attempt counts an execution, so
+a claim reaped with no lease ever written and no immutable attempt published
+under the number it would take is *released* rather than concluded: it returns
+to `ready/` with its attempt count unchanged, the release filed under
+`withdrawn/superseded/` as an `unstarted-claim` and counted on the item as
+`unstarted_releases`. Both halves of that test are load-bearing, because a
+restored finish tombstone also has no lease and must keep the charged path. A
+claim carrying a withdrawal stamp is never released: `withdraw` closes the
+retry with `max_attempts: 1`, and a release is not counted against that limit,
+so the stamp is what stops a cancelled action returning to the queue.
+Releases are counted, not bounded: the measured stall between the rename and
+the lease has no upper bound on this filesystem, so a bound would be a guess
+about a delegation recall. Unparseable ready records are
 isolated under `withdrawn/superseded/` with their original bytes and a bounded
 diagnostic; healthy records continue through the queue. A quarantine restores
 a concurrently repaired record without replacing another submission and never

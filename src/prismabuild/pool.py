@@ -3024,9 +3024,19 @@ class PoolQueue:
         stale" requeued a live seven-second action within a second of its
         claim and let a retry's refusal stand as its outcome (issue #36).  A
         genuinely dead claimant still gets reaped, one grace period later.
-        The default grace is the heartbeat interval: longer than the window
-        actually spans, far shorter than the lease timeout that governs the
-        normal case.
+        The default grace is the heartbeat interval, far shorter than the
+        lease timeout that governs the normal case.
+
+        It is **not** longer than the window actually spans, which is what this
+        paragraph used to say (#222).  Measured on ``dl380g10`` on 2026-09-06,
+        read-only, at load 0.44 across 80 CPUs with nothing in ``D``: one
+        pool-record operation took 45.001 s against a 30 s grace, on NFSv4
+        delegation recalls of the directories another box rewrites.  The window
+        has no upper bound here, so no grace is safe and a larger one is only a
+        larger guess.  The grace still decides *when* a leaseless claim is
+        taken; what the taking costs is decided below, by asking whether
+        anything ever ran under it rather than how long the claimant took to
+        say so.
 
         **This loop reads its records loudly, and the sibling sweeps do not.**
         ``ready_items`` and ``quarantine_orphans`` treat an entry that goes
@@ -3191,6 +3201,92 @@ class PoolQueue:
             # every consumer addresses items by key.
             record["action_key"] = key
             prior_attempts = int(record.get("attempts", 0))
+            if (age is None
+                    and record.get("withdrawn_unix") is None
+                    and not self.attempt_path(
+                        record, prior_attempts + 1).exists()):
+                # Nothing ever ran under this claim, so nothing failed under
+                # it.  ``claim`` writes the lease before it returns and
+                # ``execute`` writes the child pid into it before the payload
+                # is launched, so a claim with no lease at all never reached a
+                # launch; and no attempt is published under the number this
+                # claim would take, so no other writer recorded one either.
+                #
+                # Both halves are needed.  A lease is also absent from a claim
+                # a *finisher* archived and then died holding:
+                # ``sweep_finish_tombstones`` restores exactly that record, and
+                # relies on this path archiving at the same attempt number so
+                # first-writer-wins hands the item the finisher's real outcome.
+                # ``finish`` publishes the attempt before it entombs the claim,
+                # so the attempt on disk is what tells the two apart.
+                #
+                # Charging an attempt here is what turned a stalled claimant
+                # into lost work: measured on this fleet, a single pool-record
+                # operation took 45 s against a 30 s grace, and
+                # ``0a44f2e0f62c`` came back ``lease_lost_max_attempts`` with
+                # empty stdout and stderr -- an action that never started,
+                # unrunnable, out of a queue another box could have taken it
+                # from.  Widening the grace only moves the guess; the window
+                # has no upper bound on this filesystem.  Releasing does not
+                # need one, because it asks what happened rather than how long
+                # it took.
+                #
+                # A withdrawn claim is the one thing a release must not
+                # touch.  ``withdraw`` closes the retry by writing
+                # ``max_attempts: 1`` onto the live claimed record, so that any
+                # reaper -- including one running pre-withdraw bytes, which
+                # consults no marker -- concludes the action instead of
+                # requeueing it.  A release does not charge an attempt and so
+                # is not closed by that limit: it would put an action an
+                # operator cancelled straight back in the queue.  The
+                # withdrawal stamp travels on the record beside the limit,
+                # which is what makes it readable here without the marker.
+                #
+                # This does not stop a reaper taking a live-but-blocked
+                # claimant's claim -- that is not knowable across boxes.  It
+                # stops the taking from destroying the work.  The claimant may
+                # still unblock and run: the same double-run the destructive
+                # requeue already allowed, reconciled the same way, by
+                # first-writer-wins on one attempt number.
+                self._file_superseded(
+                    record, key=key, kind="unstarted-claim", status="released",
+                    released_unix=_now(), released_host=socket.gethostname(),
+                    reason="claim released without an attempt: no lease was "
+                           "written and no attempt was published",
+                )
+                # Counted, not bounded.  A bound would be the constant this
+                # issue exists to avoid, and a release costs an execution
+                # nothing; a key whose count climbs is a box that cannot start
+                # work, which is the thing to go and look at.
+                record["unstarted_releases"] = int(
+                    record.get("unstarted_releases", 0) or 0) + 1
+                destination = self._shape_as_ready_item(record, action_key=key)
+                tombstone, mine = self._entomb_claim(key, expect=read_claim)
+                if not mine:
+                    # A retry is live under this key and owns everything the
+                    # branch below would have taken.  Nothing has been written
+                    # outside the superseded filing, which is evidence rather
+                    # than state.
+                    continue
+                self.lease_path(key).unlink(missing_ok=True)
+                self.ledger(holder if isinstance(holder, str) else None).release(key)
+                try:
+                    _write_json_atomic(destination, record)
+                except OSError:
+                    if tombstone is not None:
+                        try:
+                            os.link(tombstone, path)
+                        except OSError:
+                            pass
+                        else:
+                            tombstone.unlink(missing_ok=True)
+                    continue
+                if tombstone is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    tombstone.unlink(missing_ok=True)
+                requeued.append(key)
+                continue
             attempts = prior_attempts + 1
             limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
             if (
