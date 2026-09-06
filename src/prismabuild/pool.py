@@ -2508,10 +2508,16 @@ class PoolQueue:
             demand = self.demand_of(item)
             handle: str | None = None
             adaptive = None
+            if controller is not None and not demand:
+                # Adaptive admission needs a durable reservation to make an
+                # unknown CPU consumer visible to subsequent measurements.
+                # Empty legacy demand has no holder; keep it queued instead.
+                self.record_pass(key)
+                continue
             if ledger is not None and demand:
                 if any(total.get(kind, 0) < need for kind, need in demand.items()):
                     continue      # never fits this box; not this box's to hold
-                if controller is not None and demand.get("cpu", 0):
+                if controller is not None:
                     adaptive = controller.decision(item, demand)
                     if adaptive is None:
                         self.record_pass(key)
