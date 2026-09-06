@@ -15,3 +15,7 @@ update it with contract/default changes. Preserve existing worktrees and dirty
 work. Reproduce behavioral bugs before fixing them and validate the integrated
 result. Delegate substantial independent work when the user authorizes it;
 match effort to difficulty and verify returned artifacts independently.
+
+Changes to `main` require a GitHub issue and pull request (Rob, 2026-09-06).
+Use an isolated branch/worktree, link the issue in the PR, validate and review
+before merging. Never push directly to `main`. See [contributing](docs/contributing.md).
