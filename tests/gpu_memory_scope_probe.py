@@ -1,4 +1,4 @@
-"""Admitted bounded CUDA/scope qualification, two jobs and selective stop."""
+"""Admitted real daemon GPU stop proof; no caller-issued stop before verdict."""
 import hashlib
 import json
 import os
@@ -27,11 +27,15 @@ def main():
                 scope.create()
                 owned.append(scope)
                 ready = base / (name + '.ready')
+                progress = base / (name + '.progress')
                 program = ('import torch,time,pathlib,os; torch.set_num_threads(1); '
                            f'x=torch.ones({mib}*1024**2,dtype=torch.uint8,device="cuda"); '
                            'torch.cuda.synchronize(); '
                            f'pathlib.Path({str(ready)!r}).write_text(str(os.getpid())); '
-                           'time.sleep(45)')
+                           'deadline=time.monotonic()+45; step=0\n'
+                           'while time.monotonic()<deadline:\n'
+                           f' pathlib.Path({str(progress)!r}).write_text(str(step)); '
+                           'step+=1; time.sleep(0.2)\n')
                 processes.append(subprocess.Popen(scope.wrap_argv([sys.executable, '-c', program]),
                                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                                   text=True))
@@ -41,25 +45,41 @@ def main():
                     raise RuntimeError('CUDA scoped children did not become ready')
                 time.sleep(0.2)
             specs = [gm.Scope(s.unit, s.cgroup_path, s.memory_max_bytes) for s in owned]
-            guard = gm.Guard()
-            decision = None
-            for _ in range(4):
-                sample = gm.collect(specs)
-                print(json.dumps({'sample': sample.as_dict()}), flush=True)
-                decisions = guard.observe(sample)
-                if decisions:
-                    assert len(decisions) == 1 and decisions[0].scope_id == owned[1].unit, decisions
-                    decision = decisions[0]
+            deadline = time.monotonic() + 25
+            last_sample = 0.
+            while True:
+                offender_status = owned[1]._request('status')
+                healthy_status = owned[0]._request('status')
+                assert processes[0].poll() is None, 'healthy scope was stopped'
+                assert 'stopped_unix' not in healthy_status, healthy_status
+                if offender_status.get('stop_reason'):
                     break
-                time.sleep(1)
-            assert decision is not None, 'GPU overbudget scope was not identified'
-            assert decision.reason == 'memory_budget_exceeded'
-            owned[1].terminate_owned(decision.reason)
+                if time.monotonic() >= deadline:
+                    raise AssertionError('daemon did not stop the GPU overbudget scope')
+                if time.monotonic() - last_sample >= 1:
+                    print(json.dumps({'sample': gm.collect(specs).as_dict()}), flush=True)
+                    last_sample = time.monotonic()
+                time.sleep(0.25)
+            assert offender_status['stop_reason'] == 'memory_budget_exceeded', offender_status
+            decision = offender_status['termination_evidence']
+            assert decision['scope_id'] == owned[1].unit, decision
+            assert decision['reason'] == 'memory_budget_exceeded', decision
+            assert decision['evidence']['consecutive_samples'] >= 2, decision
+            evidence = decision['evidence']['job']
+            assert evidence['lower_bound_bytes'] > evidence['budget_bytes'], evidence
+            assert evidence['gpu_lower_bound_bytes'] > evidence['budget_bytes'], evidence
             offender_output = processes[1].communicate(timeout=10)
-            assert processes[1].returncode != 0
-            assert processes[0].poll() is None, 'healthy scope was stopped'
-            print(json.dumps({'verdict': 'selective_gpu_budget_stop', 'decision': decision.as_dict(),
-                              'healthy_alive': True, 'offender_returncode': processes[1].returncode,
+            assert processes[1].returncode == 137, offender_output
+            progress = base / 'healthy.progress'
+            before_progress = int(progress.read_text())
+            time.sleep(1)
+            after_progress = int(progress.read_text())
+            assert processes[0].poll() is None and after_progress > before_progress
+            print(json.dumps({'verdict': 'automatic_daemon_gpu_budget_stop',
+                              'offender_status': offender_status, 'healthy_status': healthy_status,
+                              'healthy_progress_before': before_progress,
+                              'healthy_progress_after': after_progress,
+                              'offender_returncode': processes[1].returncode,
                               'offender_output': offender_output}), flush=True)
         finally:
             for scope in reversed(owned):
