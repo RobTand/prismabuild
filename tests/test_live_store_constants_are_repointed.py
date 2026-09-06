@@ -194,7 +194,7 @@ def test_the_repoint_list_names_only_constants_that_exist() -> None:
     host_local = HOST_LOCAL
     stale = sorted(
         f"{module}.{attr}"
-        for module, attr in _declared() - live - env_backed - host_local
+        for module, attr in _declared() - live - env_backed.keys() - host_local.keys()
     )
     assert stale == [], (
         "LIVE_DEFAULTS names constants that no longer exist or no longer name "
