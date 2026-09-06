@@ -122,7 +122,7 @@ rm -f "$ctx/munge.key" "$ctx/id_smoke" "$ctx/id_smoke.pub"
 fi
 
 # -- the configuration, generated once from the fleet's files ----------------
-python3 "$HERE/genconf.py" "$REPO/fleet/slurm" "$vol/etc" "$(nproc)" \
+python3 "$HERE/genconf.py" "$REPO/fleet/slurm" "$vol/etc" "$(nproc --all)" \
     | tee "$run/deviations.txt" || exit 2
 echo
 

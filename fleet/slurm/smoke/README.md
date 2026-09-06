@@ -116,6 +116,8 @@ deviation at the top of the run:
 |---------|-------|------|-----|
 | `SlurmUser` | `slurm` | `root` | no `slurm` user in the image, and creating one would be testing `useradd` |
 | `NodeName` | three boxes | the container | one node |
+| CPU topology | each box's topology | `slurmd -C` inside the container | `nproc` can reflect `OMP_NUM_THREADS` and cannot describe a sparse admitted CPU mask |
+| `TaskPluginParam` | fleet binding options | adds `SlurmdSpecOverride` | SLURM excludes CPUs unavailable in its parent cgroup and adjusts available memory to its container limit |
 | `RealMemory` | the `fleet_boxes.json` budget | 16384 | enough for two concurrent shard jobs at the 4 GB default demand |
 | `KillWait` | 30 | 10 | rows 5 and 6 would otherwise spend it waiting |
 | `ConstrainDevices` | `yes` | `no` | there are no devices to constrain |
@@ -287,7 +289,8 @@ one more argument for putting the 25.11 packages on the nodes.
 
 ## Deviations from `fleet/slurm/*.conf`, and why
 
-`genconf.py` prints these at the top of every run. Everything not listed is the
+`genconf.py` prints these at the top of every run; `topology.py` then prints the
+actual hardware topology in each container's boot log. Everything not listed is the
 fleet's file unchanged, including the controller's node name, all three
 `NodeName` lines' `RealMemory`, `Gres`, `Feature` and `Weight`, all three
 `PartitionName` lines, `ReturnToService=2`, `MinJobAge=3600`, every scheduler
@@ -296,7 +299,8 @@ and cgroup plugin choice, and the real `epilog.sh`.
 | Setting | Fleet | Here | Why |
 |---------|-------|------|-----|
 | `SlurmUser` | `slurm` | `root` | no `slurm` user in the image, and creating one would be testing `useradd` |
-| `NodeName=dl380g10` topology | `CPUs=80`, 2x20x2 | `CPUs=20`, 2x10x1 | all three containers are on one GB10; a configured topology larger than what slurmd reports comes up DRAINED with "Low socket*core*thread count" |
+| All node CPU topologies | each fleet box's topology | actual `slurmd -C` topology (20 CPUs, 1x20x1 on GB10) | all three containers share one physical host; generated provisional topology is replaced before either daemon starts |
+| `TaskPluginParam` | fleet binding options | adds `SlurmdSpecOverride` | map the PB parent cgroup's unavailable CPUs to SLURM's abstract topology while preserving task binding and the outer PB limits |
 | `KillWait` | 30 | 10 | M6 would otherwise spend it waiting |
 | `SlurmdTimeout` | absent, so 300 | 30 | M6 waits for the controller to notice a dead node; the value under test is `ReturnToService`, not this |
 | `ConstrainDevices` | `yes` | `no` | the GRES binds a `mknod`'d character device nothing opens |
@@ -305,9 +309,11 @@ and cgroup plugin choice, and the real `epilog.sh`.
 | `SlurmctldHost` | `dl380g10(192.168.1.107)` | `dl380g10` | docker's own DNS resolves the node names, and the fleet's LAN is not on this network. A controller configured with those addresses binds and dials into nothing and answers no RPC at all -- which is what it did, once. |
 | `NodeAddr` | each box's LAN address | absent | the same reason |
 
-`RealMemory` is **not** a deviation, unlike in the one-node harness: 73728,
-81920 and 61440 MiB are all under what slurmd reports inside a container on
-this box, so the fleet's own budgets stand.
+The configured `RealMemory` values remain 73728, 81920 and 61440 MiB.
+`SlurmdSpecOverride` reserves the difference between those values and each
+container's limit, so actual admission respects the parent PB memory budget.
+The three containers share one aggregate PB cap; their declared node capacities
+are synthetic cluster fixtures, not three independent host reservations.
 
 The munge key is baked into a derived image, generated per run, and the image
 is removed when the run ends. That is what makes it one key in all three

@@ -91,6 +91,7 @@ for name in slurm.conf gres.conf cgroup.conf; do
     [ -f "$ETC/$name" ] || die "$ETC/$name is missing; run.sh generates it"
     install -m 0644 "$ETC/$name" "/etc/slurm/$name"
 done
+python3 "$REPO/fleet/slurm/smoke/topology.py" /etc/slurm/slurm.conf || die "CPU topology setup failed"
 cp "$REPO/fleet/slurm/epilog.sh" /etc/slurm/epilog.sh
 chmod 0755 /etc/slurm/epilog.sh
 say "config sha256 $(sha256sum /etc/slurm/slurm.conf | cut -d' ' -f1)"
