@@ -2,7 +2,7 @@
 from pathlib import Path
 import pytest
 
-from prismabuild.resource_scope import ResourceScope, read_cgroup
+from prismabuild.resource_scope import ResourceScope, ResourceUnavailable, read_cgroup
 
 
 def _group(path, cpu=2000000, memory=1234):
@@ -88,9 +88,12 @@ def test_stop_and_release_use_exact_attempt_authentication(tmp_path, monkeypatch
         (tmp_path / 'sample.termination.json').read_text())['reason']
 
 
-@pytest.mark.parametrize('response', [b'{"ok":false,"error":"no token"}\n',
-                                    b'{}\n', b'x'*65537])
-def test_broker_refusal_and_oversized_response_fail_closed(tmp_path, response):
+@pytest.mark.parametrize('response,expected', [(b'{"ok":false,"error":"no token"}\n', OSError),
+    (b'{}\n', OSError), (b'x'*65537, OSError),
+    (b'{"ok":false,"maintenance":true,"retryable":true}\n', ResourceUnavailable),
+    (b'{"ok":false,"maintenance":true}\n', OSError),
+    (b'{"ok":false,"retryable":true}\n', OSError)])
+def test_broker_refusal_and_oversized_response_fail_closed(tmp_path, response, expected):
     import socket
     import threading
     from prismabuild.resource_scope import broker_request
@@ -109,8 +112,9 @@ def test_broker_refusal_and_oversized_response_fail_closed(tmp_path, response):
         worker = threading.Thread(target=serve)
         worker.start()
         try:
-            with pytest.raises(OSError):
+            with pytest.raises(expected) as caught:
                 broker_request({'op': 'create'}, socket_path=path)
+            assert type(caught.value) is expected
         finally:
             worker.join(timeout=5)
             assert not worker.is_alive()

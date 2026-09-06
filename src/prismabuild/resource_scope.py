@@ -21,6 +21,10 @@ SCOPE_RE = re.compile(r'prismabuild-job[a-f0-9]{32}\.slice')
 MAX_MESSAGE_BYTES = 65536
 
 
+class ResourceUnavailable(OSError):
+    """Broker explicitly deferred new work for maintenance before launch."""
+
+
 def broker_request(request: dict, *, socket_path: Path = BROKER_SOCKET) -> dict:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(10)
@@ -35,6 +39,9 @@ def broker_request(request: dict, *, socket_path: Path = BROKER_SOCKET) -> dict:
             if len(data) > MAX_MESSAGE_BYTES:
                 raise OSError('resource broker response exceeds 64 KiB')
     response = json.loads(data.split(b'\n', 1)[0])
+    if (isinstance(response, dict) and response.get('ok') is False
+            and response.get('maintenance') is True and response.get('retryable') is True):
+        raise ResourceUnavailable(f'resource broker is in maintenance: {response}')
     if not isinstance(response, dict) or response.get('ok') is not True:
         raise OSError(f'resource broker refused request: {response}')
     return response
