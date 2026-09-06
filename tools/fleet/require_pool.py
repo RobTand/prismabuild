@@ -94,6 +94,15 @@ NEVER_GPU = (
     # reader to route around the hook before they have read the rule.
     "which", "whereis", "type", "man", "ls", "stat", "file",
     "head", "tail", "wc", "dpkg", "apt", "apt-get", "apt-cache",
+    # Reading the process table.  These search for a name; they never run it,
+    # so an argument naming a runner is what is being LOOKED FOR rather than
+    # what is being started -- ``pgrep -f <runner>`` was refused as if it were
+    # the runner.  That refusal fell on an agent asking whether the run it had
+    # already submitted through the pool was still alive, which is the one
+    # question a submitter most needs to answer and the one this hook has no
+    # reason to block.  Read-only spellings only: ``pkill`` and ``kill`` act on
+    # what they find and are deliberately absent.
+    "ps", "pgrep", "pidof", "pstree",
 )
 
 
