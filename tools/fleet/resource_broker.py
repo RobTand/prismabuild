@@ -585,9 +585,12 @@ class Server(socketserver.ThreadingUnixStreamServer):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--socket',default='/run/prismabuild/resources.sock')
-    parser.add_argument('--state-dir',default='/run/prismabuild/jobs')
-    parser.add_argument('--uid',type=int,default=1000)
+    parser.add_argument('--socket',default='/run/prismabuild/resources.sock',
+                        help='local Unix socket for authenticated resource requests')
+    parser.add_argument('--state-dir',default='/run/prismabuild/jobs',
+                        help='private root-owned directory for attempt authority and recovery')
+    parser.add_argument('--uid',type=int,default=1000,
+                        help='local execution user allowed to create and control job scopes')
     args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit('resource broker must run as root')
     total=next(int(x.split()[1])*1024 for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemTotal:'))

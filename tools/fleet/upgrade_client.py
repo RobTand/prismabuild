@@ -304,8 +304,10 @@ class Upgrader:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', default='/etc/prismabuild/client-upgrade.json')
-    parser.add_argument('--status', action='store_true')
+    parser.add_argument('--config', default='/etc/prismabuild/client-upgrade.json',
+                        help='root-owned client enrollment configuration')
+    parser.add_argument('--status', action='store_true',
+                        help='print the latest local upgrade result without changing clients')
     parser.add_argument('--export-runtime', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     config = json.loads(trusted(args.config).read_text())

@@ -9,9 +9,12 @@ import pwd
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--leaf',required=True)
-    p.add_argument('--uid',required=True,type=int);p.add_argument('--command-fd',required=True,type=int)
-    p.add_argument('--ready-fd',required=True,type=int);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--leaf',required=True,help='broker-owned payload cgroup to enter before dropping privileges')
+    p.add_argument('--uid',required=True,type=int,help='execution user to assume before reading the command')
+    p.add_argument('--command-fd',required=True,type=int,help='inherited descriptor containing the bounded user command')
+    p.add_argument('--ready-fd',required=True,type=int,help='inherited descriptor acknowledging containment and identity drop')
+    a=p.parse_args()
     if os.geteuid()!=0:raise SystemExit('resource payload must start from the privileged broker')
     # Writing 0 migrates this very process; no external numeric PID can race.
     fd=os.open(str(Path(a.leaf)/'cgroup.procs'),os.O_WRONLY|os.O_NOFOLLOW)
