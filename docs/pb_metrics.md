@@ -42,6 +42,14 @@ trying to see, and loses that history exactly when the mount is the problem.
 Netdata is already on these boxes, already retains, and already runs anomaly
 detection on what it holds.
 
+Netdata files these under `prometheus.script_exporter_local.*`, not under a
+`prismabuild` prefix. Its prometheus collector fingerprints an endpoint against
+a built-in list of known exporters and names the context family after whatever
+it matches; ours matches `script_exporter`. The `name:` in the job config sets
+the job, not the context, so there is nothing to correct in the config, and
+there is exactly one job and one scrape. Search Netdata for
+`prismabuild_` rather than for `prismabuild`.
+
 The exporter reports the *whole fleet's* queue from whichever box runs it, so
 one instance is enough for the queue-wide series and the `host` label is the
 claiming box, not the observing one. Anything that must be measured *from* each
