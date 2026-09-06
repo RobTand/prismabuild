@@ -91,6 +91,7 @@ LIVE_DEFAULTS = (
     ("tessera_status", "RES", "fleet/checkout/results/glm53-tessera"),
     ("tessera_status", "PARTS", "mount/models/parts"),
     ("dispatch_tessera_ladder", "SH", "fleet"),
+    ("dispatch_tessera_model", "PUBLISHED_TOOLS", "fleet/repo/tools"),
     ("dispatch_tessera_ladder", "CHECKOUT", "fleet/checkout"),
     ("dispatch_tessera_ladder", "SOURCE", "mount/models/source"),
     ("dispatch_tessera_shards", "SH", "fleet"),
