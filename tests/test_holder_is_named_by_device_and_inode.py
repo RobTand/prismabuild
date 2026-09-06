@@ -6,13 +6,21 @@ number alone, and an inode number is only unique within a filesystem: any other
 mount with a lock on the same inode number could be reported as the holder of
 this one.
 
-The device half is why this is parsed rather than formatted.  The kernel prints
-``%02x:%02x``, so a key built by formatting must reproduce that padding
+So the inode names the lock and the device breaks a tie -- in that order, which
+#276 had the other way round.  Requiring both to match is blind on btrfs, where
+a subvolume has its own anonymous device: measured on dl380g10 on 2026-09-06,
+one lock under ``/home/rob/tmp`` was ``00:1f:14164446`` to ``fstat`` and
+``00:1e:14164446`` in ``/proc/locks``.  Same inode, minor off by one, no holder
+reported for a lock the process was itself holding.  That box is where the test
+suite's ``tmp_path`` lives, so it was the suite that found it.
+
+The device is parsed rather than formatted for a related reason.  The kernel
+prints ``%02x:%02x``, so a key built by formatting must reproduce that padding
 exactly, and #264 did not: it matched nothing on dl380g10, whose ``/tmp`` is
 tmpfs with major 0, while looking correct on sparky, whose major 259 prints the
-same either way.  That is a false negative that reads as good news, so these
-tests pin the property (the right lock is found, a look-alike is not) rather
-than any particular spelling of a key.
+same either way.  Both bugs are false negatives that read as good news, so
+these tests pin the properties (the right lock is found, a look-alike is not)
+rather than any particular spelling of a key.
 
 The synthetic ``/proc/locks`` lines below are the kernel's real format, taken
 from a capture on dl380g10 during the 2026-09-06 admission incident:
@@ -70,16 +78,62 @@ def test_a_lock_on_another_device_is_not_our_holder(held, monkeypatch):
 
     Reporting it would name a process that has nothing to do with admission,
     and an operator would go and look at it.
+
+    Both rows are present, which is the reachable shape: this is only asked
+    after an acquisition failed, so our own lock is held and the kernel is
+    listing it.  The look-alike is the extra one, and the device is what tells
+    them apart.
     """
 
     info = os.fstat(held)
-    elsewhere = os.major(info.st_dev) + 1
-    _proc_locks(monkeypatch, f'1: FLOCK  ADVISORY  WRITE 4242 '
-                             f'{elsewhere:02x}:{os.minor(info.st_dev):02x}:'
-                             f'{info.st_ino} 0 EOF\n')
+    ours = (f'{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}'
+            f':{info.st_ino}')
+    elsewhere = (f'{os.major(info.st_dev) + 1:02x}:'
+                 f'{os.minor(info.st_dev):02x}:{info.st_ino}')
+    _proc_locks(monkeypatch,
+                f'1: FLOCK  ADVISORY  WRITE 4242 {elsewhere} 0 EOF\n'
+                f'2: FLOCK  ADVISORY  WRITE 4243 {ours} 0 EOF\n')
+
+    assert adaptive_cpu._holder_of(held) == 4243, (
+        'a lock on another filesystem was named as holding this one')
+
+
+def test_a_subvolumes_own_device_does_not_hide_the_holder(held, monkeypatch):
+    """The btrfs shape, taken from the dl380g10 measurement.
+
+    One row, our inode, a device that is not the one ``fstat`` reports.  There
+    is nothing else it could be: the acquisition failed, so this lock is held,
+    and the kernel listed exactly one lock on this inode.  #276 answered
+    ``None`` here and the refusal could not name anyone.
+    """
+
+    info = os.fstat(held)
+    superblock = (f'{os.major(info.st_dev):02x}:'
+                  f'{max(os.minor(info.st_dev) - 1, 0):02x}:{info.st_ino}')
+    _proc_locks(monkeypatch,
+                f'1: FLOCK  ADVISORY  WRITE 4242 {superblock} 0 EOF\n')
+
+    assert adaptive_cpu._holder_of(held) == 4242, (
+        'the holder of a lock on a btrfs subvolume was not named')
+
+
+def test_an_inode_two_mounts_disagree_about_names_nobody(held, monkeypatch):
+    """Two candidates, neither carrying our device: we do not know which.
+
+    Naming either would be a guess, and the operator would go and look at a
+    process picked by file order.
+    """
+
+    info = os.fstat(held)
+    minor = os.minor(info.st_dev)
+    first = f'{os.major(info.st_dev):02x}:{minor + 1:02x}:{info.st_ino}'
+    second = f'{os.major(info.st_dev) + 1:02x}:{minor:02x}:{info.st_ino}'
+    _proc_locks(monkeypatch,
+                f'1: FLOCK  ADVISORY  WRITE 4242 {first} 0 EOF\n'
+                f'2: FLOCK  ADVISORY  WRITE 4243 {second} 0 EOF\n')
 
     assert adaptive_cpu._holder_of(held) is None, (
-        'a lock on another filesystem was named as holding this one')
+        'one of two look-alikes was named as the holder')
 
 
 def test_the_device_is_matched_by_value_not_by_padding(held, monkeypatch):

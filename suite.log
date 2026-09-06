@@ -1,0 +1,7 @@
+197 files -> 4 shards (min 49, max 50 files per shard), tags=['x86'], transport=pool
+shard   0 ok       925 passed, 1 skipped, 2 xfailed in 43.20s
+shard   1 ok       561 passed, 1 skipped in 30.01s
+shard   2 ok       490 passed, 1 skipped in 30.51s
+shard   3 ok       771 passed in 30.39s
+
+4/4 shards green

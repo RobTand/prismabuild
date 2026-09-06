@@ -168,6 +168,24 @@ def _holder_of(descriptor):
     asked at all is that something on the shared mount is slow.  Every failure
     answers ``None`` rather than raising: a diagnostic must never be able to
     turn a refusal into a crash.
+
+    The INODE identifies the lock and the device only breaks a tie, which is
+    not the obvious way round.  Requiring both to match makes this blind on
+    btrfs, where a subvolume carries its own anonymous device: ``fstat``
+    returns the subvolume's, while ``/proc/locks`` reports the superblock's,
+    and the two differ.  Measured on dl380g10 on 2026-09-06, one lock, one
+    row::
+
+        /home/rob/tmp  btrfs  fstat 00:1f:14164446
+                              /proc/locks 00:1e:14164446
+
+    Same inode, minor off by one, and #276 reported no holder at all for a
+    lock it was itself holding.  Matching on the inode recovers it, and costs
+    nothing: this is only ever asked after a non-blocking acquisition failed,
+    so a holder exists and its row is there to be found.  A second row on the
+    same inode number means some other filesystem also has one -- that is the
+    collision the device exists to resolve, and where it cannot resolve it
+    this answers ``None`` rather than naming a pid from another mount.
     """
 
     try:
@@ -175,6 +193,7 @@ def _holder_of(descriptor):
     except OSError:
         return None
     wanted = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+    candidates = []
     try:
         with open('/proc/locks') as handle:
             for line in handle:
@@ -186,15 +205,26 @@ def _holder_of(descriptor):
                 if len(fields) < 6 or fields[1] != 'FLOCK':
                     continue
                 found = _device_and_inode(fields[5])
-                if found != wanted:
+                if found is None or found[2] != info.st_ino:
                     continue
-                held_by = int(fields[4])
-                # -1 is the kernel's "no owning process" (an OFD lock); it is
-                # not a pid and must not be reported as one.
-                return held_by if held_by > 0 else None
+                candidates.append((found, int(fields[4])))
     except (OSError, ValueError):
         return None
-    return None
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        # More than one filesystem has a lock on this inode NUMBER, so the
+        # number alone no longer names a lock and the device has to break the
+        # tie.  If it cannot -- neither row carries this descriptor's device,
+        # or both do -- the honest answer is that we do not know which.
+        exact = [row for row in candidates if row[0] == wanted]
+        if len(exact) != 1:
+            return None
+        candidates = exact
+    held_by = candidates[0][1]
+    # -1 is the kernel's "no owning process" (an OFD lock); it is not a pid
+    # and must not be reported as one.
+    return held_by if held_by > 0 else None
 
 
 def box_state(base):
