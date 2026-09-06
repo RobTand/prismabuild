@@ -51,7 +51,12 @@ The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements
 changed returns to `ready/` for a fresh decision. Requeued records use the item
 schema and retain attempt history, but discard claim ownership, reservation and
-cleanup stamps, and the sidecar aging count. Unparseable ready records are
+cleanup stamps, and the sidecar aging count. A record the reaper concludes
+names two boxes and never conflates them: `claimed_host` is the box the action
+was on, filled from the claim-intent marker of the same generation when the
+claimant was lost before it rewrote the record, and `finished_host` is the box
+that filed the ending. Readers report the first as where the work was; the
+second reaps most of the fleet's work and would otherwise absorb its failures. Unparseable ready records are
 isolated under `withdrawn/superseded/` with their original bytes and a bounded
 diagnostic; healthy records continue through the queue. A quarantine restores
 a concurrently repaired record without replacing another submission and never

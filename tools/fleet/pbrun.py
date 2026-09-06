@@ -2017,6 +2017,20 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
                 )
         detail = adopted["detail"]
         status = str(adopted["status"])
+    claimed_host = outcome.get("claimed_host")
+    if not isinstance(claimed_host, str) or not claimed_host:
+        # A terminal record filed by a path that did not carry the field can
+        # still have it in the immutable attempt, which ``archive_attempt``
+        # stamps from the claim itself. Read the newest attempt that names a
+        # box; never invent one, because "unknown" is the answer that sends
+        # nobody anywhere.
+        claimed_host = None
+        if adopted is not None:
+            for attempt in reversed(q.attempt_outcomes(outcome)):
+                candidate = attempt.get("claimed_host")
+                if isinstance(candidate, str) and candidate:
+                    claimed_host = candidate
+                    break
     return {
         "action_key": str(outcome.get("action_key") or ""),
         "status": status,
@@ -2028,6 +2042,9 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         "succeeded": status in {"executed", "cache_hit"},
         "transport": str(outcome.get("transport") or "pool"),
         "finished_host": outcome.get("finished_host"),
+        # The box the action was ON. ``finished_host`` is the box that
+        # concluded it, and for a reaped claim those are different machines.
+        "claimed_host": claimed_host,
         "elapsed_s": detail.get("elapsed_s"),
         "returncode": detail.get("returncode"),
         # The action's own ending, where the transport recorded one.  The
@@ -2183,11 +2200,7 @@ def await_outcome(
         print(f"pbrun: withdrawn by {who}"
               f"{' -- ' + why if why else ''}", file=sys.stderr)
         return WITHDRAWN_EXIT
-    # ``elapsed_s`` is present and null on a SLURM record whose scheduler
-    # provenance was purged, so the key's presence must not defeat the default.
-    print(f"pbrun: {status} on {outcome.get('finished_host')} "
-          f"in {(detail.get('elapsed_s') or 0):.0f}s"
-          f"{action_status_suffix(detail)}", file=sys.stderr)
+    print(f"pbrun: {outcome_headline(summary)}", file=sys.stderr)
     if status == "cache_hit":
         return 0
     rc = detail.get("returncode")
@@ -2226,6 +2239,49 @@ def action_status_suffix(detail: Mapping[str, object]) -> str:
     if isinstance(signal, int) and not isinstance(signal, bool):
         return f"; rc={detail.get('returncode')} (action killed by signal {signal})"
     return f"; rc={detail.get('returncode')} (action exited {action})"
+
+
+def outcome_headline(summary: Mapping[str, object]) -> str:
+    """One line saying how a run ended, and where -- and who "where" is.
+
+    ``finished_host`` is the box that *filed* the record, which for anything a
+    worker ran is also the box that ran it.  For a claim the reaper concluded
+    it is not: ``reap_stale`` stamps its own hostname there, correctly, and
+    rendering that as the place the action failed sends an investigation at
+    the machine that merely noticed.  It did, on 2026-09-06.
+
+    The bias outlives the one wrong trip.  The box that runs most of the
+    fleet's work reaps most of it too, so misattributed failures accumulate on
+    the box that already looks busiest and the fleet's failure profile leans
+    toward whichever box reaps.  That is a measurement defect: it corrupts the
+    evidence used to decide which box is unhealthy.
+
+    ``detail["lease_age_s"]`` is the discriminator, not the status text.  The
+    reaper is its only producer, it is on every record the reaper files
+    whatever status it chose, and a gate can read it.  Its value carries a
+    second distinction the operator needs: a number is a lease that stopped
+    being refreshed, while ``None`` means no lease was ever written -- the
+    claim was lost before the worker launched anything.
+    """
+
+    detail = summary.get("detail") or {}
+    status = str(summary.get("status"))
+    finished = summary.get("finished_host") or "(not recorded)"
+    if "lease_age_s" not in detail:
+        # ``elapsed_s`` is present and null on a SLURM record whose scheduler
+        # provenance was purged, so the key's presence must not defeat the
+        # default.
+        return (f"{status} on {finished} "
+                f"in {(detail.get('elapsed_s') or 0):.0f}s"
+                f"{action_status_suffix(detail)}")
+    held = summary.get("claimed_host")
+    age = detail.get("lease_age_s")
+    if isinstance(age, (int, float)) and not isinstance(age, bool):
+        lease = f"lease {float(age):.1f}s stale"
+    else:
+        lease = "no lease was ever written"
+    return (f"{status} -- held by {held or '(not recorded)'}, "
+            f"reaped by {finished}, {lease}")
 
 
 def reported_exit(returncode: int, *, key: str) -> int:
