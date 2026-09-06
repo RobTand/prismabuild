@@ -435,6 +435,29 @@ class MountSampler:
     def probe_dir(self) -> Path:
         return self.mount / PROBE_DIRNAME / self.host
 
+    @staticmethod
+    def _reap_within(pid: int, grace_s: float) -> int:
+        """Reap ``pid`` if it goes within ``grace_s``, without ever blocking.
+
+        A blocking ``waitpid`` is the one call in this module that could
+        outlast its own deadline: a child stuck in the kernel on a hard mount
+        never returns, and waiting on it would put the caller in exactly the
+        state the fork was there to avoid.  Polling costs a few syscalls and
+        keeps the bound over the whole call rather than over most of it.
+        """
+
+        deadline = time.time() + grace_s
+        while True:
+            try:
+                gone, _status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                return pid                    # already reaped; treat as gone
+            except OSError:
+                return 0
+            if gone or time.time() >= deadline:
+                return gone
+            time.sleep(KILL_POLL_S)
+
     def _reap(self) -> None:
         """Collect an abandoned child if it has finally come back."""
 
@@ -528,10 +551,7 @@ class MountSampler:
             except ValueError as exc:
                 result = {"status": "error",
                           "error": f"unreadable probe payload: {exc}"}
-            try:
-                os.waitpid(pid, 0)
-            except OSError:
-                pass
+            self._reap_within(pid, KILL_GRACE_S)
             result["elapsed_s"] = round(elapsed, 4)
             if result.get("status") == "ok":
                 self._setup_done = True
@@ -552,17 +572,7 @@ class MountSampler:
         # grace instead -- long enough for the scheduler to deliver a signal
         # to a runnable process, far too short to be confused with a mount
         # timeout, and never blocking, because a D-state child never comes.
-        gone = 0
-        deadline = time.time() + KILL_GRACE_S
-        while True:
-            try:
-                gone, _status = os.waitpid(pid, os.WNOHANG)
-            except OSError:
-                gone = pid
-            if gone or time.time() >= deadline:
-                break
-            time.sleep(KILL_POLL_S)
-        if not gone:
+        if not self._reap_within(pid, KILL_GRACE_S):
             self._outstanding_pid = pid
             self._outstanding_since = started
         return {"status": "timed_out",
@@ -839,12 +849,18 @@ def main(argv: list[str] | None = None) -> int:
         record = sampler.sample()
         if args.record_dir and str(args.record_dir):
             append_record(record, args.record_dir)
-        if args.netdata:
-            _emit(record, sys.stdout)
-        elif args.json:
-            print(json.dumps(record, indent=2, sort_keys=True), flush=True)
-        else:
-            print(one_line(record), flush=True)
+        try:
+            if args.netdata:
+                _emit(record, sys.stdout)
+            elif args.json:
+                print(json.dumps(record, indent=2, sort_keys=True), flush=True)
+            else:
+                print(one_line(record), flush=True)
+        except BrokenPipeError:
+            # netdata closes the pipe to stop a plugin.  That is the stop
+            # signal, not a fault, and a traceback in the agent's error log is
+            # a worse way to report it than exiting.
+            return 0
         if args.once:
             return 0
         time.sleep(max(0.0, interval - (time.time() - started)))

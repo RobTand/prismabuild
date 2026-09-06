@@ -25,13 +25,22 @@ survives a sick mount.
 operation, differenced over a stated window. Each operation carries queue time
 and round-trip time separately, and that split is the diagnosis:
 
-| | queue | rtt | reading |
-|---|---|---|---|
-| storm, 2026-09-06 16:37 | 142.47 ms | 0.32 ms | this client cannot send |
-| healthy, 2026-09-06 21:45 | 0.002 ms | 0.031 ms | the medium is not the constraint |
+| `GETATTR` | queue | rtt | per-op share | reading |
+|---|---|---|---|---|
+| storm, 2026-09-06 16:37 | 142.47 ms | 0.32 ms | 0.998 | this client cannot send |
+| healthy, 2026-09-06 21:45 | 0.002 ms | 0.031 ms | 0.06 | the medium is not the constraint |
 
-`queue_share` is that ratio. It separated the two states by two orders of
-magnitude — 0.998 against 0.06 — rather than by a margin somebody has to pick.
+`queue_share` is that ratio, and the two states separate by two orders of
+magnitude rather than by a margin somebody has to pick.
+
+Read it per operation. The top-level `queue_share` is an aggregate over the
+whole mount, and on the storm it reads **0.912, not 0.998** — because
+`TEST_STATEID` was 97.7% of the calls and its own queue time was *zero*. The
+storm operation is what fills the session slot table; it does not wait in it.
+So the sickest mount we have on record dilutes its own headline number with
+the very traffic that made it sick, and only `by_op` shows the 165 ms `RENAME`
+that actually stalled the claim path. Threshold on operations you care about.
+
 This leg reads one procfs file and costs the mount no operation at all, so it
 keeps reporting when the mount does not.
 
@@ -70,13 +79,31 @@ python3 tools/fleet/mount_latency.py --once --json
 ```
 
 As a netdata external plugin, which is where the series and its retention come
-from. Netdata already runs on every box, so this is one symlink rather than a
-store somebody has to build and back up:
+from. Netdata already runs on every box, so the collector itself is one symlink
+rather than a store somebody has to build and back up — but netdata runs its
+plugins as the unprivileged `netdata` user, and that user owns neither the
+probe directory nor `/home/rob/tmp`. Both have to be granted, once per box,
+before the symlink means anything:
 
 ```
+# the probe directory: the plugin can create its own anchor but not its own
+# parent, and a failed mkdir makes every sample report status=error
+install -d -o netdata -g netdata \
+        /mnt/shared/prismabuild-fleet/mount-probe/$(hostname -s)
+
+# the box-local record: append_record returns None rather than raising when it
+# cannot write, so an unwritable directory is a silent loss of the backstop
+install -d -o netdata -g netdata /var/lib/netdata/prismabuild
+
 ln -s /mnt/shared/prismabuild-fleet/repo/tools/fleet/mount_latency.py \
       /usr/libexec/netdata/plugins.d/mount_latency.plugin
 ```
+
+with `--record-dir /var/lib/netdata/prismabuild` in the plugin's argument list.
+Check the first sample rather than assuming: a plugin that cannot reach the
+mount still emits charts, and its `probe_status` will read `error` on every
+one of them. That is the tool working correctly and the install being wrong,
+and it is exactly the failure this document exists to make legible.
 
 The plugin takes its interval as netdata's first positional argument and
 publishes five charts under the `prismabuild` family: metadata latency per
@@ -124,6 +151,15 @@ Nothing here takes a lock. A probe that serialises against a wedged peer is a
 probe that wedges.
 
 ## What this does not do
+
+Both instruments are client-side, on the box being measured. They are
+independent — `mountstats` and `/proc/net/rpc/nfs` are separate kernel
+counters, and cross-checking them is what validated the RPC rate to 0.3% — but
+they are two views from one end of the wire. Nothing here reads dl380g10's
+disk or network series, so "the server was slow" is a conclusion this tool
+supports by elimination (probe slow, queue time low, so the wait was not on
+this client) and never by direct evidence. Pairing it with the exporter's own
+series is the obvious next leg and is not built.
 
 It does not decide anything. Refusing or deprioritising admission on a box
 whose latency is out of line with the fleet is a policy decision that belongs

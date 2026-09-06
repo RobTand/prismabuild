@@ -8,6 +8,7 @@ remount that resets every counter, and a mount that does not answer.
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 import sys
@@ -386,3 +387,25 @@ def test_the_local_log_is_bounded_so_leaving_it_on_is_safe(tmp_path,
     assert len(list(tmp_path.iterdir())) == 2, "and only one"
     assert sum(f.stat().st_size for f in tmp_path.iterdir()) <= 2 * (
         cap + one_record)
+
+
+def test_a_closed_stdout_is_a_stop_signal_not_a_crash(tmp_path, monkeypatch):
+    """netdata stops a plugin by closing its pipe.
+
+    The plugin must treat that as the stop it is.  A traceback in the agent's
+    error log reports the same event less clearly and looks like a defect in
+    the collector every time netdata restarts it.
+    """
+
+    monkeypatch.setattr(
+        mount_latency.MountSampler, "sample",
+        lambda self: {"schema": mount_latency.SCHEMA, "probe": {}, "rpc": {}},
+    )
+
+    class ClosedPipe(io.StringIO):
+        def write(self, _data):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(sys, "stdout", ClosedPipe())
+    assert mount_latency.main(
+        ["--once", "--record-dir", str(tmp_path)]) == 0
