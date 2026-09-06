@@ -769,7 +769,20 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
             "action_key": str(record.get("action_key") or entry.name[:-5]),
             "status": str(record.get("status") or UNKNOWN),
             "transport": _transport(record),
-            "host": record.get("finished_host") or record.get("claimed_host"),
+            # The box the action was ON, not the box that filed its ending.
+            # ``reap_stale`` stamps itself as ``finished_host`` -- correctly,
+            # since the reaper is who filed the record -- and it files most of
+            # the fleet's lost claims, so preferring that field named
+            # whichever box happened to sweep.  That is how a diagnosis
+            # started on the wrong box, and why the bias is not cosmetic: the
+            # box that reaps most is the box that runs most, so misattributed
+            # failures pile onto the machine that already looks busiest.
+            #
+            # ``finished_host`` stays as the fallback rather than being
+            # dropped, because it is the only box an ending with no claimant
+            # names at all -- a cache hit, or a SLURM record filed by the
+            # waiter (#227, #262).
+            "host": record.get("claimed_host") or record.get("finished_host"),
             "elapsed_s": detail.get("elapsed_s"),
             "returncode": detail.get("returncode"),
             # The action's own ending, on the records that carry one: the
