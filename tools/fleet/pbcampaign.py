@@ -63,9 +63,10 @@ Three rows are refused at load for the reason ``pbrun`` would refuse them at
 submit, so a campaign of measurements is refused before it spends the fleet on
 its first row rather than on its last:
 
-* ``measurement`` without ``host_class``.  A measurement's numerics do not
-  transfer across architectures, so its result is keyed on the class that
-  produced it.
+* ``measurement`` without ``host_class`` under SLURM. Pool measurements
+  instead seal the submitting platform/toolchain and run on that host.
+* ``measurement`` with ``anywhere`` under the pool. A locally sealed
+  measurement cannot assert placement on every worker.
 * ``host_class`` under ``--transport pool``.  The class is attested through
   the SLURM controller, so a pull-queue worker refuses the action at preflight.
   This one depends on the campaign's transport rather than on the row.
@@ -311,7 +312,7 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         pbrun.require_host_class_scope(
             measurement=bool(row.get("measurement")),
             host_class=row.get("host_class"),
-            transport=transport,
+            transport=transport, anywhere=bool(row.get("anywhere")),
         )
     except SystemExit as exc:
         raise ManifestError(f"row {index}: {exc}") from None

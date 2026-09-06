@@ -328,7 +328,7 @@ def test_a_measurement_without_a_host_class_is_refused_before_anything_is_sealed
         _row(work, "./probe.sh", measurement=True),
     ])
     with pytest.raises(SystemExit) as raised:
-        pbcampaign.main([manifest])
+        pbcampaign.main(["--transport", "slurm", manifest])
 
     assert "row 1" in str(raised.value)
     assert "--measurement requires --host-class" in str(raised.value)
@@ -392,3 +392,18 @@ def test_retry_safe_on_a_row_is_sealed_into_the_action_key(
     ])
     assert pbrun.main() == 0
     assert _one_json_line(capsys.readouterr())["action_key"] == retry_safe_key
+
+
+def test_pool_measurement_row_uses_supported_local_scope(tmp_path):
+    manifest = _manifest(tmp_path, [{'argv': ['true'], 'measurement': True}])
+    rows = pbcampaign.load_manifest(manifest, transport='pool')
+    assert rows == [{'argv': ['true'], 'measurement': True}]
+
+
+def test_pool_measurement_anywhere_is_refused_before_sealing_any_row(tmp_path):
+    manifest = _manifest(tmp_path, [
+        {'argv': ['true']},
+        {'argv': ['true'], 'measurement': True, 'anywhere': True},
+    ])
+    with pytest.raises(pbcampaign.ManifestError, match='row 1:.*pool measurements.*submitting host'):
+        pbcampaign.load_manifest(manifest, transport='pool')

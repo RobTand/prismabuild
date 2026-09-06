@@ -182,3 +182,46 @@ def test_the_slurm_lane_receives_the_class_as_placement(monkeypatch):
         sl.LaneResources.from_demand({"gpu": 1, "mem_gb": 16}, exclusive=False),
         ["gb10"],
     ) == sl.GPU_PARTITION
+
+
+def test_pool_measurement_seals_verified_platform_and_local_placement(monkeypatch, tmp_path):
+    import socket
+    body = _sealed_body(['--transport', 'pool', '--measurement', '--', 'true'],
+                        monkeypatch, tmp_path)
+    assert body['task']['task_class'] == 'measurement'
+    assert body['execution_scope'] == {
+        'portability': 'platform_keyed',
+        'platform_key': pb._platform_key_from_evidence(pb._collect_worker_evidence()),
+        'host_class': None,
+    }
+    assert socket.gethostname() in body['params']['placement']['required_tags']
+    assert {'argv0.sha256', 'argv0.bytes', 'system', 'machine', 'libc'} <= set(
+        body['environment']['toolchain'])
+    sealed = _seal_action(_sealable(body))
+    assert sealed['execution_scope']['portability'] == 'platform_keyed'
+
+
+def test_pool_measurement_cannot_claim_anywhere_placement(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit, match='pool measurements.*submitting host'):
+        _sealed_body(['--transport', 'pool', '--measurement', '--anywhere', '--', 'true'],
+                     monkeypatch, tmp_path)
+
+
+def test_pool_measurement_scope_passes_local_preflight_and_rejects_different_platform(tmp_path, monkeypatch):
+    from test_core import _body
+    scope, toolchain = pbrun.host_class_scope(None, measurement=True, transport='pool')
+    body = _body(tmp_path, task_class='measurement',
+                 argv=[pbrun.SEALED_ARGV0, '--noprofile', '--norc', '-c', 'true'])
+    body['inputs'] = []
+    body['execution_scope'] = scope
+    body['environment']['toolchain'] = toolchain
+    action = _seal_action(body)
+    attestation = pb.preflight_action(action, cas_root=tmp_path / 'cas', checkout_root=tmp_path)
+    assert attestation['platform_key'] == scope['platform_key']
+    assert attestation['host_class'] is None
+    assert attestation['evidence']['source'] == 'local'
+    evidence = pb._collect_worker_evidence()
+    monkeypatch.setattr(pb, '_collect_worker_evidence', lambda **kwargs: dict(
+        evidence, machine='incompatible-architecture'))
+    with pytest.raises(pb.ActionContractError):
+        pb.preflight_action(action, cas_root=tmp_path / 'cas', checkout_root=tmp_path)
