@@ -28,6 +28,17 @@ the person trying to comply.  So commands that never start GPU work are let
 through by name, and so is the pool's own machinery -- including starting a
 worker, whose ``--python`` argument is the CUDA venv path by design.
 
+The same lesson reaches one shape further in.  A command that hands prose to a
+program -- an agent posting "shard 3 died under the runner" to the mailbox --
+is a mention of fleet work, not an instance of it, and refusing it makes the
+mailbox lossy in the case it is most needed: nobody can warn about a runner
+failure without the warning being mistaken for the failure.  So in a segment
+that is an interpreter running a SCRIPT FILE, quoted arguments are read as
+prose (see ``_prose_start``).  Nothing that executes an argument qualifies --
+``python -c``, ``python -m``, a shell, a wrapper, or a launcher forwarding its
+trailing argv -- because those are lexically identical to the mailbox and the
+difference is what runs the words.
+
 Staged rather than flipped: enforcement requires the flag file to exist, so
 turning it on is one ``touch`` and does not edit config under running agents.
 """
@@ -297,6 +308,133 @@ WRAPPERS = frozenset({
 
 def _name_of(token: str) -> str:
     return token.strip("'\"").rsplit("/", 1)[-1]
+
+
+#: Switches that hand an interpreter something to RUN rather than something to
+#: read: python's ``-c`` and ``-m``, a shell's ``-c`` in its clustered
+#: spellings, and ``sbatch --wrap``, whose value is a command line.  A segment
+#: carrying one of these executes an argument, so none of its arguments can be
+#: called prose.
+CODE_SWITCHES = frozenset({
+    "-c", "-m", "-e", "-lc", "-ic", "-cl", "-mc",
+    "--command", "--eval", "--exec", "--wrap",
+})
+
+
+#: One quoted argument, in the two spellings an option's value takes.
+QUOTED = re.compile(r"""'[^']*'|"[^"]*\"""")
+
+
+def _words(segment: str) -> list[str]:
+    """The segment's words, with their quotes kept.
+
+    ``shlex`` would strip them, and the quotes are the signal: they are what
+    separates a word that carries prose from a word that carries a path.
+    """
+
+    words: list[str] = []
+    current: list[str] = []
+    quote = ""
+    for char in segment:
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            current.append(char)
+            continue
+        if char.isspace():
+            if current:
+                words.append("".join(current))
+                current = []
+            continue
+        current.append(char)
+    if current:
+        words.append("".join(current))
+    return words
+
+
+def _prose_start(segment: str) -> int | None:
+    """Where this segment's arguments stop being commands, if they ever do.
+
+    Issue #209: a mailbox send was refused because the message body described
+    a shard that had died under a test runner.  Nothing ran and no GPU was
+    touched -- the command posts a JSON file to a directory -- but the runner's
+    name in the ``--body`` prose matched the scan.  That is the failure this
+    module's own docstring already names for a commit message, one caller
+    later, and it makes the mailbox lossy in exactly the case it is most
+    needed: one agent cannot warn another about a runner failure without the
+    warning being mistaken for the failure.
+
+    The exemption is keyed on a shape rather than on that caller's path,
+    because the path is a caller outside this repo and the shape is a fact
+    about execution: ``python x.py ...`` is the shell exec'ing an interpreter
+    and the interpreter exec'ing a FILE.  Neither of them execs an argument,
+    so a quoted argument of such a segment is prose ABOUT work, not work.
+
+    Every way of handing an argument to something that runs it fails this
+    test, and that is the load-bearing half:
+
+    * ``python -c`` and ``python -m`` run the argument, so they return None.
+    * A shell -- ``bash -lc "pytest"`` -- is not a script run at all.
+    * A wrapper -- ``ssh box "pytest"``, ``docker run --entrypoint "pytest"``
+      -- does not lead with a python interpreter, so it never gets here.
+    * Nor does a launcher that forwards its trailing argv: ``uv run "pytest"``,
+      ``systemd-run --pty "pytest"``, ``watch "pytest tests"``.  This is why
+      the exemption is not "a quoted argument is prose": that reading is
+      lexically identical to those, and would have opened a hole wider than
+      the bug.
+
+    The index returned is that of the first word past the script path.  The
+    interpreter and the script path themselves are never elided, so a quoted
+    command word -- ``'/…/prismaquant-cu130/bin/python' train.py`` -- is still
+    read as the command it is.
+    """
+
+    words = _words(segment)
+    index = 0
+    while index < len(words):
+        head = words[index]
+        if head in RESERVED_WORDS or ("=" in head and not head.startswith("/")):
+            index += 1
+            continue
+        break
+    if index >= len(words):
+        return None
+    if re.fullmatch(r"python[0-9.]*", _name_of(words[index])) is None:
+        return None
+    index += 1
+    while index < len(words):
+        word = words[index]
+        if word in CODE_SWITCHES:
+            return None
+        if word.startswith("-"):
+            index += 1
+            continue
+        # The first thing that is not a switch is what python will run.  Only
+        # a file makes this a script run; anything else is not read here.
+        return index + 1 if _name_of(word).endswith(".py") else None
+    return None
+
+
+def _mentions_elided(segment: str) -> str:
+    """The segment as the guard should read it, with its prose blanked out.
+
+    Quotes are read lexically and escapes inside them are not tracked, so a
+    body carrying an escaped quote ends its span early and the rest of the
+    prose is scanned as command text.  That falls to the refusing side on
+    purpose: the way to send prose this guard would misread is to hand it to
+    the tool in a file, where it is never on a command line at all.
+    """
+
+    start = _prose_start(segment)
+    if start is None:
+        return segment
+    words = _words(segment)
+    return " ".join(words[:start]
+                    + [QUOTED.sub(" ", word) for word in words[start:]])
 
 
 def _feeds_an_interpreter(segment: str) -> bool:
@@ -757,7 +895,7 @@ def contends(command: str) -> bool:
     """True when any segment of this command starts GPU work off-pool."""
 
     for segment in _segments(command):
-        if not CONTENDS.search(segment):
+        if not CONTENDS.search(_mentions_elided(segment)):
             continue
         if _inspects_only(segment):
             continue
@@ -789,7 +927,7 @@ def submits(command: str) -> bool:
     """
 
     for segment in _segments(command):
-        if not SCHEDULER.search(segment):
+        if not SCHEDULER.search(_mentions_elided(segment)):
             continue
         if _inspects_only(segment):
             continue
@@ -820,12 +958,13 @@ def unpooled_work(command: str) -> bool:
             continue
         if any(entry in segment for entry in POOL_ENTRYPOINTS):
             continue
-        if TEST_WORK.search(segment):
+        scanned = _mentions_elided(segment)
+        if TEST_WORK.search(scanned):
             # Asking the test runner for help/version does not run tests.
             if re.search(r"(?:^|\s)--(?:help|version)(?:\s|$)", segment):
                 continue
             return True
-        if GPU_CONTAINER.search(segment):
+        if GPU_CONTAINER.search(scanned):
             return True
     return False
 
