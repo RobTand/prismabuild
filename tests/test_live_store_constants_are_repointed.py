@@ -137,9 +137,19 @@ def test_the_repoint_list_names_only_constants_that_exist() -> None:
         ("prismabuild.materialize", "LOCAL_CHECKOUT_ROOT"),
         ("prismabuild.pool", "LOCAL_CHECKOUT_ROOT"),
     }
+    # The box-state directory is under ``/tmp``, so it is not the live store
+    # and the scan is right not to report it either -- but it is live *state*,
+    # belonging to the loops running on this box, and the suite was minting a
+    # permanent lock file into it per temp queue root (#265). Repointing it is
+    # the fix, so these have to survive this test the same way the two above
+    # do: named here with the reason, rather than left out of LIVE_DEFAULTS.
+    host_local = {
+        ("prismabuild.adaptive_cpu", "BOX_STATE_ROOT"),
+        ("mount_latency", "ADMISSION_LOCK_DIR"),
+    }
     stale = sorted(
         f"{module}.{attr}"
-        for module, attr in _declared() - live - env_backed
+        for module, attr in _declared() - live - env_backed - host_local
     )
     assert stale == [], (
         "LIVE_DEFAULTS names constants that no longer exist or no longer name "
