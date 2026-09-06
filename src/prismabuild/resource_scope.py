@@ -42,7 +42,9 @@ def broker_request(request: dict, *, socket_path: Path = BROKER_SOCKET) -> dict:
     if (request.get('op') == 'create' and request.get('recovery_protocol') == 1
             and isinstance(response, dict) and response.get('ok') is False
             and response.get('error') == 'unknown request field'):
-        raise ResourceUnavailable('installed broker needs durable creation recovery support')
+        feature = ('GPU memory budget' if 'gpu_memory_max_bytes' in request
+                   else 'durable creation recovery')
+        raise ResourceUnavailable(f'installed broker needs {feature} support')
     if (isinstance(response, dict) and response.get('ok') is False
             and response.get('maintenance') is True and response.get('retryable') is True):
         raise ResourceUnavailable(f'resource broker is in maintenance: {response}')
@@ -84,14 +86,20 @@ class ResourceScope:
     """
     def __init__(self, action_key: str, nonce: str, memory_max_bytes: int,
                  telemetry_path: Path, *, docker_owner: str | None = None,
-                 shape_key: str | None = None, socket_path: Path = BROKER_SOCKET):
+                 shape_key: str | None = None, socket_path: Path = BROKER_SOCKET,
+                 gpu_memory_max_bytes: int | None = None):
         if not re.fullmatch('[a-f0-9]{64}', action_key) or not re.fullmatch('[a-f0-9]{32}', nonce):
             raise ValueError('resource scope needs an action key and 32-hex attempt nonce')
         if isinstance(memory_max_bytes, bool) or not isinstance(memory_max_bytes, int) or memory_max_bytes <= 0:
             raise ValueError('resource scope memory limit must be a positive integer')
+        if gpu_memory_max_bytes is not None and (type(gpu_memory_max_bytes) is not int
+                or not 0 < gpu_memory_max_bytes <= 2**63 - 1):
+            raise ValueError('resource scope GPU memory limit must be positive integer bytes')
         self.action_key = action_key
         self.nonce = nonce
         self.memory_max_bytes = memory_max_bytes
+        self.gpu_memory_max_bytes = memory_max_bytes if gpu_memory_max_bytes is None else gpu_memory_max_bytes
+        self._explicit_gpu_budget = gpu_memory_max_bytes is not None
         self.telemetry_path = Path(telemetry_path)
         self.socket_path = Path(socket_path)
         self.docker_owner = docker_owner
@@ -112,13 +120,15 @@ class ResourceScope:
     def create(self) -> dict:
         if self.token is not None:
             raise RuntimeError('resource scope is already created')
-        response = self._request('create', memory_max_bytes=self.memory_max_bytes, recovery_protocol=1)
+        extra = {'gpu_memory_max_bytes': self.gpu_memory_max_bytes} if self._explicit_gpu_budget else {}
+        response = self._request('create', memory_max_bytes=self.memory_max_bytes, recovery_protocol=1, **extra)
         self._adopt_created_scope(response)
         return self.control_record()
 
     def recover_create(self) -> bool:
         """Recover authority or fence a missing attempt against delayed creation."""
-        response = self._request('recover_create', memory_max_bytes=self.memory_max_bytes)
+        extra = {'gpu_memory_max_bytes': self.gpu_memory_max_bytes} if self._explicit_gpu_budget else {}
+        response = self._request('recover_create', memory_max_bytes=self.memory_max_bytes, **extra)
         if response.get('missing') is True:
             expected = 'prismabuild-job' + hashlib.sha256((self.action_key + self.nonce).encode()).hexdigest()[:32] + '.slice'
             if response.get('scope_id') != expected:
@@ -136,6 +146,11 @@ class ResourceScope:
                 or not isinstance(token, str) or re.fullmatch('[a-f0-9]{64}', token) is None
                 or path != Path('/sys/fs/cgroup/prismabuild.slice') / unit):
             raise OSError('resource broker returned an invalid scope identity')
+        acknowledged_gpu = response.get('gpu_memory_max_bytes')
+        if (acknowledged_gpu is not None and (type(acknowledged_gpu) is not int
+                                            or acknowledged_gpu != self.gpu_memory_max_bytes)
+                or self._explicit_gpu_budget and acknowledged_gpu is None):
+            raise OSError('resource broker did not acknowledge the exact GPU memory budget')
         self.unit, self.token, self.cgroup_path = unit, token, path
 
     def control_record(self) -> dict:
@@ -143,7 +158,8 @@ class ResourceScope:
         return {'action_key': self.action_key, 'nonce': self.nonce,
                 'scope_id': self.unit, 'cgroup_path': str(self.cgroup_path),
                 'token': self.token, 'socket_path': str(self.socket_path),
-                'memory_max_bytes': self.memory_max_bytes}
+                'memory_max_bytes': self.memory_max_bytes,
+                'gpu_memory_max_bytes': self.gpu_memory_max_bytes}
 
     def wrap_argv(self, argv: list[str]) -> list[str]:
         if self.token is None:
@@ -172,6 +188,7 @@ class ResourceScope:
             'host': socket.gethostname(), 'scope_unit': self.unit,
             'sampled_unix': time.time(), 'wall_seconds': time.monotonic() - self.started,
             **direct, 'memory_max_bytes': self.memory_max_bytes,
+            'gpu_memory_max_bytes': self.gpu_memory_max_bytes,
             'complete': not errors, 'errors': errors,
         }
         if self.shape_key:

@@ -46,7 +46,8 @@ def test_exact_nested_scope_attribution_and_foreign_accounting(tmp_path, monkeyp
     process(proc, 10, f'/prismabuild.slice/{SID}/payload')
     process(proc, 20, f'/prismabuild.slice/{SID}suffix/payload')
     query(monkeypatch, '10, GPU-abc, 512\n20, GPU-abc, 800\n')
-    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
     job = sample.jobs[0]
     assert job.complete
     assert job.gpu_reported_bytes == 512 * gm.MIB
@@ -61,11 +62,65 @@ def test_unknown_gpu_memory_is_not_zero(tmp_path, monkeypatch):
     proc, cgroup, scope = system(tmp_path)
     process(proc, 10, f'/prismabuild.slice/{SID}/payload')
     query(monkeypatch, '10, GPU-abc, [N/A]\n')
-    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
     assert not sample.jobs[0].complete
     assert sample.jobs[0].gpu_reported_bytes is None
     guard = gm.Guard()
     assert guard.observe(sample) == guard.observe(replace(sample, sampled_monotonic=sample.sampled_monotonic + 1)) == []
+
+
+@pytest.mark.parametrize('domain', ['discrete', 'unknown'])
+def test_vram_within_its_budget_does_not_violate_smaller_system_budget(tmp_path, monkeypatch, domain):
+    proc, cgroup, scope = system(tmp_path)
+    scope = replace(scope, gpu_budget_bytes=2000 * gm.MIB)
+    process(proc, 10, f'/prismabuild.slice/{SID}/payload')
+    query(monkeypatch, '10, GPU-abc, 1500\n')
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': domain})
+    guard = gm.Guard()
+    assert guard.observe(sample) == []
+    assert guard.observe(replace(sample, sampled_monotonic=sample.sampled_monotonic + 1)) == []
+    assert sample.jobs[0].lower_bound_bytes == 100 * gm.MIB
+
+
+def test_explicit_gpu_subset_budget_is_enforced_on_shared_system(tmp_path, monkeypatch):
+    proc, cgroup, scope = system(tmp_path)
+    scope = replace(scope, gpu_budget_bytes=400 * gm.MIB)
+    process(proc, 10, f'/prismabuild.slice/{SID}/payload')
+    query(monkeypatch, '10, GPU-abc, 512\n')
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
+    guard = gm.Guard()
+    assert guard.observe(sample) == []
+    decisions = guard.observe(replace(sample, sampled_monotonic=sample.sampled_monotonic + 1))
+    assert [decision.reason for decision in decisions] == ['gpu_memory_budget_exceeded']
+
+
+def test_mixed_devices_charge_only_shared_allocations_to_system_memory(tmp_path, monkeypatch):
+    proc, cgroup, scope = system(tmp_path)
+    scope = replace(scope, gpu_budget_bytes=3000 * gm.MIB)
+    process(proc, 10, f'/prismabuild.slice/{SID}/payload')
+    query(monkeypatch, '10, GPU-shared, 500\n10, GPU-discrete, 2000\n')
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-shared': 'shared_system', 'GPU-discrete': 'discrete'})
+    result = sample.jobs[0]
+    assert result.memory_domain == 'unknown'
+    assert result.lower_bound_bytes == result.system_lower_bound_bytes == 500 * gm.MIB
+    assert result.upper_bound_bytes == 600 * gm.MIB
+    assert result.gpu_lower_bound_bytes == 2000 * gm.MIB
+    guard = gm.Guard()
+    assert guard.observe(sample) == []
+    assert guard.observe(replace(sample, sampled_monotonic=sample.sampled_monotonic + 1)) == []
+
+
+def test_absent_domain_is_not_inferred_from_gpu_process_presence(tmp_path, monkeypatch):
+    proc, cgroup, scope = system(tmp_path)
+    process(proc, 10, f'/prismabuild.slice/{SID}/payload')
+    query(monkeypatch, '10, GPU-abc, 512\n')
+    result = gm.collect([scope], proc_root=proc, cgroup_root=cgroup).jobs[0]
+    assert result.memory_domain == 'unknown'
+    assert result.lower_bound_bytes == result.host_bytes == 100 * gm.MIB
 
 
 def test_pid_reuse_invalidates_gpu_attribution(tmp_path, monkeypatch):
@@ -73,7 +128,8 @@ def test_pid_reuse_invalidates_gpu_attribution(tmp_path, monkeypatch):
     group = f'/prismabuild.slice/{SID}/payload'
     process(proc, 10, group, start=8)
     query(monkeypatch, '10, GPU-abc, 2048\n', effect=lambda: process(proc, 10, group, start=9))
-    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
     assert not sample.jobs[0].complete
     assert not sample.jobs[0].processes
 
@@ -82,7 +138,8 @@ def test_new_pid_during_query_is_unknown_this_sample(tmp_path, monkeypatch):
     proc, cgroup, scope = system(tmp_path)
     query(monkeypatch, '10, GPU-abc, 2048\n',
           effect=lambda: process(proc, 10, f'/prismabuild.slice/{SID}/payload'))
-    assert not gm.collect([scope], proc_root=proc, cgroup_root=cgroup).jobs[0].complete
+    assert not gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'}).jobs[0].complete
 
 
 def test_shared_gpu_bytes_and_host_charges_are_never_summed_for_kill(tmp_path, monkeypatch):
@@ -91,7 +148,8 @@ def test_shared_gpu_bytes_and_host_charges_are_never_summed_for_kill(tmp_path, m
         process(proc, pid, f'/prismabuild.slice/{SID}/payload')
     (Path(scope.cgroup_path) / 'memory.current').write_text(str(800 * gm.MIB))
     query(monkeypatch, '10, GPU-abc, 800\n11, GPU-abc, 800\n10, GPU-abc, 800\n')
-    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
     job = sample.jobs[0]
     assert job.gpu_reported_bytes == 1600 * gm.MIB
     assert job.lower_bound_bytes == 800 * gm.MIB
@@ -104,7 +162,8 @@ def test_shared_gpu_bytes_and_host_charges_are_never_summed_for_kill(tmp_path, m
 def test_bad_gpu_query_never_licenses_a_stop(tmp_path, monkeypatch, output, rc):
     proc, cgroup, scope = system(tmp_path)
     query(monkeypatch, output, rc)
-    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
     assert not sample.gpu_query_complete
     assert not sample.jobs[0].complete
 
@@ -114,7 +173,8 @@ def test_query_timeout_is_observable(tmp_path, monkeypatch):
     def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(args[0], kwargs['timeout'])
     monkeypatch.setattr(gm.subprocess, 'run', timeout)
-    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
     assert not sample.gpu_query_complete
     assert 'TimeoutExpired' in sample.errors[0]
 
@@ -127,14 +187,15 @@ def test_changed_cgroup_inode_cannot_be_stopped(tmp_path, monkeypatch):
         path.mkdir()
         (path / 'memory.current').write_text(str(2000 * gm.MIB))
     query(monkeypatch, effect=replace_group)
-    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
     assert not sample.jobs[0].complete
 
 
 def job(sid=SID, used=500, budget=1000, inode=2, complete=True):
     return gm.JobSample(sid, (1, inode), budget * gm.MIB, 100 * gm.MIB,
                         used * gm.MIB, used * gm.MIB, used * gm.MIB,
-                        (used + 100) * gm.MIB, complete)
+                        (used + 100) * gm.MIB, complete, memory_domain="shared_system")
 
 
 def snapshot(t, *jobs, available=4000, some=0, full=0):
@@ -149,6 +210,41 @@ def test_two_repeated_overbudget_readings_stop_only_offending_scope():
     assert [(d.scope_id, d.reason) for d in decisions] == [(SID, 'memory_budget_exceeded')]
     assert decisions[0].cgroup_identity == (1, 2)
     json.dumps(decisions[0].as_dict())
+
+
+def test_discrete_gpu_growth_does_not_predict_system_ram_exhaustion():
+    guard = gm.Guard(gm.Policy(reserve_bytes=500 * gm.MIB))
+    for t, used, available in [(1, 400, 1000), (2, 600, 800), (3, 800, 600)]:
+        sample = replace(job(used=used), memory_domain='discrete', gpu_budget_bytes=2000 * gm.MIB)
+        assert guard.observe(snapshot(t, sample, available=available, some=2)) == []
+
+
+@pytest.mark.parametrize('domain', ['discrete', 'unknown'])
+def test_system_ram_budget_remains_independent_of_larger_gpu_allowance(domain):
+    guard = gm.Guard()
+    over = replace(job(used=500), host_bytes=1100 * gm.MIB,
+                   memory_domain=domain, gpu_budget_bytes=5000 * gm.MIB)
+    assert guard.observe(snapshot(1, over)) == []
+    decisions = guard.observe(snapshot(2, over))
+    assert [decision.reason for decision in decisions] == ['memory_budget_exceeded']
+    assert decisions[0].evidence['budget_domain'] == 'system'
+
+
+def test_separate_budget_violations_do_not_share_confirmation_counts():
+    guard = gm.Guard()
+    base = replace(job(used=500), memory_domain='discrete')
+    assert guard.observe(snapshot(1, replace(base, host_bytes=1100 * gm.MIB))) == []
+    gpu_over = replace(base, gpu_lower_bound_bytes=1100 * gm.MIB)
+    assert guard.observe(snapshot(2, gpu_over)) == []
+    assert [d.reason for d in guard.observe(snapshot(3, gpu_over))] == ['gpu_memory_budget_exceeded']
+
+
+def test_changed_gpu_budget_resets_confirmation():
+    guard = gm.Guard()
+    sample = replace(job(used=1200), memory_domain='discrete', gpu_budget_bytes=1000 * gm.MIB)
+    assert guard.observe(snapshot(1, sample)) == []
+    changed = replace(sample, gpu_budget_bytes=1100 * gm.MIB)
+    assert guard.observe(snapshot(2, changed)) == []
 
 
 @pytest.mark.parametrize('middle', ['unknown', 'underbudget', 'inode', 'gap', 'clock'])
@@ -202,7 +298,8 @@ def test_census_deadline_marks_telemetry_incomplete(tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError('an elapsed collection deadline still launched a command')
     monkeypatch.setattr(gm.subprocess, 'run', forbidden)
-    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
     assert not sample.gpu_query_complete
     assert not sample.jobs[0].complete
     assert any('deadline' in error for error in sample.errors)
@@ -212,6 +309,7 @@ def test_unreadable_host_pressure_never_selects_a_victim(tmp_path, monkeypatch):
     proc, cgroup, scope = system(tmp_path)
     (proc / 'pressure/memory').write_text('some avg10=nan\n')
     query(monkeypatch)
-    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
     assert sample.psi_some_avg10 is None and sample.psi_full_avg10 is None
     assert 'memory PSI unavailable' in sample.errors

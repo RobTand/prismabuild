@@ -35,6 +35,37 @@ def test_scope_identity_separates_attempts(tmp_path, monkeypatch):
     assert argv[argv.index('--token')+1] == 'b'*64
 
 
+def test_explicit_gpu_budget_is_bound_to_create_recovery_and_control(tmp_path, monkeypatch):
+    import hashlib
+    scope=ResourceScope('a'*64,'1'*32,1024**3,tmp_path/'sample.json',
+                        gpu_memory_max_bytes=4*1024**3)
+    calls=[]
+    def request(self,op,**extra):
+        calls.append((op,extra))
+        unit='prismabuild-job'+hashlib.sha256((self.action_key+self.nonce).encode()).hexdigest()[:32]+'.slice'
+        return {'ok':True,'scope_id':unit,'token':'b'*64,
+                'cgroup_path':'/sys/fs/cgroup/prismabuild.slice/'+unit,
+                'gpu_memory_max_bytes':4*1024**3}
+    monkeypatch.setattr(ResourceScope,'_request',request)
+    assert scope.create()['gpu_memory_max_bytes']==4*1024**3
+    assert scope.recover_create()
+    assert calls==[
+        ('create',{'memory_max_bytes':1024**3,'gpu_memory_max_bytes':4*1024**3,'recovery_protocol':1}),
+        ('recover_create',{'memory_max_bytes':1024**3,'gpu_memory_max_bytes':4*1024**3}),
+    ]
+
+
+def test_broker_cannot_silently_drop_an_explicit_gpu_limit(tmp_path, monkeypatch):
+    import hashlib
+    scope=ResourceScope('a'*64,'1'*32,1024**3,tmp_path/'sample.json',gpu_memory_max_bytes=512*1024**2)
+    unit='prismabuild-job'+hashlib.sha256((scope.action_key+scope.nonce).encode()).hexdigest()[:32]+'.slice'
+    monkeypatch.setattr(scope,'_request',lambda *args,**kwargs:{
+        'ok':True,'scope_id':unit,'token':'b'*64,
+        'cgroup_path':'/sys/fs/cgroup/prismabuild.slice/'+unit})
+    with pytest.raises(OSError,match='exact GPU memory budget'):
+        scope.create()
+
+
 def test_cgroup_reads_whole_tree_counters(tmp_path):
     result = read_cgroup(_group(tmp_path / 'cg'))
     assert result['cpu_seconds'] == 2

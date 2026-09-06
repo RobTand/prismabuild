@@ -213,10 +213,17 @@ class Authority:
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
         if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
-        allowed=({'op','action_key','nonce','memory_max_bytes','recovery_protocol'} if op=='create'
-                 else {'op','action_key','nonce','memory_max_bytes'} if op=='recover_create'
+        allowed=({'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','recovery_protocol'} if op=='create'
+                 else {'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes'} if op=='recover_create'
                  else {'op','action_key','nonce','token','reason','memory_max_bytes'})
         if set(request)-allowed:raise ValueError('unknown request field')
+        if op in {'create','recover_create'}:
+            gpu_budget=request.get('gpu_memory_max_bytes',request.get('memory_max_bytes'))
+            # VRAM can exceed system RAM on a discrete host. Host RAM bounds
+            # do not describe this independent logical budget; admission uses
+            # trusted device capacity. Keep RPC values within signed byte range.
+            if type(gpu_budget) is not int or not 0<gpu_budget<=2**63-1:
+                raise ValueError('GPU memory budget outside supported bounds')
         with self.lock:
             if op=='recover_create':
                 budget=request.get('memory_max_bytes')
@@ -228,11 +235,16 @@ class Authority:
                     # A timed-out create may still be queued on this lock.
                     # Fence it durably before declaring this attempt absent.
                     record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
-                            'memory_max_bytes':budget,'token':secrets.token_hex(32),
+                            'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,'token':secrets.token_hex(32),
                             'released_unix':time.time(),'creation_cancelled_unix':time.time()}
                     _atomic(self.state_dir/(scope+'.json'),record);self.records[scope]=record
                     return {'ok':True,'scope_id':scope,'missing':True}
-                if record['memory_max_bytes']!=budget:raise ValueError('attempt budget cannot change')
+                if (record['memory_max_bytes']!=budget
+                        or record.get('gpu_memory_max_bytes',record['memory_max_bytes'])!=gpu_budget):
+                    raise ValueError('attempt budget cannot change')
+                if 'gpu_memory_max_bytes' not in record:
+                    record['gpu_memory_max_bytes']=gpu_budget
+                    _atomic(self.state_dir/(scope+'.json'),record)
                 return {'ok':True,**record,'cgroup_path':str(self.backend.path(scope))}
             if op=='create':
                 if 'recovery_protocol' in request and (type(request['recovery_protocol']) is not int
@@ -244,7 +256,12 @@ class Authority:
                     return {'ok':False,'maintenance':True,'retryable':True,
                             'error':'resource broker is draining for maintenance'}
                 if existing:
-                    if existing['memory_max_bytes']!=budget:raise ValueError('attempt budget cannot change')
+                    if (existing['memory_max_bytes']!=budget
+                            or existing.get('gpu_memory_max_bytes',existing['memory_max_bytes'])!=gpu_budget):
+                        raise ValueError('attempt budget cannot change')
+                    if 'gpu_memory_max_bytes' not in existing:
+                        existing['gpu_memory_max_bytes']=gpu_budget
+                        _atomic(self.state_dir/(scope+'.json'),existing)
                     if existing.get('released_unix'):raise ValueError('attempt is released')
                     if existing.get('stopped_unix'):raise ValueError('attempt is stopped')
                     if existing.get('pending'):
@@ -252,7 +269,8 @@ class Authority:
                         _atomic(self.state_dir/(scope+'.json'),existing)
                     return {'ok':True,**existing}
                 record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
-                        'memory_max_bytes':budget,'token':secrets.token_hex(32),'created_unix':time.time()}
+                        'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,
+                        'token':secrets.token_hex(32),'created_unix':time.time()}
                 # Persist authority before OS creation so a broker restart can
                 # retain exact recovery ownership even after partial setup.
                 path=self.state_dir/(scope+'.json');record['pending']=True
@@ -461,7 +479,7 @@ class Authority:
 
 class ResourceMonitor:
     """Sample outside admission locks; stop only the same recorded kernel group."""
-    identity_fields=('action_key','nonce','token','memory_max_bytes','cgroup_identity')
+    identity_fields=('action_key','nonce','token','memory_max_bytes','gpu_memory_max_bytes','cgroup_identity')
 
     def __init__(self,authority,gpu_module,*,capacity_module=None,interval_s=1.0,timeout_s=1.0):
         self.capacity=capacity_module
