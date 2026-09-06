@@ -63,18 +63,20 @@ def test_the_lock_is_really_created_where_the_guard_points(tmp_path):
     assert (directory / f'{digest}.lock').is_file()
 
 
-def test_the_directory_is_still_private(tmp_path, monkeypatch):
-    """The mode check is the reason this is not just a `mkdir`.
+def test_a_mode_this_uid_owns_is_repaired_rather_than_refused(tmp_path, monkeypatch):
+    """A box must not be removable from the fleet by a bit it may itself set.
+
+    The check wants the directory private to this uid.  When it is ours and
+    merely too permissive, `chmod` is an answer; refusing is a way of not
+    giving one, and refusing here cost two boxes an outage on 2026-09-06 (#281).
 
     The repoint is done here as well as by the autouse guard, and that is not
-    belt-and-braces for its own sake.  This test makes a directory unsafe on
-    purpose, and the directory it makes unsafe is whatever ``box_state``
-    returns -- so if the guard ever failed to apply, this would `chmod 0770`
-    the *fleet's* admission directory on the box the shard ran on.  That is
-    not hypothetical: `box_state` refuses that mode, the refusal reaches the
-    worker loop as an ordinary item error, and the box then announces a fresh
-    offer at full capacity forever while claiming nothing.  A test must not be
-    one fixture away from taking a box out of service.
+    belt-and-braces.  This test makes a directory unsafe on purpose, and the
+    directory it makes unsafe is whatever ``box_state`` returns -- so if the
+    guard ever failed to apply, this would `chmod 0770` the *fleet's* own
+    admission directory on the box the shard ran on.  That is exactly how both
+    outages happened.  The assertion below is what stops it, and it comes
+    before the chmod on purpose.
     """
 
     root = tmp_path / 'box-state'
@@ -85,7 +87,42 @@ def test_the_directory_is_still_private(tmp_path, monkeypatch):
     assert directory.stat().st_mode & 0o077 == 0
 
     directory.chmod(0o770)
+    again, _ = adaptive_cpu.box_state(tmp_path / 'reservations' / 'h')
+
+    assert again == root
+    assert again.stat().st_mode & 0o077 == 0, (
+        'the group bit survived, so the next admission call still refuses')
+
+
+def test_a_directory_this_uid_does_not_own_is_still_refused(tmp_path, monkeypatch):
+    """Repairing what we own must not become repairing anything at all.
+
+    A directory belonging to another uid cannot be made safe from here -- the
+    chmod would fail, and if it somehow succeeded we would be taking a path out
+    from under its owner.  So this stays a refusal, and it is the half of the
+    guard that carries the security of the lock.
+    """
+
+    root = tmp_path / 'box-state'
+    monkeypatch.setattr(adaptive_cpu, 'BOX_STATE_ROOT', root)
+    adaptive_cpu.box_state(tmp_path / 'reservations' / 'h')
+    # Read the real uid BEFORE patching: ``adaptive_cpu.os`` is this module's
+    # ``os`` too, so a lambda that called ``os.getuid()`` would call itself.
+    somebody_else = os.getuid() + 1
+    monkeypatch.setattr(adaptive_cpu.os, 'getuid', lambda: somebody_else)
+
     with pytest.raises(RuntimeError, match='unsafe'):
+        adaptive_cpu.box_state(tmp_path / 'reservations' / 'h')
+
+
+def test_a_path_that_is_not_a_directory_is_still_refused(tmp_path, monkeypatch):
+    """The other half that cannot be repaired: a file where a directory belongs."""
+
+    root = tmp_path / 'box-state'
+    root.write_text('not a directory')
+    monkeypatch.setattr(adaptive_cpu, 'BOX_STATE_ROOT', root)
+
+    with pytest.raises((RuntimeError, OSError)):
         adaptive_cpu.box_state(tmp_path / 'reservations' / 'h')
 
 
