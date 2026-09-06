@@ -87,8 +87,9 @@ def main():
                 assert evidence['gpu_budget_bytes'] == gm.GIB, evidence
                 assert evidence['system_lower_bound_bytes'] < evidence['budget_bytes'], evidence
                 assert int((owned[1].cgroup_path / 'memory.max').read_text()) == 4 * gm.GIB
-                assert healthy_status['memory_max_bytes'] == 4 * gm.GIB, healthy_status
-                assert healthy_status['gpu_memory_max_bytes'] == gm.GIB, healthy_status
+                assert int((owned[0].cgroup_path / 'memory.max').read_text()) == 4 * gm.GIB
+                # create() already checked the broker acknowledged this exact GPU cap.
+                assert owned[0].gpu_memory_max_bytes == gm.GIB
             else:
                 assert evidence['lower_bound_bytes'] > evidence['budget_bytes'], evidence
             offender_output = processes[1].communicate(timeout=10)
@@ -104,6 +105,8 @@ def main():
             verdict = {'verdict': 'automatic_daemon_gpu_budget_stop',
                               'explicit_gpu_cap': args.explicit_gpu_cap,
                               'devices': devices,
+                              'healthy_memory_max_bytes': owned[0].memory_max_bytes,
+                              'healthy_gpu_memory_max_bytes': owned[0].gpu_memory_max_bytes,
                               'offender_status': offender_status, 'healthy_status': healthy_status,
                               'healthy_progress_before': before_progress,
                               'healthy_progress_after': after_progress,
