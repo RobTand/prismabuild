@@ -1650,6 +1650,12 @@ def test_initial_miss_rendezvous_refuses_two_cas_roots_before_task(
     errors: list[BaseException] = []
     start = threading.Barrier(2)
 
+    # Expire at the arrival wait, not while a loaded worker validates the
+    # manifest. Only the participant with the matching CAS reaches this clock.
+    clock = [0.0]
+    monkeypatch.setattr(pb.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(pb.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
+
     def run(host: str) -> None:
         try:
             start.wait()
