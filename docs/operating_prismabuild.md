@@ -1084,6 +1084,12 @@ half-copied mixture.
 `--dry-run` prints the commit and every file that would be published, and
 writes nothing.
 
+The generation includes the execution skill, `docs/**/*.md`, `README.md` and
+`AGENTS.md`. The skill's required policy and operating guide, and their linked
+reference guides, therefore travel with the code they describe. Follow the
+skill's relative document links inside that same resolved generation; no
+mutable source checkout is needed to read the published execution contract.
+
 Each generation carries `RUNTIME_VERSION.json`: the commit, whether the tree
 was dirty, the generation name, who published it, and a sha256 for every
 published file. The receipt is what makes a disagreement between a box and this
