@@ -99,6 +99,13 @@ probe reading and no RPC statistics at all; a zero there would read as a
 perfectly healthy network mount. It still gets the gate reading, deliberately:
 it has no RPC leg and it is the box that actually stalled.
 
+One implementation note with teeth: `/proc/locks` prints the device as
+`%02x:%02x`, zero-padded. `/tmp` is tmpfs on dl380g10 — **major 0, written
+`00`** — so an unpadded key would have matched nothing and reported a gate with
+no holders and no waiters, which is indistinguishable from a healthy one. On
+sparky, where `/tmp` is major 259 (`103`), the bug is invisible. It would have
+blinded this leg on exactly the box it was built for, and on no other.
+
 `max_hold_s` is a **lower** bound. `/proc/locks` carries no timestamp, so the
 age is accumulated across samples and quantised by the interval; a hold that
 begins and ends between two samples is not seen. That is enough for the failure
@@ -136,6 +143,14 @@ ln -s /mnt/shared/prismabuild-fleet/repo/tools/fleet/mount_latency.py \
 ```
 
 with `--record-dir /var/lib/netdata/prismabuild` in the plugin's argument list.
+
+One thing that user cannot do: `/proc/<pid>/wchan` is gated by
+`ptrace_may_access`, so running as `netdata` yields `"0"` for every process it
+does not own and `waiter_wchans` reads `{"0": N}`. The **counts and states are
+unaffected** — `/proc/<pid>/stat` is world-readable — so the headline
+(`waiters`, `waiters_invisible_to_load`, `max_hold_s`) is intact and only the
+"waiting on *what*" attribution is lost. Run `--once` as the loops' own user
+when you need to tell `__break_lease` from slow work.
 Check the first sample rather than assuming: a plugin that cannot reach the
 mount still emits charts, and its `probe_status` will read `error` on every
 one of them. That is the tool working correctly and the install being wrong,
