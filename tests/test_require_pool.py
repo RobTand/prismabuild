@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+import pytest
 
 HOOK = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "require_pool.py"
 CUDA = "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python"
@@ -38,7 +39,6 @@ def _armed(tmp_path, monkeypatch):
 def _verdict(module, command):
     import io
     import contextlib
-import pytest
     stdin = io.StringIO(json.dumps({"tool_input": {"command": command}}))
     err = io.StringIO()
     old = sys.stdin
