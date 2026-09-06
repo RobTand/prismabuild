@@ -74,7 +74,11 @@ SHARED = Path("/mnt/shared")
 #: summary looks like ``1 failed, 531 passed, 1 skipped in 17.82s``; the
 #: decoration appears only above ``-q``.  Matching it costs nothing and keeps
 #: a shard run at default verbosity from reading as "did not run".
-_COUNTED = r"\d+ [A-Za-z][\w-]*"
+#: pytest-subtests reports ``N subtests passed`` (and ``failed``/``skipped``):
+#: the one two-word part.  Without it a shard that ran 16 cases and six
+#: subtests read as "did not run" (#256), which is this grammar producing the
+#: mirror of the defect it was tightened against.
+_COUNTED = r"\d+ (?:subtests? )?[A-Za-z][\w-]*"
 _COLLECT_ONLY = (r"no tests collected(?: \(\d+ deselected\))?"
                  r"|\d+/\d+ tests collected \(\d+ deselected\)"
                  r"|\d+ tests? collected")
