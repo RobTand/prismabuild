@@ -569,6 +569,15 @@ exit 2 before any action is submitted.
 The CPU demand is sealed into each shard's action, so a suite fanned out at a
 different width is a different action rather than a cache hit of the last run.
 
+Each shard prints its pytest terminal summary, and `--json` records the same
+text plus a `ran` flag. `ran` is true when pytest reported a terminal summary
+— the `1 failed, 531 passed, 1 skipped in 17.82s` line — and false otherwise.
+A shard that died before or outside pytest prints `NO PYTEST SUMMARY`, the
+number of files that did not run, and how the shard ended (`rc=N`, or
+`signal N` when it was killed), because a shard starved of I/O, one whose
+submission was refused, and one that ran clean are three different events that
+used to print the same blank.
+
 ## Submit a measurement
 
 A measurement's numerics do not transfer across architectures, so every
