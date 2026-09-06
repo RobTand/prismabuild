@@ -205,3 +205,39 @@ reduced measured combined daemon consumption from 0.9192 to 0.076 CPU cores
 in paired 25-second observations, freeing 0.8432 cores (91.7% reduction).
 Docker and containerd were not restarted. The profiler and observations are
 retained under `docker-pulses/` in the qualification artifact directory.
+
+## Final integration recovery checks
+
+A full-suite run exposed lazy directory iteration on Python 3.12 and a marker
+helper whose new diagnostic argument broke its existing caller. Both were
+corrected; 15 focused ARM tests passed. A real OOM then exposed asynchronous
+scope cleanup being delayed until lease expiry. PB now retains the original
+finish status and detail, retries on the next local poll, and releases capacity
+only after cleanup is confirmed. The 272 pool tests and six focused cleanup
+regressions passed.
+
+Final authority review found that a lost create response could leave a broker
+scope without durable worker ownership. Claims and leases now persist the
+exact creation intent before the RPC. Recovery retrieves that authority or
+durably cancels an absent attempt, fencing late create requests. Older brokers
+refuse the tagged protocol before creating anything, so new workers defer
+without consuming an attempt while clients converge. Combined recovery tests
+passed 163 cases through PB; the red and green receipts remain in the artifact
+directory.
+
+The nested SLURM smoke originally assumed CPU zero and used nproc under a
+one-thread OpenMP environment. It now uses slurmd's actual hardware topology
+and SlurmdSpecOverride to exclude parent-unavailable CPUs. It retains PB's
+cpuset and SLURM's affinity/cgroup plugins. The corrected multinode harness
+passed 12/12 contracts, including node failure and controller restart, in action
+`8dee0c281b35ce6720090149e4804cabd88ea6e2c0d9ea42f56b8ff60575760a`.
+
+The single-node smoke then exposed incorrect hierarchical OOM attribution: a
+one-GiB nested job hit its own limit while its eight-GiB enclosing PB action
+peaked at 1,185,460,224 bytes. The parent local OOM counters were zero. PB now
+uses the parent-local OOM counter to identify exhaustion of its own budget;
+hierarchical victim counts remain diagnostic. Regressions cover child-only
+OOM, parent exhaustion with descendant victims, and exhaustion before a victim
+is killed. The withdrawn negative run retains an empty frozen cgroup tombstone
+for an ambiguous Docker RPC; its exact container census is empty. This retained
+safety record is not active work.
