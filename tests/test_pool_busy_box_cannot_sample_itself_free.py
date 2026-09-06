@@ -106,16 +106,32 @@ def box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def _fill_the_box(queue, clock, publish, claim, telemetry) -> str:
-    """Admit one action that takes both CPU tokens, then prove it is idle."""
+    """Admit one action that takes both CPU tokens, then prove it is idle.
+
+    Proving it takes two *decisions*, not two telemetry writes.  The donor's
+    rate is a first difference against ``jobs.json``, and only
+    ``Controller.decision`` writes ``jobs.json`` -- so the poll that first
+    sees a holder can only record a baseline, and the next one is the
+    earliest that can compute ``cpu`` and call the holder lendable.  A test
+    that skipped the baseline poll would be asserting on the wrong reason for
+    refusal.
+    """
 
     key = publish(cpu=2)
     clock[0] += 2.0                      # a second reading: the box can sample
     assert claim(), "an idle box admits its first action"
     assert queue.ledger().available().get("cpu", 0) == 0
-    for _ in range(2):                   # two readings make a rate
-        clock[0] += 2.0
-        telemetry(key)
+    clock[0] += 2.0
+    telemetry(key)
     return key
+
+
+def _seed_the_donor_baseline(clock, claim, telemetry, holder: str) -> None:
+    """One refused poll, so the next one has a rate to compute."""
+
+    assert claim() is None, "no baseline yet, so nothing to lend"
+    clock[0] += 2.0
+    telemetry(holder)
 
 
 def test_a_full_box_that_polls_slower_than_the_sampler_never_re_admits(box):
@@ -130,13 +146,14 @@ def test_a_full_box_that_polls_slower_than_the_sampler_never_re_admits(box):
     queue, clock, publish, claim, telemetry = box
     holder = _fill_the_box(queue, clock, publish, claim, telemetry)
     small = publish(cpu=1)
+    _seed_the_donor_baseline(clock, claim, telemetry, holder)
 
     for _ in range(6):
         clock[0] += adaptive_cpu.MAX_INTERVAL_S + 1.0
         telemetry(holder)
         assert claim() is None
 
-    assert queue.passes(small) == 6
+    assert queue.passes(small) == 7
     assert queue.item_path(pool.READY, small).exists()
     sample = adaptive_cpu.read_json(
         queue.ledger().base / "adaptive" / "cpu-sample.json")
@@ -158,13 +175,12 @@ def test_the_same_box_admits_the_same_item_the_moment_it_can_sample(box):
     queue, clock, publish, claim, telemetry = box
     holder = _fill_the_box(queue, clock, publish, claim, telemetry)
     small = publish(cpu=1)
+    _seed_the_donor_baseline(clock, claim, telemetry, holder)
 
-    clock[0] += 2.0
-    telemetry(holder)
     admitted = claim()
 
     assert admitted and admitted["action_key"] == small
-    assert queue.passes(small) == 0
+    assert queue.passes(small) == 0, "the admitting claim clears the sidecar"
     assert queue.ledger().held()["cpu"] == 2, "borrowed, never minted"
     assert queue.ledger().capacity()["cpu"] == 2
 
@@ -180,18 +196,22 @@ def test_the_borrow_gate_is_what_refuses_and_free_tokens_are_why(box):
     queue, clock, publish, claim, telemetry = box
     small = publish(cpu=1)
 
-    # Nothing held: one CPU token is free, so borrowing is not required.
-    assert queue.ledger().available().get("cpu", 0) == 2
+    # The ledger's tokens are minted by ``claim`` itself (``ensure_capacity``),
+    # so the free count is only meaningful after the first poll.  This poll is
+    # at the same hopeless cadence as the refusals below and is admitted
+    # anyway, because a free token means the borrow gate is never reached.
     clock[0] += adaptive_cpu.MAX_INTERVAL_S + 1.0
     assert claim() is not None
+    assert queue.ledger().available().get("cpu", 0) == 1
+
+    other = publish(cpu=1)
+    clock[0] += adaptive_cpu.MAX_INTERVAL_S + 1.0
+    assert claim() is not None, "the second free token, on the same cadence"
+    assert queue.ledger().available().get("cpu", 0) == 0
 
     # Now the box is full, and an equally small item meets the closed door.
-    other = publish(cpu=1)
-    clock[0] += 2.0
-    assert claim() is not None
-    assert queue.ledger().available().get("cpu", 0) == 0
     starved = publish(cpu=1)
     clock[0] += adaptive_cpu.MAX_INTERVAL_S + 1.0
     assert claim() is None
     assert queue.passes(starved) == 1
-    assert other and starved
+    assert small and other and starved
