@@ -90,12 +90,22 @@ nonces, tokens, and result digests are never labels.
 | `prismabuild_attempt_observed_resources` | `host,resource` | Aggregate telemetry only when every live claim on the host has a complete, fresh, nonce-matched resource-scope record. CPU is lifetime-average cores (`cpu_seconds / wall_seconds`); memory is current cgroup bytes. The host is omitted rather than partially summed if any live claim is unavailable -- read it beside `prismabuild_attempt_telemetry_unavailable_jobs`, which says whether an absent aggregate means an idle host or an unreadable one. Lifetime average cannot see a job that has stopped moving; `prismabuild_attempt_recent_cores` is the reading that can. |
 | `prismabuild_attempt_telemetry_jobs` | `host` | Number of live claims covered by the corresponding aggregate telemetry. |
 | `prismabuild_attempt_telemetry_unavailable_jobs` | `host` | Live claims whose resource-scope record could not be used. Emitted for every host with live claims, including zero, so a withheld aggregate is legible rather than indistinguishable from an idle box. |
-| `prismabuild_attempt_telemetry_age_seconds` | `host` | Age of the oldest credible resource-scope sample among the host's live claims. Reported even when the aggregate is withheld, which is when it matters: a claim blocked on the shared mount keeps its lease while its sampler stops running. |
+| `prismabuild_attempt_telemetry_age_seconds` | `host` | Age of the oldest credible resource-scope sample among the host's live claims. Reported even when the aggregate is withheld, which is when it matters: a claim blocked on the shared mount keeps its lease while its sampler stops running. A sample from a clock slightly ahead of this reader's floors at zero; see clock skew below. |
 | `prismabuild_attempt_recent_cores` | `host` | Cores used since the exporter's previous refresh, differenced per attempt and summed over the host. Absent on the first refresh and whenever nothing could be differenced. |
 | `prismabuild_attempt_recent_cores_jobs` | `host` | Live claims the recent-cores figure was differenced over. It is that figure's denominator, not a total. |
 | `prismabuild_admission_evidence_age_seconds` | `host,resource=cpu\|gpu` | Age of persisted scheduler evidence. This is the last recorded evidence, not a live hardware sample. |
 | `prismabuild_admission_plateau` | `host,resource=gpu` | Whether persisted GPU `power_feedback.status` last recorded a plateau. The age metric must be consulted with it. |
 | `prismabuild_collection_success` | none | `1` when critical active-queue inputs and the selected terminal records were readable and valid, otherwise `0`. A stale valid worker offer does not make collection fail. |
+
+A telemetry record is stamped by the box executing the action and read by
+whichever box runs the exporter, so the two clocks are not the same clock and a
+record can legitimately carry a timestamp a few milliseconds in this reader's
+future. A sample is therefore accepted from one sampling period ahead
+(`MAX_SAMPLE_AGE_S`) to one sampling period behind; a stamp further ahead than
+that is not skew but a wrong clock, and is rejected. Requiring a non-negative
+age instead threw away the *freshest* records, and did it hardest on the busiest
+box -- whose records are the ones a fraction of a second old -- where under the
+all-or-nothing aggregate a single such record erased the whole host.
 
 Resource values use these units:
 
