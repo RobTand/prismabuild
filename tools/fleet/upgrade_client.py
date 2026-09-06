@@ -154,6 +154,10 @@ class Upgrader:
         sync_dir(self.install)
 
     def recover(self, transaction):
+        previous = {name: digest((self.state / 'previous' / name).read_bytes())
+                    for name in MEMBERS}
+        if previous != transaction.get('previous'):
+            raise RuntimeError('previous client hash mismatch; recovery requires operator repair')
         # The persisted broker gate survives restart. If the service is alive,
         # independently prove the gate and idleness again before stopping it.
         if self.ctl('is-active', check=False).returncode == 0:
@@ -162,6 +166,8 @@ class Upgrader:
                 raise RuntimeError('rollback deferred: broker still owns active work')
             self.ctl('stop')
         self.copy_files(self.state / 'previous')
+        if self.installed() != previous:
+            raise RuntimeError('restored client hash mismatch')
         self.ctl('start')
         self.healthy()
         self.call('end')

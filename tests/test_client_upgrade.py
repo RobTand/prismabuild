@@ -128,7 +128,9 @@ def test_interrupted_copy_recovers_before_reading_a_broken_publication(setup):
 def test_recovery_after_reopening_admission_never_stops_new_work(setup):
     updater, backend, _ = setup
     updater.run()
-    upgrade.atomic(updater.journal, {'desired': {'generation': 'interrupted'}})
+    upgrade.atomic(updater.journal, {'desired': {'generation': 'interrupted'},
+                                    'previous': {name: upgrade.digest((updater.state / 'previous' / name).read_bytes())
+                                                 for name in upgrade.MEMBERS}})
     backend.active = 1
     backend.operations.clear()
     with pytest.raises(RuntimeError, match='still owns active work'):
@@ -182,3 +184,18 @@ def test_current_version_clears_orphaned_drain(setup):
     backend.draining = True
     assert updater.run()['state'] == 'current'
     assert not backend.draining
+
+
+def test_corrupted_backup_refuses_recovery_without_stopping_service(setup):
+    updater, backend, _ = setup
+    updater.run()
+    previous = {name: upgrade.digest((updater.state / 'previous' / name).read_bytes())
+                for name in upgrade.MEMBERS}
+    upgrade.atomic(updater.journal, {'desired': {'generation': 'interrupted'},
+                                    'previous': previous})
+    (updater.state / 'previous' / 'resource_payload.py').write_bytes(b'corrupt backup')
+    backend.operations.clear()
+    with pytest.raises(RuntimeError, match='previous client hash mismatch'):
+        updater.run()
+    assert not backend.operations
+    assert updater.journal.exists()
