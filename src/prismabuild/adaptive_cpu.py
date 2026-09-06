@@ -277,8 +277,43 @@ def box_state(base):
     directory = Path(BOX_STATE_ROOT)
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     info = directory.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        # Not a directory, or not ours.  Nothing this process can do makes it
+        # safe, so this is the honest refusal and it stays one.
         raise RuntimeError('unsafe PrismaBuild admission lock directory')
+    if info.st_mode & 0o077:
+        # Ours, and too permissive: set it right rather than refuse.  What the
+        # check wants is that the directory be private to this uid; we own it,
+        # so `chmod` is an answer and refusing is a way of not giving one.
+        #
+        # Refusing took a box out of service for as long as the mode survived.
+        # The raise leaves `claim` into `serve_once`, where the worker loop
+        # counts it among the consecutive failures it tolerates for a bad
+        # ITEM -- but every poll re-reads the same directory and gets the same
+        # answer, so the count only runs up.  Announcing happens earlier in the
+        # same poll, so the box kept publishing a fresh offer at full capacity
+        # while claiming nothing: live to everything watching, and useless.
+        # Worse, the same raise reaches `pool.cleanup_action_containers`, which
+        # is the gate that returns tokens; `RuntimeError` is in neither of its
+        # `except` tuples, so it escapes after `scope.release()` and before the
+        # claim is finished, and an action that had already run lost its lease.
+        #
+        # Measured on sparky, 2026-09-06: mode 0770, thirteen minutes, three
+        # actions pinned to it sitting in `ready` with no passes recorded;
+        # `chmod 700` by hand and the queue drained in eighteen seconds.  It
+        # happened again on dl380g10 within the hour.
+        #
+        # The origin was ours -- a test that chmodded the very path
+        # `box_state` handed it -- and that is fixed at source in #265, so this
+        # is not the only thing standing between the fleet and that outage.  It
+        # is here because the mode arrives from outside this process and a box
+        # must not be removable from the fleet by a permission bit it is
+        # entitled to set.
+        directory.chmod(0o700)
+        info = directory.lstat()
+        if info.st_mode & 0o077:
+            # The chmod did not take.  Now there is nothing left to try.
+            raise RuntimeError('unsafe PrismaBuild admission lock directory')
     identity = f'{Path(base).resolve()}:{socket.gethostname()}'
     return directory, hashlib.sha256(identity.encode()).hexdigest()
 
