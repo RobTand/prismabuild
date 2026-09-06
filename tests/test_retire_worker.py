@@ -198,6 +198,34 @@ def test_a_retirement_is_reversible(tmp_path):
     assert not _retired(queue).exists()
 
 
+def test_a_name_retired_twice_files_the_older_tombstone_rather_than_refusing(
+    tmp_path,
+):
+    """The second retirement is the one the hand-move was needed for.
+
+    A box comes back under a name that was retired, announces, is renamed
+    again and goes quiet again.  If the tombstone already in the way made the
+    second retirement refuse, the operator is back to moving a file by hand --
+    and ``--restore`` is no exit either, since it refuses while a record is in
+    ``workers/``, which in that scenario there is.  So the older tombstone is
+    filed under the moment it last announced, and both remain readable.
+    """
+
+    queue = _queue(tmp_path)
+    first = _announce(queue, age_s=pool.LEASE_TIMEOUT_S * 8)
+    first_stamp = int(json.loads(first.read_text())["announced_unix"])
+    tool = _tool()
+    assert tool.main([HOST, "--root", str(queue.root), "--apply"]) == 0
+
+    _announce(queue, age_s=pool.LEASE_TIMEOUT_S * 4)
+    assert tool.main([HOST, "--root", str(queue.root), "--apply"]) == 0
+
+    assert _retired(queue).exists()
+    archived = _retired(queue).with_name(f"{HOST}.{first_stamp}.json")
+    assert archived.exists()
+    assert int(json.loads(archived.read_text())["announced_unix"]) == first_stamp
+
+
 def test_restoring_a_name_that_came_back_on_its_own_is_refused(tmp_path):
     """A live announce is the current truth; the archive must not overwrite it."""
 

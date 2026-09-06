@@ -140,6 +140,32 @@ def refusals(queue, host: str, record: dict, *, now: float) -> list[str]:
     return reasons
 
 
+def _archive_existing(destination: Path) -> Path | None:
+    """Move an older tombstone out of the way, keyed by its own timestamp.
+
+    A name can be retired more than once: the box comes back, announces, is
+    renamed again, and goes quiet again.  Refusing the second retirement
+    because the first tombstone is in the way sends the operator back to the
+    hand-move this tool exists to replace, and ``--restore`` cannot get them
+    out either -- it refuses while the live record is there, which in that
+    scenario it is.  So the older tombstone is filed under the moment it last
+    announced, which is the only thing that distinguishes it from the newer
+    one.  Still a rename: nothing is deleted, and the history reads in order.
+    """
+
+    if not destination.exists():
+        return None
+    stamp = _announced(_read(destination))
+    label = f"{int(stamp)}" if stamp is not None else "unknown"
+    archived = destination.with_name(f"{destination.stem}.{label}.json")
+    suffix = 1
+    while archived.exists():
+        archived = destination.with_name(f"{destination.stem}.{label}.{suffix}.json")
+        suffix += 1
+    os.rename(destination, archived)
+    return archived
+
+
 def retire(queue, host: str, *, now: float) -> tuple[int, str]:
     """Move the record aside, and put it back if the checks went stale."""
 
@@ -153,9 +179,7 @@ def retire(queue, host: str, *, now: float) -> tuple[int, str]:
     checked = _announced(record)
     destination = queue.root / RETIRED / f"{host}.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        return 1, (f"{destination} already exists; --restore it or move it "
-                   "aside before retiring this name again")
+    archived = _archive_existing(destination)
     os.rename(source, destination)
     # The moved file is the copy a refresh cannot have reached.  If its
     # timestamp is not the one the checks were made against, the refresh
@@ -166,12 +190,13 @@ def retire(queue, host: str, *, now: float) -> tuple[int, str]:
         return 1, (f"refused to retire {host}: the record changed between the "
                    "check and the move, so a loop is announcing under this "
                    "name; put back unchanged")
+    note = f" (the previous tombstone is now {archived.name})" if archived else ""
     if source.exists():
-        return 1, (f"retired {host} to {destination}, and the name was "
+        return 1, (f"retired {host} to {destination}{note}, and the name was "
                    "announced again immediately: a loop is live on this box. "
                    "The record is back in workers/ and the retirement did "
                    "nothing durable.")
-    return 0, f"retired {host} to {destination}"
+    return 0, f"retired {host} to {destination}{note}"
 
 
 def restore(queue, host: str) -> tuple[int, str]:
