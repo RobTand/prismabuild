@@ -11,26 +11,34 @@ Use the published runtime at `/mnt/shared/prismabuild-fleet/repo/tools`:
 
 ```bash
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
-  --tag x86 --cpus 8 --demand mem_gb=8 -- \
+  --tag x86 --cpus 4 --demand mem_gb=8 -- \
   env PYTHONPATH=src OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  /home/rob/venvs/pb-cpu/bin/python -m pytest -n 8 tests
+  /home/rob/venvs/pb-cpu/bin/python -m pytest -n 4 tests
 
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
   --gpu --tag gb10 --cpus 4 --demand mem_gb=32 -- ./gpu-validation.sh
 ```
 
 Use `pbtest.py` to split suites into independent file shards and
-`pbcampaign.py` for explicit action manifests. Declare aggregate CPU and memory
-use, bound native threads per subprocess, and specify GPU demand. Use tags for
-actual dependencies and architecture, allowing any eligible worker to claim
-portable work. Reserve the CPU count the workload actually uses; do not inflate
-reservations to force access to additional cores. Physical performance cores are
-the preferred tier; SMT siblings and efficiency cores are overflow capacity.
-The pool selects CPUs, and agents must preserve its assigned affinity, including
-inside containers. A pool measurement implicitly retains the submitting host
-and its platform/toolchain identity; `--anywhere` is invalid for it. A SLURM
-measurement must retain its explicit host-class identity. Reserve exclusive GPU
-capacity when competing work would invalidate either kind of measurement.
+`pbcampaign.py` for explicit action manifests. Cap pytest fanout at `-n 4` with
+one native thread per worker (`OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`,
+`OPENBLAS_NUM_THREADS=1`) and one reserved CPU per worker. That cap is the
+fleet's operating limit while several agents submit concurrently, not a property
+of the tool: a wider fanout multiplies small-file traffic against the shared
+`/mnt/shared` mount, and RobTand/prismabuild#217 records the contention that
+follows. Raise it only against a measurement showing the mount has room.
+
+Declare aggregate CPU and memory use, bound native threads per subprocess, and
+specify GPU demand. Use tags for actual dependencies and architecture, allowing
+any eligible worker to claim portable work. Reserve the CPU count the workload
+actually uses; do not inflate reservations to force access to additional cores.
+Physical performance cores are the preferred tier; SMT siblings and efficiency
+cores are overflow capacity. The pool selects CPUs, and agents must preserve its
+assigned affinity, including inside containers. A pool measurement implicitly
+retains the submitting host and its platform/toolchain identity; `--anywhere` is
+invalid for it. A SLURM measurement must retain its explicit host-class
+identity. Reserve exclusive GPU capacity when competing work would invalidate
+either kind of measurement.
 
 CPU admission is adaptive, so a declared CPU count remains the action's honest
 peak demand rather than a promise that every reserved core will stay busy. The
@@ -73,6 +81,39 @@ containers, inline Python or another agent to evade admission. If PrismaBuild
 cannot admit work, diagnose and repair its availability; do not silently fall
 back to untracked local execution. A bootstrap exception requires an explicit
 user instruction and its scope and evidence must be recorded.
+
+## Measure wall time
+
+Submit every wall-time measurement with `--measurement`. Do not assemble a quiet
+window by hand, and do not reach for `--exclusive` instead: `--exclusive` asks
+for one box's whole GPU capacity, so it derives GPU demand and refuses when no
+tagged worker announces a GPU. It says nothing about CPU isolation.
+
+`--measurement` is the isolation mechanism, and `adaptive_cpu.Controller.decision`
+enforces it. A measurement is admitted only against a fresh host sample showing
+at most 5% of the box's cores busy. It refuses to start while any other
+reservation is held on the host, and blocks other admissions while it holds one.
+It never borrows CPU capacity, and its own reservation is never lent out. Action
+validation in `core` refuses a measurement whose execution scope is portable, so
+the result carries the platform or host class that produced it.
+
+Interleave the arms: before, after, before, after, rather than every repeat of
+one arm followed by every repeat of the other. Interleaving cancels background
+drift instead of accumulating it into whichever arm ran later.
+
+Record the observed load at the start and end of every arm, and report it beside
+the timings. If the spread between repeats of the same arm is comparable to the
+gap between the arms, the comparison is inconclusive. Report it as inconclusive
+rather than reporting a mean.
+
+Expect a `--measurement` action to wait. Its near-idle precondition is
+unsatisfiable while the fleet is busy, which is when you most want to measure, so
+the action can sit `READY` for a long time. The precondition also has a
+freshness half: a host sample older than a few seconds fails it as surely as a
+busy box, so stale worker telemetry holds a measurement back on an idle fleet.
+RobTand/prismabuild#205 tracks that staleness. Wait for the action, or measure
+when the fleet is quiet. Dropping `--measurement` to get admitted yields a number
+that describes the fleet rather than the change.
 
 ## Persistent instructions and command guard
 
