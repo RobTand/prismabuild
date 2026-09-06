@@ -758,26 +758,50 @@ def _expansions_in(text: str) -> list[str]:
 
 
 def _find_heredoc(text: str) -> tuple[int, int, str, bool] | None:
-    """The first here-document opener the shell would act on.
+    """The first here-document opener the shell would act on AT THIS LEVEL.
 
     Quote-aware, so a ``<<EOF`` inside a quoted argument is text rather than
     an opener.
+
+    Substitution-aware too, and for the same reason one level down: a ``$( ...
+    )`` or backquoted span is a shell context of its own, so an opener inside
+    it belongs to a command inside it.  Claiming it from out here got its
+    owner wrong every time (issue #239).  ``_heredocs`` asks who owns an
+    opener with ``_commands_in(rest[:opens_at])``, and on ``echo $(bash `` that
+    prefix ends in the substitution's own segment rather than the enclosing
+    command's, so the owner came back ``echo``: a body a shell really runs was
+    read as data and never scanned.  Skipping the span here leaves the opener
+    to the ``_scan`` pass ``_commands_in`` already makes over the
+    substitution's body, where the owner is computed from text that has no
+    substitution in front of it, and both halves of that bug are out of reach.
+
+    The ordering matches ``_commands_in``: a substitution is recognized inside
+    a double-quoted string, because the shell expands it there, and not inside
+    a single-quoted one, because it does not.
     """
 
     quote = ""
     index = 0
     while index < len(text):
         char = text[index]
-        if quote:
-            if char == "\\" and quote == '"' and index + 1 < len(text):
-                index += 2
-                continue
-            if char == quote:
+        if quote == "'":
+            if char == "'":
                 quote = ""
             index += 1
             continue
         if char == "\\" and index + 1 < len(text):
             index += 2
+            continue
+        if text.startswith("$(", index):
+            _, index = _substitution(text, index)
+            continue
+        if char == "`":
+            _, index = _backquoted(text, index)
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = ""
+            index += 1
             continue
         if char in "'\"":
             quote = char
@@ -827,6 +851,16 @@ def _heredocs(command: str) -> tuple[str, list[str]]:
     in the segments where the enclosing script's commands are judged, and
     ``bash <<'SH'`` wrapping ``python3 - <<'PY'`` cannot hide work in the
     inner body.
+
+    An opener inside a ``$( ... )`` or a backquoted span is not this pass's
+    to claim.  That span is a shell context of its own, and the opener belongs
+    to a command inside it; ``_find_heredoc`` skips over it, and the ``_scan``
+    that ``_commands_in`` already makes over the substitution's body finds it
+    there, where the owner is read from text with no substitution in front of
+    it.  Claiming it out here asked ``_commands_in(rest[:opens_at])`` a
+    question whose answer ended in the substitution's own segment, so ``echo
+    $(bash <<'SH'`` came back owned by ``echo`` and a body a shell really runs
+    was read as data (issue #239).
 
     Only the opener TOKENS leave the command line, not the rest of the line
     they sit on.  Dropping everything from the opener to the newline is the
