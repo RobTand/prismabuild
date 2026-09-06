@@ -27,8 +27,10 @@ portable work. Reserve the CPU count the workload actually uses; do not inflate
 reservations to force access to additional cores. Physical performance cores are
 the preferred tier; SMT siblings and efficiency cores are overflow capacity.
 The pool selects CPUs, and agents must preserve its assigned affinity, including
-inside containers. A measurement must retain its host-class identity and reserve
-exclusive GPU capacity when competing work would invalidate the measurement.
+inside containers. A pool measurement implicitly retains the submitting host
+and its platform/toolchain identity; `--anywhere` is invalid for it. A SLURM
+measurement must retain its explicit host-class identity. Reserve exclusive GPU
+capacity when competing work would invalidate either kind of measurement.
 
 CPU admission is adaptive, so a declared CPU count remains the action's honest
 peak demand rather than a promise that every reserved core will stay busy. The

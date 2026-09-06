@@ -33,8 +33,8 @@ which is Rob's. `fleet/slurm/install.sh`, `verify.sh`,
 `cutover.sh` and `rollback.sh` are the operator's four steps, in that order.
 `tools/fleet/pbcampaign.py` fans a manifest out over the lane and
 `pbwait.py` waits for the keys, whichever transport filed their endings;
-`pbrun --measurement --host-class` seals a class-keyed action the worker
-attests through the controller. `src/prismabuild/slurm.py` is the earlier durable-state SLURM
+`pbrun --transport slurm --measurement --host-class` seals a class-keyed action
+the worker attests through the controller. `src/prismabuild/slurm.py` is the earlier durable-state SLURM
 adapter, superseded by the lane and retained until the decision record's
 Phase 3. `tools/prismabuild_worker.py` is the direct batch-script entry point.
 `docs/operating_prismabuild.md` is the usage guide for operators and agents.
@@ -170,9 +170,11 @@ matters). Rules:
 - **Generation vs measurement tasks**: ordinary generation (encodes,
   permutation/gauge searches — discrete outputs re-scored later) may exclude
   host from the key → any box's result is valid ("surrogates generate, real KL
-  selects" applied to hardware). Measurement (KL, PPL, probe)
-  INCLUDES host-class + toolchain — numerics don't transfer across
-  architectures; gold path pinned to `gb10`. Codebook generation is also
+  selects" applied to hardware). Measurement (KL, PPL, probe) includes verified
+  platform and toolchain identity because numerics do not transfer across
+  architectures. The pool seals a `platform_keyed` action and an implicit
+  submitting-host placement pin. SLURM seals an explicit `host_class_keyed`
+  action; the gold path remains pinned to `gb10`. Codebook generation is also
   nonportable because D29 records cross-architecture row-scale byte drift.
 - **Artifact family is explicit** — action schema
   `prismaquant.prismabuild.action.v2` requires the closed
@@ -217,6 +219,12 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   single visible NVIDIA compute capability, when present (for example,
   `linux-aarch64-sm121`). Heterogeneous visible capabilities are ambiguous and
   refuse.
+- A pool `pbrun --measurement` derives that platform key and its executable/ABI
+  toolchain from the submitter's live evidence, seals both, and implicitly adds
+  the submitter's hostname to effective placement. The claiming worker derives
+  its own evidence and must match. `--anywhere` is refused because it contradicts
+  that host pin; `--host-class` remains unavailable on the pool because no SLURM
+  controller attests it.
 - `worker_id` is the live hostname locally or SLURM's node name inside an
   allocation. Inside an allocation the job id is derived from the `job_<id>`
   cgroup the kernel placed the process in; `SLURM_JOB_ID`, `SLURMD_NODENAME`
@@ -238,7 +246,8 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   `evidence.slurm.controller`, optional in the persisted shape so earlier
   receipts keep validating, and a receipt re-derives the class from that
   record alone.
-- `pbrun --measurement --host-class CLASS` seals such an action: the class
+- `pbrun --transport slurm --measurement --host-class CLASS` seals such an
+  action: the class
   joins the effective placement, so the SLURM lane sends `--constraint=CLASS`
   and the action key moves with it. The submission binds the submitting
   box's argv[0] and ABI facts, as every nonportable action must, so it has to
@@ -669,7 +678,9 @@ entries can be audited by recompute-and-compare.
 Honest caveats: stochastic tasks (probe backward is recorded
 non-bit-reproducible) get run-once/first-result-wins — their entry is the
 *canonical* result, pinned but not re-derivable; and a cached measurement is
-valid only under its host-class key (a gb10 KL never answers an x86 query).
+valid only under its exact nonportable scope. A pool measurement retains its
+platform, toolchain and host placement; a SLURM measurement retains its host
+class (a gb10 KL never answers an x86 query).
 
 ### Durable SLURM submission, polling, and cancellation (superseded, never live-validated)
 
@@ -1091,8 +1102,10 @@ Each host's immutable `reservations/<host>/cpu-map.json` maps CPU token ordinals
 to preferred CPU IDs followed by fallback IDs. Admission acquires those ordered
 tokens, and the canonical worker launches through `taskset` with exactly its
 held CPU set. The launcher checks the reservation, CPU count and inherited
-mask before execution. Concurrent reservations therefore select disjoint CPU
-IDs; children inherit the assigned affinity. The action's Docker shim carries
+mask before execution. Physical-token baseline reservations therefore select
+disjoint CPU IDs. The adaptive lending contract below may deliberately share
+an attributed, lightly used CPU; unknown or busy reservations remain disjoint.
+Children inherit the assigned affinity. The action's Docker shim carries
 that kernel mask into local `run`/`create` containers with `--cpuset-cpus`,
 intersects an explicit requested mask, and refuses an empty intersection.
 It resolves and pins the selected Unix daemon endpoint; remote or unresolved
@@ -1142,8 +1155,10 @@ next borrower.
 Memory and GPU resources always retain ordinary all-or-nothing token admission;
 CPU telemetry cannot discount either. Measurements require a fresh nearly idle
 host, never lend or borrow CPU IDs, and do not overlap another held CPU action.
-Measurement placement, host-class identity and any required exclusive GPU
-reservation remain separate contracts. In particular, GB10 GPU utilization
+Measurement placement and identity remain transport-specific: the pool uses an
+implicit submitting-host pin with platform/toolchain identity, while SLURM uses
+an explicit host class. Any required exclusive GPU reservation remains a
+separate contract. In particular, GB10 GPU utilization
 percentage is not accepted as saturation evidence; device power, CPU activity,
 residency and useful work per unit time are the relevant host view.
 

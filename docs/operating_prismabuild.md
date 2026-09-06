@@ -431,16 +431,20 @@ number, `cwd` and `host_class` are strings, and every switch field is `true` or
 "no"` sealed the opposite of what it said. Each refusal names the row index,
 the field, and the value.
 
-Three rows are refused at load as well, each for the reason `pbrun` gives at
+These rows are refused at load as well, each for the reason `pbrun` gives at
 submit:
 
-*   `measurement` without `host_class`. A measurement's numerics do not
-    transfer across architectures, so its result is keyed on the class that
-    produced it.
+*   `measurement` without `host_class` under `--transport slurm`. A SLURM
+    measurement is keyed on the scheduler-attested class that produced it.
+    Under `--transport pool`, omitting `host_class` is the supported form: the
+    submitter's platform/toolchain is sealed and its hostname is added to
+    placement implicitly.
+*   `measurement` with `anywhere` under `--transport pool`. Pool measurements
+    run on the submitting host whose platform/toolchain is sealed, so portable
+    placement contradicts their execution scope.
 *   `host_class` under `--transport pool`. The class is attested through the
     SLURM controller, so a pull-queue worker refuses the action at preflight.
-    This is the one refusal that depends on the campaign's transport rather
-    than on the row.
+    This refusal depends on the campaign's transport rather than on the row.
 *   `max_attempts` greater than 1. A campaign submits every row detached,
     which is what lets one command hold N actions open, and a retry needs
     somebody alive to see the attempt fail.
@@ -463,6 +467,20 @@ cache hit on the second run:
     ]
 
 Run it with `--transport slurm`, from a box of that class.
+
+For the pool, omit `host_class`; every row is implicitly pinned to the host
+running `pbcampaign`, and its platform/toolchain becomes part of the action:
+
+    [
+      {
+        "argv": ["./probe.sh", "--shard", "0"],
+        "cwd": "/home/rob/mypkg",
+        "measurement": true,
+        "retry_safe": true
+      }
+    ]
+
+Run that form with `--transport pool`. Do not set `anywhere` on those rows.
 
 `--transport` is a flag on the campaign, not a row field, because which
 dispatcher carries the work is a fact about the fleet. One caveat travels with
@@ -542,8 +560,24 @@ different width is a different action rather than a cache hit of the last run.
 
 ## Submit a measurement
 
-A measurement's numerics do not transfer across architectures, so a measurement
-is keyed on the host class that produced it:
+A measurement's numerics do not transfer across architectures, so every
+measurement has a nonportable execution scope. The two transports establish it
+differently.
+
+For the live pull queue, submit from the box whose platform should produce the
+result:
+
+    tools/fleet/pbrun.py --transport pool --measurement -- ./probe.sh
+
+This seals `execution_scope.portability=platform_keyed`, with the platform key,
+executable digest, ABI and accelerator facts derived from the submitting box's
+live evidence. `pbrun` also adds that box's hostname to effective placement
+without requiring `--here`. The worker re-derives and verifies the platform and
+toolchain before execution. `--anywhere` is refused because it contradicts the
+implicit host pin, and `--host-class` is refused because the pool has no SLURM
+controller evidence with which to attest a class.
+
+For SLURM, retain the explicit host-class form:
 
     tools/fleet/pbrun.py --transport slurm --measurement --host-class gb10 -- ./probe.sh
 
@@ -551,10 +585,10 @@ is keyed on the host class that produced it:
 host_class_keyed`, joins the effective placement so the action key moves with
 it, and the SLURM lane sends it as `--constraint=CLASS`.
 
-Three constraints follow, and each is enforced rather than advised:
+The SLURM constraints are enforced rather than advised:
 
-*   **`--measurement` refuses without `--host-class`.** A portable measurement
-    would let any box's KL stand in for another's.
+*   **A SLURM `--measurement` refuses without `--host-class`.** Its class must
+    be present in the sealed scope and scheduler constraint.
 *   **`--host-class` refuses without `--transport slurm`.** The class is
     attested through the SLURM controller, so a pull-queue worker refuses the
     action at preflight.
@@ -1217,10 +1251,11 @@ telemetry cannot be read, but it receives no borrowing credit.
 
 Measurements are stricter. They require a fresh nearly idle CPU observation,
 do not share CPU reservations, and wait while another CPU action is held on the
-host. Continue to use `--measurement --host-class CLASS`, and use an exclusive
-GPU reservation whenever competing GPU work would invalidate the result. GB10
-GPU utilization percentage is not a saturation measure; performance evidence
-should include device power, CPU activity, residency and useful work over time.
+host. Use the pool's implicit platform-keyed submitting-host form or SLURM's
+explicit `--host-class CLASS` form described above. Use an exclusive GPU
+reservation whenever competing GPU work would invalidate the result. GB10 GPU
+utilization percentage is not a saturation measure; performance evidence should
+include device power, CPU activity, residency and useful work over time.
 
 Adaptive lending requires aggregate attempt telemetry for the complete execution
 scope: the direct payload, descendants and daemon-created Docker containers.
