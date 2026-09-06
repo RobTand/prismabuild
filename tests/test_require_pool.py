@@ -38,6 +38,7 @@ def _armed(tmp_path, monkeypatch):
 def _verdict(module, command):
     import io
     import contextlib
+import pytest
     stdin = io.StringIO(json.dumps({"tool_input": {"command": command}}))
     err = io.StringIO()
     old = sys.stdin
