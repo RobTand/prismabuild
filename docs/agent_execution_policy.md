@@ -27,8 +27,8 @@ fleet's operating limit while several agents submit concurrently, not a property
 of the tool: a wider fanout multiplies small-file traffic against the shared
 `/mnt/shared` mount, and RobTand/prismabuild#217 records the contention that
 follows. Raise it only against a measurement showing the mount has room.
-Declare aggregate CPU and memory
-use, bound native threads per subprocess, and specify GPU demand. Use tags for
+
+Declare aggregate CPU and memory use, bound native threads per subprocess, and specify GPU demand. Use tags for
 actual dependencies and architecture, allowing any eligible worker to claim
 portable work. Reserve the CPU count the workload actually uses; do not inflate
 reservations to force access to additional cores. Physical performance cores are
