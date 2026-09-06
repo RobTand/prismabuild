@@ -1288,7 +1288,7 @@ shrink and growth. `--loops` explicitly selects fixed mode, while `--once` tops
 up only to the configured floor.
 
 Every claim, offer, receipt and CAS read crosses one shared filesystem, and
-the fleet measures it per box. `tools/fleet/mount_latency.py` samples two
+the fleet measures it per box. `tools/fleet/mount_latency.py` samples three
 things that answer different questions: NFS per-operation queue time and
 round-trip time differenced from `/proc/self/mountstats`, which costs the mount
 no operation and therefore keeps reporting when the mount does not, and a
@@ -1299,9 +1299,21 @@ client in a state-recovery storm by two orders of magnitude rather than by a
 chosen margin. The syscall leg runs in a forked child abandoned at a deadline,
 because a hard mount blocks uninterruptibly and no signal reaches it, and at
 most one such child is ever outstanding: a wedged mount suppresses the next
-probe instead of accumulating one blocked process per scrape. Readings are a
+probe instead of accumulating one blocked process per scrape. The third
+reading is not about the mount: admission is gated by a local `flock` held
+across the whole of a claim, so a slow mount converts into a local queue and
+one process waiting on one remote peer starves every other loop on the box.
+`/proc/locks` is filtered to the admission lock files and split into holders and
+waiters, each with its state and `wchan`, and the hold age is accumulated across
+samples as a lower bound. The count of waiters not in a running or
+uninterruptible state is reported alongside `load1`, because a blocking `flock`
+sleeps interruptibly and load average counts neither: fifteen fully blocked
+processes moved `load1` from 0.24 to 0.30 on sparky, which is why a box with
+every loop starved reported load 1.13 and why no load-based check can see this.
+Readings are a
 per-box property and the three boxes are not symmetric, since the host that
-exports the filesystem reaches it as local storage and has no RPC statistics.
+exports the filesystem reaches it as local storage and has no RPC statistics;
+it is still measured for lock contention, being the host that stalled.
 Nothing in it decides anything; deprioritising admission on a box whose
 latency is out of line with the fleet needs the fleet-relative view the
 recorded series exists to provide, and is not built.

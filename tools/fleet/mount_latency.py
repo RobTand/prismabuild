@@ -124,6 +124,24 @@ _OP_FIELDS = ("ops", "trans", "timeouts", "bytes_sent", "bytes_recv",
 CLAIM_PATH_OPS = ("GETATTR", "LOOKUP", "ACCESS", "RENAME", "CREATE",
                   "REMOVE", "OPEN", "READ", "WRITE", "TEST_STATEID")
 
+#: PrismaBuild's admission gate is a local ``flock`` (``adaptive_cpu.py``
+#: ``locked()``), taken on a file in this box-private directory and held across
+#: the whole of ``pool.py`` ``_claim`` -- a ``ready/`` scan, a record rename, a
+#: lease write and the token renames, all of them on NFS.  That makes it the
+#: conversion point: a mount that is merely slow becomes a local queue, and one
+#: process waiting on a remote peer starves every other loop on the box.
+#:
+#: Found by globbing rather than by recomputing the identity hash, because the
+#: hash is the lock's business and duplicating it here would make this file
+#: wrong the day that changes.  Whatever admission locks exist on this box are
+#: what we measure.
+ADMISSION_LOCK_DIR = Path("/tmp") / f"prismabuild-admission-{os.getuid()}"
+
+#: Reading ``/proc/<pid>/wchan`` for an unbounded waiter list would make the
+#: cost of this leg a function of how bad the incident is.  Beyond this many we
+#: still report the exact count and stop attributing.
+MAX_ATTRIBUTED_WAITERS = 32
+
 
 @dataclass
 class _Mount:
@@ -404,6 +422,177 @@ def timed_probe(probe_dir: Path, repeats: int = PROBE_REPEATS,
     return result
 
 
+# --------------------------------------------------------------------------
+# The third leg: local lock contention.
+#
+# This one exists because the other two would have called a wedged box healthy.
+# On 2026-09-06 dl380g10 had 15 of 16 worker loops blocked on the admission
+# flock and one holder stuck in ``__break_lease`` waiting for a remote client
+# to return an NFS delegation.  Nothing served.  Its load average read 1.13.
+#
+# That is not bad luck.  A blocking ``flock`` sleeps *interruptibly*
+# (``locks_lock_inode_wait``), and load average counts only running and
+# uninterruptible tasks, so a total admission stall is invisible to load by
+# construction -- measured on sparky through PrismaBuild, action key
+# ``463aacd60ceb``: 15 processes fully blocked moved load1 from 0.24 to 0.30,
+# with zero waiters in D state.  Every load-based health check on this fleet is
+# blind to this failure, and a mount instrument that reported only RPC latency
+# would have been blind to it too: the mount was answering, one peer was not
+# returning a delegation, and the damage was entirely local and entirely in a
+# lock queue.
+# --------------------------------------------------------------------------
+
+
+def _load1() -> float | None:
+    """Recorded next to the lock counts so the blind spot is in the data.
+
+    Not a health signal.  It is here to be contradicted: a reading of "load
+    0.3, fifteen waiters" is the incident, and the pair says more than either
+    number does alone.
+    """
+
+    try:
+        return float(Path("/proc/loadavg").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def lock_key(path: Path) -> str | None:
+    """``/proc/locks`` spells a file as ``major:minor:inode``, major in hex."""
+
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return f"{os.major(info.st_dev):x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
+
+
+def read_proc_locks(keys: set[str], text: str | None = None) -> dict[str, dict]:
+    """Split holders from waiters for each key of interest.
+
+    A waiting record is marked by ``->`` after its id.  That single character
+    is the whole diagnosis: holders are working, waiters are starved, and a
+    lock with one holder and fifteen waiters is a stall no throughput number
+    will show you.
+    """
+
+    found: dict[str, dict[str, list[int]]] = {
+        key: {"holders": [], "waiters": []} for key in keys}
+    if text is None:
+        try:
+            text = Path("/proc/locks").read_text()
+        except OSError:
+            return found
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        waiting = fields[1] == "->"
+        rest = fields[2:] if waiting else fields[1:]
+        # kind, mandatory-ness, access, pid, maj:min:inode, start, end
+        if len(rest) < 5 or rest[4] not in found:
+            continue
+        try:
+            pid = int(rest[3])
+        except ValueError:
+            continue
+        found[rest[4]]["waiters" if waiting else "holders"].append(pid)
+    return found
+
+
+def process_status(pid: int) -> tuple[str, str]:
+    """``(state, wchan)`` for one pid, or ``("?", "?")`` if it has gone.
+
+    The state answers "would load average have seen this?" and the wchan
+    answers "waiting on what?".  Together they separate a holder stuck in the
+    kernel on NFS from a holder that is simply doing slow work, which is the
+    difference between blaming the mount and blaming the code holding the lock.
+    """
+
+    try:
+        stat_line = Path(f"/proc/{pid}/stat").read_text()
+        state = stat_line[stat_line.rindex(")") + 2]
+    except (OSError, ValueError, IndexError):
+        return "?", "?"
+    try:
+        wchan = Path(f"/proc/{pid}/wchan").read_text().strip() or "?"
+    except OSError:
+        wchan = "?"
+    return state, wchan
+
+
+def lock_contention(lock_dir: Path = ADMISSION_LOCK_DIR,
+                    locks_text: str | None = None,
+                    held_since: dict[str, float] | None = None,
+                    now: float | None = None) -> dict[str, object]:
+    """Who holds the admission gate, who is queued behind it, and for how long.
+
+    ``held_since`` is the caller's memory across samples, so the hold age is a
+    *lower* bound quantised by the sample interval: a hold that began and ended
+    between two samples is not seen at all.  That is honest and it is enough --
+    the incident this catches lasted hours, and a bound that says "at least
+    four minutes" already names a defect, since the gate is meant to be held
+    for the length of a few renames.
+    """
+
+    now = time.time() if now is None else now
+    held_since = {} if held_since is None else held_since
+    try:
+        paths = sorted(lock_dir.glob("*.lock"))
+    except OSError:
+        paths = []
+
+    keys = {}
+    for path in paths:
+        key = lock_key(path)
+        if key:
+            keys[key] = path.name
+    if not keys:
+        # No admission lock on this box is a fact, not a failure: a box that
+        # has never run a loop has no gate to contend for.
+        return {"present": False, "waiters": 0, "holders": 0}
+
+    locks = read_proc_locks(set(keys), text=locks_text)
+    holders, waiters = [], []
+    for key, entry in locks.items():
+        for pid in entry["holders"]:
+            state, wchan = process_status(pid)
+            token = f"{key}:{pid}"
+            since = held_since.setdefault(token, now)
+            holders.append({"pid": pid, "state": state, "wchan": wchan,
+                            "held_at_least_s": round(max(0.0, now - since), 3)})
+        for pid in entry["waiters"]:
+            waiters.append((key, pid))
+
+    live = {f"{key}:{pid}" for key, entry in locks.items()
+            for pid in entry["holders"]}
+    for token in [token for token in held_since if token not in live]:
+        del held_since[token]
+
+    states: dict[str, int] = {}
+    wchans: dict[str, int] = {}
+    for _key, pid in waiters[:MAX_ATTRIBUTED_WAITERS]:
+        state, wchan = process_status(pid)
+        states[state] = states.get(state, 0) + 1
+        wchans[wchan] = wchans.get(wchan, 0) + 1
+
+    return {
+        "present": True,
+        "files": len(keys),
+        "holders": len(holders),
+        "waiters": len(waiters),
+        "holder_detail": holders,
+        "waiter_states": states,
+        "waiter_wchans": wchans,
+        "attributed_waiters": min(len(waiters), MAX_ATTRIBUTED_WAITERS),
+        # The headline.  Waiters that load average cannot see, which on this
+        # fleet is nearly all of them, and the reason this leg exists.
+        "waiters_invisible_to_load": sum(
+            count for state, count in states.items() if state not in ("R", "D")),
+        "max_hold_s": max((h["held_at_least_s"] for h in holders), default=0.0),
+    }
+
+
 class MountSampler:
     """One box's view of one mount, sampled repeatedly.
 
@@ -419,7 +608,8 @@ class MountSampler:
                  host: str | None = None,
                  deadline_s: float = PROBE_DEADLINE_S,
                  repeats: int = PROBE_REPEATS,
-                 probe: object = None) -> None:
+                 probe: object = None,
+                 lock_dir: Path = ADMISSION_LOCK_DIR) -> None:
         self.mount = Path(mount)
         self.host = host or socket.gethostname()
         self.deadline_s = deadline_s
@@ -430,6 +620,8 @@ class MountSampler:
         self._previous_at: float | None = None
         self._outstanding_pid: int | None = None
         self._outstanding_since: float | None = None
+        self._lock_dir = Path(lock_dir)
+        self._held_since: dict[str, float] = {}
 
     @property
     def probe_dir(self) -> Path:
@@ -603,6 +795,9 @@ class MountSampler:
             "unix": round(now, 3),
             "mount_point": str(self.mount),
             "probe": probe,
+            "locks": lock_contention(self._lock_dir,
+                                     held_since=self._held_since, now=now),
+            "load1": _load1(),
         }
 
         if after is None or not after.is_nfs:
@@ -709,6 +904,19 @@ def one_line(record: dict[str, object]) -> str:
     if attribution:
         parts.append(f"cost<={attribution.get('probe_rpcs_upper_bound')}rpc "
                      f"cache={attribution.get('attribute_cache_hits', '?')}")
+    locks = record.get("locks") or {}
+    if locks.get("present"):
+        parts.append(f"gate={locks.get('holders')}held/"
+                     f"{locks.get('waiters')}wait")
+        if locks.get("max_hold_s"):
+            parts.append(f"held>={locks['max_hold_s']}s")
+        for holder in (locks.get("holder_detail") or [])[:1]:
+            parts.append(f"holder={holder['pid']}:{holder['state']}:"
+                         f"{holder['wchan']}")
+        # Printed together on purpose.  This pair is the whole finding.
+        if locks.get("waiters"):
+            parts.append(f"load1={record.get('load1')} "
+                         f"(invisible={locks.get('waiters_invisible_to_load')})")
     return " ".join(parts)
 
 
@@ -764,6 +972,14 @@ _CHARTS = (
     ("prismabuild.mount_probe_state", "Shared mount probe outcome",
      "state", "latency", "line", 90004,
      (("ok",), ("timed_out",), ("wedged",), ("error",))),
+    # The admission gate.  Separate family: this is a local lock, not the
+    # mount, and the entire point of measuring it is that it fails while the
+    # mount looks fine.
+    ("prismabuild.admission_gate", "PrismaBuild admission lock contention",
+     "processes", "gate", "line", 90005,
+     (("holders",), ("waiters",), ("invisible_to_load",))),
+    ("prismabuild.admission_hold", "PrismaBuild admission lock hold age",
+     "seconds", "gate", "line", 90006, (("max_hold",),)),
 )
 
 
@@ -799,6 +1015,18 @@ def _emit(record: dict[str, object], out) -> None:
         out.write(f"SET {name} = {1 if status == name else 0}\n")
     out.write("END\n")
 
+    locks = record.get("locks") or {}
+    if locks.get("present"):
+        out.write("BEGIN prismabuild.admission_gate\n")
+        out.write(f"SET holders = {int(locks.get('holders') or 0)}\n")
+        out.write(f"SET waiters = {int(locks.get('waiters') or 0)}\n")
+        out.write("SET invisible_to_load = "
+                  f"{int(locks.get('waiters_invisible_to_load') or 0)}\n")
+        out.write("END\n")
+        out.write("BEGIN prismabuild.admission_hold\n")
+        out.write(f"SET max_hold = {int(float(locks.get('max_hold_s') or 0))}\n")
+        out.write("END\n")
+
     if rpc:
         out.write("BEGIN prismabuild.mount_rpc\n")
         out.write(f"SET ops = {int(round(float(rpc['ops_per_s'])))}\n")
@@ -830,6 +1058,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--record-dir", type=Path, default=DEFAULT_RECORD_DIR,
                     help="box-local directory for the JSONL log; empty to "
                          "record nothing")
+    ap.add_argument("--lock-dir", type=Path, default=ADMISSION_LOCK_DIR,
+                    help="directory holding the admission lock files to watch")
     ap.add_argument("--deadline-s", type=float, default=PROBE_DEADLINE_S,
                     help="how long the syscall probe may take before it is "
                          "abandoned and recorded as timed out")
@@ -839,7 +1069,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     interval = args.update_every or args.interval_s
-    sampler = MountSampler(args.mount, deadline_s=args.deadline_s)
+    sampler = MountSampler(args.mount, deadline_s=args.deadline_s,
+                           lock_dir=args.lock_dir)
 
     if args.netdata:
         _declare_charts(max(1, int(interval)), sys.stdout)

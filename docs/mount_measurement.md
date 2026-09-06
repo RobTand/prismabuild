@@ -18,8 +18,9 @@ series existed to look up.
 
 ## What it measures
 
-Two instruments, because they answer different questions and only one of them
-survives a sick mount.
+Three instruments, because they answer different questions, only one of them
+survives a sick mount, and the third catches a failure the other two call
+healthy.
 
 **Where the time went** — `/proc/self/mountstats`, per mount and per NFS
 operation, differenced over a stated window. Each operation carries queue time
@@ -49,10 +50,37 @@ create/rename/unlink, timed against the mount in a box-private directory. The
 rename is there because `RENAME` is the claim path and a read-only probe would
 time everything except the operation the queue depends on.
 
-Read together they answer "was the mount the constraint?" from data: a slow
+**Who is queued behind the admission gate** — `/proc/locks`, filtered to the
+`flock` files under `/tmp/prismabuild-admission-<uid>/`, split into holders and
+waiters, with each process's state and `wchan`.
+
+This leg is not about the mount at all, and that is why it is here. PrismaBuild's
+admission gate is a *local* `flock` (`adaptive_cpu.py` `locked()`) held across
+the whole of `pool.py` `_claim` — the `ready/` scan, the record rename, the
+lease write, the token renames, every one of them on NFS. It is the conversion
+point. A mount that is merely slow becomes a local queue, and one process
+waiting on one remote peer starves every other loop on the box.
+
+That is what happened to dl380g10 on 2026-09-06: 15 of 16 worker loops in
+`locks_lock_inode_wait`, one holder in `__break_lease` waiting for a remote
+client to return an NFS delegation, nothing served at all. **Its load average
+read 1.13.**
+
+Not bad luck — structural. A blocking `flock` sleeps *interruptibly*, and load
+average counts only running and uninterruptible tasks, so a total admission
+stall moves load by approximately nothing. Measured on sparky through
+PrismaBuild, action key `463aacd60ceb`: 15 fully blocked processes took `load1`
+from 0.24 to 0.30, with **zero** waiters in D state. Every load-based health
+check on this fleet is blind to this failure by construction, which is why
+`waiters_invisible_to_load` is reported as a first-class number and why `load1`
+is recorded beside it — the pair is the finding, and either number alone is
+misleading.
+
+Read together the three answer "was the mount the constraint?" from data: a slow
 probe with fast RPCs locates the fault on this client, a slow probe with slow
-RPCs locates it at the server, and a fast probe says the box was busy rather
-than blocked, whatever its load average claimed.
+RPCs locates it at the server, a fast probe says the box was busy rather than
+blocked whatever its load average claimed — and a fast probe *with a queue at
+the gate* says the box was neither, it was starved, and the mount is innocent.
 
 ## Reading the output
 
@@ -68,7 +96,15 @@ client, so anything else touching the mount while the probe ran is counted in.
 The three boxes are not symmetric and must never be given one number.
 dl380g10 exports this filesystem and reaches it as local ZFS, so it has a
 probe reading and no RPC statistics at all; a zero there would read as a
-perfectly healthy network mount.
+perfectly healthy network mount. It still gets the gate reading, deliberately:
+it has no RPC leg and it is the box that actually stalled.
+
+`max_hold_s` is a **lower** bound. `/proc/locks` carries no timestamp, so the
+age is accumulated across samples and quantised by the interval; a hold that
+begins and ends between two samples is not seen. That is enough for the failure
+it is for — the gate is meant to be held for the length of a few renames, so
+any reading in seconds is already a defect, and the incident this catches
+lasted hours.
 
 ## Running it
 
@@ -106,9 +142,12 @@ one of them. That is the tool working correctly and the install being wrong,
 and it is exactly the failure this document exists to make legible.
 
 The plugin takes its interval as netdata's first positional argument and
-publishes five charts under the `prismabuild` family: metadata latency per
-operation, RPC rate, time per RPC split into queue and rtt, queue share, and
-the probe's own outcome. The last one matters — a wedged mount must appear in
+publishes seven charts: five in the `latency`/`rpc` families — metadata latency
+per operation, RPC rate, time per RPC split into queue and rtt, queue share, and
+the probe's own outcome — and two in a separate `gate` family for the admission
+lock's holders/waiters and hold age. The families are separate because the gate
+is not the mount, and the whole point is that one can be sick while the other is
+fine. The probe-outcome chart matters — a wedged mount must appear in
 the series as an incident, not as a gap where the incident was.
 
 A box-local JSONL copy is written alongside, capped at two generations of
@@ -127,6 +166,7 @@ intended scrape:
 | NFS RPCs | ≤ 31 median |
 | RPC time | ≤ 22 ms median |
 | files left on the mount | one `anchor`, reused |
+| gate leg | one `/proc/locks` read + ≤ 32 `wchan` reads, no mount I/O |
 
 At a 15 s scrape that is under 0.2% of one core and about 2 RPC/s, against a
 baseline of 20–300 RPC/s idle and 65,000 RPC/s under load. Cheap enough to
@@ -152,7 +192,11 @@ probe that wedges.
 
 ## What this does not do
 
-Both instruments are client-side, on the box being measured. They are
+It does not watch the gate on any box but this one, so "the fleet is starved"
+needs the recorded series from every box compared, which is the same missing
+piece as above.
+
+The mount instruments are client-side, on the box being measured. They are
 independent — `mountstats` and `/proc/net/rpc/nfs` are separate kernel
 counters, and cross-checking them is what validated the RPC rate to 0.3% — but
 they are two views from one end of the wire. Nothing here reads dl380g10's
