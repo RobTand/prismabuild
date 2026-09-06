@@ -1,9 +1,10 @@
 #!/usr/bin/python3
-"""Docker CLI shim that binds created containers to one pbrun action."""
+"""Docker CLI shim that binds containers to one action and its reserved CPUs."""
 
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 from pathlib import Path
 import re
@@ -200,6 +201,160 @@ def _has_reserved_label(argv: list[str]) -> bool:
     return False
 
 
+# Arity from Docker's run/create CLI contract. Unknown options fail closed
+# instead of guessing where IMAGE (and arbitrary container argv) begins.
+# https://docs.docker.com/reference/cli/docker/container/run/
+CONTAINER_VALUE_OPTIONS = frozenset("""
+--add-host --annotation -a --attach --blkio-weight --blkio-weight-device --cap-add
+--cap-drop --cgroup-parent --cgroupns --cidfile --cpu-count --cpu-percent --cpu-period
+--cpu-quota --cpu-rt-period --cpu-rt-runtime -c --cpu-shares --cpus --cpuset-cpus
+--cpuset-mems --detach-keys --device --device-cgroup-rule --device-read-bps
+--device-read-iops --device-write-bps --device-write-iops --dns --dns-option
+--dns-search --domainname --entrypoint -e --env --env-file --expose --gpus --group-add
+--health-cmd --health-interval --health-retries --health-start-interval
+--health-start-period --health-timeout -h --hostname --io-maxbandwidth --io-maxiops --ip
+--ip6 --ipc --isolation -l --label --label-file --link --link-local-ip --log-driver
+--log-opt --mac-address -m --memory --memory-reservation --memory-swap
+--memory-swappiness --mount --name --network --network-alias --oom-score-adj --pid
+--pids-limit --platform -p --publish --pull --restart --runtime --security-opt
+--shm-size --stop-signal --stop-timeout --storage-opt --sysctl --tmpfs --ulimit --umask
+-u --user --userns --uts -v --volume --volume-driver --volumes-from -w --workdir --net
+--net-alias --dns-opt
+""".split())
+CONTAINER_FLAGS = frozenset("""
+-d --detach --help --init -i --interactive --no-healthcheck --oom-kill-disable
+--privileged -P --publish-all -q --quiet --read-only --rm --sig-proxy -t --tty
+--use-api-socket
+""".split())
+
+
+def _container_options(argv: list[str]) -> tuple[list[str], list[str], str | None]:
+    """Retain argv verbatim except cpuset options before IMAGE.
+
+    Return retained argv, normalized label options for ownership checks, and the
+    last explicit cpuset (Docker scalar options use the last supplied value).
+    Values consumed by another option and tokens after IMAGE are opaque.
+    """
+    kept: list[str] = []
+    options: list[str] = []
+    cpuset = None
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--" or not token.startswith("-") or token == "-":
+            return [*kept, *argv[index:]], options, cpuset
+        end = index + 1
+        name, equals, value = token.partition("=")
+        if token.startswith("--"):
+            if name in CONTAINER_VALUE_OPTIONS:
+                if not equals:
+                    if end >= len(argv):
+                        raise Refused(f"container option {name} requires a value")
+                    value = argv[end]
+                    end += 1
+            elif name not in CONTAINER_FLAGS:
+                raise Refused(f"unknown container option {name}; cannot locate image safely")
+        else:
+            # Docker's short flags may be grouped (-it) and value options may
+            # be attached (-v/tmp:/tmp), including after booleans (-itw/tmp).
+            offset = 1
+            while offset < len(token):
+                short = "-" + token[offset]
+                offset += 1
+                if short in CONTAINER_VALUE_OPTIONS:
+                    name = short
+                    value = token[offset:]
+                    if offset == len(token):
+                        if end >= len(argv):
+                            raise Refused(f"container option {short} requires a value")
+                        value = argv[end]
+                        end += 1
+                    elif value.startswith("="):
+                        value = value[1:]
+                    break
+                if short not in CONTAINER_FLAGS:
+                    raise Refused(f"unknown container option {short}; cannot locate image safely")
+                if token[offset:offset + 1] == "=":
+                    break  # Explicit short boolean value, left for Docker to validate.
+        if name in {"--label", "-l"}:
+            options.extend(["--label", value])
+        if name == "--cpuset-cpus":
+            cpuset = value
+        else:
+            kept.extend(argv[index:end])
+        index = end
+    return kept, options, cpuset
+
+
+def _reserved_cpuset(requested: str | None) -> str:
+    """Intersect an optional Docker mask with kernel-inherited action CPUs."""
+    try:
+        allowed = set(os.sched_getaffinity(0))
+    except (AttributeError, OSError) as exc:
+        raise Refused(f"cannot read the action's CPU affinity: {exc}") from exc
+    if requested:
+        selected: set[int] = set()
+        for piece in requested.split(","):
+            match = re.fullmatch(r"([0-9]+)(?:-([0-9]+))?", piece)
+            if match is None:
+                raise Refused(f"invalid --cpuset-cpus mask: {requested!r}")
+            try:
+                first = int(match[1])
+                last = int(match[2]) if match[2] is not None else first
+            except ValueError as exc:
+                raise Refused("invalid --cpuset-cpus CPU number") from exc
+            if first > last:
+                raise Refused(f"invalid --cpuset-cpus range: {piece!r}")
+            # Bound work by the reserved set even for an enormous input range.
+            selected.update(cpu for cpu in allowed if first <= cpu <= last)
+        allowed = selected
+    if not allowed:
+        raise Refused("--cpuset-cpus has no reserved CPUs in the action's affinity")
+    return ",".join(str(cpu) for cpu in sorted(allowed))
+
+
+def _local_daemon(real: str, global_options: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Resolve Docker's own effective context, then pin its local endpoint.
+
+    CPU IDs are host-local. A remote context, DOCKER_HOST or SSH endpoint
+    cannot safely interpret the reservation. Docker resolves CLI/config/env
+    precedence; a second invocation pins that result so a concurrent context
+    change cannot redirect the container to another daemon.
+    """
+    try:
+        result = subprocess.run(
+            [real, *global_options, "context", "inspect", "--format",
+             "{{json .Endpoints.docker.Host}}"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refused(f"cannot resolve the Docker daemon endpoint: {exc}") from exc
+    try:
+        endpoint = json.loads(result.stdout) if result.returncode == 0 else None
+    except ValueError:
+        endpoint = None
+    if (not isinstance(endpoint, str) or not endpoint.startswith("unix:///")
+            or endpoint == "unix:///" or "\x00" in endpoint):
+        raise Refused("CPU affinity requires a local Unix Docker daemon endpoint; "
+                      "remote or unresolved contexts cannot use this host's CPU IDs")
+    retained: list[str] = []
+    index = 0
+    while index < len(global_options):
+        token = global_options[index]
+        name = token.split("=", 1)[0]
+        attached = not token.startswith("--") and token[:2] in GLOBAL_VALUE_OPTIONS
+        end = index + (2 if name in GLOBAL_VALUE_OPTIONS and "=" not in token else 1)
+        selector = name in {"--context", "-c", "--host", "-H"} or (
+            attached and token[:2] in {"-c", "-H"})
+        if not selector and token != "--":
+            retained.extend(global_options[index:end])
+        index = end
+    environment = dict(os.environ)
+    environment.pop("DOCKER_CONTEXT", None)
+    environment.pop("DOCKER_HOST", None)
+    return [*retained, "--host", endpoint], environment
+
+
 def main() -> int:
     argv = sys.argv[1:]
     owner = os.environ.get(OWNER_ENV, "")
@@ -231,10 +386,22 @@ def main() -> int:
     if relative is None:
         os.execv(real, [real, *argv])
     insertion = command + relative
-    if _has_reserved_label(argv[insertion:]):
+    try:
+        creation, options, requested = _container_options(argv[insertion:])
+        cpuset = _reserved_cpuset(requested)
+    except Refused as refusal:
+        sys.stderr.write(f"docker shim: {refusal}\n")
+        return 125
+    if _has_reserved_label(options):
         sys.stderr.write(
             f"docker shim: callers may not set the reserved {LABEL} or "
             f"{JOB_LABEL} label\n")
+        return 125
+
+    try:
+        global_options, environment = _local_daemon(real, argv[:command])
+    except Refused as refusal:
+        sys.stderr.write(f"docker shim: {refusal}\n")
         return 125
 
     marker = Path(marker_raw)
@@ -252,8 +419,10 @@ def main() -> int:
         job = _slurm_job_id()
         if job:
             labels += ["--label", f"{JOB_LABEL}={job}"]
-        labelled = [*argv[:insertion], *labels, *argv[insertion:]]
-        return subprocess.run([real, *labelled], check=False).returncode
+        labelled = [*global_options, *sub[:relative], *labels,
+                    "--cpuset-cpus", cpuset, *creation]
+        return subprocess.run([real, *labelled], env=environment,
+                              check=False).returncode
     finally:
         os.close(descriptor)
 

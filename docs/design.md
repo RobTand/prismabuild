@@ -47,6 +47,17 @@ execution plane until the cutover. The fleet has dispatched Tessera and
 PrismaQuant test, quantization, and measurement campaigns. Dagster and the
 proposed observability stack remain uninstalled.
 
+The pull queue admits the generation actually moved from `ready/`, including
+its placement and resource demand. A replacement whose admission requirements
+changed returns to `ready/` for a fresh decision. Requeued records use the item
+schema and retain attempt history, but discard claim ownership, reservation and
+cleanup stamps, and the sidecar aging count. Unparseable ready records are
+isolated under `withdrawn/superseded/` with their original bytes and a bounded
+diagnostic; healthy records continue through the queue. A quarantine restores
+a concurrently repaired record without replacing another submission and never
+overwrites an existing failed outcome. These contracts have local filesystem
+regression coverage; they are not a cross-host NFS qualification claim.
+
 Local task output is now crash-recoverable without accepting unowned bytes.
 Before argv, the worker publishes an immutable claim for the exact action,
 resolved checkout, working directory, and declared result. Under the same
@@ -70,6 +81,17 @@ roots naming one file share one lock. Workers whose declared outputs are
 distinct files may execute task argv concurrently and converge through
 ordinary CAS publication.
 
+## Sealed execution environment
+
+`pbrun` executes its wrapper with `bash --noprofile --norc -c`. Host login
+profiles cannot rewrite the sealed PATH or select a different executable.
+CUDA tooling outside the default PATH must be named explicitly or supplied
+with `--env PATH=...` and appropriate placement. Native OMP, MKL and OpenBLAS
+thread defaults equal the sealed CPU demand; explicit environment overrides
+remain caller-owned. Parallel test processes must reserve their combined CPU
+and memory demand. These defaults change new action identities; old immutable
+requests and receipts retain their original meaning.
+
 ## Problem
 
 Campaign work (screens, per-point KL fan-outs, per-tensor encodes, A/Bs)
@@ -90,7 +112,7 @@ partitions/reservations, or attested any machine through a SLURM allocation.
 | `gb10` | sparky, sparklina (GB10, 128 GB unified, sm_121) | live pull-queue workers for probes, validated KL, ship gates, and big renders; no SLURM reservation is installed |
 | `rocm-16g` | Rob's + son's 9800X3D/9070 XT desktops | 0.6B screen tier; brute-force search/encode (trellis Viterbi, permutation/gauge searches, CB training) |
 | `strix-32g` | son's AI Max laptop (32 GB unified, opportunistic) | 4B screen tier (the size 16 GB cards can't hold) |
-| `cpu-x86-large` | dl380g10 (80 cores, 300 GB, NFS server) | live pull-queue CPU worker and shared CAS/NFS host; page-cache, hashing, repacking, shard merges, references, bootstraps, and CPU encode work |
+| `cpu-x86-large` | dl380g10 (40 physical cores, 80 SMT threads, 300 GB, NFS server) | live pull-queue CPU worker and shared CAS/NFS host; page-cache, hashing, repacking, shard merges, references, bootstraps, and CPU encode work |
 | — | M5 Mac mini | below the value line; not a tier |
 
 The live data plane is `/mnt/shared` (NFS from dl380), including the deployed
@@ -253,7 +275,14 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   canonical computation is one core function shared by submitter and worker:
   `HEAD`, the tracked delta, and the content digest of every untracked regular
   file or the literal link text of every untracked symlink (including members
-  below a newly-added directory). Git's NUL-delimited, repository-root-relative
+  below a newly-added directory). The tracked delta uses `diff-index --binary`
+  with external diff and text conversion disabled, preserving default keys.
+  It reads the source index and object store through a temporary Git directory
+  with canonical configuration, excluding personal diff drivers, attributes,
+  and diff environment settings without modifying the source index. Personal global
+  excludes are disabled for both the untracked roster and special-inode screen;
+  repository `.gitignore` and `info/exclude` remain effective.
+  Git's NUL-delimited, repository-root-relative
   untracked roster owns pathname decoding, so quotes, backslashes, and newlines
   remain literal path bytes and a requested subdirectory cannot hide a
   repository sibling. Only basenames matching pbrun's exact generated
@@ -274,7 +303,12 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   Git checkouts are made immutable across the remaining interval by default:
   the submitter synthesizes a deterministic commit from the exact tracked
   and untracked working tree, including the closure stamp, parented on the
-  source's own `HEAD`, publishes its
+  source's own `HEAD`. The stamp is injected into the submitter's private Git
+  index directly from its UTF-8 payload; no stamp or temporary stamp pathname
+  is published into the source checkout. Its historical relative name, bytes,
+  and regular-file mode are retained, preserving closure and bundle identities
+  while concurrent submissions need no shared stamp lock or cleanup. Existing
+  source-side stamps from older versions are left untouched. The submitter publishes its
   bundle as a verified CAS input, and puts the commit rather than the
   submitter path in the queue. Those bundle bytes are a function of the sealed
   objects alone: the pack is written with every setting that influences it
@@ -287,7 +321,10 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   under the worker's local materialization root; it never changes completed
   task work into a retry. The worker preflight requires the private tree to be
   clean at the sealed commit, to carry the recorded parent, and to resolve
-  every recorded branch to its recorded id -- so `HEAD~1` and `BASE...HEAD`
+  every recorded branch to its recorded id. This snapshot proof applies to
+  every definition carrying `params.checkout_snapshot`, including Tessera
+  producers; only the closure-stamp proof is specific to `fleet/pbrun`.
+  Thus `HEAD~1` and `BASE...HEAD`
   are facts a diff-derived gate can rely on rather than a
   `fatal: ambiguous argument`. Absolute submitter-repository paths in argv or
   environment are refused because they would escape the snapshot. New
@@ -325,7 +362,35 @@ The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
 dependency-free `ingest-input` CLI. It takes a stable regular-file snapshot,
 derives the canonical SHA-256 and byte count, optionally checks both against
 caller-supplied expectations, publishes through a read-only first-writer-wins
-hard link, and fsyncs the blob shard. A winning publisher reopens the canonical
+hard link, and fsyncs the blob shard. Each ingest holds an exclusive filesystem
+lock on `.staging/ingest.<random>/.owner.lock` for its complete staging lifetime.
+The directory is initialized under a hidden name and renamed into that namespace
+only after locking. A death during initialization can leave a hidden directory
+with at most its empty marker; no payload is written before publication. Success
+and ordinary refusal remove it. Cleanup enumerates from a fresh directory
+file description anchored to the held inode, so prior directory stream offsets
+cannot hide its ownership marker. The unlinked marker is closed before removing
+the directory so NFS removes any temporary open-file placeholder first. A
+source rejected before file-copy ownership transfers likewise closes its staged
+payload descriptor before unlinking it.
+Process death leaves
+an attributable directory whose lock is released by the kernel. A reaper must
+acquire the owner lock before removal; local PID absence cannot establish that
+a writer on another host is dead.
+The `pb_gc` operator command also collects legacy root staging copies, claims,
+worker locks, and empty result staging namespaces. Applying any sweep requires
+an explicitly acknowledged maintenance window with every CAS producer paused
+on every host and candidate checkout roots verified absent on all hosts.
+Neither file age nor local process inspection proves remote abandonment.
+This is an operator prerequisite, not an automatically acquired fleet lock.
+Exclusive lock probes open existing markers read-write without modifying their
+bytes, because NFS requires a writable descriptor for its byte-range lock.
+When deleting a private ingest, GC closes the unlinked ownership marker before
+removing the directory so NFS can clear its temporary `.nfs*` name.
+GC retains records, unknown entries, occupied result namespaces, and private
+ingest directories whose owner lock cannot be acquired. Rechecks compare inode
+identity and removal traverses directory descriptors without following symlinks.
+A winning publisher reopens the canonical
 name and proves that it is the exact private, read-only staging inode whose
 bytes it just hashed and fsynced; it does not hash that same inode again. A
 loser never trusts the other writer's inode and hashes the canonical blob in
@@ -975,3 +1040,82 @@ keep streaming regardless.
    `rocm-16g`/`strix-32g`.
 3. Then: shard heavy stages; GLM/Qwen validation fan-outs as the first
    production campaign on the full stack.
+
+### Sealed execution budgets
+
+An explicit `pbrun --timeout-s` is sealed as `params.execution_timeout_s`, a
+positive finite number of seconds. Its value participates in the action key.
+The pool reads and validates this value from the CAS request, not the mutable
+queue record, and applies the shorter of it and the worker's timeout ceiling.
+Without the field, existing actions retain the worker ceiling. The pool starts
+its monotonic budget after checkout materialization and before launcher spawn;
+queue waiting does not consume it. Communication waits are capped by the
+remaining budget independently of lease-heartbeat cadence. Expiry uses the
+existing bounded process-group termination and timeout receipt path. SLURM
+continues enforcing the submitter budget through its scheduler time limit.
+
+## Fleet durability and terminal publication (2026-09-05)
+
+The two NFS client exports on dl380g10 now use `sync`, with ZFS
+`sync=standard`. This removes the known asynchronous-export acknowledgement
+exception; it is verified configuration, not a power-loss test or a hardware
+durability claim. The server's `/mnt/shared` is a persistent bind mount of
+`/storage_pool/shared`, ordered after ZFS mounting.
+
+SLURM summary writers serialize each key's generation comparison and atomic
+publication with a permanent POSIX lock file under `.summary-locks/`, plus
+in-process thread exclusion. Newer sibling terminal states also prevent an
+older ending from landing. POSIX lock exclusion was verified in both directions
+between sparky's NFSv4.2 mount (`local_lock=none`) and the server-local ZFS path.
+Do not unlink lock files while publishers can run. Mounts with local-only
+locking are not supported for this contract.
+
+`pbsweep --apply` reconciles unwatched SLURM endings. Keep campaign manifest
+re-run recovery: it also resubmits unfinished work and supports the pool,
+whereas a sweep only files an authoritative ending. Sweep before re-running a
+SLURM campaign to preserve its execution record. An unknown job without a CAS
+receipt remains unresolved; neither recovery path invents success.
+
+## Preferred and overflow CPU admission
+
+The fleet retains `--all-cores` so all usable CPU capacity remains available.
+Within each worker's inherited affinity, physical performance cores form the
+preferred tier. SMT siblings and efficiency cores form the lower tier and are
+allocated last. Kernel online state, sibling topology and ARM `cpu_capacity`
+determine the split; Intel hybrid `cpu_atom` PMU metadata identifies efficiency
+cores where available. Missing class metadata cannot prove a heterogeneous
+split and is treated as uniform capacity. No core numbering is hardcoded into
+the scheduler.
+
+Each host's immutable `reservations/<host>/cpu-map.json` maps CPU token ordinals
+to preferred CPU IDs followed by fallback IDs. Admission acquires those ordered
+tokens, and the canonical worker launches through `taskset` with exactly its
+held CPU set. The launcher checks the reservation, CPU count and inherited
+mask before execution. Concurrent reservations therefore select disjoint CPU
+IDs; children inherit the assigned affinity. The action's Docker shim carries
+that kernel mask into local `run`/`create` containers with `--cpuset-cpus`,
+intersects an explicit requested mask, and refuses an empty intersection.
+It resolves and pins the selected Unix daemon endpoint; remote or unresolved
+contexts refuse because CPU identities belong to the admitted host. Agents
+must retain this shim and must not widen their assigned affinity. These are
+cooperative execution controls, not hostile-process containment.
+Offers advertise `cpu_tiers`, and
+claims and endings retain `cpu_allocation`. Already-running overflow actions
+are not migrated when preferred cores become free; subsequent actions reuse
+the released preferred capacity.
+
+Before accepting a local allocation containing fallback CPUs, a worker gives
+another fresh compatible offer up to 20 seconds to claim the action if that
+host can fit the entire CPU, memory and GPU demand using free preferred CPU
+tokens. This is bounded advisory deferral over distributed observations, not
+an atomic global scheduling order. An incompatible host, an undersized host,
+or a stale offer does not strand host-specific or wide work. Local ordered
+allocation remains effective after the deferral expires.
+
+Initial activation requires drained legacy reservations. Changing an existing
+host's topology map requires draining reservations, stopping that host's worker
+loops and supervisor, and then removing only its `cpu-map.json` before restart;
+never reinterpret held tokens under a changed map. New hosts receive their own
+maps. Logical CPU counts are capacity units, not equal-throughput claims across
+cores or hosts. Performance measurements still require declared architecture,
+resource demand and isolation, with measured evidence for any speedup claim.

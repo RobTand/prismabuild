@@ -182,22 +182,9 @@ def unreadable_terminal(q, key: str):
     for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         path = q.item_path(state, key)
         try:
-            # By readdir, like ``pbrun.terminal_record``: a stat of a path that
-            # did not exist yet is negatively cached on NFS.
-            if path.name not in os.listdir(path.parent):
-                continue
-        except OSError:
-            continue
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except PermissionError:
-            return path, "permission denied"
-        except OSError as exc:
-            return path, str(exc.strerror or type(exc).__name__).lower()
-        except ValueError:
-            return path, "not valid JSON"
-        if not isinstance(record, dict):
-            return path, "not a JSON object"
+            pbrun.terminal_record(path, None, report_unreadable=True)
+        except pbrun.UnreadableTerminal as exc:
+            return exc.path, exc.reason
     return None
 
 
@@ -311,7 +298,33 @@ def wait_one(
         time.sleep(max(0.0, min(pbrun.POLL_S, deadline - time.monotonic())))
 
 
-def _look_once(
+def _look_once(q, key: str, *, cas, **kwargs):
+    """Convert filesystem faults into per-key rows without losing other waits."""
+
+    try:
+        return _look_once_checked(q, key, cas=cas, **kwargs)
+    except pbrun.UnreadableTerminal as exc:
+        found = outstanding(q, key, lane_root=kwargs.get("lane_root"))
+        return _row(
+            key, "unreadable", transport=found[0] if found else "-",
+            job=_job_id(found), note=str(exc))
+    except (OSError, slurm_lane.SlurmLaneError) as exc:
+        found = outstanding(q, key, lane_root=kwargs.get("lane_root"))
+        job_id = str(getattr(exc, "job_id", "") or _job_id(found))
+        action = recorded_action(cas, key)
+        if action is None:
+            # No sealed action means there is no receipt lookup to attempt.
+            note = f"{exc}; retry tools/fleet/pbwait.py {key[:12]}"
+            print(f"pbwait: {note}", file=sys.stderr)
+        else:
+            pbrun._lane_io_failure(
+                exc, key=key, action=action, cas=cas, tool="pbwait", job_id=job_id)
+        return _row(
+            key, "record_error", transport=found[0] if found else "-",
+            job=job_id, note=str(exc))
+
+
+def _look_once_checked(
     q,
     key: str,
     *,
@@ -374,17 +387,6 @@ def _look_once(
         # it, which is the property the CAS exists to give.
         return _row(key, "cache_hit", transport="cas", receipt_published=True)
 
-    broken = unreadable_terminal(q, key)
-    if broken is not None:
-        # An ending was filed and cannot be read. Waiting is what a caller does
-        # for an ending that has not arrived; this one has.
-        return _row(
-            key, "unreadable",
-            transport=found[0] if found is not None else "-",
-            job=_job_id(found),
-            note=f"{broken[1]}: {broken[0]}",
-        )
-
     if slurm_run:
         if action is None:
             return _row(
@@ -407,9 +409,24 @@ def _look_once(
         landed = pbrun.landed_outcome(q, key, wait_s=0.0, generation=generation)
         if landed is not None:
             return _from_record(q, *landed)
+        broken = unreadable_terminal(q, key)
+        if broken is not None:
+            return _row(key, "unreadable", transport="slurm",
+                        job=_job_id(found), note=f"{broken[1]}: {broken[0]}")
         return _row(key, "waiting", transport="slurm",
                     job=_job_id(found),
                     host=str(found[2].get("submitted_host") or "-"))
+
+    broken = unreadable_terminal(q, key)
+    if broken is not None:
+        # An ending was filed and cannot be read. Waiting is what a caller does
+        # for an ending that has not arrived; this one has.
+        return _row(
+            key, "unreadable",
+            transport=found[0] if found is not None else "-",
+            job=_job_id(found),
+            note=f"{broken[1]}: {broken[0]}",
+        )
 
     if found is None:
         # Nothing has been recorded under this key at all.  Say so by
@@ -421,7 +438,7 @@ def _look_once(
     # only watches, and it may watch out the whole deadline.
     landed = pbrun.landed_outcome(
         q, key, wait_s=max(0.0, deadline - time.monotonic()),
-        generation=generation,
+        generation=generation, report_unreadable=True,
     )
     if landed is None:
         return _row(key, "waiting", transport=found[0], job=_job_id(found))
@@ -523,6 +540,8 @@ def verdict(rows) -> int:
     now.
     """
 
+    if any(row["status"] == "record_error" for row in rows):
+        return pbrun.RECORD_WRITE_FAILED_EXIT
     if any(not row["succeeded"] and row["status"] != "waiting" for row in rows):
         return 1
     if any(row["status"] == "waiting" for row in rows):

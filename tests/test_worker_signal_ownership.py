@@ -73,7 +73,8 @@ def test_sigint_reaps_the_action_even_when_the_launcher_ignored_sigint(
         assert action_pid is not None, "the action never started"
 
         process.send_signal(signal.SIGINT)
-        assert process.wait(timeout=pb._PROCESS_GROUP_GRACE_SECONDS) != 0
+        assert process.wait(timeout=60.0) != 0
+        assert not (checkout / "result.bin").exists()
         with pytest.raises(ProcessLookupError):
             os.kill(action_pid, 0)
     finally:

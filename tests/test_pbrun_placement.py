@@ -612,7 +612,8 @@ def test_pbrun_identity_prunes_git_ignored_directories(
     real_scandir = os.scandir
 
     def observed_scandir(path):
-        visited.append(Path(path))
+        if not isinstance(path, int):
+            visited.append(Path(path))
         return real_scandir(path)
 
     monkeypatch.setattr(core_module.os, "scandir", observed_scandir)
@@ -684,7 +685,7 @@ def test_pbrun_identity_refuses_an_unreadable_untracked_file(
         pbrun._git_identity(checkout)
 
 
-@pytest.mark.parametrize("failed_git_verb", ["ls-files", "diff"])
+@pytest.mark.parametrize("failed_git_verb", ["ls-files", "diff-index"])
 def test_pbrun_identity_fails_closed_after_git_repository_detection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -951,9 +952,29 @@ def test_git_snapshot_allows_an_internal_relative_symlink(tmp_path: Path) -> Non
     )
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    pbrun.build_git_checkout_snapshot(
+    snapshot = pbrun.build_git_checkout_snapshot(
         checkout, stamp_name=stamp_name, cas=cas, max_bytes=16 * 1024 * 1024
     )
+
+    # "Allows" has to mean "seals", not "does not raise": a snapshot that
+    # dropped the link, or followed it into a copy, would also not raise.
+    materialized = tmp_path / "materialized-internal-link"
+    materialized.mkdir()
+    assert _git(materialized, "init", "-q").returncode == 0
+    assert _git(
+        materialized,
+        "fetch",
+        "-q",
+        str(cas.input_path(snapshot["input"])),
+        "refs/heads/prismabuild-snapshot",
+    ).returncode == 0
+    assert _git(
+        materialized, "checkout", "-q", "--detach", str(snapshot["commit"])
+    ).returncode == 0
+
+    assert (materialized / "data").is_symlink()
+    assert os.readlink(materialized / "data") == "assets"
+    assert (materialized / "data" / "payload.txt").read_text() == "sealed bytes\n"
 
 
 def test_git_snapshot_refuses_a_gitlink_whose_working_bytes_are_not_bundled(
@@ -1299,6 +1320,20 @@ def test_portable_subdirectory_allows_a_relative_repository_sibling_script(
         repository_root=checkout,
     )
 
+    # The control the acceptance needs.  Nothing else refuses a *relative*
+    # token, so a gate that resolved only absolute ones read exactly like this
+    # acceptance: measured, by skipping relative tokens and running the whole
+    # suite, which stayed green.
+    outside = tmp_path / "outside" / "helper.py"
+    outside.parent.mkdir()
+    outside.write_text("print('helper')\n")
+    with pytest.raises(SystemExit, match="outside the snapshotted repository"):
+        pbrun.require_checkout_owned_scripts(
+            ["python", "../../outside/helper.py"],
+            requested,
+            repository_root=checkout,
+        )
+
 
 def test_a_non_git_checkout_cannot_fall_back_to_mutable_execution(
     tmp_path, monkeypatch,
@@ -1347,6 +1382,8 @@ def test_a_script_inside_the_checkout_is_bound_by_its_identity(tmp_path) -> None
     helper = checkout / "run-campaign.sh"
     helper.write_text("#!/bin/sh\nexit 0\n")
 
+    # No assertion: acceptance is the absence of the refusal, and the gate is
+    # proved to look at this argv shape by the refusal test directly above.
     pbrun.require_checkout_owned_scripts([str(helper)], checkout)
 
 
@@ -1382,7 +1419,40 @@ def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
     assert "--gpu-capacity" in str(caught.value)
 
 
-def test_the_default_environment_bounds_the_thread_pools():
+def _submitted_environment(root: Path, *extra_argv: str) -> dict[str, str]:
+    """The environment a real submission carries, read off the sealed action.
+
+    Driven through ``main()`` against a private pool root, because the
+    environment the child gets is the one in the action body -- past the
+    ``--env`` loop, the GPU rule and the container variables that all edit the
+    dict after the defaults are written.
+    """
+
+    import socket
+    from unittest import mock
+
+    root.mkdir(parents=True, exist_ok=True)
+    work = _git_checkout(root)
+    queue = pool_module.PoolQueue(root / "pb-queue")
+    queue.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
+                   capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
+
+    with mock.patch.object(pbrun, "SH", root), \
+         mock.patch.object(pbrun, "POLL_S", 0.001), \
+         mock.patch.object(socket, "gethostname", return_value=HOST), \
+         mock.patch.object(sys, "argv",
+                           ["pbrun.py", "--cwd", str(work), "--here",
+                            "--wait-s", "0.01", *extra_argv,
+                            "--", "echo", "hi"]):
+        assert pbrun.main() == 75          # accepted; nothing here claims it
+
+    requests = sorted((root / "cas" / "requests").rglob("*.json"))
+    assert len(requests) == 1, requests
+    body = json.loads(requests[0].read_text(encoding="utf-8"))
+    return body["environment"]["variables"]
+
+
+def test_the_default_environment_bounds_the_thread_pools(tmp_path):
     """A fleet's parallelism is many actions, not one action per box.
 
     Torch, numpy and OpenBLAS each size their pool from the machine's core
@@ -1390,19 +1460,22 @@ def test_the_default_environment_bounds_the_thread_pools():
     multiplies.  dl380g10 ran a 24-worker pytest under 16 worker loops and
     reached a load average of **927** on 80 cores -- every process fighting
     for a scheduler slot it did not need.
-    """
-    import subprocess
-    import sys
 
-    out = subprocess.run(
-        [sys.executable, str(pbrun.__file__), "--help"],
-        capture_output=True, text=True, check=False)
-    assert out.returncode == 0
-    source = Path(pbrun.__file__).read_text()
+    Asserted on the submitted action rather than on pbrun's source: a default
+    that is overwritten further down ``main`` is still spelled in the dict
+    literal, and a source grep reads it as present.
+    """
+
+    variables = _submitted_environment(tmp_path / "defaults")
+
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
-        assert f'"{name}": "4"' in source, name
+        assert variables[name] == "1", name
+
     # And it must stay overridable: --env is applied after the defaults.
-    assert source.index('"OMP_NUM_THREADS"') < source.index("for entry in args.env")
+    overridden = _submitted_environment(
+        tmp_path / "override", "--env", "OMP_NUM_THREADS=16")
+    assert overridden["OMP_NUM_THREADS"] == "16"
+    assert overridden["MKL_NUM_THREADS"] == "1"
 
 
 def _fleet(tmp_path: Path):

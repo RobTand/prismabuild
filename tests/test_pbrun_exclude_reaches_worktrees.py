@@ -79,11 +79,26 @@ def test_it_writes_the_exclude_git_actually_reads(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     tree = tmp_path / "wt"
     _git(root, "worktree", "add", "-q", str(tree), "-b", "probe")
+    stamp = f"{pbrun.STAMP_PREFIX}{'a' * 16}.json"
+    (tree / stamp).write_text("{}\n")
 
-    assert pbrun.keep_droppings_out_of_git(tree) == root / ".git" / "info" / "exclude"
-
+    # The measurement itself, staged rather than reasoned about: the same
+    # pattern in the per-worktree exclude ignores nothing.  Asserting only
+    # that the fix stayed out of this file left the premise unread, and a Git
+    # that started reading it would make the choice of file arbitrary.
     per_worktree = root / ".git" / "worktrees" / "wt" / "info" / "exclude"
-    assert not per_worktree.exists() or pbrun.STAMP_PREFIX not in per_worktree.read_text()
+    per_worktree.parent.mkdir(parents=True, exist_ok=True)
+    # Use the exact stamp so an accidental append of the general pattern to
+    # this wrong file remains observable, even after staging the premise.
+    per_worktree.write_text(f"{stamp}\n")
+    assert not _ignored(tree, stamp)
+
+    written = pbrun.keep_droppings_out_of_git(tree)
+
+    assert written == root / ".git" / "info" / "exclude"
+    assert pbrun.STAMP_PREFIX in written.read_text()   # named, and written
+    assert _ignored(tree, stamp)                       # and read back by git
+    assert per_worktree.read_text() == f"{stamp}\n"
 
 
 def test_a_repository_root_still_works_and_is_not_written_twice(tmp_path: Path) -> None:

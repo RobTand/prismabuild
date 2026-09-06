@@ -103,8 +103,8 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     environment = {
         "PB_FAKE_DOCKER_STUBBORN": "1" if stubborn_docker else "0",
-        **os.environ,
-        "PATH": f"{node['bin']}{os.pathsep}{os.environ['PATH']}",
+        "PATH": f"{node['bin']}{os.pathsep}/usr/bin:/bin",
+        "LC_ALL": "C",
         "SLURM_JOB_ID": job_id,
         "PRISMABUILD_SLURM_JOB_STATE_ROOT": str(node["jobs"]),
         # The node's own bound on the `rm -rf`, which is the thing the state
@@ -313,6 +313,35 @@ def test_it_cleans_up_after_a_job_that_ended_normally(
     assert not state.exists()
 
 
+def _root_prologue() -> str:
+    """The Epilog's configuration before its first job operation.
+
+    A slice rather than the one line, because the value is what the shell
+    computes: an assignment split over a helper variable, or spelled with
+    ``${VAR}`` braces, is the same path and a different string.
+    """
+
+    source = EPILOG.read_text(encoding="utf-8")
+    return source[:source.index('job_id="${SLURM_JOB_ID:-}"')]
+
+
+def _root(name: str, environment: dict[str, str]) -> str:
+    """What the Epilog's own shell computes for one root, in one environment."""
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", f'{_root_prologue()}\nprintf "%s" "${name}"'],
+        capture_output=True, text=True, env=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def _without(*names: str) -> dict[str, str]:
+    """A node's environment with the overrides the tests set taken back out."""
+
+    return {key: value for key, value in os.environ.items() if key not in names}
+
+
 def test_the_epilog_and_the_lane_name_the_same_job_state_root() -> None:
     """The one thing the shell script and the Python launcher must agree on.
 
@@ -320,6 +349,11 @@ def test_the_epilog_and_the_lane_name_the_same_job_state_root() -> None:
     default are spelled once on each side.  If they ever drift, a killed job
     leaks its checkout and its containers and nothing says so; this is the only
     thing that would notice.
+
+    Evaluated rather than matched against the source line, because the two
+    sides have to agree on a path and not on a spelling: a correct reformat of
+    the assignment is not a drift, and a default rewritten below the line the
+    grep read is.
     """
 
     import sys
@@ -327,12 +361,12 @@ def test_the_epilog_and_the_lane_name_the_same_job_state_root() -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from prismabuild import slurm_lane  # noqa: PLC0415
 
-    text = EPILOG.read_text(encoding="utf-8")
-    expected = (
-        f'JOB_STATE_ROOT="${{{slurm_lane.JOB_STATE_ROOT_ENV}:'
-        f'-{slurm_lane.DEFAULT_JOB_STATE_ROOT}}}"'
-    )
-    assert expected in text
+    environment = _without(slurm_lane.JOB_STATE_ROOT_ENV)
+    assert _root("JOB_STATE_ROOT", environment) == \
+        slurm_lane.DEFAULT_JOB_STATE_ROOT
+
+    environment[slurm_lane.JOB_STATE_ROOT_ENV] = "/node/jobs"
+    assert _root("JOB_STATE_ROOT", environment) == "/node/jobs"
 
 
 def _marker(node: dict[str, Path], owner: str) -> Path:
@@ -627,6 +661,8 @@ def test_the_epilog_and_the_materializer_name_the_same_checkout_root() -> None:
     Epilog stops cleaning up -- every state file refused with a root mismatch
     -- or its bound stops describing where the trees actually are.  The Epilog
     cannot import ``materialize``, so this is what notices.
+
+    Evaluated, for the reason the job-state root above is.
     """
 
     import sys
@@ -634,12 +670,12 @@ def test_the_epilog_and_the_materializer_name_the_same_checkout_root() -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from prismabuild import materialize  # noqa: PLC0415
 
-    text = EPILOG.read_text(encoding="utf-8")
-    expected = (
-        f'CHECKOUT_ROOT="${{{materialize.LOCAL_CHECKOUT_ROOT_ENV}:'
-        f'-{materialize.DEFAULT_LOCAL_CHECKOUT_ROOT}}}"'
-    )
-    assert expected in text
+    environment = _without(materialize.LOCAL_CHECKOUT_ROOT_ENV)
+    assert _root("CHECKOUT_ROOT", environment) == \
+        materialize.DEFAULT_LOCAL_CHECKOUT_ROOT
+
+    environment[materialize.LOCAL_CHECKOUT_ROOT_ENV] = "/node/checkouts"
+    assert _root("CHECKOUT_ROOT", environment) == "/node/checkouts"
 
 
 def test_it_reports_the_state_files_owner_and_refuses_nothing_on_it(

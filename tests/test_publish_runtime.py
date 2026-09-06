@@ -6,7 +6,6 @@ import importlib.util
 from pathlib import Path
 import shutil
 import sys
-import threading
 from types import SimpleNamespace
 
 import pytest
@@ -83,54 +82,46 @@ def test_untracked_published_files_make_the_runtime_tree_dirty(monkeypatch) -> N
 def test_publish_never_exposes_a_mixed_generation(tmp_path, monkeypatch) -> None:
     commit = "a" * 40
     checkout = _checkout(tmp_path / "checkout", "new")
-    mirror = _checkout(tmp_path / "mirror", "old")
+    old = _checkout(tmp_path / "old-generation", "old")
+    mirror = tmp_path / "mirror"
+    mirror.symlink_to(old, target_is_directory=True)
     monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
     monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
-    monkeypatch.setattr(
-        publish_runtime.subprocess, "run", _fake_git_and_probe(commit)
-    )
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--migrate-directory"])
-
-    copied_core = threading.Event()
-    release_copy = threading.Event()
+    monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe(commit))
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
     real_copy = shutil.copy2
+    real_replace = publish_runtime.os.replace
+    copies = []
+    activations = []
 
-    def paused_copy(source, target, *args, **kwargs):
-        result = real_copy(source, target, *args, **kwargs)
-        if Path(target).name == "core.py" and not copied_core.is_set():
-            copied_core.set()
-            assert release_copy.wait(timeout=5)
-        return result
+    def pair(root):
+        return tuple((root / "src" / "prismabuild" / name).read_text()
+                     for name in ("core.py", "pool.py"))
 
-    monkeypatch.setattr(publish_runtime.shutil, "copy2", paused_copy)
-    outcome: list[int] = []
-    errors: list[BaseException] = []
+    def checked_copy(source, target, *args, **kwargs):
+        target = Path(target)
+        assert not target.is_relative_to(mirror)
+        assert not target.resolve().is_relative_to(old.resolve())
+        copies.append(target)
+        return real_copy(source, target, *args, **kwargs)
 
-    def publish() -> None:
-        try:
-            outcome.append(publish_runtime.main())
-        except BaseException as exc:  # make a publisher crash visible to the test
-            errors.append(exc)
+    def checked_replace(source, target, *args, **kwargs):
+        if Path(target) == mirror:
+            assert Path(source).is_symlink()
+            assert pair(mirror) == ("GENERATION = 'old'\n",) * 2
+            assert pair(Path(source)) == ("GENERATION = 'new'\n",) * 2
+            activations.append(Path(source))
+        return real_replace(source, target, *args, **kwargs)
 
-    thread = threading.Thread(target=publish)
-    thread.start()
-    assert copied_core.wait(timeout=5)
-    observed = (
-        (mirror / "src" / "prismabuild" / "core.py").read_text(),
-        (mirror / "src" / "prismabuild" / "pool.py").read_text(),
-    )
-    release_copy.set()
-    thread.join(timeout=5)
-
-    if errors:
-        raise errors[0]
-    assert outcome == [0]
-    assert observed in {
-        ("GENERATION = 'old'\n", "GENERATION = 'old'\n"),
-        ("GENERATION = 'new'\n", "GENERATION = 'new'\n"),
-    }
+    monkeypatch.setattr(publish_runtime.shutil, "copy2", checked_copy)
+    monkeypatch.setattr(publish_runtime.os, "replace", checked_replace)
+    assert publish_runtime.main() == 0
+    assert copies
+    assert len(activations) == 1
+    assert pair(mirror) == ("GENERATION = 'new'\n",) * 2
+    assert pair(old) == ("GENERATION = 'old'\n",) * 2
 
 
 def test_a_failure_after_sealing_still_removes_the_staging_tree(

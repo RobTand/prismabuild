@@ -49,15 +49,24 @@ key; a different admissible worker population does.
 
 ## Submit one command
 
+The wrapper runs without login profiles. Use an absolute executable or seal
+its required PATH with `--env PATH=...`; a worker's shell startup files are
+not dependencies. Native thread defaults match `--cpus` (or `cpu=` in
+`--demand`), and explicit `--env` overrides are preserved. Reserve the total
+cores and memory used by parallel child processes, including pytest workers.
+
 Submit a command with `pbrun`. Everything after `--` is the command.
 
     tools/fleet/pbrun.py --gpu --timeout-s 3600 -- ./stage.sh --shard 3
 
 `pbrun` waits for the action and exits with the result. `--cwd` selects the
 checkout to seal; it defaults to the current directory and must be inside a Git
-checkout on the box you submit from. The checkout must be writable: `pbrun`
-keeps its closure stamp there, and the action tees its output to a result file
-in the same tree.
+checkout on the box you submit from. `pbrun` injects its closure stamp into a
+private Git index while sealing the snapshot; it creates no stamp or scratch
+file in the submitting tree. The worker verifies that stamp and writes its
+result in the materialized checkout. A read-only source checkout works when
+its Git excludes are already configured; first-time exclude setup still needs
+write access to Git's common `info/exclude` file.
 
 The checkout has a size ceiling. `pbrun` refuses a working tree whose sealed
 paths exceed 512 MiB, before it hashes anything, and refuses the bundle at the
@@ -205,9 +214,18 @@ already finished, and exited 75.
 | 0 | The work is done. A `cache_hit` counts as done. |
 | 1 | The action failed. `pbrun` prints the worker's message and the log paths. `pbwait` also exits 1 when an ending was filed and cannot be read, and names the file: that is not 75, because waiting again only re-reads the same record. |
 | 2 | `pbrun --withdraw` matched no submission, matched more than one, or every `scancel` refused. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
-| 74 | SLURM took the action, but `pbrun` could not write the record of it. `sysexits.h` calls 74 `EX_IOERR`, and that is what happened: the job is real and the work may be finished, only the account of it failed. |
+| 74 | A filesystem or record-persistence error prevented `pbrun` or `pbwait` from completing the operation. The diagnostic distinguishes a known accepted job from an unverified submission, and says whether a withdrawal reached `scancel`. |
 | 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
+
+Those four codes are `pbrun`'s own, and a run never gets to speak them. A run
+whose recorded status is 2, 74, 75 or 143 is reported as 1, with its real
+number on a line of its own and under `detail.returncode` in the record. Every
+other status reaches the caller unchanged: a run that exits 7 exits 7. The case
+this exists for is 143. `core._sigterm_unwinds_this_process` raises
+`SystemExit(128 + signum)`, so any SIGTERM that is not a withdrawal leaves 143
+in the record, and a caller reading that was told an operator had made a
+decision that nothing on disk records.
 
 Exit 1 is the worker launcher's status, not the command's own exit code. A
 command that exits 7 makes the worker refuse to publish a receipt, and both
@@ -270,7 +288,7 @@ is real and the work may be finished.
 
     pbrun: slurm took this action, but pbrun could not write its record.
       slurm job: 1743
-      record:    /mnt/shared/prismabuild-fleet/pb-queue/done/<key>.json
+      record:    /mnt/shared/prismabuild-fleet/pb-queue/done/.<key>.json.<pid>.<uuid>.tmp
       reason:    Permission denied
     The receipt is in the CAS, so the work is done and re-running costs nothing.
     Clear what blocked the write, then run `tools/fleet/pbwait.py <key12>` to
@@ -285,6 +303,26 @@ A lane error raised after `sbatch` accepted the job reports the same way, with
 the same exit code. Only a refusal with no job behind it reports as a refusal,
 and only that one tells you to fix the `--tag`: a job the controller has
 already taken is not fixed by changing the submission.
+
+`pbwait` uses the same diagnostic when it cannot file a detached job's ending,
+returns a `record_error` row naming the job and failed path, and exits 74.
+A CAS read failure or a filesystem failure before submission instead says
+that filesystem access failed; it does not claim a record write was attempted
+or that SLURM accepted a job. The job id is retained when already known.
+If the CAS itself cannot be read, receipt status is reported as unknown.
+
+Withdrawal has two write stages. If its initial marker or terminal record
+cannot be written, no cancellation is sent. If `scancel` accepted the
+cancellation but the acceptance stamp cannot be written, the diagnostic says
+so. Both exit 74 and give the withdrawal command to retry after restoring
+record writes. The path in these diagnostics may name a temporary file;
+atomic record publication creates that file before renaming it.
+
+An unreadable terminal record that appears while a pull-queue wait is polling
+ends the wait immediately with exit 1 and the path and reason, instead of
+spending the remaining deadline and reporting exit 75. For a recorded SLURM
+submission, `pbwait` first tries to recover the ending from the controller and
+CAS; if it cannot repair the record, it reports an `unreadable` row.
 
 ### When `sbatch` stops answering
 
@@ -310,11 +348,17 @@ stands. A controller that cannot be asked leaves the fate unknown: `pbrun`
 prints the job name, the comment and that `squeue`, files nothing, and exits
 75.
 
-### No deadline exists by default
+### Execution deadlines
 
-`pbrun` sends no `--time` unless you pass `--timeout-s`. A job that is doing
-something runs until it ends. Elapsed time is never treated as evidence that a
-worker is dead.
+`pbrun --timeout-s` seals a positive finite execution budget into the action.
+Changing that budget changes the action key. SLURM receives the corresponding
+`--time`; the pool applies the shorter of that budget and its worker's
+`--timeout-s` safety ceiling (7200 seconds by default). Without an explicit
+budget, SLURM receives no `--time` and the pool retains its worker ceiling.
+Pool execution timing starts after checkout materialization, immediately before
+launching the worker, using a monotonic clock. Queue waiting does not consume
+that budget; `--wait-s` controls the submitter's wait separately. A short budget
+does not wait for the next lease heartbeat before being enforced.
 
 When a `--timeout-s` you asked for does expire, the worker takes the action's
 whole process group down before it reports the timeout: SIGTERM, a grace
@@ -476,14 +520,22 @@ Each shard is one `pbrun` action, so the checkout travels through the CAS and
 the interpreter is the target box's, not this one's. `--tag` defaults to `x86`,
 which is also the claim that owns the named interpreter.
 
-`--threads-per-shard` sets each shard's BLAS and OMP ceiling, and the same
-number becomes that shard's `pbrun --cpus`, which the lane emits as
-`--cpus-per-task`. The two travel together on purpose: a ceiling without a
-reservation is threads taking turns inside one core, because `ConstrainCores`
-makes the declared demand a cpuset. `--cpus-per-shard N` reserves a different
-number, and it is required with `--threads-per-shard 0`, which sets no ceiling
-and so gives nothing to derive a reservation from. A negative ceiling, a reservation below one core, and a missing
-pairing are all refused with exit 2 before any shard is submitted.
+`--workers-per-shard N` runs N pytest workers in each action with `pytest -n N`.
+The default is 1 and needs no plugin; higher values require `pytest-xdist` in
+the target interpreter. The coordinator still uses only the standard library.
+For example, `--shards 16 --workers-per-shard 5 --threads-per-shard 1` can
+use 80 CPU cores across 16 concurrent actions, subject to available fleet
+capacity and sufficient memory per shard. `--mem-gb` reserves memory for the
+whole action, including all of its pytest workers.
+
+`--threads-per-shard` sets each pytest worker's BLAS and OMP ceiling. The
+CPU reservation defaults to workers times threads; `pbrun --cpus` carries it
+into the lane's `--cpus-per-task`. `--cpus-per-shard N` can reserve more, but
+cannot reserve fewer than this product. With `--threads-per-shard 0`, no
+native thread ceiling is set, so an explicit CPU reservation is required and
+must allow at least one core per pytest worker. Invalid worker counts,
+negative thread ceilings, and insufficient reservations are refused with
+exit 2 before any action is submitted.
 
 The CPU demand is sealed into each shard's action, so a suite fanned out at a
 different width is a different action rather than a cache hit of the last run.
@@ -727,6 +779,12 @@ after `BOOT_FAIL`, `FAILED`, `NODE_FAIL`, `OUT_OF_MEMORY`, `PREEMPTED`, or
 `DEADLINE` because a resubmission would meet the same absolute deadline
 immediately.
 
+A pool worker receiving `SIGTERM` completes its current action and files the
+outcome before exiting. This protects claims acquired after the supervisor's
+idle check. Use the withdrawal command to cancel an action; worker rotation
+is a request to drain. Supervisors also defer rotation when claim ownership
+cannot be read, including the interval before a claim's first lease appears.
+
 ### Reset a batch of failures
 
 `pool_reset` re-submits the queue's failed items. It resets the work, not the
@@ -759,12 +817,17 @@ would undo a decision. A record `pool_reset` has already handled is filed as
 failure it recorded: the returncode, the output tails, and the job the lane
 submitted stay in `detail`, and the reset is stamped beside them under `reset`.
 
-`--apply` keeps each re-submission's output under `<queue root>/resets/` and
-waits a few seconds, once for the whole batch, before it stamps anything. A
-child `pbrun` that refuses does so at once, and a refusal is printed with the
-tail of what it said, leaves its record `failed` so the next run plans it
-again, and makes the command exit non-zero. A child still running at the end
-of that wait has been admitted and is left alone.
+`--apply` starts each path-addressed re-submission with `pbrun --detach` and
+waits for its structured admission acknowledgement and exit status. It prints
+progress for slow submissions; elapsed time never counts as admission. A
+refusal or missing/invalid acknowledgement leaves the original record `failed`
+and makes the command exit non-zero after the rest of the batch is handled.
+Successful acknowledgements, including cache hits and attachments to an
+existing run, are saved under `reset.submission` with the new action key and
+generation. The child exits after admission instead of streaming the action's
+output. Its last 64 KiB of diagnostics stay under `<queue root>/resets/` for
+operator inspection; each log is bounded, and old logs may be removed once
+that evidence is no longer needed.
 
 A record addressed by a snapshot, which is what the lane files for every
 submission, is not re-sealed. Its tree is a commit in the CAS and nothing can
@@ -783,7 +846,7 @@ an impossible GRES, is reported for that record, the record stays `failed`, and
 | `executed` | The work ran. Filed under `done/`. The two transports decide it differently: the lane files `executed` only when the receipt is in the CAS, and the pull queue derives it from the launcher exiting 0. |
 | `cache_hit` | The receipt was already there. Counts as done. On the lane, `pbrun` finds it before submitting and submits nothing. A job that starts and finds it -- the second job of a key, held behind the first -- reports it too, before materializing anything. Either way `done/` keeps the record of the run that did the work: a `cache_hit` record is filed only when the key has none. |
 | `failed` | No receipt. Something refused, or the command exited non-zero. Filed under `failed/`. |
-| `timeout` | The action was killed at a deadline. `returncode` is null, because an action that finished inside the tick that crossed the deadline would otherwise report 0 for a record filed as a timeout: read `status`, not `returncode`. Filed under `failed/`. Retriable. Under SLURM the deadline is the `--timeout-s` you asked for and the scheduler enforces it. In the pull queue `pbrun --timeout-s` is parsed and not sent, so the deadline is the worker loop's own `--timeout-s` on the box that claimed the action. |
+| `timeout` | The action was killed at a deadline. `returncode` is null, because an action that finished inside the tick that crossed the deadline would otherwise report 0 for a record filed as a timeout: read `status`, not `returncode`. Filed under `failed/`. Retriable. Under SLURM the deadline is the `--timeout-s` you asked for and the scheduler enforces it. The pool enforces the shorter of the sealed execution budget and the worker loop's own `--timeout-s` safety ceiling. |
 | `withdrawn` | Somebody cancelled the run. Not a defect, and not retried. |
 | `reset` | A `failed` ending that `pool_reset --apply` re-submitted. The record stays under `failed/` with its `detail` intact and a `reset` object beside it, carrying the reason, the time and the host that reset it. The attempt links move to `attempt_history_before_reset`, so a reader does not adopt the old attempt's `failed` as this record's own ending. See "Reset a batch of failures". |
 | `finish_lost_race` | The worker finished work whose claim a reaper had already concluded, and the item's own record was gone, so nothing could be carried forward. Filed under `failed/` with the reason in `detail` and the launcher's own result under `detail.worker_detail`. Only a failing outcome reaches this: a successful one files its real status. |
@@ -808,13 +871,13 @@ These are refusals at submission, before anything reaches the fleet.
     Git checkout, so its exact bytes can be sealed and materialized through the
     CAS. Mutable path-addressed submission is not supported.
 *   **`--cwd is not a directory on <host>`** — the path may be correct and
-    belong to another box. `pbrun` stamps the code closure inside the checkout,
+    belong to another box. `pbrun` reads the source checkout to seal its bytes,
     so it can submit only for a checkout on the box it runs on. Submit from that
     box; the queue is shared, the filesystem is not.
-*   **`cannot write into the checkout <dir>`** — the checkout is read-only, or
-    owned by someone else, or the disk is full. `pbrun` keeps the closure stamp
-    there and the action tees its output into the same tree, so submit from a
-    writable clone or worktree of it.
+*   **`cannot update pbrun Git excludes`** — initial exclude setup or migration
+    cannot write Git's common `info/exclude`. Configure the checkout's excludes
+    while that metadata is writable, then submit. Stamps and execution results
+    do not require writes to the submitting tree.
 *   **`command executable is absent or not executable on the submitting box`** —
     `pbrun` resolves `argv[0]` exactly against the declared `PATH`. Pass `--tag`
     for the worker class that owns the executable, or `--anywhere` to assert an
@@ -869,6 +932,18 @@ point.
 own closures, environments and result paths — one action per input shard.
 Routing them through `pbrun` would re-seal the work as a shell command and lose
 exactly that.
+
+The ladder dispatcher accepts `--wrapper /path/to/tessera_ladder_probe.py`.
+Without it, the source is `tessera_ladder_probe.py` in the shared checkout;
+there is no dependency on a submitting box's private Tessera tree. Each
+submission records the resolved source path, SHA256, and staged relative path
+in `params.wrapper_source`. The source bytes are staged under
+`prismabuild-wrappers/<sha256>/tessera_ladder_probe.py`, included in the code
+closure, and invoked at that relative path. Concurrent dispatches with different
+wrappers keep separate copies. A conflicting existing digest path is refused.
+The source path is provenance bound into the action key, so changing either
+the source path or its bytes changes the key. `--dry-run --wrapper ...` previews
+that same closure without staging files or publishing work.
 
 What they share with `pbrun` is the last step: hand the sealed action to
 whichever transport is live. That step is `tools/fleet/fleet_submit.py`, and
@@ -1037,3 +1112,79 @@ either transport. Ignoring them is the SLURM half only, because the pull queue
 never snapshots. This applies to the smoke action, whose result is
 `fleet_result.txt`, and to every export shard, whose result is
 `results/glm53-tessera/shard-NNNNN.json`.
+
+## Sweep the store's per-execution litter
+
+`pb_gc` inventories per-execution claims under `local-results/v1/`, worker lock
+files, empty local-result staging namespaces, legacy root staging payloads,
+and private `ingest.*` staging directories left by killed ingests. Requests,
+receipts, unrecognized entries, and nonempty result staging namespaces are
+retained. Normal ingest completion removes its private directory; SIGKILL can
+leave payload bytes behind for this maintenance command to reclaim.
+
+    tools/fleet/pb_gc.py --cas-root /mnt/shared/prismabuild-fleet/cas
+
+The default only reports, including candidate paths, bytes, ages, reasons for
+retention, and record counts. `--summary` omits individual paths. No default
+CAS root is supplied. Candidate status describes local observations; it does
+not establish that a remote execution is dead.
+
+Before applying a sweep, stop new submissions and drain or stop **all CAS
+producers on every host**, including direct clients outside the worker pool.
+Review the dry-run paths and verify candidate checkout roots are absent on all
+hosts where they could reside. Keep any claim needed to repair a persistent
+checkout. Maintain this quiescence until the command exits. Only then run:
+
+    tools/fleet/pb_gc.py --cas-root /mnt/shared/prismabuild-fleet/cas --apply --quiescent-store
+
+Both flags are required for removal. `--quiescent-store` records the operator's
+assertion; the tool does not acquire a distributed maintenance lock or stop
+workers itself. A root missing on this host can exist on another host, and a
+local `/proc` scan cannot see remote file users. Removing an unlocked worker
+lock while producers may open it can leave a waiter on an orphan inode. The
+maintenance requirement prevents relying on those incomplete local checks.
+
+`--min-age-hours` is a finite, nonnegative retention threshold (default 24),
+never proof of abandonment. Raising it does not make an online sweep safe.
+The tool retains claims whose checkout roots exist or cannot be inspected,
+locks protected by those claims or a local holder, occupied result staging
+namespaces, open local staging files, and private ingest directories whose
+ownership lock is held, missing, or contains unrecognized files. A private
+ingest lock is held throughout copying and publication; the reaper also holds
+it while deleting that directory. Incomplete hidden `.ingest.*` initialization
+directories are retained for manual inspection.
+
+A fresh survey and inode identity checks protect against entries that changed
+since the report. Parent directories are opened without following symlinks.
+A skipped removal exits 1 and reports the path; invalid arguments or an unsafe
+store layout exit 2. These safeguards complement the maintenance prerequisite.
+Use `core.repair_local_result` for occupied result namespaces: it takes the
+output lock and validates the result's ownership before clearing a crash-left
+publication.
+
+
+## CPU tiers and container affinity
+
+The live pool reserves physical performance cores before using SMT siblings
+or efficiency cores. `--cpus` (or `--demand cpu=N`) declares the total CPU demand,
+not a core-class preference. Small jobs use free preferred CPUs; wide jobs and
+concurrent overflow can use the lower tier. Compatible free preferred capacity
+on another host gets a bounded opportunity to claim work first. Constraints
+still determine eligibility. Do not overdeclare CPU demand to force overflow.
+
+Worker offers expose `cpu_tiers`; a claimed or terminal record's
+`cpu_allocation` names its preferred and fallback CPU IDs. Children inherit the
+reservation through `taskset`. The published Docker shim transfers it into
+`docker run` and `docker create`; an explicit `--cpuset-cpus` is intersected
+with the reservation. A disjoint mask or remote Docker context refuses with an
+explanation. Use the action's ordinary `docker` command so the shim can preserve
+CPU affinity and ownership labels. Directly choosing another Docker executable
+or widening a child mask violates the agent execution policy.
+
+The CPU map is immutable while a host serves work. To change an existing host's
+usable topology or CPU cap: drain its reservations, stop its supervisor and
+worker loops, preserve the old `reservations/<host>/cpu-map.json` as recovery
+evidence, remove that map, then restart with the new shape. Never delete a map
+while claims or loops can still use its CPU-token interpretation. Adding a new
+host creates a separate map. Ordinary runtime publication with an unchanged
+map uses the existing idle-queue procedure.

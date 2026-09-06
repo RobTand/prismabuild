@@ -43,7 +43,7 @@ def _fake_hostname(tmp_path: Path, name: str) -> dict[str, str]:
     script = binaries / "hostname"
     script.write_text(f"#!/bin/sh\necho {name}\n", encoding="utf-8")
     script.chmod(0o755)
-    environment = dict(os.environ)
+    environment = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LC_ALL": "C"}
     environment["PATH"] = f"{binaries}{os.pathsep}{environment['PATH']}"
     return environment
 
@@ -221,7 +221,7 @@ def test_the_munge_self_test_fails_when_munge_does(
         encoding="utf-8")
     for name in ("munge", "unmunge"):
         (fakes / name).chmod(0o755)
-    environment = dict(os.environ)
+    environment = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LC_ALL": "C"}
     environment["PATH"] = f"{fakes}{os.pathsep}{environment['PATH']}"
 
     broken = subprocess.run(
@@ -362,7 +362,7 @@ def _cutover_environment(tmp_path: Path) -> dict[str, str]:
     runtime = tmp_path / "runtime"
     (runtime / "runtime-generations" / "gen-old").mkdir(parents=True)
     (runtime / "repo").symlink_to("runtime-generations/gen-old")
-    environment = dict(os.environ)
+    environment = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LC_ALL": "C"}
     environment.update(
         PB_QUEUE_ROOT=str(queue),
         PB_RUNTIME_DIR=str(runtime),
@@ -472,17 +472,45 @@ def test_cutover_refuses_before_the_kills_when_publication_would_refuse(
     assert "no pbrun is waiting" not in result.stdout
 
 
-def test_cutover_publishes_through_the_interpreter(tmp_path: Path) -> None:
+@pytest.mark.parametrize("name, marker, boundary, expected", [
+    ("cutover.sh", "# step 5: publish", "# -- the state file, completed",
+     ["--default-transport", "slurm"]),
+    ("rollback.sh", "# step 1: point", "# -- 1b.",
+     ["--activate-generation", "gen-old"]),
+])
+def test_cutover_publishes_through_the_interpreter(
+    tmp_path: Path, name: str, marker: str, boundary: str, expected: list[str],
+) -> None:
     """publish_runtime.py is checked in mode 644.
 
     Running it as a command is a "Permission denied" at the one step that has
     no cheap retry, so both scripts name an interpreter.
     """
 
-    for name in ("cutover.sh", "rollback.sh"):
-        text = (FLEET / name).read_text(encoding="utf-8")
-        assert 'PUBLISH="${PB_PUBLISH:-python3 ' in text, name
-        assert '"$REPO/tools/fleet/publish_runtime.py"' not in text, name
+    publisher = tmp_path / "tools" / "fleet" / "publish_runtime.py"
+    publisher.parent.mkdir(parents=True)
+    publisher.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+    publisher.chmod(0o644)
+    source = (FLEET / name).read_text(encoding="utf-8")
+    # Evaluate configuration, including later reassignments, then the live
+    # publication step. No stop commands or runtime mutations are executed.
+    config = source[source.index('\n#', source.index('REPO="')) + 1:]
+    config = config[:config.index('\nexec 3>&1')]
+    start = source.rindex('say ', 0, source.index(marker))
+    step = source[start:source.index(boundary, start)]
+    program = '\n'.join([
+        'set -eu', 'REPO="$TEST_REPO"', config,
+        'DRY_RUN=0', 'PREVIOUS=gen-old',
+        'say() { :; }', 'die() { echo "$*" >&2; exit 1; }', step,
+    ])
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("PB_")}
+    environment["TEST_REPO"] = str(tmp_path)
+    result = subprocess.run(
+        ["/bin/bash", "-c", program], env=environment,
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == expected
 
 
 def test_cutover_refuses_when_verification_did_not_pass_here(tmp_path: Path) -> None:
@@ -675,14 +703,13 @@ def test_rollback_refuses_when_there_is_no_cutover_to_reverse(tmp_path: Path) ->
     assert "no cutover state file" in result.stderr
 
 
-# -- shellcheck, when it can be had ------------------------------------------
+# -- required shellcheck ------------------------------------------
 
 
-@pytest.mark.skipif(
-    shutil.which("docker") is None, reason="shellcheck is run through docker"
-)
 def test_shellcheck_is_clean() -> None:
-    """shellcheck 0.11.0 via koalaman/shellcheck-alpine; skipped without docker."""
+    """The fleet script lint gate must run; missing tooling is a failure."""
+
+    assert shutil.which("docker"), "install Docker and koalaman/shellcheck-alpine:stable to run required shellcheck"
 
     result = subprocess.run(
         [
@@ -692,8 +719,6 @@ def test_shellcheck_is_clean() -> None:
         ],
         capture_output=True, text=True, check=False,
     )
-    if result.returncode != 0 and "Unable to find image" in result.stderr:
-        pytest.skip("shellcheck image is not available and cannot be pulled")
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -744,7 +769,8 @@ def test_every_tool_the_scripts_run_directly_is_executable() -> None:
     assert not wrong, "\n".join(wrong)
 
 
-def test_verify_row_4_reports_nvidia_smis_own_status() -> None:
+@pytest.mark.parametrize("status", [0, 17, 127])
+def test_verify_row_4_reports_nvidia_smis_own_status(tmp_path: Path, status: int) -> None:
     """`$?` after a pipeline is the last command's, and the last command was
     `sed`.
 
@@ -756,12 +782,24 @@ def test_verify_row_4_reports_nvidia_smis_own_status() -> None:
         smi-rc=0
     """
 
-    text = (FLEET / "verify.sh").read_text(encoding="utf-8")
-    assert 'nvidia-smi -L 2>&1 | sed' not in text, (
-        "row 4 pipes nvidia-smi into sed and then reads $?, which is sed's"
+    source = (FLEET / "verify.sh").read_text(encoding="utf-8")
+    row = source.split("# -- row 4:", 1)[1].split("# -- row 5:", 1)[0]
+    setup = row[:row.index('out="$(srun_here')]
+    # Replace only the device path: no real GPU or scheduler is accessed.
+    setup = setup.replace("/dev/nvidia0", str(tmp_path / "absent-device"))
+    program = '\n'.join([
+        setup,
+        "hostname() { echo fake-spark; }",
+        'nvidia-smi() { echo "driver result"; return "$TEST_SMI_STATUS"; }',
+        'eval "$probe"',
+    ])
+    result = subprocess.run(
+        ["/bin/bash", "-c", program], capture_output=True, text=True, timeout=10,
+        env={**os.environ, "TEST_SMI_STATUS": str(status)},
     )
-    assert 'smi="$(nvidia-smi -L 2>&1)"; rc=$?' in text
-    assert 'echo "smi-rc=$rc"' in text
+    assert result.returncode == 0, result.stderr
+    assert "smi: driver result" in result.stdout
+    assert f"smi-rc={status}" in result.stdout.splitlines()
 
 
 def test_a_live_cutover_under_test_never_runs_a_stop_snippet_on_this_box(
@@ -816,7 +854,7 @@ def test_a_pid_that_exits_between_pgrep_and_the_read_is_silently_gone(
     (fakes / "pgrep").chmod(0o755)
     assert not Path(f"/proc/{dead}").exists()
 
-    environment = dict(os.environ)
+    environment = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LC_ALL": "C"}
     environment["PATH"] = f"{fakes}{os.pathsep}{environment['PATH']}"
     result = subprocess.run(
         ["bash", "-c", _stop_functions() + "\npb_pids supervise.py\n"],
@@ -865,7 +903,7 @@ def test_the_key_is_removed_on_a_box_that_has_no_shred(tmp_path: Path) -> None:
     result = subprocess.run(
         ["/bin/bash", "-c", lines[0].replace(KEY_B64, str(key))],
         capture_output=True, text=True, check=False,
-        env={**os.environ, "PATH": str(coreutils)},
+        env={"PATH": str(coreutils), "LC_ALL": "C"},
     )
 
     assert result.returncode == 0, result.stderr

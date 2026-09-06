@@ -22,8 +22,8 @@ Three constraints shape this, and none of them are negotiable:
   timing or numeric arm.  ``--tag`` defaults to ``x86`` to make that explicit
   at the call site rather than in a comment.
 * **A shard reserves what it is allowed to use.**  ``--threads-per-shard``
-  sets each shard's BLAS and OMP ceiling, and the same number becomes
-  ``pbrun --cpus``, which the lane emits as ``--cpus-per-task``.  A ceiling
+  sets each pytest worker's BLAS and OMP ceiling. Multiplying that by
+  ``--workers-per-shard`` gives ``pbrun --cpus``, which the lane emits as ``--cpus-per-task``.  A ceiling
   without a reservation is threads taking turns inside one core, because
   ``ConstrainCores=yes`` makes the declared demand a cpuset.
   ``--cpus-per-shard`` overrides the pairing, and it is required when the
@@ -97,12 +97,15 @@ def main() -> int:
                     help="how many actions the suite is split into, "
                          "round-robin over the discovered files; more than "
                          "there are files is lowered to one shard per file")
+    ap.add_argument("--workers-per-shard", type=int, default=1,
+                    help="pytest workers in each action; above 1 uses pytest-xdist "
+                         "(-n N), which must be installed in the target interpreter")
     ap.add_argument("--threads-per-shard", type=int, default=2,
-                    help="BLAS/OMP threads each shard may use; 0 leaves it "
+                    help="BLAS/OMP threads each pytest worker may use; 0 leaves it "
                          "alone and then --cpus-per-shard is required")
     ap.add_argument("--cpus-per-shard", type=int, default=None,
                     help="cores each shard reserves; the default is "
-                         "--threads-per-shard, so the ceiling a shard is given "
+                         "--workers-per-shard times --threads-per-shard, so the ceiling a shard is given "
                          "is the ceiling it can use. Required with "
                          "--threads-per-shard 0, which sets no ceiling at all")
     ap.add_argument("--mem-gb", type=int, default=3,
@@ -144,6 +147,9 @@ def main() -> int:
     # pull queue the ledger admits the shard as if it used one.  So the two
     # travel together, and 0 threads, which asks for no ceiling at all, has
     # no reservation to derive and must be told one.
+    if args.workers_per_shard < 1:
+        sys.stderr.write("--workers-per-shard must be at least 1\n")
+        return 2
     if args.threads_per_shard < 0:
         sys.stderr.write("--threads-per-shard cannot be negative\n")
         return 2
@@ -155,11 +161,18 @@ def main() -> int:
                 "reserve for it: pass --cpus-per-shard N as well, or name a "
                 "thread ceiling and let it answer both\n")
             return 2
-        cpus_per_shard = args.threads_per_shard
+        cpus_per_shard = args.workers_per_shard * args.threads_per_shard
     else:
         cpus_per_shard = args.cpus_per_shard
     if cpus_per_shard < 1:
         sys.stderr.write("--cpus-per-shard must be at least 1\n")
+        return 2
+
+    minimum_cpus = args.workers_per_shard * max(1, args.threads_per_shard)
+    if cpus_per_shard < minimum_cpus:
+        sys.stderr.write(
+            f"--cpus-per-shard must be at least {minimum_cpus} for "
+            f"{args.workers_per_shard} workers and the declared thread ceiling\n")
         return 2
 
     checkout = Path(args.checkout).resolve()
@@ -187,6 +200,8 @@ def main() -> int:
         threads = [f"OMP_NUM_THREADS={n}", f"MKL_NUM_THREADS={n}",
                    f"OPENBLAS_NUM_THREADS={n}", f"TORCH_NUM_THREADS={n}"]
 
+    pytest_workers = (["-n", str(args.workers_per_shard)]
+                      if args.workers_per_shard > 1 else [])
     procs = []
     for index, bucket in enumerate(buckets):
         # Built in order rather than spliced into.  The repeatable --tag used
@@ -223,7 +238,7 @@ def main() -> int:
             *threads,
             "PYTHONPATH=src:experiments",
             args.python, "-m", "pytest", "-q", "--no-header",
-            "-p", "no:cacheprovider", *bucket,
+            "-p", "no:cacheprovider", *pytest_workers, *bucket,
         ]
         procs.append((index, bucket, subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))

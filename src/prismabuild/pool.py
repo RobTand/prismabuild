@@ -126,7 +126,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
     _run_materializer_git,
     _write_json_atomic,
 )
-from . import materialize
+from . import materialize, cpu_topology
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -211,6 +211,11 @@ STARVATION_FLOOR = 3
 #: than the multi-hour actions that turn the guard pathological.
 WITHHOLD_CEILING_S = 900.0
 
+#: How much of an unparseable record is kept inline with the evidence.  Enough
+#: to recognise a writer's handwriting, little enough that a runaway producer
+#: cannot fill the queue root with the file it already failed to write.
+UNREADABLE_HEAD_BYTES = 2048
+
 RESERVATIONS = "reservations"
 PASSES = "passes"
 WORKERS = "workers"
@@ -288,6 +293,28 @@ class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
 
 
+def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
+    """Read the deadline from the sealed request, never mutable queue metadata."""
+    key = str(item["action_key"])
+    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
+    try:
+        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+    except FileNotFoundError:
+        # Legacy/custom launchers can have no request. The canonical worker
+        # independently refuses a missing request before executing any action.
+        return ceiling
+    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    if action["action_key"] != key:
+        raise PoolContractError("pool action request does not match the claimed key")
+    requested = action["params"].get("execution_timeout_s")
+    if requested is None:
+        return ceiling
+    if (type(requested) not in (int, float) or not math.isfinite(requested)
+            or requested <= 0):
+        raise PoolContractError("execution_timeout_s must be a positive finite number")
+    return float(requested) if ceiling is None else min(float(requested), ceiling)
+
+
 @contextmanager
 def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:
     """Yield the live path or a private checkout of the sealed snapshot.
@@ -332,7 +359,7 @@ def _read_json(path: Path) -> dict[str, object] | None:
         return None
     try:
         value = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise PoolContractError(f"queue record is not valid JSON: {path}") from exc
     if not isinstance(value, dict):
         raise PoolContractError(f"queue record is not an object: {path}")
@@ -784,6 +811,47 @@ class ResourceLedger:
         """
 
         return self.base / "minted"
+
+    def configure_cpu_tiers(self, tiers: Mapping[str, Sequence[int]]) -> dict:
+        """Bind token ordinals to CPUs once; all loops on a host must agree.
+
+        Changing this map requires stopping workers, draining reservations,
+        and removing cpu-map.json before restarting. Never reinterpret a held
+        ordinal under another affinity or topology.
+        """
+        record = {kind: list(tiers[kind]) for kind in ("preferred", "fallback")}
+        cpus = record["preferred"] + record["fallback"]
+        if (not cpus or any(type(c) is not int or c < 0 for c in cpus)
+                or len(cpus) != len(set(cpus))):
+            raise PoolContractError("CPU tiers must contain distinct nonnegative CPU IDs")
+        path = self.base / "cpu-map.json"
+        existing = _read_json(path)
+        if existing is None:
+            if self.held().get("cpu", 0):
+                raise PoolContractError("drain legacy CPU reservations before enabling CPU tiers")
+            self.base.mkdir(parents=True, exist_ok=True)
+            pb._atomic_publish(path, pb._canonical_bytes(record))
+            existing = _read_json(path)
+        if existing != record:
+            raise PoolContractError("CPU tier map differs: stop workers, drain reservations "
+                                    "and remove cpu-map.json before changing topology")
+        return record
+
+    def cpu_allocation(self, holder: str, tiers: Mapping) -> dict:
+        """The actual CPUs represented by this claimant's held tokens."""
+        ordered = list(tiers["preferred"]) + list(tiers["fallback"])
+        cpus = []
+        for token in _glob(self.held_dir / holder, "cpu-*"):
+            index = int(token.name.split("-")[-1])
+            if index >= len(ordered):
+                raise PoolContractError("CPU token exceeds configured topology")
+            cpus.append(ordered[index])
+        return {kind: [c for c in tiers[kind] if c in cpus]
+                for kind in ("preferred", "fallback")}
+
+    def free_preferred(self, tiers: Mapping) -> int:
+        return sum(int(token.name.split("-")[-1]) < len(tiers["preferred"])
+                   for token in _glob(self.free_dir, "cpu-*"))
 
     def ensure_capacity(self, capacity: Mapping[str, int]) -> None:
         """Create any missing token of each declared kind, idempotently.
@@ -1240,6 +1308,7 @@ class PoolQueue:
         # a caller (or the test guard) that re-points ``DEFAULT_POOL_ROOT``
         # after import gets the root it named rather than the live store.
         self.root = Path(DEFAULT_POOL_ROOT if root is None else root)
+        self._cpu_deferrals: dict[tuple[str, str], float] = {}
         if not self.root.is_absolute():
             raise PoolContractError("pool root must be absolute")
 
@@ -1382,6 +1451,7 @@ class PoolQueue:
         tags: Sequence[str],
         has_gpu: bool,
         capacity: Mapping[str, int] | None = None,
+        cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         runtime_commit: str = "",
         observed_capacity: Mapping[str, int] | None = None,
         foreign: Mapping[str, int] | None = None,
@@ -1445,6 +1515,7 @@ class PoolQueue:
             # the module it imported at start for its whole life, so without
             # this a fleet running four generations of the code at once looks
             # uniform from the queue.
+            "cpu_tiers": dict(cpu_tiers or {}),
             "runtime_commit": str(runtime_commit),
             "announced_unix": _now(),
         }
@@ -1828,6 +1899,47 @@ class PoolQueue:
         _write_json_atomic(path, item)
         return path
 
+    #: Everything that describes the claim that has just ended.  A ready item
+    #: is claimed by nobody and holds no tokens, so none of it may survive a
+    #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
+    _CLAIM_SCOPED_FIELDS = (
+        "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes",
+        "cpu_allocation",
+        "container_cleanup_pending", "container_cleanup_checked_unix",
+        "stop_pending",
+    )
+
+    def _shape_as_ready_item(
+        self, record: dict[str, object], *, action_key: str
+    ) -> Path:
+        """Turn a concluded claim back into a ready item; say where it goes.
+
+        Three producers write into ``ready``: ``publish`` above, ``finish``'s
+        retry branch and ``reap_stale``'s.  The two requeues each spelled the
+        shape out for themselves and had drifted apart -- one stamped the
+        outcome schema onto a queue item, the other left ``action_key`` to
+        whatever the claim happened to carry -- so one directory held records
+        a consumer could tell apart by which writer produced them.  Teaching
+        the readers to accept both is the fix that drifts again; one writer is
+        the fix that cannot.
+
+        The rules are the ones ``publish`` already keeps.  ``schema`` says what
+        kind of record this is, and a record in ``ready`` is an item, not an
+        outcome.  The filename is the identity, because every consumer
+        addresses an item by key.  Nothing claim-scoped survives.
+
+        What does survive is the item's own history: ``attempts`` is what the
+        next try is counted against, and ``status``, ``detail`` and
+        ``attempt_history`` are how the last one went.
+        """
+
+        record["schema"] = POOL_ITEM_SCHEMA_V1
+        record["action_key"] = action_key
+        record["requeued_unix"] = _now()
+        for field in self._CLAIM_SCOPED_FIELDS:
+            record.pop(field, None)
+        return self.item_path(READY, action_key)
+
     # -- consumer -------------------------------------------------------
 
     def _placement_matches(
@@ -1846,7 +1958,17 @@ class PoolQueue:
         if not ready.is_dir():
             return out
         for path in sorted(ready.glob("*.json")):
-            record = _read_json(path)
+            try:
+                record = _read_json(path)
+            except PoolContractError:
+                # A record nobody can parse is nobody's work.  Raising it out
+                # of here took ``claim`` down on every box at once for one
+                # foreign writer's truncated file, and ``reap_stale`` with it
+                # -- so the sweep that files the thing was itself among the
+                # casualties.  Skip it and keep serving; ``quarantine_orphans``
+                # files it, and ``serve_once`` reaches that sweep before its
+                # next claim.
+                continue
             if record is not None:
                 record["passes"] = self.passes(str(record.get("action_key", "")))
                 out.append(record)
@@ -2053,6 +2175,36 @@ class PoolQueue:
             raise PoolContractError("pool item resources must be an object")
         return {str(k): int(v) for k, v in raw.items() if int(v) > 0}
 
+    def _defer_fallback(self, item: Mapping, demand: Mapping) -> bool:
+        """Give a compatible host with free preferred CPUs up to 20s to claim.
+
+        Offers and remote ledger scans are advisory snapshots, not an atomic
+        fleet allocation. The bounded wait prevents stale-but-fresh offers
+        from stranding work. A host that cannot fit the whole demand never
+        delays another host, nor does incompatible placement.
+        """
+        identity = (str(item["action_key"]), repr(item.get("published_unix")))
+        started = self._cpu_deferrals.setdefault(identity, time.monotonic())
+        if time.monotonic() - started >= 20.0:
+            return False
+        for offer in self._matching_offers(item, live=self.offers()):
+            host = str(offer.get("host") or "")
+            if not host or host == socket.gethostname():
+                continue
+            tiers = offer.get("cpu_tiers")
+            if not isinstance(tiers, Mapping) or not tiers.get("preferred"):
+                continue
+            remote = self.ledger(host)
+            if _read_json(remote.base / "cpu-map.json") != tiers:
+                continue
+            free = remote.available()
+            observed = offer.get("observed_capacity") or {}
+            if (remote.free_preferred(tiers) >= demand.get("cpu", 0)
+                    and all(free.get(k, 0) >= n and observed.get(k, free[k]) >= n
+                            for k, n in demand.items())):
+                return True
+        return False
+
     def claim(
         self,
         *,
@@ -2060,6 +2212,7 @@ class PoolQueue:
         has_gpu: bool = False,
         owner: str | None = None,
         capacity: Mapping[str, int] | None = None,
+        cpu_tiers: Mapping[str, Sequence[int]] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -2102,9 +2255,22 @@ class PoolQueue:
         total: dict[str, int] = {}
         if capacity is not None:
             ledger = self.ledger()
+            if cpu_tiers is None:
+                cpu_tiers = _read_json(ledger.base / "cpu-map.json")
+            if cpu_tiers is not None:
+                cpu_tiers = ledger.configure_cpu_tiers(cpu_tiers)
+                if int(capacity.get("cpu", 0)) > sum(map(len, cpu_tiers.values())):
+                    raise PoolContractError("CPU capacity exceeds the inherited CPU map")
+                ledger.retire_free_capacity({"cpu": int(capacity.get("cpu", 0))})
             ledger.ensure_capacity(capacity)
             total = ledger.capacity()
-        for item in self.ready_items():
+        ready = self.ready_items()
+        live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
+                            for item in ready}
+        for generation in list(self._cpu_deferrals):
+            if generation not in live_generations:
+                self._cpu_deferrals.pop(generation, None)
+        for item in ready:
             key = str(item.get("action_key", ""))
             if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
                 continue
@@ -2145,6 +2311,11 @@ class PoolQueue:
                     # the head of the ordering -- but stops holding the box shut
                     # for work it cannot do anything with.
                     continue
+            if (ledger is not None and handle is not None and cpu_tiers is not None
+                    and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
+                    and self._defer_fallback(item, demand)):
+                ledger.abandon_acquire(handle)
+                continue
             # Intent precedes the claim, so a crash in between leaves evidence.
             self._write_claim_intent(key, owner=owner)
             src = self.item_path(READY, key)
@@ -2158,6 +2329,24 @@ class PoolQueue:
                     # winner's reservation and let a third action be admitted
                     # on top of it.
                     ledger.abandon_acquire(handle)
+                continue
+            moved = _read_json(dst) or item
+            if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
+                    or self.demand_of(moved) != demand):
+                # Admission described the scanned generation. A replacement
+                # may need a different host or more tokens; put it back for a
+                # fresh admission before committing this claimant's tokens.
+                if ledger is not None and handle is not None:
+                    ledger.abandon_acquire(handle)
+                try:
+                    os.link(dst, src)
+                except OSError:
+                    # A still newer submission may own ready already. Leave
+                    # the moved record for the reaper, as below.
+                    pass
+                else:
+                    dst.unlink(missing_ok=True)
+                    self.item_path(INTENT, key).unlink(missing_ok=True)
                 continue
             if ledger is not None and handle is not None:
                 # Won the rename, so the reservation stops belonging to this
@@ -2188,7 +2377,6 @@ class PoolQueue:
                         dst.unlink(missing_ok=True)
                         self.item_path(INTENT, key).unlink(missing_ok=True)
                     continue
-            moved = _read_json(dst) or item
             terminal = self.terminal_outcome_covers(moved, action_key=key)
             if terminal is not None:
                 # A stale reaper can put a generation back in ``ready`` after
@@ -2208,7 +2396,7 @@ class PoolQueue:
                 dst.unlink(missing_ok=True)
                 self.passes_path(key).unlink(missing_ok=True)
                 continue
-            if self.withdrawal_covers(item, action_key=key) is not None:
+            if self.withdrawal_covers(moved, action_key=key) is not None:
                 # Withdrawn between the scan above and this rename.  The window
                 # is microseconds wide and closing it here costs one listing on
                 # a path taken once per claim; leaving it open costs a cancelled
@@ -2216,16 +2404,39 @@ class PoolQueue:
                 if ledger is not None:
                     ledger.release(key)
                 self._file_superseded(
-                    item, key=key, kind="dropped", status="dropped",
+                    moved, key=key, kind="dropped", status="dropped",
                     dropped_unix=_now(), dropped_host=socket.gethostname(),
                     reason="withdrawn between the ready scan and the claim",
                 )
                 dst.unlink(missing_ok=True)
                 continue
-            claimed = dict(item)
+            # From ``moved``, not from ``item``: past the rename the bytes in
+            # ``claimed`` are the item, and the scan's copy may be a generation
+            # ``publish`` has already replaced.  Rebuilding the claim from the
+            # scan wrote that replaced generation back over the one the rename
+            # moved, so the worker ran a submission nobody had asked for and
+            # ``finish`` filed the outcome under the retired ``published_unix``
+            # -- where the waiter on the live one never looked.  The terminal
+            # and withdrawal guards above already read ``moved`` for this
+            # reason; the record this method returns is the last place that
+            # still did not.
+            claimed = dict(moved)
+            # ``passes`` is not a field of the item; it is the aging sidecar,
+            # which ``ready_items`` stamps on its copy so the ready ordering
+            # can read it and which this method deletes four lines below.
+            # Copying it into the claim freezes a denial count into the
+            # claimed record, into every attempt archived from it, and into
+            # the done or failed record it becomes -- a number describing a
+            # counter that no longer exists, on a record no admission decision
+            # ever reads.
+            claimed.pop("passes", None)
+            claimed.pop("cpu_allocation", None)
+            self._cpu_deferrals.pop((key, repr(moved.get("published_unix"))), None)
             claimed["claimed_by"] = owner
             claimed["claimed_unix"] = _now()
             claimed["claimed_host"] = socket.gethostname()
+            if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
+                claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
             claimed["reserved_on"] = socket.gethostname() if demand else None
             _write_json_atomic(dst, claimed)
             self.write_lease(
@@ -2263,6 +2474,42 @@ class PoolQueue:
         if not isinstance(declared, (int, float)):
             return None
         return _now() - float(declared)
+
+    def claim_holder_pids(self, host: str | None = None) -> set[int]:
+        """The pids on ``host`` that hold a claim of this queue right now.
+
+        ``claim`` writes the lease before it returns and ``finish`` unlinks it,
+        so this is exactly the set of loops between those two points --
+        including one that has claimed an action and has not yet started
+        anything to run it.  Nothing about that loop's process tree says so,
+        which is why the question is asked here: the lease carries the
+        claiming loop's own pid, and has since it was written.
+
+        Host-qualified, because the queue is shared and a pid is a name only
+        one box can resolve.  A lease naming another box is another box's
+        business.
+
+        Missing or unreadable ownership is unknown, not idle. A claim is
+        renamed before its first lease is written, so inspect claimed items
+        and refuse to authorize a signal while any ownership is unresolved.
+        """
+
+        host = socket.gethostname() if host is None else host
+        pids: set[int] = set()
+        for claim in _glob(self.dir(CLAIMED), "*.json"):
+            lease = claim.with_suffix(".lease")
+            record = _read_json(lease)
+            if record is None:
+                if not claim.exists():
+                    continue  # Finished while the directory was being read.
+                raise PoolContractError(f"claim ownership is unknown: {claim}")
+            pid = record.get("pid")
+            if (not isinstance(record.get("host"), str) or not record["host"]
+                    or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0):
+                raise PoolContractError(f"claim ownership is invalid: {lease}")
+            if record["host"] == host:
+                pids.add(pid)
+        return pids
 
     def reap_stale(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
         """Return claims whose lease has expired to ``ready``.
@@ -2437,10 +2684,7 @@ class PoolQueue:
                 record["schema"] = POOL_OUTCOME_SCHEMA_V1
                 destination = self.item_path(str(disposition), key)
             else:
-                record["requeued_unix"] = _now()
-                for transient in ("claimed_by", "claimed_unix", "claimed_host"):
-                    record.pop(transient, None)
-                destination = self.item_path(READY, key)
+                destination = self._shape_as_ready_item(record, action_key=key)
             # Same ordering as ``finish``, and for the same reason: this loop
             # published the requeue and only then unlinked the claim and lease,
             # so a worker that claimed the requeue inside that window had its
@@ -2661,6 +2905,75 @@ class PoolQueue:
             swept.append(key)
         return swept
 
+    def _file_unreadable(self, path: Path, *, reason: str) -> str | None:
+        """Take one unparseable queue record out of the live queue, loudly.
+
+        The original bytes and a bounded diagnostic go to ``superseded/``
+        so whoever has to find the writer still can; a
+        record with the file's own name goes to ``failed/`` because that is
+        what ``pbstatus`` and ``pbwait`` read, and a defect nobody counts is
+        the silence this sweep exists to end.
+
+        Never over a terminal record.  A corrupt ready file says nothing about
+        an ending already filed for that key, and a key with two terminals is
+        a worse defect than the one being cleaned up.
+        """
+
+        key = path.stem
+        # Take the bytes out of the live namespace before diagnosing or filing
+        # them. A later publish must not be unlinked by this sweep. Preserve the
+        # complete original alongside the bounded inline diagnostic.
+        evidence = self.superseded_dir() / f"{key}.{uuid.uuid4().hex}.unreadable.raw"
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.rename(path, evidence)
+        except FileNotFoundError:
+            return None
+        try:
+            repaired = _read_json(evidence)
+        except PoolContractError:
+            repaired = None
+        else:
+            if repaired is not None:
+                # The producer repaired/replaced the record after the scan.
+                # Restore without overwriting another concurrent publication.
+                try:
+                    os.link(evidence, path)
+                except FileExistsError:
+                    pass  # the replacement remains available as evidence
+                else:
+                    evidence.unlink()
+                return None
+        raw = evidence.read_bytes()
+        self._file_superseded(
+            None, key=key, kind="unreadable", state=READY,
+            status="unreadable_record",
+            filed_unix=_now(), filed_host=socket.gethostname(),
+            reason=reason, raw_bytes=len(raw),
+            raw_path=str(evidence.relative_to(self.root)),
+            raw_head=raw[:UNREADABLE_HEAD_BYTES].decode("utf-8", "replace"),
+        )
+        if not any(self.item_path(state, key).exists()
+                   for state in (DONE, FAILED)):
+            pb._atomic_publish(
+                self.item_path(FAILED, key),
+                pb._canonical_bytes({
+                    "schema": POOL_OUTCOME_SCHEMA_V1,
+                    "action_key": key,
+                    "status": "unreadable_record",
+                    "finished_unix": _now(),
+                    "finished_host": socket.gethostname(),
+                    "detail": {
+                        "reason": "the ready record could not be parsed, so no "
+                                  "worker could ever claim it; its bytes are "
+                                  "kept under withdrawn/superseded/",
+                        "parse_error": reason,
+                        "bytes": len(raw),
+                    },
+                }),
+            )
+        return key
+
     def quarantine_orphans(self) -> list[str]:
         """File ready records that no consumer can address.
 
@@ -2672,6 +2985,13 @@ class PoolQueue:
         the sweep stays whether or not that race can still fire.  Filing them
         is the point -- a countable ``orphaned_stub`` in ``failed`` is a
         defect someone can see; a permanent resident of ``ready`` is not.
+
+        A record whose bytes will not parse is the same defect one step
+        earlier, so it takes the same route.  It used to take the whole fleet
+        instead: ``_read_json`` refuses a malformed record, and that refusal
+        reached ``claim``, ``ready_items``, ``reap_stale`` and this sweep, so
+        one foreign writer's truncated file stopped every consumer on every
+        box until somebody deleted it by hand.
         """
 
         filed: list[str] = []
@@ -2679,8 +2999,23 @@ class PoolQueue:
         if not ready.is_dir():
             return filed
         for path in sorted(ready.glob("*.json")):
-            record = _read_json(path)
+            try:
+                record = _read_json(path)
+            except PoolContractError as exc:
+                key = self._file_unreadable(path, reason=str(exc))
+                if key is not None:
+                    filed.append(key)
+                continue
             if record is None:
+                # ``None`` covers two different things.  The file vanishing
+                # under the glob is an ordinary race with a concurrent claim
+                # and is not this sweep's business.  A file that is still
+                # there and holds zero bytes is a torn write no consumer will
+                # ever address, which is exactly what this sweep is for.
+                if path.exists():
+                    key = self._file_unreadable(path, reason="queue record is empty")
+                    if key is not None:
+                        filed.append(key)
                 continue
             # Two ways to be unaddressable, and both belong here.  A record
             # with the wrong (or no) ``action_key`` is skipped by ``claim()``
@@ -3196,8 +3531,31 @@ class PoolQueue:
                 str(snapshot_host) if isinstance(snapshot_host, str) else None
             ).release(action_key)
             self.lease_path(action_key).unlink(missing_ok=True)
-            covered = self.terminal_outcome_covers(
-                snapshot, action_key=action_key)
+            try:
+                covered = self.terminal_outcome_covers(
+                    snapshot, action_key=action_key)
+            except PoolContractError:
+                # A terminal for this key exists and cannot be read.  Raising
+                # here ends the whole ``serve_once`` call over one bad file,
+                # and PR #52 introduced that on a branch which used to write
+                # unconditionally, so ask what is actually left to do.
+                #
+                # Nothing, is the answer.  This branch is reached only because
+                # a reaper already concluded the claim, so the key HAS an
+                # ending; the unreadable record is it.  Writing a second one
+                # beside it is the two-terminals defect PR #52 removed, and a
+                # generation this read cannot supply is no basis for deciding
+                # that this is a different run.  So report the terminal that
+                # is there and write nothing: the submitter's own reader
+                # reports an unreadable record at once (PR #50), which is
+                # where a corrupted queue record has to surface, and repairing
+                # it from here would be inventing an ending for an attempt
+                # this worker did not archive.
+                for state in (DONE, FAILED):
+                    unreadable = self.item_path(state, action_key)
+                    if unreadable.exists():
+                        return unreadable
+                raise
             if covered is not None:
                 return self.item_path(str(covered[0]), action_key)
             lost = self.item_path(
@@ -3281,10 +3639,7 @@ class PoolQueue:
             # external state before failing even when its CAS result would be
             # reproducible.  ``fleet/pbrun`` reaches it only with
             # ``--retry-safe`` and a bound above one.
-            record["requeued_unix"] = _now()
-            for transient in ("claimed_by", "claimed_unix", "claimed_host"):
-                record.pop(transient, None)
-            dst = self.item_path(READY, action_key)
+            dst = self._shape_as_ready_item(record, action_key=action_key)
         # Everything this worker owns goes before the item's next home becomes
         # visible: the claim to a tombstone, then its own lease.  A retry
         # published while either still stood was claimed by the next poll, and
@@ -3724,10 +4079,22 @@ class PoolQueue:
             # decision reached nobody.  Keep the evidence under a name of its
             # own: the links still resolve, and no reader mistakes them for
             # this record's own ending.
+            #
+            # ``detail`` is the same fact one field over.  A record a requeue
+            # has touched carries the returncode, stdout and stderr of the
+            # attempt that failed, and under ``status: withdrawn`` that
+            # describes an ending this record does not have: ``pbrun`` wrote
+            # the failed attempt's stderr to the operator's terminal and only
+            # then said who withdrew the action, and ``pbstatus`` showed its
+            # returncode on the withdrawn row.  A cancellation has no detail of
+            # its own -- ``withdrawn_by`` and ``reason`` are what it has to say
+            # -- so the field is kept as evidence rather than left where every
+            # reader takes it for this record's ending.
             for field, kept in (
                 ("attempt_history", "attempt_history_before_withdrawal"),
                 ("attempt_history_missing_before",
                  "attempt_history_missing_before_withdrawal"),
+                ("detail", "detail_before_withdrawal"),
             ):
                 if field in filed:
                     filed[kept] = filed.pop(field)
@@ -3923,14 +4290,35 @@ class PoolQueue:
         """
 
         key = str(item["action_key"])
+        timeout_s = _execution_timeout(item, timeout_s)
         argv = [str(python)] + worker_argv(
             worker_script=item["worker_script"],
             action_key=key,
             cas_root=item["cas_root"],
             checkout_root=checkout_root,
         )
+        allocation = item.get("cpu_allocation")
+        if allocation is not None:
+            host = str(item.get("reserved_on") or "")
+            if host != socket.gethostname():
+                raise PoolContractError("CPU allocation belongs to another host")
+            ledger = self.ledger(host)
+            tiers = _read_json(ledger.base / "cpu-map.json")
+            if tiers is None or ledger.cpu_allocation(key, tiers) != allocation:
+                raise PoolContractError("CPU allocation differs from held reservation")
+            cpus = list(allocation["preferred"]) + list(allocation["fallback"])
+            if len(cpus) != self.demand_of(item).get("cpu", 0):
+                raise PoolContractError("CPU allocation does not cover demand")
+            if cpus:
+                if not set(cpus) <= os.sched_getaffinity(0):
+                    raise PoolContractError("CPU allocation exceeds current affinity")
+                # taskset applies affinity before exec, without preexec_fn in
+                # this multithread-capable parent. Descendants inherit it.
+                argv = ["/usr/bin/taskset", "--cpu-list", cpu_topology.as_range(cpus),
+                        *argv]
         owner = str(item.get("claimed_by") or "")
         started = _now()
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
         # Withdrawal checkpoint one of three: before the launch.  A cancellation
         # that landed in the microseconds between ``claim``'s rename and this
         # call would otherwise start the work anyway, and then have to stop it.
@@ -3942,6 +4330,7 @@ class PoolQueue:
                 "stderr": "",
                 "elapsed_s": 0.0,
                 "argv": argv,
+                "cpu_allocation": allocation,
             }
         process = subprocess.Popen(
             argv,
@@ -3974,7 +4363,10 @@ class PoolQueue:
             # reaped out from under itself.
             while True:
                 try:
-                    out, err = process.communicate(timeout=heartbeat_s)
+                    interval = heartbeat_s if deadline is None else min(
+                        heartbeat_s, max(0.0, deadline - time.monotonic())
+                    )
+                    out, err = process.communicate(timeout=interval)
                     break
                 except subprocess.TimeoutExpired:
                     # Checkpoint two: the cross-box path.  A withdrawal from another
@@ -3990,6 +4382,7 @@ class PoolQueue:
                             "stderr": err,
                             "elapsed_s": _now() - started,
                             "argv": argv,
+                            "cpu_allocation": allocation,
                         }
                     self.write_lease(
                         key,
@@ -3998,7 +4391,7 @@ class PoolQueue:
                         container_owner=(str(item["container_owner"])
                                          if item.get("container_owner") else None),
                     )
-                    if timeout_s is not None and _now() - started > timeout_s:
+                    if deadline is not None and time.monotonic() >= deadline:
                         # Worst case this branch spends three grace budgets
                         # -- TERM wait, KILL wait, drain (~45 s) -- without
                         # refreshing the lease, against a 300 s expiry.
@@ -4033,6 +4426,7 @@ class PoolQueue:
                             "action_survived_kill": survived,
                             "elapsed_s": _now() - started,
                             "argv": argv,
+                            "cpu_allocation": allocation,
                         }
         except BaseException:
             # The launcher leads its own session now, so a Ctrl-C or any other
@@ -4058,6 +4452,7 @@ class PoolQueue:
             "stderr": err,
             "elapsed_s": _now() - started,
             "argv": argv,
+            "cpu_allocation": allocation,
         }
 
     def _stop_action(self, process: subprocess.Popen) -> tuple[str, str]:
@@ -4087,6 +4482,7 @@ class PoolQueue:
         python: str | Path = sys.executable,
         timeout_s: float | None = None,
         capacity: Mapping[str, int] | None = None,
+        cpu_tiers: Mapping[str, Sequence[int]] | None = None,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -4097,7 +4493,8 @@ class PoolQueue:
         """
 
         self.reap_stale()
-        item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity)
+        item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
+                          cpu_tiers=cpu_tiers)
         if item is None:
             return None
         key = str(item["action_key"])

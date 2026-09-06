@@ -1629,9 +1629,14 @@ def test_durable_state_read_replays_transient_link_metadata_from_fresh_fd(
             if transition == "two-to-one":
                 transient_link.unlink()
             else:
-                time.sleep(0.001)
-                os.link(state, transient_link)
-                transient_link.unlink()
+                original_ctime = os.fstat(descriptor).st_ctime_ns
+                deadline = time.monotonic() + 10.0
+                while True:
+                    os.link(state, transient_link)
+                    transient_link.unlink()
+                    if os.fstat(descriptor).st_ctime_ns != original_ctime:
+                        break
+                    assert time.monotonic() < deadline, "link metadata never changed"
         return chunk
 
     monkeypatch.setattr(pb, "_open_regular_nofollow", tracked_open)

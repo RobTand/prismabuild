@@ -33,9 +33,10 @@ external state and then fail, so arbitrary commands get one attempt.  A larger
 ``--max-attempts`` is accepted only with ``--retry-safe``, which declares the
 whole command idempotent, and that policy is sealed into the action identity.
 
-The stamp carrying that identity has to live *inside* the checkout, because
+The stamp carrying that identity lives inside the materialized checkout, because
 the worker verifies the closure against ``checkout_root`` on the box that
-runs it.  So it is excluded from the identity it records -- otherwise each
+runs it. A private snapshot index injects it without writing the source tree.
+Legacy stamps are excluded from the identity they record -- otherwise each
 submit would dirty the tree it is describing and no two submits of the same
 command would ever agree -- and it is added to ``.git/info/exclude`` (local
 only, never the committed ignore file) so it cannot make a clean tree look
@@ -58,6 +59,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import math
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -113,13 +115,27 @@ CONTENT_TRANSFORM_ATTRIBUTES = frozenset(
 #: Non-zero because the command did not run; distinct from a real failure
 #: because nothing about it was a defect.
 WITHDRAWN_EXIT = 143
-#: What ``pbrun`` exits with when the fleet took the action but the record of
-#: it could not be written.  ``sysexits.h`` calls 74 ``EX_IOERR``, and that is
-#: exactly what happened: the work is unaffected, the account of it is what
-#: failed.  Deliberately neither ``GAVE_UP_EXIT`` (which means no verdict yet
-#: and nothing to do) nor ``WITHDRAWN_EXIT`` (which means somebody decided),
-#: because a caller that retries on those would do the wrong thing here.
+#: Filesystem/record persistence failure (sysexits.h ``EX_IOERR``). The legacy
+#: name remains for callers; diagnostics distinguish an accepted job's failed
+#: record write from other filesystem access failures and withdrawal stages.
+#: Neither a timeout nor a withdrawal verdict: recovery requires reading the
+#: reported path, reason and known job id.
 RECORD_WRITE_FAILED_EXIT = 74
+#: The exit codes ``pbrun`` decides for itself, and therefore the codes a run's
+#: own status must never be allowed to impersonate.  A terminal record carries
+#: the far side's launcher status as a plain integer, and both report paths
+#: returned it verbatim: a launcher that exited 143 reached the caller as
+#: ``WITHDRAWN_EXIT``, which claims an operator made a decision that nothing on
+#: disk records.  That is reachable rather than theoretical --
+#: ``core._sigterm_unwinds_this_process`` raises ``SystemExit(128 + signum)``,
+#: so every SIGTERM that is not a withdrawal leaves 143 in the record -- and 2
+#: (a refusal), 74 and 75 are the same hole with different remedies attached.
+#: Zero is deliberately absent: it is ``pbrun``'s word for success, no producer
+#: files it under a status that is not one, and the SLURM site below already
+#: excludes it by truthiness.
+RESERVED_EXITS = frozenset(
+    {2, RECORD_WRITE_FAILED_EXIT, GAVE_UP_EXIT, WITHDRAWN_EXIT}
+)
 
 #: The one line ``--detach`` prints.  Versioned because ``pbcampaign`` and
 #: ``pbwait`` parse it, and a fleet runs a published runtime generation that
@@ -836,10 +852,21 @@ def write_deterministic_bundle(
         )
 
 
+def build_stamp_closure(stamp_name: str, payload: str) -> dict[str, object]:
+    """Describe the UTF-8 bytes injected into the snapshot's private index."""
+    raw = payload.encode("utf-8")
+    body = {"schema": pb.CODE_CLOSURE_SCHEMA_V1,
+            "files": [{"path": stamp_name, "sha256": hashlib.sha256(raw).hexdigest(),
+                       "bytes": len(raw)}]}
+    return pb.validate_code_closure(
+        {**body, "closure_sha256": pb.canonical_sha256(body)})
+
+
 def build_git_checkout_snapshot(
     cwd: Path,
     *,
     stamp_name: str | None = None,
+    stamp_payload: str | None = None,
     cas: pb.PrismaBuildCAS,
     max_bytes: int = CHECKOUT_SNAPSHOT_MAX_BYTES,
     expected_identity: dict[str, str] | None = None,
@@ -855,6 +882,9 @@ def build_git_checkout_snapshot(
             action that pinned it; a snapshot-addressed action is compared
             against its own sealed commit instead, so a producer that never
             writes a stamp does not need one invented for it.
+        stamp_payload: Optional UTF-8 stamp contents injected into the private
+            Git index, without writing a stamp into the submitting worktree.
+            The name, bytes and Git mode remain identical to a regular stamp.
         cas: The store the bundle is ingested into.
         max_bytes: The local-disk bound this snapshot may not exceed.
         expected_identity: The checkout identity the caller already read, so
@@ -869,6 +899,17 @@ def build_git_checkout_snapshot(
     if root is None:
         raise SystemExit("pbrun: a non-Git checkout cannot be materialized")
     require_checkout_snapshot_limit(max_bytes)
+    if stamp_payload is not None:
+        if (not stamp_name or Path(stamp_name).name != stamp_name
+                or stamp_name in {".", ".."}):
+            raise SystemExit("pbrun: overlay stamp name must be a plain basename")
+        subdirectory = cwd.relative_to(root).as_posix() or "."
+        stamp_relative = (Path(subdirectory) / stamp_name).as_posix()
+        return _build_git_checkout_snapshot(
+            cwd, root, subdirectory, stamp_relative, (),
+            stamp_payload=stamp_payload, cas=cas, max_bytes=max_bytes,
+            expected_identity=expected_identity, snapshot_refs=snapshot_refs,
+        )
     if stamp_name is None:
         subdirectory = cwd.relative_to(root).as_posix() or "."
         stamp_relative = None
@@ -914,12 +955,19 @@ def _build_git_checkout_snapshot(
     max_bytes: int,
     expected_identity: dict[str, str] | None,
     snapshot_refs: Sequence[str],
+    stamp_payload: str | None = None,
 ) -> dict[str, object]:
     """Seal the tree once the caller has settled where the stamp is, if any."""
 
     paths = snapshot_path_roster(root, extra_paths=stamp_paths)
-    require_working_tree_size(root, paths, max_bytes=max_bytes)
-    require_untransformed_checkout(root, paths)
+    working_bytes = require_working_tree_size(root, paths, max_bytes=max_bytes)
+    if stamp_payload is not None:
+        overlay_bytes = len(stamp_payload.encode("utf-8"))
+        if working_bytes + overlay_bytes > max_bytes:
+            raise SystemExit("pbrun: working tree plus closure stamp exceeds "
+                             "checkout snapshot size limit")
+    require_untransformed_checkout(
+        root, paths + ([stamp_relative] if stamp_payload is not None else []))
     identity = expected_identity or _git_identity(cwd)
     if _git_identity(cwd) != identity:
         raise SystemExit("pbrun: checkout changed before it could be snapshotted")
@@ -973,7 +1021,20 @@ def _build_git_checkout_snapshot(
             [*PERSONAL_EXCLUDES_PIN, "add", "-A"],
             environment=object_environment,
         )
-        if stamp_relative is not None:
+        if stamp_payload is not None:
+            # This index and object store belong only to this submission.
+            # Keep the historical pathname and mode so unchanged action bytes
+            # produce exactly the same commit, bundle, and closure identity.
+            stamp_blob = _snapshot_git(
+                root, ["hash-object", "-w", "--stdin", "--no-filters"],
+                environment=object_environment, input_text=stamp_payload,
+            )
+            _snapshot_git(
+                root, ["update-index", "--add", "--cacheinfo",
+                       f"100644,{stamp_blob},{stamp_relative}"],
+                environment=object_environment,
+            )
+        elif stamp_relative is not None:
             _snapshot_git(
                 root,
                 ["add", "-f", "--", stamp_relative],
@@ -1786,7 +1847,18 @@ def published_generation(q, key: str, path) -> float | None:
     return None
 
 
-def terminal_record(path: Path, generation: float | None):
+class UnreadableTerminal(ValueError):
+    """A published ending exists but cannot supply a verdict."""
+
+    def __init__(self, path: Path, reason: str):
+        self.path = path
+        self.reason = reason
+        super().__init__(f"{reason}: {path}")
+
+
+def terminal_record(
+    path: Path, generation: float | None, *, report_unreadable: bool = False,
+):
     """The record filed at ``path``, when it belongs to ``generation``.
 
     An action key is a content hash, so one key accumulates the endings of
@@ -1800,6 +1872,10 @@ def terminal_record(path: Path, generation: float | None):
     and records filed before generations were stamped have none either;
     staleness cannot be proved of those, and refusing them would hang a caller
     on the outcome that is the only account of what happened.
+
+    With ``report_unreadable=True``, a present but unreadable record raises
+    ``UnreadableTerminal``. Nonblocking compatibility probes keep returning
+    ``None``; waiters opt in so corruption is not reported as a timeout.
     """
 
     try:
@@ -1813,9 +1889,18 @@ def terminal_record(path: Path, generation: float | None):
         return None
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        # A concurrent requeue can remove an ending after readdir.
+        return None
+    except (OSError, ValueError) as exc:
+        if report_unreadable:
+            reason = (str(exc.strerror or type(exc).__name__).lower()
+                      if isinstance(exc, OSError) else "not valid JSON")
+            raise UnreadableTerminal(path, reason) from exc
         return None
     if not isinstance(record, dict):
+        if report_unreadable:
+            raise UnreadableTerminal(path, "not a JSON object")
         return None
     if generation is None:
         return record
@@ -1826,7 +1911,8 @@ def terminal_record(path: Path, generation: float | None):
 
 
 def landed_outcome(
-    q, key: str, *, wait_s: float, generation: float | None = None
+    q, key: str, *, wait_s: float, generation: float | None = None,
+    report_unreadable: bool = False,
 ):
     """Block until this action's ending lands, and return it with its path.
 
@@ -1864,14 +1950,22 @@ def landed_outcome(
     deadline = time.monotonic() + wait_s
     while True:
         found = []
+        broken = []
         for path in watched:
-            record = terminal_record(path, generation)
+            try:
+                record = terminal_record(
+                    path, generation, report_unreadable=report_unreadable)
+            except UnreadableTerminal as exc:
+                broken.append(exc)
+                continue
             if record is not None:
                 found.append((path, record))
         if len(found) == 1 or (found and generation is not None):
             return found[0]
         if found:
             return max(found, key=_stamp)
+        if broken:
+            raise broken[0]
         # ``>=``, so a non-blocking probe (``wait_s=0``) does not spend a poll
         # interval finding out that it had none to spend.
         if time.monotonic() >= deadline:
@@ -2037,10 +2131,16 @@ def await_outcome(
     test would have been least likely to reach.
     """
 
-    landed = landed_outcome(q, key, wait_s=wait_s, generation=generation)
+    try:
+        landed = landed_outcome(
+            q, key, wait_s=wait_s, generation=generation,
+            report_unreadable=True)
+    except UnreadableTerminal as exc:
+        print(f"pbrun: unreadable ending for {key[:12]}: {exc}", file=sys.stderr)
+        return 1
     if landed is None:
         print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
-        return 75
+        return GAVE_UP_EXIT
     outcome_path, outcome = landed
 
     summary = outcome_summary(q, outcome_path, outcome)
@@ -2084,7 +2184,7 @@ def await_outcome(
         return 0
     rc = detail.get("returncode")
     if isinstance(rc, int):
-        return rc
+        return reported_exit(rc, key=key)
     if status == "executed":
         return 0
     # A failure the worker itself raised carries no returncode -- the argv's
@@ -2118,6 +2218,39 @@ def action_status_suffix(detail: Mapping[str, object]) -> str:
     if isinstance(signal, int) and not isinstance(signal, bool):
         return f"; rc={detail.get('returncode')} (action killed by signal {signal})"
     return f"; rc={detail.get('returncode')} (action exited {action})"
+
+
+def reported_exit(returncode: int, *, key: str) -> int:
+    """One run's recorded status as ``pbrun``'s own exit status.
+
+    Every status but ``pbrun``'s own reserved words passes through unchanged,
+    which is the contract callers already have: an action that exits 7 exits
+    7.  One that lands on a reserved word is reported as 1, an ordinary
+    failure, with the real number said on a line of its own so nothing is
+    hidden.  The record keeps it under ``detail.returncode`` either way, and
+    ``pbstatus`` and ``pbwait`` print it from there.
+
+    Clamping rather than renumbering, because the codes have readers this
+    cannot see: ``pbcampaign``, the harness, and whatever an operator wrapped
+    ``pbrun`` in.  Every existing condition keeps the code it had, and the one
+    case that was ambiguous stops being ambiguous.
+
+    Args:
+        returncode: The status the terminal record recorded for the run.
+        key: The action key, for the prefix every fleet tool takes.
+
+    Returns:
+        ``returncode``, or 1 when returning it would impersonate a verdict
+        ``pbrun`` did not reach.
+    """
+
+    if returncode not in RESERVED_EXITS:
+        return returncode
+    print(f"pbrun: {key[:12]} exited {returncode}, which is one of pbrun's own "
+          f"exit codes; reporting it as 1 so it is not read as pbrun's "
+          f"verdict. The run's own status is detail.returncode in the record.",
+          file=sys.stderr)
+    return 1
 
 
 def _report_stall(key: str, report) -> None:
@@ -2292,6 +2425,7 @@ def _unfiled_record(
     action,
     cas,
     record: str = "",
+    tool: str = "pbrun",
 ) -> int:
     """Report a record write that failed after the thing it records happened.
 
@@ -2327,7 +2461,7 @@ def _unfiled_record(
         done = cas.lookup(action) is not None
     except OSError:
         # The mount that would not take the record may not answer this either.
-        done = False
+        done = None
     if done:
         advice = (
             f"The receipt is in the CAS, so the work is done and re-running "
@@ -2337,21 +2471,44 @@ def _unfiled_record(
         )
     else:
         advice = (
-            f"No receipt is in the CAS, so the job may still be running.\n"
-            f"Clear what blocked the write, then run "
+            ("The CAS could not be read, so receipt status is unknown.\n"
+             if done is None else
+             "No receipt is in the CAS, so the job may still be running.\n")
+            + f"Clear what blocked the write, then run "
             f"`tools/fleet/pbwait.py {key[:12]}` "
             f"to wait on it and file the ending, or "
             f"`tools/fleet/pbrun.py --transport slurm --withdraw {key[:12]}` "
             f"to stop it."
         )
     print(
-        f"pbrun: slurm took this action, but pbrun could not write its "
+        f"{tool}: slurm took this action, but {tool} could not write its "
         f"record.\n"
         f"  slurm job: {job_id or '(none accepted)'}\n"
         f"{where}"
         f"  reason:    {reason}\n"
         f"{advice}",
         file=sys.stderr, flush=True)
+    return RECORD_WRITE_FAILED_EXIT
+
+
+def _lane_io_failure(exc, *, key: str, action, cas, tool="pbrun", job_id="") -> int:
+    """Separate stamped post-submission writes from other filesystem faults."""
+
+    if getattr(exc, "job_id", None):
+        return _unfiled_record(exc, key=key, action=action, cas=cas, tool=tool)
+    path = str(getattr(exc, "filename", "") or "")
+    reason = str(getattr(exc, "strerror", "") or exc)
+    print(
+        f"{tool}: filesystem access failed while processing slurm action {key[:12]}.\n"
+        f"  slurm job: {job_id or '(not identified; acceptance is unknown)'}\n"
+        f"  path:      {path or '(not supplied)'}\n"
+        f"  reason:    {reason}\n"
+        "Submission and receipt status could not be fully verified.\n"
+        f"Restore filesystem access, then run `tools/fleet/pbwait.py {key[:12]}` "
+        "to recover a recorded submission or ending; if nothing was submitted, "
+        "retry the original command.",
+        file=sys.stderr, flush=True,
+    )
     return RECORD_WRITE_FAILED_EXIT
 
 
@@ -2443,7 +2600,10 @@ def slurm_outcome(
     # this check and the job's start costs a materialization, never a rerun.
     # One lookup: it verifies the result blob, which on a rendered model is
     # gigabytes hashed over NFS.
-    receipt = None if detach else cas.lookup(action)
+    try:
+        receipt = None if detach else cas.lookup(action)
+    except OSError as exc:
+        return _lane_io_failure(exc, key=key, action=action, cas=cas)
     if receipt is not None:
         return cached_outcome(
             key,
@@ -2479,6 +2639,15 @@ def slurm_outcome(
         # A live *pool* item is not this transport's to wait on: it belongs to
         # a worker, and ``resume`` reconstructs a SLURM submission record.
         attached = found if found is not None and found[0] == "slurm" else None
+    submitted_job_ids = []
+
+    def announce_submission(job):
+        submitted_job_ids.append(job.job_id)
+        print(
+            f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
+            f"(attempt {job.attempt}) tags={tags} demand={demand}{masked}",
+            file=sys.stderr, flush=True)
+
     # sbatch's own refusal is this transport's capability gate: an unknown
     # Feature or an impossible GRES is rejected at submit time, which is the
     # moment the pool path's ``capability_verdict`` spoke.  So it reaches the
@@ -2532,10 +2701,7 @@ def slurm_outcome(
                 queue_root=queue,
                 wait_s=wait_s,
                 detach=detach,
-                on_submit=lambda job: print(
-                    f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
-                    f"(attempt {job.attempt}) tags={tags} demand={demand}{masked}",
-                    file=sys.stderr, flush=True),
+                on_submit=announce_submission,
                 **lane_commands,
             )
     except slurm_lane.SubmissionFateUnknown as exc:
@@ -2561,11 +2727,10 @@ def slurm_outcome(
             f"Fix the --tag, or read `sinfo -N -l` for a node that offers it."
         ) from exc
     except OSError as exc:
-        # Not a scheduler failure: ``slurm_lane._run`` turns every one of those
-        # into a ``SlurmLaneError`` above.  What reaches here is a write to the
-        # lane directory or the queue that the filesystem refused, at a point
-        # where the job is real and the work may already be finished.
-        return _unfiled_record(exc, key=key, action=action, cas=cas)
+        return _lane_io_failure(
+            exc, key=key, action=action, cas=cas,
+            job_id=(str(attached[2].get("job_id") or "") if attached else
+                    str(submitted_job_ids[-1]) if submitted_job_ids else ""))
 
     last = result.last
     if last is None:                       # unreachable: run always submits
@@ -2653,7 +2818,7 @@ def slurm_outcome(
     print(f"pbrun: failed ({outcome.state}) after {total} attempt(s); "
           f"logs {job.stdout_path} and {job.stderr_path}", file=sys.stderr)
     if isinstance(outcome.exit_code, int) and outcome.exit_code:
-        return outcome.exit_code
+        return reported_exit(outcome.exit_code, key=key)
     return 1
 
 
@@ -2751,20 +2916,25 @@ def withdraw_slurm_main(
         if not found:
             print(f"pbrun: no slurm submission matches {prefix!r}",
                   file=sys.stderr)
-            rc = 2
+            rc = rc or 2
             continue
         if len(found) > 1:
             keys = ", ".join(sorted(str(r["action_key"])[:12] for r in found))
             print(f"pbrun: {prefix!r} matches {len(found)} submissions "
                   f"({keys}); name more characters", file=sys.stderr)
-            rc = 2
+            rc = rc or 2
             continue
         record = found[0]
         key = str(record["action_key"])
         job_id = str(record["job_id"])
         queue = SH / "pb-queue" if queue_root is None else Path(queue_root)
-        marker = _file_slurm_withdrawal(
-            queue, record, reason=reason, by=by, scancel_command=scancel)
+        try:
+            marker = _file_slurm_withdrawal(
+                queue, record, reason=reason, by=by, scancel_command=scancel)
+        except (OSError, slurm_lane.SlurmLaneError) as exc:
+            _withdrawal_write_failure(exc, key=key, job_id=job_id, accepted=[])
+            rc = RECORD_WRITE_FAILED_EXIT
+            continue
         if marker is None:
             print(f"pbrun: {key[:12]} already has an outcome filed; "
                   f"nothing to withdraw", file=sys.stderr)
@@ -2776,7 +2946,12 @@ def withdraw_slurm_main(
             else:
                 refused.append(target)
         if accepted:
-            _stamp_scancel_accepted(queue, record)
+            try:
+                _stamp_scancel_accepted(queue, record)
+            except (OSError, slurm_lane.SlurmLaneError) as exc:
+                _withdrawal_write_failure(
+                    exc, key=key, job_id=job_id, accepted=accepted)
+                rc = RECORD_WRITE_FAILED_EXIT
             why = f" -- {reason}" if reason else ""
             jobs = ", ".join(accepted)
             plural = "s" if len(accepted) > 1 else ""
@@ -2786,8 +2961,24 @@ def withdraw_slurm_main(
             print(f"pbrun: scancel refused slurm job {target} for {key[:12]}; "
                   f"it may already have finished", file=sys.stderr)
         if refused and not accepted:
-            rc = 2
+            rc = rc or 2
     return rc
+
+
+def _withdrawal_write_failure(exc, *, key: str, job_id: str, accepted) -> None:
+    stage = (f"scancel accepted cancellation for job(s) {', '.join(accepted)}, "
+             "but its acceptance stamp could not be written"
+             if accepted else
+             "the withdrawal record could not be written; no cancellation was sent")
+    print(
+        f"pbrun: {stage}.\n"
+        f"  slurm job: {job_id}\n"
+        f"  record:    {getattr(exc, 'filename', '') or '(see reason)'}\n"
+        f"  reason:    {getattr(exc, 'strerror', '') or exc}\n"
+        "Restore record writes, then retry "
+        f"`tools/fleet/pbrun.py --transport slurm --withdraw {key[:12]}`.",
+        file=sys.stderr, flush=True,
+    )
 
 
 def _jobs_to_cancel(action_key: str, job_id: str, *, squeue: str) -> list[str]:
@@ -2818,23 +3009,32 @@ def _file_slurm_withdrawal(
     action finished a moment before the operator asked, which is them getting
     what they wanted rather than them mistyping, and is what
     ``PoolQueue.withdraw`` reports as ``already_finished``.
+
+    Each directory is listed before the name in it is read.  These are the same
+    NFS directories ``read_withdrawal_marker`` was written for: a lookup of a
+    name that did not exist yet is negatively cached, so ``exists()`` keeps
+    answering False after the ending has landed.  On a stale answer this verb
+    filed a withdrawal over a run already in ``done/`` and reported work that
+    succeeded as cancelled.  ``slurm_lane._read_json_object`` is the general
+    form of that revalidation; ``read_withdrawal_marker`` itself is pinned to
+    ``withdrawn/`` and this loop reads all three terminal directories.
     """
 
     key = str(submission["action_key"])
     published_unix = _submission_generation(submission)
     for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         filed = queue_root / state / f"{key}.json"
-        if not filed.exists() or not slurm_lane._same_generation(filed, published_unix):
+        filed_record = slurm_lane._read_json_object(filed)
+        if filed_record is None:
+            continue
+        theirs = slurm_lane._record_generation(filed_record)
+        if theirs is None or theirs != published_unix:
             continue
         if state == pool.WITHDRAWN:
             # A bare marker is a withdrawal still in flight (or one whose
             # scancel never landed); only a record carrying the job's ending
             # says this generation is over.
-            try:
-                filed_record = json.loads(filed.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                filed_record = None
-            if not (isinstance(filed_record, dict) and "detail" in filed_record):
+            if "detail" not in filed_record:
                 continue
             # The record this verb writes below carries ``detail`` too, and it
             # is written before ``scancel`` runs.  Until ``scancel`` accepts,
@@ -3118,16 +3318,10 @@ def main() -> int:
         help=("bounded attempts for a --retry-safe action; arbitrary commands "
               "default to one"),
     )
-    # Honoured on the SLURM path, where it becomes --time and the scheduler
-    # enforces it (TERM, then KILL after KillWait).  On the pool path it is
-    # still only parsed: the worker loop's own --timeout-s bounds an action
-    # there, and a submitter-declared bound has nowhere to be recorded.  See
-    # issue #32; the SLURM lane is the half of it that this closes.
     ap.add_argument("--timeout-s", type=float, default=None,
-                    help="an explicit deadline for the action, enforced by "
-                         "SLURM under --transport slurm; unset means the "
-                         "action runs while it is running, because elapsed "
-                         "time is not evidence that a worker is dead")
+                    help="positive execution deadline in seconds, enforced by "
+                         "both transports; the pool worker's safety ceiling "
+                         "also applies. Queue waiting is bounded by --wait-s")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument(
@@ -3171,6 +3365,10 @@ def main() -> int:
                     help="the command to run, after a bare --; every word "
                          "past it belongs to the command and not to pbrun")
     args = ap.parse_args()
+    if args.timeout_s is not None and (
+        not math.isfinite(args.timeout_s) or args.timeout_s <= 0
+    ):
+        raise SystemExit("pbrun: --timeout-s must be a positive finite number")
 
     if args.withdraw:
         # Withdrawing is not a submission and must not need one: the operator
@@ -3220,7 +3418,7 @@ def main() -> int:
         # workaround; it is where the closure can honestly be taken.
         raise SystemExit(
             f"--cwd is not a directory on {socket.gethostname()}: {cwd}\n"
-            f"pbrun stamps the code closure inside the checkout, so it can "
+            f"pbrun reads the source checkout to seal its bytes, so it can "
             f"only submit for a checkout on the box it runs on. If this path "
             f"exists on another box, submit from there -- the queue is "
             f"shared, the filesystem is not."
@@ -3264,9 +3462,6 @@ def main() -> int:
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        "OMP_NUM_THREADS": "4",
-        "MKL_NUM_THREADS": "4",
-        "OPENBLAS_NUM_THREADS": "4",
     }
     caller_variables: dict[str, str] = {}
     for entry in args.env:
@@ -3294,6 +3489,9 @@ def main() -> int:
     if args.cpus < 1:
         raise SystemExit("--cpus must be at least 1")
     demand.setdefault("cpu", args.cpus)
+    if not args.no_default_env:
+        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            variables.setdefault(name, str(demand["cpu"]))
 
     if args.anywhere and args.here:
         raise SystemExit("--anywhere and --here contradict each other")
@@ -3429,77 +3627,19 @@ def main() -> int:
         logical_cwd=logical_cwd,
         placement=placement,
     )
-    # The closure member must be under checkout_root: that is where the
-    # worker re-verifies it, on whichever box claimed the action.
-    # Written through a private temp file and renamed, because rename is the
-    # one primitive this fleet trusts on NFS and a plain write is not atomic.
-    # Concurrent submits from one checkout -- forty test shards, say -- all
-    # write this same file, and a reader that catches a partial one gets
-    # "cannot open code closure file as a regular file" or "live code closure
-    # differs from the action-pinned closure".  The content is identical across
-    # those submits *because the commit is in the name*, so atomicity is the
-    # whole fix and ordering does not matter.  It was not identical before
-    # that: the name held the command and the content held the commit.
-    #
-    # The stamp stays in the checkout after the bundle is built, and issue #57
-    # asks why.  Because that same concurrency is what an unlink would break.
-    # This submission still reads the stamp after the seal -- the closure below
-    # hashes it -- and so does every other submitter of this fingerprint that
-    # is mid-seal, all the way through ``resolve(strict=True)``, ``add -f`` and
-    # its own closure.  Measured: removing the file turns those into "cannot
-    # open code closure file as a regular file" and a bare FileNotFoundError.
-    # There is no unlink-if-nobody-else-needs-it: every correct version is a
-    # lock or a refcount over this path, and the submit side holds neither --
-    # the only lock in this system is the worker's output flock, on the far
-    # side of the queue from here.  Moving the stamp
-    # into a ``.pbrun/`` directory instead would move ``stamp_relative``, which
-    # is a closure entry path and a path in the sealed tree, so it is a key
-    # change and Rob's to make.
+    # Seal the stamp only in the private snapshot index. Publishing it in the
+    # source tree creates both litter and races: another submitter can hash a
+    # scratch name just as it is renamed. Unlinking the final stamp also races
+    # with readers sealing the same fingerprint. No shared stamp path exists
+    # now; workers still verify the same name and bytes in the materialization.
     payload = json.dumps(
         {"cwd": logical_cwd, **identity}, indent=1, sort_keys=True
     )
-    scratch = cwd / f"{stamp_name}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
-    try:
-        # fsync both the file and its directory before publishing.  The submit
-        # side is usually an NFS client and the worker may be the box holding
-        # the export, so a write that has only reached the client's page cache
-        # is invisible to the reader that is about to verify it -- the action
-        # gets published, a worker claims it within milliseconds, and it fails
-        # with "cannot open code closure file as a regular file" for a file
-        # that plainly exists a second later.  Durability before publication is
-        # the ordering the queue already assumes everywhere else.
-        try:
-            with scratch.open("w", encoding="utf-8") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(scratch, cwd / stamp_name)
-        except OSError as exc:
-            # A read-only mount, a checkout owned by another user, a full
-            # disk.  The stamp is not optional and neither is the result file
-            # the action tees into the same tree, so the tree itself is what
-            # is unfit here, and the refusal names it rather than tracing.
-            raise SystemExit(
-                f"pbrun: cannot write into the checkout {cwd}: {exc}. "
-                "The checkout must be writable: pbrun keeps the closure "
-                f"stamp {stamp_name} there, and the action tees its output "
-                f"to {log_name} in the same tree. Submit from a writable "
-                "clone or worktree of it."
-            ) from None
-        directory = os.open(cwd, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        except OSError:
-            pass                     # some filesystems refuse directory fsync
-        finally:
-            os.close(directory)
-    finally:
-        if scratch.exists():
-            scratch.unlink()
     cas = pb.PrismaBuildCAS(SH / "cas")
     checkout_snapshot = build_git_checkout_snapshot(
         cwd,
         stamp_name=stamp_name,
+        stamp_payload=payload,
         cas=cas,
         max_bytes=args.checkout_snapshot_max_bytes,
         expected_identity=identity,
@@ -3518,7 +3658,7 @@ def main() -> int:
             "determinism": determinism,
             "artifact_family": "generic",
             "artifact_kind": "generic",
-            "argv": [SEALED_ARGV0, "-lc",
+            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
                      f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
                      f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
                      f"exit ${{PIPESTATUS[0]}}"],
@@ -3526,7 +3666,7 @@ def main() -> int:
             "result_path": log_name,
         },
         "inputs": [checkout_snapshot["input"]],
-        "code_closure": pb.build_code_closure(cwd, [stamp_name]),
+        "code_closure": build_stamp_closure(stamp_name, payload),
         "params": {
             "command": command,
             "cwd": logical_cwd,
@@ -3538,6 +3678,8 @@ def main() -> int:
         "environment": {"variables": variables, "toolchain": toolchain},
         "execution_scope": execution_scope,
     }
+    if args.timeout_s is not None:
+        body["params"]["execution_timeout_s"] = args.timeout_s
     try:
         action = pb.seal_action(body)
     except pb.ActionContractError as exc:

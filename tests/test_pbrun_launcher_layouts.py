@@ -36,7 +36,7 @@ import pool_reset  # noqa: E402
 import require_pool  # noqa: E402
 import runtime_paths  # noqa: E402
 
-from test_pool_reset_refusal import KEY, fleet  # noqa: E402,F401
+from test_pool_reset_refusal import ACK, KEY, fleet  # noqa: E402,F401
 
 _SPEC = importlib.util.spec_from_file_location(
     "pbtest", REPOSITORY / "tools" / "fleet" / "pbtest.py"
@@ -51,13 +51,15 @@ IN_A_CHECKOUT = REPOSITORY / "tools" / "fleet" / "pbrun.py"
 
 
 class _Stub:
-    """A child that was started and is still running, as ``Popen`` looks."""
+    """A detached submitter that exited after acknowledging admission."""
 
     pid = 4242
 
+    def poll(self):
+        return 0
+
     def wait(self, timeout=None):
-        raise pool_reset.subprocess.TimeoutExpired(cmd="pbrun.py",
-                                                   timeout=timeout or 0.0)
+        return 0
 
 
 def test_a_reset_from_a_checkout_starts_the_pbrun_beside_it(
@@ -76,11 +78,10 @@ def test_a_reset_from_a_checkout_starts_the_pbrun_beside_it(
         started.append(list(command))
         log = Path(queue_root) / pool_reset.RESETS / f"{key}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text("", encoding="utf-8")
+        log.write_text(json.dumps(ACK) + "\n", encoding="utf-8")
         return _Stub(), log
 
     monkeypatch.setattr(pool_reset, "start_resubmission", _capture)
-    monkeypatch.setattr(pool_reset, "REFUSAL_WINDOW_S", 0.0, raising=False)
 
     code = pool_reset.main([
         "--apply", "--transport", "pool",
@@ -94,6 +95,7 @@ def test_a_reset_from_a_checkout_starts_the_pbrun_beside_it(
     launcher = Path(started[0][1])
     assert launcher.is_file(), started[0]
     assert launcher == IN_A_CHECKOUT
+    assert "--detach" in started[0]
     record = json.loads(fleet["failed"].read_text(encoding="utf-8"))
     assert record["reset"]["reason"].startswith("re-submitted")
 

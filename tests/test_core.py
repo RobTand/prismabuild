@@ -1761,6 +1761,11 @@ def test_initial_miss_rendezvous_one_arrival_times_out_without_task(
         timeout_seconds=0.05,
     )
     monkeypatch.setattr(pb, "_initial_miss_hostname", lambda: "host-a")
+    # Expire only after the arrival wait actually polls. A 50ms wall-clock
+    # budget can expire during manifest validation on a busy fleet worker.
+    clock = [0.0]
+    monkeypatch.setattr(pb.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(pb.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
     with pytest.raises(
         pb.InitialMissRendezvousError, match="timed out waiting for exact arrivals"
     ):
@@ -1804,6 +1809,15 @@ def test_initial_miss_rendezvous_defeats_post_wrapper_sigstop_schedule(
     monkeypatch.setattr(
         pb, "_initial_miss_hostname", lambda: threading.current_thread().name
     )
+    reached_arrivals = threading.Event()
+    real_wait_arrivals = pb._wait_initial_miss_arrivals
+
+    def observed_wait_arrivals(**kwargs):
+        if threading.current_thread().name == "host-a":
+            reached_arrivals.set()
+        return real_wait_arrivals(**kwargs)
+
+    monkeypatch.setattr(pb, "_wait_initial_miss_arrivals", observed_wait_arrivals)
     wrapper_marker = threading.Event()
     release_stalled_wrapper = threading.Event()
     results: list[dict[str, object]] = []
@@ -1824,18 +1838,20 @@ def test_initial_miss_rendezvous_defeats_post_wrapper_sigstop_schedule(
 
     def stalled_worker_b() -> None:
         wrapper_marker.set()  # V3 treated this pre-exec event as worker start.
-        release_stalled_wrapper.wait(timeout=2.0)  # deterministic SIGSTOP seam
+        release_stalled_wrapper.wait(timeout=30.0)  # deterministic SIGSTOP seam
         worker_a()
 
     first = threading.Thread(target=worker_a, name="host-a")
     stalled = threading.Thread(target=stalled_worker_b, name="host-b")
     first.start()
     stalled.start()
-    assert wrapper_marker.wait(timeout=1.0)
-    time.sleep(0.08)
-    assert first.is_alive()
-    assert not (checkout / "task-entered").exists()
-    release_stalled_wrapper.set()
+    try:
+        assert wrapper_marker.wait(timeout=10.0)
+        assert reached_arrivals.wait(timeout=10.0)
+        assert first.is_alive()
+        assert not (checkout / "task-entered").exists()
+    finally:
+        release_stalled_wrapper.set()
     first.join(timeout=5.0)
     stalled.join(timeout=5.0)
     assert not first.is_alive() and not stalled.is_alive()

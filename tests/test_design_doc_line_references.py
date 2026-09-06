@@ -25,7 +25,7 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS = sorted((ROOT / "docs").glob("*.md"))
+DOCS = sorted((ROOT / "docs").rglob("*.md"))
 SECTION = "## Line references"
 
 #: One table row: | where | `the quoted line` |

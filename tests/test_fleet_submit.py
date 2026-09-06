@@ -28,7 +28,10 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
 
+import dispatch_tessera_ladder as ladder  # noqa: E402
+import dispatch_tessera_shards as shards  # noqa: E402
 import fleet_submit  # noqa: E402
+import seal_and_publish  # noqa: E402
 
 from test_slurm_lane import (  # noqa: E402
     _paper_action,
@@ -286,32 +289,110 @@ def test_the_job_entry_is_a_sibling_of_this_module(tmp_path: Path) -> None:
 # The producers themselves: no tool may keep its own publish
 # --------------------------------------------------------------------------
 
-def assert_routed_through_the_shared_submit(name: str) -> None:
-    """No producer may keep a publish of its own.
+def _point_at_this_tree(
+    producer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Point one producer's live-store constants at this test's own tree.
 
-    Read from the source because that is the property: a tool that still calls
-    ``PoolQueue.publish`` bypasses the lane no matter what its own tests do,
-    and its ``main`` cannot be exercised here (the ladder copies a wrapper onto
-    the shared mount at import of its work, and none of the three has a fleet
-    to talk to).
+    Each dispatcher addresses ``/mnt/shared`` in module constants, so driving
+    its ``main`` means repointing every one of them first.  Nothing here needs
+    a fleet: ``fleet_submit.submit`` is replaced by the caller, so the run
+    stops at exactly the boundary these tests are about.
     """
 
-    text = (REPOSITORY / "tools" / "fleet" / name).read_text(encoding="utf-8")
-    assert ".publish(" not in text.replace("publish_action_request(", ""), name
-    assert "fleet_submit.submit(" in text, name
-    assert "add_transport_argument" in text, name
+    monkeypatch.setattr(producer, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(producer, "RUNTIME_ROOT", REPOSITORY)
+    if producer is seal_and_publish:
+        return
+
+    checkout = tmp_path / "checkout"
+    (checkout / "tessera" / "src").mkdir(parents=True)
+    (checkout / "tessera" / "src" / "encoder.py").write_text(
+        "VALUE = 1\n", encoding="utf-8")
+    (checkout / producer.WRAPPER).write_text("# wrapper\n", encoding="utf-8")
+    monkeypatch.setattr(producer, "CHECKOUT", checkout)
+    monkeypatch.setattr(producer, "PYTHON", sys.executable)
+    monkeypatch.setattr(producer, "SOURCE", str(tmp_path / "unused-model"))
+    if producer is not ladder:
+        plan = tmp_path / "plan.json"
+        plan.write_text("{}\n", encoding="utf-8")
+        monkeypatch.setattr(producer, "PLAN", str(plan))
+        monkeypatch.setattr(producer, "PARTS", str(tmp_path / "parts"))
 
 
-def test_the_ladder_dispatcher_routes_through_the_shared_submit() -> None:
-    assert_routed_through_the_shared_submit("dispatch_tessera_ladder.py")
+def drive_producer(
+    producer, argv: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, object]:
+    """Run one producer's ``main`` and record what reached the submit path.
+
+    No producer may keep a publish of its own: a tool that calls
+    ``PoolQueue.publish`` bypasses the lane, and after the cutover that queues
+    work where no worker drains it and *succeeds*, so nothing says so.  Driven
+    rather than read off the source, because a tool can name the shared submit
+    in a branch it never takes and publish from the branch it does.
+    """
+
+    _point_at_this_tree(producer, tmp_path, monkeypatch)
+    seen: dict[str, object] = {}
+
+    def capture(action, **kwargs):
+        seen["sealed_key"] = str(action["action_key"])
+        seen.update(kwargs)
+        return fleet_submit.Submission(
+            transport=str(kwargs["transport"]), where=tmp_path / "latest.json",
+            job_id="7", action_key="f" * 64,
+        )
+
+    def refuse_a_direct_publish(*args, **kwargs):
+        raise AssertionError(
+            f"{producer.__name__} published straight to the pool queue")
+
+    monkeypatch.setattr(fleet_submit, "submit", capture)
+    monkeypatch.setattr(pool.PoolQueue, "publish", refuse_a_direct_publish)
+
+    if producer is seal_and_publish:
+        assert producer.main(argv) == 0
+    else:
+        monkeypatch.setattr(sys, "argv", [f"{producer.__name__}.py", *argv])
+        # Both of these fall off the end of ``main``; ``SystemExit(None)`` is 0.
+        assert producer.main() in (None, 0)
+    assert seen, f"{producer.__name__} never reached fleet_submit.submit"
+    return seen
 
 
-def test_the_shard_dispatcher_routes_through_the_shared_submit() -> None:
-    assert_routed_through_the_shared_submit("dispatch_tessera_shards.py")
+@pytest.mark.parametrize("transport", ["pool", "slurm"])
+def test_the_ladder_dispatcher_routes_through_the_shared_submit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str,
+) -> None:
+    seen = drive_producer(
+        ladder, ["--shards", "1", "--transport", transport],
+        tmp_path, monkeypatch)
+
+    assert seen["transport"] == transport
+    assert seen["checkout_root"] == str(tmp_path / "checkout")
 
 
-def test_the_smoke_publisher_routes_through_the_shared_submit() -> None:
-    assert_routed_through_the_shared_submit("seal_and_publish.py")
+@pytest.mark.parametrize("transport", ["pool", "slurm"])
+def test_the_shard_dispatcher_routes_through_the_shared_submit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str,
+) -> None:
+    seen = drive_producer(
+        shards, ["--shards", "61", "--transport", transport],
+        tmp_path, monkeypatch)
+
+    assert seen["transport"] == transport
+    assert seen["checkout_root"] == str(tmp_path / "checkout")
+
+
+@pytest.mark.parametrize("transport", ["pool", "slurm"])
+def test_the_smoke_publisher_routes_through_the_shared_submit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str,
+) -> None:
+    seen = drive_producer(
+        seal_and_publish, ["--transport", transport], tmp_path, monkeypatch)
+
+    assert seen["transport"] == transport
+    assert seen["checkout_root"] == str(tmp_path / "fleet" / "checkout")
 
 
 # --------------------------------------------------------------------------

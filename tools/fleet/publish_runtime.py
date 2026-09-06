@@ -61,6 +61,10 @@ FLEET_SCRIPTS = (
     # runtime_process_census.py is here for the same reason and is only
     # useful there: it reads /proc on the box it runs on.
     "pbstatus.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
+    # pb_gc.py is the same case: it sweeps a store from whichever box is
+    # holding the mount, and it reads /proc on the box it runs on to find out
+    # what is still live there.
+    "pb_gc.py",
     # The reconcile, for the same reason: the endings it files are the ones
     # no waiter asked for, and the operator who notices they are missing is
     # on whichever box has the shared mount rather than the checkout.

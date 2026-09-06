@@ -2,11 +2,10 @@
 
 ``dispatch_tessera_ladder`` staged its wrapper into the shared checkout before
 it looked at ``--dry-run``, so the one flag that promises nothing will change
-copied a file into a tree both boxes execute. The comment above the copy
-argued the digest could not be previewed without the file, which is true and
-is not a reason to write: a dry run now reads the checkout as it stands, says
-when that is not what ``--apply`` would seal, and refuses when there is
-nothing staged to read.
+copied a file into a tree both boxes execute. A dry run now reads the selected
+source and constructs the same content-addressed closure as a submission,
+without staging anything. Without an explicit --wrapper, the shared checkout
+wrapper is the source.
 
 The evidence is a full listing of the checkout with sizes, modification times
 and content digests, taken before the run and after it. "The file is not
@@ -67,7 +66,6 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     local.write_text("# the box-local copy, which differs\n", encoding="utf-8")
 
     monkeypatch.setattr(ladder, "CHECKOUT", root)
-    monkeypatch.setattr(ladder, "LOCAL_WRAPPER", local)
     monkeypatch.setattr(ladder, "PYTHON", sys.executable)
     monkeypatch.setattr(ladder, "SOURCE", str(tmp_path / "unused-model"))
     return root
@@ -89,8 +87,6 @@ def test_a_dry_run_changes_nothing_in_the_shared_checkout(
     assert _listing(checkout) == before
     printed = capsys.readouterr().out
     assert "(dry run)" in printed
-    # And it says the preview is of the checkout, not of what --apply seals.
-    assert "differs from" in printed
 
 
 def test_a_dry_run_with_nothing_staged_refuses_rather_than_previewing(
@@ -107,7 +103,7 @@ def test_a_dry_run_with_nothing_staged_refuses_rather_than_previewing(
     assert ladder.main() == 1
 
     assert _listing(checkout) == before
-    assert "does not stage it" in capsys.readouterr().err
+    assert "ladder wrapper:" in capsys.readouterr().err
 
 
 def test_a_real_run_still_stages_the_wrapper(
@@ -115,7 +111,7 @@ def test_a_real_run_still_stages_the_wrapper(
 ) -> None:
     """The dry run stopped writing; the run that submits did not."""
 
-    local = ladder.LOCAL_WRAPPER
+    local = checkout.parent / "local" / ladder.WRAPPER
     published: list[dict] = []
 
     class _CAS:
@@ -132,9 +128,11 @@ def test_a_real_run_still_stages_the_wrapper(
         lambda action, **_kwargs: types.SimpleNamespace(
             action_key=str(action["action_key"]), describe=lambda: "queued"))
     monkeypatch.setattr(
-        sys, "argv", ["dispatch_tessera_ladder", "--shards", "2"])
+        sys, "argv", ["dispatch_tessera_ladder", "--shards", "2", "--wrapper", str(local)])
 
     assert ladder.main() in (None, 0)
 
-    assert (checkout / ladder.WRAPPER).read_bytes() == local.read_bytes()
+    assert (checkout / ladder.WRAPPER).read_text() == "# staged earlier\n"
     assert len(published) == 1
+    staged = checkout / published[0]["params"]["wrapper_source"]["staged_path"]
+    assert staged.read_bytes() == local.read_bytes()

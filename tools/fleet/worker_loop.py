@@ -48,13 +48,16 @@ are properties of the box rather than of the work:
   a class it is not will be sent work it cannot run.
 * **The cores.**  Both box shapes punish the obvious affinity (GB10
   interleaves fast and slow cores; the Xeon is 2-way SMT), so the loop pins
-  itself to the preferred set and every action inherits it.  See
+  itself to the preferred set by default. With ``--all-cores`` it retains
+  the inherited mask and the ledger assigns preferred CPUs first, fallback
+  CPUs for overflow. Each action inherits only its reserved CPUs. See
   ``prismabuild.cpu_topology``.
 """
 import argparse
 import json
 import os
 import socket
+import signal
 import sys
 import time
 from pathlib import Path
@@ -144,6 +147,27 @@ def census_line(queue) -> str:
 
 
 def main():
+    """Drain an in-flight action on SIGTERM, then exit before the next poll.
+
+    The supervisor's idle snapshot can race with claim acquisition. A signal
+    therefore requests shutdown instead of interrupting materialization or
+    execution and leaving a lease for the reaper. Action cancellation remains
+    the queue withdrawal protocol.
+    """
+    stopping = False
+
+    def request_stop(signum, frame):
+        nonlocal stopping
+        stopping = True
+
+    previous = signal.signal(signal.SIGTERM, request_stop)
+    try:
+        return _run_loop(lambda: stopping)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _run_loop(stop_requested):
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true",
                     help="serve at most one action and exit, whether or not "
@@ -162,7 +186,7 @@ def main():
     ap.add_argument("--python", default="/usr/bin/python3",
                     help="interpreter that launches the pool worker on this box")
     ap.add_argument("--all-cores", action="store_true",
-                    help="do not pin to the preferred cores (debug)")
+                    help="retain all inherited CPUs; reserve preferred cores before fallback")
     ap.add_argument("--mem-gb", type=int, default=96,
                     help="memory this box offers the queue, of ~121 GB total")
     ap.add_argument("--tag", action="append", default=[],
@@ -190,11 +214,20 @@ def main():
     # GB10 that is ten of twenty cores, and offering twenty would be the same
     # promise-the-box-cannot-keep the capacity drift was.  With ``--all-cores``
     # there is no pin, and the offer is then the inherited affinity rather than
-    # the machine count; ``--cpu-slots`` is the explicit override on both
-    # paths.  See ``inherited_cpus``.
+    # the machine count; ``--cpu-slots`` can cap either path but cannot
+    # exceed its inherited affinity.  See ``inherited_cpus``.
     cores = args.cpu_slots
     if cores <= 0:
         cores = len(pinned) if pinned else inherited_cpus()
+    cpu_tiers = cpu_topology.inherited_tiers()
+    if cpu_tiers is not None:
+        if cores > sum(map(len, cpu_tiers.values())):
+            ap.error("--cpu-slots exceeds inherited CPU affinity")
+        # An explicit capacity cap retains the best CPUs first.
+        ordered = cpu_tiers["preferred"] + cpu_tiers["fallback"]
+        enabled = set(ordered[:cores])
+        cpu_tiers = {kind: [c for c in values if c in enabled]
+                     for kind, values in cpu_tiers.items()}
     # What this box offers when the pool is the only thing on it.  What it can
     # offer *now* is that minus whatever else is running, read at every poll.
     declared = {"gpu": args.gpu_slots, "mem_gb": args.mem_gb, "cpu": cores}
@@ -232,6 +265,9 @@ def main():
     loaded_commit = loaded_runtime_commit()
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}", flush=True)
     while True:
+        if stop_requested():
+            print(f"[{host}] shutdown requested; current action drained", flush=True)
+            return 0
         # Fence stale imported bytes before the first queue read or mutation,
         # and again at the top of every later poll.  In particular, an old
         # orphan reaper must never classify a record emitted by a successor's
@@ -307,7 +343,7 @@ def main():
                      and observer.last is not None else None),
             observed_detail=(observer.last.detail if observer is not None
                              and observer.last is not None else None),
-            runtime_commit=loaded_commit,
+            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
         )
         # One bad item must not take the worker with it.  ``serve_once``
         # re-raises whatever ``execute`` raised, and this loop had no handler,
@@ -319,10 +355,12 @@ def main():
         # SystemExit must still stop the loop.  And the count is consecutive,
         # so a box whose every poll raises stops rather than spinning: that
         # shape is the box being broken, not the items.
+        if stop_requested():
+            return 0
         try:
             outcome = queue.serve_once(
                 tags=offered, has_gpu=args.gpu_slots > 0, python=args.python,
-                timeout_s=args.timeout_s, capacity=capacity,
+                timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
             )
         except Exception as exc:                                 # noqa: BLE001
             # The raise may have come two hours into an action, so this loop
@@ -341,6 +379,8 @@ def main():
                       f"the items -- exiting for the supervisor to replace",
                       flush=True)
                 return 1
+            if stop_requested():
+                return 0
             time.sleep(args.poll_s)
             continue
         errors = 0

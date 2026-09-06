@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Refuse GPU work that does not go through the PrismaBuild pool.
+"""Refuse test and GPU work that does not go through PrismaBuild.
 
 Briefs are discipline, not enforcement, and discipline is what failed: the
 same briefs that said "use the pool" produced fifteen agents recomputing one
 baseline and a flock jam seven deep.  This hook moves the rule from prose an
 agent may skim to a refusal it cannot.
 
-It is deliberately narrow.  Read-only inspection (``nvidia-smi``, ``squeue``,
+Recognized test runners and GPU containers are also refused. The global agent
+policy covers indirect execution this lexical guard cannot prove. Read-only inspection (``nvidia-smi``, ``squeue``,
 ``sinfo``) is allowed, because refusing it would only teach agents to route
 around the hook.  What is refused is the things that actually contend for the
 GPU: the CUDA venv interpreter, the box-local flock wrappers the pool replaces,
@@ -33,11 +34,12 @@ turning it on is one ``touch`` and does not edit config under running agents.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
-FLAG = Path("/home/rob/tmp/arb/require_pool.on")
+FLAG = Path(os.environ.get("REQUIRE_POOL_FLAG", "/home/rob/tmp/arb/require_pool.on"))
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import fleet_tool, generation_root  # noqa: E402
 
@@ -74,7 +76,7 @@ CONTENDS = re.compile(
 #: would have fixed that, before this existed.  A guard that can lock out its
 #: own repair is a worse failure than the one it guards against.
 NEVER_GPU = (
-    "git", "gh", "echo", "cat", "grep", "sed", "awk", "less", "diff",
+    "git", "gh", "echo", "cat", "rg", "grep", "sed", "awk", "less", "diff",
     # Asking where a program is, what it is, or what it says about itself.
     # ``which sbatch`` and ``man sbatch`` are the first two commands anyone
     # runs at a scheduler they have never used, and refusing them teaches the
@@ -119,7 +121,8 @@ NO_DEVICE = re.compile(r"""(?:^|\s)CUDA_VISIBLE_DEVICES=(?:''|""|)(?=\s)""")
 #: ``slurm_job.py`` joins them for both reasons at once: it is what a SLURM job
 #: execs on the node, so it *is* the sanctioned path, and it carries the
 #: action's own sealed interpreter -- the CUDA venv -- on its command line.
-POOL_ENTRYPOINTS = ("pbrun.py", "worker_loop.py", "worker.py", "slurm_job.py")
+POOL_ENTRYPOINTS = ("pbrun.py", "pbtest.py", "pbcampaign.py",
+                    "worker_loop.py", "worker.py", "slurm_job.py")
 
 
 #: A submission to the scheduler, by any of its three verbs.  Bounded by
@@ -800,6 +803,33 @@ def submits(command: str) -> bool:
     return False
 
 
+# This is a command-line guard, not a proof of arbitrary program behavior.
+# The standing agent policy covers indirect test/GPU execution too.
+TEST_WORK = re.compile(
+    r"(?<![\w.-])(?:pytest|py.test|ctest|tox|nox)(?![\w.-])"
+    r"|(?:^|\s)-m\s+unittest\b"
+    r"|\b(?:cargo|go)\s+test\b"
+    r"|\b(?:npm|pnpm|yarn)\s+(?:run\s+)?test(?:[ :\s]|$)"
+)
+GPU_CONTAINER = re.compile(r"\b(?:docker|podman)\s+[^;]*--gpus(?:[ =]|$)")
+
+
+def unpooled_work(command: str) -> bool:
+    for segment in _segments(command):
+        if _inspects_only(segment) or _first_token(segment) in NEVER_GPU:
+            continue
+        if any(entry in segment for entry in POOL_ENTRYPOINTS):
+            continue
+        if TEST_WORK.search(segment):
+            # Asking the test runner for help/version does not run tests.
+            if re.search(r"(?:^|\s)--(?:help|version)(?:\s|$)", segment):
+                continue
+            return True
+        if GPU_CONTAINER.search(segment):
+            return True
+    return False
+
+
 def main() -> int:
     if not FLAG.exists():
         return 0
@@ -808,6 +838,14 @@ def main() -> int:
     except Exception:                                        # noqa: BLE001
         return 0
     command = str((event.get("tool_input") or {}).get("command") or "")
+    if unpooled_work(command):
+        sys.stderr.write(
+            "Refused: all tests and GPU work must run through PrismaBuild.\n"
+            f"Use /usr/bin/python3 {PBRUN} --cpus N --demand mem_gb=M "
+            "[--gpu] -- <command>, or pbtest.py for test shards.\n"
+            "Reserve combined child-process resources and read the CAS receipt.\n"
+        )
+        return 2
     if contends(command):
         sys.stderr.write(
             "Refused: GPU work goes through the PrismaBuild pool, not a local "

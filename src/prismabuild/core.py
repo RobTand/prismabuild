@@ -1535,15 +1535,18 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
         *args: str,
         input_text: str | None = None,
         accepted_returncodes: tuple[int, ...] = (0,),
+        env: Mapping[str, str] | None = None,
     ) -> str:
         try:
             completed = subprocess.run(
-                ["git", "-C", str(checkout), *args],
+                ["git", "-C", str(checkout), "-c",
+                 "core.excludesFile=/dev/null", *args],
                 capture_output=True,
                 text=True,
                 errors="surrogateescape",
                 input=input_text,
                 timeout=30,
+                env=env,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             if repository_detected:
@@ -1572,6 +1575,9 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
         repository_detected = True
     head = _git("rev-parse", "HEAD").strip() or "no-git"
 
+    # Personal excludes must not change either the untracked roster or the
+    # special-inode screen. The helper pins them off for every Git call;
+    # repository .gitignore and info/exclude rules continue to apply.
     # Let Git delimit untracked pathnames. Line-oriented porcelain C-quotes
     # newlines, quotes, and backslashes, and hand-unquoting that display form
     # can bind ``:unreadable`` instead of the actual file bytes. ``ls-files
@@ -1682,7 +1688,54 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
             raise ActionContractError(
                 f"cannot hash untracked path {relative!r}: {exc}"
             ) from exc
-    dirty = bytearray(os.fsencode(_git("diff", "--binary", "HEAD")))
+    # Plumbing bypasses porcelain presentation settings, but still reads
+    # custom diff-driver configuration, personal attributes and GIT_DIFF_OPTS.
+    # Read the original index and objects through a private Git directory with
+    # canonical configuration. This neither copies nor modifies the source
+    # index, and preserves default diff bytes (including binary/rename keys).
+    # Tracked .gitattributes remains part of the tree; per-clone info/attributes
+    # and global attributes do not belong to the checkout's content identity.
+    dirty = bytearray()
+    if head != "no-git":
+        objects = _git(
+            "rev-parse", "--path-format=absolute", "--git-path", "objects"
+        ).rstrip("\n")
+        index = _git(
+            "rev-parse", "--path-format=absolute", "--git-path", "index"
+        ).rstrip("\n")
+        diff_env = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith("GIT_CONFIG") and key not in {
+                "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_ATTR_SOURCE",
+                "GIT_DIFF_OPTS", "GIT_PREFIX",
+            }
+        }
+        diff_env.update({
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_INDEX_FILE": index,
+            "GIT_OBJECT_DIRECTORY": objects,
+        })
+        with tempfile.TemporaryDirectory(prefix="prismabuild-identity-") as temporary:
+            private_git = Path(temporary)
+            (private_git / "refs").mkdir()
+            (private_git / "objects").mkdir()
+            (private_git / "HEAD").write_text(head + "\n")
+            if len(head) == 64:
+                (private_git / "config").write_text(
+                    "[core]\nrepositoryformatversion = 1\n"
+                    "[extensions]\nobjectformat = sha256\n"
+                )
+            dirty.extend(os.fsencode(_git(
+                "--git-dir=" + str(private_git),
+                "--work-tree=" + str(checkout),
+                "-c", "core.abbrev=auto",
+                "-c", "core.attributesFile=" + os.devnull,
+                "diff-index", "-p", "--binary", "-M",
+                "--no-ext-diff", "--no-textconv", "HEAD",
+                env=diff_env,
+            )))
     for relative, digest in sorted(untracked, key=lambda item: os.fsencode(item[0])):
         dirty.extend(b"\0untracked\0")
         dirty.extend(os.fsencode(relative))
@@ -1849,14 +1902,71 @@ def _verify_pbrun_checkout_ancestry(
             )
 
 
+def _verify_pbrun_checkout_snapshot(
+    action: Mapping[str, object],
+    root: Path,
+    raw_snapshot: object,
+    *,
+    subdirectory: str | None,
+) -> None:
+    """Prove the live tree is the sealed commit, clean, with its ancestry.
+
+    ``subdirectory`` is the directory the action declares it runs in, for a
+    definition that declares one, and ``None`` for a producer that does not.
+    """
+
+    snapshot = validate_pbrun_checkout_snapshot(raw_snapshot)
+    if subdirectory is not None and subdirectory != snapshot["subdirectory"]:
+        raise ActionContractError(
+            "pbrun checkout stamp cwd differs from snapshot subdirectory"
+        )
+    inputs = action["inputs"]
+    assert isinstance(inputs, list)
+    if snapshot["input"] not in inputs:
+        raise ActionContractError(
+            "pbrun checkout snapshot is absent from action.inputs"
+        )
+    live = git_checkout_identity(root)
+    clean = hashlib.sha256(b"").hexdigest()
+    if live != {"head": snapshot["commit"], "dirty_sha256": clean}:
+        raise ActionContractError(
+            "materialized pbrun checkout differs from its sealed commit"
+        )
+    if snapshot["schema"] == PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2:
+        _verify_pbrun_checkout_ancestry(snapshot, root)
+
+
 def _verify_pbrun_checkout_identity(
     action: Mapping[str, object], root: Path
 ) -> None:
-    """Verify the live Git semantics claimed by a pbrun closure stamp."""
+    """Verify the live Git semantics an action's checkout claims.
+
+    Two proofs live here and they belong to different things. The snapshot
+    proof belongs to ``params.checkout_snapshot``: whatever built the action,
+    a sealed snapshot promises the worker a clean tree at one commit with a
+    named ancestry, and the worker must hold it to that before running
+    anything. The stamp proof belongs to ``fleet/pbrun``, which is the only
+    definition that writes a closure stamp.
+
+    Keying the whole function on the definition id conflated them, so every
+    action a producer sealed itself skipped the snapshot proof.
+    ``fleet_submit`` seals a snapshot for ``tessera/*`` on the SLURM lane, and
+    those nodes ran a materialized tree nothing had checked.
+    """
 
     task = action["task"]
     assert isinstance(task, Mapping)
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    raw_snapshot = params.get("checkout_snapshot")
     if task["definition_id"] != "fleet/pbrun":
+        if raw_snapshot is not None:
+            # A producer that builds its own action body writes no stamp and
+            # declares no cwd, so there is no cwd to cross-check. The
+            # snapshot still names the commit the tree must be.
+            _verify_pbrun_checkout_snapshot(
+                action, root, raw_snapshot, subdirectory=None
+            )
         return
     closure = action["code_closure"]
     assert isinstance(closure, Mapping)
@@ -1890,34 +2000,15 @@ def _verify_pbrun_checkout_identity(
     stamped_cwd = _text(
         stamp["cwd"], where="pbrun checkout identity stamp.cwd"
     )
-    params = action["params"]
-    assert isinstance(params, Mapping)
     source_cwd = _text(params.get("cwd"), where="fleet/pbrun params.cwd")
     if stamped_cwd != source_cwd:
         raise ActionContractError(
             "pbrun checkout identity stamp cwd differs from action params"
         )
-    raw_snapshot = params.get("checkout_snapshot")
     if raw_snapshot is not None:
-        snapshot = validate_pbrun_checkout_snapshot(raw_snapshot)
-        if source_cwd != snapshot["subdirectory"]:
-            raise ActionContractError(
-                "pbrun checkout stamp cwd differs from snapshot subdirectory"
-            )
-        inputs = action["inputs"]
-        assert isinstance(inputs, list)
-        if snapshot["input"] not in inputs:
-            raise ActionContractError(
-                "pbrun checkout snapshot is absent from action.inputs"
-            )
-        live = git_checkout_identity(root)
-        clean = hashlib.sha256(b"").hexdigest()
-        if live != {"head": snapshot["commit"], "dirty_sha256": clean}:
-            raise ActionContractError(
-                "materialized pbrun checkout differs from its sealed commit"
-            )
-        if snapshot["schema"] == PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2:
-            _verify_pbrun_checkout_ancestry(snapshot, root)
+        _verify_pbrun_checkout_snapshot(
+            action, root, raw_snapshot, subdirectory=source_cwd
+        )
         return
     if git_checkout_identity(root) != recorded:
         raise ActionContractError(
@@ -2603,6 +2694,87 @@ def _unlink_nofollow(path: Path, *, where: str) -> None:
         os.close(directory_fd)
 
 
+#: Only fully initialized ingest directories enter the reaper-visible namespace.
+PRIVATE_STAGING_PREFIX = "ingest."
+PRIVATE_STAGING_OWNER = ".owner.lock"
+
+
+@contextmanager
+def _private_staging_directory(staging_directory: Path):
+    """Hold a shared-filesystem ownership lock until one ingest is cleaned up.
+
+    A killed ingest leaves a payload with a lock the kernel releases. A
+    sweeper must acquire that same lock nonblocking before removing anything;
+    a hostname or a local PID lookup cannot prove a remote writer is dead.
+    Initialize under a hidden name, then rename only after locking so a
+    sweeper never sees the interval between creating and locking the marker.
+    """
+
+    parent_fd = _open_directory_nofollow(
+        staging_directory, where="CAS staging directory", create=True
+    )
+    name = ".ingest." + os.urandom(16).hex()
+    private_fd = owner_fd = None
+    created = False
+    try:
+        os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        created = True
+        private_fd = os.open(
+            name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        owner_fd = os.open(
+            PRIVATE_STAGING_OWNER,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600, dir_fd=private_fd,
+        )
+        fcntl.flock(owner_fd, fcntl.LOCK_EX)
+        published_name = name[1:]
+        os.rename(name, published_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        name = published_name
+        private = staging_directory / name
+        _assert_directory_identity(
+            parent_fd, staging_directory, where="CAS staging directory"
+        )
+        _assert_directory_identity(
+            private_fd, private, where="CAS private staging directory"
+        )
+        yield private
+    finally:
+        # Keep the owner locked through payload and ownership-marker removal.
+        # Cleanup failure retains evidence without masking the ingest's error.
+        if private_fd is not None:
+            if owner_fd is not None:
+                with suppress(OSError):
+                    # If payload cleanup failed, retain its released ownership
+                    # marker so a later reaper can still prove abandonment.
+                    # Enumeration starts from a fresh open-file description.
+                    # A held directory descriptor can retain an exhausted
+                    # directory offset (observed on Python 3.14/Btrfs). Open
+                    # relative to that inode, never through a mutable pathname.
+                    listing_fd = os.open(
+                        ".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        dir_fd=private_fd,
+                    )
+                    try:
+                        contents = os.listdir(listing_fd)
+                    finally:
+                        os.close(listing_fd)
+                    if contents == [PRIVATE_STAGING_OWNER]:
+                        os.unlink(PRIVATE_STAGING_OWNER, dir_fd=private_fd)
+            os.close(private_fd)
+        if owner_fd is not None:
+            # On NFS, unlinking an open marker creates a .nfs* placeholder
+            # until this close. Release it before rmdir so success leaves no
+            # empty directory behind. The missing marker prevents a reaper
+            # from claiming the directory during this final removal interval.
+            os.close(owner_fd)
+        if created:
+            with suppress(OSError):
+                os.rmdir(name, dir_fd=parent_fd)
+        os.close(parent_fd)
+
+
 def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, int]:
     """Take a stable regular-file snapshot into the CAS filesystem."""
 
@@ -2677,6 +2849,13 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
         )
         return temporary, digest.hexdigest(), size
     except BaseException:
+        # A rejection before fdopen still owns the writable descriptor. Close
+        # before unlink so an NFS .nfs* placeholder cannot outlive the payload
+        # and confuse the enclosing private-directory cleanup.
+        if descriptor >= 0:
+            with suppress(OSError):
+                os.close(descriptor)
+            descriptor = -1
         try:
             os.unlink(temporary_name, dir_fd=staging_fd)
         except FileNotFoundError:
@@ -3323,26 +3502,25 @@ class PrismaBuildCAS:
             if expected_bytes is not None
             else None
         )
-        staging, digest, size = _copy_to_staging(
-            Path(source_path), self.root / ".staging"
-        )
-        try:
-            if expected_digest is not None and digest != expected_digest:
-                raise ActionContractError(
-                    "ingested input sha256 differs from the expected digest"
+        with _private_staging_directory(self.root / ".staging") as private:
+            staging, digest, size = _copy_to_staging(Path(source_path), private)
+            try:
+                if expected_digest is not None and digest != expected_digest:
+                    raise ActionContractError(
+                        "ingested input sha256 differs from the expected digest"
+                    )
+                if expected_size is not None and size != expected_size:
+                    raise ActionContractError(
+                        "ingested input byte count differs from the expected size"
+                    )
+                entry = validate_input_contract(
+                    {"id": identity, "sha256": digest, "bytes": size}
                 )
-            if expected_size is not None and size != expected_size:
-                raise ActionContractError(
-                    "ingested input byte count differs from the expected size"
-                )
-            entry = validate_input_contract(
-                {"id": identity, "sha256": digest, "bytes": size}
-            )
-            contract = {"sha256": digest, "bytes": size}
-            _, won = self._publish_staged_input_blob(staging, contract)
-            return entry, won
-        finally:
-            _unlink_nofollow(staging, where="CAS staging file")
+                contract = {"sha256": digest, "bytes": size}
+                _, won = self._publish_staged_input_blob(staging, contract)
+                return entry, won
+            finally:
+                _unlink_nofollow(staging, where="CAS staging file")
 
     def input_path(self, input_contract: object) -> Path:
         """Return an action input's CAS path after full content verification."""
