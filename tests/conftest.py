@@ -111,6 +111,15 @@ LIVE_DEFAULTS = (
     # reads ``pool.LOCAL_CHECKOUT_ROOT``, which is a copy taken at import.
     ("prismabuild.materialize", "LOCAL_CHECKOUT_ROOT", "checkouts"),
     ("prismabuild.pool", "LOCAL_CHECKOUT_ROOT", "checkouts"),
+    # Box-local, like the checkout root above, and it leaked the same way: the
+    # admission identity is keyed on the queue root, so a suite whose every
+    # test builds a queue under a fresh ``tmp_path`` minted a permanent lock
+    # file per test into the directory the fleet's own loops use.  Both
+    # spellings of the one directory move together -- ``mount_latency`` reads
+    # what ``adaptive_cpu`` writes, and a guard that moved only one would have
+    # the probe measuring a directory nothing writes to.
+    ("prismabuild.adaptive_cpu", "BOX_STATE_ROOT", "box-state"),
+    ("mount_latency", "ADMISSION_LOCK_DIR", "box-state"),
 )
 
 #: Environment variables the lane and the pool read on use.

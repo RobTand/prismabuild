@@ -227,6 +227,25 @@ def _holder_of(descriptor):
     return held_by if held_by > 0 else None
 
 
+#: Where a box keeps the host-local state its loops share.  An attribute
+#: rather than a literal inside ``box_state`` so the test guard can repoint it
+#: at the test's own ``tmp_path``: the identity below is keyed on the queue
+#: root, every test builds its own queue under a fresh ``tmp_path``, and the
+#: lock file for each is created and never unlinked -- so the suite minted a
+#: permanent file per test into the directory the *fleet* uses.  dl380g10 had
+#: accumulated 3780 of them against sparky's 2, 874 of those in one 20-minute
+#: run.  Nothing read them and nothing broke, but a box's own admission state
+#: lived in a directory the suite was filling.
+#:
+#: Unlinking is not the alternative.  A file here can be held by a live loop
+#: that this process cannot see, and there is no way to test "unheld" and
+#: unlink it without a window in which a sibling opens the path and ends up
+#: holding an inode nobody else can reach -- which is a lapse of the mutual
+#: exclusion the file exists for.  Not writing them is the fix; the ones
+#: already on a box are cleared by the reboot that clears ``/tmp``.
+BOX_STATE_ROOT = Path('/tmp') / f'prismabuild-admission-{os.getuid()}'
+
+
 def box_state(base):
     """Return ``(directory, digest)`` naming host-local state for ONE box.
 
@@ -246,8 +265,8 @@ def box_state(base):
     more than it had to.
     """
 
-    directory = Path('/tmp') / f'prismabuild-admission-{os.getuid()}'
-    directory.mkdir(mode=0o700, exist_ok=True)
+    directory = Path(BOX_STATE_ROOT)
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     info = directory.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise RuntimeError('unsafe PrismaBuild admission lock directory')
