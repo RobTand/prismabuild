@@ -174,6 +174,12 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     """
 
     queue = _fleet(tmp_path)
+    # Published FROM sparky, which is where the live pin came from: the
+    # checkout root is a box-local path, so ``pbstatus`` narrows the placeable
+    # set to the publishing host as well as the tags do.  Publishing under the
+    # test runner's own hostname would pin these items to a box this fixture
+    # does not contain.
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
     _publish(queue, "a", tags=["sparky"])
     _publish(queue, "b", tags=["sparky"])
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "dl380g10")
