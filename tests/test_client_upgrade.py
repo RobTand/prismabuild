@@ -21,12 +21,15 @@ def setup(tmp_path):
     state.mkdir()
     files = {}
     for name, member in upgrade.MEMBERS.items():
-        data = ('new:' + name).encode()
+        data = (b'CLIENT_UPGRADE_PROTOCOL = 2\n' if name == 'upgrade_client.py'
+                else b'') + ('new:' + name).encode()
         target = generation / member
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         files[member] = upgrade.digest(data)
-        (install / name).write_bytes(('old:' + name).encode())
+        (install / name).write_bytes((b'CLIENT_UPGRADE_PROTOCOL = 2\n'
+                                     if name == 'upgrade_client.py' else b'')
+                                    + ('old:' + name).encode())
     (generation / 'RUNTIME_VERSION.json').write_text(json.dumps({
         'schema': 'prismaquant.prismabuild.runtime_version.v1',
         'generation': generation.name, 'commit': 'a' * 40, 'files': files}))
@@ -430,3 +433,29 @@ def test_legacy_updater_needs_bridge_then_new_dependency_converges(setup, tmp_pa
     add_optional_runtime(generation)
     assert next_updater.run()['state'] == 'updated'
     assert (updater.install / 'gpu_capacity.py').exists()
+
+
+def test_optional_transaction_rejects_prebridge_updater_before_drain(setup):
+    updater, backend, generation = setup
+    add_optional_runtime(generation)
+    member = generation / 'tools/upgrade_client.py'
+    member.write_bytes(b'# Legacy updater without dependency-aware recovery\n')
+    receipt = generation / 'RUNTIME_VERSION.json'
+    value = json.loads(receipt.read_text())
+    value['files']['tools/upgrade_client.py'] = upgrade.digest(member.read_bytes())
+    receipt.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match='dependency-aware recovery protocol'):
+        updater.run()
+    assert not backend.operations
+    assert not updater.journal.exists()
+
+
+
+def test_optional_transaction_requires_recoverable_previous_updater(setup):
+    updater, backend, generation = setup
+    add_optional_runtime(generation)
+    (updater.install / 'upgrade_client.py').write_bytes(b'# pre-bridge updater')
+    with pytest.raises(ValueError, match='dependency-aware recovery protocol'):
+        updater.run()
+    assert not backend.operations
+    assert not updater.journal.exists()

@@ -30,6 +30,7 @@ OPTIONAL_MEMBERS = {'gpu_capacity.py': 'src/prismabuild/gpu_capacity.py'}
 SERVICE = 'prismabuild-resource-broker.service'
 MAX_MEMBER = 4 * 1024 * 1024
 MAX_EXPORT = 32 * 1024 * 1024
+CLIENT_UPGRADE_PROTOCOL = 2
 
 
 def digest(data):
@@ -303,6 +304,15 @@ class Upgrader:
         # Keep an explicit union so additions and removals both carry their
         # previous existence through failures and process restarts.
         names = sorted(set(installed) | set(version['files']))
+        if set(names) & set(OPTIONAL_MEMBERS):
+            # A crash can execute the newly copied updater while this journal
+            # still exists. Never replace it with a pre-bridge recovery reader
+            # during a transaction that records optional member existence.
+            pattern = rb'(?m)^CLIENT_UPGRADE_PROTOCOL[ \t]*=[ \t]*2[ \t]*$'
+            for code in (blobs['upgrade_client.py'],
+                         (self.install / 'upgrade_client.py').read_bytes()):
+                if re.search(pattern, code) is None:
+                    raise ValueError('optional client transaction requires dependency-aware recovery protocol 2')
         previous = self.installed(names)
         target_files = {name: version['files'].get(name) for name in names}
         self.validate_files(target_files)

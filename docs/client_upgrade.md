@@ -119,7 +119,13 @@ without requiring the optional module, and the new four-module broker must
 attest it. Activating a generation without the optional dependency removes it
 inside the same stopped-service transaction.
 
-Rolling back the updater itself to a pre-bridge generation also rolls back its
-recognized member set. Before subsequently deploying the dependent broker,
-repeat the bridge convergence step. Retain a dependency-aware generation as the
-ordinary rollback target once this migration has completed.
+A transaction involving an optional file also requires both the installed and candidate updaters to
+declare `CLIENT_UPGRADE_PROTOCOL = 2`. The transaction can restart into its candidate or restored previous
+updater after a crash, so its ability to interpret optional-file absence must
+be established before closing admission. A candidate without this declaration
+is refused before any service mutation, including a downgrade to a pre-bridge
+updater while the optional file is installed. Use a dependency-aware bridge
+with the old broker and no optional source as the rollback generation. Once
+that removes the optional file safely, a separate later publication can restore
+a pre-bridge updater if explicitly intended; reintroducing the dependency would
+then require bridge convergence again.
