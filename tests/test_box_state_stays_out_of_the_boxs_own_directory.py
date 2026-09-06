@@ -63,10 +63,25 @@ def test_the_lock_is_really_created_where_the_guard_points(tmp_path):
     assert (directory / f'{digest}.lock').is_file()
 
 
-def test_the_directory_is_still_private(tmp_path):
-    """The mode check is the reason this is not just a `mkdir`."""
+def test_the_directory_is_still_private(tmp_path, monkeypatch):
+    """The mode check is the reason this is not just a `mkdir`.
+
+    The repoint is done here as well as by the autouse guard, and that is not
+    belt-and-braces for its own sake.  This test makes a directory unsafe on
+    purpose, and the directory it makes unsafe is whatever ``box_state``
+    returns -- so if the guard ever failed to apply, this would `chmod 0770`
+    the *fleet's* admission directory on the box the shard ran on.  That is
+    not hypothetical: `box_state` refuses that mode, the refusal reaches the
+    worker loop as an ordinary item error, and the box then announces a fresh
+    offer at full capacity forever while claiming nothing.  A test must not be
+    one fixture away from taking a box out of service.
+    """
+
+    root = tmp_path / 'box-state'
+    monkeypatch.setattr(adaptive_cpu, 'BOX_STATE_ROOT', root)
 
     directory, _ = adaptive_cpu.box_state(tmp_path / 'reservations' / 'h')
+    assert directory == root, 'the repoint did not take; refusing to chmod'
     assert directory.stat().st_mode & 0o077 == 0
 
     directory.chmod(0o770)
