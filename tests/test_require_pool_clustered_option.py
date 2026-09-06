@@ -44,7 +44,7 @@ RUNNER = "py" + "test"
 # The gap: an attached -m value is the same command as a detached one.
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("runner", [RUNNER, "nox", "tox", "unittest"])
+@pytest.mark.parametrize("runner", [RUNNER, "nox", "tox", "ctest", "unittest"])
 def test_an_attached_m_value_is_read_as_the_runner_it_names(runner) -> None:
     """``-m<runner>`` and ``-m <runner>`` are one command, so one verdict.
 
