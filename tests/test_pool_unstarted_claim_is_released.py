@@ -215,3 +215,33 @@ def test_a_withdrawn_claim_is_never_released_back_into_the_queue(
     )
     filed = json.loads(queue.item_path(pool.FAILED, KEY).read_text())
     assert filed["status"] == "lease_lost_max_attempts"
+
+
+def test_a_claim_lost_before_its_record_was_rewritten_is_released(
+    queue: pool.PoolQueue,
+) -> None:
+    """The second confirmed drop, ``347e30ef932f``: the rename landed, the
+    record rewrite did not.
+
+    That claim carried no ``claimed_by``, no ``claimed_host`` and no
+    ``claimed_unix`` at all, so the reaper reached it on the claim-intent clock
+    rather than the claim's own.  It is the same loss on an earlier statement
+    of ``claim``, and it must release for the same reason: the lease that
+    proves a launch is exactly as absent.
+    """
+
+    _publish(queue, max_attempts=1, retry_safe=True)
+    assert queue.claim(owner="sparklina:1:a", capacity={"cpu": 1}) is not None
+    path = queue.item_path(pool.CLAIMED, KEY)
+    record = json.loads(path.read_text())
+    for field in ("claimed_by", "claimed_unix", "claimed_host"):
+        record.pop(field, None)
+    pool._write_json_atomic(path, record)
+    queue.lease_path(KEY).unlink()
+
+    assert _reap_later(queue) == [KEY]
+
+    assert not queue.item_path(pool.FAILED, KEY).exists()
+    item = json.loads(queue.item_path(pool.READY, KEY).read_text())
+    assert item.get("attempts", 0) == 0
+    assert item["unstarted_releases"] == 1
