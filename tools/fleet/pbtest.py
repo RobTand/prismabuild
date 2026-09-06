@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -52,6 +53,46 @@ RUNTIME_ROOT = generation_root(__file__)
 #: runtime containing this file uses.  ``None`` when neither layout has one.
 PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
 SHARED = Path("/mnt/shared")
+
+#: pytest's terminal summary line -- the one line that says pytest reached the
+#: end of a session.  Built from ``_pytest.terminal``'s own grammar:
+#: ``", ".join(parts) + " in " + duration``, where a part is ``N <word>`` from
+#: ``pluralize``, or the literal ``no tests ran``, or one of the
+#: ``--collect-only`` forms; and the duration is ``S.SSs``, with a
+#: ``(H:MM:SS)`` tail past a minute.
+#:
+#: The word-substring test this replaces matched any line containing
+#: ``" passed"``, ``" failed"`` or ``" error"``.  Two live examples of what it
+#: captured instead of a summary: pytest's own usage failure, whose second
+#: line is ``python -m pytest: error: unrecognized arguments: ...``, and
+#: pbrun's ``removed failed exchange probe /mnt/shared/pb-exchange-...``.
+#: Either one set ``ran=True`` for a shard that never started a case, which is
+#: exactly the "did not run" reading the ``ran`` flag exists to keep distinct.
+#:
+#: The ``=``-wrapped form is accepted too.  Shards run ``-q``, so
+#: ``summary_stats`` takes its undecorated ``write_line`` branch and a real
+#: summary looks like ``1 failed, 531 passed, 1 skipped in 17.82s``; the
+#: decoration appears only above ``-q``.  Matching it costs nothing and keeps
+#: a shard run at default verbosity from reading as "did not run".
+_COUNTED = r"\d+ [A-Za-z][\w-]*"
+_COLLECT_ONLY = (r"no tests collected(?: \(\d+ deselected\))?"
+                 r"|\d+/\d+ tests collected \(\d+ deselected\)"
+                 r"|\d+ tests? collected")
+_PARTS = rf"(?:no tests ran|{_COLLECT_ONLY}|{_COUNTED})(?:, {_COUNTED})*"
+_DURATION = r"\d+\.\d+s(?: \([^)]*\))?"
+PYTEST_SUMMARY = re.compile(rf"^(?:=+ )?{_PARTS} in {_DURATION}(?: =+)?$")
+#: Colour is off down a pipe, but ``FORCE_COLOR`` in a shard's environment
+#: would wrap the line in escapes and make it unmatchable.
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def pytest_summary(lines: list[str]) -> str:
+    """The last line that is pytest's terminal summary, or ``""``."""
+
+    for line in reversed(lines):
+        if PYTEST_SUMMARY.match(ANSI.sub("", line).strip()):
+            return line.strip()
+    return ""
 
 #: ``pbrun``'s own transport vocabulary, and its own reader for the default.
 #: This tool builds pbrun's argv rather than importing it, so every flag a
@@ -247,18 +288,27 @@ def main() -> int:
     for index, bucket, proc in procs:
         out, _ = proc.communicate()
         tail = [line for line in (out or "").strip().splitlines() if line.strip()]
-        summary = next((l for l in reversed(tail)
-                        if " passed" in l or " failed" in l or " error" in l), "")
+        summary = pytest_summary(tail)
         # A shard whose pytest never reported is a shard whose tests never
         # ran, and it is not the same event as a shard that ran clean -- but
         # with an empty summary it printed the same blank space, which is how
         # a submission killed before it queued anything (#208) cost 74 tests
         # silently.  Say the count that did not run; do not let the reader
         # infer it from an absence.
+        # ``ran`` now means "pytest reported a terminal summary", which is the
+        # question the flag is actually asked.  It used to mean "some line
+        # mentioned passing, failing or an error", and those are not the same
+        # claim: the second is true of a shard that died in argparse.
         ran = bool(summary)
         if not ran:
+            # Name how it ended as well as that it did not run.  A shard killed
+            # by a signal, one that timed out, and one whose pbrun refused to
+            # submit all printed the same sentence, and the reader had to go
+            # find the returncode elsewhere to tell them apart.
+            rc = proc.returncode
+            how = f"signal {-rc}" if rc < 0 else f"rc={rc}"
             summary = (f"NO PYTEST SUMMARY -- {len(bucket)} file(s) did not run "
-                       f"(the shard died before or outside pytest)")
+                       f"(the shard ended {how}, before or outside pytest)")
         results.append({"shard": index, "files": bucket,
                         "returncode": proc.returncode, "summary": summary,
                         "ran": ran, "output": out})

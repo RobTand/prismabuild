@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import core as pb, pool, resource_scope  # noqa: E402
+from prismabuild import core as pb, cpu_topology, pool, resource_scope  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
@@ -57,7 +57,14 @@ def _await_pid(path: Path, *, worker: subprocess.Popen | None = None, timeout_s:
         nonlocal pid
         if worker is not None and worker.poll() is not None:
             output, _ = worker.communicate(timeout=5)
-            pytest.fail(f"worker exited before the action started:\n{output}")
+            # Name the mask as well as the output. The worker's refusals are
+            # about the box it inherited, and a reader who cannot see the box
+            # spends the time this test already cost once working out that the
+            # environment, not withdraw, is what said no.
+            pytest.fail(
+                f"worker exited before the action started "
+                f"(inherited CPU affinity: {sorted(os.sched_getaffinity(0))}):\n"
+                f"{output}")
         try:
             text = path.read_text().strip()
         except OSError:
@@ -69,6 +76,32 @@ def _await_pid(path: Path, *, worker: subprocess.Popen | None = None, timeout_s:
 
     assert _await(written, timeout_s=timeout_s), f"nothing wrote a pid to {path}"
     return pid
+
+
+def cpu_slots_that_fit(want: int = 2) -> int:
+    """How many cpu tokens a worker started here may offer.
+
+    The worker this test starts inherits this process's CPU affinity, and
+    ``worker_loop`` refuses a ``--cpu-slots`` wider than that mask -- correctly:
+    offering more tokens than the box will let it run on is the
+    promise-the-box-cannot-keep that the guard exists to stop.  Inside a
+    PrismaBuild reservation the mask is the reservation's, which is narrow by
+    design, so a hardcoded ``--cpu-slots 2`` made this test fail with
+    ``--cpu-slots exceeds inherited CPU affinity`` on every run through the only
+    sanctioned way to run it.  That is not a withdraw defect and it never was:
+    it is the test asking for a box it was not given.
+
+    Sizing the ask to the mask keeps the check intact and makes the test
+    exercise withdraw under the same constraint production workers run under.
+    The arithmetic mirrors the guard's own -- ``inherited_tiers`` summed, and
+    the mask only when the platform has no topology at all -- so the two cannot
+    drift into disagreeing about the same box.
+    """
+
+    tiers = cpu_topology.inherited_tiers()
+    if tiers is None:                       # no affinity call: the guard does
+        return want                         # not check either.
+    return max(1, min(want, sum(len(cpus) for cpus in tiers.values())))
 
 
 @pytest.fixture()
@@ -150,17 +183,18 @@ wl.loaded_runtime_commit = lambda: 'deadbeef'
 wl.published_commit = lambda: 'deadbeef'
 raise SystemExit(wl.main())
 """)
+    cpu_slots = cpu_slots_that_fit()
     worker = subprocess.Popen([
         sys.executable, str(bootstrap), "--once", "--all-cores", "--assume-idle", "--class", "x86",
-        "--gpu-slots", "0", "--mem-gb", "4", "--cpu-slots", "2",
+        "--gpu-slots", "0", "--mem-gb", "4", "--cpu-slots", str(cpu_slots),
         "--poll-s", "0.05", "--python", sys.executable,
     ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         action_pid = _await_pid(pidfile, worker=worker)
         assert _await(lambda: (queue.lease_path(key).exists() and json.loads(
             queue.lease_path(key).read_text()).get("child_pid") is not None))
-        assert queue.ledger(host).available().get("cpu", 0) == 1, (
-            "one of two cpu tokens is held while the action runs")
+        assert queue.ledger(host).available().get("cpu", 0) == cpu_slots - 1, (
+            f"one of {cpu_slots} cpu token(s) is held while the action runs")
         claim = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
         control = claim["resource_scope"]
         assert control["memory_max_bytes"] == 1024 ** 3
