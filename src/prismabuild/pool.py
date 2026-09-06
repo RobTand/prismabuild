@@ -2845,6 +2845,38 @@ class PoolQueue:
             return None
         return _now() - float(declared)
 
+    def claim_intent_host(self, action_key: str, record: Mapping[str, object]) -> str | None:
+        """The box that declared intent to claim this generation, if it said.
+
+        ``claim`` writes the intent marker *before* the rename and rewrites the
+        record with ``claimed_host`` after it, so a claimant blocked in between
+        leaves a claim that names no box at all.  Reaped, that becomes a
+        terminal record whose only hostname is the reaper's -- and a claim must
+        not be able to be lost more anonymously than it was taken.
+
+        Generation-scoped, because the marker outlives the claim it belongs to:
+        nothing unlinks it on the success path, so a key republished after an
+        earlier run still carries that run's marker until the next claimant
+        overwrites it.  A marker older than the record's own publication
+        describes a different generation and names the wrong box, so it is
+        refused rather than guessed with.
+        """
+
+        marker = _read_json(self.item_path(INTENT, action_key))
+        if marker is None:
+            return None
+        host = marker.get("host")
+        declared = marker.get("intent_unix")
+        published = record.get("published_unix")
+        if not isinstance(host, str) or not host:
+            return None
+        if not isinstance(declared, (int, float)) or isinstance(declared, bool):
+            return None
+        if isinstance(published, (int, float)) and not isinstance(published, bool):
+            if float(declared) < float(published):
+                return None
+        return host
+
     def claim_holder_pids(self, host: str | None = None) -> set[int]:
         """The pids on ``host`` that hold a claim of this queue right now.
 
@@ -3125,6 +3157,15 @@ class PoolQueue:
             # The reaper is frequently NOT the dead claimant's box, and its
             # tokens live under the claimant's ledger, not the reaper's.
             holder = record.get("claimed_host")
+            if not isinstance(holder, str) or not holder:
+                # Lost between the rename and the record rewrite, so the box
+                # never named itself here.  The intent marker precedes the
+                # rename and does name it; stamping it on the record is what
+                # keeps the attempt archive and the terminal record from
+                # carrying the reaper's hostname as their only one (#227).
+                intent_host = self.claim_intent_host(key, record)
+                if intent_host is not None:
+                    record["claimed_host"] = intent_host
             # The filename is the identity; a record that disagrees with it, or
             # has lost it, must not be written back to a queue directory where
             # every consumer addresses items by key.
