@@ -22,13 +22,21 @@ What the cycle was spending its time on, measured on ``dl380g10``
   behind one holder, and the holder listed as ``DELEG BREAKER WRITE`` on
   ``claimed/<key>.lease``.
 
-The box exports the pool: ``/mnt/shared`` is its own ZFS dataset and it runs
-``nfsd``.  Its local reads of a lease another box is writing must recall that
-box's NFSv4 delegation, and the recall blocks on the remote client.  So the
-poll cost was not throughput, CPU, or the network -- it was one delegation
-recall per lease read, multiplied by the number of loops, multiplied by their
-poll rate.  ``serve_once`` reaped on every poll, and ``reap_stale`` reads
-every claimed record and every lease.
+The poll cost was not throughput, CPU, or the network: it was one blocking
+metadata operation per record read, multiplied by the number of loops,
+multiplied by their poll rate.  ``serve_once`` reaped on every poll, and
+``reap_stale`` reads every claimed record and every lease.
+
+What makes each read block differs by box, and the throttle does not depend
+on which applies.  ``dl380g10`` exports the pool -- ``/mnt/shared`` is its own
+ZFS dataset and it runs ``nfsd`` -- so its local read of a lease another box
+is writing must recall that box's NFSv4 delegation and wait for the remote
+client; that is why it pays most.  ``sparklina`` is an ordinary client and was
+caught with all three of its loops in ``D`` on ``rpc_wait_bit_killable`` /
+``do_renameat2`` / ``open_last_lookups`` at box load 3.5, and ``sparky`` took
+its own turn at an expired offer while ``dl380g10`` was live.  The stale role
+rotates between all three, so what these tests pin is the multiplier the boxes
+share, not one box's filesystem role.
 
 The fix is not to read faster or lock less: it is to not re-read, tens of
 times a second, files that change once per ``HEARTBEAT_S``.  These tests pin

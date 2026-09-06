@@ -100,6 +100,46 @@ So the poll has two readers of remotely-written records, not one.
 (`pool.py`, `ready_items`), because the ready ordering sorts on the denial
 count. Only the first is throttled below.
 
+## The stall is not a property of one box
+
+Delegation recall is why `dl380g10` pays *most* per read: it is the server, so
+its local open of a remotely-written file must recall that writer's delegation.
+It is not why the fleet stalls. Watching the three offers from one place:
+
+| time (UTC) | dl380g10 | sparklina | sparky |
+| --- | --- | --- | --- |
+| 17:16 | 806.8 s | 317.0 s | 103.5 s (live) |
+| ~17:30 | 18.6 s (live) | 104.5 s (live) | 136.5 s (stale) |
+| 17:37 | 144.2 s | 323.2 s | 1.5 s (live) |
+
+The stale role **rotates**. `sparklina` is an ordinary NFS client and was
+caught with all three of its worker loops in `D` simultaneously — wchans
+`rpc_wait_bit_killable`, `do_renameat2` and `open_last_lookups`, the atomic
+claim operations — at box load 3.5, holding a claim with no
+`prismabuild_worker` process behind it. `sparky` took its turn at stale while
+`dl380g10` was live.
+
+So there are at least two costs per read, on different boxes: delegation recall
+on the exporter, ordinary shared-mount metadata latency on the clients
+(issue #217 measures the latter directly). What they have in common is the
+multiplier — loops × polls × records — and that is what the change below
+reduces. Read the fix as being about the cadence, not about a box.
+
+## The same thing, seen from the queue
+
+At 17:30 UTC ten x86-tagged items had been READY for ~1520 s with
+**`passes: 0`**, all showing `MATCHING: dl380g10`, while `dl380g10` was `live`
+with an 18.6 s offer and free tokens (248 in `reservations/dl380g10/free`, and
+a live `claiming.…` entry for one of the same shards).
+
+`passes` is incremented by `record_pass`, which `_claim` calls when it has
+*evaluated* an item and refused it. Zero passes after twenty-five minutes on a
+matching, live, non-full box says those items were never evaluated — the scan
+did not reach them — not that the box looked at them and said no. Earlier the
+same day the queue showed items at 35 and 77 passes, which is what being
+refused looks like. This is the cadence failure observed from the queue's side
+rather than the box's, and it is the cheapest before-measurement available.
+
 ## The change
 
 `serve_once` now sweeps at most once per `HEARTBEAT_S` per box, through a

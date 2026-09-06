@@ -2884,15 +2884,24 @@ class PoolQueue:
         about once a second while the queue is non-empty, so the box as a
         whole opened every ``claimed/<key>.lease`` in the pool tens of times a
         second -- files that a *different* box is writing to once per
-        heartbeat.  On the host that exports the pool over NFSv4 those opens
-        are not cheap reads: each one recalls the writer's delegation and
-        blocks until the remote client answers.  Measured on ``dl380g10``
-        2026-09-06 at load 0.44 across 80 CPUs with no process in ``D``:
-        three of twenty ``pb-queue`` file reads took 34.2 s, 40.3 s and
-        11.9 s (the rest under a millisecond), fifteen of eighteen worker
-        loops sat in ``__break_lease`` simultaneously, and the box's offer
-        aged past ``OFFER_TIMEOUT_S`` -- an idle 80-CPU box invisible to
-        placement because its poll could not get back to ``announce``.
+        heartbeat.  Measured on ``dl380g10`` 2026-09-06 at load 0.44 across 80
+        CPUs with no process in ``D``: three of twenty ``pb-queue`` file reads
+        took 34.2 s, 40.3 s and 11.9 s (the rest under a millisecond), fifteen
+        of eighteen worker loops sat in ``__break_lease`` simultaneously, and
+        the box's offer aged past ``OFFER_TIMEOUT_S`` -- an idle 80-CPU box
+        invisible to placement because its poll could not get back to
+        ``announce``.
+
+        The per-read cost differs by box and the throttle does not depend on
+        which one applies.  ``dl380g10`` exports the pool, so its local open of
+        a remotely-written file recalls that writer's NFSv4 delegation and
+        blocks on the remote client; that is why it pays most.  ``sparklina``
+        is an ordinary client and was caught with all three of its loops in
+        ``D`` on ``rpc_wait_bit_killable`` / ``do_renameat2`` /
+        ``open_last_lookups`` at box load 3.5, and ``sparky`` took its own turn
+        at an expired offer while ``dl380g10`` was live.  The stale role
+        rotates, so the thing to reduce is the multiplier the boxes share --
+        loops times polls times records -- not one box's filesystem role.
 
         The interval is derived, for the conclusions the reaper draws from
         leases.  Every one of those is a statement about a lease, and a
