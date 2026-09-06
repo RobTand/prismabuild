@@ -83,9 +83,14 @@ def test_output_must_match_receipt_and_actual_payload(tmp_path):
 
 
 def test_failed_partition_cannot_pass_assembly_barrier(tmp_path, monkeypatch):
-    monkeypatch.setattr(dispatcher.pbcampaign, 'submit', lambda *a, **k: [
+    # The dispatcher imports these when a command runs, not when it loads, so
+    # the modules to patch come from the same seam it goes through.  They are
+    # the module objects `run_stage` will be handed: an import is cached, so
+    # patching an attribute here is what patching it on the dispatcher was.
+    pbcampaign, _, pbwait = dispatcher.published_client()
+    monkeypatch.setattr(pbcampaign, 'submit', lambda *a, **k: [
         {'action_key': 'a' * 64, 'status': 'submitted', 'published_unix': 100.}])
-    monkeypatch.setattr(dispatcher.pbwait, 'wait_for_keys', lambda *a, **k: [
+    monkeypatch.setattr(pbwait, 'wait_for_keys', lambda *a, **k: [
         {'action_key': 'a' * 64, 'status': 'failed', 'succeeded': False, 'host': 'worker',
          'returncode': 1, 'elapsed_s': 1, 'transport': 'pool'}])
     with pytest.raises(ValueError, match='assembly remains blocked'):
