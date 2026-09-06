@@ -94,6 +94,11 @@ GPU sharing for ordinary work. Optional SLURM measurements require
 On GB10, GPU utilization percentage is not a saturation measure; collect power,
 CPU activity, residency and useful throughput with before/after profiling.
 
+Running vLLM for inference serving is exempt from submission: start and operate
+a serve directly, including its GPU containers. The exemption covers serving
+only -- tests and benchmarks still submit, even on the same image -- and a direct
+serve remains external load for batch admission.
+
 ## Verify and recover
 
 A submission acknowledgement is not completion. With `--detach`, retain the
