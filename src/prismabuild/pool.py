@@ -2875,6 +2875,88 @@ class PoolQueue:
                 pids.add(pid)
         return pids
 
+    def _sweep_due(self, *, interval_s: float = HEARTBEAT_S) -> bool:
+        """Claim this box's turn to run the reaper, or decline it.
+
+        ``serve_once`` used to reap on every poll of every loop, and the
+        reaper reads every claimed record *and its lease*.  A box runs many
+        loops (one per class, grown by ``supervise``), and each of them polls
+        about once a second while the queue is non-empty, so the box as a
+        whole opened every ``claimed/<key>.lease`` in the pool tens of times a
+        second -- files that a *different* box is writing to once per
+        heartbeat.  Measured on ``dl380g10`` 2026-09-06 at load 0.44 across 80
+        CPUs with no process in ``D``: three of twenty ``pb-queue`` file reads
+        took 34.2 s, 40.3 s and 11.9 s (the rest under a millisecond), fifteen
+        of eighteen worker loops sat in ``__break_lease`` simultaneously, and
+        the box's offer aged past ``OFFER_TIMEOUT_S`` -- an idle 80-CPU box
+        invisible to placement because its poll could not get back to
+        ``announce``.
+
+        The per-read cost differs by box and the throttle does not depend on
+        which one applies.  ``dl380g10`` exports the pool, so its local open of
+        a remotely-written file recalls that writer's NFSv4 delegation and
+        blocks on the remote client; that is why it pays most.  ``sparklina``
+        is an ordinary client and was caught with all three of its loops in
+        ``D`` on ``rpc_wait_bit_killable`` / ``do_renameat2`` /
+        ``open_last_lookups`` at box load 3.5, and ``sparky`` took its own turn
+        at an expired offer while ``dl380g10`` was live.  The stale role
+        rotates, so the thing to reduce is the multiplier the boxes share --
+        loops times polls times records -- not one box's filesystem role.
+
+        The interval is derived, for the conclusions the reaper draws from
+        leases.  Every one of those is a statement about a lease, and a
+        lease's own writer refreshes it every ``HEARTBEAT_S``; the grace
+        ``reap_stale`` applies to a claim with no lease at all is
+        ``HEARTBEAT_S`` too.  So no lease input to the sweep can change more
+        often than that, and a second sweep inside one heartbeat re-reads
+        bytes that cannot have moved.  Detection is unaffected in kind: a
+        lease expires at ``LEASE_TIMEOUT_S`` and is noticed within one
+        heartbeat of expiring, by this box or by any other box polling the
+        same pool.
+
+        One branch of ``reap_stale`` is not derived and is accepted instead.
+        ``finish_pending`` retries the saved outcome of a payload that has
+        already returned but whose kernel scope has not drained; its input is
+        cgroup state, which moves on its own clock, and its capacity return is
+        therefore delayed by up to ``HEARTBEAT_S``.  That is a bounded delay
+        in giving tokens back, weighed against a poll cycle that measured
+        longer than ``OFFER_TIMEOUT_S`` and cost the box all of its capacity.
+        Retrying it off this schedule needs a host-local record of which keys
+        are pending, which is the enumeration this method exists to avoid.
+
+        The marker is host-local and unlocked on purpose.  Taking the
+        admission lock to decide whether to sweep would put this decision
+        behind the very NFS waits it exists to prevent, and losing the race
+        costs one extra sweep, which is exactly what the code did before.
+        """
+
+        try:
+            directory, digest = cpu_admission.box_state(self.ledger().base)
+        except Exception:                                        # noqa: BLE001
+            # No host-local rendezvous (a read-only or absent ``/tmp``, an
+            # unresolvable ledger): sweep, as this method's caller always did.
+            return True
+        marker = directory / f"{digest}.sweep"
+        now = _now()
+        try:
+            if 0 <= now - marker.stat().st_mtime < interval_s:
+                return False
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError:
+            return True
+        try:
+            descriptor = os.open(marker, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        except OSError:
+            return True
+        try:
+            os.utime(descriptor, (now, now))
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)
+        return True
+
     def reap_stale(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
         """Return claims whose lease has expired to ``ready``.
 
@@ -4976,7 +5058,8 @@ class PoolQueue:
         back-pressure and poll again, not as an empty queue.
         """
 
-        self.reap_stale()
+        if self._sweep_due():
+            self.reap_stale()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
                           cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu)
         if item is None:

@@ -120,6 +120,34 @@ def counters(cpus):
     return {'cpus': values, 'psi_total': pressure, 'sampled_unix': time.time()}
 
 
+def box_state(base):
+    """Return ``(directory, digest)`` naming host-local state for ONE box.
+
+    The loops of a single box have to agree about a few things -- who holds
+    admission, when the queue was last swept -- and the pool they share is on
+    NFS.  Coordinating through the pool would put an NFS round trip in front
+    of every answer, which is the cost this identity exists to avoid, so the
+    rendezvous is a host-local directory keyed by the ledger the loops share.
+    Two boxes serving the same pool hash differently and never meet here;
+    two generations on one box hash identically and do.
+
+    ``/tmp`` is cleared on some of these hosts.  Every user of this directory
+    must therefore treat a missing file as "no information", never as a fact:
+    the lock re-creates its inode (a cleared directory can only lapse mutual
+    exclusion between a live loop and a new one, which is the pre-existing
+    behaviour of this path), and the sweep marker below simply sweeps once
+    more than it had to.
+    """
+
+    directory = Path('/tmp') / f'prismabuild-admission-{os.getuid()}'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise RuntimeError('unsafe PrismaBuild admission lock directory')
+    identity = f'{Path(base).resolve()}:{socket.gethostname()}'
+    return directory, hashlib.sha256(identity.encode()).hexdigest()
+
+
 class Controller:
     def __init__(self, ledger, tiers):
         self.ledger = ledger
@@ -132,13 +160,8 @@ class Controller:
     def locked(self):
         # Never unlink: two generations must not lock different inodes. The
         # private directory and O_NOFOLLOW prevent another uid redirecting it.
-        directory = Path('/tmp') / f'prismabuild-admission-{os.getuid()}'
-        directory.mkdir(mode=0o700, exist_ok=True)
-        info = directory.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise RuntimeError('unsafe PrismaBuild admission lock directory')
-        identity = f'{self.ledger.base.resolve()}:{socket.gethostname()}'
-        name = hashlib.sha256(identity.encode()).hexdigest() + '.lock'
+        directory, digest = box_state(self.ledger.base)
+        name = digest + '.lock'
         descriptor = os.open(directory / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
             info = os.fstat(descriptor)
