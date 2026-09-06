@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=%h/prismabuild
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=GH_PROMPT_DISABLED=1
 Environment=GIT_TERMINAL_PROMPT=0
 ExecStart=/usr/bin/python3 %h/.local/lib/prismabuild-maintenance/watch_issues.py --checkout %h/prismabuild --state-dir %h/.local/state/prismabuild-maintenance
