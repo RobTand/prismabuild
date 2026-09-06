@@ -9,11 +9,11 @@ path an agent needs.
 
 Two things are deliberate.
 
-*Exclusivity is a demand, not a token kind.*  ``--exclusive`` asks for the
-whole GPU capacity of a box.  The ledger's all-or-nothing ``acquire`` turns
-that into exclusion for free, and ``STARVATION_FLOOR`` stops a big demand
-being leapfrogged forever by small ones.  A second "exclusive" lock would be
-policy where arithmetic already answers.
+*GPU exclusivity is sealed intent.* ``--exclusive`` records
+``params.gpu_exclusive=true``. Shared generation work records false, so the
+adaptive pool may probe concurrency on one physical GPU without weakening an
+exclusive request. Legacy requests without this marker remain exclusive;
+historical multi-slot demands retain their identity but reserve one device.
 
 *The closure is an immutable checkout.* A Git working tree, including its
 dirty and untracked bytes, is synthesized as a shallow root commit and carried
@@ -3283,6 +3283,9 @@ def main() -> int:
                          "run wants its -n, not 1")
     ap.add_argument("--exclusive", action="store_true",
                     help="demand the whole GPU capacity of one box")
+    ap.add_argument("--gpu-memory-gb", type=float, default=None,
+                    help="GPU memory budget in GiB; separate VRAM on discrete GPUs, "
+                         "a subset of --demand mem_gb on unified-memory GPUs")
     ap.add_argument("--gpu-capacity", type=int, default=0,
                     help="slots to demand for --exclusive; 0 reads the largest "
                          "a matching box actually offers")
@@ -3497,6 +3500,9 @@ def main() -> int:
         caller_variables[key] = value
 
     demand = _parse_demand(args.demand)
+    if args.gpu_memory_gb is not None and (not math.isfinite(args.gpu_memory_gb)
+                                            or args.gpu_memory_gb <= 0):
+        ap.error("--gpu-memory-gb must be positive and finite")
     if args.gpu:
         demand.setdefault("gpu", 1)
         demand.setdefault("mem_gb", 16)
@@ -3595,6 +3601,10 @@ def main() -> int:
     # ``--no-default-env`` too: an empty environment means every device is
     # visible, which is the case this exists for.
     declared = variables.get("CUDA_VISIBLE_DEVICES")
+    if args.gpu_memory_gb is not None and not demand.get("gpu"):
+        ap.error("--gpu-memory-gb requires GPU demand")
+    if args.gpu_memory_gb is not None and args.transport == "slurm":
+        ap.error("--gpu-memory-gb requires pool transport; SLURM VRAM budgets are not supported")
     if not demand.get("gpu"):
         if declared not in (None, ""):
             raise SystemExit(
@@ -3701,6 +3711,10 @@ def main() -> int:
         "environment": {"variables": variables, "toolchain": toolchain},
         "execution_scope": execution_scope,
     }
+    if demand.get("gpu"):
+        body["params"]["gpu_exclusive"] = bool(args.exclusive)
+        if args.gpu_memory_gb is not None:
+            body["params"]["gpu_memory_gb"] = args.gpu_memory_gb
     if args.timeout_s is not None:
         body["params"]["execution_timeout_s"] = args.timeout_s
     try:

@@ -39,8 +39,9 @@ freshly attributed, lightly used preferred capacity from another generation
 action; it may also admit beyond the physical token count when the same evidence
 and current host headroom support it. Host CPU use and pressure include work
 outside PrismaBuild and can stop further admission. Missing, stale or incomplete
-attempt telemetry grants no lending credit. Memory and GPU demand are never
-discounted, and measurements do not borrow CPU capacity or overlap another
+attempt telemetry grants no lending credit. Memory demand is never discounted. GPU concurrency uses its own trusted device
+admission policy rather than CPU lending; measurements do not borrow CPU
+capacity or overlap another
 admitted CPU action. On GB10, GPU utilization percentage is not evidence of
 saturation; use power, host activity, residency and useful throughput for a
 performance claim.
@@ -87,3 +88,11 @@ and a GPU action for GPU workers, including their CAS receipts. Install the
 same global policy and hook before using agents on the new worker. Expand
 capacity through these offers; agents must not invent an independent queue or
 bypass resource reservations.
+
+GPU admission requires fresh broker evidence even for its first action. Both GB10
+workers advertise one physical device and use the same adaptive sharing policy.
+`--exclusive` and measurements remain exclusive. On discrete GPUs, declare the
+separate VRAM budget with pool `--gpu-memory-gb N`; it defaults conservatively
+to `mem_gb`. Host RAM and VRAM are reserved independently. On GB10, `mem_gb`
+remains the shared physical budget and an explicit GPU budget is a subset cap.
+Unknown memory domains or missing counters grant no admission credit.

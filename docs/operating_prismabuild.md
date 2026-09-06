@@ -1296,3 +1296,21 @@ not mix two live workers' append evidence.
 No loop-count tuning is required for ordinary operation. `--loops N` is the
 operator opt-out that fixes the count at `N`; `--once` retains deterministic
 one-shot behavior and tops up only to the configured floor.
+
+
+## Adaptive GPU sharing and GPU memory budgets
+
+Pool GPU workers advertise physical devices: both GB10 hosts offer one GPU.
+A fresh trusted broker observation permits one action, then low-load samples
+may admit one further generation action at a time within unchanged memory
+reservations. GPU power/thermal limits, foreign work and host pressure stop new
+admission. Missing telemetry stops admission too. Use `--exclusive` or
+`--measurement` when overlapping GPU work would invalidate a result. Historical
+requests without explicit sharing intent remain exclusive during migration.
+
+For a discrete GPU, `--gpu-memory-gb N` declares VRAM separately from host
+`--demand mem_gb=M`; both budgets must fit. If omitted, the VRAM budget defaults
+to the host memory demand. On GB10 shared DRAM, the host memory demand remains
+the aggregate physical budget and an explicit GPU cap limits its GPU subset.
+The GPU memory option requires GPU demand and pool transport; unsupported SLURM
+VRAM enforcement is rejected at submission.

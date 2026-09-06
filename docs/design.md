@@ -1165,8 +1165,9 @@ or measurement action remain protected. One sample cannot authorize an
 unbounded burst: a successful borrowing decision consumes its freshness for the
 next borrower.
 
-Memory and GPU resources always retain ordinary all-or-nothing token admission;
-CPU telemetry cannot discount either. Measurements require a fresh nearly idle
+Memory resources retain ordinary all-or-nothing token admission. CPU telemetry
+cannot discount memory or GPU demand. The separate adaptive GPU controller below
+may share the single physical GPU using its own trusted device evidence. Measurements require a fresh nearly idle
 host, never lend or borrow CPU IDs, and do not overlap another held CPU action.
 Measurement placement and identity remain transport-specific: the pool uses an
 implicit submitting-host pin with platform/toolchain identity, while SLURM uses
@@ -1219,3 +1220,55 @@ never reinterpret held tokens under a changed map. New hosts receive their own
 maps. Logical CPU counts are capacity units, not equal-throughput claims across
 cores or hosts. Performance measurements still require declared architecture,
 resource demand and isolation, with measured evidence for any speedup claim.
+
+
+## Adaptive GPU admission and independent memory domains
+
+Each GPU worker advertises physical devices, not manually tuned concurrent job
+slots. The two identical GB10 hosts each advertise one device and use the same
+policy. The current adaptive controller supports one physical device per worker;
+multi-device placement requires a future UUID-specific allocation contract.
+
+A root-owned broker snapshot at `/run/prismabuild/gpu-capacity.json` describes
+all active scopes, attributed GPU processes, foreign processes, host memory and
+pressure, device power and memory domain. The controller reads only a regular
+root-owned file below directories that other users cannot modify. Missing,
+incomplete, stale or unknown-device observations refuse new GPU admissions,
+including cold start. A fresh complete snapshot permits one cold-start action.
+Two consecutive low-load samples permit one additional generation action per
+new sample, after every running GPU action has complete current attempt
+attribution and at least two seconds to start. Sample credit is persisted before
+reservation mutation: crashes may lose a probe opportunity but cannot reuse it.
+Released or retried actions cannot reset that sample's spent credit.
+
+GPU concurrency uses the same host admission lock as CPU lending. Additional
+GPU reservations live in each claimant's `.gpu.json`; they never mint physical
+GPU or host memory tokens. Failure, abandonment and release remove the metadata
+with the reservation. Existing CPU affinity, GPU visibility and hard cgroup
+limits remain the execution boundaries. Rising load closes new admission and
+does not stop running work. Thermal/power limiting, foreign GPU processes, host
+memory pressure and CPU pressure close admission. Low power permits a probe;
+it does not certify hardware saturation or useful throughput. GB10's 140 W SoC
+design envelope is explicitly a reference, not an NVML GPU power limit, and
+GPU utilization percentage does not drive admission. Performance claims require
+useful work, elapsed time, energy and the relevant host observations.
+
+New GPU submissions seal `params.gpu_exclusive` as an explicit boolean.
+Measurements and exclusive work never overlap another GPU holder. Legacy
+requests without that marker are conservatively exclusive because an old
+`gpu=1` request could mean the whole device. Historical `gpu>1` sharing-slot
+requests also remain exclusive; their sealed demand and receipts retain the
+original count, while physical reservation and fit checks use one device.
+
+Host `mem_gb` always retains its complete token reservation and cgroup cap.
+On a `shared_system` device such as GB10, CPU and GPU allocations share physical
+DRAM and remain inside that existing aggregate budget. On a `discrete` device,
+VRAM is an independent pool: each action reserves its full GPU budget, the sum
+cannot exceed device VRAM, and currently free VRAM must cover a new reservation.
+Missing VRAM counters are unknown, never free. The pool-only `--gpu-memory-gb`
+option seals `params.gpu_memory_gb`; without it the GPU budget conservatively
+defaults to `mem_gb`. RAM-heavy, GPU-light jobs should declare their separate
+VRAM budget. On shared-memory devices this explicit GPU cap is an additional
+subset cap, not a second reservation of the same physical DRAM. The exact
+GPU budget follows scope creation, durable recovery and release. SLURM refuses
+this option until its execution contract supports separate VRAM budgets.
