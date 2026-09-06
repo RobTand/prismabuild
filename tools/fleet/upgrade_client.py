@@ -22,7 +22,6 @@ MEMBERS = {
     'resource_broker.py': 'tools/resource_broker.py',
     'resource_payload.py': 'tools/resource_payload.py',
     'gpu_memory.py': 'src/prismabuild/gpu_memory.py',
-    'gpu_capacity.py': 'src/prismabuild/gpu_capacity.py',
     'upgrade_client.py': 'tools/upgrade_client.py',
 }
 SERVICE = 'prismabuild-resource-broker.service'
