@@ -23,6 +23,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import mount_latency  # noqa: E402
 
 
+def test_probe_failure_reaches_netdata_and_human_output():
+    reason = "PermissionError: [Errno 13] Permission denied: /probe/claim.tmp"
+    record = {"probe": {"status": "error", "error": reason}}
+    sink = io.StringIO()
+    mount_latency._emit(record, sink)
+    assert reason in sink.getvalue()
+    assert reason in mount_latency.one_line(record)
+
+
+def test_recording_failure_reaches_protocol_without_losing_probe(tmp_path,
+                                                               capsys):
+    # A regular file in place of the log directory is a real I/O failure,
+    # independent of the worker UID's permission privileges.
+    blocked = tmp_path / "records"
+    blocked.write_text("not a directory")
+    assert mount_latency.main([
+        "--once", "--netdata", "--mount", str(tmp_path / "probe"),
+        "--record-dir", str(blocked), "--lock-dir", str(tmp_path / "locks"),
+    ]) == 0
+    output = capsys.readouterr().out
+    assert "SET ok = 1" in output
+    assert "FileExistsError" in output
+    assert str(blocked) in output
+
+
 @pytest.mark.parametrize("direct_exec", [False, True])
 def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec):
     """Exercise the installed symlink and Netdata's positional interval argv.
