@@ -2502,6 +2502,17 @@ def detached_attempts_refusal(max_attempts: int) -> str:
     )
 
 
+def require_gpu_memory_scope(*, gpu_memory_gb, gpu: bool, transport: str) -> None:
+    """Share GPU-budget scope refusals with campaign manifest preflight."""
+
+    if gpu_memory_gb is not None and not gpu:
+        raise ValueError("--gpu-memory-gb requires GPU demand")
+    if gpu_memory_gb is not None and transport == "slurm":
+        raise ValueError(
+            "--gpu-memory-gb requires pool transport; SLURM VRAM budgets are not supported"
+        )
+
+
 def require_host_class_scope(
     *, measurement: bool, host_class: str | None, transport: str, anywhere: bool = False
 ) -> None:
@@ -3800,10 +3811,13 @@ def main() -> int:
     # ``--no-default-env`` too: an empty environment means every device is
     # visible, which is the case this exists for.
     declared = variables.get("CUDA_VISIBLE_DEVICES")
-    if args.gpu_memory_gb is not None and not demand.get("gpu"):
-        ap.error("--gpu-memory-gb requires GPU demand")
-    if args.gpu_memory_gb is not None and args.transport == "slurm":
-        ap.error("--gpu-memory-gb requires pool transport; SLURM VRAM budgets are not supported")
+    try:
+        require_gpu_memory_scope(
+            gpu_memory_gb=args.gpu_memory_gb, gpu=bool(demand.get("gpu")),
+            transport=args.transport,
+        )
+    except ValueError as exc:
+        ap.error(str(exc))
     if not demand.get("gpu"):
         if declared not in (None, ""):
             raise SystemExit(

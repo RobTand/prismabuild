@@ -421,6 +421,7 @@ an omitted field is not passed at all.
 | `snapshot_ref` | `--snapshot-ref`, once per entry |
 | `exclusive` | `--exclusive` |
 | `gpu_capacity` | `--gpu-capacity` |
+| `gpu_memory_gb` | `--gpu-memory-gb`, a positive finite GiB budget; pool only, requires GPU demand |
 | `priority` | `--priority` |
 | `measurement` | `--measurement` |
 | `host_class` | `--host-class`, a node Feature name such as `gb10` |
@@ -445,6 +446,12 @@ the field, and the value.
 These rows are refused at load as well, each for the reason `pbrun` gives at
 submit:
 
+*   `gpu_memory_gb` without positive `demand.gpu` or `exclusive`, or under
+    `--transport slurm`. The budget accepts a JSON number or numeric string
+    converting to between 1 and `2**63 - 1` bytes, just like `pbrun`.
+    Booleans, non-finite values and out-of-range budgets refuse before any row
+    is submitted. For example, `"demand": {"gpu": 1, "mem_gb": 80},
+    "gpu_memory_gb": 32` retains the 80 GiB aggregate budget and 32 GiB GPU cap.
 *   `measurement` without `host_class` under `--transport slurm`. A SLURM
     measurement is keyed on the scheduler-attested class that produced it.
     Under `--transport pool`, omitting `host_class` is the supported form: the
