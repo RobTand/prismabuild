@@ -14,7 +14,7 @@ authors = [{name = "Robert Tand", email = "robert.tand@icloud.com"}]
 [project.optional-dependencies]
 slurm = []                 # slurm.py shells out to sbatch/scontrol; nothing to install
 dagster = ["dagster>=1.7"]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "PyYAML>=6"]
 
 [project.scripts]
 prismabuild = "prismabuild.core:main"
