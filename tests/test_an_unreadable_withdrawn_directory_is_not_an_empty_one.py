@@ -107,3 +107,14 @@ def test_a_missing_withdrawn_directory_still_answers_empty(tmp_path: Path) -> No
     """Absence is not an error: a queue with no layout has no withdrawals."""
 
     assert pool.PoolQueue(tmp_path / "fresh").withdrawn_keys() == frozenset()
+
+
+def test_a_withdrawn_state_path_that_is_a_file_is_not_empty(
+    queue: pool.PoolQueue,
+) -> None:
+    directory = queue.dir(pool.WITHDRAWN)
+    directory.rmdir()
+    directory.write_text("invalid queue state", encoding="utf-8")
+
+    with pytest.raises(NotADirectoryError):
+        queue.withdrawn_keys()
