@@ -59,6 +59,17 @@ and denial sidecars before deriving worker/sample freshness and placement. Its
 `sampled_unix` is the time that collection finished; it remains a non-atomic
 diagnostic snapshot, not a process-liveness or storage-recovery guarantee.
 
+The pull queue orders ready items by descending priority, then descending
+admission-denial count, then oldest publication time. Aging changes order only
+within a priority band. A denied item past `STARVATION_FLOOR` may withhold its
+host until `WITHHOLD_CEILING_S`, but higher-priority items have already been
+considered before that veto is reached. The existing withholding rule still
+protects large items within each band. Priority defaults to 0 and is queue
+metadata outside action identity; `pbtest --priority` forwards it to every
+shard. Agent self-validation uses -10 so queued campaign work at 0 is considered
+first. An admitted background action retains its reservation until completion
+or its execution deadline; queue priority does not preempt running work.
+
 The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements
 changed returns to `ready/` for a fresh decision. Requeued records use the item
