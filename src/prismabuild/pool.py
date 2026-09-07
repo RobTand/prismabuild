@@ -5087,6 +5087,29 @@ class PoolQueue:
                     }
             raise PoolContractError(f"no such action in the queue: {key}")
 
+        # A live marker that does not name the live record is a *stale*
+        # decision, not this one, and the idempotent branch below would treat
+        # it as one: it keeps ``existing`` verbatim and files nothing new, so
+        # the ready guard finds a generation the marker does not cover, leaves
+        # it queued, and answers ``already_withdrawn``.  The operator is told
+        # the action is cancelled and it runs anyway -- and if the live record
+        # is CLAIMED, worse: the cleanup at the end of this verb still unlinks
+        # that claim and its lease and hands back its tokens, while nothing on
+        # the running box is covered by any marker, so the child runs on and
+        # ``finish`` files it under ``failed`` as a lost race.  Retire the
+        # stale decision into ``withdrawn/superseded/`` and proceed as a fresh
+        # one, which is what the operator asked for by running the verb again.
+        #
+        # The first decision is kept, not overwritten: ``_supersede_withdrawal``
+        # files it under ``withdrawn/superseded/``, where it remains the record
+        # of who cancelled the earlier generation and why.  This is the same
+        # retirement ``publish`` performs when a re-submission arrives behind a
+        # marker, applied to the verb that has the same problem.
+        if (existing is not None and record is not None
+                and self.withdrawal_covers(record, action_key=key) is None):
+            self._supersede_withdrawal(key)
+            existing = None
+
         lease = _read_json(self.lease_path(key)) or {}
         host: str | None = None
         if isinstance(record, Mapping):

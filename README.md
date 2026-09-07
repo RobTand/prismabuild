@@ -72,10 +72,12 @@ refused once `done` or `failed` carries the same generation: both stale reaping
 and the claim boundary treat that outcome as terminal, while a later
 `published_unix` for the same content-addressed key remains claimable. A
 withdrawal likewise cancels the *run* and not the name —
-the marker is scoped to the generation it was filed against and a later
-submission retires it into `withdrawn/superseded/` — because the action key is
+the marker is scoped to the generation it was filed against, and a later
+submission — or a later withdrawal, which finds the same marker stale —
+retires it into `withdrawn/superseded/`. The action key is
 a content hash, so re-submitting one is how anybody asks for the same work
-again. What
+again, and running the verb a second time is how anybody cancels what is
+live now rather than what was live then. What
 pqwork lacks, and PrismaBuild has, is action-key determinism and CAS receipts —
 which is what quantization work needs, since an artifact you cannot reproduce is
 quarantined.
