@@ -71,7 +71,8 @@ def test_finish_does_not_delete_the_retrys_claim_or_lease(
             claim_snapshot=first,
         )
 
-    retry = observed["retry"]
+    assert observed["retry"] is None, "cleanup retains ownership until its tombstone is removed"
+    retry = queue.claim(owner="attempt-2", capacity={"cpu": 1})
     assert retry is not None and retry["claimed_by"] == "attempt-2"
     # Everything attempt 2 acquired survives attempt 1's cleanup.
     assert queue.item_path(pool.CLAIMED, KEY_A).exists()
@@ -81,9 +82,7 @@ def test_finish_does_not_delete_the_retrys_claim_or_lease(
     assert json.loads(queue.lease_path(KEY_A).read_text())["owner"] == "attempt-2"
     assert queue.ledger().held() == {"cpu": 1}
     assert queue.ledger().held_keys() == [KEY_A]
-    # The finisher filed the retry to ready and says so. That path does not
-    # still exist, and must not be asserted to: attempt 2 claimed it inside
-    # the hook, which is the transition this whole test is about.
+    # The next poll claims the retry only after its predecessor's cleanup.
     assert result == queue.item_path(pool.READY, KEY_A)
     # No tombstone is left behind on the ordinary path.
     assert _tombstones(queue) == []
@@ -110,7 +109,8 @@ def test_reap_stale_does_not_delete_the_retrys_claim_or_lease(
     with mock.patch.object(pool, "_write_json_atomic", write):
         assert queue.reap_stale(timeout_s=-1) == [KEY_A]
 
-    retry = observed["retry"]
+    assert observed["retry"] is None, "cleanup retains ownership until its tombstone is removed"
+    retry = queue.claim(owner="attempt-2", capacity={"cpu": 1})
     assert retry is not None and retry["claimed_by"] == "attempt-2"
     assert queue.item_path(pool.CLAIMED, KEY_A).exists()
     assert queue.lease_path(KEY_A).exists()

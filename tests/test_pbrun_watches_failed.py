@@ -23,7 +23,7 @@ import pbrun
 
 
 class _Queue:
-    """Just enough PoolQueue for the wait loop: two terminal directories."""
+    """Terminal-file fixture with no immutable cancellation decisions."""
 
     def __init__(self, root: Path):
         self.root = root
@@ -32,6 +32,9 @@ class _Queue:
 
     def item_path(self, state: str, key: str) -> Path:
         return self.root / state / f"{key}.json"
+
+    def withdrawal_decisions(self, key: str) -> list:
+        return []
 
 
 def _file(queue: _Queue, state: str, key: str, payload: dict) -> None:

@@ -164,8 +164,12 @@ def test_withdraw_stops_scope_and_releases_only_after_broker_proof(scoped, monke
     _process(monkeypatch, queue, item, calls)
     queue.execute(item, containment=True)
     result = queue.withdraw(item['action_key'])
-    assert result['released'] == 3
-    assert 'stop' in calls and 'release' in calls
+    assert result['released'] == 0
+    assert 'stop' in calls and 'release' not in calls
+    assert queue.ledger().held() == {'cpu': 1, 'mem_gb': 2}
+    queue.finish(item['action_key'], status='withdrawn', claim_snapshot=item)
+    assert 'release' in calls
+    assert queue.ledger().held() == {}
     assert not queue.item_path(pool.CLAIMED, item['action_key']).exists()
 
 

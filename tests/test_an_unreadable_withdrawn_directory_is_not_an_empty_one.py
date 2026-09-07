@@ -113,7 +113,7 @@ def test_a_withdrawn_state_path_that_is_a_file_is_not_empty(
     queue: pool.PoolQueue,
 ) -> None:
     directory = queue.dir(pool.WITHDRAWN)
-    directory.rmdir()
+    directory.rename(directory.with_name("withdrawn-original"))
     directory.write_text("invalid queue state", encoding="utf-8")
 
     with pytest.raises(NotADirectoryError):

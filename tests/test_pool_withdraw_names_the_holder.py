@@ -122,7 +122,8 @@ def test_withdraw_leaves_a_live_holders_claim_for_its_own_box(queue) -> None:
     assert queue.ledger(HELD_BY).held() == DEMAND, (
         "the holder's tokens were dropped by an operator on another box")
     claim = json.loads(queue.item_path(pool.CLAIMED, KEY).read_text())
-    assert claim["stop_pending"]["holder_host"] == HELD_BY
+    assert "stop_pending" not in claim
+    assert result["stop_pending"]["holder_host"] == HELD_BY
     # Durable regardless: the operator's decision is filed before any of this.
     assert queue.item_path(pool.WITHDRAWN, KEY).exists()
 

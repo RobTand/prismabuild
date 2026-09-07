@@ -703,6 +703,7 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
     """
 
     entries: list[tuple[float, os.DirEntry]] = []
+    withdrawal_mtimes: dict[str, float] = {}
     for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         directory = Path(queue_root) / state
         try:
@@ -712,10 +713,31 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
                         continue
                     try:
                         entries.append((entry.stat().st_mtime, entry))
+                        if state == pool.WITHDRAWN:
+                            withdrawal_mtimes[entry.name[:-5]] = entry.stat().st_mtime
                     except OSError:
                         continue
         except OSError:
             continue
+    # A cancellation is durable before its visible summary is written. Keep
+    # that ending visible if the operator crashed between the two writes.
+    decisions = Path(queue_root) / pool.WITHDRAWN / "decisions"
+    try:
+        with os.scandir(decisions) as scan:
+            directories = [entry for entry in scan if entry.is_dir()]
+    except OSError:
+        directories = []
+    for directory in directories:
+        try:
+            with os.scandir(directory.path) as scan:
+                candidates = [(entry.stat().st_mtime, entry) for entry in scan
+                              if entry.name.endswith(".json")]
+        except OSError:
+            continue
+        if candidates:
+            newest = max(candidates, key=lambda pair: pair[0])
+            if newest[0] > withdrawal_mtimes.get(directory.name, float("-inf")):
+                entries.append(newest)
     entries.sort(key=lambda pair: pair[0], reverse=True)
     return [entry for _, entry in entries[: max(0, int(limit))]]
 
@@ -750,7 +772,9 @@ def _unreadable_row(entry: os.DirEntry, reason: str) -> dict:
     except OSError:
         mtime = 0.0
     return {
-        "action_key": entry.name[:-5],
+        "action_key": (Path(entry.path).parent.name
+                       if Path(entry.path).parent.parent.name == "decisions"
+                       else entry.name[:-5]),
         "status": "unreadable",
         "transport": UNKNOWN,
         "host": None,
@@ -803,8 +827,12 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
     rows: list[dict] = []
     for entry in _ending_paths(queue_root, limit):
         try:
-            record = json.loads(Path(entry.path).read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+            path = Path(entry.path)
+            if path.parent.parent.name == "decisions":
+                record = pool.PoolQueue(Path(queue_root))._read_withdrawal_decision(path)
+            else:
+                record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, pool.PoolContractError) as exc:
             # Not dropped. ``limit`` sliced the newest records before any of
             # them was read, so dropping one printed the same empty table a
             # fleet that had filed nothing prints, and the two states call for

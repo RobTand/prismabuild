@@ -79,6 +79,7 @@ def test_old_queue_timestamp_does_not_consume_execution_budget(tmp_path):
     queue, item = _claimed(tmp_path, 5)
     item['published_unix'] = 1
     item['claimed_unix'] = 1
+    pool._write_json_atomic(queue.item_path(pool.CLAIMED, item['action_key']), item)
     outcome = queue.execute(item, heartbeat_s=30)
     assert outcome['status'] == 'executed'
     assert outcome['returncode'] == 0

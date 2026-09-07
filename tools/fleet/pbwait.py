@@ -120,6 +120,13 @@ def resolve_key(q, name: str, *, lane_root=None) -> str:
             entry[: -len(".json")] for entry in names
             if entry.startswith(text) and entry.endswith(".json")
         )
+    decisions = q.dir(pool.WITHDRAWN) / "decisions"
+    try:
+        for directory in decisions.iterdir():
+            if directory.name.startswith(text) and directory.is_dir() and any(directory.glob("*.json")):
+                found.add(directory.name)
+    except FileNotFoundError:
+        pass
     if not found:
         raise _misnamed(
             f"pbwait: nothing recorded matches {name!r}; a prefix can only be "

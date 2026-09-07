@@ -65,7 +65,10 @@ the evidence on later sweeps; it does not guess a host. A lease whose claim is
 gone and whose host is missing or invalid uses the same holder resolution
 before cleanup. Conflicting ledgers retain the lease and every reservation;
 absent ownership never becomes the sweeping host's ledger.
-`finished_host` is the box
+A claim-to-tombstone
+rename that fails does not establish cleanup ownership: the reaper retains
+the claim, lease and reservation, reports the refusal, and retries on a later
+sweep without publishing a runnable replacement. `finished_host` is the box
 that filed the ending. Readers report the first as where the work was; the
 second reaps most of the fleet's work and would otherwise absorb its failures. An attempt counts an execution, so
 a claim reaped with no lease ever written and no immutable attempt published
@@ -74,9 +77,9 @@ to `ready/` with its attempt count unchanged, the release filed under
 `withdrawn/superseded/` as an `unstarted-claim` and counted on the item as
 `unstarted_releases`. Both halves of that test are load-bearing, because a
 restored finish tombstone also has no lease and must keep the charged path. A
-claim carrying a withdrawal stamp is never released: `withdraw` closes the
-retry with `max_attempts: 1`, and a release is not counted against that limit,
-so the stamp is what stops a cancelled action returning to the queue.
+claim covered by a withdrawal decision is concluded without a retry. Legacy
+withdrawal stamps remain readable, but new withdrawals never rewrite a claimed
+record's retry limit or ownership fields.
 Releases are counted, not bounded: the measured stall between the rename and
 the lease has no upper bound on this filesystem, so a bound would be a guess
 about a delegation recall. Both readers surface the count, because a release
@@ -90,6 +93,68 @@ diagnostic; healthy records continue through the queue. A quarantine restores
 a concurrently repaired record without replacing another submission and never
 overwrites an existing failed outcome. These contracts have local filesystem
 regression coverage; they are not a cross-host NFS qualification claim.
+
+Ownership mutations hold a permanent per-key POSIX record lock under
+`transition-locks/<sha256(action_key)>.lock`. Publication, scope startup and
+recovery, heartbeat writes, finish, withdrawal and recovery sweeps use the same
+lock. Claim and sweeps skip busy keys; independent keys continue. A queued
+successor cannot replace an active claim or pending finish tombstone. The lock
+inode is never deleted, thread nesting retains its original descriptor, and
+process death releases kernel ownership. Cross-host POSIX lock visibility is a
+queue mount requirement; NFS client mounts with local-only locks are unsupported.
+The helper is shared with SLURM terminal-summary publication. Bidirectional
+exclusion and reacquisition were qualified through admitted PB jobs between each
+GB10 NFSv4.2 client (`local_lock=none`) and the dl380g10 server-local ZFS path.
+
+Heartbeats verify the owner and, for worker execution, the exact claim snapshot
+while holding that lock. A late heartbeat refuses to overwrite a successor's
+lease. Legacy owner-only callers cannot distinguish attempts sharing an owner;
+internal claim, scope and execution writers always supply the snapshot.
+
+Withdrawal records an immutable decision under
+`withdrawn/decisions/<action_key>/<attempt_generation>.json`, using the same
+publication identity as attempt history. The first decision for that generation
+wins. The current `withdrawn/<action_key>.json` remains the operator-facing
+ending, and publication may retire it without erasing an original attempt's
+stop request. All cancellation gates consult the generation decision even when
+the live marker has been retired. A malformed decision is a refusal, never an
+inferred cancellation of another generation.
+
+The withdrawal caller owns no claimed record, lease or reservation and never
+rewrites, removes or releases them. It returns `released: 0` and a pending stop
+until the claiming worker or reaper completes cleanup. On the claiming host,
+a saved broker scope authority may accelerate stopping only that exact
+attempt; uncontained work stops through its worker's marker checkpoint. A
+process search by action key cannot distinguish successor attempts and is not
+used for withdrawal. Ready cancellation moves and reads the record before
+checking its generation, and restores replacements without overwriting them.
+This contract retires the old retry-limit poison write and synchronous local
+process scan. Deployment requires draining and upgrading workers to readers of
+immutable decisions before relying on asynchronous cancellation across a
+re-submission; there is no unsafe legacy fallback.
+
+READY-record examinations use `ready-transitions/` as their recoverable
+intermediate namespace. Withdrawal and orphan cleanup move the original bytes
+there under the key's POSIX transition lock, then either restore them with a
+no-clobber link or retain them as superseded evidence after a durable disposition.
+The reaper revisits expired captures under the same nonblocking key lock. Live
+successors are preserved, usable records require a matching-generation ending
+before retirement, and unavailable evidence or a failed restore keeps the
+capture for another sweep. An orphan capture is acknowledged only after its
+ending is published or a successor is observed. These transitions never release
+reservations and do not overwrite another terminal record.
+
+Widowed-lease recovery also holds the nonblocking key transition lock from its
+claim census through capacity return and lease removal. A busy key is deferred
+while independent keys remain recoverable.
+
+A finish tombstone remains cleanup authority even when its generation already
+has a durable cancellation or terminal ending. Before retiring such a tombstone
+with no live claim, recovery verifies its holder and payload cleanup, returns
+any remaining reservation, and removes only a matching lease. Unknown cleanup,
+conflicting holders, or an incomplete token return retains the tombstone. A
+queued successor remains untouched; a claimed successor's resources and lease
+are never released using an older tombstone.
 
 Local task output is now crash-recoverable without accepting unowned bytes.
 Before argv, the worker publishes an immutable claim for the exact action,

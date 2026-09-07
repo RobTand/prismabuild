@@ -84,7 +84,7 @@ def test_a_remote_withdrawal_keeps_the_reservation_until_the_holder_stops(
 
     assert result["signalled"] is None
     assert result["released"] == 0
-    assert result["container_cleanup"]["complete"] is True
+    assert result["container_cleanup"]["deferred"] is True
     assert result["host"] == HOLDER
     assert result["stop_pending"]["holder_host"] == HOLDER
     # The claim and lease stay: they are the ownership record for a payload
@@ -99,12 +99,10 @@ def test_a_remote_withdrawal_keeps_the_reservation_until_the_holder_stops(
     assert filed["status"] == "withdrawn"
     assert filed["reason"] == "cancel remotely"
 
-    # The record says why the reservation is still out, and keeps the poison
-    # that stops a worker on older bytes from requeueing a cancelled action.
+    # Withdrawal never rewrites the claiming worker's ownership record.
     live = json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text())
-    assert live["stop_pending"]["holder_host"] == HOLDER
-    assert live["max_attempts"] == 1
-    assert "withdrawn_note" in live
+    assert "stop_pending" not in live
+    assert "withdrawn_note" not in live
 
     # And nothing else can run on the holder's only token.
     _publish(queue, KEY_B)
@@ -146,7 +144,7 @@ def test_the_holder_completes_the_withdrawal_and_releases_then(
     assert other is not None and other["action_key"] == KEY_B
 
 
-def test_a_local_withdrawal_with_nothing_running_still_releases(
+def test_a_local_withdrawal_defers_release_to_the_claiming_worker(
     queue: pool.PoolQueue,
 ) -> None:
     """The gate must not hold capacity when there is nothing left to stop."""
@@ -155,8 +153,10 @@ def test_a_local_withdrawal_with_nothing_running_still_releases(
     claimed = queue.claim(owner="local-worker", capacity={"cpu": 1})
     assert claimed is not None
     result = queue.withdraw(KEY_A, reason="changed my mind")
-    assert result["stop_pending"] is None
-    assert result["released"] == 1
+    assert result["stop_pending"] is not None
+    assert result["released"] == 0
+    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
+    queue.finish(KEY_A, status="withdrawn", claim_snapshot=claimed)
     assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
     assert not queue.lease_path(KEY_A).exists()
     assert queue.ledger().available() == {"cpu": 1}

@@ -65,7 +65,6 @@ from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
 import contextlib
 from dataclasses import dataclass, field
-import fcntl
 import getpass
 import hashlib
 import json
@@ -77,12 +76,12 @@ import secrets
 import shlex
 import socket
 import subprocess
-import threading
 import time
 from typing import Callable
 import uuid
 
 from . import core as pb
+from . import posix_lock
 from . import pool
 
 SUBMISSION_SCHEMA_V1 = "prismaquant.prismabuild.slurm_lane_submission.v1"
@@ -2567,12 +2566,6 @@ def _newer_ending_stands(
     return str(existing.get("status") or "") != "cache_hit"
 
 
-# POSIX locks are process-scoped. Serialize threads before opening the file,
-# and close it before releasing the thread lock: closing another descriptor
-# for the same inode would release this process's POSIX lock too.
-_SUMMARY_THREAD_LOCKS = tuple(threading.Lock() for _ in range(64))
-
-
 @contextlib.contextmanager
 def _summary_lock(path: Path) -> Iterator[None]:
     """Serialize summary writers on local filesystems and NFSv4.
@@ -2586,15 +2579,8 @@ def _summary_lock(path: Path) -> Iterator[None]:
 
     directory = path.parent.parent / ".summary-locks"
     lock_path = directory / f"{path.stem}.lock"
-    thread_lock = _SUMMARY_THREAD_LOCKS[hash(str(lock_path.resolve())) % 64]
-    with thread_lock:
-        directory.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+b") as stream:
-            fcntl.lockf(stream.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.lockf(stream.fileno(), fcntl.LOCK_UN)
+    with posix_lock.held(lock_path):
+        yield
 
 
 def _land_summary(
