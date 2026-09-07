@@ -186,3 +186,23 @@ def test_waiter_cannot_finish_between_withdrawal_and_requeue(tmp_path, monkeypat
             allow_publish.set()
         assert writer.result(timeout=10) is None
         assert reader.result(timeout=10) is None
+
+
+def test_waiter_reports_its_requeue_not_an_unrelated_later_generation(tmp_path):
+    from test_preemption_review_boundaries import setup_holder
+    q, bg, fg, holder = setup_holder(tmp_path, max_attempts=2)
+    assert q.claim(capacity={'gpu': 1}) is None
+    q.finish(bg, status='withdrawn', claim_snapshot=holder)
+    foreground = q.claim(capacity={'gpu': 1})
+    q.finish(fg, status='executed', claim_snapshot=foreground)
+    retry = q.claim(capacity={'gpu': 1})
+    q.finish(bg, status='failed', detail={'returncode': 1}, claim_snapshot=retry)
+    assert q.item_path(pool.FAILED, bg).exists()
+    q.publish(action_key=bg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
+              worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1})
+    unrelated = q.claim(capacity={'gpu': 1})
+    q.finish(bg, status='executed', claim_snapshot=unrelated)
+    landed = pbrun.landed_outcome(q, bg, wait_s=0, generation=holder['published_unix'])
+    assert landed is not None
+    assert landed[1]['published_unix'] == retry['published_unix']
+    assert landed[1]['status'] == 'failed'

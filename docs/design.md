@@ -87,7 +87,9 @@ failures cannot refresh the launch budget. New generations account for earlier
 interruptions through `attempt_history_missing_before`; their immutable
 withdrawal decisions remain linked by `supersedes_withdrawal.published_unix`.
 No failure history is discarded or rewritten. A preempted attempt records
-`preempted_by`; a waiter follows it to the requeue and reports that run's ending.
+`preempted_by`; a waiter follows the exact `supersedes_withdrawal` lineage
+through any repeated interruptions and reports that retry's ending. It does
+not adopt an unrelated later generation's verdict merely because the key matches.
 The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
 handoff cannot report cancellation while the replacement is being published.

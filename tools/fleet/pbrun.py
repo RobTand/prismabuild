@@ -2055,7 +2055,7 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
     # Reading the marker before the replacement exists is an intermediate
     # transition, not evidence that the preempted action was abandoned.
     with q._transition_locked(key):
-        newest: float | None = None
+        records = [record for _, record in q.withdrawal_decisions(key)]
         for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
                       pool.WITHDRAWN):
             try:
@@ -2063,16 +2063,23 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
                     q.item_path(state, key).read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if not isinstance(record, dict):
-                continue
+            if isinstance(record, dict):
+                records.append(record)
+        successors = []
+        for record in records:
             theirs = record.get("published_unix")
-            if not isinstance(theirs, (int, float)) or isinstance(theirs, bool):
+            parent = record.get("supersedes_withdrawal")
+            if (type(theirs) not in (int, float)
+                    or not isinstance(parent, dict)
+                    or parent.get("published_unix") != generation
+                    or parent.get("preempted_by") != ending.get("preempted_by")):
                 continue
-            # Strictly newer, so this can only ever move a waiter forward: an older
-            # generation's leftovers must not send it backwards into a loop.
+            # Follow the actual handoff, never an unrelated later submission
+            # of the same key. Immutable decisions retain intermediate links
+            # when the action was preempted more than once.
             if float(theirs) > float(generation):
-                newest = float(theirs) if newest is None else max(newest, float(theirs))
-        return newest
+                successors.append(float(theirs))
+        return min(successors) if successors else None
 
 
 def landed_outcome(
