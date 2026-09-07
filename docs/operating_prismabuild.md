@@ -778,7 +778,11 @@ So the run has a deadline.
     the answer to all of them. `complete` is true only when the deadline held,
     every required queue-root section (`pool`, `endings`, and the queue-root
     note that says which kind of empty an empty endings table is) read without
-    raising, *and* the pool census parsed every record it found. A section that
+    raising, *and* the pool census and selected endings parsed every record they
+    found. An unreadable ending keeps its diagnostic row and also appears in
+    `unavailable_sections`; inaccessible terminal directories fail the endings
+    section instead of silently contributing zero rows. Absent terminal
+    directories remain compatible with a transport that has filed nothing. A section that
     raised is listed in `unavailable_sections` with its error class and text,
     which is kept apart from `timed_out_sections` because the two call for
     different next moves: a timeout says look at the mount, an error says look

@@ -1590,3 +1590,12 @@ The assembler uses the producer's checked merge and revalidates part bytes.
 Per-worker source-hash reuse requires unchanged filesystem identity and matching
 expected digests, with before/after export checks. It is cooperative cache
 validation, not a claim of hostile-writer immutability or cross-action residency.
+
+### Status census completeness
+
+`pbstatus` exits 3 when required queue reads time out or fail, active pool
+records are unreadable, or selected terminal records cannot be parsed. Its
+top-level `complete` flag covers all these cases. Terminal directory read
+failures are unavailable sections; an unreadable terminal record retains its
+diagnostic row and names its path in `unavailable_sections`. Missing terminal
+directories remain valid for transports that have not filed outcomes.

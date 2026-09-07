@@ -802,13 +802,12 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
                 for entry in scan:
                     if not entry.name.endswith(".json") or not entry.is_file():
                         continue
-                    try:
-                        entries.append((entry.stat().st_mtime, entry))
-                        if state == pool.WITHDRAWN:
-                            withdrawal_mtimes[entry.name[:-5]] = entry.stat().st_mtime
-                    except OSError:
-                        continue
-        except OSError:
+                    entries.append((entry.stat().st_mtime, entry))
+                    if state == pool.WITHDRAWN:
+                        withdrawal_mtimes[entry.name[:-5]] = entry.stat().st_mtime
+        except FileNotFoundError:
+            if directory.exists():
+                raise  # The directory was readable, but a selected entry was not.
             continue
     # A cancellation is durable before its visible summary is written. Keep
     # that ending visible if the operator crashed between the two writes.
@@ -816,15 +815,12 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
     try:
         with os.scandir(decisions) as scan:
             directories = [entry for entry in scan if entry.is_dir()]
-    except OSError:
+    except FileNotFoundError:
         directories = []
     for directory in directories:
-        try:
-            with os.scandir(directory.path) as scan:
-                candidates = [(entry.stat().st_mtime, entry) for entry in scan
-                              if entry.name.endswith(".json")]
-        except OSError:
-            continue
+        with os.scandir(directory.path) as scan:
+            candidates = [(entry.stat().st_mtime, entry) for entry in scan
+                          if entry.name.endswith(".json")]
         if candidates:
             newest = max(candidates, key=lambda pair: pair[0])
             if newest[0] > withdrawal_mtimes.get(directory.name, float("-inf")):
@@ -1683,6 +1679,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                    deadline=deadline, abandoned=abandoned)
     if read["status"] == "ok":
         endings = read["value"]
+        for ending in endings:
+            if ending.get("unreadable"):
+                unavailable.append({"section": "endings", "type": "UnreadableRecord",
+                                    "error": f"{ending['path']}: {ending['unreadable']}"})
     elif read["status"] == "error":
         ending_note = f"endings: unavailable ({read['type']})"
         unavailable.append({"section": "endings", "type": read["type"],
