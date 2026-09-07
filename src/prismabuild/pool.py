@@ -4891,7 +4891,7 @@ class PoolQueue:
         for state in (DONE, FAILED):
             try:
                 names = os.listdir(self.dir(state))
-            except (FileNotFoundError, NotADirectoryError):
+            except FileNotFoundError:
                 # Absence only.  A queue whose layout has not been created yet
                 # legitimately has no ``done`` and no ``failed``, and that is
                 # the one reading of "no names" this method may make.
@@ -4954,7 +4954,7 @@ class PoolQueue:
 
         try:
             names = os.listdir(self.dir(WITHDRAWN))
-        except (FileNotFoundError, NotADirectoryError):
+        except FileNotFoundError:
             # Absence only, for the reason ``terminal_keys`` gives: a queue
             # whose layout has not been created yet has no ``withdrawn``.
             return frozenset()

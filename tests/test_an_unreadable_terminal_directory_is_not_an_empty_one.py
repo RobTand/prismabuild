@@ -119,3 +119,15 @@ def test_a_missing_done_directory_still_answers_empty(tmp_path: Path) -> None:
     """Absence is not an error: a queue with no layout has no outcomes."""
 
     assert pool.PoolQueue(tmp_path / "fresh").terminal_keys() == frozenset()
+
+
+@pytest.mark.parametrize("state", [pool.DONE, pool.FAILED])
+def test_a_terminal_state_path_that_is_a_file_is_not_empty(
+    queue: pool.PoolQueue, state: str
+) -> None:
+    directory = queue.dir(state)
+    directory.rmdir()
+    directory.write_text("invalid queue state", encoding="utf-8")
+
+    with pytest.raises(NotADirectoryError):
+        queue.terminal_keys()
