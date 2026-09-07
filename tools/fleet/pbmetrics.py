@@ -657,6 +657,43 @@ def collect_metrics(
                 for kind in ("cpu", "gpu"):
                     active.add(active_by_host[host][kind], host=host, kind=kind)
 
+    # A claim retained because its cleanup could not be proved is retried by a
+    # local reaper forever, deliberately: concluding it would release tokens
+    # for a payload nobody showed had stopped.  What that costs is a claim
+    # nobody is looking at, so the retry loop has to be able to raise its hand
+    # (#288).  Two aggregate series, not one per action: an alert asks "is
+    # anything stuck and for how long", and an action key is unbounded
+    # cardinality.
+    pinned = metrics.family(
+        "prismabuild_cleanup_pending_claims",
+        "Claims on the host retained because their payload could not be proved stopped; the reservation is still held.",
+    )
+    pinned_age = metrics.family(
+        "prismabuild_cleanup_pending_oldest_seconds",
+        "Age of the oldest unproven cleanup on the host, from its first failure; absent when nothing is pending.",
+    )
+    if claimed_known:
+        pinned_by_host: dict[str, int] = defaultdict(int)
+        oldest_by_host: dict[str, float] = {}
+        for job in jobs:
+            if job.get("state") != "CLAIMED" or not job.get("cleanup_pending"):
+                continue
+            host = _host(job.get("node"))
+            if host is None:
+                continue
+            pinned_by_host[host] += 1
+            age = _number(job.get("cleanup_pending_s"))
+            # A record written before #288 carries no first-failure stamp.
+            # That is a missing series, never a zero one: reporting 0 would
+            # say "just started" about a cleanup that may have been pending
+            # for hours.
+            if age is not None:
+                oldest_by_host[host] = max(oldest_by_host.get(host, age), age)
+        for host in sorted(fresh_hosts | set(pinned_by_host)):
+            pinned.add(pinned_by_host.get(host, 0), host=host)
+            if host in oldest_by_host:
+                pinned_age.add(oldest_by_host[host], host=host)
+
     observations = _attempt_telemetry(pool.PoolQueue(root), live_jobs, sampled)
     observed = metrics.family(
         "prismabuild_attempt_observed_resources",

@@ -628,7 +628,16 @@ def read_pool(queue_root: str | Path) -> dict:
                                cpu_allocation=record.get('cpu_allocation'),
                                gpu_admission=record.get('gpu_admission'),
                                cleanup_pending=bool(record.get('finish_pending') or record.get('stop_pending')
-                                                    or record.get('container_cleanup_pending')))
+                                                    or record.get('container_cleanup_pending')),
+                               # How hard, and for how long.  A cleanup pending
+                               # for three seconds and one pending for six hours
+                               # over four hundred attempts wrote the same row,
+                               # and an operator acts on them very differently
+                               # (#288).  ``None`` on a record written before
+                               # these fields existed.
+                               cleanup_attempts=record.get('container_cleanup_attempts'),
+                               cleanup_pending_s=_age(
+                                   record.get('container_cleanup_first_failed_unix'), now))
                     age = queue.lease_age(key)
                     row['lease_age_s'] = age
                     row['stale'] = age is None or not math.isfinite(age) or not 0 <= age <= pool.LEASE_TIMEOUT_S
@@ -636,6 +645,13 @@ def read_pool(queue_root: str | Path) -> dict:
                         row['reason'] = 'lease missing, stale or invalid; process liveness unknown'
                     elif row['cleanup_pending']:
                         row['reason'] = 'cleanup pending; reservation retained'
+                        if row.get('cleanup_attempts'):
+                            row['reason'] += (
+                                f"; {row['cleanup_attempts']} attempt"
+                                f"{'' if row['cleanup_attempts'] == 1 else 's'}")
+                            if row.get('cleanup_pending_s') is not None:
+                                row['reason'] += (
+                                    f" over {row['cleanup_pending_s']:.0f}s")
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 row.update(state='UNREADABLE', reason=str(exc))
                 valid_counts[state] = None

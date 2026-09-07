@@ -2112,6 +2112,7 @@ class PoolQueue:
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes", "gpu_admission",
         "cpu_allocation",
         "container_cleanup_pending", "container_cleanup_checked_unix",
+        "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
         "finish_pending", "resource_scope_intent",
     )
@@ -2554,9 +2555,74 @@ class PoolQueue:
                 # or SystemExit still stops the process.
                 cleanup["learning_error"] = f"{type(exc).__name__}: {exc}"
             return {**containers, "resource_scope": cleanup}
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+        except Exception as exc:                                     # noqa: BLE001
+            # Every exception, and for the opposite reason to the inner
+            # handler above.  This block is the part that PROVES the payload
+            # stopped -- the resource broker over a socket, Docker, the shared
+            # mount -- and an unexpected raise here escaped the method
+            # entirely.  All four callers (``finish``, ``reap_stale``, the
+            # lease sweep, ``withdraw``) index ``["complete"]`` on a dict they
+            # then never receive, so the payload had run, the claim was never
+            # concluded, the lease stopped being renewed, and the reaper
+            # recorded ``lease_lost_max_attempts``.  That is fail-OPEN in the
+            # way that costs the work (#286, #288).
+            #
+            # ``complete: False`` is the honest answer instead: cleanup could
+            # not be proved.  It is fail-closed -- the claim and its tokens are
+            # retained and a local reaper retries -- and it is deliberately NOT
+            # a decision to release capacity for a payload nobody has shown to
+            # have stopped.  A GPU an action still holds must not be handed to
+            # somebody else because the box gave up asking.
+            #
+            # What the old crash bought was a signal: it ran up
+            # ``MAX_CONSECUTIVE_ERRORS`` and took the box out of service.  That
+            # signal is replaced rather than dropped -- ``_note_cleanup_attempt``
+            # counts the retries and dates the first failure, so a cleanup that
+            # can never succeed is a visible pinned claim instead of an
+            # invisible one.  Relying on the crash was relying on a handler
+            # written for bad ITEMS, which had already misfired once: a 0770
+            # admission directory made every box run that counter up while
+            # announcing full capacity (#281).
+            #
+            # ``Exception`` and not ``BaseException``: a KeyboardInterrupt or
+            # SystemExit still stops the process.
             return {"complete": False, "used": True, "removed": [], "remaining": [],
                     "error": f"resource scope cleanup incomplete: {type(exc).__name__}: {exc}"}
+
+    @staticmethod
+    def _note_cleanup_attempt(
+        pending: dict[str, object], prior: Mapping[str, object] | None,
+        cleanup: Mapping[str, object],
+    ) -> None:
+        """Record that cleanup was tried again and still could not be proved.
+
+        One writer for all three sites that retain a claim on unproven cleanup
+        (``finish``, ``reap_stale``, ``withdraw``), because a count only two of
+        them increment measures nothing.
+
+        The two numbers answer the question the retry loop cannot answer about
+        itself: a cleanup pending for three seconds and one pending for six
+        hours and four hundred attempts write the same ``container_cleanup_
+        pending`` record, and an operator acts on them completely differently.
+        ``container_cleanup_checked_unix`` already said when it was last tried,
+        which is the one thing that is always recent.
+
+        No bound is applied here on purpose.  Concluding such a claim means
+        releasing tokens for a payload nobody proved had stopped, and that is a
+        fleet policy decision about hardware, not a defect fix -- see #288.
+        What this makes possible is deciding it on evidence.
+        """
+
+        attempts = (prior or {}).get("container_cleanup_attempts")
+        pending["container_cleanup_attempts"] = (
+            int(attempts) + 1 if isinstance(attempts, int) and not isinstance(attempts, bool)
+            else 1)
+        first = (prior or {}).get("container_cleanup_first_failed_unix")
+        pending["container_cleanup_first_failed_unix"] = (
+            float(first) if isinstance(first, (int, float)) and not isinstance(first, bool)
+            else _now())
+        pending["container_cleanup_pending"] = dict(cleanup)
+        pending["container_cleanup_checked_unix"] = _now()
 
     def _cleanup_action_containers(
         self, record: Mapping[str, object]
@@ -3395,8 +3461,7 @@ class PoolQueue:
             container_cleanup = self.cleanup_action_containers(record, reason="lease_lost")
             if not container_cleanup["complete"]:
                 pending = dict(record)
-                pending["container_cleanup_pending"] = container_cleanup
-                pending["container_cleanup_checked_unix"] = _now()
+                self._note_cleanup_attempt(pending, record, container_cleanup)
                 _write_json_atomic(path, pending)
                 continue
             # One holder, resolved once, before any branch below concludes
@@ -4417,8 +4482,7 @@ class PoolQueue:
             # remote one sees the claimed host and leaves it alone.
             pending = dict(effective_record)
             pending["action_key"] = action_key
-            pending["container_cleanup_pending"] = container_cleanup
-            pending["container_cleanup_checked_unix"] = _now()
+            self._note_cleanup_attempt(pending, effective_record, container_cleanup)
             pending["finish_pending"] = {
                 "status": status, "detail": dict(detail or {}),
             }
@@ -5214,8 +5278,7 @@ class PoolQueue:
                 # a cancelled action.
                 pending = dict(live)
                 if not container_cleanup["complete"]:
-                    pending["container_cleanup_pending"] = container_cleanup
-                    pending["container_cleanup_checked_unix"] = _now()
+                    self._note_cleanup_attempt(pending, live, container_cleanup)
                 if stop_pending is not None:
                     pending["stop_pending"] = stop_pending
                 _write_json_atomic(claimed_path, pending)
