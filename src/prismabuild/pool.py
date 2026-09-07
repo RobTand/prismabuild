@@ -3999,10 +3999,19 @@ class PoolQueue:
             if age <= timeout_s:
                 continue
             host = record.get("host")
+            if not isinstance(host, str) or not host:
+                try:
+                    host = self.resolve_claim_holder(key, record)
+                except AmbiguousClaimHolder as exc:
+                    print(f"pool lease sweep: {exc}", file=sys.stderr)
+                    continue
+                if host is not None:
+                    record["host"] = host
             container_cleanup = self.cleanup_action_containers(record)
             if not container_cleanup["complete"]:
                 continue
-            self.ledger(str(host) if isinstance(host, str) else None).release(key)
+            if host is not None:
+                self.ledger(host).release(key)
             lease.unlink(missing_ok=True)
             swept.append(key)
         return swept
