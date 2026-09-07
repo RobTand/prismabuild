@@ -53,8 +53,15 @@ changed returns to `ready/` for a fresh decision. Requeued records use the item
 schema and retain attempt history, but discard claim ownership, reservation and
 cleanup stamps, and the sidecar aging count. A record the reaper concludes
 names two boxes and never conflates them: `claimed_host` is the box the action
-was on, filled from the claim-intent marker of the same generation when the
-claimant was lost before it rewrote the record, and `finished_host` is the box
+was on, recovered from the unique committed reservation when the claimant was
+lost before it rewrote the record. Only when no ledger names a holder does the
+same-generation claim-intent marker supply that fallback. Multiple committed
+holder ledgers found during that recovery are a contradiction, distinct from
+absent evidence: the reaper
+reports the action key and conflicting hosts, retains the claim and every
+reservation, and continues with other claims. Withdrawal refuses that ambiguous
+claim before recording a cancellation or releasing anything. Recovery retries
+the evidence on later sweeps; it does not guess a host. `finished_host` is the box
 that filed the ending. Readers report the first as where the work was; the
 second reaps most of the fleet's work and would otherwise absorb its failures. An attempt counts an execution, so
 a claim reaped with no lease ever written and no immutable attempt published
