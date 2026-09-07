@@ -1155,8 +1155,8 @@ def append_record(record: dict[str, object], directory: Path) -> Path | None:
 #
 # Netdata already runs on every box in this fleet and already keeps history, so
 # the cheapest way to turn a sample into a series is to speak its plugin
-# protocol rather than to build a store.  Charts are declared once and values
-# are integers, so latencies are emitted in microseconds.
+# protocol rather than to build a store. Values are integers, so latencies are
+# emitted in microseconds; the probe chart also carries current diagnostics.
 
 _PROBE_STATE_CHART = (
     "prismabuild.mount_probe_state", "Shared mount probe outcome",
