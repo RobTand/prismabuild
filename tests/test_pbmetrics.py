@@ -344,6 +344,46 @@ class MetricsFixture(unittest.TestCase):
         self.assertIn('prismabuild_attempt_recent_cores{host="sparky"} 1', text)
         self.assertIn('prismabuild_attempt_recent_cores_jobs{host="dl380"} 1', text)
 
+    def test_unusable_sample_breaks_recent_cpu_coverage(self) -> None:
+        path = self.queue / "reservations" / "dl380" / "telemetry" / f"{CPU_KEY}.json"
+        original = json.loads(path.read_text())
+        for invalid in (
+            {"complete": False},
+            {"sampled_unix": NOW - 60},
+            {"sampled_unix": NOW + 60},
+            {"nonce": "wrong-scope"},
+        ):
+            with self.subTest(invalid=invalid):
+                _write(path, original)
+                store: dict = {}
+                pbmetrics.collect_metrics(self.queue, now=NOW, previous=store)
+                # A failed cgroup read retains CPU but advances wall and stamp.
+                fallback = dict(original, sampled_unix=NOW + 3, wall_seconds=14.0)
+                fallback.update(invalid)
+                _write(path, fallback)
+                text = pbmetrics.collect_metrics(self.queue, now=NOW + 4, previous=store)
+                for metric in ("prismabuild_attempt_recent_cores",
+                               "prismabuild_attempt_recent_cores_jobs",
+                               "prismabuild_attempt_observed_resources"):
+                    self.assertFalse(any('host="dl380"' in line
+                                         for line in _samples(text, metric)), text)
+                self.assertNotIn((CPU_KEY, "1" * 32), store)
+                self.assertIn('prismabuild_attempt_telemetry_unavailable_jobs{host="dl380"} 1',
+                              text)
+                # Recovery needs two usable samples; never bridge the gap.
+                recovered = dict(original, sampled_unix=NOW + 7,
+                                 wall_seconds=18.0, cpu_seconds=28.0)
+                _write(path, recovered)
+                text = pbmetrics.collect_metrics(self.queue, now=NOW + 8, previous=store)
+                self.assertFalse(any('host="dl380"' in line for line in _samples(
+                    text, "prismabuild_attempt_recent_cores")))
+                recovered.update(sampled_unix=NOW + 11, wall_seconds=22.0,
+                                 cpu_seconds=32.0)
+                _write(path, recovered)
+                text = pbmetrics.collect_metrics(self.queue, now=NOW + 12, previous=store)
+                self.assertIn('prismabuild_attempt_recent_cores{host="dl380"} 1', text)
+                self.assertIn('prismabuild_attempt_recent_cores_jobs{host="dl380"} 1', text)
+
     def test_one_moment_reports_no_rate(self) -> None:
         """A first reading has nothing to difference, and says so by absence."""
 
