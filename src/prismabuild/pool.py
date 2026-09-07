@@ -4856,11 +4856,21 @@ class PoolQueue:
         negatively cached and keeps answering ``False`` after the file lands --
         the same reason pbrun's wait loop polls by ``readdir``.  A withdrawal
         that a guard could not see is not a withdrawal.
+
+        Which is why an unreadable directory is not an empty one.  Every
+        ``OSError`` used to answer ``frozenset()`` here, so an ``ESTALE`` on a
+        cached handle said "nothing has been withdrawn" and defeated the
+        sentence above: ``_claim`` reads this set as the load-bearing half of
+        ``withdraw``, and with it empty the cancelled work is claimed and run
+        again -- the race the operator used to have to win by hand.  Loud on
+        anything but absence, for the reason :meth:`terminal_keys` records.
         """
 
         try:
             names = os.listdir(self.dir(WITHDRAWN))
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
+            # Absence only, for the reason ``terminal_keys`` gives: a queue
+            # whose layout has not been created yet has no ``withdrawn``.
             return frozenset()
         return frozenset(
             name[: -len(".json")] for name in names if name.endswith(".json")
