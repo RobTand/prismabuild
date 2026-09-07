@@ -37,6 +37,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -108,6 +109,35 @@ OBSERVABILITY_FILES = (
     "prismabuild-metrics.service", "prometheus.scrape.yml", "qualify_dashboard.py",
 )
 
+#: The modes a published generation's members carry, chosen rather than
+#: inherited.  Until #316 the mode came from ``shutil.copy2`` preserving
+#: whatever the *publishing checkout* happened to have, which is a box-local
+#: umask artifact: a worktree created under umask 077 published every file
+#: ``0500``/``0400``, and the same commit published from a umask-002 worktree
+#: would have published ``0555``/``0444``.  A generation's permissions must be
+#: a property of the generation, not of the shell that made it.
+#:
+#: World-readable, because a published generation has a reader that is not
+#: ``rob``.  ``docs/mount_measurement.md`` installs Netdata's mount collector
+#: as a symlink *into the live generation* on purpose, so that a later
+#: publication re-points it and no re-link is ever owed -- which makes a
+#: non-owner UID a first-class reader of published bytes.  The group bit alone
+#: would not do it: Netdata is uid 983 in group ``rob`` on sparky only because
+#: a ``usermod`` was run there, while on dl380g10 it is uid 984 with
+#: ``groups=984(netdata),110(docker)`` and in no group of Rob's at all.  A
+#: group-bit fix would make plugin adoption depend on a per-box ``usermod`` on
+#: every current and future box; the ``other`` bits need no provisioning.
+#: Nothing in a generation is secret -- it is PrismaBuild's own source, and
+#: credentials and queue state live elsewhere -- and the directories on the
+#: way already permit traversal by anyone.
+#:
+#: Write stays denied to everyone including the owner, so the property that
+#: makes a generation quotable -- it is immutable and append-only history --
+#: is exactly preserved.
+PUBLISHED_EXECUTABLE_MODE = 0o555
+PUBLISHED_FILE_MODE = 0o444
+PUBLISHED_DIRECTORY_MODE = 0o555
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -157,6 +187,64 @@ def _working_tree_dirty() -> bool:
             f"git status exited {result.returncode}: {detail}"
         )
     return bool(result.stdout.strip())
+
+
+def _git_index_modes() -> dict[str, int]:
+    """The mode Git records for every tracked file, keyed by checkout path.
+
+    The executable bit a published file carries is a fact the repository
+    already states -- ``100755`` or ``100644`` in the index -- so publication
+    reads it there rather than guessing from a filename, an extension, or a
+    hardcoded list of "the plugin files".  The alternative that was in place
+    read it from the publishing worktree's filesystem, which is why the same
+    commit published different modes from different worktrees.
+
+    A failure here is a refusal, in the shape ``_commit_identity`` uses: a
+    publisher that cannot read the index cannot say which of its members are
+    programs, and guessing would put an unexecutable collector on the fleet
+    exactly as before.
+    """
+
+    result = _git_result("ls-files", "--stage", "-z")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no output").strip()
+        raise SystemExit(
+            "cannot read the Git index modes the published files derive from: "
+            f"git ls-files --stage exited {result.returncode}: {detail}"
+        )
+    modes: dict[str, int] = {}
+    for entry in result.stdout.split("\0"):
+        if not entry:
+            continue
+        head, separator, path = entry.partition("\t")
+        fields = head.split()
+        if not separator or len(fields) != 3 or not re.fullmatch(r"[0-7]{6}", fields[0]):
+            raise SystemExit(
+                f"cannot parse a Git index entry for runtime publication: {entry!r}"
+            )
+        modes[path] = int(fields[0], 8)
+    return modes
+
+
+def _published_mode(source: Path, index_modes: dict[str, int]) -> int:
+    """The mode ``source`` gets in the generation: 0555 if it is a program.
+
+    Tracked files take the answer from the index.  An untracked one -- which
+    only a ``--allow-dirty`` publication has -- has no index entry to read, so
+    its own owner-execute bit is the only statement available and is used.
+    Either way the group and other read bits are set, which is the whole point.
+    """
+
+    try:
+        relative = source.resolve().relative_to(CHECKOUT.resolve()).as_posix()
+    except ValueError:
+        relative = None
+    recorded = index_modes.get(relative) if relative is not None else None
+    if recorded is not None:
+        executable = bool(recorded & 0o111)
+    else:
+        executable = bool(source.stat().st_mode & stat.S_IXUSR)
+    return PUBLISHED_EXECUTABLE_MODE if executable else PUBLISHED_FILE_MODE
 
 
 def _source_for(name: str) -> Path:
@@ -264,13 +352,29 @@ def _probe(root: Path) -> None:
 
 
 def _seal_generation(root: Path) -> None:
-    """Make accidental mutation fail; generations are append-only history."""
+    """Deny write to everyone, and settle the read and execute bits.
+
+    Generations are append-only history, so write is denied to the owner too.
+    The rest of the mode is set here rather than inherited: a directory came
+    from ``mkdir`` under the publisher's umask and the receipt came from
+    ``open("w")`` under the same umask, so a umask-077 publisher would close
+    the generation to its non-owner readers by accident -- which is the defect
+    in #316, one level up from the files.  Every member therefore lands on
+    ``PUBLISHED_*_MODE``; the copy loop has already set each file's execute
+    bit from the Git index, and this preserves that distinction rather than
+    re-deciding it.
+    """
 
     for path in sorted(root.rglob("*"), reverse=True):
         if path.is_symlink():
             continue
-        path.chmod(path.stat().st_mode & ~0o222)
-    root.chmod(root.stat().st_mode & ~0o222)
+        if path.is_dir():
+            path.chmod(PUBLISHED_DIRECTORY_MODE)
+        elif path.stat().st_mode & stat.S_IXUSR:
+            path.chmod(PUBLISHED_EXECUTABLE_MODE)
+        else:
+            path.chmod(PUBLISHED_FILE_MODE)
+    root.chmod(PUBLISHED_DIRECTORY_MODE)
 
 
 def _unseal_tree(root: Path) -> None:
@@ -464,6 +568,10 @@ def main() -> int:
         )
 
     published = _publication_manifest()
+    # Read before a single byte is staged: a publisher that cannot say
+    # which of its members are programs refuses here, not halfway
+    # through a tree it then has to clean up.
+    index_modes = _git_index_modes()
 
     print(f"publishing {len(published)} files from {commit[:12]}"
           f"{' (dirty)' if dirty else ''} to {MIRROR}")
@@ -497,6 +605,10 @@ def main() -> int:
             target = stage / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
+            # copy2 preserves the source's mode, which is the publishing
+            # worktree's umask rather than anything about the file.  Say what
+            # the generation carries instead of inheriting an accident.
+            os.chmod(target, _published_mode(source, index_modes))
             _fsync_file(target)
             actual = _sha256(target)
             if actual != expected:

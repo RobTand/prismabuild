@@ -1168,6 +1168,35 @@ restores the previous default in the same atomic operation that changed it.
     behind it as legitimate, because an old generation may still be running an
     action. A tree that is neither is not this fleet's, whatever the script
     inside it is called.
+*   Netdata reads it as its own UID. The [mount
+    collector](mount_measurement.md) is installed as a symlink into the live
+    generation on purpose, so that publishing a new runtime re-points it and no
+    re-link is ever owed.
+
+### What a published generation permits
+
+A generation is world-readable: `0555` for the files Git records as executable
+(`100755`), `0444` for the rest, and `0555` for its directories. Write is
+denied to everyone, the owner included, so the property that makes a generation
+quotable -- it is immutable, append-only history -- is unchanged.
+
+Read is open because a published generation has a reader that is not `rob`.
+The mount collector above runs as Netdata's own UID, and that UID is not in a
+group you can rely on: on sparky it is 983 and in group `rob` only because a
+`usermod` was run there, while on dl380g10 it is 984 with
+`groups=984(netdata),110(docker)` and in no group of Rob's at all. Granting
+only the group bit would therefore make plugin adoption depend on a per-box
+`usermod` on every current and future box. The `other` bits need no per-box
+provisioning. Nothing in a generation is secret: it is PrismaBuild's own
+source, and credentials and queue state live elsewhere.
+
+The mode is chosen by the publisher rather than inherited from the checkout it
+copies. Before this, `shutil.copy2` carried the publishing worktree's mode into
+the generation, so a worktree created under umask 077 published every file
+`0500`/`0400` -- unreadable to the collector -- and the same commit published
+from a umask-002 worktree would have published `0555`/`0444` (issue #316).
+Which members are programs comes from the Git index, not from a filename or the
+local filesystem, so the answer is the repository's and not the shell's.
 
 ## Smoke-test a transport
 
