@@ -3179,54 +3179,60 @@ class PoolQueue:
         usable.sort(key=lambda entry: (entry[0], -entry[1]))
         _, _, holder, record, _ = usable[0]
 
-        requeue = self._requeue_arguments(record, action_key=holder)
-        if requeue is None:
-            return None
-        try:
-            filed = self.withdraw(
-                holder,
-                reason=(
-                    f"preempted on {socket.gethostname()} so foreground action "
-                    f"{action_key[:12]} could be admitted; requeued at priority "
-                    f"{requeue['priority']}"
-                ),
-                by=f"prismabuild admission on {socket.gethostname()}",
-                preempted_by=action_key,
-                expected_claim=record,
-            )
-        except PoolContractError:
-            # The holder concluded, or its reservations contradict each other,
-            # between reading its claim and taking its lock.  Neither is this
-            # pass's business to resolve, and raising here would end a claim
-            # pass over a bookkeeping fact about somebody else's action.
-            return None
-        if filed.get("status") != "withdrawn" or filed.get("state") != CLAIMED:
-            # Nothing was stopped: the claim had already finished, or an
-            # earlier cancellation already covers this generation.  Publishing
-            # the requeue anyway would re-run work that just completed, on a
-            # fresh generation no terminal-claim guard catches.  The tokens are
-            # already back or on their way, so the denied item is admitted on a
-            # later pass without this.
-            return None
-        # Immediately after, and in this order: ``withdraw`` retires a ready
-        # record its own cancellation covers, and ``publish`` retires the
-        # visible marker into ``superseded/`` so the holder's submitter does
-        # not read its requeued action as terminally withdrawn.  The immutable
-        # decision survives that, which is what the holder's own checkpoint and
-        # ``finish`` read.  The aging sidecar is untouched by both.
-        try:
-            self.publish(**requeue)
-        except PoolContractError as exc:
-            # The cancellation is already durable, so this cannot be silent:
-            # say which action was stopped without being requeued, and let the
-            # pass continue.  Raising would take the claim loop down with it.
-            print(
-                f"prismabuild: preempted {holder[:12]} for {action_key[:12]} "
-                f"but could not requeue it: {exc}",
-                file=sys.stderr,
-                flush=True,
-            )
-        return holder
+        # Keep cancellation and replacement publication in one transition.
+        # Waiters take this same key lock before following the cancellation,
+        # so an intermediate marker cannot become a terminal verdict.
+        with self._transition_locked(holder, blocking=False) as acquired:
+            if not acquired:
+                return None
+            requeue = self._requeue_arguments(record, action_key=holder)
+            if requeue is None:
+                return None
+            try:
+                filed = self.withdraw(
+                    holder,
+                    reason=(
+                        f"preempted on {socket.gethostname()} so foreground action "
+                        f"{action_key[:12]} could be admitted; requeued at priority "
+                        f"{requeue['priority']}"
+                    ),
+                    by=f"prismabuild admission on {socket.gethostname()}",
+                    preempted_by=action_key,
+                    expected_claim=record,
+                )
+            except PoolContractError:
+                # The holder concluded, or its reservations contradict each other,
+                # between reading its claim and taking its lock.  Neither is this
+                # pass's business to resolve, and raising here would end a claim
+                # pass over a bookkeeping fact about somebody else's action.
+                return None
+            if filed.get("status") != "withdrawn" or filed.get("state") != CLAIMED:
+                # Nothing was stopped: the claim had already finished, or an
+                # earlier cancellation already covers this generation.  Publishing
+                # the requeue anyway would re-run work that just completed, on a
+                # fresh generation no terminal-claim guard catches.  The tokens are
+                # already back or on their way, so the denied item is admitted on a
+                # later pass without this.
+                return None
+            # Immediately after, and in this order: ``withdraw`` retires a ready
+            # record its own cancellation covers, and ``publish`` retires the
+            # visible marker into ``superseded/`` so the holder's submitter does
+            # not read its requeued action as terminally withdrawn.  The immutable
+            # decision survives that, which is what the holder's own checkpoint and
+            # ``finish`` read.  The aging sidecar is untouched by both.
+            try:
+                self.publish(**requeue)
+            except PoolContractError as exc:
+                # The cancellation is already durable, so this cannot be silent:
+                # say which action was stopped without being requeued, and let the
+                # pass continue.  Raising would take the claim loop down with it.
+                print(
+                    f"prismabuild: preempted {holder[:12]} for {action_key[:12]} "
+                    f"but could not requeue it: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return holder
 
     def _claim(
         self,

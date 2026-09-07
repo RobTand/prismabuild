@@ -138,3 +138,51 @@ def test_pbstatus_names_the_preemption_on_the_ending_and_on_the_requeue(
     assert len(rows) == 1
     assert rows[0]["preempted_by"] == FOREGROUND
     assert f"preemption by {FOREGROUND[:12]}" in str(rows[0]["reason"])
+
+
+def test_waiter_cannot_finish_between_withdrawal_and_requeue(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from test_preemption_review_boundaries import setup_holder
+
+    q, bg, fg, holder = setup_holder(tmp_path)
+    stopped = threading.Event()
+    allow_publish = threading.Event()
+    reader_checkpoint = threading.Event()
+    publish = q.publish
+    transition = q._transition_locked
+    reader_ident = []
+
+    def pause_publish(**kw):
+        if kw.get('preempted_claim') is not None:
+            stopped.set()
+            assert allow_publish.wait(10)
+        return publish(**kw)
+
+    def watch_transition(key, **kw):
+        if reader_ident and threading.get_ident() == reader_ident[0] and key == bg:
+            reader_checkpoint.set()
+        return transition(key, **kw)
+
+    def wait_for_outcome():
+        reader_ident.append(threading.get_ident())
+        try:
+            return pbrun.landed_outcome(q, bg, wait_s=0,
+                                       generation=holder['published_unix'])
+        finally:
+            reader_checkpoint.set()
+
+    monkeypatch.setattr(q, 'publish', pause_publish)
+    monkeypatch.setattr(q, '_transition_locked', watch_transition)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        writer = workers.submit(q.claim, capacity={'gpu': 1})
+        try:
+            assert stopped.wait(10)
+            reader = workers.submit(wait_for_outcome)
+            # The reader either reaches the handoff lock or prematurely returns
+            # a verdict. No timing sleep decides which interleaving was tested.
+            assert reader_checkpoint.wait(10)
+        finally:
+            allow_publish.set()
+        assert writer.result(timeout=10) is None
+        assert reader.result(timeout=10) is None

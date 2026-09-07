@@ -2051,24 +2051,28 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
         return None
     if str(ending.get("status") or "") != "withdrawn":
         return None
-    newest: float | None = None
-    for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
-                  pool.WITHDRAWN):
-        try:
-            record = json.loads(
-                q.item_path(state, key).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(record, dict):
-            continue
-        theirs = record.get("published_unix")
-        if not isinstance(theirs, (int, float)) or isinstance(theirs, bool):
-            continue
-        # Strictly newer, so this can only ever move a waiter forward: an older
-        # generation's leftovers must not send it backwards into a loop.
-        if float(theirs) > float(generation):
-            newest = float(theirs) if newest is None else max(newest, float(theirs))
-    return newest
+    # Admission holds this lock across withdrawal and replacement publication.
+    # Reading the marker before the replacement exists is an intermediate
+    # transition, not evidence that the preempted action was abandoned.
+    with q._transition_locked(key):
+        newest: float | None = None
+        for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
+                      pool.WITHDRAWN):
+            try:
+                record = json.loads(
+                    q.item_path(state, key).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            theirs = record.get("published_unix")
+            if not isinstance(theirs, (int, float)) or isinstance(theirs, bool):
+                continue
+            # Strictly newer, so this can only ever move a waiter forward: an older
+            # generation's leftovers must not send it backwards into a loop.
+            if float(theirs) > float(generation):
+                newest = float(theirs) if newest is None else max(newest, float(theirs))
+        return newest
 
 
 def landed_outcome(
