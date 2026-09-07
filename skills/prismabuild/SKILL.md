@@ -96,12 +96,12 @@ CPU activity, residency and useful throughput with before/after profiling.
 
 vLLM is exempt from submission, universally: anything that runs it -- a serve, a
 census, a routing run, a benchmark against a live endpoint -- runs directly,
-including its GPU containers. The exemption is about what vLLM is, not what a
-given invocation feels like: it is a serving runtime, not work that divides into
-schedulable quanta, so an action wrapping it holds a reservation for the life of
-the service and gives the scheduler no completion to wait for. Work that does not
-run vLLM still submits, and a running vLLM remains external load for batch
-admission. `docs/agent_execution_policy.md` carries the full ruling.
+including its GPU containers. That is Rob's ruling (2026-09-06, reaffirmed
+2026-09-07: "vllm is exempt. It can't run in prismabuild"), not a claim about
+what a wrapper could technically do -- a bounded action that starts vLLM can
+exit cleanly, and is exempt all the same. Work that does not run vLLM still
+submits, and a running vLLM remains external load for batch admission.
+`docs/agent_execution_policy.md` carries the full ruling.
 
 ## Verify and recover
 
