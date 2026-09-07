@@ -421,6 +421,15 @@ def _run_loop(stop_requested):
         # and the question there is whether any box could EVER run the item.
         # A box occupied by someone else's encode is a slow submission, and
         # publishing the live figure there would make ``pbrun`` refuse it.
+        # How many loops this box is running.  Censused here rather than
+        # accumulated across siblings, and re-censused every poll, so a loop
+        # that exits is absent from the next record without anything having to
+        # notice it left.  ``None`` on an unreadable ``/proc`` is deliberate:
+        # the field is a diagnostic, and a wrong count is worse than none.
+        try:
+            loops = len(box_capacity.worker_loops())
+        except OSError:
+            loops = None
         queue.announce(
             host=host, tags=offered, has_gpu=gpu_capable,
             capacity=declared, observed_capacity=capacity,
@@ -428,7 +437,7 @@ def _run_loop(stop_requested):
                      and observer.last is not None else None),
             observed_detail=(observer.last.detail if observer is not None
                              and observer.last is not None else None),
-            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
+            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers, loops=loops,
         )
         # One bad item must not take the worker with it.  ``serve_once``
         # re-raises whatever ``execute`` raised, and this loop had no handler,

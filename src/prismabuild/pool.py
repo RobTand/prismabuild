@@ -1533,6 +1533,7 @@ class PoolQueue:
         observed_capacity: Mapping[str, int] | None = None,
         foreign: Mapping[str, int] | None = None,
         observed_detail: Mapping[str, object] | None = None,
+        loops: int | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -1571,6 +1572,31 @@ class PoolQueue:
         poll after an action carries no reading older than that poll.  Older
         workers announce none of the three, and a reader must treat their
         absence as "not measured" rather than as zero.
+
+        ``loops`` is how many PrismaBuild worker loops are running on the box
+        that wrote this record, and it exists because the record itself cannot
+        otherwise say: every loop on a box announces into the same
+        ``workers/<host>.json``, so the file states *that the box is offering*
+        and never *how many loops are*.  That number was load-bearing in the
+        2026-09-06 diagnosis and had to be recovered by a hand process census
+        on each box, because no series carried it -- twelve loops on one box
+        against three on another means nothing as a bare number until you can
+        see they were spawned in tranches with none exiting, which is a
+        supervisor ratchet.
+
+        It counts loops on the **box**, not loops announcing under this host
+        name, because that is the only one of the two a loop can honestly
+        measure: ``worker_loop.py`` reads ``socket.gethostname()`` once before
+        its poll loop and holds that name for life, so after a rename the box
+        runs loops announcing under two names and no loop can tell which of its
+        siblings uses which.  The arithmetic that falls out of counting the box
+        is the useful one: two host records whose ``loops`` agree, and whose
+        sum exceeds either, are one physical box read as two live nodes (#244).
+
+        ``None`` means the census was not taken or could not be read, and is
+        written as an absent field for the same reason as the three above: a
+        reader must not turn "not measured" into zero, and every loop published
+        before this field existed announces without it.
         """
 
         record = {
@@ -1596,6 +1622,8 @@ class PoolQueue:
             "runtime_commit": str(runtime_commit),
             "announced_unix": _now(),
         }
+        if loops is not None:
+            record["loops"] = int(loops)
         directory = self.root / WORKERS
         directory.mkdir(parents=True, exist_ok=True)
         _write_json_atomic(directory / f"{host}.json", record)

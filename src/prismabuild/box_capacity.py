@@ -49,6 +49,7 @@ MEMORY_MARGIN_GB = 8
 DEFAULT_SAMPLES = 3
 
 MEMINFO = Path("/proc/meminfo")
+PROC = Path("/proc")
 GPU_CAPACITY_SCHEMA = "prismabuild.gpu_capacity.v1"
 GPU_SAMPLE_MAX_AGE_S = 5.0
 GPU_MEMORY_DOMAINS = frozenset(("shared_system", "discrete"))
@@ -181,6 +182,47 @@ def run_queue() -> float | None:
         return os.getloadavg()[0]
     except OSError:
         return None
+
+
+def worker_loops(*, proc: Path = PROC) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    """Every PrismaBuild worker loop running on this box, as ``(pid, argv)``.
+
+    A census, deliberately, and not a running total.  A loop knows itself and
+    not its siblings, so a count each loop *contributed* to could only ever
+    grow: the record would outlive what it described, which is the shape of
+    the phantom-node bug (#244) rather than a cure for it.  Reading ``/proc``
+    answers the whole question from one loop, and answers it again from
+    scratch on the next poll, so a loop that exits is gone from the next
+    reading without anybody having to notice it left.
+
+    The matching rule lives here rather than in either caller because two
+    readers ask the same question and must not drift: the offer records how
+    many loops a box is running, and ``runtime_process_census.py`` refuses a
+    runtime activation unless that same set started after it.  A publish gate
+    and a metric disagreeing about what a loop *is* would be worse than
+    either one alone.
+
+    Cost, measured on sparky 2026-09-06: 4.8 ms median over 556 processes,
+    against a 10 s default poll -- 0.05% of one core per loop, or under 1% on
+    an eighteen-loop box.  Cheap enough to do every poll, which is what makes
+    it a census instead of a cache.
+    """
+
+    loops: list[tuple[int, tuple[str, ...]]] = []
+    for entry in sorted(proc.glob("[0-9]*"), key=lambda path: int(path.name)):
+        try:
+            argv = tuple(
+                part.decode("utf-8", "replace")
+                for part in (entry / "cmdline").read_bytes().split(b"\0")
+                if part
+            )
+        except OSError:
+            continue          # exited between the directory read and this one
+        if (len(argv) < 2 or "python" not in Path(argv[0]).name
+                or not argv[1].endswith("worker_loop.py")):
+            continue
+        loops.append((int(entry.name), argv))
+    return tuple(loops)
 
 
 @dataclass(frozen=True)

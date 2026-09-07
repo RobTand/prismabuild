@@ -8,6 +8,17 @@ import json
 import os
 from pathlib import Path
 import socket
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root  # noqa: E402
+
+# The matching rule -- what counts as a live PrismaBuild loop -- is shared with
+# the offer this box publishes (``pool.announce``'s ``loops``).  This gate and
+# that field must not be able to disagree about the same box, so there is one
+# implementation and both read it.
+sys.path.insert(0, str(generation_root(__file__) / "src"))
+from prismabuild import box_capacity  # noqa: E402
 
 
 def _boot_unix() -> int:
@@ -29,26 +40,14 @@ def _worker_loops() -> list[dict[str, object]]:
     boot_unix = _boot_unix()
     ticks_per_s = int(os.sysconf("SC_CLK_TCK"))
     loops: list[dict[str, object]] = []
-    for proc in sorted(Path("/proc").glob("[0-9]*"), key=lambda p: int(p.name)):
-        pid = int(proc.name)
+    for pid, argv in box_capacity.worker_loops():
         try:
-            argv = [
-                part.decode("utf-8", "replace")
-                for part in (proc / "cmdline").read_bytes().split(b"\0")
-                if part
-            ]
-            if (
-                len(argv) < 2
-                or "python" not in Path(argv[0]).name
-                or not argv[1].endswith("worker_loop.py")
-            ):
-                continue
             started = _process_start_unix(
                 pid, boot_unix=boot_unix, ticks_per_s=ticks_per_s
             )
-        except (OSError, ValueError):
-            continue  # exited between directory and record reads
-        loops.append({"pid": pid, "started_unix": started, "argv": argv})
+        except (OSError, ValueError, IndexError):
+            continue  # exited between the census and its start-time read
+        loops.append({"pid": pid, "started_unix": started, "argv": list(argv)})
     return loops
 
 
