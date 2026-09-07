@@ -1394,7 +1394,11 @@ useful throughput and energy measurements must qualify its practical effect.
 GPU concurrency uses the same host admission lock as CPU lending. Additional
 GPU reservations live in each claimant's `.gpu.json`; they never mint physical
 GPU or host memory tokens. Failure, abandonment and release remove the metadata
-with the reservation. Existing CPU affinity, GPU visibility and hard cgroup
+with the reservation. Physical tokens return before metadata is removed, so
+an unlink failure cannot strand the entire physical reservation. A partial
+token return retains adaptive metadata until a later release completes;
+metadata cleanup failures remain visible and retryable.
+Existing CPU affinity, GPU visibility and hard cgroup
 limits remain the execution boundaries. Rising load closes new admission and
 does not stop running work. Thermal/power limiting, foreign GPU processes, host
 memory pressure and CPU pressure close admission. Low power permits a probe;
