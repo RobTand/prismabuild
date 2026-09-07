@@ -1195,7 +1195,11 @@ class ResourceLedger:
 
         All-or-nothing on the demand: a multi-resource actor that keeps what it
         managed to get while blocked on what it did not is holding resources it
-        cannot use.
+        cannot use.  That holds for *every* ending, not only the insufficient
+        one: an exception raised anywhere between the first rename and the last
+        metadata write empties the private directory back into ``free/`` before
+        it leaves, because a caller that never receives the handle has no way to
+        return the tokens itself.
         """
 
         wanted = {k: int(v) for k, v in demand.items() if int(v) > 0}
@@ -1254,6 +1258,22 @@ class ResourceLedger:
         except _Insufficient:
             self._empty_into_free(destination)
             return None
+        except BaseException:
+            # All-or-nothing cannot depend on *which* exception ends the
+            # attempt.  ``_Insufficient`` is the only ending this function
+            # authors, and it was the only ending that returned the tokens;
+            # every other one -- ``cpu_allocation`` refusing a token index the
+            # configured topology no longer covers, ``_read_json`` on a torn
+            # ``.adaptive.json``, an ESTALE or ENOSPC out of ``os.rename`` or
+            # either ``_write_json_atomic`` -- left the whole demand under a
+            # private holder.  The caller cannot clean that up: the function
+            # never returns, so no ``handle`` reaches it and
+            # ``abandon_acquire`` has nothing to name.  Only
+            # ``sweep_stale_acquisitions`` recovers it, and its grace is
+            # ``LEASE_TIMEOUT_S``, so a repeating cause starves the box one
+            # five-minute reservation at a time.
+            self._empty_into_free(destination)
+            raise
         return handle
 
     def commit_acquire(self, action_key: str, handle: str) -> int:
