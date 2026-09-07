@@ -239,7 +239,16 @@ as data. Record the terminal result, logs, CAS receipt and payload as well as
 the probe fields. Charts existing or a successful probe as `rob` do not prove
 Netdata adoption. Keep #314 open until both GB10 clients have this evidence.
 
-The published script is executable, and Netdata's invocation
+The published script is executable *and readable by Netdata's own UID*: a
+published generation is world-readable, `0555` for the files Git records as
+executable and `0444` for the rest, so the symlink resolves to bytes the
+collector can run without being added to any group. See [what a published
+generation permits](operating_prismabuild.md#what-a-published-generation-permits).
+A generation published before that fix carries mode `0500` and the collector
+cannot read it; the repair is the next publication, not a `chmod` on a sealed
+generation.
+
+Netdata's invocation
 `mount_latency.plugin <update_every>` automatically selects protocol output.
 In that mode the box-local record directory defaults to
 `/var/lib/netdata/prismabuild`, so the symlink needs no extra arguments or
