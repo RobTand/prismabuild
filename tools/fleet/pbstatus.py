@@ -576,6 +576,7 @@ def read_pool(queue_root: str | Path) -> dict:
             # Absent on a pre-#254 offer, and that is "not measured": the
             # reader below prints it as unknown and never as zero.
             "loops": offer.get("loops"),
+            "timeout_ceiling_s": offer.get("timeout_ceiling_s"),
             "reason": None if fresh else "offer expired or timestamp invalid",
             "admission": {
                 "cpu": _admission_sample(base / 'cpu-sample.json', now=now,
@@ -652,9 +653,14 @@ def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
     if not nodes:
         return ["no worker offers recorded"]
     return render_table(
-        ("NODE", "STATE", "OFFER AGE", "LOOPS", "CAPACITY", "OBSERVED", "ADMISSION", "NOTE"), (
+        ("NODE", "STATE", "OFFER AGE", "LOOPS", "KILL AT", "CAPACITY", "OBSERVED",
+         "ADMISSION", "NOTE"), (
             (n['node'], n['state'], n.get('age_s'),
              ABSENT if n.get('loops') is None else n['loops'],
+             # What this box will kill an action at, whatever --timeout-s asked
+             # for.  ABSENT is "the offer predates the field", not "no limit".
+             ABSENT if n.get('timeout_ceiling_s') is None
+             else f"{float(n['timeout_ceiling_s']):g}s",
              n.get('capacity'), n.get('observed_capacity'),
              ', '.join(f"{k}: {v['state']}" for k, v in n.get('admission', {}).items()),
              n.get('reason'))

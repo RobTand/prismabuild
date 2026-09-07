@@ -1709,6 +1709,65 @@ def _width_of_the_pin(queue, intent, tags: list[str], hostname: str,
             f"{', '.join(others)}.")
 
 
+def timeout_ceiling_notice(
+    queue,
+    intent: Mapping[str, object],
+    *,
+    requested: float | None,
+) -> str:
+    """Say when the boxes that could run this will cut ``--timeout-s`` short.
+
+    Every worker loop enforces a safety ceiling of its own (7200 s by
+    default) and ``pool._execution_timeout`` applies it as a silent ``min``.
+    Nothing said so: the PrismaQuant #275 campaign asked for 13000 s, was
+    admitted without a word, and was killed at 7200 s -- its own
+    ``--deadline-seconds`` never fired, so the attempt ended rc=1 with no
+    sealed payload, and 554 anchor rows survived only because the job
+    checkpoints every ten (#293).
+
+    Warned rather than refused, deliberately.  An action that asks for more
+    than it needs and finishes inside the ceiling is not wrong, and refusing
+    it would break every long submission on a fleet whose loops all default to
+    7200.  What was wrong was being told nothing.  The number to act on is
+    the *smallest* eligible ceiling, because the submitter does not choose
+    which box claims: any box in this set may.
+
+    A box that announces no ceiling is named as unknown rather than assumed
+    unbounded -- the loops that starved #275 announced nothing, and reading
+    silence as "no limit" is the same false confidence one layer up.
+    """
+
+    if requested is None:
+        return ""
+    ceilings = queue.placement_timeout_ceilings(intent)
+    if not ceilings:
+        return ""
+    bounded = {host: value for host, value in ceilings.items() if value is not None}
+    silent = sorted(host for host, value in ceilings.items() if value is None)
+    cutting = {host: value for host, value in bounded.items() if value < requested}
+    if not cutting and not silent:
+        return ""
+    lines = []
+    if cutting:
+        lowest = min(cutting.values())
+        named = ", ".join(f"{host} {value:g}s" for host, value in sorted(cutting.items()))
+        certain = len(cutting) == len(ceilings)
+        lines.append(
+            f"pbrun: --timeout-s {requested:g} exceeds the execution ceiling "
+            f"{'every' if certain else 'some'} eligible worker announces "
+            f"({named}), so this action "
+            f"{'will' if certain else 'may'} be killed at {lowest:g}s, not "
+            f"{requested:g}s."
+        )
+    if silent:
+        lines.append(
+            "pbrun: " + ", ".join(silent) + " announce no execution ceiling "
+            "(offers predating the field), so what they would enforce is "
+            "unknown rather than unlimited."
+        )
+    return "\n".join(lines)
+
+
 def pin_notice(
     queue,
     intent,
@@ -3456,7 +3515,9 @@ def main() -> int:
     ap.add_argument("--timeout-s", type=float, default=None,
                     help="positive execution deadline in seconds, enforced by "
                          "both transports; the pool worker's safety ceiling "
-                         "also applies. Queue waiting is bounded by --wait-s")
+                         "(7200 s by default, announced per box and reported "
+                         "here when it would cut this request short) also "
+                         "applies. Queue waiting is bounded by --wait-s")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument(
@@ -3987,6 +4048,10 @@ def main() -> int:
             f"{args.wait_s:g} owns how long to wait.",
             file=sys.stderr, flush=True,
         )
+
+    ceiling_notice = timeout_ceiling_notice(q, intent, requested=args.timeout_s)
+    if ceiling_notice:
+        print(ceiling_notice, file=sys.stderr, flush=True)
 
     # Read the decision this submission is about to supersede, so the caller is
     # told rather than surprised.  ``publish`` retires the marker -- a key is a

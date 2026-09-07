@@ -103,6 +103,7 @@ are NTP-synchronised and measured 1.2-2.5 ms apart against a 300 s lease.
 from __future__ import annotations
 
 from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
+from typing import NamedTuple
 from contextlib import contextmanager
 import errno
 import fcntl
@@ -297,6 +298,55 @@ class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
 
 
+class ExecutionBudget(NamedTuple):
+    """How long this action may run, and why that is the number.
+
+    ``requested`` is the submitter's sealed ``execution_timeout_s``;
+    ``ceiling`` is the worker loop's own safety limit; ``effective`` is what
+    actually kills the action.  All three, because the two-field version of
+    this -- one clamped float -- is what made #293 undiagnosable: the #275
+    campaign asked for 13000 s, was silently given 7200 s, and was killed at
+    7200 s with nothing anywhere recording that a clamp had happened.  A
+    receipt has to be able to say what governed, not just that time ran out.
+
+    ``None`` in any field means unbounded, which is a real answer and not a
+    missing one: neither the submitter nor the loop is obliged to name a limit.
+    """
+
+    effective: float | None
+    requested: float | None
+    ceiling: float | None
+
+    @property
+    def clamped(self) -> bool:
+        """Did the worker's ceiling, and not the submitter, decide?"""
+
+        return (self.requested is not None and self.ceiling is not None
+                and self.ceiling < self.requested)
+
+    def as_record(self) -> dict[str, object]:
+        """The fields an outcome carries so a receipt can be read years later."""
+
+        return {
+            "execution_timeout_s": self.effective,
+            "execution_timeout_requested_s": self.requested,
+            "execution_timeout_ceiling_s": self.ceiling,
+            "execution_timeout_clamped": self.clamped,
+        }
+
+
+def execution_budget(
+    item: Mapping[str, object], ceiling: float | None
+) -> ExecutionBudget:
+    """The deadline this action runs under, with both numbers behind it."""
+
+    requested = _requested_execution_timeout(item)
+    if requested is None:
+        return ExecutionBudget(ceiling, None, ceiling)
+    effective = requested if ceiling is None else min(requested, ceiling)
+    return ExecutionBudget(effective, requested, ceiling)
+
+
 def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
     """Read the deadline from the sealed request, never mutable queue metadata."""
     key = str(item["action_key"])
@@ -317,6 +367,17 @@ def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> flo
             or requested <= 0):
         raise PoolContractError("execution_timeout_s must be a positive finite number")
     return float(requested) if ceiling is None else min(float(requested), ceiling)
+
+
+def _requested_execution_timeout(item: Mapping[str, object]) -> float | None:
+    """What the submitter sealed, before any ceiling is applied.
+
+    Reads the same sealed request ``_execution_timeout`` does, and refuses the
+    same values, because a budget the receipt reports and a budget the worker
+    enforces that disagreed would be worse than either alone.
+    """
+
+    return _execution_timeout(item, None)
 
 
 @contextmanager
@@ -1534,6 +1595,7 @@ class PoolQueue:
         foreign: Mapping[str, int] | None = None,
         observed_detail: Mapping[str, object] | None = None,
         loops: int | None = None,
+        timeout_ceiling_s: float | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -1624,6 +1686,8 @@ class PoolQueue:
         }
         if loops is not None:
             record["loops"] = int(loops)
+        if timeout_ceiling_s is not None:
+            record["timeout_ceiling_s"] = float(timeout_ceiling_s)
         directory = self.root / WORKERS
         directory.mkdir(parents=True, exist_ok=True)
         _write_json_atomic(directory / f"{host}.json", record)
@@ -1749,6 +1813,37 @@ class PoolQueue:
             str(offer.get("host") or "?")
             for offer in self._matching_offers(item, live=live)
         })
+
+    def placement_timeout_ceilings(
+        self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
+    ) -> dict[str, float | None]:
+        """The execution ceiling each box that could run this item announces.
+
+        ``None`` for a box whose offer predates the field, which a reader must
+        treat as "not measured" and never as unbounded -- the loops that
+        starved #275 for six hours announced nothing, and reading their
+        silence as "no limit" would reproduce the same false confidence one
+        layer up.  An empty dict means nobody eligible has announced at all.
+
+        Separate from ``placeable_hosts`` because the questions differ: that
+        one asks whether any box CAN run the item, this one asks how long the
+        boxes that can would let it.  A submitter needs both, and needs to be
+        able to tell "no box will grant this" from "no box said".
+        """
+
+        live = self.offers(max_age_s=max_age_s)
+        if not live:
+            return {}
+        ceilings: dict[str, float | None] = {}
+        for offer in self._matching_offers(item, live=live):
+            host = str(offer.get("host") or "?")
+            announced = offer.get("timeout_ceiling_s")
+            ceilings[host] = (
+                float(announced)
+                if isinstance(announced, (int, float)) and not isinstance(announced, bool)
+                else None
+            )
+        return ceilings
 
     def placement_census(
         self, *, max_age_s: float = OFFER_TIMEOUT_S
@@ -5159,12 +5254,21 @@ class PoolQueue:
         """Materialize a sealed checkout and optionally contain the worker."""
         if not isinstance(item, dict):
             item = dict(item)
+        # Priced here rather than only inside, so every ending carries it --
+        # a timeout, a clean exit and a withdrawal all leave a receipt that
+        # says which deadline was in force and whether the box's ceiling, not
+        # the submitter, chose it (#293).  ``_execute_in_checkout`` re-derives
+        # the same number from the same sealed request, which is idempotent
+        # under the clamp; passing the effective value keeps the two in step
+        # without giving either one a second source of truth.
+        budget = execution_budget(item, timeout_s)
         with _execution_checkout(item) as checkout_root:
             outcome = self._execute_in_checkout(
                 item, checkout_root=checkout_root, python=python,
-                timeout_s=timeout_s, heartbeat_s=heartbeat_s,
+                timeout_s=budget.effective, heartbeat_s=heartbeat_s,
                 timeout_grace_s=timeout_grace_s, containment=containment,
             )
+        outcome.update(budget.as_record())
         if item.get("resource_scope") is not None:
             telemetry = self._sample_resource_scope(self._scope_from_record(item))
             outcome["resource_telemetry"] = telemetry
