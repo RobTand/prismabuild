@@ -4819,12 +4819,13 @@ class PoolQueue:
                 snapshot=claim_snapshot, live=record,
             )
         read_claim = dict(record) if record is not None else None
-        effective_record = dict(record or claim_snapshot or {})
+        # Cleanup annotates this mapping with the completed scope evidence.
+        # Keep the live record itself so the terminal retains that annotation;
+        # only a caller-owned fallback snapshot needs a private copy.
+        effective_record = record if record is not None else dict(claim_snapshot or {})
         holder = self.resolve_claim_holder(action_key, effective_record)
         if holder is not None:
             effective_record["claimed_host"] = holder
-            if record is not None:
-                record["claimed_host"] = holder
         container_cleanup = self.cleanup_action_containers(
             effective_record, reason=str((detail or {}).get("termination_reason") or status))
         if not container_cleanup["complete"]:
