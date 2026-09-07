@@ -1543,8 +1543,9 @@ class PoolQueue:
         judged, deletes that claim's lease, releases its reservation and
         republishes the item, leaving a second worker running an action
         nothing records it holds.  Returns the tombstone and whether the claim
-        was the caller's: ``(None, False)`` says a different claim is there
-        now and the caller must leave the key alone.  With no ``expect`` the
+        was the caller's: ``(None, False)`` says ownership could not be
+        established, either because the move failed or a different claim is
+        there now, and the caller must leave the key alone. With no ``expect`` the
         move is unconditional, which is what a caller holding the only claim
         on the key wants.
         """
@@ -1555,8 +1556,13 @@ class PoolQueue:
         )
         try:
             os.rename(self.item_path(CLAIMED, action_key), tombstone)
-        except OSError:
-            return None, True
+        except OSError as exc:
+            # No move means no exclusive ownership of the bytes being
+            # concluded. In particular a stale handle or denied rename must
+            # not authorize the reaper to release capacity and publish a retry.
+            print(f"pool: cannot entomb claim {action_key}: {exc}; "
+                  "claim, lease and reservation retained", file=sys.stderr)
+            return None, False
         if expect is None:
             return tombstone, True
         entombed = _read_json(tombstone)

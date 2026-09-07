@@ -65,7 +65,10 @@ the evidence on later sweeps; it does not guess a host. A lease whose claim is
 gone and whose host is missing or invalid uses the same holder resolution
 before cleanup. Conflicting ledgers retain the lease and every reservation;
 absent ownership never becomes the sweeping host's ledger.
-`finished_host` is the box
+A claim-to-tombstone
+rename that fails does not establish cleanup ownership: the reaper retains
+the claim, lease and reservation, reports the refusal, and retries on a later
+sweep without publishing a runnable replacement. `finished_host` is the box
 that filed the ending. Readers report the first as where the work was; the
 second reaps most of the fleet's work and would otherwise absorb its failures. An attempt counts an execution, so
 a claim reaped with no lease ever written and no immutable attempt published
