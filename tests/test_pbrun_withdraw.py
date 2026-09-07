@@ -47,6 +47,9 @@ class _Queue:
         for name in ("ready", "claimed", "done", "failed", "withdrawn"):
             (root / name).mkdir(parents=True, exist_ok=True)
 
+    def withdrawal_decisions(self, key: str):
+        return []
+
     def item_path(self, state: str, key: str) -> Path:
         return self.root / state / f"{key}.json"
 

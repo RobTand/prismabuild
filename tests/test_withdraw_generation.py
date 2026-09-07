@@ -284,9 +284,12 @@ def test_withdrawing_again_cancels_the_claimed_run_it_leaves_uncovered(
     """
 
     _publish(queue, KEY_A)                       # generation one
-    assert queue.claim() is not None
+    first = queue.claim()
+    assert first is not None
     _publish(queue, KEY_A)                       # generation two, queued behind
     queue.withdraw(KEY_A, by="rob", signal_child=False)     # names generation one
+    assert queue.claim() is None, "the first holder still owns cleanup"
+    queue.finish(KEY_A, status="withdrawn", claim_snapshot=first)
 
     running = queue.claim()                      # a worker picks up generation two
     assert running is not None, "the marker does not cover a later generation"

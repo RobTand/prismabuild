@@ -703,7 +703,7 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
     """
 
     entries: list[tuple[float, os.DirEntry]] = []
-    visible_keys: set[str] = set()
+    withdrawal_mtimes: dict[str, float] = {}
     for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         directory = Path(queue_root) / state
         try:
@@ -713,7 +713,8 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
                         continue
                     try:
                         entries.append((entry.stat().st_mtime, entry))
-                        visible_keys.add(entry.name[:-5])
+                        if state == pool.WITHDRAWN:
+                            withdrawal_mtimes[entry.name[:-5]] = entry.stat().st_mtime
                     except OSError:
                         continue
         except OSError:
@@ -727,8 +728,6 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
     except OSError:
         directories = []
     for directory in directories:
-        if directory.name in visible_keys:
-            continue
         try:
             with os.scandir(directory.path) as scan:
                 candidates = [(entry.stat().st_mtime, entry) for entry in scan
@@ -736,7 +735,9 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
         except OSError:
             continue
         if candidates:
-            entries.append(max(candidates, key=lambda pair: pair[0]))
+            newest = max(candidates, key=lambda pair: pair[0])
+            if newest[0] > withdrawal_mtimes.get(directory.name, float("-inf")):
+                entries.append(newest)
     entries.sort(key=lambda pair: pair[0], reverse=True)
     return [entry for _, entry in entries[: max(0, int(limit))]]
 
