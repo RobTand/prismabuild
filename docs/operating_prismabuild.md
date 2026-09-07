@@ -744,7 +744,8 @@ then reads.
 
 So the run has a deadline.
 
-*   `--timeout-s N` bounds the whole run, not each section: a slow first read
+*   `--timeout-s N` bounds the pool census and runtime transport lookup with
+    one shared budget, not a fresh budget per section: a slow first read
     does not buy the second one a fresh budget. The default is 10 seconds,
     which is two orders of magnitude longer than a healthy census and shorter
     than a person's patience. `--timeout-s 0` waits indefinitely, which is the
@@ -824,7 +825,12 @@ One thing the deadline does not cover, and cannot. When `pbstatus` is invoked
 from the shared checkout, the interpreter reads the script and the
 `prismabuild` package off the same mount before `main` exists. A mount sick
 enough can block that, and no code inside the script can bound its own load.
-The census phase is bounded; startup from a shared checkout is not. The
+The pool census phase is bounded; startup from a shared checkout is not.
+The default transport metadata lookup after imports shares the census budget;
+when it fails, the transport is unknown (`null` in JSON), never guessed.
+Explicit SLURM status retains its separate per-command timeouts and an
+unbounded lane-root lookup; the flag does not bound those scheduler reads.
+Output writes and the short child-reaping grace are also outside the read budget. The
 deadline also applies only to this diagnostic: it is not authority to time out
 an action payload, which is the fleet's work and has its own contract.
 

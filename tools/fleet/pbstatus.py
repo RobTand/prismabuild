@@ -1596,7 +1596,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--squeue", default="squeue", help=argparse.SUPPRESS)
     parser.add_argument("--scontrol", default="scontrol", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    transport = args.transport or default_transport()
+    transport = args.transport
     if args.recent < 0:
         parser.error("--recent cannot be negative")
     # Finiteness first, because ``-inf < 0`` is true and would answer with the
@@ -1649,10 +1649,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     if peer_note:
         print(peer_note, file=sys.stderr)
 
-    notes: list[str] = []
+    transport_note = None
+    if transport is None:
+        selected = bounded("transport", default_transport, deadline=deadline,
+                           abandoned=abandoned)
+        if selected["status"] == "ok":
+            transport = selected["value"]
+        elif selected["status"] == "error":
+            unavailable.append({"section": "transport", "type": selected["type"],
+                                "error": selected["error"]})
+            transport_note = f"transport: unavailable ({selected['type']}: {selected['error']})"
+        else:
+            timed_out.append("transport")
+            transport_note = "transport: incomplete -- runtime metadata did not answer"
+
+    notes: list[str] = [transport_note] if transport_note else []
     nodes: list[dict] = []
     jobs: list[dict] = []
-    node_note = job_note = detail_note = None
+    node_note = job_note = transport_note
+    detail_note = None
     pool_summary = None
     if transport == "pool":
         read = bounded("pool", lambda: read_pool(args.queue_root),
@@ -1678,7 +1693,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{args.timeout_s:g}s")
             pool_summary = {"ready": None, "claimed": None, "empty": None,
                             "complete": False, "unreadable": [node_note]}
-    else:
+    elif transport == "slurm":
         try:
             nodes, detail_note = read_nodes(sinfo=args.sinfo, scontrol=args.scontrol)
         except SchedulerUnavailable as exc:
@@ -1813,9 +1828,13 @@ def _incomplete(timed_out: Sequence[str], unavailable: Sequence[Mapping[str, obj
     """
     if not (timed_out or unavailable or pool_partial):
         return 0
-    if timed_out:
+    if "transport" in timed_out:
+        print(f"pbstatus: incomplete -- runtime metadata did not answer within "
+              f"{timeout_s:g}s (transport pending)", file=sys.stderr)
+    queue_pending = [section for section in timed_out if section != "transport"]
+    if queue_pending:
         print(f"pbstatus: incomplete -- queue root did not answer within "
-              f"{timeout_s:g}s ({', '.join(timed_out)} pending)", file=sys.stderr)
+              f"{timeout_s:g}s ({', '.join(queue_pending)} pending)", file=sys.stderr)
     for section in unavailable:
         print(f"pbstatus: incomplete -- the {section['section']} read failed "
               f"({section['type']}: {section['error']})", file=sys.stderr)

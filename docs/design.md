@@ -1604,3 +1604,8 @@ A bounded status reader belongs to its calling process. SIGINT/SIGTERM unwind
 through bounded pipe closure and exact-child termination/reaping; failed
 termination retains PID/starttime evidence, including on cancellation. Reader
 EOF does not by itself prove process exit. SIGKILL cannot execute cleanup.
+
+The status read budget starts before default transport metadata is opened. A
+failed lookup reports unknown transport and incomplete status rather than
+guessing a scheduler. Script imports, output delivery, cleanup grace, and the
+explicit SLURM scheduler/lane lookups are outside this pool census budget.
