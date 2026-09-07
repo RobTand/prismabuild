@@ -585,6 +585,39 @@ number of files that did not run, and how the shard ended (`rc=N`, or
 submission was refused, and one that ran clean are three different events that
 used to print the same blank.
 
+### Choose the project's test environment
+
+`pb-cpu` is the PrismaBuild infrastructure test environment. Its presence on a
+worker does not mean that arbitrary project dependencies are installed there.
+For PrismaQuant CPU tests on the current x86 fleet, use the existing project
+interpreter `/home/rob/venvs/pq-cpu312/bin/python`:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
+  --checkout /path/to/prismaquant \
+  --python /home/rob/venvs/pq-cpu312/bin/python --tag x86 \
+  --workers-per-shard 2 --threads-per-shard 1 --mem-gb 6 \
+  tests/test_shipcard_git_provenance.py tests/test_format_registry.py
+```
+
+The same interpreter and `--tag x86` work with `pbrun`. This class constraint
+declares the external environment dependency and allows every eligible x86
+worker; it does not consume a GB10 just to obtain Python packages. Provision
+and qualify this environment before adding another worker to that population.
+Do not replace the tag with `--anywhere`: this interpreter is not installed on
+the current GB10 workers, and `--anywhere` asserts that external dependencies
+are available throughout the eligible population. PB does not infer a project's
+Python imports from the checkout or install its packages at submission.
+
+The project environment has CPU PyTorch and the common PrismaQuant runtime and
+test dependencies, including `compressed_tensors`, which its autouse fixture
+imports even for otherwise dependency-light tests. Tests requiring Tessera's
+producer source must additionally declare their pinned Tessera dependency;
+tests requiring CUDA, model data or a serving runtime retain those requirements.
+The [CPU environment qualification](prismaquant_cpu_environment_2026-09-07.md)
+records versions, exact tested scope, receipts and the missing-dependency
+reproduction. It does not certify the entire PrismaQuant suite as CPU-portable.
+
 ## Submit a measurement
 
 A measurement's numerics do not transfer across architectures, so every
