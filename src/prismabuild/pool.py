@@ -4856,6 +4856,34 @@ class PoolQueue:
             host = claimed_host if isinstance(claimed_host, str) else None
         if host is None and isinstance(lease.get("host"), str):
             host = str(lease["host"])
+        if host is None and origin == CLAIMED:
+            # Neither field exists in the window between ``claim``'s rename and
+            # its record rewrite: the rewrite is what writes ``claimed_host``,
+            # and the lease is written after that.  A claim lost in there names
+            # no box, and every use of ``host`` below then means the operator's
+            # own: the release moves nothing (``release`` empties an absent
+            # ``held/<key>`` and returns 0), so the claiming box keeps its
+            # tokens and a reservation outlives its holder, while the verb
+            # reports ``released: 0`` and ``holder_host: null`` -- a number
+            # that is true beside a box that is unknown.
+            #
+            # ``claim_intent_host`` is the recovery #227 added for exactly this
+            # window and #261 made the single resolution every concluding
+            # branch of ``reap_stale`` reads.  ``withdraw`` is a different verb
+            # with the same shape, which is why it was left out then (#271).
+            #
+            # Only for a CLAIMED record.  The same marker exists, this
+            # generation and legitimately, while a claimant sits between
+            # writing its intent and winning the rename -- and in that moment
+            # the item is still in ``ready`` with the claimant's tokens already
+            # acquired.  Recovering a holder there and releasing against it
+            # would take tokens from a claim that is about to succeed.
+            host = self.claim_intent_host(key, record)
+            if host is not None and isinstance(record, dict):
+                # Named on the withdrawn record too, for the reason #227 gives:
+                # a claim must not be able to be lost more anonymously than it
+                # was taken.
+                record["claimed_host"] = host
 
         if existing is None:
             filed = dict(record or {})
