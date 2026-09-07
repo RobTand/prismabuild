@@ -77,3 +77,41 @@ commands/lane-root reads remain outside it, as stated in the operating guide.
 SIGKILL cannot unwind cleanup. Missing terminal directories remain compatible
 with transports that have not filed outcomes; unreadable existing directories
 are failures.
+
+## Follow-up: Python 3.14 stat predicates
+
+Root review identified that the first root-stat regression patched
+`Path.exists` to raise rather than exercising its actual error handling.
+Reading dl380g10's installed `/usr/lib/python3.14/pathlib/__init__.py:664` and
+`:675` confirmed that `exists` and `is_dir` delegate to genericpath predicates.
+`/usr/lib/python3.14/genericpath.py:16` and `:48` catch every `OSError` from
+`os.stat` and return False, including permission and I/O failures.
+
+Three further regressions were committed first at `c0f976e7e`: two real
+`chmod(0)` traversal failures at the queue root and a terminal-directory symlink,
+and a syscall-injected ENOENT followed by EACCES during the terminal-directory
+recheck. Red PB action
+`9ddae8bbb5c290e48a79dd592f4898c71a887ddc86830e71d81562ab7d3851c5`
+failed all three in 1.26 s, with no skips, on dl380g10 (CPU 1, 1 GiB).
+
+Fix `fc04a3b6b595f289a20457ab710e7b6e59b7b862` replaces those predicates with
+explicit stat calls. Only ENOENT means missing; permission/I/O failures reach
+the unavailable-section contract. Missing root, non-directory root, and missing
+optional terminal-directory diagnostics retain their previous distinctions.
+The original synthetic regression now patches stat as well.
+
+Final integrated PB action
+`141a4fbb50ceef81126264307bb2fd1abf303c8816236f6111fb0cd132cd7d4a`
+ran the same compilation and test command above: **192 passed, four subtests
+passed, no skips**, 208 fork warnings, 15.73 s. CPU 4, 4 GiB, portable placement,
+priority -10 and native threads 1; dl380g10 was selected again.
+
+Verified terminal exit 0, cleanup complete, canonical receipt, payload hash/size,
+producer input binding, and sealed source bundle. Snapshot
+`2805e8a45f3ed044278beb36eb1f4ec84b027f14` differs from the fixed head only by
+its generated closure record. Receipt digest:
+`2862ac6bbf1d4f1bf73d34516fd3edbfdf252749b2a69cda2185fdbff67fc363`.
+Payload digest:
+`81c0c726211d13b05e579e98b94e9a0558c241a7c938a0cc7bfc2bc29620c50c`.
+Canonical receipt path is under `cas/actions/v3/14/` with the full action key.
+The same evidence directory retains both new verification records and logs.
