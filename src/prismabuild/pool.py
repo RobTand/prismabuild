@@ -3822,7 +3822,16 @@ class PoolQueue:
         A record whose attempt links no longer verify is filed rather than
         restored.  Restoring it would hand ``reap_stale`` a record that raises
         from ``archive_attempt``, and that exception stops reaping on every box
-        for as long as the record exists.
+        for as long as the record exists.  Verification therefore has to cover
+        every way a link can fail to resolve, not only the ones the queue
+        itself judges: a missing or tampered immutable outcome raises out of
+        ``core``, not out of the pool's contract error, and an escape here
+        causes the exact stall this paragraph is about -- ``reap_stale`` calls
+        this sweep unguarded, and ``serve_once`` calls ``reap_stale`` before it
+        claims.  Being *unable to look* is a third answer and takes neither
+        disposition: the tombstone is left for the next sweep, because filing
+        it would hide it in ``withdrawn/superseded/`` on the strength of a
+        stale directory handle.
 
         The grace is the lease timeout: nothing is blocked behind this except
         the action's own visibility, and a sweep that fires while a finisher is
@@ -3866,8 +3875,26 @@ class PoolQueue:
             if restorable and "attempt_history" in record:
                 try:
                     self.attempt_outcomes(record)
-                except PoolContractError:
+                except (PoolContractError, FileNotFoundError, pb.CASTamperError):
+                    # ``attempt_outcomes`` decides most of this by reading the
+                    # record and raises ``PoolContractError``, but the link it
+                    # checks last is a *file*: ``_open_regular_nofollow``
+                    # raises a bare ``FileNotFoundError`` when the immutable
+                    # outcome is absent and ``CASTamperError`` when the entry
+                    # is not a readonly regular file, and neither derives from
+                    # ``PoolContractError``.  Both are positive evidence that
+                    # the link does not verify, which is this branch's whole
+                    # question, so both file the record rather than restore it.
                     restorable = False
+                except pb.CASUnavailableError:
+                    # "Could not look" is not evidence, and it must not be
+                    # answered either way.  Restoring risks the reaping stall
+                    # this guard exists to prevent; filing moves the record
+                    # into ``withdrawn/superseded/``, which every reader is
+                    # documented to ignore, so a stale handle would lose the
+                    # action permanently.  Leave the tombstone for the next
+                    # sweep -- the only disposition that keeps the evidence.
+                    continue
             if restorable:
                 try:
                     os.link(tombstone, self.item_path(CLAIMED, key))
