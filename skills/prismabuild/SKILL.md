@@ -90,10 +90,16 @@ fresh measured demand, and stop admitting work as host pressure rises. Declare
 honest peak CPU demand. Memory budgets remain fully reserved; CPU lending does
 not authorize GPU sharing.
 
-Use `--measurement` for measurements: the pool pins the submitting host, seals
-platform/toolchain identity, admits only against a fresh near-idle host, and
+Use `--measurement` for measurements: the pool defaults to the submitting host,
+seals platform/toolchain identity, admits only against a fresh near-idle host, and
 keeps GPU measurements exclusive. Interleave the arms of a timing comparison and
-record the load per arm; see `docs/agent_execution_policy.md`. `--exclusive`
+record the load per arm; see `docs/agent_execution_policy.md`. Explicit pool
+`--measurement --host-class CLASS` lets PB select a matching worker when the
+complete paired experiment and external dependencies are identical across that
+class. Platform/ABI, shell executable, driver and GPU models/counts are verified;
+actual worker and GPU UUID stay in the receipt. Keep both arms in one admitted
+action and pin/record inner container or Python dependencies in the experiment.
+This is placement eligibility, not an isolation exemption. `--exclusive`
 reserves one box's whole GPU capacity and is not CPU isolation; it also prevents
 GPU sharing for ordinary work. Optional SLURM measurements require
 `--host-class`; reserve its GPU exclusively when overlap would invalidate results.

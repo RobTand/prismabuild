@@ -437,7 +437,7 @@ an omitted field is not passed at all.
 | `gpu_memory_gb` | `--gpu-memory-gb`, a positive finite GiB budget; pool only, requires GPU demand |
 | `priority` | `--priority` |
 | `measurement` | `--measurement` |
-| `host_class` | `--host-class`, a node Feature name such as `gb10` |
+| `host_class` | `--host-class`, a pool measurement worker class or SLURM Feature such as `gb10` |
 | `retry_safe` | `--retry-safe` |
 | `max_attempts` | `--max-attempts` |
 
@@ -467,15 +467,14 @@ submit:
     "gpu_memory_gb": 32` retains the 80 GiB aggregate budget and 32 GiB GPU cap.
 *   `measurement` without `host_class` under `--transport slurm`. A SLURM
     measurement is keyed on the scheduler-attested class that produced it.
-    Under `--transport pool`, omitting `host_class` is the supported form: the
+    Under `--transport pool`, omitting `host_class` is the default form: the
     submitter's platform/toolchain is sealed and its hostname is added to
     placement implicitly.
-*   `measurement` with `anywhere` under `--transport pool`. Pool measurements
-    run on the submitting host whose platform/toolchain is sealed, so portable
-    placement contradicts their execution scope.
-*   `host_class` under `--transport pool`. The class is attested through the
-    SLURM controller, so a pull-queue worker refuses the action at preflight.
-    This refusal depends on the campaign's transport rather than on the row.
+*   `measurement` with `anywhere` under `--transport pool`. A measurement must
+    retain its submitting-host or explicit class placement and attested facts.
+*   `host_class` without `measurement` under `--transport pool`. The pool's
+    explicit class-placement option applies only to measurements; SLURM also
+    supports controller-attested class-keyed generation.
 *   `max_attempts` greater than 1. A campaign submits every row detached,
     which is what lets one command hold N actions open, and a retry needs
     somebody alive to see the attempt fail.
@@ -499,7 +498,7 @@ cache hit on the second run:
 
 Run it with `--transport slurm`, from a box of that class.
 
-For the pool, omit `host_class`; every row is implicitly pinned to the host
+For the pool, omit `host_class` to keep every row implicitly pinned to the host
 running `pbcampaign`, and its platform/toolchain becomes part of the action:
 
     [
@@ -646,9 +645,34 @@ This seals `execution_scope.portability=platform_keyed`, with the platform key,
 executable digest, ABI and accelerator facts derived from the submitting box's
 live evidence. `pbrun` also adds that box's hostname to effective placement
 without requiring `--here`. The worker re-derives and verifies the platform and
-toolchain before execution. `--anywhere` is refused because it contradicts the
-implicit host pin, and `--host-class` is refused because the pool has no SLURM
-controller evidence with which to attest a class.
+toolchain before execution. `--anywhere` is refused because a measurement must
+retain its declared nonportable scope.
+
+When the complete experiment and its external dependencies are identical across
+a worker class, explicitly let PB select a matching worker:
+
+    tools/fleet/pbrun.py --transport pool --measurement --host-class gb10 --gpu -- ./paired-probe.sh
+
+The class enters sealed placement and the scope remains `platform_keyed`.
+The worker must match the submitter's platform, libc ABI, shell executable,
+driver, and GPU models/counts and compute capabilities before running. The
+receipt records the selected worker and actual GPU UUID. Unknown device identity
+refuses. `--here` adds a host pin even with a class; `--anywhere` is unnecessary
+and refused. The class is placement intent, not a claimed SLURM attestation.
+
+Keep both arms of a comparison in one self-contained interleaved action. CPU
+near-idle admission, measurement isolation, GPU exclusivity, memory and telemetry
+gates remain enforced. This option changes eligibility, not available capacity.
+Pin and record container images and inner Python dependencies in the experiment:
+the worker attests pbrun's shell and host facts, not arbitrary inner environments.
+Declaring the class asserts that these external dependencies are identical on
+its workers. Shared mutable container tags are not immutable toolchain evidence.
+
+The cache key binds the class and attested compatibility facts. Changing the
+architecture, GPU model or declared toolchain produces a different key; changing
+only the selected matching host or physical GPU does not. A hit replays the
+recorded experiment and its producer identity, not a new timing of this host.
+Do not resubmit already running experiments merely to move them between hosts.
 
 For SLURM, retain the explicit host-class form:
 
@@ -662,9 +686,8 @@ The SLURM constraints are enforced rather than advised:
 
 *   **A SLURM `--measurement` refuses without `--host-class`.** Its class must
     be present in the sealed scope and scheduler constraint.
-*   **`--host-class` refuses without `--transport slurm`.** The class is
-    attested through the SLURM controller, so a pull-queue worker refuses the
-    action at preflight.
+*   **SLURM's `host_class_keyed` scope requires controller evidence.** The pool
+    class-placement option above uses actual platform facts instead.
 *   **Submit from a box of that class.** A host-class-keyed action is
     nonportable, so it binds the submitting box's `argv[0]` digest and its ABI
     and accelerator facts. A worker of another class refuses it at preflight,
@@ -1430,7 +1453,7 @@ telemetry cannot be read, but it receives no borrowing credit.
 
 Measurements are stricter. They require a fresh nearly idle CPU observation,
 do not share CPU reservations, and wait while another CPU action is held on the
-host. Use the pool's implicit platform-keyed submitting-host form or SLURM's
+host. Use the pool's platform-keyed default or explicit class placement, or SLURM's
 explicit `--host-class CLASS` form described above. Use an exclusive GPU
 reservation whenever competing GPU work would invalidate the result. GB10 GPU
 utilization percentage is not a saturation measure; performance evidence should
@@ -1467,8 +1490,9 @@ them just because load rises. The separate memory guard may stop an exact
 attempt that exceeds its budget or threatens shared memory.
 
 `--exclusive` and GPU measurements do not share the device. Use `--measurement`
-for performance results: the pool pins the submitting host and seals its
-platform/toolchain identity. Optional SLURM measurements require `--host-class`;
+for performance results: the pool seals platform/toolchain identity and pins the
+submitting host unless `--host-class` explicitly selects matching workers.
+Optional SLURM measurements require `--host-class`;
 use its `--exclusive` GPU reservation when overlapping work would invalidate a
 result. Historical pool requests lacking explicit sharing intent remain
 exclusive until they finish.
