@@ -4026,35 +4026,38 @@ class PoolQueue:
         now = _now()
         for lease in sorted(claimed.glob("*.lease")):
             key = lease.name[: -len(".lease")]
-            if self.item_path(CLAIMED, key).exists():
-                continue
-            record = _read_json(lease) or {}
-            beat = record.get("heartbeat_unix")
-            try:
-                age = now - float(beat)
-            except (TypeError, ValueError):
-                try:
-                    age = now - lease.stat().st_mtime
-                except OSError:
+            with self._transition_locked(key, blocking=False) as acquired:
+                if not acquired:
                     continue
-            if age <= timeout_s:
-                continue
-            host = record.get("host")
-            if not isinstance(host, str) or not host:
+                if self.item_path(CLAIMED, key).exists():
+                    continue
+                record = _read_json(lease) or {}
+                beat = record.get("heartbeat_unix")
                 try:
-                    host = self.resolve_claim_holder(key, record)
-                except AmbiguousClaimHolder as exc:
-                    print(f"pool lease sweep: {exc}", file=sys.stderr)
+                    age = now - float(beat)
+                except (TypeError, ValueError):
+                    try:
+                        age = now - lease.stat().st_mtime
+                    except OSError:
+                        continue
+                if age <= timeout_s:
+                    continue
+                host = record.get("host")
+                if not isinstance(host, str) or not host:
+                    try:
+                        host = self.resolve_claim_holder(key, record)
+                    except AmbiguousClaimHolder as exc:
+                        print(f"pool lease sweep: {exc}", file=sys.stderr)
+                        continue
+                    if host is not None:
+                        record["host"] = host
+                container_cleanup = self.cleanup_action_containers(record)
+                if not container_cleanup["complete"]:
                     continue
                 if host is not None:
-                    record["host"] = host
-            container_cleanup = self.cleanup_action_containers(record)
-            if not container_cleanup["complete"]:
-                continue
-            if host is not None:
-                self.ledger(host).release(key)
-            lease.unlink(missing_ok=True)
-            swept.append(key)
+                    self.ledger(host).release(key)
+                lease.unlink(missing_ok=True)
+                swept.append(key)
         return swept
 
     def _file_unreadable(self, path: Path, *, reason: str) -> str | None:

@@ -124,6 +124,10 @@ capture for another sweep. An orphan capture is acknowledged only after its
 ending is published or a successor is observed. These transitions never release
 reservations and do not overwrite another terminal record.
 
+Widowed-lease recovery also holds the nonblocking key transition lock from its
+claim census through capacity return and lease removal. A busy key is deferred
+while independent keys remain recoverable.
+
 Local task output is now crash-recoverable without accepting unowned bytes.
 Before argv, the worker publishes an immutable claim for the exact action,
 resolved checkout, working directory, and declared result. Under the same
