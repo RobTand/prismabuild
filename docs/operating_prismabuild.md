@@ -707,8 +707,10 @@ It prints three tables:
     the transport that produced it. `--recent N` changes how many are read; the
     default is 20.
 
-`pbstatus` never writes and reports unavailable state without failing the
-screen. Scheduler commands have bounded timeouts, and since #350 so does the
+`pbstatus` never writes, and an unavailable part of the fleet is reported in
+place rather than failing the screen: the tables that were read still print.
+Since #358 that report is also in the exit status, because printing a note is
+not enough for a wrapper that reads only the lists -- see the exit rule below. Scheduler commands have bounded timeouts, and since #350 so does the
 whole run: `--timeout-s` (default 10) bounds every read of the queue root, and
 `--timeout-s 0` restores the unbounded behaviour a caller may still want. A
 selected SLURM controller that is not
@@ -717,8 +719,9 @@ those records are files on the shared mount. A record it cannot read prints as a
 `unreadable` row whose note names the path and the reason, so a truncated or
 unreadable newest record does not read as a fleet that filed nothing. `--json`
 prints one object with the selected `transport`, three lists, any scheduler
-notes, and the deadline's own three fields: `complete`, `timed_out_sections`
-and `abandoned_children`. In pool mode its `pool` summary carries ready/claimed
+notes, and the four fields that say how much of the fleet was actually read:
+`complete`, `timed_out_sections`, `unavailable_sections` and
+`abandoned_children`. In pool mode its `pool` summary carries ready/claimed
 counts and an
 `empty` field: `true` means both active directories were read and contain no
 jobs, `null` means state could not be established. Corrupt active records stay
@@ -768,6 +771,25 @@ So the run has a deadline.
     wrapper must be able to tell "I could not read the fleet" from "I read it
     and something in it is wrong". Under `--json` the object carries
     `"complete": false` and the list of `timed_out_sections`.
+*   The deadline is not the only way a census comes back short, and **3** is
+    the answer to all of them. `complete` is true only when the deadline held,
+    every required queue-root section (`pool`, `endings`, and the queue-root
+    note that says which kind of empty an empty endings table is) read without
+    raising, *and* the pool census parsed every record it found. A section that
+    raised is listed in `unavailable_sections` with its error class and text,
+    which is kept apart from `timed_out_sections` because the two call for
+    different next moves: a timeout says look at the mount, an error says look
+    at the error. Before this, a prompt `PermissionError` on the queue root
+    printed empty `nodes` and `jobs` under `"complete": true` and exited 0 --
+    indistinguishable from a quiet fleet, which is the one confusion the flag
+    was added to end.
+*   What `complete` does not cover is SLURM reachability. `sinfo` or `squeue`
+    missing or refusing is a statement about the scheduler, not about a census
+    that could not be read; it is reported in the `scheduler` notes and still
+    exits 0. Nor does a *stale* worker offer make a run incomplete: a box that
+    stopped announcing was read correctly and is a fact about the fleet. Only
+    a record nobody could read makes `pool.complete` false, and the records
+    that could not be read are named in `pool.unreadable`.
 *   `SIGKILL` is sent to an abandoned child and its exit verified within a
     short grace, because a timeout alone proves nothing about reaping. A child
     that does not exit is recorded in `abandoned_children` by PID *and*

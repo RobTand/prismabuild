@@ -624,6 +624,14 @@ def read_pool(queue_root: str | Path) -> dict:
                 sidecars[state, key] = _pool_sidecar(path)
     now = time.time()
     notes = [*worker_notes, *ready_notes, *claim_notes]
+    # The half of ``notes`` that means "this census is missing something",
+    # kept apart from the half that means "the fleet is in this state".  A
+    # directory that would not list and a record that would not parse make the
+    # census partial; a worker that stopped announcing is a fleet fact, fully
+    # read.  ``complete`` below is the first, and only the first, because it is
+    # what the run's exit status is derived from and a stale offer must not
+    # spend the signal that says the mount did not answer.
+    unreadable = [*worker_notes, *ready_notes, *claim_notes]
     nodes: list[dict] = []
     live: list[dict] = []
     for host, offer in workers.items():
@@ -631,6 +639,7 @@ def read_pool(queue_root: str | Path) -> dict:
             nodes.append({"node": host, "state": "unreadable", "healthy": False,
                           "reason": "invalid worker offer"})
             notes.append(f"pool worker {host}: invalid worker offer")
+            unreadable.append(f"pool worker {host}: invalid worker offer")
             continue
         age = _age(offer.get("announced_unix"), now)
         fresh = age is not None and 0 <= age <= pool.OFFER_TIMEOUT_S
@@ -736,12 +745,14 @@ def read_pool(queue_root: str | Path) -> dict:
                 row.update(state='UNREADABLE', reason=str(exc))
                 valid_counts[state] = None
                 notes.append(f"pool {state}/{key}: {exc}")
+                unreadable.append(f"pool {state}/{key}: {exc}")
             jobs.append(row)
     empty = (valid_counts[pool.READY] == 0 and valid_counts[pool.CLAIMED] == 0)
     return {"nodes": nodes, "jobs": jobs, "notes": notes,
             "queue": {"ready": valid_counts[pool.READY], "claimed": valid_counts[pool.CLAIMED],
                       "empty": empty if all(v is not None for v in valid_counts.values()) else None,
-                      "complete": not notes, "live_workers": len(live),
+                      "complete": not unreadable, "unreadable": unreadable,
+                      "live_workers": len(live),
                       "sampled_unix": now}}
 
 
@@ -1521,9 +1532,11 @@ def _starttime_ticks(pid: int) -> int | None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Show the fleet's nodes, its jobs, and how work ended.",
-        epilog=f"Exit status: 0 the fleet was read; {EXIT_INCOMPLETE} the queue "
-               f"root did not answer within --timeout-s and the output printed "
-               f"above it is partial, not an empty fleet.")
+        epilog=f"Exit status: 0 the fleet was read whole; {EXIT_INCOMPLETE} "
+               f"some of it could not be read -- a section ran out of "
+               f"--timeout-s, a section raised, or the pool census held records "
+               f"nobody could read -- and the output printed above is partial, "
+               f"not an empty fleet.")
     parser.add_argument("--transport", choices=TRANSPORTS, default=None,
                         help="active scheduler (default: environment, then deployed runtime)")
     parser.add_argument(
@@ -1560,6 +1573,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     deadline = Deadline(args.timeout_s)
     abandoned: list[dict] = []
     timed_out: list[str] = []
+    # Kept apart from ``timed_out`` on purpose.  "The mount did not answer in
+    # time" and "the read raised" are different faults with different fixes,
+    # and collapsing them would lose the half a wrapper can act on; what they
+    # have in common is only that neither read the fleet.
+    unavailable: list[dict] = []
+    pool_partial = False
 
     # Before anything touches the mount, and to stderr so it cannot be
     # mistaken for part of the census.  Counted, never enforced: an operator
@@ -1604,15 +1623,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = read["value"]
             nodes, jobs, pool_summary = result['nodes'], result['jobs'], result['queue']
             notes.extend(result['notes'])
+            # The census answered and is still missing rows.  Nothing timed out
+            # and nothing raised, so this is the only place the run learns it
+            # did not read the whole queue.
+            pool_partial = pool_summary.get("complete") is False
         elif read["status"] == "error":
             node_note = job_note = f"pool: unavailable ({read['type']}: {read['error']})"
-            pool_summary = {"ready": None, "claimed": None, "empty": None, "complete": False}
+            unavailable.append({"section": "pool", "type": read["type"],
+                                "error": read["error"]})
+            pool_summary = {"ready": None, "claimed": None, "empty": None,
+                            "complete": False, "unreadable": [node_note]}
         else:
             timed_out.append("pool")
             node_note = job_note = (
                 f"pool: incomplete -- queue root did not answer within "
                 f"{args.timeout_s:g}s")
-            pool_summary = {"ready": None, "claimed": None, "empty": None, "complete": False}
+            pool_summary = {"ready": None, "claimed": None, "empty": None,
+                            "complete": False, "unreadable": [node_note]}
     else:
         try:
             nodes, detail_note = read_nodes(sinfo=args.sinfo, scontrol=args.scontrol)
@@ -1638,6 +1665,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         endings = read["value"]
     elif read["status"] == "error":
         ending_note = f"endings: unavailable ({read['type']})"
+        unavailable.append({"section": "endings", "type": read["type"],
+                            "error": read["error"]})
         notes.append(ending_note)
     else:
         timed_out.append("endings")
@@ -1654,6 +1683,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                        deadline=deadline, abandoned=abandoned)
         if read["status"] == "ok":
             empty_note = read["value"]
+        elif read["status"] == "error":
+            # Why the endings table is empty is itself unread.  Before, this
+            # branch fell through silently and the empty table printed as
+            # though the question had been asked and answered.
+            unavailable.append({"section": "queue-root", "type": read["type"],
+                                "error": read["error"]})
+            empty_note = (f"queue root: unreadable ({read['type']}: "
+                          f"{read['error']}); this table is not an empty queue")
         elif read["status"] == "timed_out":
             timed_out.append("queue-root")
             empty_note = (f"queue root: incomplete -- it did not answer within "
@@ -1661,15 +1698,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         if empty_note:
             notes.append(empty_note)
 
+    # Whole means every required section read, and read entirely: the deadline
+    # held, nothing raised, and the pool census came back with every record
+    # legible.  Any one of those failing is a partial answer, and a partial
+    # answer that calls itself complete is worse than no answer.  What this
+    # does not cover is SLURM reachability: `sinfo` or `squeue` missing is a
+    # statement about the scheduler, is reported in `scheduler`, and has always
+    # exited 0.
+    complete = not timed_out and not unavailable and not pool_partial
+
     if args.json:
         print(json.dumps({
             "schema": "prismabuild.pbstatus.v1",
             "transport": transport,
             # New with #350 and the reason the exit code exists: a reader that
             # keys on the lists alone cannot tell a truncated census from an
-            # empty fleet, and those are the two answers that matter.
-            "complete": not timed_out,
+            # empty fleet, and those are the two answers that matter.  It is
+            # every way the read fell short, not only the deadline: a prompt
+            # ``PermissionError`` on the queue root also produces empty lists,
+            # and certifying that as a complete read of an empty fleet is the
+            # same lie the exit code exists to stop.
+            "complete": complete,
             "timed_out_sections": timed_out,
+            # Read, but not readable: the section raised.  Separate from
+            # ``timed_out_sections`` because a wrapper's next move differs --
+            # a timeout says look at the mount, this says look at the error.
+            "unavailable_sections": unavailable,
             # Which process, exactly, this run left behind -- ``(pid,
             # starttime)`` rather than a PID, because a PID is reusable and
             # therefore not an identity (#349).
@@ -1680,7 +1734,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "endings": endings,
             "scheduler": notes,
         }, sort_keys=True, indent=1))
-        return _incomplete(timed_out, args.timeout_s)
+        return _incomplete(timed_out, unavailable, pool_partial, args.timeout_s)
 
     print("== nodes")
     print("\n".join([node_note] if node_note else
@@ -1700,22 +1754,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"== endings (newest {args.recent})")
     print("\n".join([ending_note] if ending_note
                      else ending_lines(endings, note=empty_note)))
-    return _incomplete(timed_out, args.timeout_s)
+    return _incomplete(timed_out, unavailable, pool_partial, args.timeout_s)
 
 
-def _incomplete(timed_out: Sequence[str], timeout_s: float) -> int:
+def _incomplete(timed_out: Sequence[str], unavailable: Sequence[Mapping[str, object]],
+                pool_partial: bool, timeout_s: float) -> int:
     """Say what is missing, on stderr, and exit distinctly.
 
     On stderr because the tables above it are real and a wrapper capturing
     stdout should keep them; distinctly because "I could not read the fleet"
     and "I read it and it is empty" are the two answers this command existed
     to confuse, and a truncated listing that exits 0 is the more dangerous
-    half.
+    half.  A section that raised gets its own line rather than being folded
+    into the deadline's: both mean the census is partial, and only one means
+    the mount is slow.
     """
-    if not timed_out:
+    if not (timed_out or unavailable or pool_partial):
         return 0
-    print(f"pbstatus: incomplete -- queue root did not answer within "
-          f"{timeout_s:g}s ({', '.join(timed_out)} pending)", file=sys.stderr)
+    if timed_out:
+        print(f"pbstatus: incomplete -- queue root did not answer within "
+              f"{timeout_s:g}s ({', '.join(timed_out)} pending)", file=sys.stderr)
+    for section in unavailable:
+        print(f"pbstatus: incomplete -- the {section['section']} read failed "
+              f"({section['type']}: {section['error']})", file=sys.stderr)
+    if pool_partial:
+        print("pbstatus: incomplete -- the pool census could not read every "
+              "record; the counts above are partial", file=sys.stderr)
     return EXIT_INCOMPLETE
 
 

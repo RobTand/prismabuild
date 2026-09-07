@@ -213,6 +213,118 @@ def test_a_healthy_run_is_complete_and_exits_zero(tmp_path, monkeypatch, capsys)
     assert result["pool"]["empty"] is True
 
 
+# --------------------------------------------------------------------------
+# Complete means read, not merely returned.  The deadline is one way a census
+# comes back short; a section that raised and a record nobody could parse are
+# two more, and all three print the same empty lists.
+# --------------------------------------------------------------------------
+
+def test_a_prompt_error_is_not_a_complete_read(tmp_path, monkeypatch, capsys):
+    """A queue root that refuses is not a fleet with nothing in it.
+
+    This is the contradiction the review of #358 filed: ``read_pool`` raising
+    ``PermissionError`` returns immediately, so nothing timed out, so
+    ``complete`` said true over empty ``nodes`` and ``jobs`` and the run exited
+    0.  A wrapper reading that cannot tell it from a quiet fleet, which is the
+    single confusion the flag was added to end.
+    """
+    monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+
+    def refuse(root):
+        raise PermissionError("queue unavailable")
+
+    monkeypatch.setattr(pbstatus, "read_pool", refuse)
+    code = pbstatus.main(["--json", "--recent", "0",
+                          "--queue-root", str(queue.root)])
+    assert code == EXIT_INCOMPLETE
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["complete"] is False
+    assert result["nodes"] == [] and result["jobs"] == []
+    # An error and a timeout stay distinguishable: they call for different
+    # next moves, and only one of them says to go and look at the mount.
+    assert result["timed_out_sections"] == []
+    assert [section["section"] for section in result["unavailable_sections"]] == ["pool"]
+    assert result["unavailable_sections"][0]["type"] == "PermissionError"
+    assert "PermissionError" in captured.err
+
+
+def test_an_ending_read_that_raises_is_not_a_complete_read(
+        tmp_path, monkeypatch, capsys):
+    """The same rule for the other required section of the queue root."""
+    monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+
+    def refuse(root, limit):
+        raise PermissionError("done/ unavailable")
+
+    monkeypatch.setattr(pbstatus, "read_endings", refuse)
+    code = pbstatus.main(["--json", "--queue-root", str(queue.root)])
+    assert code == EXIT_INCOMPLETE
+    result = json.loads(capsys.readouterr().out)
+    assert result["complete"] is False and result["endings"] == []
+    assert [section["section"] for section in result["unavailable_sections"]] == ["endings"]
+
+
+def test_a_pool_census_missing_a_record_is_not_complete(
+        tmp_path, monkeypatch, capsys):
+    """Nested incompleteness counts: the census returned, holed.
+
+    ``pool.complete`` was already false here and the top-level flag said true
+    anyway, so the object contradicted itself inside one screen.  Nothing timed
+    out and nothing raised -- the read finished and could not parse a record --
+    which is why this needs its own arm.
+    """
+    monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    (queue.dir(pool.READY) / f"{'a' * 64}.json").write_text("{ truncated")
+
+    code = pbstatus.main(["--json", "--recent", "0",
+                          "--queue-root", str(queue.root)])
+    assert code == EXIT_INCOMPLETE
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["complete"] is False
+    assert result["timed_out_sections"] == [] and result["unavailable_sections"] == []
+    assert result["pool"]["complete"] is False and result["pool"]["unreadable"]
+    assert "could not read every record" in captured.err
+
+
+def test_a_stale_worker_offer_does_not_spend_the_incomplete_signal(
+        tmp_path, monkeypatch, capsys):
+    """A box that stopped announcing is a fleet fact, fully read.
+
+    The distinction the exit status lives on.  Every note is not a hole: an
+    offer that timed out was read correctly and says something true about the
+    fleet, and exiting 3 for it would make 3 the normal answer and cost the
+    one case -- a census that came back short -- the code exists to signal.
+    """
+    monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    queue.announce(host="cpu-box", tags=["cpu-box"], has_gpu=False,
+                   capacity={"cpu": 4, "mem_gb": 8},
+                   observed_capacity={"cpu": 4, "mem_gb": 8})
+    offer = queue.root / pool.WORKERS / "cpu-box.json"
+    record = json.loads(offer.read_text())
+    record["announced_unix"] = time.time() - pool.OFFER_TIMEOUT_S - 1
+    offer.write_text(json.dumps(record))
+
+    code = pbstatus.main(["--json", "--recent", "0",
+                          "--queue-root", str(queue.root)])
+    assert code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["complete"] is True
+    assert result["pool"]["complete"] is True and result["pool"]["unreadable"] == []
+    # Still said, in the place a fleet fact belongs.
+    assert any("stale" in note for note in result["scheduler"])
+    assert result["nodes"][0]["state"] == "stale"
+
+
 def test_a_negative_timeout_is_refused(capsys):
     with pytest.raises(SystemExit) as raised:
         pbstatus.main(["--timeout-s", "-1"])
