@@ -105,7 +105,7 @@ def _old_bytes(q: pool.PoolQueue, monkeypatch) -> pool.PoolQueue:
     """
 
     old = pool.PoolQueue(q.root)
-    monkeypatch.setattr(old, "withdrawn_keys", lambda: frozenset())
+    monkeypatch.setattr(old, "withdrawal_covers", lambda *args, **kwargs: None)
     return old
 
 
@@ -320,86 +320,27 @@ def test_finish_cannot_retry_what_was_withdrawn(queue: pool.PoolQueue) -> None:
     assert queue.claim() is None
 
 
-def test_a_pre_publish_worker_cannot_requeue_what_was_withdrawn(
-    queue: pool.PoolQueue, monkeypatch
-) -> None:
-    """The last of the race that bytes on this side can reach.
-
-    A worker running pre-withdraw bytes cannot see ``withdrawn/`` at all, so
-    the marker does not stop it.  What does is the ``max_attempts: 1`` the verb
-    writes into the live claimed record before it signals anything -- step one
-    of the operator's old hand-edit, now done atomically and with the decision
-    already filed, so nobody has to win the race by hand.  The window that
-    matters is the signal ladder: seconds long, and exactly when the worker
-    this withdrawal just SIGTERMed calls ``finish``.
-
-    The interleaving is scheduled rather than hoped for: ``withdraw`` calls
-    ``ledger`` once, between the ladder and its cleanup, so hooking it drops
-    the old worker's ``finish`` into that window every run.  The ``finish``
-    that runs is the real one, on the real files.
-    """
-
+def test_withdrawal_retains_claim_bytes_for_the_marker_aware_worker(queue):
     _publish(queue, KEY_A, max_attempts=3)
     queue.claim()
-    old = _old_bytes(queue, monkeypatch)
-
-    real_ledger = queue.ledger
-    fired: list[bool] = []
-
-    def racing_ledger(host=None):
-        if not fired:
-            fired.append(True)
-            old.finish(KEY_A, status="failed", detail={"returncode": -15})
-        return real_ledger(host)
-
-    monkeypatch.setattr(queue, "ledger", racing_ledger)
-    queue.withdraw(KEY_A, signal_child=False)
-
-    assert fired, "the interleaving did not happen; the test proves nothing"
-    assert not queue.item_path(pool.READY, KEY_A).exists(), (
-        "a worker that cannot see the marker still must not requeue the action")
-    filed = json.loads(queue.item_path(pool.FAILED, KEY_A).read_text())
-    assert filed["attempts"] == 1 and filed["max_attempts"] == 1
-    assert filed["withdrawn_by"] == "", "the decision travels onto the record"
-    assert "withdrawn_note" in filed
-    assert queue.claim() is None
-
-
-def test_a_pre_publish_reaper_cannot_requeue_a_withdrawn_claim(
-    queue: pool.PoolQueue, monkeypatch
-) -> None:
-    """The other self-healing path an old worker still runs.
-
-    ``reap_stale`` on pre-withdraw bytes consults no marker either, and a
-    withdrawal whose box died before its own cleanup leaves exactly what that
-    loop looks for: a claimed record with a lease nobody refreshes.  The same
-    ``max_attempts: 1`` closes it, because that loop counts attempts against
-    the same limit -- one write covers both readers.
-    """
-
-    _publish(queue, KEY_A, max_attempts=3)
-    queue.claim()
-    real_ledger = queue.ledger
-    captured: dict = {}
-
-    def capture(host=None):
-        if not captured:
-            captured.update(
-                json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text()))
-        return real_ledger(host)
-
-    monkeypatch.setattr(queue, "ledger", capture)
-    queue.withdraw(KEY_A, signal_child=False)
-    assert captured["max_attempts"] == 1, "the retry was not closed"
-
-    # What a box dying inside ``withdraw`` leaves behind, aged past the grace
-    # ``reap_stale`` gives a claim whose lease has not landed yet.
-    captured["claimed_unix"] = time.time() - 10 * pool.HEARTBEAT_S
-    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(captured))
-    _old_bytes(queue, monkeypatch).reap_stale(timeout_s=0.0)
+    path = queue.item_path(pool.CLAIMED, KEY_A)
+    before = path.read_bytes()
+    result = queue.withdraw(KEY_A, signal_child=False)
+    assert result["released"] == 0
+    assert path.read_bytes() == before
+    queue.finish(KEY_A, status="failed", detail={"returncode": -15})
     assert not queue.item_path(pool.READY, KEY_A).exists()
-    assert json.loads(queue.item_path(pool.FAILED, KEY_A).read_text())[
-        "status"] == "lease_lost_max_attempts"
+    assert queue.withdrawn_keys() == frozenset([KEY_A])
+
+
+def test_marker_aware_reaper_concludes_the_cancelled_claim(queue):
+    _publish(queue, KEY_A, max_attempts=3)
+    queue.claim()
+    queue.withdraw(KEY_A, signal_child=False)
+    queue.reap_stale(timeout_s=-1)
+    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert queue.item_path(pool.WITHDRAWN, KEY_A).exists()
 
 
 def test_a_completed_action_that_lost_its_claim_is_filed_under_done(
@@ -459,7 +400,9 @@ def test_a_withdrawal_returns_the_capacity_the_action_held(
     queue.claim(capacity={"gpu": 1, "mem_gb": 8})
     assert queue.ledger().available() == {}
     result = queue.withdraw(KEY_A)
-    assert result["released"] == 9
+    assert result["released"] == 0
+    assert queue.ledger().available() == {}
+    queue.finish(KEY_A, status="withdrawn")
     assert queue.ledger().available() == {"gpu": 1, "mem_gb": 8}
 
 
@@ -577,7 +520,7 @@ def test_a_prefix_still_resolves_after_the_action_is_terminal(
 # -- the signal --------------------------------------------------------------
 
 
-def test_the_signal_reaches_the_action_group_not_only_the_launcher(
+def test_the_worker_stops_its_own_action_group_after_withdrawal(
     queue: pool.PoolQueue, tmp_path: Path, pidfile: Path
 ) -> None:
     """The distinguishing test: kill the work, not the process that started it.
@@ -591,19 +534,16 @@ def test_the_signal_reaches_the_action_group_not_only_the_launcher(
     stub = _grandchild_launcher(tmp_path, pidfile)
     _publish(queue, KEY_A, worker_script=str(stub))
     item = queue.claim()
-    # Heartbeat long enough that the cooperative poll inside ``execute`` cannot
-    # fire: what stops the action here must be the withdrawal's own signal.
-    thread, outcome = _run_in_background(queue, item, heartbeat_s=30.0)
+    # The claiming worker owns the process handle and stops its own payload.
+    thread, outcome = _run_in_background(queue, item, heartbeat_s=0.1)
     grandchild = _await_pid(pidfile)
     assert _await(lambda: (json.loads(queue.lease_path(KEY_A).read_text())
                            .get("child_pid") is not None))
 
     result = queue.withdraw(KEY_A, reason="stop it")
 
-    signalled = result["signalled"] or {}
-    assert signalled.get("action_pgids") == [grandchild], (
-        "the group signalled must be the action's own, not the launcher's")
-    assert any(sent.startswith("TERM -") for sent in signalled.get("signals", []))
+    assert result["signalled"] is None
+    assert result["released"] == 0
     thread.join(timeout=30.0)
     assert not thread.is_alive(), "execute must not hang on the killed pipes"
     assert _await(lambda: not pool._process_alive(grandchild)), (
@@ -654,7 +594,7 @@ def test_withdrawal_reaps_an_owned_container_before_releasing_capacity(
     marker.parent.mkdir(parents=True)
     marker.write_text(owner)
 
-    thread, outcome = _run_in_background(queue, item, heartbeat_s=30.0)
+    thread, outcome = _run_in_background(queue, item, heartbeat_s=0.1)
     action_pid = _await_pid(pidfile)
     container_pid = _await_pid(container_pidfile)
 
@@ -673,10 +613,13 @@ def test_withdrawal_reaps_an_owned_container_before_releasing_capacity(
     monkeypatch.setattr(pool, "_docker_remove_containers", remove, raising=False)
     try:
         result = queue.withdraw(KEY_A, reason="stop the serve")
+        assert result["released"] == 0
         assert _await(lambda: not pool._process_alive(action_pid))
+        thread.join(timeout=5.0)
+        queue.finish(KEY_A, status="withdrawn", detail=outcome, claim_snapshot=item)
         assert _await(lambda: not pool._process_alive(container_pid)), (
             "the reparented container survived after its GPU token was released")
-        assert result["container_cleanup"]["complete"] is True
+        assert result["container_cleanup"]["deferred"] is True
         assert queue.ledger().available() == {"gpu": 1, "mem_gb": 8}
     finally:
         if pool._process_alive(container_pid):
@@ -706,8 +649,10 @@ def test_withdrawal_keeps_the_claim_and_tokens_when_container_cleanup_fails(
     result = queue.withdraw(KEY_A, signal_child=False)
 
     assert result["released"] == 0
-    assert result["container_cleanup"]["complete"] is False
-    assert result["container_cleanup"]["remaining"] == ["stuck-container"]
+    assert result["container_cleanup"]["deferred"] is True
+    queue.finish(KEY_A, status="withdrawn")
+    pending = pool._read_json(queue.item_path(pool.CLAIMED, KEY_A))
+    assert pending["container_cleanup_pending"]["remaining"] == ["stuck-container"]
     assert queue.item_path(pool.CLAIMED, KEY_A).exists()
     assert queue.ledger().held_keys() == [KEY_A]
 
@@ -760,23 +705,18 @@ def test_a_withdrawal_from_another_box_still_stops_the_action(
     assert _await(lambda: not pool._process_alive(grandchild))
 
 
-def test_a_worker_that_never_wrote_a_child_pid_is_still_signalled(
-    queue: pool.PoolQueue, tmp_path: Path, pidfile: Path
+def test_worker_without_child_pid_stops_cooperatively_without_key_scan(
+    queue: pool.PoolQueue, tmp_path: Path, pidfile: Path, monkeypatch
 ) -> None:
-    """A cancellation must work against the fleet as it is, not as it will be.
-
-    A worker loop holds the bytes it imported at start for its whole life, so
-    every loop already running when this lands writes a lease with no
-    ``child_pid``.  If the lease were the only way to name the launcher, the
-    verb would not work on the one fleet it was written for until the runtime
-    rolled.  The launcher's own argv carries the action key, so it can be found
-    without the lease's help.
-    """
+    """A content-addressed key cannot select a process from a later attempt."""
+    def forbidden(*args):
+        raise AssertionError("withdrawal must not scan processes by action key")
+    monkeypatch.setattr(pool, "find_launcher_pids", forbidden)
 
     stub = _grandchild_launcher(tmp_path, pidfile)
     _publish(queue, KEY_A, worker_script=str(stub))
     item = queue.claim()
-    thread, outcome = _run_in_background(queue, item, heartbeat_s=30.0)
+    thread, outcome = _run_in_background(queue, item, heartbeat_s=0.1)
     grandchild = _await_pid(pidfile)
 
     # What a pre-withdrawal worker's lease looks like.
@@ -786,10 +726,7 @@ def test_a_worker_that_never_wrote_a_child_pid_is_still_signalled(
 
     result = queue.withdraw(KEY_A)
 
-    signalled = result["signalled"] or {}
-    assert signalled.get("launcher_pids") == [launcher], (
-        "the launcher was found from /proc, not from the lease")
-    assert signalled.get("action_pgids") == [grandchild]
+    assert result["signalled"] is None
     thread.join(timeout=30.0)
     assert _await(lambda: not pool._process_alive(grandchild))
     assert outcome["status"] == "withdrawn"

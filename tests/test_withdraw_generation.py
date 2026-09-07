@@ -68,7 +68,7 @@ def _old_bytes(q: pool.PoolQueue, monkeypatch) -> pool.PoolQueue:
     """
 
     old = pool.PoolQueue(q.root)
-    monkeypatch.setattr(old, "withdrawn_keys", lambda: frozenset())
+    monkeypatch.setattr(old, "withdrawal_covers", lambda *args, **kwargs: None)
     return old
 
 

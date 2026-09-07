@@ -152,8 +152,8 @@ def test_a_claimed_action_on_another_box_says_the_signal_did_not_land(
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
     assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
     err = capsys.readouterr().err
-    assert f"no local child to signal on {ELSEWHERE}" in err
-    assert "stops within a heartbeat" in err
+    assert "stop requested through the generation marker" in err
+    assert "checks it at the next heartbeat" in err
 
 
 def test_a_withdrawal_the_holder_cannot_see_is_said_out_loud(

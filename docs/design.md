@@ -74,9 +74,9 @@ to `ready/` with its attempt count unchanged, the release filed under
 `withdrawn/superseded/` as an `unstarted-claim` and counted on the item as
 `unstarted_releases`. Both halves of that test are load-bearing, because a
 restored finish tombstone also has no lease and must keep the charged path. A
-claim carrying a withdrawal stamp is never released: `withdraw` closes the
-retry with `max_attempts: 1`, and a release is not counted against that limit,
-so the stamp is what stops a cancelled action returning to the queue.
+claim covered by a withdrawal decision is concluded without a retry. Legacy
+withdrawal stamps remain readable, but new withdrawals never rewrite a claimed
+record's retry limit or ownership fields.
 Releases are counted, not bounded: the measured stall between the rename and
 the lease has no upper bound on this filesystem, so a bound would be a guess
 about a delegation recall. Both readers surface the count, because a release
@@ -90,6 +90,28 @@ diagnostic; healthy records continue through the queue. A quarantine restores
 a concurrently repaired record without replacing another submission and never
 overwrites an existing failed outcome. These contracts have local filesystem
 regression coverage; they are not a cross-host NFS qualification claim.
+
+Withdrawal records an immutable decision under
+`withdrawn/decisions/<action_key>/<attempt_generation>.json`, using the same
+publication identity as attempt history. The first decision for that generation
+wins. The current `withdrawn/<action_key>.json` remains the operator-facing
+ending, and publication may retire it without erasing an original attempt's
+stop request. All cancellation gates consult the generation decision even when
+the live marker has been retired. A malformed decision is a refusal, never an
+inferred cancellation of another generation.
+
+The withdrawal caller owns no claimed record, lease or reservation and never
+rewrites, removes or releases them. It returns `released: 0` and a pending stop
+until the claiming worker or reaper completes cleanup. On the claiming host,
+a saved broker scope authority may accelerate stopping only that exact
+attempt; uncontained work stops through its worker's marker checkpoint. A
+process search by action key cannot distinguish successor attempts and is not
+used for withdrawal. Ready cancellation moves and reads the record before
+checking its generation, and restores replacements without overwriting them.
+This contract retires the old retry-limit poison write and synchronous local
+process scan. Deployment requires draining and upgrading workers to readers of
+immutable decisions before relying on asynchronous cancellation across a
+re-submission; there is no unsafe legacy fallback.
 
 Local task output is now crash-recoverable without accepting unowned bytes.
 Before argv, the worker publishes an immutable claim for the exact action,

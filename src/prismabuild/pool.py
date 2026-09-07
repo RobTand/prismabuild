@@ -107,6 +107,7 @@ from typing import NamedTuple
 from contextlib import contextmanager
 import errno
 import fcntl
+from functools import wraps
 import hashlib
 import json
 import math
@@ -132,6 +133,7 @@ from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
 from . import resource_scope
+from . import posix_lock
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -1475,6 +1477,17 @@ class ResourceLedger:
         )
 
 
+def _serialized_key(method):
+    """Keep one public mutation inside its key's shared transition lock."""
+    @wraps(method)
+    def invoke(self, *args, **kwargs):
+        value = args[0] if args else kwargs["action_key"]
+        key = value.get("action_key") if isinstance(value, Mapping) else value
+        with self._transition_locked(str(key)):
+            return method(self, *args, **kwargs)
+    return invoke
+
+
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
@@ -2039,6 +2052,7 @@ class PoolQueue:
             "rather than stranded in a queue whose workers are being retired."
         )
 
+    @_serialized_key
     def publish(
         self,
         *,
@@ -2305,6 +2319,7 @@ class PoolQueue:
         if isinstance(marker, Mapping) and marker.get("owner") == owner:
             path.unlink(missing_ok=True)
 
+    @_serialized_key
     def write_lease(
         self,
         action_key: str,
@@ -2344,6 +2359,12 @@ class PoolQueue:
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
         return ResourceLedger(self.root / RESERVATIONS, host=host)
+
+    def _transition_locked(self, action_key: str, *, blocking: bool = True):
+        """Serialize one key's ownership transitions, never independent keys."""
+        name = hashlib.sha256(str(action_key).encode()).hexdigest()
+        return posix_lock.held(self.root / "transition-locks" / f"{name}.lock",
+                               blocking=blocking)
 
     def container_marker(self, owner: str) -> Path:
         """The durable signal that this action invoked the Docker shim."""
@@ -2915,237 +2936,244 @@ class PoolQueue:
                 self._cpu_deferrals.pop(generation, None)
         for item in ready:
             key = str(item.get("action_key", ""))
-            if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
-                continue
-            if key in withdrawn and self.withdrawal_covers(
-                    item, action_key=key, withdrawn=withdrawn) is not None:
-                # Already filed under ``withdrawn``, and of the generation that
-                # was withdrawn: this record is the losing half of a race, not
-                # work.  Drop it rather than leave it at the head of ``ready``
-                # for every future poll to step over -- but FILE it first.  A
-                # queue that removes a record it will not run and says nothing
-                # anywhere is the shape ``quarantine_orphans`` names in its own
-                # docstring, and the reason this guard was a blocker.
-                #
-                # A record of a LATER generation falls through and is claimed:
-                # somebody asked for this work again after the cancellation,
-                # which a content-addressed key makes the ordinary way to ask.
-                self._file_superseded(
-                    item, key=key, kind="dropped", status="dropped",
-                    dropped_unix=_now(), dropped_host=socket.gethostname(),
-                    reason="requeued into ready after the withdrawal that "
-                           "cancelled this generation",
-                )
-                self.item_path(READY, key).unlink(missing_ok=True)
-                continue
-            demand = self.demand_of(item)
-            reservation_demand = dict(demand)
-            if gpu_controller is not None and demand.get("gpu"):
-                # Historical slot counts expressed sharing, not device count.
-                # Preserve the sealed demand but reserve this worker's single
-                # physical GPU; the controller keeps multi-slot work exclusive.
-                reservation_demand["gpu"] = 1
-            handle: str | None = None
-            adaptive = None
-            adaptive_gpu = None
-            if controller is not None and not demand:
-                # Adaptive admission needs a durable reservation to make an
-                # unknown CPU consumer visible to subsequent measurements.
-                # Empty legacy demand has no holder; keep it queued instead.
-                self.record_pass(key)
-                continue
-            if ledger is not None and demand:
-                if any(total.get(kind, 0) < need for kind, need in reservation_demand.items()):
-                    continue      # never fits this box; not this box's to hold
-                if controller is not None:
-                    adaptive = controller.decision(item, demand)
-                    if adaptive is None:
-                        self.record_pass(key)
-                        continue
-                if gpu_controller is not None and demand.get("gpu"):
-                    adaptive_gpu = gpu_controller.decision(item, demand)
-                    if adaptive_gpu is None:
-                        self.record_pass(key)
-                        continue
-                    gpu_controller.reserve_probe(adaptive_gpu)
-                if adaptive_gpu is not None:
-                    handle = ledger.begin_acquire(key, reservation_demand, adaptive=adaptive,
-                                                  cpu_tiers=cpu_tiers,
-                                                  adaptive_gpu=adaptive_gpu)
-                else:
-                    handle = (ledger.begin_acquire(key, demand) if adaptive is None else
-                              ledger.begin_acquire(key, demand, adaptive=adaptive,
-                                                   cpu_tiers=cpu_tiers))
-                if handle is None:
-                    denials = self.record_pass(key)
-                    if (denials >= STARVATION_FLOOR
-                            and self.withhold_age(key) <= WITHHOLD_CEILING_S):
-                        # Wired to the decision: stop letting smaller work pass it.
-                        return None
-                    # Past the ceiling it keeps its passes -- and so its place at
-                    # the head of the ordering -- but stops holding the box shut
-                    # for work it cannot do anything with.
+            with self._transition_locked(key, blocking=False) as acquired:
+                if not acquired:
                     continue
-            if (ledger is not None and handle is not None and cpu_tiers is not None
-                    and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
-                    and self._defer_fallback(item, demand)):
-                ledger.abandon_acquire(handle)
-                continue
-            # Intent precedes the claim, so a crash in between leaves evidence.
-            self._write_claim_intent(key, owner=owner)
-            src = self.item_path(READY, key)
-            dst = self.item_path(CLAIMED, key)
-            try:
-                os.rename(src, dst)
-            except (FileNotFoundError, NotADirectoryError):
-                if ledger is not None and handle is not None:
-                    # Lost the race: hold nothing -- and return only what THIS
-                    # claimant took.  Releasing by action key here returned the
-                    # winner's reservation and let a third action be admitted
-                    # on top of it.
+                if (self.item_path(CLAIMED, key).exists()
+                        or _glob(self.dir(CLAIMED), f"{key}.*{TOMBSTONE_SUFFIX}")):
+                    continue
+                if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
+                    continue
+                if self.withdrawal_covers(
+                        item, action_key=key, withdrawn=withdrawn) is not None:
+                    # Already filed under ``withdrawn``, and of the generation that
+                    # was withdrawn: this record is the losing half of a race, not
+                    # work.  Drop it rather than leave it at the head of ``ready``
+                    # for every future poll to step over -- but FILE it first.  A
+                    # queue that removes a record it will not run and says nothing
+                    # anywhere is the shape ``quarantine_orphans`` names in its own
+                    # docstring, and the reason this guard was a blocker.
+                    #
+                    # A record of a LATER generation falls through and is claimed:
+                    # somebody asked for this work again after the cancellation,
+                    # which a content-addressed key makes the ordinary way to ask.
+                    cancelled = self._withdraw_ready(key)
+                    if cancelled is not None:
+                        self._file_superseded(
+                            cancelled, key=key, kind="dropped", status="dropped",
+                            dropped_unix=_now(), dropped_host=socket.gethostname(),
+                            reason="requeued into ready after the withdrawal that "
+                                   "cancelled this generation",
+                        )
+                    continue
+                demand = self.demand_of(item)
+                reservation_demand = dict(demand)
+                if gpu_controller is not None and demand.get("gpu"):
+                    # Historical slot counts expressed sharing, not device count.
+                    # Preserve the sealed demand but reserve this worker's single
+                    # physical GPU; the controller keeps multi-slot work exclusive.
+                    reservation_demand["gpu"] = 1
+                handle: str | None = None
+                adaptive = None
+                adaptive_gpu = None
+                if controller is not None and not demand:
+                    # Adaptive admission needs a durable reservation to make an
+                    # unknown CPU consumer visible to subsequent measurements.
+                    # Empty legacy demand has no holder; keep it queued instead.
+                    self.record_pass(key)
+                    continue
+                if ledger is not None and demand:
+                    if any(total.get(kind, 0) < need for kind, need in reservation_demand.items()):
+                        continue      # never fits this box; not this box's to hold
+                    if controller is not None:
+                        adaptive = controller.decision(item, demand)
+                        if adaptive is None:
+                            self.record_pass(key)
+                            continue
+                    if gpu_controller is not None and demand.get("gpu"):
+                        adaptive_gpu = gpu_controller.decision(item, demand)
+                        if adaptive_gpu is None:
+                            self.record_pass(key)
+                            continue
+                        gpu_controller.reserve_probe(adaptive_gpu)
+                    if adaptive_gpu is not None:
+                        handle = ledger.begin_acquire(key, reservation_demand, adaptive=adaptive,
+                                                      cpu_tiers=cpu_tiers,
+                                                      adaptive_gpu=adaptive_gpu)
+                    else:
+                        handle = (ledger.begin_acquire(key, demand) if adaptive is None else
+                                  ledger.begin_acquire(key, demand, adaptive=adaptive,
+                                                       cpu_tiers=cpu_tiers))
+                    if handle is None:
+                        denials = self.record_pass(key)
+                        if (denials >= STARVATION_FLOOR
+                                and self.withhold_age(key) <= WITHHOLD_CEILING_S):
+                            # Wired to the decision: stop letting smaller work pass it.
+                            return None
+                        # Past the ceiling it keeps its passes -- and so its place at
+                        # the head of the ordering -- but stops holding the box shut
+                        # for work it cannot do anything with.
+                        continue
+                if (ledger is not None and handle is not None and cpu_tiers is not None
+                        and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
+                        and self._defer_fallback(item, demand)):
                     ledger.abandon_acquire(handle)
-                # Leave no evidence of a claim that did not happen.  The marker
-                # is written by rename, so this claimant's copy replaced
-                # whatever was there -- and if the winner wrote first, the
-                # marker now names the box that LOST while still passing the
-                # generation check (#272).
-                #
-                # Only while it is still this claimant's own: ``owner`` is
-                # unique per claimant and the marker carries it.  The check and
-                # the unlink are two operations on a shared mount, so a marker
-                # written between them is removed as well -- but that leaves no
-                # marker, which ``resolve_claim_holder`` already answers as
-                # "nobody said", rather than a marker naming the wrong box.
-                # The ledger is the exact answer either way; this only keeps
-                # the fallback from being confidently wrong.
-                self._discard_claim_intent(key, owner=owner)
-                continue
-            moved = _read_json(dst) or item
-            if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
-                    or self.demand_of(moved) != demand):
-                # Admission described the scanned generation. A replacement
-                # may need a different host or more tokens; put it back for a
-                # fresh admission before committing this claimant's tokens.
-                if ledger is not None and handle is not None:
-                    ledger.abandon_acquire(handle)
+                    continue
+                # Intent precedes the claim, so a crash in between leaves evidence.
+                self._write_claim_intent(key, owner=owner)
+                src = self.item_path(READY, key)
+                dst = self.item_path(CLAIMED, key)
                 try:
-                    os.link(dst, src)
-                except OSError:
-                    # A still newer submission may own ready already. Leave
-                    # the moved record for the reaper, as below.
-                    pass
-                else:
-                    dst.unlink(missing_ok=True)
-                    self.item_path(INTENT, key).unlink(missing_ok=True)
-                continue
-            if ledger is not None and handle is not None:
-                # Won the rename, so the reservation stops belonging to this
-                # claimant and starts belonging to the action.  Every branch
-                # below releases by action key, which is correct only once the
-                # tokens are filed under it.
-                if (ledger.commit_acquire(key, handle) < sum(reservation_demand.values())
-                        or (adaptive is not None and _read_json(
-                            ledger.held_dir / key / cpu_admission.METADATA) is None)
-                        or (adaptive_gpu is not None and _read_json(
-                            ledger.held_dir / key / gpu_admission.METADATA) is None)):
-                    # A stale-acquisition sweep took part of the reservation,
-                    # or tokens of an earlier incarnation are filed under this
-                    # key.  Fail closed rather than run unreserved: ``dst`` is
-                    # still byte-identical to the ready record, because the
-                    # rewrite below has not happened yet, so putting it back
-                    # restores the item exactly as it was.
-                    ledger.abandon_acquire(handle)
-                    ledger.release(key)
-                    # Link rather than rename.  ``publish`` writes ``ready``
-                    # unconditionally, so a re-submission of this key can
-                    # already be sitting there, and a rename would replace that
-                    # new generation with these older bytes and lose the
-                    # request.  If it is there, leave the claim for the reaper
-                    # instead: an extra reaper cycle costs one attempt, a
-                    # clobbered generation costs the whole submission.
+                    os.rename(src, dst)
+                except (FileNotFoundError, NotADirectoryError):
+                    if ledger is not None and handle is not None:
+                        # Lost the race: hold nothing -- and return only what THIS
+                        # claimant took.  Releasing by action key here returned the
+                        # winner's reservation and let a third action be admitted
+                        # on top of it.
+                        ledger.abandon_acquire(handle)
+                    # Leave no evidence of a claim that did not happen.  The marker
+                    # is written by rename, so this claimant's copy replaced
+                    # whatever was there -- and if the winner wrote first, the
+                    # marker now names the box that LOST while still passing the
+                    # generation check (#272).
+                    #
+                    # Only while it is still this claimant's own: ``owner`` is
+                    # unique per claimant and the marker carries it.  The check and
+                    # the unlink are two operations on a shared mount, so a marker
+                    # written between them is removed as well -- but that leaves no
+                    # marker, which ``resolve_claim_holder`` already answers as
+                    # "nobody said", rather than a marker naming the wrong box.
+                    # The ledger is the exact answer either way; this only keeps
+                    # the fallback from being confidently wrong.
+                    self._discard_claim_intent(key, owner=owner)
+                    continue
+                moved = _read_json(dst) or item
+                if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
+                        or self.demand_of(moved) != demand):
+                    # Admission described the scanned generation. A replacement
+                    # may need a different host or more tokens; put it back for a
+                    # fresh admission before committing this claimant's tokens.
+                    if ledger is not None and handle is not None:
+                        ledger.abandon_acquire(handle)
                     try:
                         os.link(dst, src)
                     except OSError:
+                        # A still newer submission may own ready already. Leave
+                        # the moved record for the reaper, as below.
                         pass
                     else:
                         dst.unlink(missing_ok=True)
                         self.item_path(INTENT, key).unlink(missing_ok=True)
                     continue
-            terminal = self.terminal_outcome_covers(moved, action_key=key)
-            if terminal is not None:
-                # A stale reaper can put a generation back in ``ready`` after
-                # its outcome was filed, or the outcome can land between the
-                # ready scan and this rename.  The rename is the last boundary
-                # at which the payload is definitely not executing.
-                if ledger is not None:
-                    ledger.release(key)
-                state, outcome = terminal
-                self._file_superseded(
-                    moved, key=key, kind="terminal-claim", status="dropped",
-                    dropped_unix=_now(), dropped_host=socket.gethostname(),
-                    reason="claim lost to an outcome for the same generation "
-                           f"filed under {state}",
-                    terminal_status=outcome.get("status"),
+                if ledger is not None and handle is not None:
+                    # Won the rename, so the reservation stops belonging to this
+                    # claimant and starts belonging to the action.  Every branch
+                    # below releases by action key, which is correct only once the
+                    # tokens are filed under it.
+                    if (ledger.commit_acquire(key, handle) < sum(reservation_demand.values())
+                            or (adaptive is not None and _read_json(
+                                ledger.held_dir / key / cpu_admission.METADATA) is None)
+                            or (adaptive_gpu is not None and _read_json(
+                                ledger.held_dir / key / gpu_admission.METADATA) is None)):
+                        # A stale-acquisition sweep took part of the reservation,
+                        # or tokens of an earlier incarnation are filed under this
+                        # key.  Fail closed rather than run unreserved: ``dst`` is
+                        # still byte-identical to the ready record, because the
+                        # rewrite below has not happened yet, so putting it back
+                        # restores the item exactly as it was.
+                        ledger.abandon_acquire(handle)
+                        ledger.release(key)
+                        # Link rather than rename.  ``publish`` writes ``ready``
+                        # unconditionally, so a re-submission of this key can
+                        # already be sitting there, and a rename would replace that
+                        # new generation with these older bytes and lose the
+                        # request.  If it is there, leave the claim for the reaper
+                        # instead: an extra reaper cycle costs one attempt, a
+                        # clobbered generation costs the whole submission.
+                        try:
+                            os.link(dst, src)
+                        except OSError:
+                            pass
+                        else:
+                            dst.unlink(missing_ok=True)
+                            self.item_path(INTENT, key).unlink(missing_ok=True)
+                        continue
+                terminal = self.terminal_outcome_covers(moved, action_key=key)
+                if terminal is not None:
+                    # A stale reaper can put a generation back in ``ready`` after
+                    # its outcome was filed, or the outcome can land between the
+                    # ready scan and this rename.  The rename is the last boundary
+                    # at which the payload is definitely not executing.
+                    if ledger is not None:
+                        ledger.release(key)
+                    state, outcome = terminal
+                    self._file_superseded(
+                        moved, key=key, kind="terminal-claim", status="dropped",
+                        dropped_unix=_now(), dropped_host=socket.gethostname(),
+                        reason="claim lost to an outcome for the same generation "
+                               f"filed under {state}",
+                        terminal_status=outcome.get("status"),
+                    )
+                    dst.unlink(missing_ok=True)
+                    self.passes_path(key).unlink(missing_ok=True)
+                    continue
+                if self.withdrawal_covers(moved, action_key=key) is not None:
+                    # Withdrawn between the scan above and this rename.  The window
+                    # is microseconds wide and closing it here costs one listing on
+                    # a path taken once per claim; leaving it open costs a cancelled
+                    # action a full run before ``execute`` notices.
+                    if ledger is not None:
+                        ledger.release(key)
+                    self._file_superseded(
+                        moved, key=key, kind="dropped", status="dropped",
+                        dropped_unix=_now(), dropped_host=socket.gethostname(),
+                        reason="withdrawn between the ready scan and the claim",
+                    )
+                    dst.unlink(missing_ok=True)
+                    continue
+                # From ``moved``, not from ``item``: past the rename the bytes in
+                # ``claimed`` are the item, and the scan's copy may be a generation
+                # ``publish`` has already replaced.  Rebuilding the claim from the
+                # scan wrote that replaced generation back over the one the rename
+                # moved, so the worker ran a submission nobody had asked for and
+                # ``finish`` filed the outcome under the retired ``published_unix``
+                # -- where the waiter on the live one never looked.  The terminal
+                # and withdrawal guards above already read ``moved`` for this
+                # reason; the record this method returns is the last place that
+                # still did not.
+                claimed = dict(moved)
+                # ``passes`` is not a field of the item; it is the aging sidecar,
+                # which ``ready_items`` stamps on its copy so the ready ordering
+                # can read it and which this method deletes four lines below.
+                # Copying it into the claim freezes a denial count into the
+                # claimed record, into every attempt archived from it, and into
+                # the done or failed record it becomes -- a number describing a
+                # counter that no longer exists, on a record no admission decision
+                # ever reads.
+                claimed.pop("passes", None)
+                claimed.pop("cpu_allocation", None)
+                claimed.pop("gpu_admission", None)
+                self._cpu_deferrals.pop((key, repr(moved.get("published_unix"))), None)
+                claimed["claimed_by"] = owner
+                claimed["claimed_unix"] = _now()
+                claimed["claimed_host"] = socket.gethostname()
+                if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
+                    claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
+                if adaptive_gpu is not None:
+                    claimed["gpu_admission"] = _read_json(ledger.held_dir / key / gpu_admission.METADATA)
+                claimed["reserved_on"] = socket.gethostname() if demand else None
+                _write_json_atomic(dst, claimed)
+                self.write_lease(
+                    key,
+                    owner=owner,
+                    container_owner=(str(claimed["container_owner"])
+                                     if claimed.get("container_owner") else None),
                 )
-                dst.unlink(missing_ok=True)
                 self.passes_path(key).unlink(missing_ok=True)
-                continue
-            if self.withdrawal_covers(moved, action_key=key) is not None:
-                # Withdrawn between the scan above and this rename.  The window
-                # is microseconds wide and closing it here costs one listing on
-                # a path taken once per claim; leaving it open costs a cancelled
-                # action a full run before ``execute`` notices.
-                if ledger is not None:
-                    ledger.release(key)
-                self._file_superseded(
-                    moved, key=key, kind="dropped", status="dropped",
-                    dropped_unix=_now(), dropped_host=socket.gethostname(),
-                    reason="withdrawn between the ready scan and the claim",
-                )
-                dst.unlink(missing_ok=True)
-                continue
-            # From ``moved``, not from ``item``: past the rename the bytes in
-            # ``claimed`` are the item, and the scan's copy may be a generation
-            # ``publish`` has already replaced.  Rebuilding the claim from the
-            # scan wrote that replaced generation back over the one the rename
-            # moved, so the worker ran a submission nobody had asked for and
-            # ``finish`` filed the outcome under the retired ``published_unix``
-            # -- where the waiter on the live one never looked.  The terminal
-            # and withdrawal guards above already read ``moved`` for this
-            # reason; the record this method returns is the last place that
-            # still did not.
-            claimed = dict(moved)
-            # ``passes`` is not a field of the item; it is the aging sidecar,
-            # which ``ready_items`` stamps on its copy so the ready ordering
-            # can read it and which this method deletes four lines below.
-            # Copying it into the claim freezes a denial count into the
-            # claimed record, into every attempt archived from it, and into
-            # the done or failed record it becomes -- a number describing a
-            # counter that no longer exists, on a record no admission decision
-            # ever reads.
-            claimed.pop("passes", None)
-            claimed.pop("cpu_allocation", None)
-            claimed.pop("gpu_admission", None)
-            self._cpu_deferrals.pop((key, repr(moved.get("published_unix"))), None)
-            claimed["claimed_by"] = owner
-            claimed["claimed_unix"] = _now()
-            claimed["claimed_host"] = socket.gethostname()
-            if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
-                claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
-            if adaptive_gpu is not None:
-                claimed["gpu_admission"] = _read_json(ledger.held_dir / key / gpu_admission.METADATA)
-            claimed["reserved_on"] = socket.gethostname() if demand else None
-            _write_json_atomic(dst, claimed)
-            self.write_lease(
-                key,
-                owner=owner,
-                container_owner=(str(claimed["container_owner"])
-                                 if claimed.get("container_owner") else None),
-            )
-            self.passes_path(key).unlink(missing_ok=True)
-            if controller is not None and adaptive is not None:
-                controller.admitted(adaptive)
-            return claimed
+                if controller is not None and adaptive is not None:
+                    controller.admitted(adaptive)
+                return claimed
         return None
 
     # -- self-healing ---------------------------------------------------
@@ -3470,221 +3498,323 @@ class PoolQueue:
         terminal_keys = self.terminal_keys()
         for path in sorted(claimed.glob("*.json")):
             key = path.stem
-            record = _read_json(path)
-            pending_finish = (record or {}).get("finish_pending")
-            if pending_finish is not None:
-                # Only the owner host can prove its kernel scope is empty.
-                # A payload has already returned here, so lease freshness is
-                # irrelevant; preserve that result rather than file lease_lost.
-                if record.get("claimed_host") != socket.gethostname():
+            with self._transition_locked(key, blocking=False) as acquired:
+                if not acquired:
                     continue
-                if (not isinstance(pending_finish, dict)
-                        or not isinstance(pending_finish.get("status"), str)
-                        or not isinstance(pending_finish.get("detail"), dict)):
-                    raise PoolContractError(f"invalid pending finish for {key}")
-                result = self.finish(
-                    key, status=pending_finish["status"],
-                    detail=pending_finish["detail"], claim_snapshot=record,
-                )
-                if result == self.item_path(READY, key):
-                    requeued.append(key)
-                continue
-            age = self.lease_age(key)
-            if age is not None and age <= timeout_s:
-                continue
-            if age is None:
-                record = _read_json(path) or {}
-                claimed_unix = record.get("claimed_unix")
-                if isinstance(claimed_unix, (int, float)):
-                    if _now() - float(claimed_unix) <= grace_s:
-                        continue          # claimed moments ago; lease imminent
-                else:
-                    intent_age = self.claim_intent_age(key)
-                    if intent_age is not None and intent_age <= grace_s:
-                        # Renamed moments ago; the claimant's rewrite, lease and
-                        # its own terminal/withdrawal checks are imminent.  Nothing
-                        # below may touch this record: a conclusion here would
-                        # release tokens the claimant is about to hold.
+                record = _read_json(path)
+                pending_finish = (record or {}).get("finish_pending")
+                if pending_finish is not None:
+                    # Only the owner host can prove its kernel scope is empty.
+                    # A payload has already returned here, so lease freshness is
+                    # irrelevant; preserve that result rather than file lease_lost.
+                    if record.get("claimed_host") != socket.gethostname():
                         continue
-            record = _read_json(path)
-            # The claim exactly as it was read, before the archiving below
-            # rewrites its attempt fields.  ``_entomb_claim`` compares against
-            # this so the loop can only move aside the claim it judged.
-            read_claim = dict(record) if record is not None else None
-            if record is None:
-                # The claim concluded under us.  Both ``finish()`` and this
-                # loop write the item's next home and only then unlink the
-                # claimed file, so a reaper that globbed before that unlink
-                # reads nothing back here -- and two reapers on two boxes race
-                # each other for exactly this window.  Treating the absence as
-                # an empty record and requeueing it writes a stub with no
-                # ``action_key`` over whatever the winner just filed, and
-                # ``claim()`` skips a keyless item forever: the item never
-                # runs, never fails, and sits at the head of ``ready`` denying
-                # every worker that polls past it.  There is nothing to reap --
-                # the winner filed the item and released its capacity -- so the
-                # loser's only correct move is to leave it alone.
-                continue
-            if record.get("finish_pending") is not None:
-                # The claim became a pending finish under us.  ``finish``
-                # publishes that state by atomically *replacing* this file, so
-                # it can land after the guard above read an ordinary claim --
-                # and the guard is where the owner-host rule lives.  Acting on
-                # this read without re-asking would run a foreign box's
-                # container cleanup and file ``lease_lost`` over a payload that
-                # has already returned.  Leave it: the next cycle's first read
-                # is the guard's read, and it decides on the owner's box under
-                # the rule that belongs to it.
-                continue
-            # One holder, resolved once, before any branch below concludes
-            # this claim -- because every one of them releases the claim's
-            # tokens, and tokens are filed under the ledger of the box that
-            # committed them.  ``claim`` commits them the moment it wins the
-            # rename and rewrites the record with ``claimed_host`` only after
-            # that, so a claim lost in between is holding real capacity on a
-            # box this record does not name.  Releasing that against the
-            # default ledger names the reaper instead, whose ``held/<key>``
-            # does not exist: the release returns 0 and moves nothing, the
-            # holder keeps its tokens, and a reservation outlives its holder
-            # -- the starvation shape, reached by an accounting error rather
-            # than by a missed call (#261).
-            #
-            # The intent marker precedes the rename and does name the box, so
-            # the recovery is the one #227 added; what changes is that its
-            # answer now reaches the release as well as the record.  Both, so
-            # the ledger this loop debits and the hostname its terminal record
-            # carries are the same box.
-            #
-            # Read here for the second reason too: the requeue branch below
-            # strips ``claimed_host`` on its way to ``ready``, so this is the
-            # last point at which every path can still ask.
-            #
-            # Contradictory ledger evidence must stop even cleanup from making
-            # a choice. Refuse just this claim so healthy work can still recover.
-            holder = record.get("claimed_host")
-            if not isinstance(holder, str) or not holder:
-                try:
-                    holder = self.resolve_claim_holder(key, record)
-                except AmbiguousClaimHolder as exc:
-                    print(f"pool reaper: {exc}", file=sys.stderr)
+                    if (not isinstance(pending_finish, dict)
+                            or not isinstance(pending_finish.get("status"), str)
+                            or not isinstance(pending_finish.get("detail"), dict)):
+                        raise PoolContractError(f"invalid pending finish for {key}")
+                    result = self.finish(
+                        key, status=pending_finish["status"],
+                        detail=pending_finish["detail"], claim_snapshot=record,
+                    )
+                    if result == self.item_path(READY, key):
+                        requeued.append(key)
                     continue
-                if holder is not None:
-                    record["claimed_host"] = holder
-            container_cleanup = self.cleanup_action_containers(record, reason="lease_lost")
-            if not container_cleanup["complete"]:
-                pending = dict(record)
-                self._note_cleanup_attempt(pending, record, container_cleanup)
-                _write_json_atomic(path, pending)
-                continue
-            terminal = self.terminal_outcome_covers(
-                record, action_key=key, terminal=terminal_keys
-            )
-            if terminal is not None:
-                # The worker already filed this exact generation.  A stale
-                # directory view or a cycle racing the final unlink may still
-                # expose its old claim, but that copy is cleanup, not a retry.
-                state, outcome = terminal
-                self._file_superseded(
-                    record, key=key, kind="terminal-claim", status="dropped",
-                    dropped_unix=_now(), dropped_host=socket.gethostname(),
-                    reason="stale claim belongs to a generation already filed "
-                           f"under {state}",
-                    terminal_status=outcome.get("status"),
+                age = self.lease_age(key)
+                if age is not None and age <= timeout_s:
+                    continue
+                if age is None:
+                    record = _read_json(path) or {}
+                    claimed_unix = record.get("claimed_unix")
+                    if isinstance(claimed_unix, (int, float)):
+                        if _now() - float(claimed_unix) <= grace_s:
+                            continue          # claimed moments ago; lease imminent
+                    else:
+                        intent_age = self.claim_intent_age(key)
+                        if intent_age is not None and intent_age <= grace_s:
+                            # Renamed moments ago; the claimant's rewrite, lease and
+                            # its own terminal/withdrawal checks are imminent.  Nothing
+                            # below may touch this record: a conclusion here would
+                            # release tokens the claimant is about to hold.
+                            continue
+                record = _read_json(path)
+                # The claim exactly as it was read, before the archiving below
+                # rewrites its attempt fields.  ``_entomb_claim`` compares against
+                # this so the loop can only move aside the claim it judged.
+                read_claim = dict(record) if record is not None else None
+                if record is None:
+                    # The claim concluded under us.  Both ``finish()`` and this
+                    # loop write the item's next home and only then unlink the
+                    # claimed file, so a reaper that globbed before that unlink
+                    # reads nothing back here -- and two reapers on two boxes race
+                    # each other for exactly this window.  Treating the absence as
+                    # an empty record and requeueing it writes a stub with no
+                    # ``action_key`` over whatever the winner just filed, and
+                    # ``claim()`` skips a keyless item forever: the item never
+                    # runs, never fails, and sits at the head of ``ready`` denying
+                    # every worker that polls past it.  There is nothing to reap --
+                    # the winner filed the item and released its capacity -- so the
+                    # loser's only correct move is to leave it alone.
+                    continue
+                if record.get("finish_pending") is not None:
+                    # The claim became a pending finish under us.  ``finish``
+                    # publishes that state by atomically *replacing* this file, so
+                    # it can land after the guard above read an ordinary claim --
+                    # and the guard is where the owner-host rule lives.  Acting on
+                    # this read without re-asking would run a foreign box's
+                    # container cleanup and file ``lease_lost`` over a payload that
+                    # has already returned.  Leave it: the next cycle's first read
+                    # is the guard's read, and it decides on the owner's box under
+                    # the rule that belongs to it.
+                    continue
+                # One holder, resolved once, before any branch below concludes
+                # this claim -- because every one of them releases the claim's
+                # tokens, and tokens are filed under the ledger of the box that
+                # committed them.  ``claim`` commits them the moment it wins the
+                # rename and rewrites the record with ``claimed_host`` only after
+                # that, so a claim lost in between is holding real capacity on a
+                # box this record does not name.  Releasing that against the
+                # default ledger names the reaper instead, whose ``held/<key>``
+                # does not exist: the release returns 0 and moves nothing, the
+                # holder keeps its tokens, and a reservation outlives its holder
+                # -- the starvation shape, reached by an accounting error rather
+                # than by a missed call (#261).
+                #
+                # The intent marker precedes the rename and does name the box, so
+                # the recovery is the one #227 added; what changes is that its
+                # answer now reaches the release as well as the record.  Both, so
+                # the ledger this loop debits and the hostname its terminal record
+                # carries are the same box.
+                #
+                # Read here for the second reason too: the requeue branch below
+                # strips ``claimed_host`` on its way to ``ready``, so this is the
+                # last point at which every path can still ask.
+                #
+                # Contradictory ledger evidence must stop even cleanup from making
+                # a choice. Refuse just this claim so healthy work can still recover.
+                holder = record.get("claimed_host")
+                if not isinstance(holder, str) or not holder:
+                    try:
+                        holder = self.resolve_claim_holder(key, record)
+                    except AmbiguousClaimHolder as exc:
+                        print(f"pool reaper: {exc}", file=sys.stderr)
+                        continue
+                    if holder is not None:
+                        record["claimed_host"] = holder
+                container_cleanup = self.cleanup_action_containers(record, reason="lease_lost")
+                if not container_cleanup["complete"]:
+                    pending = dict(record)
+                    self._note_cleanup_attempt(pending, record, container_cleanup)
+                    _write_json_atomic(path, pending)
+                    continue
+                terminal = self.terminal_outcome_covers(
+                    record, action_key=key, terminal=terminal_keys
                 )
-                self.ledger(
-                    holder if isinstance(holder, str) else None
-                ).release(key)
-                path.unlink(missing_ok=True)
-                self.lease_path(key).unlink(missing_ok=True)
-                continue
-            if self.withdrawal_covers(record, action_key=key) is not None:
-                # A withdrawal that could not finish its own cleanup -- the
-                # operator's box died mid-verb, say -- leaves a claimed record
-                # whose lease nobody refreshes.  Requeueing that is the one
-                # thing withdrawal exists to prevent, so conclude it here
-                # instead: capacity back, records gone, nothing counted as
-                # reaped because nothing was returned to the pool.
-                self.ledger(holder if isinstance(holder, str) else None).release(key)
-                path.unlink(missing_ok=True)
-                self.lease_path(key).unlink(missing_ok=True)
-                continue
-            # The filename is the identity; a record that disagrees with it, or
-            # has lost it, must not be written back to a queue directory where
-            # every consumer addresses items by key.
-            record["action_key"] = key
-            prior_attempts = int(record.get("attempts", 0))
-            if (age is None
-                    and record.get("withdrawn_unix") is None
-                    and not self.attempt_path(
-                        record, prior_attempts + 1).exists()):
-                # Nothing ever ran under this claim, so nothing failed under
-                # it.  ``claim`` writes the lease before it returns and
-                # ``execute`` writes the child pid into it before the payload
-                # is launched, so a claim with no lease at all never reached a
-                # launch; and no attempt is published under the number this
-                # claim would take, so no other writer recorded one either.
-                #
-                # Both halves are needed.  A lease is also absent from a claim
-                # a *finisher* archived and then died holding:
-                # ``sweep_finish_tombstones`` restores exactly that record, and
-                # relies on this path archiving at the same attempt number so
-                # first-writer-wins hands the item the finisher's real outcome.
-                # ``finish`` publishes the attempt before it entombs the claim,
-                # so the attempt on disk is what tells the two apart.
-                #
-                # Charging an attempt here is what turned a stalled claimant
-                # into lost work: measured on this fleet, a single pool-record
-                # operation took 45 s against a 30 s grace, and
-                # ``0a44f2e0f62c`` came back ``lease_lost_max_attempts`` with
-                # empty stdout and stderr -- an action that never started,
-                # unrunnable, out of a queue another box could have taken it
-                # from.  Widening the grace only moves the guess; the window
-                # has no upper bound on this filesystem.  Releasing does not
-                # need one, because it asks what happened rather than how long
-                # it took.
-                #
-                # A withdrawn claim is the one thing a release must not
-                # touch.  ``withdraw`` closes the retry by writing
-                # ``max_attempts: 1`` onto the live claimed record, so that any
-                # reaper -- including one running pre-withdraw bytes, which
-                # consults no marker -- concludes the action instead of
-                # requeueing it.  A release does not charge an attempt and so
-                # is not closed by that limit: it would put an action an
-                # operator cancelled straight back in the queue.  The
-                # withdrawal stamp travels on the record beside the limit,
-                # which is what makes it readable here without the marker.
-                #
-                # This does not stop a reaper taking a live-but-blocked
-                # claimant's claim -- that is not knowable across boxes.  It
-                # stops the taking from destroying the work.  The claimant may
-                # still unblock and run: the same double-run the destructive
-                # requeue already allowed, reconciled the same way, by
-                # first-writer-wins on one attempt number.
-                self._file_superseded(
-                    record, key=key, kind="unstarted-claim", status="released",
-                    released_unix=_now(), released_host=socket.gethostname(),
-                    reason="claim released without an attempt: no lease was "
-                           "written and no attempt was published",
+                if terminal is not None:
+                    # The worker already filed this exact generation.  A stale
+                    # directory view or a cycle racing the final unlink may still
+                    # expose its old claim, but that copy is cleanup, not a retry.
+                    state, outcome = terminal
+                    self._file_superseded(
+                        record, key=key, kind="terminal-claim", status="dropped",
+                        dropped_unix=_now(), dropped_host=socket.gethostname(),
+                        reason="stale claim belongs to a generation already filed "
+                               f"under {state}",
+                        terminal_status=outcome.get("status"),
+                    )
+                    self.ledger(
+                        holder if isinstance(holder, str) else None
+                    ).release(key)
+                    path.unlink(missing_ok=True)
+                    self.lease_path(key).unlink(missing_ok=True)
+                    continue
+                if self.withdrawal_covers(record, action_key=key) is not None:
+                    # A withdrawal that could not finish its own cleanup -- the
+                    # operator's box died mid-verb, say -- leaves a claimed record
+                    # whose lease nobody refreshes.  Requeueing that is the one
+                    # thing withdrawal exists to prevent, so conclude it here
+                    # instead: capacity back, records gone, nothing counted as
+                    # reaped because nothing was returned to the pool.
+                    tombstone, mine = self._entomb_claim(key, expect=read_claim)
+                    if not mine or tombstone is None:
+                        continue
+                    self.lease_path(key).unlink(missing_ok=True)
+                    self.ledger(holder if isinstance(holder, str) else None).release(key)
+                    tombstone.unlink(missing_ok=True)
+                    continue
+                # The filename is the identity; a record that disagrees with it, or
+                # has lost it, must not be written back to a queue directory where
+                # every consumer addresses items by key.
+                record["action_key"] = key
+                prior_attempts = int(record.get("attempts", 0))
+                if (age is None
+                        and record.get("withdrawn_unix") is None
+                        and not self.attempt_path(
+                            record, prior_attempts + 1).exists()):
+                    # Nothing ever ran under this claim, so nothing failed under
+                    # it.  ``claim`` writes the lease before it returns and
+                    # ``execute`` writes the child pid into it before the payload
+                    # is launched, so a claim with no lease at all never reached a
+                    # launch; and no attempt is published under the number this
+                    # claim would take, so no other writer recorded one either.
+                    #
+                    # Both halves are needed.  A lease is also absent from a claim
+                    # a *finisher* archived and then died holding:
+                    # ``sweep_finish_tombstones`` restores exactly that record, and
+                    # relies on this path archiving at the same attempt number so
+                    # first-writer-wins hands the item the finisher's real outcome.
+                    # ``finish`` publishes the attempt before it entombs the claim,
+                    # so the attempt on disk is what tells the two apart.
+                    #
+                    # Charging an attempt here is what turned a stalled claimant
+                    # into lost work: measured on this fleet, a single pool-record
+                    # operation took 45 s against a 30 s grace, and
+                    # ``0a44f2e0f62c`` came back ``lease_lost_max_attempts`` with
+                    # empty stdout and stderr -- an action that never started,
+                    # unrunnable, out of a queue another box could have taken it
+                    # from.  Widening the grace only moves the guess; the window
+                    # has no upper bound on this filesystem.  Releasing does not
+                    # need one, because it asks what happened rather than how long
+                    # it took.
+                    #
+                    # A withdrawn claim is the one thing a release must not
+                    # touch.  ``withdraw`` closes the retry by writing
+                    # ``max_attempts: 1`` onto the live claimed record, so that any
+                    # reaper -- including one running pre-withdraw bytes, which
+                    # consults no marker -- concludes the action instead of
+                    # requeueing it.  A release does not charge an attempt and so
+                    # is not closed by that limit: it would put an action an
+                    # operator cancelled straight back in the queue.  The
+                    # withdrawal stamp travels on the record beside the limit,
+                    # which is what makes it readable here without the marker.
+                    #
+                    # This does not stop a reaper taking a live-but-blocked
+                    # claimant's claim -- that is not knowable across boxes.  It
+                    # stops the taking from destroying the work.  The claimant may
+                    # still unblock and run: the same double-run the destructive
+                    # requeue already allowed, reconciled the same way, by
+                    # first-writer-wins on one attempt number.
+                    self._file_superseded(
+                        record, key=key, kind="unstarted-claim", status="released",
+                        released_unix=_now(), released_host=socket.gethostname(),
+                        reason="claim released without an attempt: no lease was "
+                               "written and no attempt was published",
+                    )
+                    # Counted, not bounded.  A bound would be the constant this
+                    # issue exists to avoid, and a release costs an execution
+                    # nothing; a key whose count climbs is a box that cannot start
+                    # work, which is the thing to go and look at.
+                    record["unstarted_releases"] = int(
+                        record.get("unstarted_releases", 0) or 0) + 1
+                    destination = self._shape_as_ready_item(record, action_key=key)
+                    tombstone, mine = self._entomb_claim(key, expect=read_claim)
+                    if not mine:
+                        # A retry is live under this key and owns everything the
+                        # branch below would have taken.  Nothing has been written
+                        # outside the superseded filing, which is evidence rather
+                        # than state.
+                        continue
+                    self.lease_path(key).unlink(missing_ok=True)
+                    self.ledger(holder if isinstance(holder, str) else None).release(key)
+                    try:
+                        _write_json_atomic(destination, record)
+                    except OSError:
+                        if tombstone is not None:
+                            try:
+                                os.link(tombstone, path)
+                            except OSError:
+                                pass
+                            else:
+                                tombstone.unlink(missing_ok=True)
+                        continue
+                    if tombstone is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        tombstone.unlink(missing_ok=True)
+                    requeued.append(key)
+                    continue
+                attempts = prior_attempts + 1
+                limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
+                if (
+                    prior_attempts
+                    and "attempt_history" not in record
+                    and "attempt_history_missing_before" not in record
+                ):
+                    # Runtime rollout can meet a record already requeued by older
+                    # bytes.  State the irrecoverable prefix honestly and archive
+                    # from this attempt onward; inventing links would be worse,
+                    # while refusing the record would strand live work.
+                    record["attempt_history_missing_before"] = prior_attempts
+                terminal = attempts >= limit
+                finished_unix = _now()
+                finished_host = socket.gethostname()
+                attempt_record = dict(record)
+                attempt_record.update(
+                    {
+                        "finished_unix": finished_unix,
+                        "finished_host": finished_host,
+                    }
                 )
-                # Counted, not bounded.  A bound would be the constant this
-                # issue exists to avoid, and a release costs an execution
-                # nothing; a key whose count climbs is a box that cannot start
-                # work, which is the thing to go and look at.
-                record["unstarted_releases"] = int(
-                    record.get("unstarted_releases", 0) or 0) + 1
-                destination = self._shape_as_ready_item(record, action_key=key)
+                telemetry = (container_cleanup.get("resource_scope") or {}).get("telemetry") or {}
+                resource_failure = self._resource_failure(telemetry)
+                recovery_detail = {
+                    "reason": "claim lease expired before an outcome was filed",
+                    "lease_age_s": age,
+                }
+                if telemetry:
+                    recovery_detail["resource_telemetry"] = telemetry
+                if resource_failure:
+                    recovery_detail.update(termination_reason=resource_failure,
+                                           termination_evidence=telemetry.get("termination_evidence"),
+                                           returncode=137)
+                record["attempt_history"] = self.archive_attempt(
+                    attempt_record,
+                    attempt=attempts,
+                    status="failed" if resource_failure else (
+                        "lease_lost_max_attempts" if terminal else "lease_lost"),
+                    disposition=FAILED if terminal else "requeued",
+                    detail=recovery_detail,
+                )
+                record["attempts"] = attempts
+                adopted = self.adopted_attempt_summary(record)
+                record.update(
+                    {
+                        "status": adopted["status"],
+                        "finished_unix": adopted["finished_unix"],
+                        "finished_host": adopted["finished_host"],
+                        "detail": adopted["detail"],
+                    }
+                )
+                disposition = adopted["disposition"]
+                if disposition in {DONE, FAILED}:
+                    # The immutable winner may be the finisher, not this reaper.
+                    # File the exact transition it proved rather than the local
+                    # lease observation that lost the first-writer race.
+                    record["schema"] = POOL_OUTCOME_SCHEMA_V1
+                    destination = self.item_path(str(disposition), key)
+                else:
+                    destination = self._shape_as_ready_item(record, action_key=key)
+                # Same ordering as ``finish``, and for the same reason: this loop
+                # published the requeue and only then unlinked the claim and lease,
+                # so a worker that claimed the requeue inside that window had its
+                # claim and lease deleted by this reaper.
                 tombstone, mine = self._entomb_claim(key, expect=read_claim)
                 if not mine:
-                    # A retry is live under this key and owns everything the
-                    # branch below would have taken.  Nothing has been written
-                    # outside the superseded filing, which is evidence rather
-                    # than state.
+                    # A retry is live under this key: its claim, lease and
+                    # reservation are its own.  This loop has written nothing
+                    # outside the attempt archive, which is immutable and
+                    # first-writer-wins, so leaving now costs the key nothing.
                     continue
                 self.lease_path(key).unlink(missing_ok=True)
+                # Whatever the outcome, the dead claimant's capacity goes back.  A
+                # reservation outliving its holder is the starvation bug's shape.
                 self.ledger(holder if isinstance(holder, str) else None).release(key)
                 try:
                     _write_json_atomic(destination, record)
                 except OSError:
+                    # Put the claim back rather than leave the key with no record
+                    # anywhere.  Link first: the tombstone must not replace a claim
+                    # that appeared while this was in flight.
                     if tombstone is not None:
                         try:
                             os.link(tombstone, path)
@@ -3698,102 +3828,6 @@ class PoolQueue:
                 else:
                     tombstone.unlink(missing_ok=True)
                 requeued.append(key)
-                continue
-            attempts = prior_attempts + 1
-            limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
-            if (
-                prior_attempts
-                and "attempt_history" not in record
-                and "attempt_history_missing_before" not in record
-            ):
-                # Runtime rollout can meet a record already requeued by older
-                # bytes.  State the irrecoverable prefix honestly and archive
-                # from this attempt onward; inventing links would be worse,
-                # while refusing the record would strand live work.
-                record["attempt_history_missing_before"] = prior_attempts
-            terminal = attempts >= limit
-            finished_unix = _now()
-            finished_host = socket.gethostname()
-            attempt_record = dict(record)
-            attempt_record.update(
-                {
-                    "finished_unix": finished_unix,
-                    "finished_host": finished_host,
-                }
-            )
-            telemetry = (container_cleanup.get("resource_scope") or {}).get("telemetry") or {}
-            resource_failure = self._resource_failure(telemetry)
-            recovery_detail = {
-                "reason": "claim lease expired before an outcome was filed",
-                "lease_age_s": age,
-            }
-            if telemetry:
-                recovery_detail["resource_telemetry"] = telemetry
-            if resource_failure:
-                recovery_detail.update(termination_reason=resource_failure,
-                                       termination_evidence=telemetry.get("termination_evidence"),
-                                       returncode=137)
-            record["attempt_history"] = self.archive_attempt(
-                attempt_record,
-                attempt=attempts,
-                status="failed" if resource_failure else (
-                    "lease_lost_max_attempts" if terminal else "lease_lost"),
-                disposition=FAILED if terminal else "requeued",
-                detail=recovery_detail,
-            )
-            record["attempts"] = attempts
-            adopted = self.adopted_attempt_summary(record)
-            record.update(
-                {
-                    "status": adopted["status"],
-                    "finished_unix": adopted["finished_unix"],
-                    "finished_host": adopted["finished_host"],
-                    "detail": adopted["detail"],
-                }
-            )
-            disposition = adopted["disposition"]
-            if disposition in {DONE, FAILED}:
-                # The immutable winner may be the finisher, not this reaper.
-                # File the exact transition it proved rather than the local
-                # lease observation that lost the first-writer race.
-                record["schema"] = POOL_OUTCOME_SCHEMA_V1
-                destination = self.item_path(str(disposition), key)
-            else:
-                destination = self._shape_as_ready_item(record, action_key=key)
-            # Same ordering as ``finish``, and for the same reason: this loop
-            # published the requeue and only then unlinked the claim and lease,
-            # so a worker that claimed the requeue inside that window had its
-            # claim and lease deleted by this reaper.
-            tombstone, mine = self._entomb_claim(key, expect=read_claim)
-            if not mine:
-                # A retry is live under this key: its claim, lease and
-                # reservation are its own.  This loop has written nothing
-                # outside the attempt archive, which is immutable and
-                # first-writer-wins, so leaving now costs the key nothing.
-                continue
-            self.lease_path(key).unlink(missing_ok=True)
-            # Whatever the outcome, the dead claimant's capacity goes back.  A
-            # reservation outliving its holder is the starvation bug's shape.
-            self.ledger(holder if isinstance(holder, str) else None).release(key)
-            try:
-                _write_json_atomic(destination, record)
-            except OSError:
-                # Put the claim back rather than leave the key with no record
-                # anywhere.  Link first: the tombstone must not replace a claim
-                # that appeared while this was in flight.
-                if tombstone is not None:
-                    try:
-                        os.link(tombstone, path)
-                    except OSError:
-                        pass
-                    else:
-                        tombstone.unlink(missing_ok=True)
-                continue
-            if tombstone is None:
-                path.unlink(missing_ok=True)
-            else:
-                tombstone.unlink(missing_ok=True)
-            requeued.append(key)
         self.sweep_widowed_leases(timeout_s=timeout_s)
         self.sweep_stale_acquisitions()
         self.sweep_finish_tombstones()
@@ -3862,71 +3896,74 @@ class PoolQueue:
             key = parts[0]
             if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
                 continue
-            when: float | None = None
-            if len(parts) >= 2:
-                try:
-                    when = int(parts[1]) / 1_000_000.0
-                except ValueError:
-                    when = None
-            if when is None:
-                try:
-                    when = tombstone.stat().st_mtime
-                except OSError:
+            with self._transition_locked(key, blocking=False) as acquired:
+                if not acquired:
                     continue
-            if now - when <= grace_s:
-                continue
-            record = _read_json(tombstone)
-            live = any(
-                self.item_path(state, key).exists()
-                for state in (READY, CLAIMED)
-            )
-            covered = (
-                self.terminal_outcome_covers(record, action_key=key) is not None
-                or self.withdrawal_covers(record, action_key=key) is not None
-            )
-            restorable = record is not None and not live and not covered
-            if restorable and "attempt_history" in record:
-                try:
-                    self.attempt_outcomes(record)
-                except (PoolContractError, FileNotFoundError, pb.CASTamperError):
-                    # ``attempt_outcomes`` decides most of this by reading the
-                    # record and raises ``PoolContractError``, but the link it
-                    # checks last is a *file*: ``_open_regular_nofollow``
-                    # raises a bare ``FileNotFoundError`` when the immutable
-                    # outcome is absent and ``CASTamperError`` when the entry
-                    # is not a readonly regular file, and neither derives from
-                    # ``PoolContractError``.  Both are positive evidence that
-                    # the link does not verify, which is this branch's whole
-                    # question, so both file the record rather than restore it.
-                    restorable = False
-                except pb.CASUnavailableError:
-                    # "Could not look" is not evidence, and it must not be
-                    # answered either way.  Restoring risks the reaping stall
-                    # this guard exists to prevent; filing moves the record
-                    # into ``withdrawn/superseded/``, which every reader is
-                    # documented to ignore, so a stale handle would lose the
-                    # action permanently.  Leave the tombstone for the next
-                    # sweep -- the only disposition that keeps the evidence.
+                when: float | None = None
+                if len(parts) >= 2:
+                    try:
+                        when = int(parts[1]) / 1_000_000.0
+                    except ValueError:
+                        when = None
+                if when is None:
+                    try:
+                        when = tombstone.stat().st_mtime
+                    except OSError:
+                        continue
+                if now - when <= grace_s:
                     continue
-            if restorable:
-                try:
-                    os.link(tombstone, self.item_path(CLAIMED, key))
-                except OSError:
-                    pass
-                else:
-                    tombstone.unlink(missing_ok=True)
-                    swept.append(key)
-                    continue
-            self._file_superseded(
-                record, key=key, kind="finish-tombstone", status="dropped",
-                dropped_unix=_now(), dropped_host=socket.gethostname(),
-                reason="a finisher was interrupted between moving its claim "
-                       "aside and publishing the item's next home; the key "
-                       "already has a live or terminal record, so these bytes "
-                       "are evidence rather than work",
-            )
-            tombstone.unlink(missing_ok=True)
-            swept.append(key)
+                record = _read_json(tombstone)
+                live = any(
+                    self.item_path(state, key).exists()
+                    for state in (READY, CLAIMED)
+                )
+                covered = (
+                    self.terminal_outcome_covers(record, action_key=key) is not None
+                    or self.withdrawal_covers(record, action_key=key) is not None
+                )
+                restorable = record is not None and not live and not covered
+                if restorable and "attempt_history" in record:
+                    try:
+                        self.attempt_outcomes(record)
+                    except (PoolContractError, FileNotFoundError, pb.CASTamperError):
+                        # ``attempt_outcomes`` decides most of this by reading the
+                        # record and raises ``PoolContractError``, but the link it
+                        # checks last is a *file*: ``_open_regular_nofollow``
+                        # raises a bare ``FileNotFoundError`` when the immutable
+                        # outcome is absent and ``CASTamperError`` when the entry
+                        # is not a readonly regular file, and neither derives from
+                        # ``PoolContractError``.  Both are positive evidence that
+                        # the link does not verify, which is this branch's whole
+                        # question, so both file the record rather than restore it.
+                        restorable = False
+                    except pb.CASUnavailableError:
+                        # "Could not look" is not evidence, and it must not be
+                        # answered either way.  Restoring risks the reaping stall
+                        # this guard exists to prevent; filing moves the record
+                        # into ``withdrawn/superseded/``, which every reader is
+                        # documented to ignore, so a stale handle would lose the
+                        # action permanently.  Leave the tombstone for the next
+                        # sweep -- the only disposition that keeps the evidence.
+                        continue
+                if restorable:
+                    try:
+                        os.link(tombstone, self.item_path(CLAIMED, key))
+                    except OSError:
+                        pass
+                    else:
+                        tombstone.unlink(missing_ok=True)
+                        swept.append(key)
+                        continue
+                self._file_superseded(
+                    record, key=key, kind="finish-tombstone", status="dropped",
+                    dropped_unix=_now(), dropped_host=socket.gethostname(),
+                    reason="a finisher was interrupted between moving its claim "
+                           "aside and publishing the item's next home; the key "
+                           "already has a live or terminal record, so these bytes "
+                           "are evidence rather than work",
+                )
+                tombstone.unlink(missing_ok=True)
+                swept.append(key)
         return swept
 
     def sweep_stale_acquisitions(
@@ -4559,6 +4596,7 @@ class PoolQueue:
         )
         return self.attempt_path(archived, attempt)
 
+    @_serialized_key
     def finish(
         self,
         action_key: str,
@@ -4635,9 +4673,14 @@ class PoolQueue:
             # compare, and is treated as covered -- the claim was concluded by
             # somebody else, so there is nothing here to file either way.
             host = (record or claim_snapshot or {}).get("claimed_host")
-            self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
-            src.unlink(missing_ok=True)
+            if read_claim is None:
+                return self.item_path(WITHDRAWN, action_key)
+            tombstone, mine = self._entomb_claim(action_key, expect=read_claim)
+            if not mine or tombstone is None:
+                return self.item_path(WITHDRAWN, action_key)
             self.lease_path(action_key).unlink(missing_ok=True)
+            self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
+            tombstone.unlink(missing_ok=True)
             return self.item_path(WITHDRAWN, action_key)
         if record is None:
             # A reaper concluded this claim while the work was still running,
@@ -4805,6 +4848,7 @@ class PoolQueue:
             tombstone.unlink(missing_ok=True)
         return dst
 
+    @_serialized_key
     def reclaim_terminal_reservation(self, action_key: str) -> dict[str, object]:
         """Return an orphaned reservation only when terminal state proves it.
 
@@ -5000,15 +5044,89 @@ class PoolQueue:
         """Retire the live withdrawal for ``action_key``; return what it said."""
 
         live = self.item_path(WITHDRAWN, action_key)
-        record = _read_json(live)
-        if record is None:
-            return None
-        self._file_superseded(
-            record, key=action_key, kind="withdrawal",
-            superseded_unix=_now(), superseded_host=socket.gethostname(),
+        captured = self.superseded_dir() / (
+            f"{action_key}.{uuid.uuid4().hex}.withdrawal-source"
         )
-        live.unlink(missing_ok=True)
+        captured.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.rename(live, captured)
+        except FileNotFoundError:
+            return None
+        try:
+            record = _read_json(captured)
+            if record is None:
+                raise PoolContractError(f"empty withdrawal marker: {captured}")
+            self._persist_withdrawal_decision(record)
+            self._file_superseded(
+                record, key=action_key, kind="withdrawal",
+                superseded_unix=_now(), superseded_host=socket.gethostname(),
+            )
+        except BaseException:
+            # Failure must not erase the decision, and restoration must not
+            # replace another cancellation written while this one was aside.
+            try:
+                os.link(captured, live)
+            except FileExistsError:
+                pass
+            else:
+                captured.unlink()
+            raise
+        captured.unlink()
         return record
+
+    def withdrawal_decision_path(self, record: Mapping[str, object]) -> Path | None:
+        """The durable cancellation address for records with known generation."""
+        try:
+            generation = self.attempt_generation(record)
+        except PoolContractError:
+            return None  # legacy marker without a publication identity
+        return self.dir(WITHDRAWN) / "decisions" / str(record["action_key"]) / f"{generation}.json"
+
+    def _persist_withdrawal_decision(self, record: Mapping[str, object]) -> dict[str, object]:
+        path = self.withdrawal_decision_path(record)
+        if path is None:
+            return dict(record)
+        pb._atomic_publish(path, pb._canonical_bytes(record))
+        return self._read_withdrawal_decision(path)
+
+    def _read_withdrawal_decision(self, path: Path) -> dict[str, object]:
+        try:
+            raw = pb._read_regular_file_nofollow(
+                path, where="withdrawal decision", require_readonly=True)
+            decision = json.loads(raw)
+            if (not isinstance(decision, dict) or decision.get("status") != "withdrawn"
+                    or self.withdrawal_decision_path(decision) != path):
+                raise ValueError("decision identity disagrees with its address")
+        except Exception as exc:
+            raise PoolContractError(f"invalid withdrawal decision: {path}: {exc}") from exc
+        return decision
+
+    def withdrawal_decisions(self, key: str) -> list[tuple[Path, dict[str, object]]]:
+        """All immutable cancellation endings for this content-addressed key."""
+        return [(path, self._read_withdrawal_decision(path))
+                for path in _glob(self.dir(WITHDRAWN) / "decisions" / key, "*.json")]
+
+    def _withdraw_ready(self, key: str) -> dict[str, object] | None:
+        """Take a ready record, then decide whether its generation is cancelled."""
+        path = self.item_path(READY, key)
+        evidence = self.superseded_dir() / f"{key}.{uuid.uuid4().hex}.withdraw-ready-source"
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.rename(path, evidence)
+        except FileNotFoundError:
+            return
+        try:
+            moved = _read_json(evidence)
+            if moved is not None and self.withdrawal_covers(moved, action_key=key) is not None:
+                return moved  # the original bytes remain cancellation evidence
+        except (OSError, PoolContractError):
+            pass
+        try:
+            os.link(evidence, path)
+        except FileExistsError:
+            pass
+        else:
+            evidence.unlink()
 
     def withdrawal_covers(
         self,
@@ -5044,15 +5162,22 @@ class PoolQueue:
         that then removes such a record files it first, so "covered" never
         means "vanished".
 
-        The marker is read only for keys the listing just reported, so NFS's
-        negative cache -- the reason ``withdrawn_keys`` lists rather than
-        stats -- is not in this path.  A marker that is gone by the time it is
-        read was retired by a re-submission, and the record is not covered.
+        Immutable generation decisions survive retirement of the visible
+        marker on re-submission. Both paths enumerate before reading so NFS's
+        negative cache does not hide a decision just written by another host.
+        Legacy markers remain readable when no durable decision exists.
         """
 
         key = str(action_key or (record or {}).get("action_key") or "")
         if not key:
             return None
+        if record is not None:
+            decision = self.withdrawal_decision_path({**record, "action_key": key})
+            if decision is not None:
+                # Enumerate before reading to avoid NFS's negatively cached
+                # absence hiding a cancellation written by another host.
+                for path in _glob(decision.parent, decision.name):
+                    return self._read_withdrawal_decision(path)
         known = self.withdrawn_keys() if withdrawn is None else withdrawn
         if key not in known:
             return None
@@ -5108,6 +5233,9 @@ class PoolQueue:
         for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
             for path in _glob(self.dir(state), f"{wanted}*.json"):
                 seen.add(path.stem)
+        for directory in _glob(self.dir(WITHDRAWN) / "decisions", f"{wanted}*"):
+            if directory.is_dir() and _glob(directory, "*.json"):
+                seen.add(directory.name)
         if not seen:
             raise PoolContractError(f"no action in the queue starts with {wanted!r}")
         if len(seen) > 1:
@@ -5117,6 +5245,7 @@ class PoolQueue:
                 "say more of the key")
         return seen.pop()
 
+    @_serialized_key
     def withdraw(
         self,
         action_key: str,
@@ -5125,77 +5254,16 @@ class PoolQueue:
         by: str = "",
         signal_child: bool = True,
     ) -> dict[str, object]:
-        """Cancel an action by operator decision.  Not a defect; not a retry.
+        """Cancel one generation; its owner concludes any claimed attempt.
 
-        Every other terminal path in this module is the pool's opinion of a
-        *worker's* health -- a lease that stopped beating, a record no consumer
-        can address, an argv that exited non-zero.  None of them is "I have
-        changed my mind", so cancelling meant rewriting ``max_attempts`` into a
-        live claimed record, killing the child, and hoping the rewrite landed
-        first: if the kill won, ``finish`` requeued the action at its old
-        ``max_attempts`` and the whole thing restarted.  Four redundant test
-        suites ran to completion on a box at load average 371 because stopping
-        them was more dangerous than letting them finish.
+        The immutable generation decision survives a new publication retiring
+        the visible withdrawn record. Claimed records, leases and reservations
+        remain with their worker or reaper. A local broker can accelerate the
+        stop using the saved exact scope authority, but an operator never
+        signals a process identified only by its content-addressed action key.
 
-        Three things make this the verb that was missing.
-
-        **The marker is written before anything is removed.**  ``claim``,
-        ``finish`` and ``reap_stale`` all consult it, so from the instant it
-        exists the action cannot be claimed, cannot be requeued and cannot be
-        filed under ``done`` or ``failed`` -- whatever a concurrent worker is
-        doing at the time.  The withdrawal wins the race by construction; the
-        operator does not have to.
-
-        **It lands in ``withdrawn/``, not ``failed/``.**  The failure record is
-        what someone reads to ask whether the fleet is broken, and four
-        cancellations sitting in it say the fleet is broken when the truth is
-        that somebody changed their mind.
-
-        **The signal goes to the action's process group.**  Not to the
-        launcher, which is not in it, and not to this loop's pid, which the
-        lease has always carried and which is a different process again.  See
-        ``terminate_action``.  Cross-box that signal cannot be sent at all, so
-        ``execute`` also watches for the marker between heartbeats and stops
-        its own child; withdrawal is therefore correct from any box and merely
-        *faster* from the one running the work.
-
-        Tokens go back through the same ``ledger(host).release(key)`` path
-        ``finish`` uses, but only once the action is known to have **stopped**,
-        and only after the action-owned container census is empty.  Those are
-        two different questions and the verb used to ask only the second: an
-        action with no Docker marker reports an empty census immediately, so a
-        withdrawal from another box released the holder's tokens and removed
-        its claim and lease while the payload was still running, and a
-        replacement action was admitted on the holder's only CPU token.  The
-        census proves no owned container remains; it says nothing about a
-        non-container payload.
-
-        Three things confirm a stop, and nothing else does: the local signal
-        ladder reporting ``still_alive`` false; the holder being this host with
-        no process owning the action, so there is nothing here to stop; and the
-        dead-holder case, which is the reaper's, not this verb's -- once the
-        lease stops beating, ``reap_stale``'s withdrawal branch concludes the
-        claim and releases the tokens from the holder's own ledger.  Otherwise
-        the claim, lease and reservation stay exactly where they are, a
-        ``stop_pending`` object is stamped on the claimed record the way
-        ``container_cleanup_pending`` is, and the result reports ``released:
-        0`` and the holder's host.  The holder's own launcher checkpoint then
-        stops the action, files it as withdrawn, and releases the tokens.
-        Releasing twice is free, because tokens are filed under the action key
-        and the second release finds nothing to return.
-
-        Idempotent.  Run it twice and the second run re-signals, re-releases
-        and re-cleans -- all no-ops once they have happened -- and leaves the
-        first decision's record, timestamp and reason untouched.
-
-        **It cancels a run, not a name.**  The marker is scoped to the
-        generation it was filed against -- see ``withdrawal_covers`` -- and a
-        later ``publish`` of the same key retires it into
-        ``withdrawn/superseded/``.  An action key is a content hash, so
-        re-submitting one is how anybody asks for the same work again; a
-        withdrawal that blacklisted the key would make the queue silently eat
-        that request, and the only remedy would be a hand edit of the live
-        queue.
+        Workers must support withdrawal markers. The former compatibility
+        write of max_attempts=1 raced successor claims and is retired.
         """
 
         key = str(action_key)
@@ -5207,6 +5275,12 @@ class PoolQueue:
         existing = _read_json(withdrawn_path)
         record = _read_json(claimed_path)
         origin: str | None = CLAIMED if record is not None else None
+        if record is not None and self.withdrawal_covers(record, action_key=key) is not None:
+            waiting = _read_json(ready_path)
+            if waiting is not None and self.withdrawal_covers(waiting, action_key=key) is None:
+                # A repeated operator request can cancel a later submission
+                # queued behind an original attempt that is still stopping.
+                record, origin = waiting, READY
         if record is None:
             record = _read_json(ready_path)
             origin = READY if record is not None else None
@@ -5228,30 +5302,11 @@ class PoolQueue:
                         "path": str(self.item_path(state, key)),
                         "reason": "",
                     }
-            raise PoolContractError(f"no such action in the queue: {key}")
-
-        # A live marker that does not name the live record is a *stale*
-        # decision, not this one, and the idempotent branch below would treat
-        # it as one: it keeps ``existing`` verbatim and files nothing new, so
-        # the ready guard finds a generation the marker does not cover, leaves
-        # it queued, and answers ``already_withdrawn``.  The operator is told
-        # the action is cancelled and it runs anyway -- and if the live record
-        # is CLAIMED, worse: the cleanup at the end of this verb still unlinks
-        # that claim and its lease and hands back its tokens, while nothing on
-        # the running box is covered by any marker, so the child runs on and
-        # ``finish`` files it under ``failed`` as a lost race.  Retire the
-        # stale decision into ``withdrawn/superseded/`` and proceed as a fresh
-        # one, which is what the operator asked for by running the verb again.
-        #
-        # The first decision is kept, not overwritten: ``_supersede_withdrawal``
-        # files it under ``withdrawn/superseded/``, where it remains the record
-        # of who cancelled the earlier generation and why.  This is the same
-        # retirement ``publish`` performs when a re-submission arrives behind a
-        # marker, applied to the verb that has the same problem.
-        if (existing is not None and record is not None
-                and self.withdrawal_covers(record, action_key=key) is None):
-            self._supersede_withdrawal(key)
-            existing = None
+            decisions = self.withdrawal_decisions(key)
+            if decisions:
+                existing = max(decisions, key=lambda entry: float(entry[1]["published_unix"]))[1]
+            else:
+                raise PoolContractError(f"no such action in the queue: {key}")
 
         lease = _read_json(self.lease_path(key)) or {}
         host: str | None = None
@@ -5261,38 +5316,19 @@ class PoolQueue:
         if host is None and isinstance(lease.get("host"), str):
             host = str(lease["host"])
         if host is None and origin == CLAIMED:
-            # Neither field exists in the window between ``claim``'s rename and
-            # its record rewrite: the rewrite is what writes ``claimed_host``,
-            # and the lease is written after that.  A claim lost in there names
-            # no box, and every use of ``host`` below then means the operator's
-            # own: the release moves nothing (``release`` empties an absent
-            # ``held/<key>`` and returns 0), so the claiming box keeps its
-            # tokens and a reservation outlives its holder, while the verb
-            # reports ``released: 0`` and ``holder_host: null`` -- a number
-            # that is true beside a box that is unknown.
-            #
-            # ``resolve_claim_holder`` is the recovery #227 added for exactly
-            # this window and #261 made the single resolution every concluding
-            # branch of ``reap_stale`` reads.  ``withdraw`` is a different verb
-            # with the same shape, which is why it was left out then (#271).
-            #
-            # Only for a CLAIMED record, for the *marker* half of that
-            # resolution: the marker is written before the rename, so it exists
-            # -- this generation and legitimately -- while a claimant sits
-            # between writing it and winning, when the item is still in
-            # ``ready`` with that claimant's tokens already acquired.
-            # Recovering a holder there and releasing against it would take
-            # tokens from a claim that is about to succeed.  The ledger half
-            # answers "nobody" on its own in that moment, since the tokens are
-            # still under the claimant-private ``held/<handle>``, so this guard
-            # is belt and braces for the proxy rather than for the exact
-            # evidence.
+            # Resolve ambiguity before retiring or publishing any decision.
+            # This is also the holder named in the deferred-stop result.
             host = self.resolve_claim_holder(key, record)
             if host is not None and isinstance(record, dict):
                 # Named on the withdrawn record too, for the reason #227 gives:
                 # a claim must not be able to be lost more anonymously than it
                 # was taken.
                 record["claimed_host"] = host
+
+        if (existing is not None and record is not None
+                and self.withdrawal_covers(record, action_key=key) is None):
+            self._supersede_withdrawal(key)
+            existing = None
 
         if existing is None:
             filed = dict(record or {})
@@ -5336,118 +5372,39 @@ class PoolQueue:
                     "reason": str(reason),
                 }
             )
+            filed = self._persist_withdrawal_decision(filed)
             _write_json_atomic(withdrawn_path, filed)
         else:
-            filed = existing
+            filed = self._persist_withdrawal_decision(existing)
 
-        # Step one of the hand-edit, done by the verb: ``max_attempts: 1``
-        # written into the live claimed record.  The marker above stops every
-        # worker running THESE bytes, but a loop holds the module it imported
-        # at start, so part of the fleet cannot see it until the runtime rolls
-        # -- and the signal ladder below runs for seconds, which is exactly
-        # when a worker this withdrawal just SIGTERMed calls ``finish``.  An
-        # old ``finish`` reads this record: with the limit at one attempt its
-        # retry branch is unreachable, so the outcome is filed terminally
-        # instead of being requeued and re-run.  That is the race the operator
-        # used to have to win by hand, and it is the last of it that new bytes
-        # can reach.
-        live = dict(record) if isinstance(record, Mapping) else None
-        if origin == CLAIMED and live is not None:
-            live["max_attempts"] = 1
-            live["withdrawn_unix"] = filed.get("withdrawn_unix")
-            live["withdrawn_by"] = str(filed.get("withdrawn_by") or by)
-            live["withdrawn_note"] = (
-                "withdrawn by an operator; the retry is closed so a worker "
-                "that cannot see withdrawn/ files this terminally"
-            )
-            _write_json_atomic(claimed_path, live)
+        # A ready record is ours only after its atomic move and generation
+        # check. Publication can replace it between the initial read and now.
+        self._withdraw_ready(key)
 
-        # The ready record goes NOW, not after the ladder.  The ladder can run
-        # for seconds; a re-submission landing inside it would otherwise be
-        # unlinked by a withdrawal that had already been superseded -- the
-        # blocker again, in this verb's own hand.  Gated on the generation for
-        # the same reason every other guard is.
-        if self.withdrawal_covers(
-                _read_json(ready_path), action_key=key) is not None:
-            ready_path.unlink(missing_ok=True)
-
-        # Signal before releasing, so this box does not admit work on top of an
-        # action that is still dying.
-        #
-        # No host check is needed and none is made: both ways of naming a target
-        # verify the *process*, not the record.  A ``child_pid`` copied from
-        # another box's lease is a number that means nothing here, and
-        # ``launcher_owns_action`` refuses it because the local process at that
-        # number is not running this action.  What is here is what gets
-        # signalled.
-        signalled: dict[str, object] | None = None
-        targets: list[int] = []
-        child_pid = lease.get("child_pid")
-        if isinstance(child_pid, int) and launcher_owns_action(int(child_pid), key):
-            targets.append(int(child_pid))
-        targets.extend(pid for pid in find_launcher_pids(key) if pid not in targets)
-        if signal_child and targets:
-            stopped = [terminate_action(pid) for pid in targets]
-            signalled = {
-                "launcher_pids": [int(one["launcher_pid"]) for one in stopped],
-                "action_pgids": [g for one in stopped for g in one["action_pgids"]],
-                "signals": [s for one in stopped for s in one["signals"]],
-                "still_alive": any(one["still_alive"] for one in stopped),
-            }
-
-        container_cleanup = self.cleanup_action_containers(record or lease, reason="withdrawn")
-        # Why the action is known to have stopped, or why it is not.  A claim
-        # is the only state with a payload to stop; ``ready`` never started.
-        stop_pending: dict[str, object] | None = None
+        signalled = None
+        stop_pending = None
+        container_cleanup = {"complete": True, "used": False, "deferred": False}
         if origin == CLAIMED:
-            local = socket.gethostname()
-            if signalled is not None:
-                if signalled["still_alive"]:
-                    stop_pending = {"reason": "the action's process group "
-                                              "survived the signal ladder"}
-            elif host is not None and host != local:
-                stop_pending = {
-                    "reason": f"the action is held on {host}, which this box "
-                              "cannot signal; its own worker stops it at the "
-                              "next heartbeat and releases the reservation "
-                              "then, and the reaper concludes it if that box "
-                              "is gone",
-                }
-            elif targets:
-                stop_pending = {
-                    "reason": "a local process owns the action and no signal "
-                              "was sent",
-                }
-            # Otherwise the holder is this host and nothing here is running
-            # the action, so there is nothing left to stop.
-            if stop_pending is not None:
-                stop_pending.update({
-                    "holder_host": host,
-                    "checked_unix": _now(),
-                    "checked_host": local,
-                })
-        if container_cleanup["complete"] and stop_pending is None:
-            released = self.ledger(host).release(key)
-            claimed_path.unlink(missing_ok=True)
-            self.lease_path(key).unlink(missing_ok=True)
-            self.passes_path(key).unlink(missing_ok=True)
-        else:
-            # The decision is already durable in withdrawn/, but the run is
-            # not gone yet.  Preserve the claim, lease and reservation as its
-            # ownership record; the holder's worker/reaper concludes it.
-            released = 0
-            if origin == CLAIMED and live is not None:
-                # From the poisoned copy, not from the record as it was read.
-                # Rebuilding this from ``record`` wrote the pre-poison bytes
-                # back over the ``max_attempts: 1`` above, which is the one
-                # thing that stops a worker running older bytes from requeueing
-                # a cancelled action.
-                pending = dict(live)
-                if not container_cleanup["complete"]:
-                    self._note_cleanup_attempt(pending, live, container_cleanup)
-                if stop_pending is not None:
-                    pending["stop_pending"] = stop_pending
-                _write_json_atomic(claimed_path, pending)
+            # The operator has a snapshot, never cleanup ownership. Its marker
+            # may already have been observed by the first worker, which can
+            # finish and admit a successor before this call resumes.
+            container_cleanup = {"complete": None, "used": None, "deferred": True}
+            stop_pending = {
+                "holder_host": host,
+                "checked_unix": _now(),
+                "checked_host": socket.gethostname(),
+                "reason": "the claiming worker or reaper retains cleanup ownership",
+            }
+            if signal_child and host == socket.gethostname() and record.get("resource_scope") is not None:
+                try:
+                    scope = self._scope_from_record(record)
+                    stopped = scope.terminate_owned("withdrawn")
+                    signalled = {"scope_id": scope.unit, "nonce": scope.nonce,
+                                 "signals": ["broker exact-attempt stop"],
+                                 "broker": stopped}
+                except Exception as exc:  # the durable decision remains effective
+                    stop_pending["stop_error"] = f"{type(exc).__name__}: {exc}"
+
         return {
             "action_key": key,
             "status": "already_withdrawn" if existing is not None else "withdrawn",
@@ -5458,7 +5415,7 @@ class PoolQueue:
             # live offer names the host; ``""`` means the offer predates the
             # field.  Both are "cannot tell", and the CLI says so.
             "holder_runtime": self.runtime_of(host),
-            "released": released,
+            "released": 0,
             "signalled": signalled,
             "container_cleanup": container_cleanup,
             # ``None`` when the action is known to have stopped.  Otherwise
@@ -5746,6 +5703,7 @@ class PoolQueue:
         except subprocess.TimeoutExpired:
             return "", ""
 
+    @_serialized_key
     def _defer_unstarted_claim(self, item: Mapping[str, object]) -> None:
         """Return a broker-refused launch without recording an execution attempt."""
         key = str(item["action_key"])

@@ -2074,6 +2074,15 @@ def landed_outcome(
                 continue
             if record is not None:
                 found.append((path, record))
+        # The immutable cancellation is already an ending if its writer died
+        # before updating withdrawn/<key>.json, or publication retired that
+        # visible marker while an earlier generation's waiter was still here.
+        for path, record in q.withdrawal_decisions(key):
+            if generation is None or float(record["published_unix"]) == float(generation):
+                if not any(existing.get("status") == "withdrawn"
+                           and existing.get("published_unix") == record.get("published_unix")
+                           for _, existing in found):
+                    found.append((path, record))
         if len(found) == 1 or (found and generation is not None):
             return found[0]
         if found:
@@ -3378,7 +3387,7 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
         where = result.get("state") or "nowhere"
         note = [f"released {result.get('released', 0)} token(s)"]
         container_cleanup = result.get("container_cleanup") or {}
-        if not container_cleanup.get("complete", True):
+        if not container_cleanup.get("complete", True) and not container_cleanup.get("deferred"):
             note.append("container cleanup unverified; claim and tokens retained")
             error = str(container_cleanup.get("error") or "").strip()
             if error:
@@ -3404,19 +3413,14 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
             # normal case and the remote worker stops within a heartbeat, but a
             # caller who reads "withdrawn" and assumes "already dead" would be
             # wrong for those seconds.
-            note.append(f"no local child to signal on "
-                        f"{result.get('host') or 'an unknown host'}; its worker "
-                        f"stops within a heartbeat")
+            note.append("stop requested through the generation marker; "
+                        "its worker checks it at the next heartbeat")
         if status == "already_withdrawn":
             note.insert(0, "already withdrawn")
         print(f"pbrun: withdrew {key[:12]} from {where}; " + "; ".join(note),
               file=sys.stderr)
-        # Say when the withdrawal is one the holder's worker cannot see.  Every
-        # guard this verb relies on lives in bytes the loop imported at start,
-        # so a box that has not rolled runs the action to completion -- with
-        # the tokens this just handed back, which is the load-average-371
-        # shape the issue is about.  The record is filed and the retry is
-        # closed either way; what is not bounded is the current run.
+        # An older loop may not understand durable generation decisions.
+        # Its reservation remains held; upgrade through the drained rollout.
         if where == "claimed":
             runtime = result.get("holder_runtime")
             host = result.get("host") or "the holder"
@@ -3431,9 +3435,10 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
             elif published and runtime != published:
                 print(f"pbrun: WARNING {host} is running runtime "
                       f"{runtime[:12]}, not the published {published[:12]}: "
-                      f"its loop cannot see withdrawn/, so the action may run "
-                      f"to completion with the tokens just released.  Roll the "
-                      f"fleet, or watch the box.", file=sys.stderr)
+                      f"its support for durable cancellation is unverified; "
+                      f"the reservation stays held until its worker or reaper "
+                      f"completes cleanup. Upgrade through the drained fleet rollout.",
+                      file=sys.stderr)
     return rc
 
 
