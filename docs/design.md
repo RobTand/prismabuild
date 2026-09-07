@@ -483,7 +483,11 @@ nlink, and ctime) is identical before and after the read and whose expected
 byte count and content address match. A ctime/nlink-only within-read mismatch
 discards that attempt and retries; a substantive identity change, wrong
 content address or byte count, non-regular/writable object, changed path, or
-symlink hop refuses immediately. Three unstable reads refuse. Deterministic
+symlink hop refuses immediately. The final canonical-file identity check reports
+a missing or replaced entry as tamper, but other stat failures as unavailable.
+Recovery retains work on unavailable evidence and retries the whole read; a
+temporary NFS or permission fault cannot retire a finish tombstone as corrupt.
+Three unstable reads refuse. Deterministic
 regressions cover transient `2 -> 1` publication-link cleanup, transient
 `1 -> 1` link/unlink ctime churn followed by a stable pass, perpetual `1 -> 1`
 churn, and immediate content/mode/mtime/owner refusal. The focused core,
