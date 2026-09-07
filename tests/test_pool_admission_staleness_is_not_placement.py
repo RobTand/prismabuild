@@ -13,7 +13,7 @@ what the code does, and these tests pin the two halves of why.
 ``adaptive/cpu-sample.json``.  The only freshness that gates placement is the
 offer's own ``announced_unix`` against ``OFFER_TIMEOUT_S``.
 
-**The sample is written on the placement-success path.**  The writer is
+**The authoritative sample is written on the placement-success path.**  The writer is
 ``adaptive_cpu.Controller.sample()``, reached only through ``decision()``,
 reached only from ``claim()`` -- and ``claim()`` skips every item that fails
 ``_placement_matches`` *before* it constructs a demand or asks the controller.
@@ -21,7 +21,8 @@ A box that matches nothing therefore never samples, so its record never
 advances, so the status view reports it stale for as long as the starvation
 lasts.  The staleness is the *shadow* of the exclusion; reading it as the
 cause points an operator at the admission controller, which is where #205's
-investigation went.
+investigation went. Since #355, samples are host-local and the status view
+reads an asynchronous diagnostic copy; that copy can also lag a matching poll.
 
 Measured on the live queue, 2026-09-06 16:03-16:12 UTC: ``dl380g10`` re-wrote
 ``workers/dl380g10.json`` at 16:07:26 and 16:11:50 while every file under
@@ -89,8 +90,8 @@ def _publish(queue: pool.PoolQueue, seed: str, *, tags: list[str],
 def _stale_admission(queue: pool.PoolQueue, host: str) -> Path:
     """Give ``host`` an admission sample far older than ``MAX_SAMPLE_AGE_S``.
 
-    Written the way the controller writes it, so the reader under test sees a
-    real record rather than a shape invented for the assertion.
+    This is the shared diagnostic copy read by status, not the controller's
+    host-local authority.
     """
 
     base = queue.ledger(host).base / "adaptive"
@@ -173,6 +174,15 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     "fresh file behind a stale verdict" the issue could not explain.
     """
 
+    # Hold diagnostic publication back for the entire test. Claim sampling
+    # must be observable in local authority even when no copy can complete.
+    monkeypatch.setattr(pool.cpu_admission.adaptive_snapshot, "publish",
+                        lambda local, shared: None)
+    sampled_at = time.time()
+    monkeypatch.setattr(pool.cpu_admission, "counters", lambda cpus: {
+        "sampled_unix": sampled_at,
+        "cpus": {str(cpu): [10, 100] for cpu in cpus}, "psi_total": 0})
+
     queue = _fleet(tmp_path)
     # Published FROM sparky, which is where the live pin came from: the
     # checkout root is a box-local path, so ``pbstatus`` narrows the placeable
@@ -185,12 +195,16 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "dl380g10")
     sample = _stale_admission(queue, "dl380g10")
     before = json.loads(sample.read_text())["sampled_unix"]
+    local_sample = (pool.cpu_admission.local_state_base(queue.ledger("dl380g10").base)
+                    / "cpu-sample.json")
+    local_sample.write_bytes(sample.read_bytes())
     for _ in range(3):
         assert queue.claim(tags=["cpu", "dl380g10", "x86"], has_gpu=False,
                            owner="dl380g10", capacity=X86,
                            cpu_tiers=_tiers(X86), adaptive_cpu=True) is None
 
     assert json.loads(sample.read_text())["sampled_unix"] == before
+    assert json.loads(local_sample.read_text())["sampled_unix"] == before
     # ...and no pass was recorded either: the item was skipped before the
     # controller was ever asked, so even the denial counter stays silent.  A
     # box starved this way leaves no trace anywhere but a verdict that names
@@ -209,6 +223,13 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
     matched = _stale_admission(queue, "sparky")
     stale_on_sparky = json.loads(matched.read_text())["sampled_unix"]
+    local_matched = (pool.cpu_admission.local_state_base(queue.ledger("sparky").base)
+                     / "cpu-sample.json")
+    local_matched.write_bytes(matched.read_bytes())
+    assert sampled_at > stale_on_sparky
     queue.claim(tags=["gb10", "sparky"], has_gpu=False, owner="sparky",
                 capacity=GB10, cpu_tiers=_tiers(GB10), adaptive_cpu=True)
-    assert json.loads(matched.read_text())["sampled_unix"] > stale_on_sparky
+    assert json.loads(local_matched.read_text())["sampled_unix"] == sampled_at
+    # The old assertion raced this copy. Equality here is expected while
+    # publication is deferred; accepting >= would lose the positive control.
+    assert json.loads(matched.read_text())["sampled_unix"] == stale_on_sparky
