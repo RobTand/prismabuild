@@ -73,8 +73,11 @@ withdrawn through the withdrawal ladder and re-published at `-10` with its aging
 count, so it is retried later rather than lost. Expect an agent shard to be
 stopped and requeued when campaign work arrives; keep shards restartable, and
 read `preempted_by` on the requeued row rather than treating the interruption as
-a failure. The stop is not instant -- the holder returns its tokens at its next
-checkpoint -- so shards that are short still cost the campaign least.
+a failure. A `pbrun` or `pbtest` that is waiting does not exit on the stop: it
+follows the requeue and reports the retry's result, so a preempted shard costs
+wall-clock, not a verdict. The stop is not instant -- the holder returns its
+tokens at its next checkpoint -- so shards that are short still cost the
+campaign least.
 
 GPU work declares `--gpu` or the appropriate GPU demand. The live pool shares
 one physical GPU among generation actions when fresh broker observations show

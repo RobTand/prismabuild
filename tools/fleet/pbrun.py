@@ -2024,6 +2024,53 @@ def terminal_record(
     return record
 
 
+def _preemption_requeue(q, key: str, ending, generation) -> float | None:
+    """The generation a preemption requeued this one as, or ``None``.
+
+    ``PoolQueue`` stops an admitted background holder to admit foreground work
+    and immediately re-publishes it (#364).  The requeue is a NEW generation --
+    it has to be, because the cancellation it revives is generation-scoped and
+    would otherwise cover its own retry -- so a waiter watching the stopped
+    generation sees a withdrawal and would report exit 143 for work the queue
+    is about to run again.  That would make "retried, not lost" true of the
+    queue and false of everyone waiting on it.
+
+    Deliberately narrow.  It follows only an ending stamped ``preempted_by``,
+    which nothing but admission writes, and only to a generation the queue
+    actually holds -- waiting to run, running, or already ended.  An operator's
+    withdrawal still ends the wait; so does a preemption whose requeue was
+    never published, because then there is no newer generation to find and the
+    cancellation is the whole account of what happened.
+
+    The terminal directories are searched as well as the live ones, because a
+    caller that arrives after the requeued run finished would otherwise be told
+    about the stop and never about the ending that followed it.
+    """
+
+    if generation is None or ending.get("preempted_by") is None:
+        return None
+    if str(ending.get("status") or "") != "withdrawn":
+        return None
+    newest: float | None = None
+    for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
+                  pool.WITHDRAWN):
+        try:
+            record = json.loads(
+                q.item_path(state, key).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        theirs = record.get("published_unix")
+        if not isinstance(theirs, (int, float)) or isinstance(theirs, bool):
+            continue
+        # Strictly newer, so this can only ever move a waiter forward: an older
+        # generation's leftovers must not send it backwards into a loop.
+        if float(theirs) > float(generation):
+            newest = float(theirs) if newest is None else max(newest, float(theirs))
+    return newest
+
+
 def landed_outcome(
     q, key: str, *, wait_s: float, generation: float | None = None,
     report_unreadable: bool = False,
@@ -2100,7 +2147,17 @@ def landed_outcome(
                 and not isinstance(entry[1].get("published_unix"), bool)
                 and float(entry[1]["published_unix"]) == float(generation)
             ]
-            return (exact or found)[0]
+            landed = (exact or found)[0]
+            requeued = _preemption_requeue(q, key, landed[1], generation)
+            if requeued is None:
+                return landed
+            # Admission stopped this generation to give a foreground item the
+            # box, and published another one to run it again (#364).  Reporting
+            # the cancellation would tell the caller its work was decided
+            # against, when the queue is already running it: follow the
+            # generation the requeue published instead.
+            generation = requeued
+            continue
         if len(found) == 1:
             return found[0]
         if found:

@@ -138,9 +138,20 @@ does not cancel a second action for the same gap. A holder that cannot be
 stopped through the ladder -- already withdrawing, waiting on cleanup, or on
 another box -- is skipped, never forced.
 
-`pbstatus` shows the cost. The requeued row carries `preempted_by` naming the
-foreground action, and the immutable withdrawal decision under
+`pbstatus` shows the cost. The requeued row in the jobs table names the
+preemption in its NOTE, and the withdrawal in the endings table reads
+`preempted by <key12>`; both carry `preempted_by` as a field in `--json`. The
+immutable withdrawal decision under
 `withdrawn/decisions/<key>/<generation>.json` carries it too.
+
+A submitter waiting on a preempted action is not told it was withdrawn. The
+requeue is a new generation, and a waiter names the generation it submitted, so
+`pbrun` follows a cancellation stamped `preempted_by` to the generation the
+requeue published and reports *that* run's ending -- the retry's, whether it is
+still queued, running, or already done. An operator's withdrawal is unaffected:
+it carries no `preempted_by`, so it ends the wait as it always did, and so does
+a preemption whose requeue was never published, because then the cancellation is
+the whole account of what happened.
 
 ### SLURM partitions
 
