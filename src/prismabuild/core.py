@@ -291,6 +291,7 @@ _ATTESTABLE_TOOLCHAIN_KEYS = frozenset(
         "libc",
         "cuda_compute_capability",
         "nvidia_driver",
+        "accelerator_models.sha256",
     }
 )
 _PYTHON_DISTRIBUTIONS = frozenset({"torch", "transformers", "vllm", "gridbook"})
@@ -884,7 +885,7 @@ def executable_toolchain_contract(path: str | Path) -> dict[str, str]:
     }
 
 
-def _probe_nvidia_accelerators() -> list[dict[str, str]]:
+def _probe_nvidia_accelerators(*, include_identity: bool = False) -> list[dict[str, str]]:
     """Read live NVIDIA compute/driver facts without importing the task stack."""
 
     executable = Path("/usr/bin/nvidia-smi")
@@ -892,7 +893,7 @@ def _probe_nvidia_accelerators() -> list[dict[str, str]]:
         return []
     argv = [
         str(executable),
-        "--query-gpu=compute_cap,driver_version",
+        "--query-gpu=compute_cap,driver_version" + (",name,uuid" if include_identity else ""),
         "--format=csv,noheader,nounits",
     ]
     try:
@@ -907,28 +908,39 @@ def _probe_nvidia_accelerators() -> list[dict[str, str]]:
             env={"LANG": "C", "LC_ALL": "C"},
             timeout=10.0,
         )
-    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        if include_identity:
+            raise ActionContractError("cannot attest NVIDIA device identity") from exc
         return []
     if completed.returncode != 0:
+        if include_identity:
+            raise ActionContractError("cannot attest NVIDIA device identity: nvidia-smi failed")
         return []
-    facts: set[tuple[str, str]] = set()
+    facts: set[tuple[str, ...]] = set()
     for raw_line in completed.stdout.splitlines():
         fields = [field.strip() for field in raw_line.split(",")]
-        if len(fields) != 2:
+        if len(fields) != (4 if include_identity else 2):
             raise ActionContractError("nvidia-smi returned malformed accelerator facts")
-        capability, driver = fields
+        capability, driver = fields[:2]
         if re.fullmatch(r"[0-9]+\.[0-9]+", capability) is None:
             raise ActionContractError("nvidia-smi returned an invalid compute capability")
         if _VERSION_RE.fullmatch(driver) is None:
             raise ActionContractError("nvidia-smi returned an invalid driver version")
-        facts.add((capability, driver))
+        if include_identity:
+            name, uuid = fields[2:]
+            if not name or name in {"N/A", "[N/A]"} or not uuid.startswith("GPU-"):
+                raise ActionContractError("nvidia-smi returned invalid device identity")
+        facts.add(tuple(fields))
+    if include_identity and not facts:
+        raise ActionContractError("nvidia-smi returned no device identity")
     return [
         {
             "kind": "nvidia",
-            "compute_capability": capability,
-            "driver_version": driver,
+            "compute_capability": row[0],
+            "driver_version": row[1],
+            **({"name": row[2], "uuid": row[3]} if include_identity else {}),
         }
-        for capability, driver in sorted(facts)
+        for row in sorted(facts)
     ]
 
 
@@ -1138,6 +1150,7 @@ def _collect_worker_evidence(
     environment: Mapping[str, str] | None = None,
     *,
     attest_host_class: str | None = None,
+    attest_accelerator_identity: bool = False,
 ) -> dict[str, object]:
     """Collect facts from the live worker and its SLURM job, if any.
 
@@ -1211,7 +1224,8 @@ def _collect_worker_evidence(
         "system": _text(system, where="worker system", pattern=_SCOPE_TOKEN_RE),
         "machine": _text(machine, where="worker machine", pattern=_SCOPE_TOKEN_RE),
         "libc": _text(libc, where="worker libc", pattern=_SCOPE_TOKEN_RE),
-        "accelerators": _probe_nvidia_accelerators(),
+        "accelerators": (_probe_nvidia_accelerators(include_identity=True)
+                         if attest_accelerator_identity else _probe_nvidia_accelerators()),
         "slurm": slurm,
     }
 
@@ -1291,7 +1305,27 @@ def _host_class_from_evidence(
     return expected
 
 
-def live_platform_toolchain_contract() -> dict[str, str]:
+def accelerator_models_contract(evidence: Mapping[str, object]) -> str:
+    """Bind device models/counts while keeping physical UUIDs as provenance.
+
+    Class-scoped measurements may select a second matching device, never a
+    different model merely sharing a compute capability. Legacy evidence
+    without model/UUID facts cannot establish this stronger contract.
+    """
+
+    rows = evidence["accelerators"]
+    assert isinstance(rows, list)
+    models = []
+    for row in rows:
+        if not isinstance(row, Mapping) or not row.get("name") or not row.get("uuid"):
+            raise ActionContractError("accelerator model identity is unavailable")
+        models.append({key: row[key] for key in ("kind", "name", "compute_capability")})
+    return canonical_sha256(sorted(models, key=_canonical_bytes))
+
+
+def live_platform_toolchain_contract(
+    *, evidence: Mapping[str, object] | None = None,
+) -> dict[str, str]:
     """The ABI and accelerator toolchain fields of this box.
 
     Together with ``executable_toolchain_contract`` these are the fields a
@@ -1300,7 +1334,7 @@ def live_platform_toolchain_contract() -> dict[str, str]:
     boxes that verify identically.
     """
 
-    evidence = _collect_worker_evidence()
+    evidence = _collect_worker_evidence() if evidence is None else evidence
     fields = {
         "system": str(evidence["system"]),
         "machine": str(evidence["machine"]),
@@ -2206,6 +2240,9 @@ def _normalize_action_body(value: object) -> dict[str, object]:
         r"[0-9]+\.[0-9]+", str(toolchain["cuda_compute_capability"])
     ) is None:
         _fail("action.environment.toolchain.cuda_compute_capability is malformed")
+    if "accelerator_models.sha256" in toolchain:
+        _sha256(toolchain["accelerator_models.sha256"],
+                where="action.environment.toolchain.accelerator_models.sha256")
     if scope["portability"] != "portable":
         unknown = set(toolchain) - _ATTESTABLE_TOOLCHAIN_KEYS
         if unknown:
@@ -2931,9 +2968,11 @@ def _normalize_worker_evidence(value: object) -> dict[str, object]:
         _fail("worker evidence.accelerators must be an array")
     accelerators: list[dict[str, str]] = []
     for index, raw in enumerate(accelerators_raw):
+        identity_keys = {"name", "uuid"} if isinstance(raw, Mapping) and (
+            "name" in raw or "uuid" in raw) else set()
         accelerator = _exact_mapping(
             raw,
-            keys=_ACCELERATOR_KEYS,
+            keys=_ACCELERATOR_KEYS | identity_keys,
             where=f"worker evidence.accelerators[{index}]",
         )
         kind = _text(
@@ -2958,10 +2997,16 @@ def _normalize_worker_evidence(value: object) -> dict[str, object]:
                     where=f"worker evidence.accelerators[{index}].driver_version",
                     pattern=_VERSION_RE,
                 ),
+                **({
+                    "name": _text(accelerator["name"], where="worker accelerator.name"),
+                    "uuid": _text(accelerator["uuid"], where="worker accelerator.uuid",
+                                  pattern=re.compile(r"GPU-[A-Za-z0-9-]+")),
+                } if identity_keys else {}),
             }
         )
     accelerators.sort(
-        key=lambda row: (row["kind"], row["compute_capability"], row["driver_version"])
+        key=lambda row: (row["kind"], row["compute_capability"], row["driver_version"],
+                         row.get("name", ""), row.get("uuid", ""))
     )
     if len({_canonical_bytes(row) for row in accelerators}) != len(accelerators):
         _fail("worker evidence accelerator rows must be unique")
@@ -3132,13 +3177,22 @@ def validate_worker_attestation(
     assert isinstance(environment, Mapping)
     if declared != environment["toolchain"]:
         _fail("worker attestation toolchain differs from the action")
+    if "accelerator_models.sha256" in declared:
+        if declared["accelerator_models.sha256"] != accelerator_models_contract(evidence):
+            _fail("worker accelerator model identity differs from the action")
+        observed_platform = live_platform_toolchain_contract(evidence=evidence)
+        for key in ("system", "machine", "libc", "cuda_compute_capability", "nvidia_driver"):
+            if key in declared and declared[key] != observed_platform.get(key):
+                _fail(f"worker recorded evidence for {key!r} differs from the action")
     verified = _normalize_string_mapping(
         toolchain_raw["verified"], where="worker attestation.toolchain.verified"
     )
     if not set(verified) <= set(declared):
         _fail("worker attestation verifies undeclared toolchain fields")
     for key, observed in verified.items():
-        if not _toolchain_value_matches(declared[key], observed):
+        matches = (declared[key] == observed if "accelerator_models.sha256" in declared
+                   else _toolchain_value_matches(declared[key], observed))
+        if not matches:
             _fail(f"worker toolchain field {key!r} differs from the action")
     if (
         declared.get("argv0.sha256") is not None
@@ -3214,6 +3268,8 @@ def _verified_toolchain(
         "machine": str(evidence["machine"]),
         "libc": str(evidence["libc"]),
     }
+    if "accelerator_models.sha256" in declared:
+        observed["accelerator_models.sha256"] = accelerator_models_contract(evidence)
     accelerators = evidence["accelerators"]
     assert isinstance(accelerators, list)
     if accelerators:
@@ -3233,7 +3289,9 @@ def _verified_toolchain(
         actual = observed.get(key)
         if actual is None:
             continue
-        if not _toolchain_value_matches(expected, actual):
+        matches = (expected == actual if "accelerator_models.sha256" in declared
+                   else _toolchain_value_matches(expected, actual))
+        if not matches:
             raise ActionContractError(
                 f"worker toolchain field {key!r} differs: "
                 f"declared={expected!r}, observed={actual!r}"
@@ -3291,15 +3349,19 @@ def preflight_action(
         if scope["portability"] == "host_class_keyed"
         else None
     )
-    evidence = _collect_worker_evidence(attest_host_class=expected_host)
-    host_class = _host_class_from_evidence(evidence, expected=expected_host)
-    executable = identify_executable(
-        normalized["task"]["argv"][0]  # type: ignore[index]
-    )
     environment = normalized["environment"]
     assert isinstance(environment, Mapping)
     declared = environment["toolchain"]
     assert isinstance(declared, Mapping)
+    evidence = _collect_worker_evidence(
+        attest_host_class=expected_host,
+        **({"attest_accelerator_identity": True}
+           if "accelerator_models.sha256" in declared else {}),
+    )
+    host_class = _host_class_from_evidence(evidence, expected=expected_host)
+    executable = identify_executable(
+        normalized["task"]["argv"][0]  # type: ignore[index]
+    )
     verified = _verified_toolchain(
         declared, executable=executable, evidence=evidence  # type: ignore[arg-type]
     )

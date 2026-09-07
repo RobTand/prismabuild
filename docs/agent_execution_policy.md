@@ -56,9 +56,13 @@ any eligible worker to claim portable work. Reserve the CPU count the workload
 actually uses; do not inflate reservations to force access to additional cores.
 Physical performance cores are the preferred tier; SMT siblings and efficiency
 cores are overflow capacity. The pool selects CPUs, and agents must preserve its
-assigned affinity, including inside containers. A pool measurement implicitly
-retains the submitting host and its platform/toolchain identity; `--anywhere` is
-invalid for it. A SLURM measurement must retain its explicit host-class
+assigned affinity, including inside containers. A pool measurement defaults to
+the submitting host and its platform/toolchain identity. Explicit
+`--measurement --host-class CLASS` permits matching workers when the complete
+experiment and external dependencies are identical across the class. The worker
+verifies platform/ABI, shell executable, driver and device models; each paired
+experiment stays in one isolated action. `--anywhere` is invalid. A SLURM
+measurement must retain its explicit host-class
 identity. Reserve exclusive GPU capacity when competing work would invalidate
 either kind of measurement.
 
@@ -143,14 +147,14 @@ vLLM is exempt from submission, universally. Anything that runs it -- a serve, a
 census, a routing run, a benchmark against a live endpoint, its GPU containers --
 runs directly, without a PrismaBuild action and without bootstrap approval.
 
-The reason is what vLLM is, not what any particular invocation of it does. Rob,
+The reason is Rob's ruling, not a property PrismaBuild could measure. Rob,
 2026-09-06: *"everything vllm is exempt from everything. Vllm isn't something
-that uses chunks of work, it's an llm serving runtime."* PrismaBuild schedules
-work that divides into quanta it can size, place and retry. A serving runtime
-does not divide that way: submitted as an action it holds a reservation for the
-life of the service and hands the scheduler something with no completion to wait
-for. The exemption is a statement about the shape of the thing, so it does not
-turn on whether a given run feels like a test.
+that uses chunks of work, it's an llm serving runtime."* Rob, 2026-09-07: *"vllm
+is exempt. It can't run in prismabuild. This is not complex don't make it so."*
+A bounded action that happens to start vLLM can run to completion under
+PrismaBuild -- action `a475cb59` did -- and it is exempt all the same. The
+exemption turns on whether the thing runs vLLM, not on whether a given run
+feels like a test or divides into quanta.
 
 This does not exempt the work *around* it. A test that does not run vLLM still
 submits, and so does an export, a probe or a cost stage that merely runs on the

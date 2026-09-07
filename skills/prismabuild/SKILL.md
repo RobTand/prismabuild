@@ -61,6 +61,12 @@ universal setting. Use `pbtest.py` for suite fanout and `pbcampaign.py` for a
 manifest of independent actions. Prefer portable placement; add a host tag only
 for a real dependency or a controlled measurement.
 
+Agent self-validation -- test shards, the receipt for a PR, a re-run to confirm
+a fix -- submits at `--priority -10` (`pbtest.py --priority -10`, `pbrun.py
+--priority -10`). Ready items are ordered by priority band before aging, so
+that work is considered only after everything at the default priority has been
+tried and never displaces campaign work in the queue. Campaign work stays at 0.
+
 GPU work declares `--gpu` or the appropriate GPU demand. The live pool shares
 one physical GPU among generation actions when fresh broker observations show
 headroom; let admission choose concurrency rather than tuning GPU job slots.
@@ -84,20 +90,30 @@ fresh measured demand, and stop admitting work as host pressure rises. Declare
 honest peak CPU demand. Memory budgets remain fully reserved; CPU lending does
 not authorize GPU sharing.
 
-Use `--measurement` for measurements: the pool pins the submitting host, seals
-platform/toolchain identity, admits only against a fresh near-idle host, and
+Use `--measurement` for measurements: the pool defaults to the submitting host,
+seals platform/toolchain identity, admits only against a fresh near-idle host, and
 keeps GPU measurements exclusive. Interleave the arms of a timing comparison and
-record the load per arm; see `docs/agent_execution_policy.md`. `--exclusive`
+record the load per arm; see `docs/agent_execution_policy.md`. Explicit pool
+`--measurement --host-class CLASS` lets PB select a matching worker when the
+complete paired experiment and external dependencies are identical across that
+class. Platform/ABI, shell executable, driver and GPU models/counts are verified;
+actual worker and GPU UUID stay in the receipt. Keep both arms in one admitted
+action and pin/record inner container or Python dependencies in the experiment.
+This is placement eligibility, not an isolation exemption. `--exclusive`
 reserves one box's whole GPU capacity and is not CPU isolation; it also prevents
 GPU sharing for ordinary work. Optional SLURM measurements require
 `--host-class`; reserve its GPU exclusively when overlap would invalidate results.
 On GB10, GPU utilization percentage is not a saturation measure; collect power,
 CPU activity, residency and useful throughput with before/after profiling.
 
-Running vLLM for inference serving is exempt from PrismaBuild submission,
-including its GPU containers. Tests, benchmarks and other batch GPU jobs still
-run through PrismaBuild, including work against a running vLLM endpoint.
-The service's CPU, GPU and memory use remains external load for batch admission.
+vLLM is exempt from submission, universally: anything that runs it -- a serve, a
+census, a routing run, a benchmark against a live endpoint -- runs directly,
+including its GPU containers. That is Rob's ruling (2026-09-06, reaffirmed
+2026-09-07: "vllm is exempt. It can't run in prismabuild"), not a claim about
+what a wrapper could technically do -- a bounded action that starts vLLM can
+exit cleanly, and is exempt all the same. Work that does not run vLLM still
+submits, and a running vLLM remains external load for batch admission.
+`docs/agent_execution_policy.md` carries the full ruling.
 
 ## Verify and recover
 

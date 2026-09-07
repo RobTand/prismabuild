@@ -34,11 +34,13 @@ structurally rather than by policy:
   circularity has nowhere to form.
 * **No aging.**  There, ``evicted_5x_does_not_fit`` was counted and then the job
   was abandoned: "an eviction counter that only counts is a starvation detector
-  wired to nothing."  Here a denial increments ``passes``, ``passes`` is the
-  first term of the ready ordering, and past ``STARVATION_FLOOR`` a denied item
-  *withholds the host* -- a worker that cannot admit the starved item declines
-  to admit a smaller one instead of leapfrogging it.  The counter is wired to
-  the decision it describes.
+  wired to nothing."  Here a denial increments ``passes``, ``passes`` orders
+  the ready set within a priority band, and past ``STARVATION_FLOOR`` a denied
+  item *withholds the host* -- a worker that cannot admit the starved item
+  declines to admit a smaller one instead of leapfrogging it.  The counter is
+  wired to the decision it describes.  Aging stays inside the band: an item
+  published at a negative priority yields to everything above it however long
+  it has waited (#362).
 * **Partial-hold waste.**  Acquisition is all-or-nothing: a demand that cannot
   be met in full releases every token it took before returning.
 
@@ -213,9 +215,9 @@ STARVATION_FLOOR = 3
 #: them CPU-only and admissible against the five free cores it was not using.
 #:
 #: Past this ceiling the item stops *blocking* but keeps every pass it has
-#: earned, and passes are the first term of the ready ordering -- so it still
+#: earned, and passes order the ready set within a priority band -- so it still
 #: gets first refusal on every claim, on every box, ahead of everything behind
-#: it.  It loses the veto, not the priority.  Fifteen minutes is longer than
+#: it in its band.  It loses the veto, not its place.  Fifteen minutes is longer than
 #: any transient this pool produces (the lease timeout is five) and far shorter
 #: than the multi-hour actions that turn the guard pathological.
 WITHHOLD_CEILING_S = 900.0
@@ -2253,15 +2255,21 @@ class PoolQueue:
             if record is not None:
                 record["passes"] = self.passes(str(record.get("action_key", "")))
                 out.append(record)
-        # Aging first, then priority, then oldest.  An item that has been denied
-        # admission repeatedly is not merely unlucky -- it is being overtaken --
-        # so its denial count outranks the band it was published in.  Within a
-        # band a long queue still drains in the order it was filled rather than
-        # by digest.  Not a scheduler; a tie-break predictable enough to debug.
+        # Priority band first, then aging, then oldest.  An item that has been
+        # denied admission repeatedly is not merely unlucky -- it is being
+        # overtaken -- so within its band its denial count outranks its place
+        # in line.  Aging never crosses a band: a negative priority is the
+        # producer saying "only when nothing else wants the box", and a hint
+        # that expired after three denials was not that (#362).  ``claim``
+        # walks this order and a withhold ends the pass, so nothing at a lower
+        # priority is even considered until every item above it has been
+        # tried.  Within a band a long queue still drains in the order it was
+        # filled rather than by digest.  Not a scheduler; a tie-break
+        # predictable enough to debug.
         out.sort(
             key=lambda r: (
-                -int(r.get("passes", 0)),
                 -int(r.get("priority", 0)),
+                -int(r.get("passes", 0)),
                 float(r.get("published_unix", 0.0)),
             )
         )

@@ -336,7 +336,7 @@ def _write_receipt(path: Path, receipt: dict[str, object]) -> None:
 
 def _probe(root: Path) -> None:
     probe = subprocess.run(
-        [sys.executable, "-c",
+        [sys.executable, "-B", "-c",
          "import sys; sys.path.insert(0, r'%s'); "
          "from prismabuild import pool, core; "
          "assert hasattr(pool.PoolQueue, 'claim'); print('import ok')"
