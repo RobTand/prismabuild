@@ -187,9 +187,14 @@ def test_an_unanticipated_failure_while_asking_docker_is_answered_too(
 def test_the_reapers_own_retry_is_counted_on_this_path_too(queue, monkeypatch):
     """The other caller named in the acceptance, reached where it actually is.
 
-    ``finish`` and ``reap_stale`` are different sites: a record carrying
-    ``finish_pending`` is skipped by the reaper, so driving this through
-    ``finish`` first would test one site twice.
+    ``finish`` and ``reap_stale`` reach this gate by different routes, and
+    driving this fixture through ``finish`` first would not then exercise the
+    reaper's.  ``finish`` leaves a ``finish_pending`` record, and ``reap_stale``
+    handles those in an earlier branch of its own -- retrying the saved outcome
+    on the owner host, and leaving it alone on any other, because only the owner
+    can prove its scope is empty -- so such a record never reaches the lease-age
+    path this test is about.  The claim here carries no pending finish for
+    exactly that reason.
     """
 
     record = _uncontained_claim_with_a_container(queue)
