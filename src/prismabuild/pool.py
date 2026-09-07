@@ -3717,15 +3717,13 @@ class PoolQueue:
                     # it took.
                     #
                     # A withdrawn claim is the one thing a release must not
-                    # touch.  ``withdraw`` closes the retry by writing
-                    # ``max_attempts: 1`` onto the live claimed record, so that any
-                    # reaper -- including one running pre-withdraw bytes, which
-                    # consults no marker -- concludes the action instead of
-                    # requeueing it.  A release does not charge an attempt and so
-                    # is not closed by that limit: it would put an action an
-                    # operator cancelled straight back in the queue.  The
-                    # withdrawal stamp travels on the record beside the limit,
-                    # which is what makes it readable here without the marker.
+                    # touch. ``withdraw`` closes the retry with an immutable,
+                    # generation-scoped decision, and ``withdrawal_covers`` reads
+                    # that decision even after a later publication retires the
+                    # visible summary. A release does not charge an attempt, but
+                    # it would put work the operator cancelled straight back in
+                    # the queue, so this branch explicitly excludes any covered
+                    # generation.
                     #
                     # This does not stop a reaper taking a live-but-blocked
                     # claimant's claim -- that is not knowable across boxes.  It
