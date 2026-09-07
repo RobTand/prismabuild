@@ -123,3 +123,37 @@ def test_this_runs_withdrawal_beats_an_old_unstamped_success(
 
     assert path == expected
     assert ending["status"] == "withdrawn"
+
+
+def _break_decision(queue, generation: float) -> Path:
+    record = _outcome(generation, status="withdrawn", returncode=143)
+    path = queue.withdrawal_decision_path(record)
+    path.parent.mkdir(parents=True)
+    path.write_text("not JSON", encoding="utf-8")
+    path.chmod(0o444)
+    return path
+
+
+def test_an_old_broken_decision_does_not_poison_this_runs_ending(queue) -> None:
+    """Validation is generation-scoped just like cancellation itself."""
+
+    _break_decision(queue, 100.0)
+    current = _outcome(200.0, status="executed", returncode=0)
+    expected = _file(queue, pool.DONE, current)
+
+    path, ending = pbrun.landed_outcome(
+        queue, KEY, wait_s=0.05, generation=200.0)
+
+    assert path == expected
+    assert ending["status"] == "executed"
+
+
+def test_a_broken_decision_for_this_run_still_refuses_a_verdict(queue) -> None:
+    """Scoping corruption must not turn fail-closed into fail-open."""
+
+    _break_decision(queue, 200.0)
+    _file(queue, pool.DONE,
+          _outcome(200.0, status="executed", returncode=0))
+
+    with pytest.raises(pool.PoolContractError, match="invalid withdrawal decision"):
+        pbrun.landed_outcome(queue, KEY, wait_s=0.05, generation=200.0)

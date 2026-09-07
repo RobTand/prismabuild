@@ -2077,7 +2077,12 @@ def landed_outcome(
         # The immutable cancellation is already an ending if its writer died
         # before updating withdrawn/<key>.json, or publication retired that
         # visible marker while an earlier generation's waiter was still here.
-        for path, record in q.withdrawal_decisions(key):
+        decisions = (
+            q.withdrawal_decisions(key)
+            if generation is None
+            else q.withdrawal_decisions(key, generation=generation)
+        )
+        for path, record in decisions:
             if generation is None or float(record["published_unix"]) == float(generation):
                 if not any(existing.get("status") == "withdrawn"
                            and existing.get("published_unix") == record.get("published_unix")
