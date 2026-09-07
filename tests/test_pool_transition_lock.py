@@ -82,3 +82,16 @@ def test_same_owner_old_attempt_cannot_replace_successor_lease(tmp_path):
     with pytest.raises(pool.PoolContractError, match="claim changed"):
         queue.write_lease(KEY, owner="worker", claim_snapshot=first)
     assert queue.lease_path(KEY).read_bytes() == lease
+
+
+def test_claim_census_does_not_trust_cached_negative_name(tmp_path, monkeypatch):
+    from pathlib import Path
+    queue = pool.PoolQueue(tmp_path / "queue")
+    publish(queue, KEY)
+    first = queue.claim(owner="first", capacity={"cpu": 2})
+    publish(queue, KEY)
+    claimed = queue.item_path(pool.CLAIMED, KEY)
+    exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda path: False if path == claimed else exists(path))
+    assert queue.claim(owner="second", capacity={"cpu": 2}) is None
+    assert pool._same_claim(pool._read_json(claimed), first)

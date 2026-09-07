@@ -1481,7 +1481,7 @@ class ResourceLedger:
 
 def _serialized_key(method):
     """Keep one public mutation inside its key's shared transition lock."""
-    identity_parameter = next(iter(list(signature(method).parameters)[1:]))
+    identity_parameter = list(signature(method).parameters)[1]
     @wraps(method)
     def invoke(self, *args, **kwargs):
         value = args[0] if args else kwargs[identity_parameter]
@@ -2954,8 +2954,12 @@ class PoolQueue:
             with self._transition_locked(key, blocking=False) as acquired:
                 if not acquired:
                     continue
-                if (self.item_path(CLAIMED, key).exists()
-                        or _glob(self.dir(CLAIMED), f"{key}.*{TOMBSTONE_SUFFIX}")):
+                # Refresh the directory under exclusion before consulting names:
+                # a cached negative lookup can outlive another NFS client's claim.
+                claimed_names = os.listdir(self.dir(CLAIMED))
+                if (f"{key}.json" in claimed_names
+                        or any(name.startswith(f"{key}.") and name.endswith(TOMBSTONE_SUFFIX)
+                               for name in claimed_names)):
                     continue
                 if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
                     continue

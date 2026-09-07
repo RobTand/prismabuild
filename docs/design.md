@@ -102,7 +102,9 @@ successor cannot replace an active claim or pending finish tombstone. The lock
 inode is never deleted, thread nesting retains its original descriptor, and
 process death releases kernel ownership. Cross-host POSIX lock visibility is a
 queue mount requirement; NFS client mounts with local-only locks are unsupported.
-The helper is shared with SLURM terminal-summary publication.
+The helper is shared with SLURM terminal-summary publication. Bidirectional
+exclusion and reacquisition were qualified through admitted PB jobs between each
+GB10 NFSv4.2 client (`local_lock=none`) and the dl380g10 server-local ZFS path.
 
 Heartbeats verify the owner and, for worker execution, the exact claim snapshot
 while holding that lock. A late heartbeat refuses to overwrite a successor's
