@@ -314,3 +314,75 @@ def test_invalid_sealed_gpu_budget_is_rejected_before_scope_creation(tmp_path, m
     with pytest.raises(pool.PoolContractError, match='gpu_memory_gb'):
         queue._start_resource_scope({'action_key': action['action_key'],
                                     'cas_root': str(cas.root), 'resources': demand})
+
+
+def _raising_hook(exc):
+    def hook(*args):
+        raise exc
+    return hook
+
+
+def test_a_raising_learning_hook_does_not_escape_the_token_return_gate(scoped, monkeypatch):
+    """The gate must answer, not raise, when only the learning hook failed.
+
+    ``record_completion`` runs after ``scope.release()``, so by then the
+    payload has stopped and the tokens are back.  It reaches the admission
+    lock, and two of that subsystem's honest refusals are bare
+    ``RuntimeError`` -- neither of which was in the ``except`` tuple that used
+    to guard this call (#286).
+    """
+
+    queue, item, calls = scoped
+    _process(monkeypatch, queue, item, calls)
+    outcome = queue.execute(item, containment=True)
+    monkeypatch.setattr(pool.cpu_admission, 'record_completion',
+                        _raising_hook(RuntimeError('unsafe PrismaBuild admission lock file')))
+    record = json.loads(queue.item_path(pool.CLAIMED, item['action_key']).read_text())
+
+    cleanup = queue.cleanup_action_containers(record)
+
+    assert cleanup['complete'] is True
+    assert cleanup['resource_scope']['complete'] is True
+    # Recorded rather than swallowed: a box whose admission is unusable should
+    # be readable from the claim it could not learn from.
+    assert 'RuntimeError' in cleanup['resource_scope']['learning_error']
+    assert 'unsafe PrismaBuild admission lock file' in cleanup['resource_scope']['learning_error']
+
+
+def test_a_raising_learning_hook_still_completes_the_claim(scoped, monkeypatch):
+    """The observed failure: the action ran, and then lost its lease anyway."""
+
+    queue, item, calls = scoped
+    _process(monkeypatch, queue, item, calls)
+    outcome = queue.execute(item, containment=True)
+    monkeypatch.setattr(pool.cpu_admission, 'record_completion',
+                        _raising_hook(RuntimeError('unsafe PrismaBuild admission lock directory')))
+
+    path = queue.finish(item['action_key'], status='executed', detail=outcome,
+                        claim_snapshot=item)
+
+    # Not still claimed, tokens back, lease gone: the three things the escape
+    # cost.  Under the old tuple this call raised and none of them happened.
+    assert path != queue.item_path(pool.CLAIMED, item['action_key'])
+    assert queue.ledger().held() == {}
+    assert not queue.lease_path(item['action_key']).exists()
+
+
+def test_an_unexpected_failure_in_the_hook_is_recorded_the_same_way(scoped, monkeypatch):
+    """Not a RuntimeError special case -- the guard is the call's contract.
+
+    Enumerating what a whole subsystem can raise is what failed here, so a
+    kind nobody predicted must also be recorded rather than cost the action.
+    """
+
+    queue, item, calls = scoped
+    _process(monkeypatch, queue, item, calls)
+    queue.execute(item, containment=True)
+    monkeypatch.setattr(pool.cpu_admission, 'record_completion',
+                        _raising_hook(ZeroDivisionError('division by zero')))
+    record = json.loads(queue.item_path(pool.CLAIMED, item['action_key']).read_text())
+
+    cleanup = queue.cleanup_action_containers(record)
+
+    assert cleanup['complete'] is True
+    assert cleanup['resource_scope']['learning_error'] == 'ZeroDivisionError: division by zero'
