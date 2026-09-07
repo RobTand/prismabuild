@@ -2872,11 +2872,10 @@ class PoolQueue:
                                        controller=controller,
                                        gpu_controller=gpu_admission.Controller(ledger) if has_gpu else None)
             except cpu_admission.AdmissionBusy as exc:
-                # Another loop on this box is mid-decision.  Everything under
-                # that lock -- the headroom read, the ``ready`` scan, the
-                # record rename, the lease, the tokens -- is on the shared
-                # mount, so waiting here means waiting on a filesystem a
-                # different machine controls, and the whole box waits with us.
+                # Another loop on this box is mid-decision. The ``ready`` scan, record rename,
+                # lease and tokens remain on the shared mount even though CPU
+                # bookkeeping is host-local. Waiting here means waiting on a
+                # filesystem a different machine controls, and the whole box waits with us.
                 #
                 # ``None`` is already this method's answer for "nothing this
                 # box may admit right now", and ``serve_once`` documents it as

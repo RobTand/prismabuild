@@ -137,7 +137,7 @@ def test_memory_and_gpu_are_never_discounted_by_cpu_headroom(rig):
 def test_concurrent_loops_cannot_spend_one_sample_repeatedly(rig):
     from prismabuild import adaptive_cpu
     queue, clock, state, key, first, publish, claim, telemetry = rig
-    adaptive_cpu.write_json(queue.ledger().base / 'adaptive' / 'profiles.json', {
+    adaptive_cpu.write_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'profiles.json', {
         'shape': {'samples': 10, 'cpu': .1, 'sampled_unix': clock[0]}})
     for index in range(3, 10):
         publish(index)
@@ -204,7 +204,7 @@ def test_cpu_owned_by_unmeasured_borrower_is_not_lent_again(rig):
     assert second['cpu_allocation']['preferred'] == [0]
     clock[0] += 1
     telemetry(key, cpu=.3)
-    adaptive_cpu.write_json(queue.ledger().base / 'adaptive' / 'profiles.json', {
+    adaptive_cpu.write_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'profiles.json', {
         'shape': {'samples': 10, 'cpu': .1, 'sampled_unix': clock[0]}})
     publish(3)
     third = claim()
@@ -221,7 +221,7 @@ def test_shape_learning_grows_immediately_when_same_shape_gets_greedier(rig):
     # already invalidates its earlier cheap profile and protects its CPU IDs.
     publish(3)
     assert claim() is None
-    learned = adaptive_cpu.read_json(queue.ledger().base / 'adaptive' / 'profiles.json')
+    learned = adaptive_cpu.read_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'profiles.json')
     assert learned['shape']['cpu'] >= 2.
 
 
@@ -274,7 +274,7 @@ def test_short_completions_learn_cpu_and_memory_without_reserving_more_memory(ri
                   'wall_seconds': .1, 'memory_peak_bytes': 1234}
         assert adaptive_cpu.record_completion(queue.ledger(), first, sample)
         assert not adaptive_cpu.record_completion(queue.ledger(), first, sample)
-    learned = adaptive_cpu.read_json(queue.ledger().base / 'adaptive' / 'profiles.json')['shape']
+    learned = adaptive_cpu.read_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'profiles.json')['shape']
     assert learned['cpu'] == pytest.approx(.125)
     assert learned['samples'] == 3
     assert learned['memory_peak_bytes'] == 1234

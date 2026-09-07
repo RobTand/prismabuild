@@ -1336,6 +1336,27 @@ map uses the existing idle-queue procedure.
 
 ### Adaptive CPU admission
 
+CPU samples, learned profiles, interval state and spent borrowing samples live
+in the host-local `PRISMABUILD_BOX_STATE_ROOT` directory, keyed by ledger and
+hostname. The default root is `/tmp/prismabuild-admission-<uid>`. Do not delete
+it while workers run. A cold start relearns intervals and profiles; shared
+copies are never recovery authority. For this authority migration or rollback,
+keep the queue drained until every worker loop reports the selected generation.
+Before rollback to shared authority, verify all snapshot publishers have
+actually exited as well; a stalled publisher blocks that rollback.
+
+Remote status readers still read `reservations/<host>/adaptive/`, now populated
+by an independent publisher after admission is released. Its CPU record carries
+`_snapshot.source=host-local`; the original sample timestamp governs freshness,
+so a delayed copy stays stale even if it was just written. These are last
+observations, not the host's current admission decision. A blocked copy cannot
+hold admission and cannot spawn successors while it owns the separate local
+publication flock. For an absent or stale copy, inspect `publisher-owner.json`
+(PID, start ticks, nonce) and `publisher-result.json` beneath that ledger's
+`<digest>.adaptive-cpu-v1` directory. Compare nonces before attributing a result.
+No publication timeout establishes process exit or authorizes deleting locks.
+Other shared claim operations remain exposed to a degraded mount.
+
 The declared CPU demand remains an upper bound the action may actually use.
 PrismaBuild measures current host CPU activity and pressure, including unrelated
 processes, and combines that with consumption attributed to each running pool
