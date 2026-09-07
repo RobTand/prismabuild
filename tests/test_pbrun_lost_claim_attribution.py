@@ -96,6 +96,12 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
         pool._write_json_atomic(path, record)
     if forget_intent:
         intent_path.unlink(missing_ok=True)
+        # The reservation too, or this is not an unknown holder any more: the
+        # committed tokens under ``reservations/<host>/held/<key>/`` are the
+        # rename's own effect and name the box exactly, and since #272 the
+        # recovery reads them before it reads the marker.  A claim really has
+        # to have left nothing behind for the headline below to be reached.
+        q.ledger(HELD_BY).release(KEY)
 
     # Age the claim by moving the reaper's clock, not the records: the grace
     # for a lease that has not arrived yet is measured against ``claimed_unix``
@@ -132,7 +138,12 @@ def test_the_headline_names_the_holder_and_the_reaper(
 def test_a_claim_lost_before_its_record_still_names_its_box(
     queue: pool.PoolQueue,
 ) -> None:
-    """The intent marker names the claimant, and it precedes the rename."""
+    """Recovered from the reservation, or failing that from the marker.
+
+    Both precede the record rewrite this claim died inside; the reservation is
+    the exact one, being the effect of the rename rather than a claimant's
+    statement before it (#272).
+    """
 
     path, record = _lose_a_claim(queue, forget_claimed_host=True)
 
@@ -144,7 +155,13 @@ def test_a_claim_lost_before_its_record_still_names_its_box(
 
 
 def test_an_unknown_holder_is_said_to_be_unknown(queue: pool.PoolQueue) -> None:
-    """``held by (not recorded)`` sends nobody anywhere; ``on sparky`` did."""
+    """``held by (not recorded)`` sends nobody anywhere; ``on sparky`` did.
+
+    Reaching this now takes a claim that left neither a marker nor a
+    reservation, which a real window does not produce -- both are written by
+    the same ``claim``.  The rendering is still what is under test: what the
+    operator is shown when nothing named a box.
+    """
 
     path, record = _lose_a_claim(
         queue, forget_claimed_host=True, forget_intent=True)

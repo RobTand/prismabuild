@@ -2164,6 +2164,14 @@ class PoolQueue:
             },
         )
 
+    def _discard_claim_intent(self, action_key: str, *, owner: str) -> None:
+        """Remove this claimant's intent marker, and only ever its own."""
+
+        path = self.item_path(INTENT, action_key)
+        marker = _read_json(path)
+        if isinstance(marker, Mapping) and marker.get("owner") == owner:
+            path.unlink(missing_ok=True)
+
     def write_lease(
         self,
         action_key: str,
@@ -2762,6 +2770,21 @@ class PoolQueue:
                     # winner's reservation and let a third action be admitted
                     # on top of it.
                     ledger.abandon_acquire(handle)
+                # Leave no evidence of a claim that did not happen.  The marker
+                # is written by rename, so this claimant's copy replaced
+                # whatever was there -- and if the winner wrote first, the
+                # marker now names the box that LOST while still passing the
+                # generation check (#272).
+                #
+                # Only while it is still this claimant's own: ``owner`` is
+                # unique per claimant and the marker carries it.  The check and
+                # the unlink are two operations on a shared mount, so a marker
+                # written between them is removed as well -- but that leaves no
+                # marker, which ``resolve_claim_holder`` already answers as
+                # "nobody said", rather than a marker naming the wrong box.
+                # The ledger is the exact answer either way; this only keeps
+                # the fallback from being confidently wrong.
+                self._discard_claim_intent(key, owner=owner)
                 continue
             moved = _read_json(dst) or item
             if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
@@ -2948,6 +2971,66 @@ class PoolQueue:
             if float(declared) < float(published):
                 return None
         return host
+
+    def claim_reservation_hosts(self, action_key: str) -> list[str]:
+        """Every box whose ledger holds committed tokens for this action.
+
+        The ledger is the *effect* of the rename that decides ownership, not a
+        report of it: ``begin_acquire`` files a claimant's tokens under a
+        private ``held/<handle>`` precisely because the owner is undecided
+        while they are taken, and ``commit_acquire`` -- "called by the winner
+        of the ready-to-claimed rename, and by nobody else" -- is what moves
+        them to ``held/<action_key>``.  So this directory exists on the winner
+        and can exist nowhere else, and a loser cannot appear here however the
+        race went.  ``release`` rmdirs the holder, so an emptied one does not
+        linger as a false answer.
+
+        A list rather than a host, because more than one is a contradiction
+        the ledger's own invariant forbids and a caller must be able to refuse
+        rather than pick.
+        """
+
+        return sorted(
+            directory.name
+            for directory in _scan(self.root / RESERVATIONS)
+            if (directory / "held" / action_key).is_dir()
+        )
+
+    def resolve_claim_holder(
+        self, action_key: str, record: Mapping[str, object]
+    ) -> str | None:
+        """The box holding this claim, by the best evidence that exists.
+
+        Read in this order, and the order is the point:
+
+        1. **The ledger.**  Exact, and derived from the rename itself, so it
+           cannot name a loser (#272).  It is silent only when the claim holds
+           no tokens -- a zero demand -- which is also when naming the wrong
+           box costs the ledger nothing.
+        2. **The intent marker.**  A proxy: written *before* the rename, so it
+           names a claimant rather than the winner.  ``_write_claim_intent``
+           writes by rename, so a loser that wrote after the winner replaced
+           the winner's marker, and both pass the generation check.  A losing
+           claimant now removes its own marker, which shrinks that window
+           without closing it -- the removal is a read-then-unlink on a shared
+           mount and can only ever degrade to no marker at all, which is the
+           honest unknown this method already returns.
+
+        ``None`` means nothing named a box.  Callers must not substitute the
+        local hostname for it: the box asking is almost never the holder, and
+        releasing against its ledger moves nothing while reporting a number
+        that looks like it did.
+        """
+
+        hosts = self.claim_reservation_hosts(action_key)
+        if len(hosts) == 1:
+            return hosts[0]
+        if hosts:
+            # Two ledgers holding one action contradicts ``commit_acquire``'s
+            # single-winner rule.  Refusing is the only answer that cannot
+            # make it worse by choosing.
+            return None
+        return self.claim_intent_host(action_key, record)
 
     def claim_holder_pids(self, host: str | None = None) -> set[int]:
         """The pids on ``host`` that hold a claim of this queue right now.
@@ -3250,7 +3333,7 @@ class PoolQueue:
             # scope -- so the identity recovered here is not one it reads.
             holder = record.get("claimed_host")
             if not isinstance(holder, str) or not holder:
-                holder = self.claim_intent_host(key, record)
+                holder = self.resolve_claim_holder(key, record)
                 if holder is not None:
                     record["claimed_host"] = holder
             terminal = self.terminal_outcome_covers(
@@ -4483,11 +4566,7 @@ class PoolQueue:
                 f"refusing to reclaim {key}: terminal status is "
                 f"{state}/{terminal.get('status')}")
 
-        hosts = [
-            directory.name
-            for directory in _scan(self.root / RESERVATIONS)
-            if (directory / "held" / key).is_dir()
-        ]
+        hosts = self.claim_reservation_hosts(key)
         if not hosts:
             return {"action_key": key, "released": 0, "hosts": []}
         if len(hosts) != 1:
@@ -4867,18 +4946,23 @@ class PoolQueue:
             # reports ``released: 0`` and ``holder_host: null`` -- a number
             # that is true beside a box that is unknown.
             #
-            # ``claim_intent_host`` is the recovery #227 added for exactly this
-            # window and #261 made the single resolution every concluding
+            # ``resolve_claim_holder`` is the recovery #227 added for exactly
+            # this window and #261 made the single resolution every concluding
             # branch of ``reap_stale`` reads.  ``withdraw`` is a different verb
             # with the same shape, which is why it was left out then (#271).
             #
-            # Only for a CLAIMED record.  The same marker exists, this
-            # generation and legitimately, while a claimant sits between
-            # writing its intent and winning the rename -- and in that moment
-            # the item is still in ``ready`` with the claimant's tokens already
-            # acquired.  Recovering a holder there and releasing against it
-            # would take tokens from a claim that is about to succeed.
-            host = self.claim_intent_host(key, record)
+            # Only for a CLAIMED record, for the *marker* half of that
+            # resolution: the marker is written before the rename, so it exists
+            # -- this generation and legitimately -- while a claimant sits
+            # between writing it and winning, when the item is still in
+            # ``ready`` with that claimant's tokens already acquired.
+            # Recovering a holder there and releasing against it would take
+            # tokens from a claim that is about to succeed.  The ledger half
+            # answers "nobody" on its own in that moment, since the tokens are
+            # still under the claimant-private ``held/<handle>``, so this guard
+            # is belt and braces for the proxy rather than for the exact
+            # evidence.
+            host = self.resolve_claim_holder(key, record)
             if host is not None and isinstance(record, dict):
                 # Named on the withdrawn record too, for the reason #227 gives:
                 # a claim must not be able to be lost more anonymously than it

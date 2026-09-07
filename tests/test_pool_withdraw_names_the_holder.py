@@ -147,11 +147,38 @@ def test_the_reaper_then_returns_the_tokens_to_that_same_box(queue) -> None:
     assert queue.ledger(HELD_BY).available() == DEMAND
 
 
-def test_an_unknown_holder_is_still_not_invented(queue) -> None:
-    """No marker, no holder.  The fallback stays the honest one."""
+def test_the_ledger_alone_is_enough_to_name_the_holder(queue) -> None:
+    """No marker at all, and the holder is still not a guess (#272).
+
+    The marker is a proxy for the rename; the committed reservation *is* the
+    rename's effect.  Since ``resolve_claim_holder`` reads the ledger first,
+    losing the marker no longer costs the recovery -- which is the case this
+    test used to assert the opposite of, when the marker was the only
+    evidence there was.
+    """
 
     _lose_the_record_rewrite(queue)
     queue.item_path(pool.INTENT, KEY).unlink()
+
+    result = _withdraw_here(queue)
+
+    assert result["host"] == HELD_BY
+    assert queue.item_path(pool.CLAIMED, KEY).exists()
+    assert queue.ledger(HELD_BY).held() == DEMAND
+
+
+def test_with_no_evidence_at_all_no_holder_is_invented(queue) -> None:
+    """Neither marker nor reservation: the honest answer is still nobody.
+
+    Fabricated by removing both, because the two are written by the same
+    ``claim`` and a real window always leaves at least one.  The point is what
+    the resolution does when it has nothing: it must not substitute the box
+    that happens to be asking.
+    """
+
+    _lose_the_record_rewrite(queue)
+    queue.item_path(pool.INTENT, KEY).unlink()
+    assert queue.ledger(HELD_BY).release(KEY) == 1
 
     result = _withdraw_here(queue)
 
