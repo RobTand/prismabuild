@@ -61,7 +61,11 @@ absent evidence: the reaper
 reports the action key and conflicting hosts, retains the claim and every
 reservation, and continues with other claims. Withdrawal refuses that ambiguous
 claim before recording a cancellation or releasing anything. Recovery retries
-the evidence on later sweeps; it does not guess a host. `finished_host` is the box
+the evidence on later sweeps; it does not guess a host. A lease whose claim is
+gone and whose host is missing or invalid uses the same holder resolution
+before cleanup. Conflicting ledgers retain the lease and every reservation;
+absent ownership never becomes the sweeping host's ledger.
+`finished_host` is the box
 that filed the ending. Readers report the first as where the work was; the
 second reaps most of the fleet's work and would otherwise absorb its failures. An attempt counts an execution, so
 a claim reaped with no lease ever written and no immutable attempt published
