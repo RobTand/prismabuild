@@ -5278,10 +5278,20 @@ class PoolQueue:
             raise PoolContractError(f"invalid withdrawal decision: {path}: {exc}") from exc
         return decision
 
-    def withdrawal_decisions(self, key: str) -> list[tuple[Path, dict[str, object]]]:
-        """All immutable cancellation endings for this content-addressed key."""
-        return [(path, self._read_withdrawal_decision(path))
-                for path in _glob(self.dir(WITHDRAWN) / "decisions" / key, "*.json")]
+    def withdrawal_decisions(
+        self, key: str, *, generation: float | None = None,
+    ) -> list[tuple[Path, dict[str, object]]]:
+        """Immutable cancellations for this key, optionally one generation."""
+
+        directory = self.dir(WITHDRAWN) / "decisions" / key
+        if generation is None:
+            paths = _glob(directory, "*.json")
+        else:
+            path = self.withdrawal_decision_path({
+                "action_key": key, "published_unix": generation,
+            })
+            paths = [] if path is None else _glob(directory, path.name)
+        return [(path, self._read_withdrawal_decision(path)) for path in paths]
 
     def _withdraw_ready(self, key: str) -> dict[str, object] | None:
         """Examine captured READY bytes without losing an uncancelled successor."""
