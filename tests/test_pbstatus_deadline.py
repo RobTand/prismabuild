@@ -332,8 +332,17 @@ def test_a_negative_timeout_is_refused(capsys):
     assert "--timeout-s cannot be negative" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "NaN", "Infinity"])
-def test_a_non_finite_timeout_is_refused(value, capsys):
+@pytest.mark.parametrize("argv", [
+    ["--timeout-s", "nan"],
+    ["--timeout-s", "inf"],
+    # ``-inf`` only reaches the parser spelled with ``=``.  A bare token
+    # starting with ``-`` that is not a plain number is read as another
+    # option, so ``--timeout-s -inf`` fails earlier and for another reason.
+    ["--timeout-s=-inf"],
+    ["--timeout-s", "NaN"],
+    ["--timeout-s", "Infinity"],
+])
+def test_a_non_finite_timeout_is_refused(argv, capsys):
     """``float()`` accepts these; a deadline cannot.
 
     Each one defeats the deadline in its own way and none of them says so.
@@ -343,7 +352,7 @@ def test_a_non_finite_timeout_is_refused(value, capsys):
     given a deadline to stop; ``-inf`` is not a duration at all.
     """
     with pytest.raises(SystemExit) as raised:
-        pbstatus.main(["--timeout-s", value])
+        pbstatus.main(argv)
     assert raised.value.code == 2
     assert "--timeout-s must be a finite number of seconds" in capsys.readouterr().err
 
