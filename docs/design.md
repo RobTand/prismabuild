@@ -1274,6 +1274,17 @@ collected once by the broker and shared by all loops.
 
 ## Preferred, overflow and adaptive CPU admission
 
+Host admission uses a nonblocking local FLOCK around candidate evaluation and
+claiming. A losing loop reports `host admission lock busy` to its worker log,
+with the holder PID observed at refusal (or `unknown`), before returning to
+its normal poll cadence. Output is limited to one line per 60 monotonic seconds
+per queue instance, including across holder changes and successful acquisitions.
+This is an observed refusal at the enclosing gate, not process ownership for
+recovery or evidence about any candidate's placement, CPU or GPU decision.
+The diagnostic adds no shared-filesystem reads or writes. A holder can still
+block on shared I/O inside the critical section; the diagnostic does not bound
+that operation or release its locks and reservations (issues #266 and #351).
+
 The fleet retains `--all-cores` so all usable CPU capacity remains available.
 Within each worker's inherited affinity, physical performance cores form the
 preferred tier. SMT siblings and efficiency cores form the lower tier and are

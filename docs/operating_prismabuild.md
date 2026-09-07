@@ -634,6 +634,15 @@ receipt under `evidence.slurm.controller`.
 
 ## Watch the fleet
 
+When ready work persists while a host claims nothing, inspect that host's
+worker logs as well as `pbstatus`. `host admission lock busy; observed holder
+pid=...; candidate evaluation not reached` identifies refusal at the local
+admission FLOCK before per-action placement and resource checks. Each loop
+reports at most once per 60 seconds; `unknown` means the holder could not be
+read. The PID is an observation, so establish its current identity and lock
+ownership before any recovery action. This message neither diagnoses the
+holder's filesystem wait nor implies that the ready queue is empty.
+
 `pbstatus` answers the three questions in one command, with no arguments:
 
     tools/fleet/pbstatus.py
