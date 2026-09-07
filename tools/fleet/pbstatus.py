@@ -573,6 +573,9 @@ def read_pool(queue_root: str | Path) -> dict:
             "foreign": offer.get("foreign"), "observed_detail": offer.get("observed_detail"),
             "features": offer.get("tags"), "has_gpu": offer.get("has_gpu"),
             "runtime_commit": offer.get("runtime_commit"),
+            # Absent on a pre-#254 offer, and that is "not measured": the
+            # reader below prints it as unknown and never as zero.
+            "loops": offer.get("loops"),
             "reason": None if fresh else "offer expired or timestamp invalid",
             "admission": {
                 "cpu": _admission_sample(base / 'cpu-sample.json', now=now,
@@ -648,10 +651,14 @@ def read_pool(queue_root: str | Path) -> dict:
 def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
     if not nodes:
         return ["no worker offers recorded"]
-    return render_table(("NODE", "STATE", "OFFER AGE", "CAPACITY", "OBSERVED", "ADMISSION", "NOTE"), (
-        (n['node'], n['state'], n.get('age_s'), n.get('capacity'), n.get('observed_capacity'),
-         ', '.join(f"{k}: {v['state']}" for k, v in n.get('admission', {}).items()), n.get('reason'))
-        for n in nodes))
+    return render_table(
+        ("NODE", "STATE", "OFFER AGE", "LOOPS", "CAPACITY", "OBSERVED", "ADMISSION", "NOTE"), (
+            (n['node'], n['state'], n.get('age_s'),
+             ABSENT if n.get('loops') is None else n['loops'],
+             n.get('capacity'), n.get('observed_capacity'),
+             ', '.join(f"{k}: {v['state']}" for k, v in n.get('admission', {}).items()),
+             n.get('reason'))
+            for n in nodes))
 
 
 def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, object]) -> list[str]:

@@ -541,6 +541,11 @@ def collect_metrics(
         "prismabuild_worker_memory_available_bytes",
         "Coarse available host memory from the fresh worker offer, converted from integer GiB.",
     )
+    loops = metrics.family(
+        "prismabuild_worker_loops",
+        "PrismaBuild worker loops running on the box that wrote this fresh offer; "
+        "absent, not zero, when the offer did not measure it.",
+    )
     evidence_age = metrics.family(
         "prismabuild_admission_evidence_age_seconds",
         "Age of the last persisted admission evidence; this is not continuous hardware monitoring.",
@@ -589,6 +594,14 @@ def collect_metrics(
                 available_gib = _number(detail.get("mem_available_gb"))
                 if available_gib is not None:
                     memory_available.add(available_gib * GIB, host=host)
+            # A pre-#254 offer carries no count.  That is a missing series and
+            # not a zero one, and it is emphatically not a scrape failure:
+            # every loop published before the field existed announces without
+            # it, so setting ``success = False`` here would mark the whole
+            # scrape bad for the duration of a rolling generation change.
+            count = node.get("loops")
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                loops.add(count, host=host)
         admission = node.get("admission")
         if isinstance(admission, Mapping):
             for resource in ("cpu", "gpu"):
