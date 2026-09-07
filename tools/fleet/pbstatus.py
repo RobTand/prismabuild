@@ -1350,9 +1350,14 @@ def _isolate_child_fds(write_fd: int) -> int:
     where a status screen still has to answer.
 
     Returns the descriptor the caller must write on, which is ``write_fd``
-    moved out of the way first when the pipe landed on 0, 1 or 2.
+    moved out of the way first when the pipe landed on 0, 1 or 2.  It is moved
+    in a loop, not once: ``os.dup`` hands back the lowest free descriptor, and
+    when the caller closed its own standard streams the lowest free descriptor
+    is another one below 3 -- the read end this child has just closed.  Each
+    turn of the loop spends one of the three low slots, so it ends after at
+    most three, and the copies left behind are closed by the ``dup2`` below.
     """
-    if write_fd < 3:
+    while write_fd < 3:
         write_fd = os.dup(write_fd)
     null = os.open(os.devnull, os.O_RDWR)
     for target in (0, 1, 2):                       # write_fd is above these now
