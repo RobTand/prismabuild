@@ -177,6 +177,9 @@ def test_install_creates_one_job(install_fixture, original):
     "jobs: []\n---\njobs: []\n",
     "jobs: [{name: on}]\n", "jobs: [{name: other, value: 1:20}]\n",
     "jobs: [{name: other, value: 2026-09-06}]\n",
+    "jobs: [{name: other, update_every: 012}]\n",
+    "jobs: [{name: other, update_every: -012}]\n",
+    "jobs: [{name: other, update_every: 1_000}]\n",
 ])
 def test_invalid_or_ambiguous_config_refused_before_changes(install_fixture, original):
     config, calls, run = install_fixture

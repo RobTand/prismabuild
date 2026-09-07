@@ -52,6 +52,11 @@ nonzero status and identify the file and recovery copies. Check Netdata's
 collector logs after deployment as well: structural YAML validation does not
 prove an endpoint is scrapeable.
 
+The installer accepts decimal integers without leading zeros or numeric
+separators. Other integer spellings (including `012`, `0x10`, and `1_000`),
+sexagesimal numbers, and floating-point separators are refused to avoid changing
+their meaning between YAML parsers. Quote values that are intended as strings.
+
 Netdata is the store, rather than a series appended under the queue, for the
 reason the queue is being observed at all: writing history onto the shared mount
 adds load to the resource whose contention is the most common thing you are

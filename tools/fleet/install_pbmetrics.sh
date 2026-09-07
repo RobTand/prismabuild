@@ -55,6 +55,7 @@ if [ -d /etc/netdata/go.d ]; then
     candidate=$(mktemp "${netdata_job}.pb-candidate.XXXXXX")
     "$python" - "$netdata_job" "$candidate" "$port" <<'PY'
 import pathlib
+import re
 import sys
 
 try:
@@ -74,6 +75,10 @@ class StrictLoader(yaml.SafeLoader):
             raise ValueError("ambiguous YAML boolean; quote it or use true/false")
         if kind in {"int", "float"} and ":" in node.value:
             raise ValueError("ambiguous YAML sexagesimal number")
+        if kind == "int" and not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]*)", node.value):
+            raise ValueError("integers must use decimal digits without leading zeros or separators")
+        if kind == "float" and "_" in node.value:
+            raise ValueError("numeric separators are unsupported")
         return super().construct_object(node, deep=deep)
 
     def compose_node(self, parent, index):
