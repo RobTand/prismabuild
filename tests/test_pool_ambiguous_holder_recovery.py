@@ -10,10 +10,14 @@ from test_pool_claim_race_names_the_winner import (
 )
 
 
-def _contradictory_claim(queue):
+def _contradictory_claim(queue, *, second_has_tokens=False):
     _win_but_die_before_naming_itself(queue)
     # This is a fabricated invariant violation, not a claimed live interleaving.
-    (queue.root / pool.RESERVATIONS / LOST_BY / "held" / KEY).mkdir(parents=True)
+    if second_has_tokens:
+        queue.ledger(LOST_BY).ensure_capacity(DEMAND)
+        assert queue.ledger(LOST_BY).acquire(KEY, DEMAND)
+    else:
+        (queue.root / pool.RESERVATIONS / LOST_BY / "held" / KEY).mkdir(parents=True)
     return queue.item_path(pool.CLAIMED, KEY).read_bytes()
 
 
@@ -24,11 +28,13 @@ def _assert_preserved(queue, original):
     assert queue.ledger(WON_BY).held() == DEMAND
 
 
-def test_reaper_retains_and_reports_ambiguous_claim(queue, capsys):
-    original = _contradictory_claim(queue)
+@pytest.mark.parametrize("second_has_tokens", [False, True])
+def test_reaper_retains_and_reports_ambiguous_claim(queue, capsys, second_has_tokens):
+    original = _contradictory_claim(queue, second_has_tokens=second_has_tokens)
     with mock.patch.object(queue, "cleanup_action_containers", wraps=queue.cleanup_action_containers) as cleanup:
         assert _reap_on_a_third_box(queue) == []
     _assert_preserved(queue, original)
+    assert queue.ledger(LOST_BY).held() == (DEMAND if second_has_tokens else {})
     cleanup.assert_not_called()
     message = capsys.readouterr().err
     assert "ambiguous claim holder" in message
