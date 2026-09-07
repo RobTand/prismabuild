@@ -32,7 +32,7 @@ from the host ``mem_gb`` reservation.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 import math
 import os
@@ -234,9 +234,23 @@ class Observation:
     detail: dict[str, object] = field(default_factory=dict)
 
 
+def _held_snapshot(
+    held: Mapping[str, int] | Callable[[], Mapping[str, int]] | None,
+) -> dict[str, int]:
+    """One reading of what the pool holds here, taken *now*.
+
+    A callable is a reading the caller can repeat; a mapping is one it already
+    took and cannot.  ``observe`` needs the repeatable kind on the memory axis
+    -- see the bracket below.
+    """
+
+    source = held() if callable(held) else held
+    return {str(kind): int(value) for kind, value in (source or {}).items()}
+
+
 def observe(
     declared: Mapping[str, int],
-    held: Mapping[str, int] | None = None,
+    held: Mapping[str, int] | Callable[[], Mapping[str, int]] | None = None,
     *,
     margin_gb: int = MEMORY_MARGIN_GB,
     gpu_sample: object = _READ,
@@ -249,15 +263,19 @@ def observe(
     ``declared`` is what this worker was configured to offer; the result never
     exceeds it, because observing the box is how an offer *falls*, never how it
     grows past its configuration. ``held`` accounts for the pool's reserved
-    host memory. GPU ownership comes only from the broker's attributed job and
-    foreign-process inventories; process counts are never inferred here.
+    host memory, and should be a **callable** so it can be read on both sides
+    of the memory instrument: a mapping is a reading somebody else took at an
+    instant this function cannot know, and the memory clamp adds it to one this
+    function takes itself. GPU ownership comes only from the broker's
+    attributed job and foreign-process inventories; process counts are never
+    inferred here.
 
     A kind nothing here knows how to read passes through untouched: an
     unobservable resource is not a busy one.
     """
 
     wanted = {str(kind): int(value) for kind, value in declared.items()}
-    ours = {str(kind): int(value) for kind, value in (held or {}).items()}
+    ours = _held_snapshot(held)
     capacity = dict(wanted)
     foreign: dict[str, int] = {}
     detail: dict[str, object] = {}
@@ -305,6 +323,35 @@ def observe(
     if "mem_gb" in wanted:
         if mem_gb is _READ:
             mem_gb = mem_available_gb()
+            # ``ours`` and ``MemAvailable`` are *added* below, so they have to
+            # describe the same instant.  They do not: the caller reads the
+            # ledger, then this line reads /proc.  A **sibling** loop releasing
+            # in between is in both terms at once -- still in ``ours`` because
+            # that read is older than its release, already free in
+            # ``MemAvailable`` because every ending proves the payload stopped
+            # before it returns the tokens (``cleanup_action_containers``:
+            # terminate, clean up containers, sample, release scope, and only
+            # then ``ledger.release``).  The window is that whole gap, seconds
+            # wide, and the box then offers memory it does not have for
+            # ``samples`` polls, because ``offer`` takes a maximum.
+            #
+            # ``rejoin`` does not cover this.  It caps *this* observer after
+            # *this* loop's action, and a loop is single-threaded: its own
+            # release cannot land inside its own reading.  A sibling's can, and
+            # a sibling's ``rejoin`` touches the sibling's observer.  Boxes run
+            # 3-16 loops against one ledger.
+            #
+            # So take the reading twice and keep what is held in both.  A token
+            # that vanished mid-reading is not credited to ``ours``; one that
+            # appeared mid-reading is not either, which lowers the offer and is
+            # the safe direction for a number that admits work.
+            if callable(held):
+                after = _held_snapshot(held)
+                if after != ours:
+                    detail["held_moved_during_read"] = {
+                        "before": dict(ours), "after": dict(after)}
+                    ours = {kind: min(value, after.get(kind, 0))
+                            for kind, value in ours.items()}
         if mem_gb is not None:
             available = int(mem_gb)                   # type: ignore[arg-type]
             detail["mem_available_gb"] = available
@@ -410,7 +457,8 @@ class CapacityObserver:
                      if ledger_total else None)
 
     def offer(
-        self, declared: Mapping[str, int], held: Mapping[str, int] | None = None,
+        self, declared: Mapping[str, int],
+        held: Mapping[str, int] | Callable[[], Mapping[str, int]] | None = None,
         **overrides: object,
     ) -> dict[str, int]:
         wanted = {str(kind): int(value) for kind, value in declared.items()}
