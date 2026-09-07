@@ -230,6 +230,28 @@ sudo ln -s /mnt/shared/prismabuild-fleet/repo/tools/fleet/mount_latency.py \
 sudo systemctl restart netdata
 ```
 
+The retained log also needs a reader. On hosts where `/var/lib/netdata` is
+`0770` or the collector directory is `0700`, ownership by Netdata alone does
+not let the fleet operator read it. After inspecting the existing paths, an
+administrator can grant **only traversal** on Netdata's parent and read access
+to this collector's records, without adding `rob` to Netdata's group or opening
+the rest of its home. For operator `rob`, using the host's ACL tools:
+
+```sh
+sudo setfacl -m u:rob:--x /var/lib/netdata
+sudo setfacl -m u:rob:r-x /var/lib/netdata/prismabuild
+sudo setfacl -m d:u:rob:r-x /var/lib/netdata/prismabuild
+# Inspect existing regular collector logs; grant each retained file explicitly:
+# sudo setfacl -m u:rob:r-- /var/lib/netdata/prismabuild/pb-mount-latency-HOST.jsonl
+# sudo setfacl -m u:rob:r-- /var/lib/netdata/prismabuild/pb-mount-latency-HOST.jsonl.1
+```
+
+The default ACL covers newly created logs after rotation; an existing file
+needs its own grant. Verify traversal and reading as the operator, and creation
+as Netdata. Do not apply recursive ACLs to Netdata's home. If administrator
+access or ACL tooling is unavailable, record that adoption blocker; the chart
+diagnostics below remain readable through Netdata's normal API.
+
 Verify a sample from the actual Netdata process on **each** client: its
 `probe.status` must be `ok`, its claim timing present, and its box-local JSONL
 record growing. A standalone validation must run through published PrismaBuild
@@ -306,6 +328,32 @@ A box-local JSONL copy is written alongside, capped at two generations of
 16 MiB — a backstop for the delay between an incident and somebody coming to
 look, not the archive. It is deliberately never written to the mount being
 measured.
+
+### Read the reason for a failed probe or missing log
+
+`prismabuild.mount_probe_state` carries current chart labels `probe_status`,
+`probe_error`, `record_status`, `record_error`, and `record_path`. Read them
+without journal permissions through the ordinary Netdata chart API:
+
+```sh
+curl -fsS 'http://localhost:19999/api/v1/chart?chart=prismabuild.mount_probe_state'
+```
+
+Under `chart_labels`, `probe_error` identifies the probe exception and
+`record_error` identifies a failed local append, directory creation, or rotation.
+The probe state continues to report independently when recording fails. Each
+successful sample clears the corresponding error to `none`; labels describe
+the current sample, not retained error history. `record_status=ok` means the
+append succeeded, not that another UID can read the file.
+
+The [Netdata protocol](https://learn.netdata.cloud/docs/developer-and-contributor-corner/external-plugins)
+uses numeric `VARIABLE` values. These strings travel as `CLABEL` values instead:
+bounded to 512 characters with quotes, backslashes and control characters
+replaced by spaces. Netdata can further normalize label text. JSONL preserves
+the original full probe error and records the successful destination under
+`recording`; when writing fails, the emitted JSON/human/chart output carries
+the recording failure. Human one-line output also includes the error reason.
+No performance or mount-recovery claim follows from successful diagnostics.
 
 ## Cost
 

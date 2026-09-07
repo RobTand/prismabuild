@@ -48,6 +48,45 @@ def test_recording_failure_reaches_protocol_without_losing_probe(tmp_path,
     assert str(blocked) in output
 
 
+def test_diagnostic_labels_cannot_inject_commands_and_recovery_clears_them():
+    reason = "bad 'path'\\\"\nDISABLE\r\x00" + "x" * 900
+    sink = io.StringIO()
+    mount_latency._emit({"probe": {"status": "error", "error": reason}},
+                        sink, update_every=15)
+    lines = sink.getvalue().splitlines()
+    error_line = next(line for line in lines if line.startswith("CLABEL probe_error"))
+    assert len(error_line) <= 512 + len("CLABEL probe_error '' 1")
+    assert error_line.count("'") == 2
+    assert "\\" not in error_line and "\x00" not in error_line
+    assert "DISABLE" not in lines
+    assert any(line.startswith("CHART ") and line.endswith(" 15") for line in lines)
+
+    sink = io.StringIO()
+    mount_latency._emit({"probe": {"status": "ok"},
+                         "recording": {"status": "ok", "path": "/logs/box.jsonl"}},
+                        sink)
+    assert "CLABEL probe_error 'none' 1" in sink.getvalue()
+    assert "CLABEL record_error 'none' 1" in sink.getvalue()
+    assert "CLABEL record_status 'ok' 1" in sink.getvalue()
+
+
+def test_forked_probe_error_is_retained_verbatim(tmp_path):
+    reason = "denied 'probe'\\path\nsecond line"
+
+    def denied(*args, **kwargs):
+        raise PermissionError(reason)
+
+    sampler = mount_latency.MountSampler(tmp_path, probe=denied,
+                                        lock_dir=tmp_path / "locks")
+    record = sampler.sample()
+    assert record["probe"]["status"] == "error"
+    assert record["probe"]["error"] == f"PermissionError: {reason}"
+    path = mount_latency.append_record(record, tmp_path / "records")
+    saved = json.loads(path.read_text())
+    assert saved["probe"]["error"] == record["probe"]["error"]
+    assert saved["recording"] == {"status": "ok", "path": str(path)}
+
+
 @pytest.mark.parametrize("direct_exec", [False, True])
 def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec):
     """Exercise the installed symlink and Netdata's positional interval argv.
