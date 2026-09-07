@@ -1423,11 +1423,11 @@ requests also remain exclusive; their sealed demand and receipts retain the
 original count, while physical reservation and fit checks use one device.
 
 Host `mem_gb` always retains its complete token reservation and cgroup cap.
-The versioned GB10 fleet ceiling is 96 GiB per box, shared by every action
-on that box. A 96 GiB action waits until other memory reservations release;
+The versioned GB10 fleet ceiling is 104 GiB per box, shared by every action
+on that box. A 104 GiB action waits until other memory reservations release;
 the ceiling does not grant overlap. The live host-memory clamp retains its
 8 GiB margin and may lower the offer. See
-[the measured capacity decision](gb10_memory_capacity_2026-09-07.md).
+[the revised capacity decision](gb10_memory_104_capacity_2026-09-07.md).
 On a `shared_system` device such as GB10, CPU and GPU allocations share physical
 DRAM and remain inside that existing aggregate budget. On a `discrete` device,
 VRAM is an independent pool: each action reserves its full GPU budget, the sum
