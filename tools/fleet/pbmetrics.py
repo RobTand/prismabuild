@@ -164,7 +164,8 @@ class _HostAttempts:
     unavailable: int = 0
     oldest_age_s: float | None = None
     #: ``(action_key, nonce) -> (cpu_seconds, wall_seconds)`` for the claims
-    #: whose counters were readable, whether or not the aggregate qualified.
+    #: with complete, fresh, exact-scope samples, even if another claim makes
+    #: the host aggregate unavailable.
     counters: dict[tuple[str, str], tuple[float, float]] = field(default_factory=dict)
 
     @property
@@ -230,9 +231,6 @@ def _attempt_telemetry(
                     host_attempts.oldest_age_s = age
             matched = (isinstance(record, dict) and record.get("action_key") == key
                        and bool(nonce) and record.get("nonce") == nonce)
-            if (matched and cpu_seconds is not None and wall_seconds is not None
-                    and wall_seconds > 0):
-                host_attempts.counters[(key, str(nonce))] = (cpu_seconds, wall_seconds)
             if (not isinstance(record, dict) or record.get("complete") is not True
                     or not matched or sampled is None
                     or not -_SKEW_S <= now - sampled <= pool.cpu_admission.MAX_SAMPLE_AGE_S
@@ -240,6 +238,7 @@ def _attempt_telemetry(
                     or current is None):
                 host_attempts.unavailable += 1
                 continue
+            host_attempts.counters[(key, str(nonce))] = (cpu_seconds, wall_seconds)
             host_attempts.cpu += cpu_seconds / wall_seconds
             host_attempts.memory_bytes += current
         answer[host] = host_attempts

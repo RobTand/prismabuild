@@ -75,10 +75,14 @@ reports, `prismabuild_attempt_recent_cores`, is not such a counter: the counters
 differenced belong to each attempt's own cgroup, they are differenced only
 against a previous reading of that same attempt -- identified by action key and
 scope nonce together, so a key reused by a later attempt is never differenced
-against an earlier one -- and a restart simply produces no sample until a second
-refresh. Nothing is exposed per action key; the store is keyed by it in memory
-and pruned each refresh to the claims that are live, so it cannot grow with the
-queue's history. Labels are drawn
+against an earlier one. Only complete, fresh, exact-scope samples contribute
+counters or recent-rate coverage. An unusable sample drops that attempt from
+the previous-reading store; recovery and exporter restart both require two
+consecutive usable readings before reporting a rate. An incomplete cgroup read
+is unknown, even when its fallback record retains an old CPU counter with an
+advancing wall clock. Nothing is exposed per action key; the store is keyed by
+it in memory and pruned each refresh to the claims that are live, so it cannot
+grow with the queue's history. Labels are drawn
 from bounded sets: worker host, resource, CPU/GPU job kind, terminal outcome,
 timing statistic, timing phase, and memory domain. Action keys, command lines,
 nonces, tokens, and result digests are never labels.
