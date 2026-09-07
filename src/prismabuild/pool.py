@@ -1757,8 +1757,7 @@ class PoolQueue:
         directory = self.root / WORKERS
         if not directory.is_dir():
             return []
-        now = _now()
-        live: list[dict[str, object]] = []
+        records: list[dict[str, object]] = []
         for path in sorted(directory.glob("*.json")):
             # An offer that went away while we were reading the list is a box
             # that left, which is the same answer as an offer that expired:
@@ -1767,8 +1766,15 @@ class PoolQueue:
             # among several.  ``tolerate_stale`` is what makes that true on
             # the shared filesystem the pool actually lives on (#208).
             record = _read_json(path, tolerate_stale=True)
-            if record is None:
-                continue
+            if record is not None:
+                records.append(record)
+
+        # Directory enumeration or any later read can stall on the shared
+        # filesystem. All offers must still be fresh after the complete scan;
+        # checking against its start would extend their lifetimes by the stall.
+        now = _now()
+        live: list[dict[str, object]] = []
+        for record in records:
             announced = record.get("announced_unix")
             if not isinstance(announced, (int, float)):
                 continue
