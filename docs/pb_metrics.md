@@ -29,11 +29,28 @@ sudo /mnt/shared/prismabuild-fleet/repo/tools/fleet/install_pbmetrics.sh
 ```
 
 That installs `prismabuild-metrics.service`, bound to `127.0.0.1:9469` and
-running as the queue's owner, and appends a Netdata scrape job for it at
-`/etc/netdata/go.d/prometheus.conf` (any existing file is copied aside first).
+running as the queue's owner, and adds one Netdata scrape job for it to the
+`jobs` sequence in `/etc/netdata/go.d/prometheus.conf`. Existing jobs and other
+settings are retained. Adding a job normalizes YAML formatting and comments;
+the original file is saved in a unique `prometheus.conf.pb-before.*` backup.
+A repeat installation with an existing `prismabuild` job keeps the file bytes
+unchanged, including that job's existing settings.
 `PBMETRICS_PORT`, `PBMETRICS_QUEUE`, `PBMETRICS_USER`, `PBMETRICS_PYTHON` and
 `PBMETRICS_RUNTIME` override the defaults. The script proves the exporter can
 read the queue before it installs a unit that would otherwise restart-loop.
+
+When Netdata's `go.d` directory exists, the installer's selected Python also
+needs PyYAML (`python3-yaml` on Debian/Ubuntu with the default system Python).
+This is an installer dependency, not an exporter or worker dependency. Before
+changing services, the installer parses the existing YAML and validates the
+candidate's mapping and job-list structure. Invalid YAML, duplicate mapping
+keys, multiple PrismaBuild jobs, aliases, merges, unsupported tags, scalar
+spellings with ambiguous YAML 1.1/1.2 meanings (such as unquoted `on`), and symlink
+configurations are refused for manual reconciliation; the installed file and
+services remain untouched. Netdata restart or active-state failures return a
+nonzero status and identify the file and recovery copies. Check Netdata's
+collector logs after deployment as well: structural YAML validation does not
+prove an endpoint is scrapeable.
 
 Netdata is the store, rather than a series appended under the queue, for the
 reason the queue is being observed at all: writing history onto the shared mount
