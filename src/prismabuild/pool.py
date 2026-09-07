@@ -171,6 +171,9 @@ _STATES = (READY, CLAIMED, DONE, FAILED, INTENT, WITHDRAWN)
 #: ``sweep_widowed_leases`` by glob, ``item_path`` and ``find_key`` by name --
 #: so a suffix that is neither is invisible to all of them, which is the point.
 TOMBSTONE_SUFFIX = ".tombstone"
+# Old sweepers must ignore exact-attempt cleanup beside a newer live claim;
+# they retire ordinary tombstones in that situation without scope cleanup.
+LATE_FINISH_SUFFIX = ".late-finish"
 CONTAINER_OWNERS = "container-owners"
 CONTAINER_OWNER_LABEL = "prismabuild.action"
 DOCKER = "/usr/bin/docker"
@@ -2629,9 +2632,28 @@ class PoolQueue:
 
     @_serialized_key
     def cleanup_action_containers(
-        self, record: Mapping[str, object], *, reason: str = "completion"
+        self, record: Mapping[str, object], *, reason: str = "completion",
+        scope_only: bool = False,
     ) -> dict[str, object]:
-        """Prove both direct and Docker payloads stopped before tokens return."""
+        """Prove payload cleanup, optionally limited to one replaced scope.
+
+        A late finisher owns its broker nonce, never the action-wide Docker
+        owner or the successor's live telemetry and reservation.
+        """
+        if scope_only:
+            try:
+                live = _read_json(self.item_path(CLAIMED, str(record["action_key"])))
+                if live is not None and not _same_claim(live, record):
+                    old = record.get("resource_scope") or record.get("resource_scope_intent")
+                    if not isinstance(old, dict) or not old.get("nonce"):
+                        raise PoolContractError("late finish has no exact scope authority")
+                    if any(isinstance(live.get(field), dict)
+                           and live[field].get("nonce") == old["nonce"]
+                           for field in ("resource_scope", "resource_scope_intent")):
+                        raise PoolContractError("late scope identity also belongs to the live claim")
+            except Exception as exc:                                 # noqa: BLE001
+                return {"complete": False, "used": True, "removed": [], "remaining": [],
+                        "error": f"late scope ownership unavailable: {type(exc).__name__}: {exc}"}
         if record.get("resource_scope") is None and record.get("resource_scope_intent") is not None:
             try:
                 self._recover_resource_scope_creation(record)
@@ -2650,6 +2672,8 @@ class PoolQueue:
                 return {"complete": False, "used": True, "removed": [], "remaining": [],
                         "error": f"resource scope creation reconciliation incomplete: {type(exc).__name__}: {exc}"}
         if record.get("resource_scope") is None:
+            if scope_only:
+                return {"complete": True, "used": False, "removed": [], "remaining": []}
             return self._cleanup_action_containers(record)
         try:
             prior = record.get("resource_scope_cleanup")
@@ -2658,8 +2682,12 @@ class PoolQueue:
                 return {"complete": True, "used": True, "removed": [], "remaining": [],
                         "resource_scope": prior}
             scope = self._scope_from_record(record)
+            if scope_only:
+                scope.telemetry_path = (scope.telemetry_path.parent / "attempts"
+                                        / scope.nonce / scope.telemetry_path.name)
             scope.terminate_owned(reason)
-            containers = self._cleanup_action_containers(record)
+            containers = ({"complete": True, "used": True, "removed": [], "remaining": []}
+                          if scope_only else self._cleanup_action_containers(record))
             if not containers["complete"]:
                 return containers
             telemetry = self._sample_resource_scope(scope)
@@ -2669,11 +2697,15 @@ class PoolQueue:
             key = str(record["action_key"])
             path = self.item_path(CLAIMED, key)
             live = _read_json(path)
-            if live is not None and _same_claim(live, record):
+            if not scope_only and live is not None and _same_claim(live, record):
                 live["resource_scope_cleanup"] = cleanup
                 _write_json_atomic(path, live)
             if isinstance(record, dict):
                 record["resource_scope_cleanup"] = cleanup
+            if scope_only:
+                # A delayed cleanup is not a fresh runtime measurement and
+                # must not train the live admission model for this action.
+                return {**containers, "resource_scope": cleanup}
             try:
                 cpu_admission.record_completion(self.ledger(), record, telemetry)
             except Exception as exc:                                 # noqa: BLE001
@@ -3325,7 +3357,8 @@ class PoolQueue:
                 # a cached negative lookup can outlive another NFS client's claim.
                 claimed_names = os.listdir(self.dir(CLAIMED))
                 if (f"{key}.json" in claimed_names
-                        or any(name.startswith(f"{key}.") and name.endswith(TOMBSTONE_SUFFIX)
+                        or any(name.startswith(f"{key}.")
+                               and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))
                                for name in claimed_names)):
                     continue
                 if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
@@ -4298,6 +4331,10 @@ class PoolQueue:
         the action's own visibility, and a sweep that fires while a finisher is
         mid-publish would put a claim beside a ready record of the same
         generation.
+
+        Exact-scope late finishes use a separate suffix. They are already
+        awaiting cleanup, never restored as claims, and retried immediately
+        on their owning host under the same key lock.
         """
 
         swept: list[str] = []
@@ -4305,13 +4342,32 @@ class PoolQueue:
         if not claimed.is_dir():
             return swept
         now = _now()
-        for tombstone in sorted(claimed.glob(f"*{TOMBSTONE_SUFFIX}")):
+        for tombstone in sorted([*claimed.glob(f"*{TOMBSTONE_SUFFIX}"),
+                                 *claimed.glob(f"*{LATE_FINISH_SUFFIX}")]):
             parts = tombstone.name.split(".", 2)
             key = parts[0]
             if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
                 continue
             with self._transition_locked(key, blocking=False) as acquired:
                 if not acquired:
+                    continue
+                if tombstone.name.endswith(LATE_FINISH_SUFFIX):
+                    # This record never owns the action's current claim or
+                    # tokens. Retry only its saved scope, even beside a live
+                    # successor, without the ordinary tombstone dispositions.
+                    try:
+                        record = _read_json(tombstone)
+                        if record is None or record.get("action_key") != key:
+                            raise PoolContractError("invalid late-finish recovery record")
+                        if record.get("claimed_host") != socket.gethostname():
+                            continue
+                        result = self._retry_late_finish(tombstone, record)
+                    except Exception as exc:                         # noqa: BLE001
+                        print(f"pool: late finish {key} retained: {type(exc).__name__}: {exc}",
+                              file=sys.stderr)
+                        continue
+                    if result != tombstone:
+                        swept.append(key)
                     continue
                 when: float | None = None
                 if len(parts) >= 2:
@@ -5166,7 +5222,77 @@ class PoolQueue:
             "detail": detail,
         }
 
+    def _late_finish_path(self, record: Mapping[str, object]) -> Path:
+        identity = pb.canonical_sha256({field: record.get(field) for field in _CLAIM_IDENTITY})
+        return self.dir(CLAIMED) / f"{record['action_key']}.{identity}{LATE_FINISH_SUFFIX}"
+
     def _finish_late(
+        self,
+        action_key: str,
+        *,
+        status: str,
+        detail: Mapping[str, object] | None,
+        snapshot: Mapping[str, object],
+        live: Mapping[str, object],
+    ) -> Path:
+        if snapshot.get("resource_scope") is None and snapshot.get("resource_scope_intent") is None:
+            return self._archive_late_finish(
+                action_key, status=status, detail=detail, snapshot=snapshot, live=live)
+        record = {**dict(snapshot), "action_key": action_key}
+        path = self._late_finish_path(record)
+        saved = _read_json(path)
+        if saved is None:
+            record["finish_pending"] = {"status": status, "detail": dict(detail or {})}
+            record["late_finish"] = {field: live.get(field) for field in _CLAIM_IDENTITY}
+            # Persist authority and the completed payload's result before any
+            # broker operation. A crash can then be retried by the same sweep
+            # that already recovers interrupted finish tombstones.
+            _write_json_atomic(path, record)
+        else:
+            record = saved
+        return self._retry_late_finish(path, record)
+
+    def _retry_late_finish(self, path: Path, record: dict[str, object]) -> Path:
+        pending = record.get("finish_pending")
+        live = record.get("late_finish")
+        if (path != self._late_finish_path(record)
+                or not isinstance(pending, dict) or not isinstance(pending.get("status"), str)
+                or not isinstance(pending.get("detail"), dict) or not isinstance(live, dict)
+                or (record.get("resource_scope") is None
+                    and record.get("resource_scope_intent") is None)):
+            raise PoolContractError("invalid late-finish recovery authority or result")
+        status, detail = pending["status"], dict(pending["detail"])
+        cleanup = self.cleanup_action_containers(
+            record, reason=str(detail.get("termination_reason") or status), scope_only=True)
+        if not cleanup["complete"]:
+            self._note_cleanup_attempt(record, record, cleanup)
+            _write_json_atomic(path, record)
+            return path
+        scope_cleanup = cleanup.get("resource_scope") or {}
+        detail["resource_scope_cleanup"] = scope_cleanup
+        telemetry = scope_cleanup.get("telemetry") or {}
+        resource_failure = self._resource_failure(telemetry)
+        if resource_failure:
+            status = "failed"
+            detail.update(status="failed", returncode=137,
+                          termination_reason=resource_failure, resource_telemetry=telemetry,
+                          termination_evidence=telemetry.get("termination_evidence"))
+        # Keep completed cleanup durable until both the immutable attempt and
+        # the recovery evidence are filed. Neither can overwrite a successor.
+        _write_json_atomic(path, record)
+        result = self._archive_late_finish(
+            str(record["action_key"]), status=status, detail=detail, snapshot=record, live=live)
+        evidence = dict(record)
+        evidence.pop("finish_pending", None)
+        evidence.pop("container_cleanup_pending", None)
+        self._file_superseded(
+            evidence, key=str(record["action_key"]), kind="late-finish",
+            status=status, detail=detail, finished_unix=_now(),
+            finished_host=socket.gethostname(), outcome=str(result.relative_to(self.root)))
+        path.unlink(missing_ok=True)
+        return result
+
+    def _archive_late_finish(
         self,
         action_key: str,
         *,
@@ -5195,11 +5321,10 @@ class PoolQueue:
         outcome, so a reaper that already filed a lease loss for this attempt
         keeps that record and this one does not overwrite it.
 
-        Containers are deliberately not cleaned up here.  ``container_owner``
-        is a property of the action, not of one attempt, so the census cannot
-        tell this attempt's payloads from the live attempt's, and removing
-        them would stop work that is legitimately running.  The live attempt's
-        own conclusion cleans up both.
+        The caller cleans up any exact broker scope before this archive.
+        Action-wide Docker ownership cannot distinguish attempts and is never
+        used by this path. A legacy attempt without scope authority can only
+        archive its result here.
         """
 
         attempt = int(snapshot.get("attempts", 0)) + 1
@@ -5265,6 +5390,15 @@ class PoolQueue:
                 action_key, status=status, detail=detail,
                 snapshot=claim_snapshot, live=record,
             )
+        if record is None and claim_snapshot is not None and (
+                claim_snapshot.get("resource_scope") is not None
+                or claim_snapshot.get("resource_scope_intent") is not None):
+            late_path = self._late_finish_path({**claim_snapshot, "action_key": action_key})
+            pending_late = _read_json(late_path)
+            if pending_late is not None:
+                # Its successor may have finished since the first refusal.
+                # The saved exact-scope transition still owns this retry.
+                return self._retry_late_finish(late_path, pending_late)
         read_claim = dict(record) if record is not None else None
         # Cleanup annotates this mapping with the completed scope evidence.
         # Keep the live record itself so the terminal retains that annotation;

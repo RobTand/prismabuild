@@ -213,6 +213,29 @@ conflicting holders, or an incomplete token return retains the tombstone. A
 queued successor remains untouched; a claimed successor's resources and lease
 are never released using an older tombstone.
 
+A late finisher with an exact broker scope persists its original claim authority
+and completed payload result in `claimed/<key>.<claim-identity>.late-finish`
+before cleanup. The existing finish-recovery sweep retries this record only on
+its claiming host, under the same key lock, even while a successor is live. It
+stops and releases only the saved action/nonce/token scope; a nonce also named by
+the live claim is a refusal. It never uses action-wide Docker ownership, returns
+the successor's tokens, or rewrites its claim, lease or live telemetry. Cleanup
+telemetry instead lives under the existing ledger's
+`telemetry/attempts/<nonce>/<key>.json`, and a delayed cleanup trains no admission
+profile. Broker stop/release still proves aggregate containment, including
+containers; an empty frozen retired scope remains protected against late Docker
+RPCs by the existing broker contract.
+
+Unproven cleanup retains the late-finish record with its original result, exact
+scope authority, failure count and first/last failure times. A restart can retry
+it without the original worker, and it is never converted to a lost lease or
+inferred success. After cleanup, the original immutable attempt keeps its
+first-writer-wins outcome; separate superseded evidence retains the cleanup proof
+even when that attempt already existed. Only then is the recovery record removed.
+New claimants defer while this pending finish exists. Older runtimes ignore the
+new suffix rather than discard its authority as an ordinary superseded tombstone;
+all claimants must be upgraded before relying on the new admission deferral.
+
 Local task output is now crash-recoverable without accepting unowned bytes.
 Before argv, the worker publishes an immutable claim for the exact action,
 resolved checkout, working directory, and declared result. Under the same
