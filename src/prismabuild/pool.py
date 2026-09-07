@@ -2568,12 +2568,12 @@ class PoolQueue:
                         "error": f"resource scope creation reconciliation incomplete: {type(exc).__name__}: {exc}"}
         if record.get("resource_scope") is None:
             return self._cleanup_action_containers(record)
-        prior = record.get("resource_scope_cleanup")
-        if (isinstance(prior, dict) and prior.get("complete") is True
-                and prior.get("nonce") == record["resource_scope"].get("nonce")):
-            return {"complete": True, "used": True, "removed": [], "remaining": [],
-                    "resource_scope": prior}
         try:
+            prior = record.get("resource_scope_cleanup")
+            if (isinstance(prior, dict) and prior.get("complete") is True
+                    and prior.get("nonce") == record["resource_scope"].get("nonce")):
+                return {"complete": True, "used": True, "removed": [], "remaining": [],
+                        "resource_scope": prior}
             scope = self._scope_from_record(record)
             scope.terminate_owned(reason)
             containers = self._cleanup_action_containers(record)
