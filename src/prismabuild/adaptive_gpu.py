@@ -69,8 +69,9 @@ def observe_feedback(state, sample, members):
 
     Saturation survives an individual holder's departure: remaining work may
     still sustain the same plateau, so concurrency can fall naturally. A
-    sustained activity drop or the end of the whole GPU busy period reopens
-    exploration. No holder is killed, migrated or stripped of its reservation.
+    sustained activity change or the end of the whole GPU busy period reopens
+    exploration under the current headroom gates. No holder is killed,
+    migrated or stripped of its reservation.
     """
     device = sample['devices'][0]
     if not members:
@@ -101,7 +102,9 @@ def observe_feedback(state, sample, members):
         recent = [r for r in window if r['sampled_unix'] > feedback['evaluated_unix']]
         if len(recent) >= FEEDBACK_SAMPLES:
             difference, margin = _separated_power(feedback['observed'], recent)
-            if difference < -margin:
+            # A rise also invalidates the old phase: an idle startup plateau
+            # cannot establish saturation for a later active workload.
+            if abs(difference) > margin:
                 state.pop('power_feedback', None)
                 return True
         return False
