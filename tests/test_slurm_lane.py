@@ -1473,6 +1473,15 @@ def test_a_cancelled_job_exits_the_way_a_withdrawal_does(
     assert code == pbrun.WITHDRAWN_EXIT
 
 
+#: A runtime every box can open.  These tests submit from ``tmp_path``, which
+#: is box-local, so without saying otherwise they would also be asserting that
+#: a worktree ``pbrun`` may send work to another box -- and it may not
+#: (``require_reachable_runtime``, #292).  Where this pbrun is installed is not
+#: the subject here, so it is declared rather than inherited from wherever the
+#: suite happens to be checked out.
+PUBLISHED_RUNTIME = Path(
+    "/mnt/shared/prismabuild-fleet/runtime-generations/test-generation")
+
 def _slurm_main_kwargs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *argv_tail: str
 ) -> dict[str, object]:
@@ -1496,6 +1505,7 @@ def _slurm_main_kwargs(
     seen: dict[str, object] = {}
     monkeypatch.setattr(pbrun.pool, "PoolQueue", refuse)
     monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
     monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
     payload = tmp_path / "bundle.bin"
     payload.write_bytes(b"not really a bundle\n")

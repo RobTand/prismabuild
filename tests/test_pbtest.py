@@ -40,6 +40,7 @@ def test_box_local_git_checkout_is_dispatched_without_leaking_its_path(
         return FinishedProcess()
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
+    monkeypatch.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -57,6 +58,14 @@ def test_box_local_git_checkout_is_dispatched_without_leaking_its_path(
     assert str(checkout.resolve()) not in " ".join(command[separator + 1:])
     assert "PYTHONPATH=src:experiments" in command
 
+
+#: The runtime these shards are dispatched from.  ``pbtest`` names no tag when
+#: its own runtime is box-local, because ``pbrun`` seals that runtime's worker
+#: launcher into the action and only one box can open it (#292).  The subject
+#: of this file is the shard argv, so the runtime is declared instead of being
+#: whatever ``tmp_path`` happens to make it.
+PUBLISHED_RUNTIME = Path(
+    "/mnt/shared/prismabuild-fleet/runtime-generations/test-generation")
 
 def _dispatch(tmp_path: Path, monkeypatch, extra: list[str]) -> list[str]:
     """Run one shard's worth of dispatch and return the pbrun argv it built."""
@@ -80,6 +89,7 @@ def _dispatch(tmp_path: Path, monkeypatch, extra: list[str]) -> list[str]:
         return FinishedProcess()
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
+    monkeypatch.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         sys, "argv",
         ["pbtest.py", "--checkout", str(checkout), "--python", "/target/python",

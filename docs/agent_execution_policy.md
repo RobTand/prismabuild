@@ -19,6 +19,18 @@ python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
   --gpu --tag gb10 --cpus 4 --demand mem_gb=32 -- ./gpu-validation.sh
 ```
 
+Submit from the published runtime, not from a worktree copy of `pbrun.py`.
+`pbrun` transports the *checkout* through the CAS, so a checkout under
+`/home/rob/...` runs on any box -- but it does not transport itself. It seals
+its own `tools/prismabuild_worker.py` as an absolute path into the action, and
+out of a worktree that path exists on one box. `pbrun` therefore refuses at
+submit when the placement admits a box that could not open the runtime, and
+says which box has it; add `--tag <thisbox>` (or `--here`) if you meant to keep
+the work here, or submit through the published runtime if you did not. This is
+also why `pbtest` names no default tag when run from a worktree: the `x86`
+default is an explicit placement claim, and an explicit tag outranks the pin
+`pbrun` would otherwise derive (RobTand/prismabuild#292).
+
 Use `pbtest.py` to split suites into independent file shards and
 `pbcampaign.py` for explicit action manifests. Cap pytest fanout at `-n 4` with
 one native thread per worker (`OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`,
