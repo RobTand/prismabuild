@@ -3964,6 +3964,38 @@ class PoolQueue:
                         tombstone.unlink(missing_ok=True)
                         swept.append(key)
                         continue
+                # A cancellation can be durable before its finisher returns
+                # tokens. If that finisher dies after removing the lease,
+                # this tombstone is the only remaining cleanup authority.
+                # A queued successor has not acquired anything yet: retain its
+                # READY bytes while completing the predecessor's cleanup.
+                # A claimed successor, however, owns the key now; none of its
+                # resources or lease belongs to this old tombstone.
+                if f"{key}.json" not in os.listdir(claimed):
+                    try:
+                        holders = self.claim_reservation_hosts(key)
+                        if len(holders) > 1 or (record is None and holders):
+                            continue
+                        if record is not None:
+                            holder = record.get("claimed_host")
+                            if holders:
+                                if holder and holder != holders[0]:
+                                    continue
+                                record["claimed_host"] = holders[0]
+                            cleanup = self.cleanup_action_containers(
+                                record, reason="interrupted finish cleanup")
+                            if not cleanup["complete"]:
+                                continue
+                        if holders:
+                            self.ledger(holders[0]).release(key)
+                            if self.claim_reservation_hosts(key):
+                                continue  # a partial return still needs this owner
+                        lease = _read_json(self.lease_path(key))
+                        if (record is not None and lease is not None
+                                and lease.get("owner") == record.get("claimed_by")):
+                            self.lease_path(key).unlink(missing_ok=True)
+                    except (OSError, PoolContractError, pb.CASUnavailableError):
+                        continue
                 self._file_superseded(
                     record, key=key, kind="finish-tombstone", status="dropped",
                     dropped_unix=_now(), dropped_host=socket.gethostname(),

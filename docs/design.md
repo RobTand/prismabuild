@@ -143,6 +143,14 @@ Widowed-lease recovery also holds the nonblocking key transition lock from its
 claim census through capacity return and lease removal. A busy key is deferred
 while independent keys remain recoverable.
 
+A finish tombstone remains cleanup authority even when its generation already
+has a durable cancellation or terminal ending. Before retiring such a tombstone
+with no live claim, recovery verifies its holder and payload cleanup, returns
+any remaining reservation, and removes only a matching lease. Unknown cleanup,
+conflicting holders, or an incomplete token return retains the tombstone. A
+queued successor remains untouched; a claimed successor's resources and lease
+are never released using an older tombstone.
+
 Local task output is now crash-recoverable without accepting unowned bytes.
 Before argv, the worker publishes an immutable claim for the exact action,
 resolved checkout, working directory, and declared result. Under the same
