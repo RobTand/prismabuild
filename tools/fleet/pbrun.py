@@ -2519,6 +2519,9 @@ def require_host_class_scope(
     """Refuse a scope the design cannot honour, before anything is sealed."""
 
     if measurement and transport == "pool" and anywhere:
+        if host_class is not None:
+            raise SystemExit("pbrun: --host-class already scopes pool measurement placement; "
+                             "drop --anywhere")
         raise SystemExit(
             "pbrun: pool measurements run on the submitting host whose "
             "platform/toolchain is sealed; --anywhere contradicts that placement."
@@ -2532,9 +2535,11 @@ def require_host_class_scope(
             "(docs/design.md, \"Cache/action-key semantics\"); a portable "
             "measurement would let any box's KL stand in for another's."
         )
-    if host_class is not None and transport != "slurm":
+    if host_class is not None and transport != "slurm" and not (
+        transport == "pool" and measurement
+    ):
         raise SystemExit(
-            "pbrun: --host-class needs --transport slurm.\n"
+            "pbrun: --host-class needs --transport slurm or pool --measurement.\n"
             "A host_class_keyed action is attested through the SLURM "
             "controller (docs/design.md, \"Worker preflight and execution "
             "attestation\"); a pull-queue worker refuses it at preflight, so "
@@ -2549,7 +2554,9 @@ def host_class_scope(
 
     Ordinary portable generation declares no toolchain. Pool measurements
     seal the submitting platform and toolchain; main pins their placement to
-    that host. A host-class-keyed action is
+    that host unless an explicit class asserts shared external dependencies.
+    A class-scoped pool measurement remains platform-keyed and additionally
+    binds actual device models. A SLURM host-class-keyed action is
     nonportable, and the core requires a nonportable action to bind the
     executable behind argv[0] and the ABI and accelerator facts of the box
     that runs it -- facts pbrun can read only from the box it runs on.  So a
@@ -2558,18 +2565,25 @@ def host_class_scope(
     another class is refused there, naming the field that differs.
     """
 
-    if measurement and transport == "pool" and host_class is None:
+    if measurement and transport == "pool":
         # A pool worker can attest its platform and executable/ABI directly.
-        # It cannot attest a SLURM host class, and no caller-supplied class is
-        # reinterpreted as one. Main pins this measurement to the host whose
-        # live evidence is sealed here.
-        evidence = pb._collect_worker_evidence()
+        # A class is placement intent, not a forged SLURM attestation. The
+        # actual platform, ABI, driver and device models constrain numerics;
+        # physical UUIDs and the selected worker remain receipt provenance.
+        evidence = pb._collect_worker_evidence(
+            **({"attest_accelerator_identity": True} if host_class is not None else {})
+        )
+        toolchain = {
+            **pb.executable_toolchain_contract(SEALED_ARGV0),
+            **pb.live_platform_toolchain_contract(evidence=evidence),
+        }
+        if host_class is not None:
+            toolchain["accelerator_models.sha256"] = pb.accelerator_models_contract(evidence)
         return (
             {"portability": "platform_keyed",
              "platform_key": pb._platform_key_from_evidence(evidence),
              "host_class": None},
-            {**pb.executable_toolchain_contract(SEALED_ARGV0),
-             **pb.live_platform_toolchain_contract()},
+            toolchain,
         )
     if host_class is None:
         return (
@@ -3496,15 +3510,16 @@ def main() -> int:
     ap.add_argument("--tag", action="append", default=[],
                     help="require a box offering this tag (e.g. a hardware class)")
     ap.add_argument("--measurement", action="store_true",
-                    help="seal task_class=measurement (pool: verified local platform; "
+                    help="seal task_class=measurement (pool: verified platform, "
+                         "local unless --host-class is explicit; "
                          "SLURM: --host-class required): the result is numerics "
                          "that do not transfer across architectures")
     ap.add_argument("--host-class", default=None, metavar="CLASS",
-                    help="key the action on a host class, a node Feature name "
-                         "(e.g. gb10): seals execution_scope host_class_keyed, "
-                         "adds CLASS to the placement, and the SLURM lane "
-                         "sends it as --constraint; the worker attests it "
-                         "through the controller before running")
+                    help="require CLASS placement (e.g. gb10). Pool measurements "
+                         "opt into matching workers, with verified platform, ABI, "
+                         "driver and device models; external dependencies must be "
+                         "identical across the class. SLURM seals host_class_keyed "
+                         "and attests its constraint through the controller")
     ap.add_argument("--anywhere", action="store_true",
                     help="assert that command/tool/data dependencies outside "
                          "the snapshot are identical on every eligible worker")
@@ -3748,11 +3763,12 @@ def main() -> int:
         transport=args.transport, anywhere=args.anywhere,
     )
     pool_measurement = args.measurement and args.transport == "pool"
+    pool_measurement_class = pool_measurement and args.host_class is not None
     tags = pool.normalize_placement_tags(
         placement_tags(
             cwd,
-            explicit=list(args.tag),
-            here=args.here or pool_measurement,
+            explicit=[*args.tag, *([args.host_class] if pool_measurement_class else [])],
+            here=args.here or (pool_measurement and not pool_measurement_class),
             hostname=socket.gethostname(),
             portable_checkout=portable_checkout,
             command=command,
@@ -3892,6 +3908,11 @@ def main() -> int:
     )
     execution_scope, toolchain = host_class_scope(
         args.host_class, measurement=args.measurement, transport=args.transport)
+    if pool_measurement_class and demand.get("gpu", 0) and (
+        "cuda_compute_capability" not in toolchain or "nvidia_driver" not in toolchain
+    ):
+        raise SystemExit("pbrun: class-scoped GPU measurement requires live accelerator "
+                         "model, compute capability and driver evidence")
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
