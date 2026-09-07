@@ -81,3 +81,35 @@ under simulated elapsed read time, not cancellation of a real stalled NFS
 operation. A bounded reader/supervision design and non-destructive cross-host
 stall qualification remain required for #16. This work makes no throughput,
 GPU saturation, or NFS root-cause claim.
+
+## Timestamp-validity follow-up
+
+Review of the expiry comparison at `103707c31` found that a future or
+positive-infinite `announced_unix` still vouched for a worker: the original
+comparison imposed only an upper age bound. The separate follow-up commit
+requires an exact numeric type, a finite timestamp, and nonnegative age. This
+matches `pbstatus`'s timestamp validity rules and retains valid current offers.
+
+Before the change, PB action
+`8549e7bbf11084035904798927dbc13d63337fb0119ab0bbfbfe600a84299394`
+failed both new assertions on dl380g10 (2 failed, 3 deselected): a finite future
+timestamp and positive infinity each returned the invalid worker alongside
+the valid current one. Flags were N=1, M=2, T=120 from the submission above,
+with `-q tests/test_pool_offer_scan_freshness.py -k invalid_offer_time`.
+
+After the change, integrated action
+`901f869e4851b40856538c9df5395b211324c6edd4c922dd7199a0ad8729e44f`
+passed 140 tests on dl380g10, CPU only, with no skips, using N=4, M=4, T=300
+and these arguments:
+
+```text
+-q -n 4 tests/test_pool_offer_scan_freshness.py
+tests/test_pool_offers_stale_handle.py tests/test_pool_enumeration_stale_handle.py
+tests/test_pool.py tests/test_pbstatus_pool.py tests/test_pbstatus.py
+```
+
+The terminal state was `executed`, return code 0. The CAS receipt and result
+bytes were read back independently; the result digest was
+`93b88e48ccd119336491f6ebc618eeeb2896f50ff4d74bad0106c158cf6adfda`.
+Readbacks are retained under
+`/home/rob/tmp/astra-review-20260906/pb16-invalid-time-*`.

@@ -1776,9 +1776,9 @@ class PoolQueue:
         live: list[dict[str, object]] = []
         for record in records:
             announced = record.get("announced_unix")
-            if not isinstance(announced, (int, float)):
+            if type(announced) not in (int, float) or not math.isfinite(announced):
                 continue
-            if now - float(announced) <= max_age_s:
+            if 0 <= now - float(announced) <= max_age_s:
                 live.append(record)
         return live
 

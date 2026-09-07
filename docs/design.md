@@ -49,8 +49,10 @@ proposed observability stack remain uninstalled.
 
 Worker-offer freshness is evaluated after the complete directory and record
 scan. An offer that expires during any read is excluded, including an offer
-read before a later file stalls. Shared filesystem I/O itself remains
-synchronous and has no caller deadline; this expiry rule does not bound a
+read before a later file stalls. Offers require a finite numeric announcement
+timestamp no later than the scan's completion time, matching the pool status
+reader's refusal of invalid or future evidence. Shared filesystem I/O itself
+remains synchronous and has no caller deadline; this expiry rule does not bound a
 queue read or repair an NFS client stall (issue #16).
 The pool status census likewise collects active records and admission, lease,
 and denial sidecars before deriving worker/sample freshness and placement. Its
