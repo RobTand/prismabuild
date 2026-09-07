@@ -215,3 +215,73 @@ def test_preemption_never_cascades_while_a_release_is_already_in_flight(
 
     preempted = [key for key in (BACKGROUND, OTHER) if _decisions(queue, key)]
     assert len(preempted) == 1
+
+
+def test_a_holder_that_finished_first_is_not_requeued(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preemption that raced a natural ending publishes nothing.
+
+    The claim is read before the holder's key is locked, so the holder can
+    conclude in between.  ``withdraw`` then reports ``already_finished`` and
+    stops nothing -- and re-publishing on that answer would put work that just
+    succeeded back on the queue as a fresh generation, which no terminal-claim
+    guard catches because the guard is generation-scoped.
+    """
+
+    capacity = {"gpu": 1}
+    queue.ledger().ensure_capacity(capacity)
+
+    _publish(queue, BACKGROUND, priority=-10, resources={"gpu": 1})
+    holder = queue.claim(capacity=capacity)
+    assert holder is not None and holder["action_key"] == BACKGROUND
+
+    _publish(queue, FOREGROUND, priority=0, resources={"gpu": 1})
+
+    original = pool.PoolQueue.withdraw
+
+    def finish_then_withdraw(self, key, *args, **kwargs):
+        if key == BACKGROUND and queue.item_path(pool.CLAIMED, key).exists():
+            queue.finish(BACKGROUND, status="executed",
+                         detail={"returncode": 0}, claim_snapshot=holder)
+        return original(self, key, *args, **kwargs)
+
+    monkeypatch.setattr(pool.PoolQueue, "withdraw", finish_then_withdraw)
+
+    queue.claim(capacity=capacity)
+
+    assert queue.item_path(pool.DONE, BACKGROUND).exists()
+    assert not queue.item_path(pool.READY, BACKGROUND).exists()
+    assert _decisions(queue, BACKGROUND) == []
+
+
+def test_a_contradictory_holder_does_not_end_the_claim_pass(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A holder nobody can conclude is skipped, not raised through ``claim``.
+
+    ``withdraw`` refuses on contradictory committed reservations
+    (``AmbiguousClaimHolder``, a ``PoolContractError``).  That is a fact about
+    somebody else's action; letting it out of ``claim`` would end a pass -- and
+    with it every other item's chance of being admitted -- over bookkeeping the
+    denied item has nothing to do with.
+    """
+
+    capacity = {"gpu": 1}
+    queue.ledger().ensure_capacity(capacity)
+
+    _publish(queue, BACKGROUND, priority=-10, resources={"gpu": 1})
+    holder = queue.claim(capacity=capacity)
+    assert holder is not None and holder["action_key"] == BACKGROUND
+
+    _publish(queue, FOREGROUND, priority=0, resources={"gpu": 1})
+
+    def refuse(self, key, *args, **kwargs):
+        raise pool.AmbiguousClaimHolder(f"two hosts claim {key}")
+
+    monkeypatch.setattr(pool.PoolQueue, "withdraw", refuse)
+
+    assert queue.claim(capacity=capacity) is None
+    assert not queue.item_path(pool.READY, BACKGROUND).exists()
+    assert queue.item_path(pool.CLAIMED, BACKGROUND).exists()
+    assert queue.ledger().held() == {"gpu": 1}
