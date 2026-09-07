@@ -667,7 +667,7 @@ def test_the_gate_is_measured_on_the_box_that_exports_the_filesystem(
     monkeypatch.setattr(mount_latency, "process_status",
                         lambda pid, want_wchan=True: ("S", "locks_lock_inode_wait"))
     monkeypatch.setattr(mount_latency, "read_proc_locks",
-                        lambda keys, text=None: {
+                        lambda keys, text=None, paths=None: {
                             k: {"holders": [4242], "waiters": [1, 2, 3]}
                             for k in keys})
 
