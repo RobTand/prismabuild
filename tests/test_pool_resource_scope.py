@@ -390,3 +390,25 @@ def test_an_unexpected_failure_in_the_hook_is_recorded_the_same_way(scoped, monk
 
     assert cleanup['complete'] is True
     assert cleanup['resource_scope']['learning_error'] == 'ZeroDivisionError: division by zero'
+
+
+@pytest.mark.parametrize('status', ['executed', 'failed'])
+def test_finish_retains_scope_cleanup_evidence_in_terminal(scoped, monkeypatch, status):
+    queue, item, calls = scoped
+    key = item['action_key']
+    item['max_attempts'] = 1
+    pool._write_json_atomic(queue.item_path(pool.CLAIMED, key), item)
+    _process(monkeypatch, queue, item, calls)
+    outcome = queue.execute(item, containment=True)
+    path = queue.finish(key, status=status, detail=outcome, claim_snapshot=item)
+    terminal = json.loads(path.read_text())
+    cleanup = terminal['resource_scope_cleanup']
+    assert cleanup['complete'] is True
+    assert cleanup['nonce'] == terminal['resource_scope']['nonce']
+    assert cleanup['released']['ok'] is True
+    assert cleanup['telemetry']['complete'] is True
+    assert cleanup['telemetry']['nonce'] == cleanup['nonce']
+    assert calls.index('stop') < calls.index('release') < calls.index('learn')
+    assert not queue.item_path(pool.CLAIMED, key).exists()
+    assert not queue.lease_path(key).exists()
+    assert queue.ledger().held() == {}
