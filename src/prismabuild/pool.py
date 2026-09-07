@@ -1388,21 +1388,34 @@ class ResourceLedger:
         return self._empty_into_free(self.held_dir / action_key)
 
     def _empty_into_free(self, holder: Path) -> int:
-        """Rename every token under one holder back to ``free/``."""
+        """Return physical tokens before removing their adaptive metadata.
+
+        A failed metadata unlink must not prevent physical capacity from
+        returning. Conversely, a partial token return retains the metadata
+        until a retry finishes the reservation, so its accounting cannot
+        disappear while tokens remain held.
+        """
 
         if not holder.is_dir():
             return 0
         released = 0
+        metadata = []
+        incomplete = False
         self.free_dir.mkdir(parents=True, exist_ok=True)
         for token in _scan(holder):
             if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
-                token.unlink(missing_ok=True)
+                metadata.append(token)
                 continue
             try:
                 os.rename(token, self.free_dir / token.name)
             except OSError:
+                incomplete = True
                 continue
             released += 1
+        if incomplete:
+            return released
+        for marker in metadata:
+            marker.unlink(missing_ok=True)
         try:
             holder.rmdir()
         except OSError:
