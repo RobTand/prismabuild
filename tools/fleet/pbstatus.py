@@ -1305,6 +1305,68 @@ def _reap_within(pid: int, grace_s: float) -> bool:
         time.sleep(0.01)
 
 
+def _isolate_child_fds(write_fd: int) -> int:
+    """Leave the forked reader owning its own pipe and nothing else.
+
+    A child this process may have to abandon inherits every descriptor the
+    caller held, and a descriptor is not a private copy: the open file
+    description behind it is shared, so an abandoned reader keeps the caller's
+    resources alive after the caller has let go of them.  Two consequences were
+    reproduced by the review of #358, and they are one defect seen twice.
+
+    A wrapper that captures ``pbstatus``'s output waits for EOF on the pipe, and
+    EOF arrives when the last writer closes.  The parent exiting ``3`` is not
+    that: the abandoned child still holds the write end, so the wrapper blocks
+    on a command that has already returned.  And an ``flock`` lives on the open
+    file description rather than on the process, so an inherited lock fd left
+    open in the child holds the caller's lock after the caller closed it --
+    against a lock the child was never told about and cannot release.
+
+    So the child keeps exactly two things: the IPC writer it must answer on,
+    and ``/dev/null`` on the three standard streams so that a write from
+    anything it calls has somewhere to go.  Everything else is closed here,
+    before the section runs.  ``/proc/self/fd`` is the list the kernel already
+    keeps; the ``SC_OPEN_MAX`` sweep is for a box without ``/proc`` mounted,
+    where a status screen still has to answer.
+
+    Returns the descriptor the caller must write on, which is ``write_fd``
+    moved out of the way first when the pipe landed on 0, 1 or 2.
+    """
+    if write_fd < 3:
+        write_fd = os.dup(write_fd)
+    null = os.open(os.devnull, os.O_RDWR)
+    for target in (0, 1, 2):                       # write_fd is above these now
+        try:
+            os.dup2(null, target)
+        except OSError:                            # pragma: no cover - kernel
+            pass
+    if null > 2:
+        try:
+            os.close(null)
+        except OSError:                            # pragma: no cover - kernel
+            pass
+    try:
+        # Materialised before any closing: the listing's own directory
+        # descriptor is gone by the time this list is walked, and closing a
+        # closed descriptor is the ``OSError`` swallowed below.
+        open_fds = [int(name) for name in os.listdir("/proc/self/fd")
+                    if name.isdigit()]
+    except OSError:                                # pragma: no cover - no /proc
+        try:
+            limit = int(os.sysconf("SC_OPEN_MAX"))
+        except (ValueError, OSError):
+            limit = 4096
+        open_fds = list(range(3, min(limit, 65536)))
+    for fd in open_fds:
+        if fd <= 2 or fd == write_fd:
+            continue
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    return write_fd
+
+
 def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
             cap_s: float | None = None) -> dict:
     """Run one read of the shared mount in a child this process can abandon.
@@ -1354,6 +1416,10 @@ def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
         code = 1
         try:
             os.close(read_fd)
+            # Before the section runs, and before anything can block in it:
+            # what this child still holds is what it holds for as long as it
+            # lives, and this is the child the parent may have to abandon.
+            write_fd = _isolate_child_fds(write_fd)
             try:
                 payload = json.dumps({"status": "ok", "value": read()})
                 code = 0
@@ -1371,7 +1437,10 @@ def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
             except OSError:
                 pass
             # ``_exit``, never ``exit``: the child inherited this process's
-            # buffered stdout and must not flush a second copy of it.
+            # buffered stdout and must not flush a second copy of it -- into
+            # ``/dev/null`` now, but ``exit`` would also run the parent's
+            # ``atexit`` handlers and finalisers, which are not this child's
+            # to run.
             os._exit(code)
 
     os.close(write_fd)

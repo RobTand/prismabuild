@@ -9,14 +9,18 @@ box's load average to ~14.7 at 0.0% CPU for the whole window.
 These tests block the queue-root read rather than a real mount: the read path
 is monkeypatched with a sleep well past the deadline, which reproduces the
 property that matters (the caller cannot bound this read in-process) without
-needing a sick NFS server.  A child in ``time.sleep`` is killable and a child
-in ``D`` is not, so the ``SIGKILL``-did-not-work branch of ``bounded`` is not
-exercisable here; what is proved below is that the caller returns on time, says
-what it could not read, exits distinctly, and reaps the child it can reap.
+needing a sick NFS server.  The branch where ``SIGKILL`` does not collect the
+child is reached the same way, by injecting the failure rather than the fault:
+with ``os.kill`` made a no-op the parent takes its retained-child path exactly
+as it would over a task in ``D``, and what the retained child still owns can
+then be read straight out of ``/proc``.  Proved below: the caller returns on
+time, says what it could not read, exits distinctly, reaps the child it can
+reap, and hands an abandoned one none of the caller's descriptors.
 """
 import json
 from pathlib import Path
 import os
+import signal
 import sys
 import time
 
@@ -110,14 +114,61 @@ def test_a_killable_blocked_child_is_reaped_and_not_left_behind(
     merely the absence of one: the list is written only when ``waitpid`` has
     failed to collect the child inside the grace, so empty means the reader was
     reaped, not that nobody looked.  A child in uninterruptible sleep would be
-    retained instead, which is the branch this fixture cannot produce -- no
-    fixture can, without a sick NFS server.
+    retained instead; that branch is covered by
+    ``test_an_abandoned_child_owns_no_inherited_descriptor`` below, which
+    injects a failed termination instead of waiting for a sick mount to
+    supply one.
     """
     assert pbstatus.main(["--json", "--timeout-s", "1", "--queue-root",
                           str(blocked_queue_root.root)]) == EXIT_INCOMPLETE
     result = json.loads(capsys.readouterr().out)
     assert result["timed_out_sections"], "the fixture must have blocked a read"
     assert result["abandoned_children"] == []
+
+
+def test_an_abandoned_child_owns_no_inherited_descriptor(tmp_path, monkeypatch):
+    """What a retained reader still holds, read out of its ``/proc`` entry.
+
+    The review of #358 reproduced the two consequences -- a wrapper left
+    blocked on captured output, and a caller's ``flock`` still held after the
+    caller closed it.  This asserts the cause underneath both: a descriptor is
+    not a private copy, so an abandoned child that kept the caller's table
+    keeps the caller's resources alive.  After the fix its table is
+    ``/dev/null`` on the three standard streams and its own answer pipe, and
+    nothing else.
+
+    Termination is made to fail on purpose.  A child in ``time.sleep`` answers
+    ``SIGKILL`` and would be reaped, and a child in ``D`` cannot be produced
+    here; a no-op ``os.kill`` puts the parent on its retained-child path
+    without needing either.
+    """
+    inherited = os.open(tmp_path / "caller.txt", os.O_CREAT | os.O_RDWR, 0o600)
+    abandoned: list[dict] = []
+    real_kill = os.kill
+    monkeypatch.setattr(pbstatus.os, "kill", lambda pid, sig: None)
+    try:
+        result = pbstatus.bounded("pool", lambda: time.sleep(BLOCKED_S),
+                                  deadline=pbstatus.Deadline(0.05),
+                                  abandoned=abandoned)
+        assert result["status"] == "timed_out"
+        assert len(abandoned) == 1, "a no-op kill must leave the child retained"
+        pid = abandoned[0]["pid"]
+        held = {}
+        for name in os.listdir(f"/proc/{pid}/fd"):
+            try:
+                held[int(name)] = os.readlink(f"/proc/{pid}/fd/{name}")
+            except OSError:                        # closed under the listing
+                continue
+        assert {held.get(fd) for fd in (0, 1, 2)} == {os.devnull}, held
+        other = {fd: link for fd, link in held.items() if fd > 2}
+        assert len(other) == 1, f"the child kept more than its own pipe: {other}"
+        assert next(iter(other.values())).startswith("pipe:"), other
+        assert not any(str(tmp_path) in link for link in held.values()), held
+    finally:
+        os.close(inherited)
+        for child in abandoned:
+            real_kill(child["pid"], signal.SIGKILL)
+            os.waitpid(child["pid"], 0)
 
 
 def test_timeout_zero_restores_the_unbounded_in_process_read(tmp_path, monkeypatch, capsys):

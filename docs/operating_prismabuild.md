@@ -752,6 +752,15 @@ So the run has a deadline.
     otherwise -- can bound it; only a separate process can be left behind. The
     parent never joins a child that may still be blocked. This is the shape
     `tools/fleet/mount_latency.py` already uses for the same reason.
+*   That child is handed `/dev/null` on its three standard streams and none of
+    the caller's other descriptors before the read starts, because a
+    descriptor is not a private copy and this is the child that may outlive
+    the run. A reader that kept the caller's table would hold the write end of
+    a wrapper's capture pipe, so the wrapper waits for EOF on a command that
+    has already exited **3**; and it would hold any `flock` the caller had
+    open, since the lock lives on the open file description the fork shares
+    rather than on the process. Both were reproduced by the independent review
+    of #358 and are covered by `tests/test_pbstatus_review_boundaries.py`.
 *   On expiry the tables that were read still print, each missing section is
     replaced by a line naming itself as incomplete, one line goes to stderr --
     `pbstatus: incomplete -- queue root did not answer within 10s (pool,
