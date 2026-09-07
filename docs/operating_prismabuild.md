@@ -1224,6 +1224,8 @@ Publication refuses rather than guesses:
     interval. It can never read a mixed generation.
 *   **A live `repo` that is neither a directory nor a symlink** is refused.
 
+A staged generation's import probe disables bytecode writes, so validation
+does not add unlisted cache files before the generation is sealed.
 A published generation is sealed read-only and is never deleted. That is what
 makes rollback a namespace operation:
 
