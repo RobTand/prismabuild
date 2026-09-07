@@ -1500,6 +1500,7 @@ class PoolQueue:
         # after import gets the root it named rather than the live store.
         self.root = Path(DEFAULT_POOL_ROOT if root is None else root)
         self._cpu_deferrals: dict[tuple[str, str], float] = {}
+        self._admission_busy_logged_at: float | None = None
         if not self.root.is_absolute():
             raise PoolContractError("pool root must be absolute")
 
@@ -2870,7 +2871,7 @@ class PoolQueue:
                                        capacity=capacity, cpu_tiers=tiers,
                                        controller=controller,
                                        gpu_controller=gpu_admission.Controller(ledger) if has_gpu else None)
-            except cpu_admission.AdmissionBusy:
+            except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision.  Everything under
                 # that lock -- the headroom read, the ``ready`` scan, the
                 # record rename, the lease, the tokens -- is on the shared
@@ -2884,9 +2885,33 @@ class PoolQueue:
                 # cadence, where announcing lives: the box keeps saying what
                 # it is while a sibling is slow, instead of going silent and
                 # letting its offer expire.
+                self._report_admission_busy(exc)
                 return None
         return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                            capacity=capacity, cpu_tiers=cpu_tiers)
+
+    def _report_admission_busy(self, refusal: cpu_admission.AdmissionBusy) -> None:
+        """Expose the gate before candidate evaluation without shared I/O.
+
+        Bound output per queue instance (one per worker loop), even when the
+        holder changes or acquisitions succeed between refusals. The PID is
+        an observation from the failed flock, not durable process ownership.
+        """
+        now = time.monotonic()
+        previous = self._admission_busy_logged_at
+        if previous is not None and now - previous < 60.0:
+            return
+        self._admission_busy_logged_at = now
+        holder = refusal.holder if refusal.holder is not None else "unknown"
+        try:
+            print(f"pool: worker pid={os.getpid()}: host admission lock busy; "
+                  f"observed holder pid={holder}; candidate evaluation not reached; "
+                  "retrying on the normal poll cadence",
+                  file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            # A broken/closed log must not turn back-pressure into a worker
+            # failure. No shared record is written as a fallback.
+            pass
 
     def _claim(
         self,

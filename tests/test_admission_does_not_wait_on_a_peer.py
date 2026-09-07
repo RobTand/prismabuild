@@ -151,6 +151,64 @@ def test_a_claim_refuses_at_once_rather_than_waiting_for_the_holder(rig, peer):
     assert item is None, 'a claim that never held admission returned an item'
 
 
+def test_claim_reports_the_enclosing_admission_gate(rig, peer, capsys, monkeypatch):
+    def must_not_scan(**kwargs):
+        pytest.fail('a refused admission reached candidate evaluation')
+
+    monkeypatch.setattr(rig, '_claim', must_not_scan)
+    assert _bounded(lambda: rig.claim(capacity=CAPACITY, cpu_tiers=TIERS,
+                                      adaptive_cpu=True), 'claim') is None
+    diagnostic = capsys.readouterr().err
+    assert 'host admission lock busy' in diagnostic
+    assert f'observed holder pid={os.getpid()}' in diagnostic
+    assert 'candidate evaluation not reached' in diagnostic
+
+
+def test_busy_diagnostic_is_bounded_across_polls_and_holder_changes(
+        rig, peer, capsys, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(pool.time, 'monotonic', lambda: clock[0])
+
+    def claim():
+        return _bounded(lambda: rig.claim(capacity=CAPACITY, cpu_tiers=TIERS,
+                                          adaptive_cpu=True), 'claim')
+
+    assert claim() is None
+    assert 'host admission lock busy' in capsys.readouterr().err
+    clock[0] = 159.0
+    monkeypatch.setattr(adaptive_cpu, '_holder_of', lambda fd: None)
+    for _ in range(10):
+        assert claim() is None
+    assert capsys.readouterr().err == ''
+
+    # Acquiring admission does not reset the log budget: repeated brief
+    # contention must not print on every transition back to busy.
+    fcntl.flock(peer, fcntl.LOCK_UN)
+    monkeypatch.setattr(rig, '_claim', lambda **kwargs: None)
+    assert claim() is None
+    fcntl.flock(peer, fcntl.LOCK_EX)
+    assert claim() is None
+    assert capsys.readouterr().err == ''
+    clock[0] = 160.0
+    assert claim() is None
+    assert 'observed holder pid=unknown' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('error', [BrokenPipeError('closed pipe'), ValueError('closed log')])
+def test_failed_busy_diagnostic_still_refuses_without_scanning(
+        rig, peer, monkeypatch, error):
+    def no_log(*args, **kwargs):
+        raise error
+
+    def must_not_scan(**kwargs):
+        pytest.fail('a diagnostic failure reached candidate evaluation')
+
+    monkeypatch.setattr(pool, 'print', no_log, raising=False)
+    monkeypatch.setattr(rig, '_claim', must_not_scan)
+    assert _bounded(lambda: rig.claim(capacity=CAPACITY, cpu_tiers=TIERS,
+                                      adaptive_cpu=True), 'claim') is None
+
+
 def test_nothing_is_claimed_or_reserved_by_a_refused_admission(rig, peer):
     """Declining must leave the queue exactly as it found it.
 
