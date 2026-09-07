@@ -61,6 +61,12 @@ universal setting. Use `pbtest.py` for suite fanout and `pbcampaign.py` for a
 manifest of independent actions. Prefer portable placement; add a host tag only
 for a real dependency or a controlled measurement.
 
+Agent self-validation -- test shards, the receipt for a PR, a re-run to confirm
+a fix -- submits at `--priority -10` (`pbtest.py --priority -10`, `pbrun.py
+--priority -10`). Ready items are ordered by priority band before aging, so
+that work is considered only after everything at the default priority has been
+tried and never displaces campaign work in the queue. Campaign work stays at 0.
+
 GPU work declares `--gpu` or the appropriate GPU demand. The live pool shares
 one physical GPU among generation actions when fresh broker observations show
 headroom; let admission choose concurrency rather than tuning GPU job slots.
