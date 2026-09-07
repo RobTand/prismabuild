@@ -29,3 +29,22 @@ def test_unreadable_endings_do_not_certify_a_complete_census(
     report = json.loads(capsys.readouterr().out)
     assert report['complete'] is False, report
     assert code == pbstatus.EXIT_INCOMPLETE
+
+
+def test_queue_root_note_does_not_hide_a_stat_error(tmp_path, monkeypatch, capsys):
+    q = pool.PoolQueue(tmp_path / 'queue')
+    q.ensure_layout()
+    exists = Path.exists
+
+    def refuse_root(path):
+        if path == q.root:
+            raise PermissionError('root stat unavailable')
+        return exists(path)
+
+    monkeypatch.setattr(Path, 'exists', refuse_root)
+    code = pbstatus.main(['--transport', 'pool', '--json', '--queue-root', str(q.root)])
+    report = json.loads(capsys.readouterr().out)
+    assert report['complete'] is False, report
+    assert code == 3
+    assert any(row['section'] == 'queue-root' and row['type'] == 'PermissionError'
+               for row in report['unavailable_sections'])
