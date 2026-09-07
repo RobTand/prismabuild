@@ -340,7 +340,9 @@ matters). Rules:
   selects" applied to hardware). Measurement (KL, PPL, probe) includes verified
   platform and toolchain identity because numerics do not transfer across
   architectures. The pool seals a `platform_keyed` action and an implicit
-  submitting-host placement pin. SLURM seals an explicit `host_class_keyed`
+  submitting-host placement pin by default. An explicit pool `--host-class`
+  instead seals class placement plus matching platform/ABI/device models.
+  SLURM seals an explicit `host_class_keyed`
   action; the gold path remains pinned to `gb10`. Codebook generation is also
   nonportable because D29 records cross-architecture row-scale byte drift.
 - **Artifact family is explicit** — action schema
@@ -390,8 +392,22 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   toolchain from the submitter's live evidence, seals both, and implicitly adds
   the submitter's hostname to effective placement. The claiming worker derives
   its own evidence and must match. `--anywhere` is refused because it contradicts
-  that host pin; `--host-class` remains unavailable on the pool because no SLURM
-  controller attests it.
+  that host pin.
+- Pool `--measurement --host-class CLASS` opts into any worker offering that
+  class whose live platform, ABI, shell executable, driver and accelerator
+  models match the sealed facts. It retains `platform_keyed` scope; the class
+  is sealed placement intent, never an invented SLURM `host_class` attestation.
+  `accelerator_models.sha256` binds the sorted device models/counts and compute
+  capabilities. The live NVIDIA model and physical UUID are recorded in the
+  receipt; UUID is provenance, not a requirement to use the same physical GPU.
+  Missing model/UUID evidence or a failed identity probe refuses this opt-in.
+  Legacy receipts and ordinary measurement keys retain their existing shape.
+  Explicit `--here` still pins the host. `--anywhere` remains invalid.
+  Declaring a class asserts that external command, container, Python and data
+  dependencies are identical across its workers; pbrun seals its shell and
+  snapshot, not the internals of arbitrary shell commands or container tags.
+  Paired experiments must be complete, interleaved actions on one admitted
+  worker. This option neither splits their arms nor relaxes CPU/GPU isolation.
 - `worker_id` is the live hostname locally or SLURM's node name inside an
   allocation. Inside an allocation the job id is derived from the `job_<id>`
   cgroup the kernel placed the process in; `SLURM_JOB_ID`, `SLURMD_NODENAME`
@@ -857,7 +873,12 @@ Honest caveats: stochastic tasks (probe backward is recorded
 non-bit-reproducible) get run-once/first-result-wins — their entry is the
 *canonical* result, pinned but not re-derivable; and a cached measurement is
 valid only under its exact nonportable scope. A pool measurement retains its
-platform, toolchain and host placement; a SLURM measurement retains its host
+platform, toolchain and host placement by default. An explicitly class-scoped
+pool measurement retains class placement, platform/ABI and device-model facts;
+a result's selected host and GPU UUID remain recorded producer provenance.
+A changed class, architecture, device model or declared toolchain changes the
+action key. A cache hit is the same recorded experiment, not a fresh measurement
+of the querying host. A SLURM measurement retains its host
 class (a gb10 KL never answers an x86 query).
 
 ### Durable SLURM submission, polling, and cancellation (superseded, never live-validated)
@@ -1428,8 +1449,9 @@ cannot discount memory or GPU demand. The separate adaptive GPU controller below
 may share the single physical GPU using its own trusted device evidence. Measurements require a fresh nearly idle
 host, never lend or borrow CPU IDs, and do not overlap another held CPU action.
 Measurement placement and identity remain transport-specific: the pool uses an
-implicit submitting-host pin with platform/toolchain identity, while SLURM uses
-an explicit host class. Any required exclusive GPU reservation remains a
+implicit submitting-host pin with platform/toolchain identity, or an explicit
+class with matching platform/ABI/device models; SLURM uses an explicit host
+class. Any required exclusive GPU reservation remains a
 separate contract. In particular, GB10 GPU utilization
 percentage is not accepted as saturation evidence; device power, CPU activity,
 residency and useful work per unit time are the relevant host view.
@@ -1631,3 +1653,29 @@ The assembler uses the producer's checked merge and revalidates part bytes.
 Per-worker source-hash reuse requires unchanged filesystem identity and matching
 expected digests, with before/after export checks. It is cooperative cache
 validation, not a claim of hostile-writer immutability or cross-action residency.
+
+### Status census completeness
+
+`pbstatus` exits 3 when required queue reads time out or fail, active pool
+records are unreadable, or selected terminal records cannot be parsed. Its
+top-level `complete` flag covers all these cases. Terminal directory read
+failures are unavailable sections; an unreadable terminal record retains its
+diagnostic row and names its path in `unavailable_sections`. Missing terminal
+directories remain valid for transports that have not filed outcomes.
+
+A bounded status reader belongs to its calling process. SIGINT/SIGTERM unwind
+through bounded pipe closure and exact-child termination/reaping; failed
+termination retains PID/starttime evidence, including on cancellation. Reader
+EOF does not by itself prove process exit. SIGKILL cannot execute cleanup.
+
+The status read budget starts before default transport metadata is opened. A
+failed lookup reports unknown transport and incomplete status rather than
+guessing a scheduler. Script imports, output delivery, cleanup grace, and the
+explicit SLURM scheduler/lane lookups are outside this pool census budget.
+
+The empty-endings root diagnostic propagates filesystem errors to the bounded
+census, so an error rendered as a note still makes the top-level read incomplete.
+
+These completeness checks use explicit stat calls, preserving ENOENT as missing
+and permission/I/O errors as unavailable. Boolean pathlib predicates are not
+evidence of absence because Python 3.14 suppresses OSError in them.

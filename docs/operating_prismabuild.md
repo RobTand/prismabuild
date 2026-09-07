@@ -479,7 +479,7 @@ an omitted field is not passed at all.
 | `gpu_memory_gb` | `--gpu-memory-gb`, a positive finite GiB budget; pool only, requires GPU demand |
 | `priority` | `--priority` |
 | `measurement` | `--measurement` |
-| `host_class` | `--host-class`, a node Feature name such as `gb10` |
+| `host_class` | `--host-class`, a pool measurement worker class or SLURM Feature such as `gb10` |
 | `retry_safe` | `--retry-safe` |
 | `max_attempts` | `--max-attempts` |
 
@@ -509,15 +509,14 @@ submit:
     "gpu_memory_gb": 32` retains the 80 GiB aggregate budget and 32 GiB GPU cap.
 *   `measurement` without `host_class` under `--transport slurm`. A SLURM
     measurement is keyed on the scheduler-attested class that produced it.
-    Under `--transport pool`, omitting `host_class` is the supported form: the
+    Under `--transport pool`, omitting `host_class` is the default form: the
     submitter's platform/toolchain is sealed and its hostname is added to
     placement implicitly.
-*   `measurement` with `anywhere` under `--transport pool`. Pool measurements
-    run on the submitting host whose platform/toolchain is sealed, so portable
-    placement contradicts their execution scope.
-*   `host_class` under `--transport pool`. The class is attested through the
-    SLURM controller, so a pull-queue worker refuses the action at preflight.
-    This refusal depends on the campaign's transport rather than on the row.
+*   `measurement` with `anywhere` under `--transport pool`. A measurement must
+    retain its submitting-host or explicit class placement and attested facts.
+*   `host_class` without `measurement` under `--transport pool`. The pool's
+    explicit class-placement option applies only to measurements; SLURM also
+    supports controller-attested class-keyed generation.
 *   `max_attempts` greater than 1. A campaign submits every row detached,
     which is what lets one command hold N actions open, and a retry needs
     somebody alive to see the attempt fail.
@@ -541,7 +540,7 @@ cache hit on the second run:
 
 Run it with `--transport slurm`, from a box of that class.
 
-For the pool, omit `host_class`; every row is implicitly pinned to the host
+For the pool, omit `host_class` to keep every row implicitly pinned to the host
 running `pbcampaign`, and its platform/toolchain becomes part of the action:
 
     [
@@ -688,9 +687,34 @@ This seals `execution_scope.portability=platform_keyed`, with the platform key,
 executable digest, ABI and accelerator facts derived from the submitting box's
 live evidence. `pbrun` also adds that box's hostname to effective placement
 without requiring `--here`. The worker re-derives and verifies the platform and
-toolchain before execution. `--anywhere` is refused because it contradicts the
-implicit host pin, and `--host-class` is refused because the pool has no SLURM
-controller evidence with which to attest a class.
+toolchain before execution. `--anywhere` is refused because a measurement must
+retain its declared nonportable scope.
+
+When the complete experiment and its external dependencies are identical across
+a worker class, explicitly let PB select a matching worker:
+
+    tools/fleet/pbrun.py --transport pool --measurement --host-class gb10 --gpu -- ./paired-probe.sh
+
+The class enters sealed placement and the scope remains `platform_keyed`.
+The worker must match the submitter's platform, libc ABI, shell executable,
+driver, and GPU models/counts and compute capabilities before running. The
+receipt records the selected worker and actual GPU UUID. Unknown device identity
+refuses. `--here` adds a host pin even with a class; `--anywhere` is unnecessary
+and refused. The class is placement intent, not a claimed SLURM attestation.
+
+Keep both arms of a comparison in one self-contained interleaved action. CPU
+near-idle admission, measurement isolation, GPU exclusivity, memory and telemetry
+gates remain enforced. This option changes eligibility, not available capacity.
+Pin and record container images and inner Python dependencies in the experiment:
+the worker attests pbrun's shell and host facts, not arbitrary inner environments.
+Declaring the class asserts that these external dependencies are identical on
+its workers. Shared mutable container tags are not immutable toolchain evidence.
+
+The cache key binds the class and attested compatibility facts. Changing the
+architecture, GPU model or declared toolchain produces a different key; changing
+only the selected matching host or physical GPU does not. A hit replays the
+recorded experiment and its producer identity, not a new timing of this host.
+Do not resubmit already running experiments merely to move them between hosts.
 
 For SLURM, retain the explicit host-class form:
 
@@ -704,9 +728,8 @@ The SLURM constraints are enforced rather than advised:
 
 *   **A SLURM `--measurement` refuses without `--host-class`.** Its class must
     be present in the sealed scope and scheduler constraint.
-*   **`--host-class` refuses without `--transport slurm`.** The class is
-    attested through the SLURM controller, so a pull-queue worker refuses the
-    action at preflight.
+*   **SLURM's `host_class_keyed` scope requires controller evidence.** The pool
+    class-placement option above uses actual platform facts instead.
 *   **Submit from a box of that class.** A host-class-keyed action is
     nonportable, so it binds the submitting box's `argv[0]` digest and its ABI
     and accelerator facts. A worker of another class refuses it at preflight,
@@ -762,20 +785,132 @@ It prints three tables:
     the transport that produced it. `--recent N` changes how many are read; the
     default is 20.
 
-`pbstatus` never writes and reports unavailable state without failing the
-screen. Scheduler commands have bounded timeouts; shared-filesystem reads
-remain subject to mount availability. A selected SLURM controller that is not
+`pbstatus` never writes, and an unavailable part of the fleet is reported in
+place rather than failing the screen: the tables that were read still print.
+Since #358 that report is also in the exit status, because printing a note is
+not enough for a wrapper that reads only the lists -- see the exit rule below. Scheduler commands have bounded timeouts, and since #350 so does the
+whole run: `--timeout-s` (default 10) bounds every read of the queue root, and
+`--timeout-s 0` restores the unbounded behaviour a caller may still want. A
+selected SLURM controller that is not
 installed prints one line saying so, and the endings table still prints, because
 those records are files on the shared mount. A record it cannot read prints as an
 `unreadable` row whose note names the path and the reason, so a truncated or
 unreadable newest record does not read as a fleet that filed nothing. `--json`
-prints one object with the selected `transport`, three lists and any scheduler
-notes. In pool mode its `pool` summary carries ready/claimed counts and an
+prints one object with the selected `transport`, three lists, any scheduler
+notes, and the four fields that say how much of the fleet was actually read:
+`complete`, `timed_out_sections`, `unavailable_sections` and
+`abandoned_children`. In pool mode its `pool` summary carries ready/claimed
+counts and an
 `empty` field: `true` means both active directories were read and contain no
 jobs, `null` means state could not be established. Corrupt active records stay
 visible as `UNREADABLE` rows. The census is not atomic, and persisted admission
 samples are historical evidence with explicit freshness, not newly computed
 admission decisions.
+
+### When the mount does not answer
+
+A diagnostic that can wait forever is worse than one that says it could not
+read the mount, because a hang and a dead fleet look identical from outside.
+On 2026-09-07 fifteen `pbstatus` processes sat 33-49 minutes each in
+`__nfs_lookup_revalidate` on sparky. They were `hard`-mount waits doing what
+`hard` is for, not driver wedges, and every one of them exited on its own when
+the stall cleared -- so nothing needed reaping and the answers all arrived,
+long after anybody could use them. What they cost while present was measured:
+0.0% CPU, 282 MB, and a load average inflated to ~14.7 on a box whose GPU was
+idle at 3%, which is a number every human and every agent glancing at the box
+then reads.
+
+So the run has a deadline.
+
+*   `--timeout-s N` bounds the pool census and runtime transport lookup with
+    one shared budget, not a fresh budget per section: a slow first read
+    does not buy the second one a fresh budget. The default is 10 seconds,
+    which is two orders of magnitude longer than a healthy census and shorter
+    than a person's patience. `--timeout-s 0` waits indefinitely, which is the
+    behaviour before #350, and it is the only value that asks for that: `nan`,
+    `inf` and `-inf` parse as floats and are refused, because NaN would select
+    the unbounded path silently and infinity would reach `select` as the very
+    wait the deadline exists to end.
+*   Each read of the queue root runs in a forked child the parent abandons at
+    the deadline. A `stat` on a hard mount need not return at its caller's
+    deadline even after a signal, so no in-process timeout -- thread, alarm or
+    otherwise -- can bound it; only a separate process can be left behind. The
+    parent never joins a child that may still be blocked. This is the shape
+    `tools/fleet/mount_latency.py` already uses for the same reason.
+*   That child is handed `/dev/null` on its three standard streams and none of
+    the caller's other descriptors before the read starts, because a
+    descriptor is not a private copy and this is the child that may outlive
+    the run. A reader that kept the caller's table would hold the write end of
+    a wrapper's capture pipe, so the wrapper waits for EOF on a command that
+    has already exited **3**; and it would hold any `flock` the caller had
+    open, since the lock lives on the open file description the fork shares
+    rather than on the process. Both were reproduced by the independent review
+    of #358 and are covered by `tests/test_pbstatus_review_boundaries.py`.
+*   On expiry the tables that were read still print, each missing section is
+    replaced by a line naming itself as incomplete, one line goes to stderr --
+    `pbstatus: incomplete -- queue root did not answer within 10s (pool,
+    endings pending)` -- and the run exits **3**. Three rather than one: a
+    wrapper must be able to tell "I could not read the fleet" from "I read it
+    and something in it is wrong". Under `--json` the object carries
+    `"complete": false` and the list of `timed_out_sections`.
+*   The deadline is not the only way a census comes back short, and **3** is
+    the answer to all of them. `complete` is true only when the deadline held,
+    every required queue-root section (`pool`, `endings`, and the queue-root
+    note that says which kind of empty an empty endings table is) read without
+    raising, *and* the pool census and selected endings parsed every record they
+    found. An unreadable ending keeps its diagnostic row and also appears in
+    `unavailable_sections`; inaccessible terminal directories fail the endings
+    section instead of silently contributing zero rows. Absent terminal
+    directories remain compatible with a transport that has filed nothing. A section that
+    raised is listed in `unavailable_sections` with its error class and text,
+    which is kept apart from `timed_out_sections` because the two call for
+    different next moves: a timeout says look at the mount, an error says look
+    at the error. Before this, a prompt `PermissionError` on the queue root
+    printed empty `nodes` and `jobs` under `"complete": true` and exited 0 --
+    indistinguishable from a quiet fleet, which is the one confusion the flag
+    was added to end.
+*   What `complete` does not cover is SLURM reachability. `sinfo` or `squeue`
+    missing or refusing is a statement about the scheduler, not about a census
+    that could not be read; it is reported in the `scheduler` notes and still
+    exits 0. Nor does a *stale* worker offer make a run incomplete: a box that
+    stopped announcing was read correctly and is a fact about the fleet. Only
+    a record nobody could read makes `pool.complete` false, and the records
+    that could not be read are named in `pool.unreadable`. The scan for
+    wedged `pbstatus` peers is outside the flag for the same reason: it is a
+    diagnostic printed to stderr about this box, not a section of the census,
+    so a scan that runs out of its slice of the budget says so on its own line
+    and leaves the exit status alone.
+*   `SIGKILL` is sent to an abandoned child and its exit verified within a
+    short grace, because a timeout alone proves nothing about reaping. A child
+    that does not exit is recorded in `abandoned_children` by PID *and*
+    `starttime`, since a PID alone is reusable and therefore not an identity.
+    SIGINT or SIGTERM aimed at the parent also closes its pipe and attempts
+    the same bounded cleanup; surviving reader identities are printed to stderr
+    even when cancellation prevents a JSON report. SIGKILL cannot run cleanup.
+    At most one queue-root child is left behind per run: the shared budget
+    means an expiry in one section leaves nothing for the next.
+*   On start the run counts other `pbstatus` processes on the box already in
+    uninterruptible sleep and prints one stderr line with the count, the oldest
+    age and the PIDs. It never refuses to run on that count. A refusal would
+    hide the fleet from the one person trying to see it, at exactly the moment
+    it is worth seeing. The scan reads `/proc/<pid>/stat` for every candidate
+    and `/proc/<pid>/cmdline` only for those already in `D`, because reading
+    another task's command line takes that task's `mmap_read_lock` and a task
+    blocked in an NFS page fault holds it; it is bounded by a PID count and a
+    wall clock, and it runs in the same kind of abandonable child.
+
+One thing the deadline does not cover, and cannot. When `pbstatus` is invoked
+from the shared checkout, the interpreter reads the script and the
+`prismabuild` package off the same mount before `main` exists. A mount sick
+enough can block that, and no code inside the script can bound its own load.
+The pool census phase is bounded; startup from a shared checkout is not.
+The default transport metadata lookup after imports shares the census budget;
+when it fails, the transport is unknown (`null` in JSON), never guessed.
+Explicit SLURM status retains its separate per-command timeouts and an
+unbounded lane-root lookup; the flag does not bound those scheduler reads.
+Output writes and the short child-reaping grace are also outside the read budget. The
+deadline also applies only to this diagnostic: it is not authority to time out
+an action payload, which is the fleet's work and has its own contract.
 
 Two flags say where `pbstatus` looks. `--lane-root` is the SLURM lane root that
 job names are resolved against, and it defaults to `$PRISMABUILD_SLURM_LANE_ROOT`, or
@@ -1243,6 +1378,8 @@ Publication refuses rather than guesses:
     interval. It can never read a mixed generation.
 *   **A live `repo` that is neither a directory nor a symlink** is refused.
 
+A staged generation's import probe disables bytecode writes, so validation
+does not add unlisted cache files before the generation is sealed.
 A published generation is sealed read-only and is never deleted. That is what
 makes rollback a namespace operation:
 
@@ -1472,7 +1609,7 @@ telemetry cannot be read, but it receives no borrowing credit.
 
 Measurements are stricter. They require a fresh nearly idle CPU observation,
 do not share CPU reservations, and wait while another CPU action is held on the
-host. Use the pool's implicit platform-keyed submitting-host form or SLURM's
+host. Use the pool's platform-keyed default or explicit class placement, or SLURM's
 explicit `--host-class CLASS` form described above. Use an exclusive GPU
 reservation whenever competing GPU work would invalidate the result. GB10 GPU
 utilization percentage is not a saturation measure; performance evidence should
@@ -1509,8 +1646,9 @@ them just because load rises. The separate memory guard may stop an exact
 attempt that exceeds its budget or threatens shared memory.
 
 `--exclusive` and GPU measurements do not share the device. Use `--measurement`
-for performance results: the pool pins the submitting host and seals its
-platform/toolchain identity. Optional SLURM measurements require `--host-class`;
+for performance results: the pool seals platform/toolchain identity and pins the
+submitting host unless `--host-class` explicitly selects matching workers.
+Optional SLURM measurements require `--host-class`;
 use its `--exclusive` GPU reservation when overlapping work would invalidate a
 result. Historical pool requests lacking explicit sharing intent remain
 exclusive until they finish.

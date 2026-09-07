@@ -485,6 +485,12 @@ def test_pool_measurement_row_uses_supported_local_scope(tmp_path):
     assert rows == [{'argv': ['true'], 'measurement': True}]
 
 
+def test_pool_measurement_row_can_explicitly_select_matching_class(tmp_path):
+    row = {'argv': ['./paired-probe.sh'], 'measurement': True, 'host_class': 'gb10'}
+    manifest = _manifest(tmp_path, [row])
+    assert pbcampaign.load_manifest(manifest, transport='pool') == [row]
+
+
 def test_pool_measurement_anywhere_is_refused_before_sealing_any_row(tmp_path):
     manifest = _manifest(tmp_path, [
         {'argv': ['true']},

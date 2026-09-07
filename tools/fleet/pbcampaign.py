@@ -46,7 +46,7 @@ and each one is exactly one ``pbrun`` flag:
 ``gpu_memory_gb``     ``--gpu-memory-gb``: pool GPU budget in GiB
 ``priority``         ``--priority``
 ``measurement``      ``--measurement``
-``host_class``       ``--host-class``: a node Feature name, e.g. ``gb10``
+``host_class``       ``--host-class``: worker class (pool measurement) or SLURM Feature
 ``retry_safe``       ``--retry-safe``
 ``max_attempts``     ``--max-attempts``
 ===================  ====================================================
@@ -65,12 +65,12 @@ submit, so a campaign of measurements is refused before it spends the fleet on
 its first row rather than on its last:
 
 * ``measurement`` without ``host_class`` under SLURM. Pool measurements
-  instead seal the submitting platform/toolchain and run on that host.
+  instead default to the submitting platform/toolchain and host; an explicit
+  class opts into matching workers while retaining platform-keyed numerics.
 * ``measurement`` with ``anywhere`` under the pool. A locally sealed
   measurement cannot assert placement on every worker.
-* ``host_class`` under ``--transport pool``.  The class is attested through
-  the SLURM controller, so a pull-queue worker refuses the action at preflight.
-  This one depends on the campaign's transport rather than on the row.
+* ``host_class`` without ``measurement`` under ``--transport pool``. SLURM's
+  host-class-keyed generation scope still requires controller attestation.
 * ``max_attempts`` greater than 1.  Every row is submitted detached -- that is
   what lets one campaign hold N actions open -- and a retry needs somebody
   alive to see the attempt fail.  ``retry_safe`` is still worth spelling on a
@@ -315,9 +315,8 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
     told the operator something different from the flag it becomes is exactly
     the row this tool exists to make reproducible at the terminal.
 
-    ``transport`` decides one of them: a host class is attested through the
-    SLURM controller, so it is a refusal under ``--transport pool`` and not a
-    refusal on the lane.
+    Pool class placement is an opt-in measurement contract; SLURM also supports
+    controller-attested host-class-keyed generation.
     """
 
     try:

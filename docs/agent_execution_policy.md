@@ -56,9 +56,13 @@ any eligible worker to claim portable work. Reserve the CPU count the workload
 actually uses; do not inflate reservations to force access to additional cores.
 Physical performance cores are the preferred tier; SMT siblings and efficiency
 cores are overflow capacity. The pool selects CPUs, and agents must preserve its
-assigned affinity, including inside containers. A pool measurement implicitly
-retains the submitting host and its platform/toolchain identity; `--anywhere` is
-invalid for it. A SLURM measurement must retain its explicit host-class
+assigned affinity, including inside containers. A pool measurement defaults to
+the submitting host and its platform/toolchain identity. Explicit
+`--measurement --host-class CLASS` permits matching workers when the complete
+experiment and external dependencies are identical across the class. The worker
+verifies platform/ABI, shell executable, driver and device models; each paired
+experiment stays in one isolated action. `--anywhere` is invalid. A SLURM
+measurement must retain its explicit host-class
 identity. Reserve exclusive GPU capacity when competing work would invalidate
 either kind of measurement.
 
