@@ -38,6 +38,21 @@ def _index_listing(entries: dict[str, int]) -> str:
     )
 
 
+def test_real_import_probe_preserves_the_runtime_file_roster(tmp_path, monkeypatch):
+    """Importing a staged generation must not publish unlisted bytecode."""
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    root = _checkout(tmp_path / "generation", "new")
+    (root / "src/prismabuild/pool.py").write_text(
+        "class PoolQueue:\n    def claim(self):\n        return None\n")
+    before = {p.relative_to(root): p.read_bytes()
+              for p in root.rglob("*") if p.is_file()}
+    publish_runtime._probe(root)
+    after = {p.relative_to(root): p.read_bytes()
+             for p in root.rglob("*") if p.is_file()}
+    assert after == before
+
+
 def _fake_git_and_probe(commit: str, index: dict[str, int] | None = None):
     """Answer the three Git questions publication asks, then the import probe.
 
@@ -484,4 +499,3 @@ def test_the_publishers_umask_does_not_decide_who_can_read_a_generation(
         mode = _mode(path)
         wanted = 0o555 if path.is_dir() else 0o444
         assert mode == wanted, f"{path} published {mode:04o}, wanted {wanted:04o}"
-
