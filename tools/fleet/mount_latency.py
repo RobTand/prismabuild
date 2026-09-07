@@ -1083,6 +1083,11 @@ def one_line(record: dict[str, object]) -> str:
         parts.append(f"for {probe.get('wedged_for_s')}s")
     elif status == "timed_out":
         parts.append(f"after {probe.get('deadline_s')}s")
+    if probe.get("error"):
+        parts.append(f"error={_diagnostic_text(probe['error'])}")
+    recording = record.get("recording") or {}
+    if recording.get("status") == "error":
+        parts.append(f"recording_error={_diagnostic_text(recording.get('error'))}")
     if rpc:
         parts.append(
             f"rpc={rpc['ops_per_s']}/s queue={rpc['queue_ms']}ms "
@@ -1129,6 +1134,7 @@ def append_record(record: dict[str, object], directory: Path) -> Path | None:
     """
 
     path = _record_path(directory, str(record.get("host") or "unknown"))
+    record["recording"] = {"status": "ok", "path": str(path)}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1138,7 +1144,9 @@ def append_record(record: dict[str, object], directory: Path) -> Path | None:
             pass
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
-    except OSError:
+    except OSError as exc:
+        record["recording"] = {"status": "error", "path": str(path),
+                               "error": f"{type(exc).__name__}: {exc}"}
         return None
     return path
 
@@ -1147,8 +1155,14 @@ def append_record(record: dict[str, object], directory: Path) -> Path | None:
 #
 # Netdata already runs on every box in this fleet and already keeps history, so
 # the cheapest way to turn a sample into a series is to speak its plugin
-# protocol rather than to build a store.  Charts are declared once and values
-# are integers, so latencies are emitted in microseconds.
+# protocol rather than to build a store. Values are integers, so latencies are
+# emitted in microseconds; the probe chart also carries current diagnostics.
+
+_PROBE_STATE_CHART = (
+    "prismabuild.mount_probe_state", "Shared mount probe outcome",
+    "state", "latency", "line", 90004,
+    (("ok",), ("timed_out",), ("wedged",), ("error",)),
+)
 
 _CHARTS = (
     ("prismabuild.mount_latency", "Shared mount metadata latency",
@@ -1160,9 +1174,7 @@ _CHARTS = (
      "microseconds", "rpc", "line", 90002, (("queue",), ("rtt",))),
     ("prismabuild.mount_queue_share", "Shared mount RPC time spent queued",
      "percentage", "rpc", "line", 90003, (("queue_share",),)),
-    ("prismabuild.mount_probe_state", "Shared mount probe outcome",
-     "state", "latency", "line", 90004,
-     (("ok",), ("timed_out",), ("wedged",), ("error",))),
+    _PROBE_STATE_CHART,
     # The admission gate.  Separate family: this is a local lock, not the
     # mount, and the entire point of measuring it is that it fails while the
     # mount looks fine.
@@ -1174,15 +1186,27 @@ _CHARTS = (
 )
 
 
-def _declare_charts(update_every: int, out) -> None:
-    for chart, title, units, family, kind, priority, dimensions in _CHARTS:
+def _declare_charts(update_every: int, out, charts=_CHARTS) -> None:
+    for chart, title, units, family, kind, priority, dimensions in charts:
         out.write(f"CHART {chart} '' '{title}' '{units}' {family} "
                   f"{chart} {kind} {priority} {update_every}\n")
         for (dimension,) in dimensions:
             out.write(f"DIMENSION {dimension} '' absolute 1 1\n")
 
 
-def _emit(record: dict[str, object], out) -> None:
+def _diagnostic_text(value: object) -> str:
+    """Bound one readable protocol token; never let error text inject commands.
+
+    Labels are a current, normalized hint. JSONL retains the original string.
+    Avoid quote/backslash parser escapes and all control characters, including
+    newlines, rather than relying on a shell's quoting rules for this protocol.
+    """
+    text = str(value or "")
+    return "".join(c if c.isprintable() and c not in "'\"\\" else " "
+                   for c in text[:512])
+
+
+def _emit(record: dict[str, object], out, update_every: int = 1) -> None:
     probe = record.get("probe") or {}
     rpc = record.get("rpc")
     status = str(probe.get("status", "error"))
@@ -1201,6 +1225,21 @@ def _emit(record: dict[str, object], out) -> None:
             out.write(f"SET {name} = {micros(probe.get(key))}\n")
         out.write("END\n")
 
+    # VARIABLE is numeric; diagnostics use chart labels, visible through the
+    # ordinary chart API without access to Netdata's journal or private home.
+    # Re-select the chart before CLABEL and replace values on every sample so
+    # recovery clears old failures. Keep the configured collection interval.
+    _declare_charts(update_every, out, (_PROBE_STATE_CHART,))
+    recording = record.get("recording") or {}
+    for name, value in (
+        ("probe_status", status),
+        ("probe_error", probe.get("error") or "none"),
+        ("record_status", recording.get("status") or "unknown"),
+        ("record_error", recording.get("error") or "none"),
+        ("record_path", recording.get("path") or "unknown"),
+    ):
+        out.write(f"CLABEL {name} '{_diagnostic_text(value)}' 1\n")
+    out.write("CLABEL_COMMIT\n")
     out.write("BEGIN prismabuild.mount_probe_state\n")
     for name in ("ok", "timed_out", "wedged", "error"):
         out.write(f"SET {name} = {1 if status == name else 0}\n")
@@ -1281,7 +1320,7 @@ def main(argv: list[str] | None = None) -> int:
             append_record(record, args.record_dir)
         try:
             if args.netdata:
-                _emit(record, sys.stdout)
+                _emit(record, sys.stdout, max(1, int(interval)))
             elif args.json:
                 print(json.dumps(record, indent=2, sort_keys=True), flush=True)
             else:
