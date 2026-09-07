@@ -2083,7 +2083,20 @@ def landed_outcome(
                            and existing.get("published_unix") == record.get("published_unix")
                            for _, existing in found):
                     found.append((path, record))
-        if len(found) == 1 or (found and generation is not None):
+        if generation is not None and found:
+            # A legacy ending with no generation remains the fallback when it
+            # is the only account of this run.  It must not outrank an exact
+            # ending that is also present: otherwise an old unstamped DONE can
+            # hide this generation's withdrawal and report cancelled work as
+            # successful.
+            exact = [
+                entry for entry in found
+                if isinstance(entry[1].get("published_unix"), (int, float))
+                and not isinstance(entry[1].get("published_unix"), bool)
+                and float(entry[1]["published_unix"]) == float(generation)
+            ]
+            return (exact or found)[0]
+        if len(found) == 1:
             return found[0]
         if found:
             return max(found, key=_stamp)
