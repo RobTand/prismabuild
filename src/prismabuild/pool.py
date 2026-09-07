@@ -2106,6 +2106,7 @@ class PoolQueue:
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         retry_safe: bool | None = None,
         container_owner: str | None = None,
+        preempted_claim: Mapping[str, object] | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -2163,6 +2164,20 @@ class PoolQueue:
         # is the hand edit this whole verb exists to remove.  The decision is
         # kept -- moved to ``superseded/``, not deleted -- and the new item
         # carries what it revived.
+        if preempted_claim is not None:
+            # Only the admission handoff may carry an interrupted attempt into
+            # a new generation. An intervening publication or operator decision
+            # wins; never overwrite it with the earlier selection snapshot.
+            decision = self.withdrawal_covers(preempted_claim, action_key=action_key)
+            visible = _read_json(self.item_path(WITHDRAWN, action_key))
+            live = _read_json(self.item_path(CLAIMED, action_key))
+            if (decision is None or not decision.get("preempted_by")
+                    or visible is None
+                    or visible.get("published_unix") != preempted_claim.get("published_unix")
+                    or self.item_path(READY, action_key).exists()
+                    or (live is not None and not _same_claim(live, preempted_claim))
+                    or not self._preemption_eligible(preempted_claim)):
+                raise PoolContractError("preemption handoff changed before requeue")
         superseded = self._supersede_withdrawal(action_key)
         item = {
             "schema": POOL_ITEM_SCHEMA_V1,
@@ -2185,6 +2200,7 @@ class PoolQueue:
             item["container_owner"] = str(container_owner)
         if superseded is not None:
             item["supersedes_withdrawal"] = {
+                "published_unix": superseded.get("published_unix"),
                 "withdrawn_unix": superseded.get("withdrawn_unix"),
                 "withdrawn_by": superseded.get("withdrawn_by"),
                 "withdrawn_host": superseded.get("withdrawn_host"),
@@ -2199,6 +2215,14 @@ class PoolQueue:
                 # the marker is retired, and the visible cost of #364 has to be
                 # on it rather than one dereference away.
                 item["preempted_by"] = str(superseded["preempted_by"])
+        if preempted_claim is not None:
+            # Reuse the ordinary bounded attempt counter. Earlier interrupted
+            # launches belong to the linked immutable withdrawal generations,
+            # not to this generation's canonical attempt-outcome directory.
+            # The existing missing-prefix field accounts for those launches;
+            # their complete cancellation lineage remains in the decisions.
+            item["attempts"] = int(preempted_claim.get("attempts", 0)) + 1
+            item["attempt_history_missing_before"] = item["attempts"]
         path = self.item_path(READY, action_key)
         _write_json_atomic(path, item)
         return path
@@ -2949,6 +2973,52 @@ class PoolQueue:
             # failure. No shared record is written as a fallback.
             pass
 
+    def _preemption_eligible(self, record: Mapping[str, object]) -> bool:
+        """Restart permission and remaining budget, with known generation work.
+
+        Preserve failed-attempt history in its original generation by leaving
+        any holder with recorded outcomes running. A new generation may carry
+        only earlier interruptions, counted by the existing attempt prefix and
+        linked through the immutable withdrawal decisions.
+        """
+        attempts = record.get("attempts", 0)
+        missing = record.get("attempt_history_missing_before", 0)
+        limit = record.get("max_attempts", DEFAULT_MAX_ATTEMPTS)
+        if (record.get("retry_safe") is not True
+                or type(attempts) is not int or attempts < 0
+                or type(missing) is not int or missing != attempts
+                or record.get("attempt_history")
+                or type(limit) is not int or attempts + 1 >= limit):
+            return False
+        # A legacy missing prefix is not proof of restartable interruptions.
+        # Verify the exact chain already filed by this preemption mechanism;
+        # each parent must account for exactly one fewer consumed launch.
+        parent = record
+        for consumed in range(attempts, 0, -1):
+            link = parent.get("supersedes_withdrawal")
+            if not isinstance(link, Mapping):
+                return False
+            generation = link.get("published_unix")
+            if type(generation) not in (int, float) or not math.isfinite(generation):
+                return False
+            try:
+                decisions = self.withdrawal_decisions(
+                    str(record["action_key"]), generation=float(generation))
+            except PoolContractError:
+                return False
+            if len(decisions) != 1:
+                return False
+            parent = decisions[0][1]
+            if (not parent.get("preempted_by")
+                    or parent.get("attempts") != consumed - 1
+                    or parent.get("max_attempts") != limit
+                    or parent.get("retry_safe") is not True
+                    or parent.get("attempt_history_before_withdrawal")
+                    or parent.get("attempt_history_missing_before_withdrawal", 0) != consumed - 1):
+                return False
+        shape, measurement = cpu_admission.action_identity(record)
+        return shape is not None and not measurement
+
     def _requeue_arguments(
         self, record: Mapping[str, object], *, action_key: str
     ) -> dict[str, object] | None:
@@ -2963,10 +3033,9 @@ class PoolQueue:
         withdrawal that stopped the holder names the generation it cancelled,
         so a new generation of the same content-addressed key is not covered by
         it -- which ``_claim`` already calls the ordinary way to ask for the
-        same work again.  ``publish`` also starts the attempt count at zero,
-        which is right: a preempted attempt reached no verdict, so it does not
-        spend one of the action's tries.  Its evidence is the withdrawal
-        decision, which is immutable and generation-scoped.
+        same work again. The admission-only handoff charges the interrupted
+        launch to the existing attempt budget and links its immutable
+        generation-scoped withdrawal. It never refunds a previous attempt.
         """
 
         addressing: dict[str, object] = {}
@@ -2986,6 +3055,7 @@ class PoolQueue:
             "needs_gpu": bool(record.get("needs_gpu")),
             "priority": int(record.get("priority", 0)),
             "resources": dict(record.get("resources") or {}),
+            "preempted_claim": dict(record),
             **addressing,
         }
         for field in ("max_attempts", "retry_safe", "container_owner"):
@@ -3022,9 +3092,11 @@ class PoolQueue:
         * **Only a foreground denial.**  Intra-band fairness is aging's job; a
           background item that cancelled another would spend its own band's
           work to buy a place in it.
-        * **Only a background holder.**  ``priority < 0`` is the band the
-          producer opted into by saying "only when nothing else wants the box".
-          A campaign action at 0 is not fair game for one at 5.
+        * **Only a restartable background holder.** Negative priority is not
+          retry permission. The verified action must be generation work with
+          explicit ``retry_safe``, an unused attempt after this interruption,
+          and no recorded failures to move across generation boundaries.
+          Foreground, measurement and unknown actions are protected.
         * **Only when the release closes the gap.**  Stopping work that does
           not admit the denied item is pure loss on both sides.  Measured from
           the holder's actual tokens, not its declared demand, because adaptive
@@ -3084,7 +3156,7 @@ class PoolQueue:
                 claimed_unix = float(record.get("claimed_unix") or 0.0)
             except (TypeError, ValueError):
                 continue
-            if holder_priority >= 0:
+            if holder_priority >= 0 or not self._preemption_eligible(record):
                 continue
             candidates.append(
                 (holder_priority, claimed_unix, holder, record, tokens))

@@ -77,10 +77,17 @@ never stops a holder whose release would not close the gap, and never cancels a
 second holder while a withdrawn one's tokens are still owed. It stops nothing when
 the selected claim concluded or changed before withdrawal, and refuses rather than raises when the holder's
 reservations contradict each other, because neither is the denied item's
-business. A preempted attempt records `preempted_by` and does not consume one of
-the action's attempts; a waiter follows that field from the cancelled generation
-to the one the requeue published, so a preemption reports the retry's ending
-rather than a withdrawal.
+business. Eligibility requires a verified generation action, explicit
+`retry_safe: true`, and an unused attempt after the interrupted launch.
+Measurements, unknown actions and holders with recorded failures remain running;
+the latter keeps its attempt history in the original generation. Priority alone
+never grants retry permission. An interruption consumes one of `max_attempts`
+through the existing `attempts` counter, so repeated preemptions and subsequent
+failures cannot refresh the launch budget. New generations account for earlier
+interruptions through `attempt_history_missing_before`; their immutable
+withdrawal decisions remain linked by `supersedes_withdrawal.published_unix`.
+No failure history is discarded or rewritten. A preempted attempt records
+`preempted_by`; a waiter follows it to the requeue and reports that run's ending.
 
 The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements

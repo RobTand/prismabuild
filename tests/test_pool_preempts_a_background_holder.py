@@ -26,6 +26,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import pool  # noqa: E402
 
+
+
+@pytest.fixture(autouse=True)
+def known_generation_action(monkeypatch):
+    # These private logical-token fixtures stand for a verified generation
+    # request; individual tests override this to exercise unknown/measurement.
+    monkeypatch.setattr(pool.cpu_admission, "action_identity", lambda item: ("shape", False))
+
+
 FOREGROUND = uuid.uuid4().hex + uuid.uuid4().hex
 BACKGROUND = uuid.uuid4().hex + uuid.uuid4().hex
 OTHER = uuid.uuid4().hex + uuid.uuid4().hex
@@ -44,6 +53,8 @@ def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
         cas_root=kw.pop("cas_root", "/cas"),
         checkout_root=kw.pop("checkout_root", "/co"),
         worker_script=kw.pop("worker_script", "/w.py"),
+        retry_safe=kw.pop("retry_safe", True),
+        max_attempts=kw.pop("max_attempts", 3),
         **kw,
     )
 

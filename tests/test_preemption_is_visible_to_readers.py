@@ -29,6 +29,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 import pbstatus  # noqa: E402
 
+
+
+@pytest.fixture(autouse=True)
+def known_generation_action(monkeypatch):
+    # These private logical-token fixtures stand for a verified generation
+    # request; individual tests override this to exercise unknown/measurement.
+    monkeypatch.setattr(pool.cpu_admission, "action_identity", lambda item: ("shape", False))
+
+
 FOREGROUND = uuid.uuid4().hex + uuid.uuid4().hex
 BACKGROUND = uuid.uuid4().hex + uuid.uuid4().hex
 
@@ -42,7 +51,8 @@ def preempted(tmp_path: Path):
     q.ledger().ensure_capacity({"gpu": 1})
 
     q.publish(action_key=BACKGROUND, cas_root="/cas", checkout_root="/co",
-              worker_script="/w.py", priority=-10, resources={"gpu": 1})
+              worker_script="/w.py", priority=-10, resources={"gpu": 1},
+              retry_safe=True, max_attempts=3)
     holder = q.claim(capacity={"gpu": 1})
     assert holder is not None and holder["action_key"] == BACKGROUND
 

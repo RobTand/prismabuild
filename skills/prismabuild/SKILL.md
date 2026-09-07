@@ -67,16 +67,20 @@ a fix -- submits at `--priority -10` (`pbtest.py --priority -10`, `pbrun.py
 that work is considered only after everything at the default priority has been
 tried and never displaces campaign work in the queue. Campaign work stays at 0.
 
-A `-10` action that is already running also yields the box: when a foreground
-item is denied for tokens a background holder is sitting on, that holder is
+An explicitly retry-safe `-10` generation action can also yield the box: when a
+foreground item is denied for tokens a background holder is sitting on, that holder is
 withdrawn through the withdrawal ladder and re-published at `-10` with its aging
-count, so it is retried later rather than lost. Expect an agent shard to be
-stopped and requeued when campaign work arrives; keep shards restartable, and
+count, provided an attempt remains after this interruption. Each preemption
+consumes one of the original `max_attempts`; it never resets the budget.
+Measurements, unknown actions and holders with recorded failures remain running.
+Use `--retry-safe` with a suitable bounded `--max-attempts` only for commands
+that can safely restart after interruption. Priority alone grants no restart
+permission. An eligible agent shard can be stopped when campaign work arrives;
 read `preempted_by` on the requeued row rather than treating the interruption as
 a failure. A `pbrun` or `pbtest` that is waiting does not exit on the stop: it
 follows the requeue and reports the retry's result, so a preempted shard costs
-wall-clock, not a verdict. The stop is not instant -- the holder returns its
-tokens at its next checkpoint -- so shards that are short still cost the
+one attempt and wall-clock time, without producing a failure verdict itself.
+The stop is not instant -- the holder returns its tokens at its next checkpoint -- so shards that are short still cost the
 campaign least.
 
 GPU work declares `--gpu` or the appropriate GPU demand. The live pool shares
