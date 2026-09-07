@@ -298,6 +298,10 @@ class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
 
 
+class AmbiguousClaimHolder(PoolContractError):
+    """Contradictory committed reservations forbid concluding a claim."""
+
+
 class ExecutionBudget(NamedTuple):
     """How long this action may run, and why that is the number.
 
@@ -3177,6 +3181,8 @@ class PoolQueue:
            mount and can only ever degrade to no marker at all, which is the
            honest unknown this method already returns.
 
+        ``AmbiguousClaimHolder`` means multiple ledgers name different boxes;
+        callers must retain the claim and reservations rather than conclude it.
         ``None`` means nothing named a box.  Callers must not substitute the
         local hostname for it: the box asking is almost never the holder, and
         releasing against its ledger moves nothing while reporting a number
@@ -3190,7 +3196,10 @@ class PoolQueue:
             # Two ledgers holding one action contradicts ``commit_acquire``'s
             # single-winner rule.  Refusing is the only answer that cannot
             # make it worse by choosing.
-            return None
+            raise AmbiguousClaimHolder(
+                f"ambiguous claim holder for {action_key}: committed reservations "
+                f"on {', '.join(hosts)}; claim and reservations retained"
+            )
         return self.claim_intent_host(action_key, record)
 
     def claim_holder_pids(self, host: str | None = None) -> set[int]:
@@ -3458,12 +3467,6 @@ class PoolQueue:
                 # is the guard's read, and it decides on the owner's box under
                 # the rule that belongs to it.
                 continue
-            container_cleanup = self.cleanup_action_containers(record, reason="lease_lost")
-            if not container_cleanup["complete"]:
-                pending = dict(record)
-                self._note_cleanup_attempt(pending, record, container_cleanup)
-                _write_json_atomic(path, pending)
-                continue
             # One holder, resolved once, before any branch below concludes
             # this claim -- because every one of them releases the claim's
             # tokens, and tokens are filed under the ledger of the box that
@@ -3487,15 +3490,23 @@ class PoolQueue:
             # strips ``claimed_host`` on its way to ``ready``, so this is the
             # last point at which every path can still ask.
             #
-            # After the container-cleanup gate rather than before it.  That
-            # gate decides who may prove a payload stopped, and in this window
-            # no payload was ever launched -- no container marker, no resource
-            # scope -- so the identity recovered here is not one it reads.
+            # Contradictory ledger evidence must stop even cleanup from making
+            # a choice. Refuse just this claim so healthy work can still recover.
             holder = record.get("claimed_host")
             if not isinstance(holder, str) or not holder:
-                holder = self.resolve_claim_holder(key, record)
+                try:
+                    holder = self.resolve_claim_holder(key, record)
+                except AmbiguousClaimHolder as exc:
+                    print(f"pool reaper: {exc}", file=sys.stderr)
+                    continue
                 if holder is not None:
                     record["claimed_host"] = holder
+            container_cleanup = self.cleanup_action_containers(record, reason="lease_lost")
+            if not container_cleanup["complete"]:
+                pending = dict(record)
+                self._note_cleanup_attempt(pending, record, container_cleanup)
+                _write_json_atomic(path, pending)
+                continue
             terminal = self.terminal_outcome_covers(
                 record, action_key=key, terminal=terminal_keys
             )

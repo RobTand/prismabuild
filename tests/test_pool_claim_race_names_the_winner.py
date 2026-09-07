@@ -231,7 +231,8 @@ def test_two_ledgers_holding_one_action_is_refused_not_guessed(queue) -> None:
     (queue.root / pool.RESERVATIONS / LOST_BY / "held" / KEY).mkdir(parents=True)
 
     assert queue.claim_reservation_hosts(KEY) == sorted([WON_BY, LOST_BY])
-    assert queue.resolve_claim_holder(KEY, _record(queue)) is None
+    with pytest.raises(pool.AmbiguousClaimHolder, match="ambiguous claim holder"):
+        queue.resolve_claim_holder(KEY, _record(queue))
 
 
 def test_a_zero_token_claim_still_falls_back_to_the_marker(queue, tmp_path) -> None:
