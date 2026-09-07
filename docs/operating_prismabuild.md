@@ -92,7 +92,7 @@ These flags say what the action needs and where it may run.
 | `--tag NAME` | Require a box offering this tag. Repeatable. | `--constraint=NAME`, ANDed with `&`. |
 | `--here` | Pin the action to this box. Combines with `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
-| `--priority N` | A queue hint. Higher runs sooner. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
+| `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 
 `--tag` and `--here` are two constraints, and passing both applies both:
 `--here --tag gb10` places the action on this box, which must also offer the
@@ -107,6 +107,19 @@ whichever is not true.
 
 `--priority` is a queue hint and nothing more. It is not part of the action
 identity, so two submissions that differ only in priority are the same action.
+
+Ready items are ordered by priority band first, then by admission denials
+(aging), then by publish time. Aging reorders only within a band: a
+`--priority -10` item denied a hundred times still sorts after a fresh
+priority-0 item, and because a claim walks that order and a withhold ends the
+pass, nothing at a negative priority is considered until every item above it
+has been tried. That is what makes `-10` mean "only when nothing else wants
+the box". Agent self-validation -- test shards, the receipt for a PR, a re-run
+to confirm a fix -- submits there (`pbtest.py --priority -10`, `pbrun.py
+--priority -10`) and cannot displace campaign work in the queue. What it can
+still do is keep a reservation it was admitted to until it finishes or hits
+its `--timeout-s`; a foreground item that needs those tokens waits that long.
+Preemption of an admitted background item is not implemented.
 
 ### SLURM partitions
 

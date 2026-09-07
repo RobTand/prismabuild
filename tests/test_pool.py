@@ -1263,6 +1263,54 @@ def test_denials_age_an_item_to_the_front(queue: pool.PoolQueue) -> None:
     assert queue.passes(KEY_B) == 1
 
 
+def test_aging_reorders_within_a_priority_band_and_never_across_one(
+    queue: pool.PoolQueue,
+) -> None:
+    """A negative priority means "only when nothing else wants the box" (#362).
+
+    Under the old key ``passes`` came first, so three denials turned that into
+    "ahead of everything".  A queue hint that expires after three denials is
+    not a hint anyone can plan on.
+    """
+
+    _publish(queue, KEY_B, priority=-10)          # background, published first
+    for _ in range(pool.STARVATION_FLOOR + 2):
+        queue.record_pass(KEY_B)
+    _publish(queue, KEY_A, priority=0)            # fresh foreground
+    assert [r["action_key"] for r in queue.ready_items()] == [KEY_A, KEY_B]
+    assert queue.claim()["action_key"] == KEY_A
+    assert queue.claim()["action_key"] == KEY_B
+
+
+def test_a_starved_background_item_cannot_withhold_the_host_from_foreground_work(
+    queue: pool.PoolQueue,
+) -> None:
+    """The displacement #362 forbids, end to end through ``claim``.
+
+    A big background item that cannot fit right now has been denied past
+    ``STARVATION_FLOOR``.  A small foreground item arrives and fits.  Under the
+    old ordering the background item was reached first, denied again, and
+    withheld the host -- ``claim`` returned ``None`` and the foreground item
+    sat behind work that was published to yield to it.  ``claim`` walks the
+    ready ordering and a withhold ends the pass, so putting the band first is
+    sufficient: nothing at a negative priority is considered until every
+    foreground item has been tried.
+    """
+
+    _publish(queue, KEY_B, priority=-10, resources={"gpu": 4})
+    capacity = {"gpu": 4}
+    ledger = queue.ledger()
+    ledger.ensure_capacity(capacity)
+    assert ledger.acquire("0" * 64, {"gpu": 2}) is True     # KEY_B cannot fit now
+    for _ in range(pool.STARVATION_FLOOR):
+        queue.record_pass(KEY_B)
+    _publish(queue, KEY_A, priority=0, resources={"gpu": 1})
+
+    taken = queue.claim(capacity=capacity)
+    assert taken is not None and taken["action_key"] == KEY_A
+    assert queue.item_path(pool.READY, KEY_B).exists()
+
+
 def test_a_starved_item_withholds_the_host_instead_of_being_overtaken(
     queue: pool.PoolQueue,
 ) -> None:

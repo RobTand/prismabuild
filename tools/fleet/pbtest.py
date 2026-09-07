@@ -195,6 +195,11 @@ def main() -> int:
     ap.add_argument("--wait-s", type=float, default=10800.0,
                     help="how long each shard waits for the fleet to run it, "
                          "queueing included; forwarded to pbrun")
+    ap.add_argument("--priority", type=int, default=0,
+                    help="queue hint forwarded to every shard's pbrun; higher "
+                         "runs sooner, negative yields to everything at 0 and "
+                         "aging never lifts it past them (#362). Not part of "
+                         "the action identity")
     ap.add_argument("--json", default="", help="write the per-shard result here")
     ap.add_argument(
         "--transport", choices=TRANSPORTS, default=default_transport(),
@@ -322,6 +327,10 @@ def main() -> int:
         if args.timeout_s is not None:
             flags += ["--timeout-s", str(args.timeout_s)]
         flags += ["--wait-s", str(args.wait_s)]
+        if args.priority != 0:
+            # Zero is pbrun's own default; forwarding only a non-zero hint
+            # leaves every existing shard argv byte-identical.
+            flags += ["--priority", str(args.priority)]
         command = flags + [
             "--", "env", "TMPDIR=/home/rob/tmp",
             *threads,

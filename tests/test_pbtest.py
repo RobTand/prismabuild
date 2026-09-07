@@ -116,6 +116,26 @@ def test_the_transport_reaches_pbrun(tmp_path: Path, monkeypatch) -> None:
     assert command.index("--transport") < command.index("--")
 
 
+def test_the_priority_reaches_pbrun(tmp_path: Path, monkeypatch) -> None:
+    """A queue hint ``pbtest`` does not forward is one the shards never carry.
+
+    Test shards are the bulk of agent self-validation, and #362 asks that they
+    be submittable at a priority that yields to campaign work.  Until this
+    flag existed every shard entered at 0.
+    """
+
+    command = _dispatch(tmp_path, monkeypatch, ["--priority", "-10"])
+    assert command[command.index("--priority") + 1] == "-10"
+    assert command.index("--priority") < command.index("--")
+
+
+def test_the_default_priority_is_left_to_pbrun(tmp_path: Path, monkeypatch) -> None:
+    """Zero is pbrun's own default; not forwarding it keeps existing argv intact."""
+
+    command = _dispatch(tmp_path, monkeypatch, [])
+    assert "--priority" not in command
+
+
 def test_a_checkout_with_no_receipt_stays_on_the_pull_queue(
     tmp_path: Path, monkeypatch,
 ) -> None:
