@@ -792,7 +792,11 @@ So the run has a deadline.
     exits 0. Nor does a *stale* worker offer make a run incomplete: a box that
     stopped announcing was read correctly and is a fact about the fleet. Only
     a record nobody could read makes `pool.complete` false, and the records
-    that could not be read are named in `pool.unreadable`.
+    that could not be read are named in `pool.unreadable`. The scan for
+    wedged `pbstatus` peers is outside the flag for the same reason: it is a
+    diagnostic printed to stderr about this box, not a section of the census,
+    so a scan that runs out of its slice of the budget says so on its own line
+    and leaves the exit status alone.
 *   `SIGKILL` is sent to an abandoned child and its exit verified within a
     short grace, because a timeout alone proves nothing about reaping. A child
     that does not exit is recorded in `abandoned_children` by PID *and*
