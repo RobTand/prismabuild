@@ -94,10 +94,14 @@ GPU sharing for ordinary work. Optional SLURM measurements require
 On GB10, GPU utilization percentage is not a saturation measure; collect power,
 CPU activity, residency and useful throughput with before/after profiling.
 
-Running vLLM for inference serving is exempt from PrismaBuild submission,
-including its GPU containers. Tests, benchmarks and other batch GPU jobs still
-run through PrismaBuild, including work against a running vLLM endpoint.
-The service's CPU, GPU and memory use remains external load for batch admission.
+vLLM is exempt from submission, universally: anything that runs it -- a serve, a
+census, a routing run, a benchmark against a live endpoint -- runs directly,
+including its GPU containers. The exemption is about what vLLM is, not what a
+given invocation feels like: it is a serving runtime, not work that divides into
+schedulable quanta, so an action wrapping it holds a reservation for the life of
+the service and gives the scheduler no completion to wait for. Work that does not
+run vLLM still submits, and a running vLLM remains external load for batch
+admission. `docs/agent_execution_policy.md` carries the full ruling.
 
 ## Verify and recover
 
