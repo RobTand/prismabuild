@@ -163,22 +163,81 @@ As a netdata external plugin, which is where the series and its retention come
 from. Netdata already runs on every box, so the collector itself is one symlink
 rather than a store somebody has to build and back up — but netdata runs its
 plugins as the unprivileged `netdata` user, and that user owns neither the
-probe directory nor `/home/rob/tmp`. Both have to be granted, once per box,
-before the symlink means anything:
+probe directory nor `/home/rob/tmp`. Provision both before installing the
+plugin. The probe must stay on the shared filesystem: moving it to local disk
+would stop measuring the claim path.
 
+### Provision the shared probe on the NFS server
+
+On a root-squashed NFS client, even `sudo install -d -o netdata` cannot
+change ownership on the export. Run ownership changes on **dl380g10, against
+its local ZFS path**, using the **client's numeric Netdata UID and GID**.
+Do not resolve `netdata` on the server for a client's directory: service UIDs
+can differ across hosts (#314).
+
+First collect these values on each client and retain them with the adoption
+record. The collector uses Python's full hostname, not `hostname -s`:
+
+```sh
+hostname
+id netdata
 ```
-# the probe directory: the plugin can create its own anchor but not its own
-# parent, and a failed mkdir makes every sample report status=error
-install -d -o netdata -g netdata \
-        /mnt/shared/prismabuild-fleet/mount-probe/$(hostname -s)
 
-# the box-local record: append_record returns None rather than raising when it
-# cannot write, so an unwritable directory is a silent loss of the backstop
-install -d -o netdata -g netdata /var/lib/netdata/prismabuild
+Then, in an administrator session on dl380g10, provision one client's directory
+at a time. This example uses Sparky's observed identity; recheck the values
+before applying it:
 
-ln -s /mnt/shared/prismabuild-fleet/repo/tools/fleet/mount_latency.py \
+```sh
+probe_host=sparky
+probe_uid=983
+probe_gid=983
+probe_dir=/storage_pool/shared/prismabuild-fleet/mount-probe/$probe_host
+findmnt -T /storage_pool/shared -o SOURCE,FSTYPE,TARGET
+# Confirm local ZFS, inspect every parent and any existing directory/anchor.
+# Coordinate existing probe users before changing ownership; reject symlinks.
+ls -ld /storage_pool/shared/prismabuild-fleet/mount-probe "$probe_dir"
+sudo install -d -m 0750 -o "$probe_uid" -g "$probe_gid" -- "$probe_dir"
+# If an existing anchor is a reviewed regular probe file, transfer it too:
+# sudo chown "$probe_uid:$probe_gid" -- "$probe_dir/anchor"
+# sudo chmod 0640 -- "$probe_dir/anchor"
+```
+
+An absent directory in the inspection is expected for a first installation.
+Provision a missing `mount-probe` parent separately with traversable permissions;
+do not recursively chown the fleet, CAS, queue, or other hosts' probes. The
+host directory and an existing anchor must be usable by that client's Netdata
+identity. This ownership model limits the grant to the probe directory. It also
+means an ordinary worker-user one-shot probe needs its own authorized writable
+probe location; coordinate any existing worker-user collector before transfer.
+
+Adding `netdata` to group `rob` is a different access policy: it grants access
+to **all** group-rob-accessible files, not just this probe. Do not use it as an
+implicit install prerequisite. A dedicated shared probe group requires a common
+numeric GID and deliberate membership provisioning on the participating hosts.
+World-writable probe directories are not required. Account group changes do not
+update a running daemon's supplementary groups; inspect `/proc/<pid>/status`
+and restart through the service manager when adopting an authorized change.
+
+### Install the local plugin
+
+On each client, in an administrator session, inspect existing paths before
+installing; retain an existing plugin rather than overwriting it blindly:
+
+```sh
+sudo install -d -m 0750 -o netdata -g netdata /var/lib/netdata/prismabuild
+sudo ln -s /mnt/shared/prismabuild-fleet/repo/tools/fleet/mount_latency.py \
       /usr/libexec/netdata/plugins.d/mount_latency.plugin
+sudo systemctl restart netdata
 ```
+
+Verify a sample from the actual Netdata process on **each** client: its
+`probe.status` must be `ok`, its claim timing present, and its box-local JSONL
+record growing. A standalone validation must run through published PrismaBuild
+under the target UID and supplementary groups with declared CPU/memory demand;
+an exit-zero `--once` alone is insufficient because failed probes are recorded
+as data. Record the terminal result, logs, CAS receipt and payload as well as
+the probe fields. Charts existing or a successful probe as `rob` do not prove
+Netdata adoption. Keep #314 open until both GB10 clients have this evidence.
 
 The published script is executable, and Netdata's invocation
 `mount_latency.plugin <update_every>` automatically selects protocol output.
