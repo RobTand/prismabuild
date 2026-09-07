@@ -2056,6 +2056,7 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
     # transition, not evidence that the preempted action was abandoned.
     with q._transition_locked(key):
         records = [record for _, record in q.withdrawal_decisions(key)]
+        records.extend(record for _, record in q.archived_preemption_outcomes(key))
         for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
                       pool.WITHDRAWN):
             try:
@@ -2146,6 +2147,12 @@ def landed_outcome(
                            and existing.get("published_unix") == record.get("published_unix")
                            for _, existing in found):
                     found.append((path, record))
+        if generation is not None and not any(
+                record.get("published_unix") == generation for _, record in found):
+            # A later same-status generation may have replaced the only mutable
+            # terminal row. The preemption successor's immutable attempt still
+            # carries its generation link, complete history and original verdict.
+            found.extend(q.archived_preemption_outcomes(key, generation=generation))
         if generation is not None and found:
             # A legacy ending with no generation remains the fallback when it
             # is the only account of this run.  It must not outrank an exact
@@ -2205,7 +2212,10 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     ):
         adopted = q.adopted_attempt_summary(outcome)
         disposition = adopted["disposition"]
-        if disposition != Path(outcome_path).parent.name:
+        archived_source = (
+            outcome.get("preemption_context") is not None
+            and Path(outcome_path) == q.attempt_path(outcome, outcome["attempts"]))
+        if not archived_source and disposition != Path(outcome_path).parent.name:
             raise pool.PoolContractError(
                 "terminal queue directory disagrees with the adopted immutable "
                 f"attempt: {Path(outcome_path).parent.name!r} != {disposition!r}"

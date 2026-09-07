@@ -90,6 +90,12 @@ No failure history is discarded or rewritten. A preempted attempt records
 `preempted_by`; a waiter follows the exact `supersedes_withdrawal` lineage
 through any repeated interruptions and reports that retry's ending. It does
 not adopt an unrelated later generation's verdict merely because the key matches.
+The existing immutable attempt outcome also retains the preemption handoff
+context and interrupted-attempt prefix. If a later same-status generation
+replaces the mutable terminal summary, the waiter reconstructs the original
+retry's ending from that attempt, revalidating canonical history, log digests
+and withdrawal lineage. Recovery writes no queue pointer and names the immutable
+attempt as its source. Attempts predating this context provide no inferred link.
 The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
 handoff cannot report cancellation while the replacement is being published.

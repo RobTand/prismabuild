@@ -206,3 +206,71 @@ def test_waiter_reports_its_requeue_not_an_unrelated_later_generation(tmp_path):
     assert landed is not None
     assert landed[1]['published_unix'] == retry['published_unix']
     assert landed[1]['status'] == 'failed'
+
+
+@pytest.mark.parametrize('status', ['failed', 'executed'])
+@pytest.mark.parametrize('interruptions', [1, 2])
+def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
+        tmp_path, status, interruptions):
+    from test_preemption_review_boundaries import setup_holder
+    q, bg, fg, holder = setup_holder(tmp_path, max_attempts=interruptions + 1)
+    original_generation = holder['published_unix']
+    for index in range(interruptions):
+        assert q.claim(capacity={'gpu': 1}) is None
+        q.finish(bg, status='withdrawn', claim_snapshot=holder)
+        foreground = q.claim(capacity={'gpu': 1})
+        q.finish(fg, status='executed', claim_snapshot=foreground)
+        holder = q.claim(capacity={'gpu': 1})
+        if index + 1 < interruptions:
+            q.publish(action_key=fg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
+                      worker_script=tmp_path / 'worker.py', resources={'gpu': 1})
+    retry = holder
+    retry_code = 7 if status == 'failed' else 0
+    q.finish(bg, status=status, detail={'returncode': retry_code, 'stdout': 'causal retry'},
+             claim_snapshot=retry)
+    q.publish(action_key=bg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
+              worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1},
+              max_attempts=1, retry_safe=False)
+    unrelated = q.claim(capacity={'gpu': 1})
+    q.finish(bg, status=status, detail={'returncode': 9 if status == 'failed' else 0,
+                                      'stdout': 'unrelated later run'},
+             claim_snapshot=unrelated)
+    terminal = q.item_path(pool.FAILED if status == 'failed' else pool.DONE, bg)
+    assert json.loads(terminal.read_text())['published_unix'] == unrelated['published_unix']
+    landed = pbrun.landed_outcome(q, bg, wait_s=0, generation=original_generation)
+    assert landed is not None
+    assert landed[1]['published_unix'] == retry['published_unix']
+    summary = pbrun.outcome_summary(q, *landed)
+    assert summary['status'] == status
+    assert summary['returncode'] == retry_code
+    assert summary['detail']['stdout'] == 'causal retry'
+    assert landed[0] == q.attempt_path(landed[1], landed[1]['attempts'])
+    assert landed[0].exists()
+    # Recovery is read-only: it must not replace G3's current summary with G2.
+    assert json.loads(terminal.read_text())['published_unix'] == unrelated['published_unix']
+
+
+@pytest.mark.parametrize('damage', ['lineage', 'log'])
+def test_archived_retry_recovery_revalidates_immutable_evidence(preempted, damage):
+    q, holder, stopped = preempted
+    q.finish(BACKGROUND, status='withdrawn', claim_snapshot=holder)
+    foreground = q.claim(capacity={'gpu': 1})
+    q.finish(FOREGROUND, status='executed', claim_snapshot=foreground)
+    retry = q.claim(capacity={'gpu': 1})
+    q.finish(BACKGROUND, status='executed', detail={'stdout': 'verified original'},
+             claim_snapshot=retry)
+    recovered = q.archived_preemption_outcomes(BACKGROUND)
+    assert len(recovered) == 1
+    path, record = recovered[0]
+    outcome = json.loads(path.read_text())
+    if damage == 'lineage':
+        outcome['preemption_context']['supersedes_withdrawal']['published_unix'] += 1
+        raw = json.dumps(outcome).encode()
+    else:
+        path = q.root / outcome['logs']['stdout']['path']
+        raw = b'changed after publication'
+    path.chmod(0o644)
+    path.write_bytes(raw)
+    path.chmod(0o444)
+    with pytest.raises(pool.PoolContractError):
+        q.archived_preemption_outcomes(BACKGROUND)

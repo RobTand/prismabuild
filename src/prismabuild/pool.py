@@ -2990,6 +2990,15 @@ class PoolQueue:
                 or record.get("attempt_history")
                 or type(limit) is not int or attempts + 1 >= limit):
             return False
+        if not self._preemption_prefix_valid(record, attempts, limit):
+            return False
+        shape, measurement = cpu_admission.action_identity(record)
+        return shape is not None and not measurement
+
+    def _preemption_prefix_valid(
+        self, record: Mapping[str, object], attempts: int, limit: int
+    ) -> bool:
+        """Verify interrupted launches against their immutable decisions."""
         # A legacy missing prefix is not proof of restartable interruptions.
         # Verify the exact chain already filed by this preemption mechanism;
         # each parent must account for exactly one fewer consumed launch.
@@ -3016,8 +3025,7 @@ class PoolQueue:
                     or parent.get("attempt_history_before_withdrawal")
                     or parent.get("attempt_history_missing_before_withdrawal", 0) != consumed - 1):
                 return False
-        shape, measurement = cpu_admission.action_identity(record)
-        return shape is not None and not measurement
+        return True
 
     def _requeue_arguments(
         self, record: Mapping[str, object], *, action_key: str
@@ -4899,6 +4907,17 @@ class PoolQueue:
             "detail": details,
             "logs": logs,
         }
+        if (record.get("preempted_by") is not None
+                and type(record.get("attempt_history_missing_before")) is int
+                and record["attempt_history_missing_before"] > 0):
+            # Preserve the generation handoff in the existing immutable attempt
+            # evidence. Mutable done/failed rows are one slot per action key
+            # and can later be replaced by an unrelated generation.
+            outcome["preemption_context"] = {
+                field: record.get(field) for field in (
+                    "preempted_by", "supersedes_withdrawal",
+                    "attempt_history_missing_before")
+            }
         # Outcome publication is first-writer-wins.  A finisher and a stale
         # reaper can legitimately race on the same numbered attempt; their
         # logs have content-addressed names, and whichever complete outcome
@@ -4984,6 +5003,14 @@ class PoolQueue:
                 raise PoolContractError(
                     f"pool attempt outcome differs from its history link: {expected}"
                 )
+            if "preemption_context" in value:
+                expected_context = {
+                    field: record.get(field) for field in (
+                        "preempted_by", "supersedes_withdrawal",
+                        "attempt_history_missing_before")
+                }
+                if value["preemption_context"] != expected_context:
+                    raise PoolContractError("immutable attempt preemption context differs")
             raw_logs = value.get("logs")
             if not isinstance(raw_logs, Mapping):
                 raise PoolContractError(f"pool attempt logs are missing: {expected}")
@@ -5021,6 +5048,58 @@ class PoolQueue:
                 expanded[stream] = log.decode("utf-8")
             outcomes.append(expanded)
         return outcomes
+
+    def archived_preemption_outcomes(
+        self, action_key: str, *, generation: float | None = None
+    ) -> list[tuple[Path, dict[str, object]]]:
+        """Recover ended preemption successors from existing attempt evidence.
+
+        No queue pointer is written. Each returned record is reconstructed from
+        its immutable terminal attempt and verified canonical history/logs. The
+        path names that actual immutable source, not an overwritten summary.
+        Older attempts without handoff context supply no inferred successor.
+        """
+        identity = {"action_key": action_key,
+                    "published_unix": generation if generation is not None else 0.0}
+        generation_name = self.attempt_generation(identity)  # validates key and timestamp
+        base = self.root / ATTEMPTS / action_key
+        if generation is not None:
+            base /= generation_name
+        pattern = "*.json" if generation is not None else "*/*.json"
+        found = []
+        for path in _glob(base, pattern):
+            value = _read_json(path)
+            if value is None or "preemption_context" not in value:
+                continue
+            if value.get("disposition") not in {DONE, FAILED}:
+                continue  # An intermediate failed attempt is not an ending.
+            context = value["preemption_context"]
+            if not isinstance(context, Mapping):
+                raise PoolContractError("immutable attempt preemption context must be an object")
+            record = {**value, **context, "schema": POOL_OUTCOME_SCHEMA_V1}
+            attempt = value.get("attempt")
+            missing = context.get("attempt_history_missing_before")
+            limit = value.get("max_attempts")
+            if (value.get("action_key") != action_key
+                    or type(attempt) is not int or type(limit) is not int
+                    or type(missing) is not int or not 0 < missing < attempt <= limit
+                    or value.get("retry_safe") is not True
+                    or path != self.attempt_path(record, attempt)
+                    or not self._preemption_prefix_valid(record, missing, limit)):
+                raise PoolContractError("invalid archived preemption outcome identity")
+            record["attempts"] = attempt
+            record["attempt_history"] = [
+                {"attempt": number,
+                 "outcome": str(self.attempt_path(record, number).relative_to(self.root))}
+                for number in range(missing + 1, attempt + 1)
+            ]
+            adopted = self.adopted_attempt_summary(record)
+            if adopted["disposition"] != value["disposition"]:
+                raise PoolContractError("archived preemption outcome has conflicting disposition")
+            for field in ("status", "finished_unix", "finished_host", "detail"):
+                record[field] = adopted[field]
+            found.append((path, record))
+        return found
 
     def adopted_attempt_summary(
         self, record: Mapping[str, object]
