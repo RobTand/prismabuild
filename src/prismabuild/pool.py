@@ -4802,13 +4802,30 @@ class PoolQueue:
         worker execute a ready copy after another box has filed its outcome.
         The record's generation is checked separately, so an old outcome does
         not blacklist this content-addressed name.
+
+        **Loud on anything but absence.**  This set is the evidence
+        ``terminal_outcome_covers`` decides on, and every ``OSError`` used to
+        answer it the same way an empty directory does.  ``ESTALE`` on a
+        cached directory handle is the ordinary way a listing fails on this
+        mount -- ``_read_json`` treats it as a first-class event (#208) and
+        ``quarantine_orphans`` re-raises every errno that is not ``ESTALE``
+        rather than swallowing the class -- so one stale handle reported "no
+        outcomes have been filed" for a queue full of them.  ``reap_stale``
+        then found no filed outcome for a generation that had one and put it
+        back in ``ready``, which is the one thing this method's own caller
+        says a CAS hit does not license.  ``_read_json`` states the rule:
+        answering "absent" without the evidence that the directory is live
+        "would turn a broken mount into a confident wrong verdict".
         """
 
         keys: set[str] = set()
         for state in (DONE, FAILED):
             try:
                 names = os.listdir(self.dir(state))
-            except OSError:
+            except (FileNotFoundError, NotADirectoryError):
+                # Absence only.  A queue whose layout has not been created yet
+                # legitimately has no ``done`` and no ``failed``, and that is
+                # the one reading of "no names" this method may make.
                 continue
             keys.update(
                 name[: -len(".json")] for name in names if name.endswith(".json")
