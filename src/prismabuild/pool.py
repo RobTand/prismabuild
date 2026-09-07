@@ -3285,10 +3285,13 @@ class PoolQueue:
         Read in this order, and the order is the point:
 
         1. **The ledger.**  Exact, and derived from the rename itself, so it
-           cannot name a loser (#272).  It is silent only when the claim holds
-           no tokens -- a zero demand -- which is also when naming the wrong
-           box costs the ledger nothing.
-        2. **The intent marker.**  A proxy: written *before* the rename, so it
+           cannot name a loser (#272).  A nonempty host in the mutable claim or
+           lease must agree with it; disagreement is contradictory evidence,
+           not permission to debit the recorded box.
+        2. **The record.**  The claimed host, or the lease host for a widowed
+           lease, remains the legacy answer when no reservation exists.  That
+           is the zero-demand case, where naming a box costs the ledger nothing.
+        3. **The intent marker.**  A proxy: written *before* the rename, so it
            names a claimant rather than the winner.  ``_write_claim_intent``
            writes by rename, so a loser that wrote after the winner replaced
            the winner's marker, and both pass the generation check.  A losing
@@ -3305,8 +3308,23 @@ class PoolQueue:
         that looks like it did.
         """
 
+        recorded = [
+            (field, value)
+            for field in ("claimed_host", "host")
+            if isinstance((value := record.get(field)), str) and value
+        ]
         hosts = self.claim_reservation_hosts(action_key)
         if len(hosts) == 1:
+            conflicts = [
+                f"{field}={value!r}" for field, value in recorded
+                if value != hosts[0]
+            ]
+            if conflicts:
+                raise AmbiguousClaimHolder(
+                    f"contradictory claim holder for {action_key}: "
+                    f"{', '.join(conflicts)}, committed reservation on "
+                    f"{hosts[0]!r}; claim and reservations retained"
+                )
             return hosts[0]
         if hosts:
             # Two ledgers holding one action contradicts ``commit_acquire``'s
@@ -3316,6 +3334,10 @@ class PoolQueue:
                 f"ambiguous claim holder for {action_key}: committed reservations "
                 f"on {', '.join(hosts)}; claim and reservations retained"
             )
+        if recorded:
+            # Preserve the established no-ledger fallback order. A claim's own
+            # field is stronger than the lease-shaped compatibility field.
+            return recorded[0][1]
         return self.claim_intent_host(action_key, record)
 
     def claim_holder_pids(self, host: str | None = None) -> set[int]:
@@ -3611,15 +3633,13 @@ class PoolQueue:
                 #
                 # Contradictory ledger evidence must stop even cleanup from making
                 # a choice. Refuse just this claim so healthy work can still recover.
-                holder = record.get("claimed_host")
-                if not isinstance(holder, str) or not holder:
-                    try:
-                        holder = self.resolve_claim_holder(key, record)
-                    except AmbiguousClaimHolder as exc:
-                        print(f"pool reaper: {exc}", file=sys.stderr)
-                        continue
-                    if holder is not None:
-                        record["claimed_host"] = holder
+                try:
+                    holder = self.resolve_claim_holder(key, record)
+                except AmbiguousClaimHolder as exc:
+                    print(f"pool reaper: {exc}", file=sys.stderr)
+                    continue
+                if holder is not None:
+                    record["claimed_host"] = holder
                 container_cleanup = self.cleanup_action_containers(record, reason="lease_lost")
                 if not container_cleanup["complete"]:
                     pending = dict(record)
@@ -4090,15 +4110,13 @@ class PoolQueue:
                         continue
                 if age <= timeout_s:
                     continue
-                host = record.get("host")
-                if not isinstance(host, str) or not host:
-                    try:
-                        host = self.resolve_claim_holder(key, record)
-                    except AmbiguousClaimHolder as exc:
-                        print(f"pool lease sweep: {exc}", file=sys.stderr)
-                        continue
-                    if host is not None:
-                        record["host"] = host
+                try:
+                    host = self.resolve_claim_holder(key, record)
+                except AmbiguousClaimHolder as exc:
+                    print(f"pool lease sweep: {exc}", file=sys.stderr)
+                    continue
+                if host is not None:
+                    record["host"] = host
                 container_cleanup = self.cleanup_action_containers(record)
                 if not container_cleanup["complete"]:
                     continue
@@ -4803,7 +4821,12 @@ class PoolQueue:
                 snapshot=claim_snapshot, live=record,
             )
         read_claim = dict(record) if record is not None else None
-        effective_record = record or claim_snapshot or {}
+        effective_record = dict(record or claim_snapshot or {})
+        holder = self.resolve_claim_holder(action_key, effective_record)
+        if holder is not None:
+            effective_record["claimed_host"] = holder
+            if record is not None:
+                record["claimed_host"] = holder
         container_cleanup = self.cleanup_action_containers(
             effective_record, reason=str((detail or {}).get("termination_reason") or status))
         if not container_cleanup["complete"]:
@@ -4849,14 +4872,14 @@ class PoolQueue:
             # all.  ``record is None`` is the one case with no generation to
             # compare, and is treated as covered -- the claim was concluded by
             # somebody else, so there is nothing here to file either way.
-            host = (record or claim_snapshot or {}).get("claimed_host")
             if read_claim is None:
                 return self.item_path(WITHDRAWN, action_key)
             tombstone, mine = self._entomb_claim(action_key, expect=read_claim)
             if not mine or tombstone is None:
                 return self.item_path(WITHDRAWN, action_key)
             self.lease_path(action_key).unlink(missing_ok=True)
-            self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
+            if holder is not None:
+                self.ledger(holder).release(action_key)
             tombstone.unlink(missing_ok=True)
             return self.item_path(WITHDRAWN, action_key)
         if record is None:
@@ -4887,11 +4910,9 @@ class PoolQueue:
             # the CAS, and ``reclaim_terminal_reservation`` refuses the key as
             # ambiguous.  The snapshot carries ``published_unix``, which is
             # what makes the question askable here at all.
-            snapshot = dict(claim_snapshot or {})
-            snapshot_host = snapshot.get("claimed_host")
-            self.ledger(
-                str(snapshot_host) if isinstance(snapshot_host, str) else None
-            ).release(action_key)
+            snapshot = dict(effective_record)
+            if holder is not None:
+                self.ledger(holder).release(action_key)
             self.lease_path(action_key).unlink(missing_ok=True)
             try:
                 covered = self.terminal_outcome_covers(
@@ -4951,7 +4972,6 @@ class PoolQueue:
             return lost
         record.pop("finish_pending", None)
         record.pop("container_cleanup_pending", None)
-        host = record.get("claimed_host")
         prior_attempts = int(record.get("attempts", 0))
         attempts = prior_attempts + 1
         limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
@@ -5017,7 +5037,8 @@ class PoolQueue:
         self.lease_path(action_key).unlink(missing_ok=True)
         # Capacity is released before the item is filed, so the next worker to
         # look sees the tokens free rather than racing this rename.
-        self.ledger(str(host) if isinstance(host, str) else None).release(action_key)
+        if holder is not None:
+            self.ledger(holder).release(action_key)
         _write_json_atomic(dst, record)
         if tombstone is None:
             src.unlink(missing_ok=True)
@@ -5486,20 +5507,24 @@ class PoolQueue:
 
         lease = _read_json(self.lease_path(key)) or {}
         host: str | None = None
-        if isinstance(record, Mapping):
-            claimed_host = record.get("claimed_host")
-            host = claimed_host if isinstance(claimed_host, str) else None
-        if host is None and isinstance(lease.get("host"), str):
-            host = str(lease["host"])
-        if host is None and origin == CLAIMED:
+        if origin == CLAIMED and isinstance(record, Mapping):
             # Resolve ambiguity before retiring or publishing any decision.
             # This is also the holder named in the deferred-stop result.
-            host = self.resolve_claim_holder(key, record)
+            evidence = dict(record)
+            if isinstance(lease.get("host"), str):
+                evidence["host"] = lease["host"]
+            host = self.resolve_claim_holder(key, evidence)
             if host is not None and isinstance(record, dict):
                 # Named on the withdrawn record too, for the reason #227 gives:
                 # a claim must not be able to be lost more anonymously than it
                 # was taken.
                 record["claimed_host"] = host
+        else:
+            if isinstance(record, Mapping):
+                claimed_host = record.get("claimed_host")
+                host = claimed_host if isinstance(claimed_host, str) else None
+            if host is None and isinstance(lease.get("host"), str):
+                host = str(lease["host"])
 
         if (existing is not None and record is not None
                 and self.withdrawal_covers(record, action_key=key) is None):
@@ -5888,12 +5913,16 @@ class PoolQueue:
             return
         if record.get("resource_scope") is not None:
             raise PoolContractError("cannot defer an attempt that already owns a resource scope")
-        tombstone, mine = self._entomb_claim(key, expect=record)
+        read_claim = dict(record)
+        host = self.resolve_claim_holder(key, record)
+        if host is not None:
+            record["claimed_host"] = host
+        tombstone, mine = self._entomb_claim(key, expect=read_claim)
         if tombstone is None or not mine:
             return
-        host = record.get("claimed_host")
         self.lease_path(key).unlink(missing_ok=True)
-        self.ledger(host if isinstance(host, str) else None).release(key)
+        if host is not None:
+            self.ledger(host).release(key)
         destination = self._shape_as_ready_item(record, action_key=key)
         record["maintenance_deferred_unix"] = _now()
         _write_json_atomic(tombstone, record)
