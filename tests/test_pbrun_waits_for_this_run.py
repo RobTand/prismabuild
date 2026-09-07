@@ -100,3 +100,26 @@ def test_an_ending_with_no_generation_stands(queue) -> None:
     assert pbrun.await_outcome(
         queue, KEY, wait_s=0.05, generation=200.0
     ) == 3
+
+
+@pytest.mark.parametrize("withdrawal", ["visible", "decision"])
+def test_this_runs_withdrawal_beats_an_old_unstamped_success(
+    queue, withdrawal
+) -> None:
+    """An exact ending is stronger evidence than the legacy fallback."""
+
+    legacy = _outcome(100.0, status="executed", returncode=0)
+    del legacy["published_unix"]
+    _file(queue, pool.DONE, legacy)
+    current = _outcome(200.0, status="withdrawn", returncode=143)
+    if withdrawal == "visible":
+        expected = _file(queue, pool.WITHDRAWN, current)
+    else:
+        expected = queue.withdrawal_decision_path(current)
+        queue._persist_withdrawal_decision(current)
+
+    path, ending = pbrun.landed_outcome(
+        queue, KEY, wait_s=0.05, generation=200.0)
+
+    assert path == expected
+    assert ending["status"] == "withdrawn"
