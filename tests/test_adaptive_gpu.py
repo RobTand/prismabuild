@@ -340,6 +340,31 @@ def test_power_plateau_closes_below_soc_fraction_and_survives_departure(gpu_rig)
     assert resumed['gpu_admission']['probe'] is True
 
 
+@pytest.mark.parametrize('holder_exits', [False, True])
+def test_startup_plateau_is_invalidated_by_sustained_activity_rise(gpu_rig, holder_exits):
+    """A startup plateau cannot govern a later active phase indefinitely."""
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    for index in range(4): publish(index)
+    sample['devices'][0]['power_w'] = 8.
+    first = claim(); assert first
+    tick(); second = claim(); assert second
+    for _ in range(3):
+        tick(); assert claim() is None
+    state = adaptive_cpu.read_json(queue.ledger().base / 'adaptive/gpu-state.json')
+    assert state['power_feedback']['status'] == 'plateau'
+    if holder_exits:
+        queue.finish(second['action_key'], status='executed', detail={})
+    sample['devices'][0]['power_w'] = 60.
+    tick(); assert claim() is None  # One changed sample is not a phase.
+    resumed = None
+    for _ in range(5):
+        tick()
+        resumed = claim()
+        if resumed: break
+    assert resumed, 'sustained activity rise must invalidate the startup plateau'
+    assert resumed['gpu_admission']['probe'] is True
+
+
 def test_power_plateau_is_cleared_when_the_gpu_busy_period_ends(gpu_rig):
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
     for index in range(3): publish(index)

@@ -1384,7 +1384,8 @@ With suitable device and host headroom, the pool admits one additional sharing
 action at a time, waits for its activity response, and checks fresh observations
 before expanding again. Power or thermal limits, host pressure and foreign work
 stop new admission. If adding work produces no activity response above observed
-noise, further probes pause until activity drops or the busy period ends.
+noise, further probes pause until activity changes beyond that noise in either
+direction or the busy period ends. Fresh headroom gates still govern admission.
 Existing healthy actions keep running; the admission controller does not stop
 them just because load rises. The separate memory guard may stop an exact
 attempt that exceeds its budget or threatens shared memory.

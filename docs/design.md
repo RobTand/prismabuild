@@ -1468,8 +1468,11 @@ compares the mean change with observed sample noise and a relative deadband,
 not a benchmark-specific wattage limit. No measurable increase latches an
 activity plateau and closes further admission. That state survives restarts and
 individual holder exits, allowing concurrency to fall while remaining work
-still sustains the plateau. Sustained power reduction or the end of the GPU busy
-period permits new exploration. This is a conservative admission heuristic;
+still sustains the plateau. A sustained power change in either direction, or the
+end of the GPU busy period, invalidates the old phase and permits new exploration
+only through the current headroom, attribution and reservation gates. An idle
+startup plateau cannot establish saturation for a later active phase.
+This is a conservative admission heuristic;
 useful throughput and energy measurements must qualify its practical effect.
 
 GPU concurrency uses the same host admission lock as CPU lending. Additional
