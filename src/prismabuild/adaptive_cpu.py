@@ -18,6 +18,8 @@ import socket
 import stat
 import time
 
+from . import adaptive_snapshot
+
 MAX_SAMPLE_AGE_S = 5.0
 MIN_INTERVAL_S = 1.0
 MAX_INTERVAL_S = 60.0
@@ -318,24 +320,45 @@ def box_state(base):
     return directory, hashlib.sha256(identity.encode()).hexdigest()
 
 
+def local_state_base(base):
+    """CPU learning is local authority, never restored from diagnostic copies."""
+    directory, digest = box_state(base)
+    state = directory / (digest + '.adaptive-cpu-v1')
+    state.mkdir(mode=0o700, exist_ok=True)
+    info = state.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError('unsafe PrismaBuild adaptive CPU state directory')
+    if info.st_mode & 0o077:
+        # As with the owning box-state directory, repair our own permissions
+        # instead of taking admission down for an owner-correctable mode.
+        state.chmod(0o700)
+        if state.lstat().st_mode & 0o077:
+            raise RuntimeError('unsafe PrismaBuild adaptive CPU state directory')
+    return state
+
+
 class Controller:
     def __init__(self, ledger, tiers):
         self.ledger = ledger
         self.tiers = tiers
         self.cpus = list(tiers['preferred']) + list(tiers['fallback'])
-        self.base = ledger.base / 'adaptive'
+        self.base = local_state_base(ledger.base)
         self._host_sample = None
+        self._dirty = False
+
+    def write_state(self, name, value):
+        write_json(self.base / name, value)
+        self._dirty = True
 
     @contextmanager
     def locked(self):
         """Hold box admission for the block, or raise ``AdmissionBusy`` at once.
 
         The acquisition is non-blocking, and that is the whole point.  What
-        this lock guards is not a short local update: ``decision`` reads
-        ``cpu-sample.json``, ``profiles.json``, ``jobs.json``, every holder's
-        metadata and every holder's telemetry, and all of those live under
-        ``reservations/<host>/`` on the shared mount, while the ``_claim`` this
-        wraps then scans ``ready/``, renames a record, writes a lease and
+        this lock guards is not entirely local: CPU samples, profiles and
+        interval/borrowing state are host-local, but ``decision`` still reads
+        every holder's metadata and telemetry on the shared mount. The
+        ``_claim`` this wraps then scans ``ready/``, renames a record, writes a lease and
         renames tokens -- also on the mount.  So the holder's time inside is
         bounded by a filesystem another machine controls, and a blocking
         ``LOCK_EX`` made every other loop on the box wait for it.
@@ -366,6 +389,7 @@ class Controller:
         directory, digest = box_state(self.ledger.base)
         name = digest + '.lock'
         descriptor = os.open(directory / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        acquired = False
         try:
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
@@ -376,9 +400,16 @@ class Controller:
                 # Read the holder before releasing anything, so the pid named
                 # is the one that was actually in the way.
                 raise AdmissionBusy(holder=_holder_of(descriptor)) from None
+            acquired = True
             yield
         finally:
             os.close(descriptor)
+            # No shared operation or inherited admission descriptor in the
+            # publisher. A blocked diagnostic copy occupies only its own
+            # host-local publication lock, never this admission lock.
+            if acquired and self._dirty:
+                self._dirty = False
+                adaptive_snapshot.publish(self.base, self.ledger.base / 'adaptive')
 
     def sample(self):
         current = counters(set(self.cpus))
@@ -402,7 +433,7 @@ class Controller:
                                'per_cpu_busy': {key: busy / total for key, (busy, total)
                                                 in zip(current['cpus'], deltas)}}
         current['observation'] = observation
-        write_json(path, current)
+        self.write_state('cpu-sample.json', current)
         return observation
 
     def decision(self, item, demand):
@@ -498,9 +529,9 @@ class Controller:
                 pending += cost
             elif meta.get('shape') and not meta.get('measurement') and cost < reserved:
                 lendable = True
-        write_json(self.base / 'jobs.json', next_recent)
+        self.write_state('jobs.json', next_recent)
         profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
-        write_json(self.base / 'profiles.json', profiles)
+        self.write_state('profiles.json', profiles)
         declared = int(demand.get('cpu', 0))
         learned = profiles.get(shape, {}) if shape else {}
         learned_valid = (learned.get('samples', 0) >= 3
@@ -541,7 +572,7 @@ class Controller:
 
     def admitted(self, metadata):
         if metadata.get('borrowing'):
-            write_json(self.base / 'last-borrow.json', {'sampled_unix': metadata['sampled_unix']})
+            self.write_state('last-borrow.json', {'sampled_unix': metadata['sampled_unix']})
 
 
 def record_completion(ledger, item, telemetry):
@@ -591,7 +622,7 @@ def record_completion(ledger, item, telemetry):
                                'memory_peak_bytes': max(telemetry['memory_peak_bytes'],
                                                         previous.get('memory_peak_bytes', 0))}
             profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
-            write_json(controller.base / 'profiles.json', profiles)
+            controller.write_state('profiles.json', profiles)
     except AdmissionBusy:
         return False
     return True

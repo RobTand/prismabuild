@@ -1285,6 +1285,40 @@ The diagnostic adds no shared-filesystem reads or writes. A holder can still
 block on shared I/O inside the critical section; the diagnostic does not bound
 that operation or release its locks and reservations (issues #266 and #351).
 
+Adaptive CPU bookkeeping is authoritative only on the host, under
+`PRISMABUILD_BOX_STATE_ROOT/<ledger-and-host-digest>.adaptive-cpu-v1/`.
+`cpu-sample.json`, `jobs.json`, `profiles.json` and `last-borrow.json` share
+the existing admission lock across worker loops. Cold local state starts with
+no interval or learned credit; it never imports an old shared diagnostic copy.
+Deploy or roll back this authority change with a drained queue, and verify all
+worker loops have adopted the generation before resuming work. Do not mix
+workers using shared authority with workers using local authority, or clear
+the local state while workers are alive. Before rolling back to shared CPU
+authority, also prove every snapshot publisher has exited: a delayed copy must
+not overwrite state that a legacy worker is again treating as authoritative.
+
+After releasing admission, a worker may start one independent snapshot
+publisher per host/ledger. A separate permanent local `publish.lock` is acquired
+nonblockingly and inherited only by that child across exec. No admission
+descriptor is inherited. A blocked publisher retains the publication slot
+until it actually exits, including after its originating worker exits; new
+loops cannot create more blocked copies. Publisher PID, start ticks and nonce
+remain in `publisher-owner.json`; `publisher-result.json` names that nonce on
+completion or error. No timeout, signal or assumed reaping releases the slot.
+Starts are limited to one per second, and completed children are reaped without
+waiting at subsequent publication attempts.
+
+The files under `reservations/<host>/adaptive/` are independent diagnostic
+copies. The CPU copy adds `_snapshot.source=host-local` and a copy timestamp,
+but retains the original `sampled_unix`. `pbstatus` and `pbmetrics` classify
+freshness from that original timestamp; a late copy remains stale and missing
+evidence remains unknown. A snapshot can lag current admission and never grants
+admission credit. Publication failure cannot change a claim result. This removes
+CPU bookkeeping writes from the critical section; holder telemetry, action
+requests, GPU state, transitions, leases and token operations still use the
+shared filesystem. It is not a bound on the entire claim operation or a claim
+that the recurring NFS fault is repaired.
+
 The fleet retains `--all-cores` so all usable CPU capacity remains available.
 Within each worker's inherited affinity, physical performance cores form the
 preferred tier. SMT siblings and efficiency cores form the lower tier and are
@@ -1427,7 +1461,7 @@ because a hard mount blocks uninterruptibly and no signal reaches it, and at
 most one such child is ever outstanding: a wedged mount suppresses the next
 probe instead of accumulating one blocked process per scrape. The third
 reading is not about the mount: admission is gated by a local `flock` whose
-critical section is still entirely on the shared mount, so a slow mount still
+critical section still contains shared operations, so a slow mount still
 makes the *holder* slow. What it no longer does is convert into a local queue.
 Until #267 the acquisition blocked, and one process waiting on one remote peer
 starved every other loop on the box; `locked()` now takes `LOCK_NB` and raises
