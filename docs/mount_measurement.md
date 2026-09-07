@@ -116,6 +116,34 @@ no holders and no waiters, which is indistinguishable from a healthy one. On
 sparky, where `/tmp` is major 259 (`103`), the bug is invisible. It would have
 blinded this leg on exactly the box it was built for, and on no other.
 
+The collector now compares the device numbers numerically. On btrfs,
+`stat` can name a subvolume's device while `/proc/locks` names the superblock's,
+so even correctly padded device numbers can differ. An inode number alone
+cannot resolve this in a passive census: the watched file may be unlocked
+while another filesystem holds a lock on that number.
+
+For an alias, the collector reads the holder's procfs `fdinfo`, mount namespace,
+mount table and descriptor **link text**. The descriptor must carry that lock
+and inode, name the watched absolute path in the collector's mount namespace,
+and belong to the visible mount at that path. The path check distinguishes
+nested subvolumes even when their mount table entry and inode numbers coincide.
+Descriptor and namespace evidence are rechecked for changes. No descriptor
+target is opened or followed, and no lock is acquired. Waiters attach to the
+proved holder's kernel lock-record group, rather than every matching inode.
+
+Missing permissions, ambiguous evidence, changed descriptors, hidden/deleted
+paths, and scan limits leave an alias unverified. Hardlink or symlink spellings
+that do not match the holder's descriptor path are also unverified. The JSON
+gate record then sets `identity_complete: false`; its counts describe only the
+identified rows, the human output says `gate=(identity unverified)`, and no
+gate/hold Netdata sample is emitted for that reading. Mount/probe/RPC samples
+continue. Do not read an incomplete census as a healthy zero.
+
+The extra work applies only to device aliases and is bounded to 32 holder
+processes, 256 descriptors per holder and 1 MiB per procfs record. It is not
+included in the historical collector-cost measurements below. The ordinary
+exact-device path retains its single `/proc/locks` read.
+
 `max_hold_s` is a **lower** bound. `/proc/locks` carries no timestamp, so the
 age is accumulated across samples and quantised by the interval; a hold that
 begins and ends between two samples is not seen. That is enough for the failure

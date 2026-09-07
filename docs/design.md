@@ -1334,7 +1334,14 @@ acquisition has come back.
 `/proc/locks` is filtered to the admission lock files and split into holders and
 waiters, each with its state and `wchan`, and the hold age is accumulated across
 samples as a lower bound. The count of waiters not in a running or
-uninterruptible state is reported alongside `load1`, because a blocking `flock`
+uninterruptible state is reported alongside `load1`. Device aliases in the
+passive census require bounded procfs evidence tying a holder's lock descriptor
+to the watched path in the same mount namespace; inode equality alone is not
+proof. Waiters follow that holder's kernel lock group. Missing, ambiguous or
+changing alias evidence sets `locks.identity_complete: false`, and the collector
+withholds gate/hold chart samples rather than presenting an incomplete zero as
+health. The measurement remains lock-free and does not open or follow holder
+descriptor targets. A blocking `flock`
 sleeps interruptibly and load average counts neither: fifteen fully blocked
 processes moved `load1` from 0.24 to 0.30 on sparky, which is why a box with
 every loop starved reported load 1.13 and why no load-based check can see this.

@@ -68,6 +68,7 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
+import re
 import select
 import signal
 import socket
@@ -151,6 +152,12 @@ ADMISSION_LOCK_DIR = Path(os.environ.get("PRISMABUILD_BOX_STATE_ROOT")
 #: cost of this leg a function of how bad the incident is.  Beyond this many we
 #: still report the exact count and stop attributing.
 MAX_ATTRIBUTED_WAITERS = 32
+
+#: Device aliases need extra procfs evidence. Bound that work independently of
+#: how many files a holder has open or how many ambiguous rows an incident adds.
+MAX_ALIAS_HOLDERS = 32
+MAX_ALIAS_FDS = 256
+MAX_PROC_IDENTITY_BYTES = 1024 * 1024
 
 
 @dataclass
@@ -490,7 +497,115 @@ def lock_key(path: Path) -> str | None:
             f":{info.st_ino}")
 
 
-def read_proc_locks(keys: set[str], text: str | None = None) -> dict[str, dict]:
+def _lock_identity(value: str) -> tuple[int, int, int] | None:
+    """Read the kernel's numeric identity; hex padding is not identity."""
+    try:
+        major, minor, inode = value.split(":")
+        return int(major, 16), int(minor, 16), int(inode)
+    except ValueError:
+        return None
+
+
+def _proc_lock_row(line: str):
+    fields = line.split()
+    if len(fields) < 2:
+        return None
+    waiting = fields[1] == "->"
+    rest = fields[2:] if waiting else fields[1:]
+    if len(rest) < 7 or rest[0] != "FLOCK":
+        return None
+    identity = _lock_identity(rest[4])
+    try:
+        pid = int(rest[3])
+    except ValueError:
+        return None
+    if identity is None or pid <= 0:
+        return None
+    return fields[0], waiting, pid, identity
+
+
+def _proc_identity_text(path: Path) -> str:
+    with path.open("rb") as stream:
+        payload = stream.read(MAX_PROC_IDENTITY_BYTES + 1)
+    if len(payload) > MAX_PROC_IDENTITY_BYTES:
+        raise OSError("procfs identity record exceeds collector bound")
+    return payload.decode("utf-8", errors="surrogateescape")
+
+
+def _visible_mount_id(path: str, mountinfo: str) -> int | None:
+    candidates = []
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if len(fields) < 6:
+            continue
+        point = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), fields[4])
+        if path == point or path.startswith(point.rstrip("/") + "/"):
+            candidates.append((len(point), int(fields[0])))
+    if not candidates:
+        return None
+    longest = max(length for length, _ in candidates)
+    matching = {mount for length, mount in candidates if length == longest}
+    return next(iter(matching)) if len(matching) == 1 else None
+
+
+def _holder_lock_paths(pid: int) -> dict | None:
+    """Map kernel lock identities to descriptor paths using only procfs reads.
+
+    On btrfs, /proc/locks uses the superblock device while stat uses the
+    subvolume device. Even fdinfo's mount ID cannot distinguish nested btrfs
+    subvolumes. Bind the lock row and inode to the descriptor's procfs link,
+    in this collector's mount namespace and at the visible mount of that path.
+    Unlike admission's _holder_of, this passive census cannot infer that an
+    inode-only candidate is ours: the file we watch may not be locked at all.
+
+    Never follow /proc/PID/fd links or probe a lock. Those could access an
+    unrelated filesystem or affect the gate. Incomplete/unreadable evidence
+    cannot prove an alias. Duplicate descriptors of one file collapse, while
+    two paths with one kernel key remain ambiguous.
+    """
+    root = Path("/proc") / str(pid)
+    try:
+        namespace = os.readlink("/proc/self/ns/mnt")
+        if os.readlink(root / "ns/mnt") != namespace:
+            return None
+        mountinfo = _proc_identity_text(root / "mountinfo")
+        identities = {}
+        with os.scandir(root / "fdinfo") as descriptors:
+            for index, descriptor in enumerate(descriptors):
+                if index >= MAX_ALIAS_FDS:
+                    return None
+                if not descriptor.name.isdigit():
+                    continue
+                text = _proc_identity_text(root / "fdinfo" / descriptor.name)
+                fields = dict(line.split(":", 1) for line in text.splitlines()
+                              if ":" in line and not line.startswith("lock:"))
+                lock_rows = [_proc_lock_row(line.partition(":")[2].strip())
+                             for line in text.splitlines() if line.startswith("lock:")]
+                for row in lock_rows:
+                    if row is None or row[1] or row[2] != pid:
+                        continue
+                    inode = int(fields["ino"])
+                    if inode != row[3][2]:
+                        return None
+                    target = os.readlink(root / "fd" / descriptor.name)
+                    if (not target.startswith("/") or target.endswith(" (deleted)")
+                            or _visible_mount_id(target, mountinfo) != int(fields["mnt_id"])):
+                        return None
+                    # Tie the procfs link to the same descriptor snapshot;
+                    # closing/reusing an fd mid-read cannot prove an alias.
+                    if _proc_identity_text(root / "fdinfo" / descriptor.name) != text:
+                        return None
+                    identities.setdefault(row[3], set()).add(target)
+        if (os.readlink(root / "ns/mnt") != namespace
+                or _proc_identity_text(root / "mountinfo") != mountinfo):
+            return None
+        return identities
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def read_proc_locks(keys: set[str], text: str | None = None, *,
+                    paths: dict[str, Path] | None = None) -> dict[str, dict]:
     """Split holders from waiters for each key of interest.
 
     A waiting record is marked by ``->`` after its id.  That single character
@@ -505,21 +620,53 @@ def read_proc_locks(keys: set[str], text: str | None = None) -> dict[str, dict]:
         try:
             text = Path("/proc/locks").read_text()
         except OSError:
+            for entry in found.values():
+                entry["identity_unverified"] = True
             return found
-    for line in text.splitlines():
-        fields = line.split()
-        if len(fields) < 2:
+    wanted = {_lock_identity(key): key for key in keys}
+    wanted_paths = {key: os.path.abspath(path) for key, path in (paths or {}).items()}
+    rows = [row for line in text.splitlines()
+            if (row := _proc_lock_row(line)) is not None]
+    aliases = {}
+    holder_proofs = {}
+    holder_counts = {}
+    for _, waiting, pid, identity in rows:
+        if not waiting:
+            token = (pid, identity)
+            holder_counts[token] = holder_counts.get(token, 0) + 1
+    for group, waiting, pid, identity in rows:
+        if waiting or identity in wanted:
             continue
-        waiting = fields[1] == "->"
-        rest = fields[2:] if waiting else fields[1:]
-        # kind, mandatory-ness, access, pid, maj:min:inode, start, end
-        if len(rest) < 5 or rest[4] not in found:
+        candidates = {key for key in wanted if key is not None
+                      and key[2] == identity[2]}
+        if not candidates:
             continue
-        try:
-            pid = int(rest[3])
-        except ValueError:
-            continue
-        found[rest[4]]["waiters" if waiting else "holders"].append(pid)
+        if pid not in holder_proofs and len(holder_proofs) < MAX_ALIAS_HOLDERS:
+            holder_proofs[pid] = _holder_lock_paths(pid)
+        proof = holder_proofs.get(pid)
+        targets = proof.get(identity, set()) if proof is not None else None
+        # fdinfo cannot distinguish two identical rows owned by the same pid.
+        if not targets or len(targets) > 1 or holder_counts[(pid, identity)] > 1:
+            for candidate in candidates:
+                found[wanted[candidate]]["identity_unverified"] = True
+        else:
+            target = next(iter(targets))
+            matching = {wanted[candidate] for candidate in candidates
+                        if wanted_paths.get(wanted[candidate]) == target}
+            if len(matching) == 1:
+                aliases[(group, identity)] = next(iter(matching))
+            elif len(matching) > 1 or any(wanted[candidate] not in wanted_paths
+                                          for candidate in candidates):
+                for candidate in candidates:
+                    found[wanted[candidate]]["identity_unverified"] = True
+    for group, waiting, pid, identity in rows:
+        key = wanted.get(identity) or aliases.get((group, identity))
+        if key is not None:
+            found[key]["waiters" if waiting else "holders"].append(pid)
+        else:
+            for candidate in wanted:
+                if candidate is not None and candidate[2] == identity[2]:
+                    found[wanted[candidate]]["identity_unverified"] = True
     return found
 
 
@@ -578,13 +725,13 @@ def lock_contention(lock_dir: Path = ADMISSION_LOCK_DIR,
     for path in paths:
         key = lock_key(path)
         if key:
-            keys[key] = path.name
+            keys[key] = path
     if not keys:
         # No admission lock on this box is a fact, not a failure: a box that
         # has never run a loop has no gate to contend for.
         return {"present": False, "waiters": 0, "holders": 0}
 
-    locks = read_proc_locks(set(keys), text=locks_text)
+    locks = read_proc_locks(set(keys), text=locks_text, paths=keys)
     holders, waiters = [], []
     for key, entry in locks.items():
         for pid in entry["holders"]:
@@ -616,6 +763,8 @@ def lock_contention(lock_dir: Path = ADMISSION_LOCK_DIR,
 
     return {
         "present": True,
+        "identity_complete": not any(entry.get("identity_unverified")
+                                     for entry in locks.values()),
         "files": len(keys),
         "holders": len(holders),
         "waiters": len(waiters),
@@ -945,7 +1094,9 @@ def one_line(record: dict[str, object]) -> str:
         parts.append(f"cost<={attribution.get('probe_rpcs_upper_bound')}rpc "
                      f"cache={attribution.get('attribute_cache_hits', '?')}")
     locks = record.get("locks") or {}
-    if locks.get("present"):
+    if locks.get("present") and not locks.get("identity_complete", True):
+        parts.append("gate=(identity unverified)")
+    elif locks.get("present"):
         parts.append(f"gate={locks.get('holders')}held/"
                      f"{locks.get('waiters')}wait")
         if locks.get("max_hold_s"):
@@ -1056,7 +1207,7 @@ def _emit(record: dict[str, object], out) -> None:
     out.write("END\n")
 
     locks = record.get("locks") or {}
-    if locks.get("present"):
+    if locks.get("present") and locks.get("identity_complete", True):
         out.write("BEGIN prismabuild.admission_gate\n")
         out.write(f"SET holders = {int(locks.get('holders') or 0)}\n")
         out.write(f"SET waiters = {int(locks.get('waiters') or 0)}\n")
