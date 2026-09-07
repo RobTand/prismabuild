@@ -2498,7 +2498,18 @@ class PoolQueue:
         if record.get("resource_scope") is None and record.get("resource_scope_intent") is not None:
             try:
                 self._recover_resource_scope_creation(record)
-            except (OSError, ValueError, KeyError, TypeError) as exc:
+            except Exception as exc:                                 # noqa: BLE001
+                # The third enumerated tuple on this path, and it is retired
+                # for the reason the other two were (#286, #288): the list is
+                # of the errors somebody thought of, and this call reaches the
+                # broker socket, the shared mount and JSON.  An escape here is
+                # fail-OPEN in the expensive direction -- the caller never
+                # receives the dict it indexes ``["complete"]`` on, so the
+                # claim is never concluded and the lease decays to
+                # ``lease_lost_max_attempts`` for a payload that already ran.
+                #
+                # ``Exception`` and not ``BaseException``: a KeyboardInterrupt
+                # or SystemExit still stops the process.
                 return {"complete": False, "used": True, "removed": [], "remaining": [],
                         "error": f"resource scope creation reconciliation incomplete: {type(exc).__name__}: {exc}"}
         if record.get("resource_scope") is None:
@@ -2642,32 +2653,46 @@ class PoolQueue:
         raw_owner = record.get("container_owner")
         if raw_owner is None:
             return {"complete": True, "used": False, "removed": [], "remaining": []}
-        try:
-            marker = self.container_marker(str(raw_owner))
-        except PoolContractError as exc:
-            return {
-                "complete": False,
-                "used": True,
-                "removed": [],
-                "remaining": [],
-                "error": str(exc),
-            }
-        if not marker.exists():
-            return {"complete": True, "used": False, "removed": [], "remaining": []}
-
-        holder = record.get("claimed_host") or record.get("host")
-        local = socket.gethostname()
-        if isinstance(holder, str) and holder and holder != local:
-            return {
-                "complete": False,
-                "used": True,
-                "removed": [],
-                "remaining": [],
-                "error": f"container belongs to {holder}; cleanup must run there",
-            }
 
         descriptor: int | None = None
+        # The boundary starts here, not at ``os.open``.  Everything between
+        # this line and the payload proof reads the shared mount -- the marker
+        # path, its stat, the hostname -- and a raise from any of it used to
+        # leave this method entirely.  ``marker.exists()`` was the live one:
+        # ``Path.exists`` re-raises an errno outside ``ENOENT/ENOTDIR/EBADF/
+        # ELOOP``, and ESTALE on an NFS handle is outside it, so a stale marker
+        # handle escaped rather than answering ``complete: False``.  This is
+        # the same fail-OPEN shape as #286/#288 in the sibling path: all four
+        # callers index ``["complete"]`` on a dict they never receive, so the
+        # payload has run, the claim is never concluded, and the lease decays
+        # to ``lease_lost_max_attempts``.  The no-scope path reaches here
+        # through ``cleanup_action_containers``'s early return, *outside* that
+        # method's broad handler, so this is where it has to be caught.
         try:
+            try:
+                marker = self.container_marker(str(raw_owner))
+            except PoolContractError as exc:
+                return {
+                    "complete": False,
+                    "used": True,
+                    "removed": [],
+                    "remaining": [],
+                    "error": str(exc),
+                }
+            if not marker.exists():
+                return {"complete": True, "used": False, "removed": [], "remaining": []}
+
+            holder = record.get("claimed_host") or record.get("host")
+            local = socket.gethostname()
+            if isinstance(holder, str) and holder and holder != local:
+                return {
+                    "complete": False,
+                    "used": True,
+                    "removed": [],
+                    "remaining": [],
+                    "error": f"container belongs to {holder}; cleanup must run there",
+                }
+
             descriptor = os.open(
                 marker,
                 os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
@@ -2694,7 +2719,18 @@ class PoolQueue:
                 "removed": removed,
                 "remaining": remaining,
             }
-        except (OSError, subprocess.SubprocessError, PoolContractError) as exc:
+        except Exception as exc:                                     # noqa: BLE001
+            # Every exception, for the reason the sibling path already records
+            # (#286, #288): this block is the part that PROVES the payload
+            # stopped -- Docker, the shared mount, a marker stat -- and the
+            # enumerated tuple was written against the errors somebody thought
+            # of.  ``complete: False`` is the honest answer to any of them:
+            # the claim and its tokens are retained, ``_note_cleanup_attempt``
+            # counts the retry, and nothing releases capacity for a payload
+            # nobody has shown to have stopped.
+            #
+            # ``Exception`` and not ``BaseException``: a KeyboardInterrupt or
+            # SystemExit still stops the process.
             return {
                 "complete": False,
                 "used": True,
