@@ -75,7 +75,7 @@ cancellation does not cover. Release is asynchronous, so the denied item is
 admitted on a later pass. Preemption never crosses into the foreground band,
 never stops a holder whose release would not close the gap, and never cancels a
 second holder while a withdrawn one's tokens are still owed. It stops nothing when
-the holder concluded first, and refuses rather than raises when the holder's
+the selected claim concluded or changed before withdrawal, and refuses rather than raises when the holder's
 reservations contradict each other, because neither is the denied item's
 business. A preempted attempt records `preempted_by` and does not consume one of
 the action's attempts; a waiter follows that field from the cancelled generation

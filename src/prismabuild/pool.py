@@ -3120,6 +3120,7 @@ class PoolQueue:
                 ),
                 by=f"prismabuild admission on {socket.gethostname()}",
                 preempted_by=action_key,
+                expected_claim=record,
             )
         except PoolContractError:
             # The holder concluded, or its reservations contradict each other,
@@ -5748,6 +5749,7 @@ class PoolQueue:
         reason: str = "",
         by: str = "",
         preempted_by: str | None = None,
+        expected_claim: Mapping[str, object] | None = None,
         signal_child: bool = True,
     ) -> dict[str, object]:
         """Cancel one generation; its owner concludes any claimed attempt.
@@ -5757,6 +5759,10 @@ class PoolQueue:
         stamped on the filed record and on the immutable decision, so the cost
         of a preemption is readable where the ending is, and by a reader that
         does not have to parse ``reason``.
+
+        ``expected_claim`` confines an admission withdrawal to the exact
+        attempt it selected. A successor changes nothing and returns
+        ``claim_changed``; ordinary operator withdrawals omit this guard.
 
         The immutable generation decision survives a new publication retiring
         the visible withdrawn record. Claimed records, leases and reservations
@@ -5776,6 +5782,14 @@ class PoolQueue:
 
         existing = _read_json(withdrawn_path)
         record = _read_json(claimed_path)
+        if expected_claim is not None and (
+                record is None or not _same_claim(record, expected_claim)):
+            # Admission selected one exact attempt before taking this key's
+            # transition lock. A replacement must retain its own priority and
+            # cancellation authority, even when it has the same action key.
+            return {"action_key": key, "status": "claim_changed",
+                    "state": CLAIMED if record is not None else None,
+                    "released": 0, "signalled": None}
         origin: str | None = CLAIMED if record is not None else None
         if record is not None and self.withdrawal_covers(record, action_key=key) is not None:
             waiting = _read_json(ready_path)
