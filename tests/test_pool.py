@@ -1757,8 +1757,9 @@ def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
     starved item was not competing for.  ``STARVATION_FLOOR`` assumes the block
     is transient; when the blocking resource is held for hours it inverts.
 
-    Past ``WITHHOLD_CEILING_S`` the item keeps every pass, and passes are the
-    first term of the ready ordering -- so it loses the veto, not the priority.
+    Past ``WITHHOLD_CEILING_S`` the item keeps every pass, and passes order
+    the ready set within its priority band -- so it loses the veto, not its
+    place in that band.
     """
 
     _publish(queue, KEY_A, resources={"gpu": 4})      # the big, starved one
