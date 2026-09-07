@@ -31,6 +31,16 @@ also why `pbtest` names no default tag when run from a worktree: the `x86`
 default is an explicit placement claim, and an explicit tag outranks the pin
 `pbrun` would otherwise derive (RobTand/prismabuild#292).
 
+Every worker loop kills an action at its own safety ceiling, **7200 s by
+default**, and that ceiling is applied as a silent `min` against `--timeout-s`.
+Each box now announces its ceiling (`pbstatus` shows it as `KILL AT`), `pbrun`
+says at submit when `--timeout-s` asks for more than an eligible box will
+grant, and the receipt records what actually governed
+(`execution_timeout_s`, `execution_timeout_requested_s`,
+`execution_timeout_ceiling_s`, `execution_timeout_clamped`). A job that needs
+longer than the ceiling needs a loop started with a larger `--timeout-s`, not
+a larger `--timeout-s` on the submission (RobTand/prismabuild#293).
+
 Use `pbtest.py` to split suites into independent file shards and
 `pbcampaign.py` for explicit action manifests. Cap pytest fanout at `-n 4` with
 one native thread per worker (`OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`,

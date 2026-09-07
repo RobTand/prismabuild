@@ -438,6 +438,13 @@ def _run_loop(stop_requested):
             observed_detail=(observer.last.detail if observer is not None
                              and observer.last is not None else None),
             runtime_commit=loaded_commit, cpu_tiers=cpu_tiers, loops=loops,
+            # The ceiling this loop will actually kill an action at.  It is a
+            # CLI default nobody outside the loop could see, and
+            # ``_execution_timeout`` applies it as a silent ``min`` -- so a
+            # submitter asking for 13000 s was given 7200 s and told nothing,
+            # and the #275 campaign died at 7200 s believing it had 13000
+            # (#293).  Announcing it is what lets pbrun say so at submit.
+            timeout_ceiling_s=args.timeout_s,
         )
         # One bad item must not take the worker with it.  ``serve_once``
         # re-raises whatever ``execute`` raised, and this loop had no handler,
