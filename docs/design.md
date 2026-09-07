@@ -65,6 +65,10 @@ the evidence on later sweeps; it does not guess a host. A lease whose claim is
 gone and whose host is missing or invalid uses the same holder resolution
 before cleanup. Conflicting ledgers retain the lease and every reservation;
 absent ownership never becomes the sweeping host's ledger.
+Every concluding path reconciles a nonempty mutable claim or lease host with the
+unique committed ledger before cleanup or a state transition. A mismatch is
+contradictory evidence and retains the claim, lease, and reservation; the
+recorded host remains the legacy fallback only when no committed ledger exists.
 A claim-to-tombstone
 rename that fails does not establish cleanup ownership: the reaper retains
 the claim, lease and reservation, reports the refusal, and retries on a later
