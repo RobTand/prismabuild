@@ -43,12 +43,12 @@ not blocked, whatever its load average claimed.
 
 Two properties this must have, because it runs on the sick box too:
 
-*Bounded.*  A hard NFS mount does not fail, it waits, and a ``stat`` on a
-wedged one blocks uninterruptibly -- no signal, no thread timeout, no
-``SIGKILL`` reaches it.  The syscall leg therefore runs in a forked child the
-parent abandons at a deadline, and the parent records ``timed_out`` instead of
-joining it in D state.  At most one child is ever outstanding: while one is
-still unreaped the next sample skips the syscall leg entirely and reports
+*Bounded.*  A hard NFS mount can keep a syscall waiting beyond its caller's
+deadline. Some kernel waits respond to ``SIGKILL``; others remain blocked, so
+neither signalling nor a thread timeout proves exit. The syscall leg runs in a
+forked child the parent stops waiting for at a deadline, and records
+``timed_out`` instead of joining it in D state. At most one child is ever
+outstanding: while one is still unreaped the next sample skips the syscall leg and reports
 ``wedged``, which is not a degraded reading but the strongest one this module
 produces.  The procfs leg keeps reporting throughout.
 
@@ -109,9 +109,9 @@ RECORD_MAX_BYTES = 16 * 1024 * 1024
 PROBE_DEADLINE_S = 2.0
 
 #: How long to wait for a ``SIGKILL`` to land on an abandoned probe child.
-#: A runnable process dies at its next scheduling point, well inside this; a
-#: process blocked in the kernel on a hard NFS mount never does, and that is
-#: the whole distinction being drawn.
+#: A runnable or killable blocked process can exit in this interval; an
+#: uninterruptible wait can outlast it. Observe reaping instead of assuming
+#: that sending the signal stopped the child.
 KILL_GRACE_S = 0.25
 KILL_POLL_S = 0.005
 
@@ -820,10 +820,10 @@ class MountSampler:
     def _reap_within(pid: int, grace_s: float) -> int:
         """Reap ``pid`` if it goes within ``grace_s``, without ever blocking.
 
-        A blocking ``waitpid`` is the one call in this module that could
-        outlast its own deadline: a child stuck in the kernel on a hard mount
-        never returns, and waiting on it would put the caller in exactly the
-        state the fork was there to avoid.  Polling costs a few syscalls and
+        A blocking ``waitpid`` could outlast its own deadline: a child stuck
+        in an uninterruptible kernel wait need not return after a signal,
+        and waiting on it would put the caller in the state the fork was
+        there to avoid. Polling costs a few syscalls and
         keeps the bound over the whole call rather than over most of it.
         """
 
@@ -857,11 +857,11 @@ class MountSampler:
     def _run_probe(self) -> dict[str, object]:
         """The syscall leg, in a child this process is willing to abandon.
 
-        A hard NFS mount answers a blocked ``stat`` with neither an error nor a
-        signal, so there is no in-process way to stop waiting for one.  Forking
-        is what makes the deadline real: the parent stops reading and returns a
-        recorded failure, and the child stays in D state until the mount comes
-        back, which it does not get to do inside this call.
+        A blocked ``stat`` on a hard NFS mount need not return at the caller's
+        deadline, even after a signal. Forking makes the caller deadline
+        possible: the parent stops reading
+        and returns a recorded failure without joining a child that remains
+        blocked. An unreaped child stays tracked for a later sample.
         """
 
         self._reap()

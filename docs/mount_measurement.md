@@ -376,10 +376,11 @@ started.
 
 ## Boundedness on a wedged mount
 
-A hard NFS mount does not fail, it waits, and a `stat` on a wedged one blocks
-uninterruptibly — no signal, no thread timeout, no `SIGKILL` reaches it. So the
-syscall leg runs in a forked child that the parent abandons at a deadline and
-records as `timed_out`.
+A hard NFS mount can keep a syscall waiting beyond its caller's deadline.
+Some kernel waits respond to `SIGKILL`; others remain blocked. Sending a
+signal or timing out a thread wait therefore does not prove process exit.
+The syscall leg runs in a forked child that the parent stops waiting for at
+a deadline and records as `timed_out`.
 
 At most one child is ever outstanding. While one is unreaped the next sample
 skips the syscall leg entirely and reports `wedged`, which is the strongest
