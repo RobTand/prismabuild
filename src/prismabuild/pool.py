@@ -10,8 +10,9 @@ submitted.
 replaces, because those primitives were argued out against real NFS behaviour
 and two boxes of production use:
 
-* **Claiming is ``rename()``, never ``flock``.**  ``rename`` is atomic on NFSv4;
-  advisory locking over NFS is version-dependent.
+* **Claiming uses atomic ``rename()`` under per-key POSIX exclusion.**
+  Permanent lock inodes serialize ownership transitions across NFS clients
+  and the server; queue mounts must provide cross-host POSIX lock visibility.
 * **A claim is a lease, not a grant.**  The claimant refreshes a heartbeat file;
   any worker may return a stale claim to ``ready``.  That is what makes a dead
   box self-healing rather than a permanent hold on the work.
@@ -108,6 +109,7 @@ from contextlib import contextmanager
 import errno
 import fcntl
 from functools import wraps
+from inspect import signature
 import hashlib
 import json
 import math
@@ -1479,9 +1481,10 @@ class ResourceLedger:
 
 def _serialized_key(method):
     """Keep one public mutation inside its key's shared transition lock."""
+    identity_parameter = next(iter(list(signature(method).parameters)[1:]))
     @wraps(method)
     def invoke(self, *args, **kwargs):
-        value = args[0] if args else kwargs["action_key"]
+        value = args[0] if args else kwargs[identity_parameter]
         key = value.get("action_key") if isinstance(value, Mapping) else value
         with self._transition_locked(str(key)):
             return method(self, *args, **kwargs)
@@ -2327,6 +2330,7 @@ class PoolQueue:
         owner: str,
         child_pid: int | None = None,
         container_owner: str | None = None,
+        claim_snapshot: Mapping[str, object] | None = None,
     ) -> None:
         """Refresh the claim's heartbeat, and say what is running under it.
 
@@ -2351,10 +2355,12 @@ class PoolQueue:
         if container_owner is not None:
             lease["container_owner"] = str(container_owner)
         claim = _read_json(self.item_path(CLAIMED, action_key))
-        if claim is not None and claim.get("claimed_by") == owner:
-            for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup", "claimed_unix"):
-                if field in claim:
-                    lease[field] = claim[field]
+        if (claim is None or claim.get("claimed_by") != owner
+                or (claim_snapshot is not None and not _same_claim(claim, claim_snapshot))):
+            raise PoolContractError("claim changed before heartbeat publication")
+        for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup", "claimed_unix"):
+            if field in claim:
+                lease[field] = claim[field]
         _write_json_atomic(self.lease_path(action_key), lease)
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
@@ -2438,7 +2444,7 @@ class PoolQueue:
             live["resource_scope"] = control
             _write_json_atomic(path, live)
             self.write_lease(key, owner=str(record.get("claimed_by") or ""),
-                             container_owner=record.get("container_owner"))
+                             claim_snapshot=record, container_owner=record.get("container_owner"))
         if not isinstance(record, dict):
             raise PoolContractError("resource scope recovery record must be mutable")
         record["resource_scope"] = control
@@ -2523,7 +2529,7 @@ class PoolQueue:
         if isinstance(item, dict):
             item["resource_scope_intent"] = intent
         self.write_lease(key, owner=str(item.get("claimed_by") or ""),
-                         container_owner=item.get("container_owner"))
+                         claim_snapshot=item, container_owner=item.get("container_owner"))
         # The broker may finish after a client timeout or worker crash. Both
         # claim and lease now retain the exact nonce needed for reconciliation.
         control = scope.create()
@@ -2538,7 +2544,7 @@ class PoolQueue:
             if isinstance(item, dict):
                 item["resource_scope"] = control
             self.write_lease(key, owner=str(item.get("claimed_by") or ""),
-                             container_owner=item.get("container_owner"))
+                             claim_snapshot=item, container_owner=item.get("container_owner"))
         except BaseException:
             # Nothing has launched yet, so this scope can be stopped without
             # any process census. Broker failures remain visible to recovery.
@@ -3169,7 +3175,7 @@ class PoolQueue:
                 _write_json_atomic(dst, claimed)
                 self.write_lease(
                     key,
-                    owner=owner,
+                    owner=owner, claim_snapshot=claimed,
                     container_owner=(str(claimed["container_owner"])
                                      if claimed.get("container_owner") else None),
                 )
@@ -5689,7 +5695,7 @@ class PoolQueue:
         try:
             self.write_lease(
                 key,
-                owner=owner,
+                owner=owner, claim_snapshot=item,
                 child_pid=process.pid,
                 container_owner=(str(item["container_owner"])
                                  if item.get("container_owner") else None),
@@ -5741,7 +5747,7 @@ class PoolQueue:
                         }
                     if time.monotonic() >= next_heartbeat:
                         self.write_lease(
-                            key, owner=owner, child_pid=process.pid,
+                            key, owner=owner, child_pid=process.pid, claim_snapshot=item,
                             container_owner=(str(item["container_owner"])
                                              if item.get("container_owner") else None),
                         )

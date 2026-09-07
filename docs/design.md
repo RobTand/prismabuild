@@ -91,6 +91,21 @@ a concurrently repaired record without replacing another submission and never
 overwrites an existing failed outcome. These contracts have local filesystem
 regression coverage; they are not a cross-host NFS qualification claim.
 
+Ownership mutations hold a permanent per-key POSIX record lock under
+`transition-locks/<sha256(action_key)>.lock`. Publication, scope startup and
+recovery, heartbeat writes, finish, withdrawal and recovery sweeps use the same
+lock. Claim and sweeps skip busy keys; independent keys continue. A queued
+successor cannot replace an active claim or pending finish tombstone. The lock
+inode is never deleted, thread nesting retains its original descriptor, and
+process death releases kernel ownership. Cross-host POSIX lock visibility is a
+queue mount requirement; NFS client mounts with local-only locks are unsupported.
+The helper is shared with SLURM terminal-summary publication.
+
+Heartbeats verify the owner and, for worker execution, the exact claim snapshot
+while holding that lock. A late heartbeat refuses to overwrite a successor's
+lease. Legacy owner-only callers cannot distinguish attempts sharing an owner;
+internal claim, scope and execution writers always supply the snapshot.
+
 Withdrawal records an immutable decision under
 `withdrawn/decisions/<action_key>/<attempt_generation>.json`, using the same
 publication identity as attempt history. The first decision for that generation

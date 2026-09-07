@@ -53,4 +53,32 @@ def test_scope_start_keeps_creation_with_its_claim(scoped, monkeypatch):
         assert pool._same_claim(pool._read_json(queue.item_path(pool.CLAIMED, item["action_key"])), item)
         return original(scope)
     monkeypatch.setattr(resource_scope.ResourceScope, "create", create)
-    queue._start_resource_scope(item)
+    queue._start_resource_scope(item=item)
+
+
+def test_old_owner_cannot_replace_successor_lease(tmp_path):
+    import pytest
+    queue = pool.PoolQueue(tmp_path / "queue")
+    publish(queue, KEY)
+    first = queue.claim(owner="first", capacity={"cpu": 2})
+    queue.finish(KEY, status="executed", detail={"returncode": 0}, claim_snapshot=first)
+    publish(queue, KEY)
+    queue.claim(owner="second", capacity={"cpu": 2})
+    lease = queue.lease_path(KEY).read_bytes()
+    with pytest.raises(pool.PoolContractError, match="claim.*changed|owner.*differs"):
+        queue.write_lease(KEY, owner="first")
+    assert queue.lease_path(KEY).read_bytes() == lease
+
+
+def test_same_owner_old_attempt_cannot_replace_successor_lease(tmp_path):
+    import pytest
+    queue = pool.PoolQueue(tmp_path / "queue")
+    publish(queue, KEY)
+    first = queue.claim(owner="worker", capacity={"cpu": 2})
+    queue.finish(KEY, status="executed", detail={"returncode": 0}, claim_snapshot=first)
+    publish(queue, KEY)
+    queue.claim(owner="worker", capacity={"cpu": 2})
+    lease = queue.lease_path(KEY).read_bytes()
+    with pytest.raises(pool.PoolContractError, match="claim changed"):
+        queue.write_lease(KEY, owner="worker", claim_snapshot=first)
+    assert queue.lease_path(KEY).read_bytes() == lease
