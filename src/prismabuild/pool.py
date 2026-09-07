@@ -3831,6 +3831,7 @@ class PoolQueue:
         self.sweep_widowed_leases(timeout_s=timeout_s)
         self.sweep_stale_acquisitions()
         self.sweep_finish_tombstones()
+        self.sweep_ready_transitions()
         self.quarantine_orphans()
         return requeued
 
@@ -4122,6 +4123,126 @@ class PoolQueue:
             )
         return key
 
+    @staticmethod
+    def _ready_record_usable(record: Mapping[str, object], key: str) -> bool:
+        return bool(
+            record.get("action_key") == key
+            and record.get("worker_script") and record.get("cas_root")
+            and (record.get("checkout_root") or record.get("checkout_snapshot"))
+        )
+
+    def _capture_ready_transition(self, path: Path, *, kind: str) -> Path | None:
+        """Move READY bytes to an address the reaper can recover after a crash.
+
+        The caller holds the key transition lock through its final disposition.
+        The source name is unique and immutable once captured. Superseded is
+        only a final evidence destination, never an in-flight recovery address.
+        """
+        captured = self.root / "ready-transitions" / (
+            f"{path.stem}.{int(_now() * 1_000_000)}.{uuid.uuid4().hex}.{kind}.json"
+        )
+        captured.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.rename(path, captured)
+        except FileNotFoundError:
+            return None
+        return captured
+
+    def _restore_ready_transition(self, captured: Path, key: str) -> bool:
+        """Restore without replacing a publication; retain any failed restore."""
+        try:
+            os.link(captured, self.item_path(READY, key))
+        except OSError:
+            return False
+        captured.unlink(missing_ok=True)
+        return True
+
+    def _finish_ready_transition(self, captured: Path) -> None:
+        """Retain original bytes after a durable ending or successor is known."""
+        evidence = self.superseded_dir() / (captured.name + ".ready-source")
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.rename(captured, evidence)
+        except FileNotFoundError:
+            pass
+
+    def sweep_ready_transitions(self, *, grace_s: float = LEASE_TIMEOUT_S) -> list[str]:
+        """Recover interrupted READY examinations under the same key lock.
+
+        No reservation belongs to this transition. A live successor is never
+        overwritten, and an ending suppresses a usable source only when its
+        generation is covered. Unknown reads retain the source for another
+        sweep. An unusable orphan source is restored so quarantine can finish
+        publishing its observable ending through the ordinary path.
+        """
+        recovered: list[str] = []
+        for captured in sorted(_scan(self.root / "ready-transitions")):
+            parts = captured.name.split(".")
+            if (len(parts) != 5 or parts[-1] != "json"
+                    or parts[3] not in {"orphan", "withdraw-ready"}
+                    or len(parts[0]) != 64
+                    or any(c not in "0123456789abcdef" for c in parts[0])):
+                continue
+            key = parts[0]
+            try:
+                age = _now() - int(parts[1]) / 1_000_000
+            except ValueError:
+                continue
+            if age <= grace_s:
+                continue
+            with self._transition_locked(key, blocking=False) as acquired:
+                if not acquired:
+                    continue
+                try:
+                    record = _read_json(captured)
+                    # A prior helper or sweep already concluded this capture.
+                    if record is None and not captured.exists():
+                        continue
+                    # List first: a negatively cached missing name must not
+                    # hide a successor or a terminal publication on NFS.
+                    present = {
+                        state: f"{key}.json" in os.listdir(self.dir(state))
+                        for state in (READY, CLAIMED, DONE, FAILED)
+                    }
+                    superseded = present[READY] or present[CLAIMED]
+                    if not superseded:
+                        # A listed but unreadable/empty ending is unknown,
+                        # including for a stub without generation metadata.
+                        for state in (DONE, FAILED):
+                            if present[state] and _read_json(self.item_path(state, key)) is None:
+                                raise PoolContractError(f"unreadable terminal record: {state}/{key}")
+                        terminal = frozenset({key}) if present[DONE] or present[FAILED] else frozenset()
+                        superseded = (
+                            self.terminal_outcome_covers(record, action_key=key,
+                                                        terminal=terminal) is not None
+                            or self.withdrawal_covers(record, action_key=key) is not None
+                            or (record is not None
+                                and not self._ready_record_usable(record, key)
+                                and bool(terminal))
+                        )
+                    if superseded:
+                        self._finish_ready_transition(captured)
+                    elif not self._restore_ready_transition(captured, key):
+                        continue
+                except (OSError, PoolContractError, pb.CASUnavailableError):
+                    continue
+                recovered.append(key)
+        return recovered
+
+    def _take_orphan_stub(self, path: Path) -> tuple[dict[str, object], Path] | None:
+        """Own and re-read a stub; caller acknowledges its durable ending."""
+        captured = self._capture_ready_transition(path, kind="orphan")
+        if captured is None:
+            return None
+        try:
+            record = _read_json(captured)
+            if record is not None and not self._ready_record_usable(record, path.stem):
+                return record, captured
+        except (OSError, PoolContractError):
+            pass
+        self._restore_ready_transition(captured, path.stem)
+        return None
+
     def quarantine_orphans(self) -> list[str]:
         """File ready records that no consumer can address.
 
@@ -4147,78 +4268,80 @@ class PoolQueue:
         if not ready.is_dir():
             return filed
         for path in sorted(ready.glob("*.json")):
-            try:
-                record = _read_json(path)
-            except PoolContractError as exc:
-                key = self._file_unreadable(path, reason=str(exc))
-                if key is not None:
-                    filed.append(key)
-                continue
-            except OSError as exc:
-                if exc.errno != errno.ESTALE:
-                    raise
-                # The same race the branch below calls ordinary, arriving
-                # through a directory handle the client had cached (#208).
-                # It is caught here rather than through ``_read_json``'s
-                # ``tolerate_stale`` because this sweep *discriminates*
-                # ``None``, and the flag would throw away the errno that tells
-                # the two cases apart: a record still on disk answers
-                # ``path.exists()`` with ``True`` and would be filed as a torn
-                # write and unlinked -- a live queue item destroyed on the
-                # evidence of a read that never reached it.  (``Path.exists``
-                # would not even survive the attempt: ``pathlib._ignore_error``
-                # covers ``ENOENT/ENOTDIR/EBADF/ELOOP``, so ``ESTALE`` comes
-                # straight back out of it.)  Filing is this sweep's only
-                # verb, and it may not be exercised on bytes it has not read.
-                continue
-            if record is None:
-                # ``None`` covers two different things.  The file vanishing
-                # under the glob is an ordinary race with a concurrent claim
-                # and is not this sweep's business.  A file that is still
-                # there and holds zero bytes is a torn write no consumer will
-                # ever address, which is exactly what this sweep is for.
-                if path.exists():
-                    key = self._file_unreadable(path, reason="queue record is empty")
+            with self._transition_locked(path.stem, blocking=False) as acquired:
+                if not acquired:
+                    continue
+                try:
+                    record = _read_json(path)
+                except PoolContractError as exc:
+                    key = self._file_unreadable(path, reason=str(exc))
                     if key is not None:
                         filed.append(key)
-                continue
-            # Two ways to be unaddressable, and both belong here.  A record
-            # with the wrong (or no) ``action_key`` is skipped by ``claim()``
-            # and never runs.  A record that *has* the key but lacks the
-            # fields a worker executes with -- ``worker_script``, ``cas_root``,
-            # checkout addressing -- is worse: it is claimed, it kills the
-            # worker process before execution, and retries before it is filed.
-            addressable = bool(record.get("checkout_root")) or bool(
-                record.get("checkout_snapshot")
-            )
-            usable = (
-                record.get("action_key") == path.stem
-                and all(
-                    record.get(field) for field in ("worker_script", "cas_root")
+                    continue
+                except OSError as exc:
+                    if exc.errno != errno.ESTALE:
+                        raise
+                    # The same race the branch below calls ordinary, arriving
+                    # through a directory handle the client had cached (#208).
+                    # It is caught here rather than through ``_read_json``'s
+                    # ``tolerate_stale`` because this sweep *discriminates*
+                    # ``None``, and the flag would throw away the errno that tells
+                    # the two cases apart: a record still on disk answers
+                    # ``path.exists()`` with ``True`` and would be filed as a torn
+                    # write and unlinked -- a live queue item destroyed on the
+                    # evidence of a read that never reached it.  (``Path.exists``
+                    # would not even survive the attempt: ``pathlib._ignore_error``
+                    # covers ``ENOENT/ENOTDIR/EBADF/ELOOP``, so ``ESTALE`` comes
+                    # straight back out of it.)  Filing is this sweep's only
+                    # verb, and it may not be exercised on bytes it has not read.
+                    continue
+                if record is None:
+                    # ``None`` covers two different things.  The file vanishing
+                    # under the glob is an ordinary race with a concurrent claim
+                    # and is not this sweep's business.  A file that is still
+                    # there and holds zero bytes is a torn write no consumer will
+                    # ever address, which is exactly what this sweep is for.
+                    if path.exists():
+                        key = self._file_unreadable(path, reason="queue record is empty")
+                        if key is not None:
+                            filed.append(key)
+                    continue
+                # Two ways to be unaddressable, and both belong here.  A record
+                # with the wrong (or no) ``action_key`` is skipped by ``claim()``
+                # and never runs.  A record that *has* the key but lacks the
+                # fields a worker executes with -- ``worker_script``, ``cas_root``,
+                # checkout addressing -- is worse: it is claimed, it kills the
+                # worker process before execution, and retries before it is filed.
+                if self._ready_record_usable(record, path.stem):
+                    continue
+                taken = self._take_orphan_stub(path)
+                if taken is None:
+                    continue
+                record, captured = taken
+                record.update(
+                    {
+                        "schema": POOL_OUTCOME_SCHEMA_V1,
+                        "action_key": path.stem,
+                        "status": "orphaned_stub",
+                        "finished_unix": _now(),
+                        "finished_host": socket.gethostname(),
+                        "detail": {
+                            "reason": "ready record is not executable: it lacks a "
+                            "matching action_key or the worker_script/cas_root/"
+                            "checkout addressing a worker runs from; see the "
+                            "reap_stale and finish() requeue races",
+                        },
+                    }
                 )
-                and addressable
-            )
-            if usable:
-                continue
-            record.update(
-                {
-                    "schema": POOL_OUTCOME_SCHEMA_V1,
-                    "action_key": path.stem,
-                    "status": "orphaned_stub",
-                    "finished_unix": _now(),
-                    "finished_host": socket.gethostname(),
-                    "detail": {
-                        "reason": "ready record is not executable: it lacks a "
-                        "matching action_key or the worker_script/cas_root/"
-                        "checkout addressing a worker runs from; see the "
-                        "reap_stale and finish() requeue races",
-                    },
-                }
-            )
-            _write_json_atomic(self.item_path(FAILED, path.stem), record)
-            path.unlink(missing_ok=True)
-            self.ledger(None).release(path.stem)
-            filed.append(path.stem)
+                # The moved bytes remain evidence. Neither a terminal ending nor
+                # a new live record under the same key belongs to this stub.
+                if not any(self.item_path(state, path.stem).exists()
+                           for state in (READY, CLAIMED, DONE, FAILED)):
+                    pb._atomic_publish(self.item_path(FAILED, path.stem),
+                                       pb._canonical_bytes(record))
+                # A ready stub supplies no authority over committed reservations.
+                self._finish_ready_transition(captured)
+                filed.append(path.stem)
         return filed
 
     # -- attempt evidence and terminal states ----------------------------
@@ -5107,26 +5230,25 @@ class PoolQueue:
                 for path in _glob(self.dir(WITHDRAWN) / "decisions" / key, "*.json")]
 
     def _withdraw_ready(self, key: str) -> dict[str, object] | None:
-        """Take a ready record, then decide whether its generation is cancelled."""
-        path = self.item_path(READY, key)
-        evidence = self.superseded_dir() / f"{key}.{uuid.uuid4().hex}.withdraw-ready-source"
-        evidence.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.rename(path, evidence)
-        except FileNotFoundError:
-            return
-        try:
-            moved = _read_json(evidence)
-            if moved is not None and self.withdrawal_covers(moved, action_key=key) is not None:
-                return moved  # the original bytes remain cancellation evidence
-        except (OSError, PoolContractError):
-            pass
-        try:
-            os.link(evidence, path)
-        except FileExistsError:
-            pass
-        else:
-            evidence.unlink()
+        """Examine captured READY bytes without losing an uncancelled successor."""
+        with self._transition_locked(key, blocking=False) as acquired:
+            if not acquired:
+                return None
+            captured = self._capture_ready_transition(self.item_path(READY, key),
+                                                      kind="withdraw-ready")
+            if captured is None:
+                return None
+            try:
+                moved = _read_json(captured)
+                marker = self.withdrawal_covers(moved, action_key=key) if moved is not None else None
+                if marker is not None:
+                    self._persist_withdrawal_decision(marker)
+                    self._finish_ready_transition(captured)
+                    return moved
+            except (OSError, PoolContractError, pb.CASUnavailableError):
+                pass
+            self._restore_ready_transition(captured, key)
+            return None
 
     def withdrawal_covers(
         self,

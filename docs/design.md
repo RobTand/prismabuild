@@ -113,6 +113,17 @@ process scan. Deployment requires draining and upgrading workers to readers of
 immutable decisions before relying on asynchronous cancellation across a
 re-submission; there is no unsafe legacy fallback.
 
+READY-record examinations use `ready-transitions/` as their recoverable
+intermediate namespace. Withdrawal and orphan cleanup move the original bytes
+there under the key's POSIX transition lock, then either restore them with a
+no-clobber link or retain them as superseded evidence after a durable disposition.
+The reaper revisits expired captures under the same nonblocking key lock. Live
+successors are preserved, usable records require a matching-generation ending
+before retirement, and unavailable evidence or a failed restore keeps the
+capture for another sweep. An orphan capture is acknowledged only after its
+ending is published or a successor is observed. These transitions never release
+reservations and do not overwrite another terminal record.
+
 Local task output is now crash-recoverable without accepting unowned bytes.
 Before argv, the worker publishes an immutable claim for the exact action,
 resolved checkout, working directory, and declared result. Under the same
