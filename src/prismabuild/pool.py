@@ -2420,8 +2420,36 @@ class PoolQueue:
                 record["resource_scope_cleanup"] = cleanup
             try:
                 cpu_admission.record_completion(self.ledger(), record, telemetry)
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                cleanup["learning_error"] = str(exc)
+            except Exception as exc:                                 # noqa: BLE001
+                # Deliberately every exception, and the narrow tuple that was
+                # here is the defect.  By this line the payload has stopped,
+                # the tokens are back and the cleanup record is written; all
+                # that is left is learning a shape, and ``record_completion``
+                # says of itself that it is "worth having and never worth
+                # waiting for", with "failure to attribute produces no learned
+                # credit" as its own contract.  A call never worth waiting for
+                # is never worth losing an action over.
+                #
+                # Enumerating what it can raise is what failed.  It reaches a
+                # whole subsystem -- the admission lock, ``/proc``, the shared
+                # mount, JSON -- and two of that subsystem's honest refusals
+                # are bare ``RuntimeError``: ``box_state`` on a directory this
+                # uid does not own, and ``Controller.locked`` on a lock file
+                # that is not a private regular file.  ``AdmissionBusy`` is a
+                # *subclass* of ``RuntimeError`` and is caught inside, which is
+                # exactly what made the gap easy to miss.
+                #
+                # Neither was in the tuple, so the raise escaped this method
+                # after ``scope.release()`` and before the caller could finish
+                # the claim: the payload had completed, the claim had not, and
+                # the lease stopped being renewed until the reaper recorded
+                # ``lease_lost_max_attempts``.  Observed on sparky and
+                # dl380g10 on 2026-09-06 while their admission directories
+                # were mode 0770 (#281, #286).
+                #
+                # ``Exception`` and not ``BaseException``: a KeyboardInterrupt
+                # or SystemExit still stops the process.
+                cleanup["learning_error"] = f"{type(exc).__name__}: {exc}"
             return {**containers, "resource_scope": cleanup}
         except (OSError, ValueError, KeyError, TypeError) as exc:
             return {"complete": False, "used": True, "removed": [], "remaining": [],
