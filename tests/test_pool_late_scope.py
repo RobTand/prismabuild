@@ -2,7 +2,7 @@
 import json
 
 import pytest
-from prismabuild import pool, resource_scope
+from prismabuild import adaptive_cpu, pool, resource_scope
 from test_pool_resource_scope import scoped  # noqa: F401
 
 
@@ -43,12 +43,14 @@ def _replaced_scope(scoped, monkeypatch):
     # These are the newer attempt's live diagnostic files too. Cleanup of a
     # predecessor must not replace them with its old nonce or stop reason.
     telemetry = queue.ledger().base / 'telemetry' / (key + '.json')
-    resource_scope._atomic_json(telemetry, {'nonce': newer['resource_scope']['nonce']})
+    authority = adaptive_cpu.local_telemetry_path(queue.ledger().base, key)
+    for path in (telemetry, authority):
+        resource_scope._atomic_json(path, {'nonce': newer['resource_scope']['nonce']})
     resource_scope._atomic_json(telemetry.with_suffix('.termination.json'),
                                 {'scope_unit': newer['resource_scope']['scope_id']})
     saved = {path: path.read_bytes() for path in (
         queue.item_path(pool.CLAIMED, key), queue.lease_path(key),
-        telemetry, telemetry.with_suffix('.termination.json'),
+        telemetry, telemetry.with_suffix('.termination.json'), authority,
     )}
     return queue, first, newer, observed, saved
 

@@ -412,3 +412,28 @@ def test_finish_retains_scope_cleanup_evidence_in_terminal(scoped, monkeypatch, 
     assert not queue.item_path(pool.CLAIMED, key).exists()
     assert not queue.lease_path(key).exists()
     assert queue.ledger().held() == {}
+
+
+def test_sampler_writes_host_local_authority_and_a_shared_copy(scoped, monkeypatch):
+    """Admission reads the local record; remote readers keep the shared path.
+
+    The shared copy is written by the sampler, outside admission, at the path
+    ``pbmetrics`` reads. Release removes the local authority so a restarted
+    loop cannot find a record for a scope that no longer exists; the shared
+    copy stays as the attempt's last observation.
+    """
+    from prismabuild import adaptive_cpu
+    queue, item, calls = scoped
+    key = item['action_key']
+    shared = queue.ledger().base / 'telemetry' / f'{key}.json'
+    authority = adaptive_cpu.local_telemetry_path(queue.ledger().base, key)
+    _process(monkeypatch, queue, item, calls, ticks=1)
+    outcome = queue.execute(item, containment=True, heartbeat_s=30)
+    assert outcome['status'] == 'executed'
+    local, published = json.loads(authority.read_text()), json.loads(shared.read_text())
+    assert local == published
+    assert local['action_key'] == key and local['nonce'] == item['resource_scope']['nonce']
+    queue.finish(key, status='executed', detail=outcome, claim_snapshot=item)
+    assert not authority.exists()
+    assert json.loads(shared.read_text())['nonce'] == item['resource_scope']['nonce']
+    assert queue.ledger().held() == {}
