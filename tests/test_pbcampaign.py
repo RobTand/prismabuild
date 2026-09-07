@@ -233,14 +233,24 @@ def test_a_failed_row_fails_the_campaign_and_the_others_still_finish(
     table = capsys.readouterr().out
     columns = [line.split() for line in table.splitlines()]
     assert columns[0][:2] == ["key", "status"]
-    assert [line[1] for line in columns[1:]] == [
-        "executed", "failed", "executed"], table
+    assert len(columns) == 4, table
+    assert columns[2][1] == "failed", table
+    assert all(columns[index][1] in {"executed", "cache_hit"}
+               for index in (1, 3)), table
     # The returncode column, so the operator reads more than "something went
     # wrong".  Non-zero rather than 3: under the pull queue the status on the
     # record is the worker launcher's, and the command's own is in the attempt
     # output, so pinning 3 here would pin one transport's convention.
     rc = columns[0].index("rc")
-    assert columns[1][rc] == "0" and columns[3][rc] == "0", table
+    # A worker can publish before detached submission finishes its CAS
+    # lookup. That successful row legitimately has a receipt instead of an
+    # execution return code; the scheduling race is not a campaign failure.
+    receipt = columns[0].index("receipt")
+    for index in (1, 3):
+        if columns[index][1] == "cache_hit":
+            assert columns[index][rc] == "-" and columns[index][receipt] == "yes", table
+        else:
+            assert columns[index][rc] == "0", table
     assert columns[2][rc] != "0", table
 
 
@@ -258,8 +268,9 @@ def test_re_running_the_same_manifest_runs_nothing(
     ])
     assert _campaign_against_a_worker(queue, manifest, rows=2) == 0
     first = capsys.readouterr().out
-    assert [line.split()[1] for line in first.splitlines()[1:]] == [
-        "executed", "executed"]
+    first_statuses = [line.split()[1] for line in first.splitlines()[1:]]
+    assert len(first_statuses) == 2
+    assert all(status in {"executed", "cache_hit"} for status in first_statuses)
     published_before = len(list(queue.dir(pool.DONE).glob("*.json")))
 
     assert pbcampaign.main([manifest]) == 0
