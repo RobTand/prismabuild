@@ -938,9 +938,9 @@ class MountSampler:
                 self._setup_done = True
             return result
 
-        # Nothing came back inside the deadline.  SIGKILL is sent because a
-        # child merely slow is reaped by it; a child in D state is not, and
-        # that is exactly the case this is here to survive.
+        # Nothing came back inside the deadline. SIGKILL can stop a runnable
+        # child or a killable kernel wait; an uninterruptible wait may remain.
+        # Verify reaping and retain ownership of any child that has not exited.
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
@@ -952,7 +952,7 @@ class MountSampler:
         # suppress the next sample on a healthy mount.  Poll for a short
         # grace instead -- long enough for the scheduler to deliver a signal
         # to a runnable process, far too short to be confused with a mount
-        # timeout, and never blocking, because a D-state child never comes.
+        # timeout, and never blocking on a child that may remain in the kernel.
         if not self._reap_within(pid, KILL_GRACE_S):
             self._outstanding_pid = pid
             self._outstanding_since = started
