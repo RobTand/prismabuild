@@ -66,3 +66,7 @@ attempt logs, canonical receipt hash, and payload hash/byte count were checked.
 Receipt SHA-256: `eda4bcc758a65d7bfc9d0a1e4ed16648bf9e17e22b1a3157614b1daf1003ed02`.
 Evidence index: `/home/rob/tmp/astra-review-20260906/gb10-memory-96-validation.json`.
 No GPU workload was repeated for this configuration change.
+
+## Later same-day revision
+
+The 96 GiB decision above is superseded by [the 104 GiB capacity decision](gb10_memory_104_capacity_2026-09-07.md), after source-derived sizing exposed overlapping finalization buffers. The earlier measurements and test receipts remain historical evidence.
