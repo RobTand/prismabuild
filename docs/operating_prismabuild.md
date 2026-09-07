@@ -675,19 +675,80 @@ It prints three tables:
     default is 20.
 
 `pbstatus` never writes and reports unavailable state without failing the
-screen. Scheduler commands have bounded timeouts; shared-filesystem reads
-remain subject to mount availability. A selected SLURM controller that is not
+screen. Scheduler commands have bounded timeouts, and since #350 so does the
+whole run: `--timeout-s` (default 10) bounds every read of the queue root, and
+`--timeout-s 0` restores the unbounded behaviour a caller may still want. A
+selected SLURM controller that is not
 installed prints one line saying so, and the endings table still prints, because
 those records are files on the shared mount. A record it cannot read prints as an
 `unreadable` row whose note names the path and the reason, so a truncated or
 unreadable newest record does not read as a fleet that filed nothing. `--json`
-prints one object with the selected `transport`, three lists and any scheduler
-notes. In pool mode its `pool` summary carries ready/claimed counts and an
+prints one object with the selected `transport`, three lists, any scheduler
+notes, and the deadline's own three fields: `complete`, `timed_out_sections`
+and `abandoned_children`. In pool mode its `pool` summary carries ready/claimed
+counts and an
 `empty` field: `true` means both active directories were read and contain no
 jobs, `null` means state could not be established. Corrupt active records stay
 visible as `UNREADABLE` rows. The census is not atomic, and persisted admission
 samples are historical evidence with explicit freshness, not newly computed
 admission decisions.
+
+### When the mount does not answer
+
+A diagnostic that can wait forever is worse than one that says it could not
+read the mount, because a hang and a dead fleet look identical from outside.
+On 2026-09-07 fifteen `pbstatus` processes sat 33-49 minutes each in
+`__nfs_lookup_revalidate` on sparky. They were `hard`-mount waits doing what
+`hard` is for, not driver wedges, and every one of them exited on its own when
+the stall cleared -- so nothing needed reaping and the answers all arrived,
+long after anybody could use them. What they cost while present was measured:
+0.0% CPU, 282 MB, and a load average inflated to ~14.7 on a box whose GPU was
+idle at 3%, which is a number every human and every agent glancing at the box
+then reads.
+
+So the run has a deadline.
+
+*   `--timeout-s N` bounds the whole run, not each section: a slow first read
+    does not buy the second one a fresh budget. The default is 10 seconds,
+    which is two orders of magnitude longer than a healthy census and shorter
+    than a person's patience. `--timeout-s 0` waits indefinitely, which is the
+    behaviour before #350.
+*   Each read of the queue root runs in a forked child the parent abandons at
+    the deadline. A `stat` on a hard mount need not return at its caller's
+    deadline even after a signal, so no in-process timeout -- thread, alarm or
+    otherwise -- can bound it; only a separate process can be left behind. The
+    parent never joins a child that may still be blocked. This is the shape
+    `tools/fleet/mount_latency.py` already uses for the same reason.
+*   On expiry the tables that were read still print, each missing section is
+    replaced by a line naming itself as incomplete, one line goes to stderr --
+    `pbstatus: incomplete -- queue root did not answer within 10s (pool,
+    endings pending)` -- and the run exits **3**. Three rather than one: a
+    wrapper must be able to tell "I could not read the fleet" from "I read it
+    and something in it is wrong". Under `--json` the object carries
+    `"complete": false` and the list of `timed_out_sections`.
+*   `SIGKILL` is sent to an abandoned child and its exit verified within a
+    short grace, because a timeout alone proves nothing about reaping. A child
+    that does not exit is recorded in `abandoned_children` by PID *and*
+    `starttime`, since a PID alone is reusable and therefore not an identity.
+    At most one queue-root child is left behind per run: the shared budget
+    means an expiry in one section leaves nothing for the next.
+*   On start the run counts other `pbstatus` processes on the box already in
+    uninterruptible sleep and prints one stderr line with the count, the oldest
+    age and the PIDs. It never refuses to run on that count. A refusal would
+    hide the fleet from the one person trying to see it, at exactly the moment
+    it is worth seeing. The scan reads `/proc/<pid>/stat` for every candidate
+    and `/proc/<pid>/cmdline` only for those already in `D`, because reading
+    another task's command line takes that task's `mmap_read_lock` and a task
+    blocked in an NFS page fault holds it; it is bounded by a PID count and a
+    wall clock, and it runs in the same kind of abandonable child.
+
+One thing the deadline does not cover, and cannot. When `pbstatus` is invoked
+from the shared checkout, the interpreter reads the script and the
+`prismabuild` package off the same mount before `main` exists. A mount sick
+enough can block that, and no code inside the script can bound its own load.
+The census phase is bounded; startup from a shared checkout is not. The
+deadline also applies only to this diagnostic: it is not authority to time out
+an action payload, which is the fleet's work and has its own contract.
 
 Two flags say where `pbstatus` looks. `--lane-root` is the SLURM lane root that
 job names are resolved against, and it defaults to `$PRISMABUILD_SLURM_LANE_ROOT`, or

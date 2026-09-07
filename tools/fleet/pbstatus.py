@@ -43,6 +43,8 @@ import math
 import os
 from pathlib import Path
 import re
+import select
+import signal
 import stat
 import subprocess
 import sys
@@ -66,6 +68,47 @@ DEFAULT_QUEUE_ROOT = SHARED_ROOT / "pb-queue"
 #: own 60 s, deliberately: a ``pbrun`` waiting on a job is willing to wait for
 #: a busy controller, and a person looking at a status screen is not.
 COMMAND_TIMEOUT_S = 20.0
+
+#: How long the whole run has to read the shared queue root.  A diagnostic
+#: that can wait forever is worse than one that says it could not read the
+#: mount: on 2026-09-07 fifteen ``pbstatus`` processes sat 33-49 minutes each
+#: in ``__nfs_lookup_revalidate`` on sparky, at 0.0% CPU and 282 MB, and the
+#: only thing they changed about the box was its load average, which they
+#: inflated to ~14.7 while the GPU idled at 3%.  They were ``hard``-mount
+#: waits doing what ``hard`` is for, not driver wedges, and they all exited on
+#: their own when the mount cleared -- which is the argument for a deadline
+#: rather than for reaping: the answer arrives eventually and is worthless
+#: long before it does, because the operator cannot tell a slow mount from a
+#: dead fleet while they wait.  Ten seconds is longer than a healthy census
+#: (tens of milliseconds) by two orders of magnitude and shorter than a
+#: person's patience.  Issue #350.
+DEFAULT_TIMEOUT_S = 10.0
+
+#: What the run exits with when the queue root did not answer.  Distinct from
+#: ``1`` on purpose: a wrapper must be able to tell "I could not read the
+#: fleet" from "I read it and something in it is wrong".
+EXIT_INCOMPLETE = 3
+
+#: How long to wait for a killed child before treating it as retained.  Same
+#: reasoning as ``mount_latency.KILL_GRACE_S``: ``SIGKILL`` is delivered at the
+#: child's next scheduling point, so an immediate ``WNOHANG`` says "still
+#: running" about a child that is already dying.
+KILL_GRACE_S = 0.25
+
+#: The slice of the budget the wedged-peer scan may spend.  Capped so that a
+#: scan which blocks cannot consume the census's budget: the peers this counts
+#: are, by definition, tasks whose kernel state can hold a lock a reader of
+#: ``/proc/<pid>/cmdline`` needs.
+PEER_SCAN_BUDGET_S = 1.0
+
+#: How many PIDs the peer scan will look at.  ``/proc`` on a busy box is large
+#: and this is a warning line, not a census.
+PEER_SCAN_MAX_PIDS = 4096
+
+#: The basename a peer is recognised by, matched as a whole path component so
+#: that a pytest process whose command line names ``test_pbstatus_pool.py``
+#: is not counted as a wedged ``pbstatus``.
+SCRIPT_NAME = Path(__file__).name
 
 #: How many endings to read by default.  The cap is the point -- the shared
 #: mount holds every action this fleet has ever run, and stat'ing all of them
@@ -1132,9 +1175,286 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
     return render_table(headers, rows)
 
 
+class Deadline:
+    """The whole run's budget, so that one slow section cannot spend another's.
+
+    Held in ``time.monotonic`` because a status screen must not change its
+    mind about how long it has waited when NTP steps the clock.  A budget of
+    zero or less means no deadline at all, which is what this command did
+    before issue #350 and what ``--timeout-s 0`` still asks for.
+    """
+
+    def __init__(self, timeout_s: float) -> None:
+        self.timeout_s = float(timeout_s)
+        self.bounded = self.timeout_s > 0
+        self._expires = time.monotonic() + self.timeout_s if self.bounded else None
+
+    def remaining(self) -> float | None:
+        if self._expires is None:
+            return None
+        return self._expires - time.monotonic()
+
+
+def _proc_stat_fields(pid: int, proc: Path) -> list[bytes] | None:
+    """The fields of ``/proc/<pid>/stat`` after ``comm``, or ``None``.
+
+    Split on the last ``)`` because ``comm`` is the only field that can hold a
+    space or a parenthesis.  ``fields[0]`` is the state and ``fields[19]`` is
+    ``starttime`` -- fields 3 and 22 of ``proc(5)``.
+    """
+    try:
+        raw = (proc / str(pid) / "stat").read_bytes()
+    except OSError:
+        return None
+    close = raw.rfind(b")")
+    if close < 0:
+        return None
+    fields = raw[close + 2:].split()
+    return fields if len(fields) > 19 else None
+
+
+def wedged_peers(*, proc: Path = Path("/proc"), self_pid: int | None = None,
+                 limit: int = PEER_SCAN_MAX_PIDS,
+                 budget_s: float = PEER_SCAN_BUDGET_S) -> dict:
+    """Count other ``pbstatus`` processes already in uninterruptible sleep.
+
+    This is the signal the operator actually wants and the one the wedged
+    instances themselves cannot give: the fifteen on sparky were only found
+    because somebody went looking for something else.  It never refuses to
+    run on the strength of it -- a refusal would hide the fleet from the one
+    person trying to see it, at exactly the moment the fleet is worth seeing.
+
+    ``/proc/<pid>/stat`` is read for every candidate and
+    ``/proc/<pid>/cmdline`` only for the ones already in ``D``, because
+    reading another task's command line takes that task's ``mmap_read_lock``
+    and a process blocked in an NFS page fault holds it.  The scan is bounded
+    by both a PID count and a wall clock, and its caller runs it in an
+    abandonable child for the case where a single ``cmdline`` read blocks
+    anyway.  That child is killable even when it does block: current kernels
+    take the lock through ``mmap_read_lock_killable``, so the scan path
+    answers ``SIGKILL`` and does not itself leave the corpses this counts.
+    """
+    self_pid = os.getpid() if self_pid is None else self_pid
+    started = time.monotonic()
+    try:
+        ticks = float(os.sysconf("SC_CLK_TCK")) or 100.0
+    except (ValueError, OSError):                  # pragma: no cover - libc
+        ticks = 100.0
+    try:
+        uptime_s = float((proc / "uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        uptime_s = None
+    try:
+        names = os.listdir(proc)
+    except OSError as exc:
+        return {"peers": [], "scanned": 0, "truncated": False,
+                "note": f"{proc} could not be listed: {exc}"}
+
+    peers: list[dict] = []
+    scanned = 0
+    truncated = False
+    for name in names:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        if pid == self_pid:
+            continue
+        if scanned >= limit or time.monotonic() - started > budget_s:
+            truncated = True
+            break
+        scanned += 1
+        fields = _proc_stat_fields(pid, proc)
+        if fields is None or fields[0] != b"D":
+            continue
+        try:
+            argv = (proc / name / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if not any(os.path.basename(arg.decode("utf-8", "replace")) == SCRIPT_NAME
+                   for arg in argv if arg):
+            continue
+        age_s = None
+        if uptime_s is not None:
+            try:
+                age_s = round(max(0.0, uptime_s - int(fields[19]) / ticks), 1)
+            except (ValueError, ZeroDivisionError):
+                age_s = None
+        peers.append({"pid": pid, "age_s": age_s})
+    peers.sort(key=lambda peer: (peer["age_s"] is None, -(peer["age_s"] or 0.0)))
+    return {"peers": peers, "scanned": scanned, "truncated": truncated, "note": None}
+
+
+def _reap_within(pid: int, grace_s: float) -> bool:
+    """Poll for a child's exit for a bounded time.  Never blocks in ``wait``.
+
+    Copied in shape from ``tools/fleet/mount_latency.py`` ``_reap_within``:
+    an unreaped child in ``D`` is exactly what this command must not join.
+    """
+    deadline = time.monotonic() + grace_s
+    while True:
+        try:
+            done, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return True
+        except OSError:
+            return False
+        if done == pid:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+
+
+def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
+            cap_s: float | None = None) -> dict:
+    """Run one read of the shared mount in a child this process can abandon.
+
+    The shape is ``tools/fleet/mount_latency.py`` ``MountSampler._run_probe``,
+    and for its reason: a ``stat`` on a hard NFS mount need not return at the
+    caller's deadline, even after a signal, so no in-process timeout -- thread,
+    alarm or otherwise -- can bound it.  Only a separate process can be
+    abandoned.  The parent stops reading at the deadline and never joins a
+    child that may still be blocked in the kernel.
+
+    Two differences from the sampler, both because this is a short-lived
+    command rather than a long-lived daemon.  The whole-run deadline means an
+    expiry in one section leaves nothing for the next, so at most one
+    queue-root child is ever abandoned per run; and an abandoned child is
+    recorded by PID and ``starttime`` in ``abandoned`` so the report names
+    exactly which process it left behind, rather than leaving the operator to
+    guess which of the ``D``-state peers was this run's.
+
+    The returned dict is one of:
+
+    ``{"status": "ok", "value": ...}``
+        the read completed; ``value`` has been through JSON when a child ran.
+    ``{"status": "error", "type": ..., "error": ...}``
+        the read raised, exactly as it would have in-process.
+    ``{"status": "timed_out", "elapsed_s": ...}``
+        the deadline expired first, or a previous section had already spent
+        the budget and this one was never started.
+    """
+    if not deadline.bounded:
+        # ``--timeout-s 0``: the pre-#350 path, in-process and unchanged.
+        try:
+            return {"status": "ok", "value": read()}
+        except Exception as exc:                   # noqa: BLE001 - diagnostic
+            return {"status": "error", "type": type(exc).__name__, "error": str(exc)}
+
+    remaining = deadline.remaining() or 0.0
+    if cap_s is not None:
+        remaining = min(remaining, cap_s)
+    if remaining <= 0:
+        return {"status": "timed_out", "elapsed_s": 0.0, "started": False}
+
+    read_fd, write_fd = os.pipe()
+    started = time.monotonic()
+    pid = os.fork()
+    if pid == 0:                                   # child
+        code = 1
+        try:
+            os.close(read_fd)
+            try:
+                payload = json.dumps({"status": "ok", "value": read()})
+                code = 0
+            except Exception as exc:               # noqa: BLE001 - diagnostic
+                payload = json.dumps({"status": "error",
+                                      "type": type(exc).__name__,
+                                      "error": str(exc)})
+                code = 0
+            os.write(write_fd, payload.encode("utf-8"))
+        except BaseException:                      # noqa: BLE001 - last resort
+            pass
+        finally:
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+            # ``_exit``, never ``exit``: the child inherited this process's
+            # buffered stdout and must not flush a second copy of it.
+            os._exit(code)
+
+    os.close(write_fd)
+    chunks: list[bytes] = []
+    saw_eof = False
+    while True:
+        left = deadline.remaining() or 0.0
+        if cap_s is not None:
+            left = min(left, cap_s - (time.monotonic() - started))
+        if left <= 0:
+            break
+        try:
+            ready, _, _ = select.select([read_fd], [], [], left)
+        except OSError:
+            break
+        if not ready:
+            break
+        try:
+            chunk = os.read(read_fd, 65536)
+        except OSError:
+            break
+        if not chunk:
+            saw_eof = True
+            break
+        chunks.append(chunk)
+    try:
+        os.close(read_fd)
+    except OSError:
+        pass
+    elapsed = time.monotonic() - started
+
+    # EOF is the only proof the payload is whole.  A census can be larger than
+    # the pipe buffer, so "some bytes arrived" is compatible with a child that
+    # is still writing, and reporting that as a parse error would file a mount
+    # timeout under the wrong cause.
+    if saw_eof and chunks:
+        _reap_within(pid, KILL_GRACE_S)
+        try:
+            return json.loads(b"".join(chunks).decode("utf-8"))
+        except ValueError as exc:
+            return {"status": "error", "type": "ValueError",
+                    "error": f"unreadable {section} payload: {exc}"}
+    if saw_eof:
+        _reap_within(pid, KILL_GRACE_S)
+        return {"status": "error", "type": "RuntimeError",
+                "error": f"the {section} reader exited without a payload"}
+
+    # Nothing whole came back in time.  ``SIGKILL`` stops a runnable child and
+    # some killable kernel waits; an uninterruptible one may remain, and a
+    # timeout is not a reaping proof.  Verify, and retain ownership of what
+    # did not exit.
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    if not _reap_within(pid, KILL_GRACE_S):
+        abandoned.append({"section": section, "pid": pid,
+                          "starttime_ticks": _starttime_ticks(pid),
+                          "since_unix": round(time.time() - elapsed, 3)})
+    return {"status": "timed_out", "elapsed_s": round(elapsed, 3), "started": True}
+
+
+def _starttime_ticks(pid: int) -> int | None:
+    """The child's ``starttime``, which is what makes the PID an identity.
+
+    A PID alone is reusable and therefore not ownership: #349 asks for exact
+    retained ownership of an abandoned reader, and ``(pid, starttime)`` is the
+    pair the kernel will not hand to a different process.
+    """
+    fields = _proc_stat_fields(pid, Path("/proc"))
+    if fields is None:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Show the fleet's nodes, its jobs, and how work ended.")
+        description="Show the fleet's nodes, its jobs, and how work ended.",
+        epilog=f"Exit status: 0 the fleet was read; {EXIT_INCOMPLETE} the queue "
+               f"root did not answer within --timeout-s and the output printed "
+               f"above it is partial, not an empty fleet.")
     parser.add_argument("--transport", choices=TRANSPORTS, default=None,
                         help="active scheduler (default: environment, then deployed runtime)")
     parser.add_argument(
@@ -1152,6 +1472,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--queue-root", default=str(DEFAULT_QUEUE_ROOT),
         help=f"the queue root holding done/ and failed/ (default "
              f"{DEFAULT_QUEUE_ROOT})")
+    parser.add_argument(
+        "--timeout-s", type=float, default=DEFAULT_TIMEOUT_S,
+        help=f"how long the whole run may spend reading the queue root "
+             f"(default {DEFAULT_TIMEOUT_S:g}; 0 waits indefinitely, which is "
+             f"what a hard mount will do). On expiry this prints what it read, "
+             f"says which section is missing, and exits {EXIT_INCOMPLETE}")
     parser.add_argument("--sinfo", default="sinfo", help=argparse.SUPPRESS)
     parser.add_argument("--squeue", default="squeue", help=argparse.SUPPRESS)
     parser.add_argument("--scontrol", default="scontrol", help=argparse.SUPPRESS)
@@ -1159,6 +1485,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     transport = args.transport or default_transport()
     if args.recent < 0:
         parser.error("--recent cannot be negative")
+    if args.timeout_s < 0:
+        parser.error("--timeout-s cannot be negative; 0 means no deadline")
+
+    deadline = Deadline(args.timeout_s)
+    abandoned: list[dict] = []
+    timed_out: list[str] = []
+
+    # Before anything touches the mount, and to stderr so it cannot be
+    # mistaken for part of the census.  Counted, never enforced: an operator
+    # running this during an outage needs the fleet, not a refusal.
+    scan = bounded("wedged-peers", wedged_peers, deadline=deadline,
+                   abandoned=abandoned, cap_s=PEER_SCAN_BUDGET_S)
+    peer_note = None
+    if scan["status"] == "ok" and scan["value"]["peers"]:
+        peers = scan["value"]["peers"]
+        oldest = peers[0]["age_s"]
+        peer_note = (
+            f"pbstatus: {len(peers)} other pbstatus process"
+            f"{'' if len(peers) == 1 else 'es'} on this box "
+            f"{'is' if len(peers) == 1 else 'are'} in uninterruptible sleep"
+            + (f", oldest {oldest:.0f}s" if oldest is not None else "")
+            + f" (pid{'' if len(peers) == 1 else 's'} "
+            + ",".join(str(peer["pid"]) for peer in peers[:8])
+            + ")"
+            # A truncated scan stopped before the end of /proc, so the count
+            # above is a floor, not the answer.  Saying "3" when the true
+            # number is 15 is the same class of lie as an empty listing that
+            # is really a wedged mount, so the line says which one it is.
+            + (f" (scan stopped after {scan['value']['scanned']} pids, "
+               "so this count is a floor)"
+               if scan["value"]["truncated"] else "")
+            + "; the shared mount is probably not answering")
+    elif scan["status"] == "timed_out":
+        peer_note = ("pbstatus: the scan for wedged pbstatus peers did not "
+                     "finish; the count is unknown")
+    if peer_note:
+        print(peer_note, file=sys.stderr)
 
     notes: list[str] = []
     nodes: list[dict] = []
@@ -1166,12 +1529,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     node_note = job_note = detail_note = None
     pool_summary = None
     if transport == "pool":
-        try:
-            result = read_pool(args.queue_root)
+        read = bounded("pool", lambda: read_pool(args.queue_root),
+                       deadline=deadline, abandoned=abandoned)
+        if read["status"] == "ok":
+            result = read["value"]
             nodes, jobs, pool_summary = result['nodes'], result['jobs'], result['queue']
             notes.extend(result['notes'])
-        except Exception as exc:                   # noqa: BLE001 - diagnostic
-            node_note = job_note = f"pool: unavailable ({type(exc).__name__}: {exc})"
+        elif read["status"] == "error":
+            node_note = job_note = f"pool: unavailable ({read['type']}: {read['error']})"
+            pool_summary = {"ready": None, "claimed": None, "empty": None, "complete": False}
+        else:
+            timed_out.append("pool")
+            node_note = job_note = (
+                f"pool: incomplete -- queue root did not answer within "
+                f"{args.timeout_s:g}s")
             pool_summary = {"ready": None, "claimed": None, "empty": None, "complete": False}
     else:
         try:
@@ -1192,10 +1563,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     endings: list[dict] = []
     ending_note = None
-    try:
-        endings = read_endings(args.queue_root, limit=args.recent)
-    except Exception as exc:                       # noqa: BLE001 - diagnostic
-        ending_note = f"endings: unavailable ({type(exc).__name__})"
+    read = bounded("endings", lambda: read_endings(args.queue_root, limit=args.recent),
+                   deadline=deadline, abandoned=abandoned)
+    if read["status"] == "ok":
+        endings = read["value"]
+    elif read["status"] == "error":
+        ending_note = f"endings: unavailable ({read['type']})"
+        notes.append(ending_note)
+    else:
+        timed_out.append("endings")
+        ending_note = (f"endings: incomplete -- queue root did not answer "
+                       f"within {args.timeout_s:g}s")
         notes.append(ending_note)
     # Asked only when the table came back empty, and asked then because an
     # empty table is three different answers.  A wrapper reads the `--json`
@@ -1203,7 +1581,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # table.
     empty_note = None
     if ending_note is None and not endings:
-        empty_note = queue_root_note(args.queue_root)
+        read = bounded("queue-root", lambda: queue_root_note(args.queue_root),
+                       deadline=deadline, abandoned=abandoned)
+        if read["status"] == "ok":
+            empty_note = read["value"]
+        elif read["status"] == "timed_out":
+            timed_out.append("queue-root")
+            empty_note = (f"queue root: incomplete -- it did not answer within "
+                          f"{args.timeout_s:g}s; this table is not an empty queue")
         if empty_note:
             notes.append(empty_note)
 
@@ -1211,13 +1596,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({
             "schema": "prismabuild.pbstatus.v1",
             "transport": transport,
+            # New with #350 and the reason the exit code exists: a reader that
+            # keys on the lists alone cannot tell a truncated census from an
+            # empty fleet, and those are the two answers that matter.
+            "complete": not timed_out,
+            "timed_out_sections": timed_out,
+            # Which process, exactly, this run left behind -- ``(pid,
+            # starttime)`` rather than a PID, because a PID is reusable and
+            # therefore not an identity (#349).
+            "abandoned_children": abandoned,
             "pool": pool_summary,
             "nodes": nodes,
             "jobs": jobs,
             "endings": endings,
             "scheduler": notes,
         }, sort_keys=True, indent=1))
-        return 0
+        return _incomplete(timed_out, args.timeout_s)
 
     print("== nodes")
     print("\n".join([node_note] if node_note else
@@ -1237,7 +1631,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"== endings (newest {args.recent})")
     print("\n".join([ending_note] if ending_note
                      else ending_lines(endings, note=empty_note)))
-    return 0
+    return _incomplete(timed_out, args.timeout_s)
+
+
+def _incomplete(timed_out: Sequence[str], timeout_s: float) -> int:
+    """Say what is missing, on stderr, and exit distinctly.
+
+    On stderr because the tables above it are real and a wrapper capturing
+    stdout should keep them; distinctly because "I could not read the fleet"
+    and "I read it and it is empty" are the two answers this command existed
+    to confuse, and a truncated listing that exits 0 is the more dangerous
+    half.
+    """
+    if not timed_out:
+        return 0
+    print(f"pbstatus: incomplete -- queue root did not answer within "
+          f"{timeout_s:g}s ({', '.join(timed_out)} pending)", file=sys.stderr)
+    return EXIT_INCOMPLETE
 
 
 if __name__ == "__main__":

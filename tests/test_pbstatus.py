@@ -585,9 +585,18 @@ def test_json_is_one_object_with_the_three_lists(fleet, capsys):
     _queue_rows(fleet)
     _pool_ending(fleet, "d4" * 32)
     payload = _run_json(fleet, capsys)
-    assert set(payload) == {"schema", "transport", "pool", "nodes", "jobs", "endings", "scheduler"}
+    # ``complete``, ``timed_out_sections`` and ``abandoned_children`` joined the
+    # object with the #350 deadline.  They are not decoration: a reader with
+    # only the three lists cannot tell a census cut short by an unanswering
+    # mount from a fleet that is genuinely empty, and that is the confusion
+    # fifteen wedged readers were filed under.
+    assert set(payload) == {"schema", "transport", "pool", "nodes", "jobs",
+                            "endings", "scheduler", "complete",
+                            "timed_out_sections", "abandoned_children"}
     assert payload["transport"] == "slurm" and payload["pool"] is None
     assert payload["scheduler"] == []
+    assert payload["complete"] is True
+    assert payload["timed_out_sections"] == [] and payload["abandoned_children"] == []
     assert len(payload["nodes"]) == 3
     assert len(payload["jobs"]) == 4
     assert len(payload["endings"]) == 1
