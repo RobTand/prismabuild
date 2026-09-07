@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import shutil
+import stat
 import sys
 from types import SimpleNamespace
 
@@ -28,7 +30,25 @@ def _checkout(path: Path, generation: str) -> Path:
     return path
 
 
-def _fake_git_and_probe(commit: str):
+def _index_listing(entries: dict[str, int]) -> str:
+    """``git ls-files --stage -z`` output for the given path -> mode map."""
+
+    return "".join(
+        f"{mode:06o} {'0' * 40} 0\t{path}\0" for path, mode in entries.items()
+    )
+
+
+def _fake_git_and_probe(commit: str, index: dict[str, int] | None = None):
+    """Answer the three Git questions publication asks, then the import probe.
+
+    ``index`` is the ``git ls-files --stage`` answer: the mode Git records for
+    each checkout-relative path.  A fake checkout is not a repository, so the
+    default is an empty index, and published files then fall back to their own
+    owner-execute bit exactly as an untracked file does.
+    """
+
+    listing = _index_listing(index or {})
+
     def run(argv, **_kwargs):
         words = [str(part) for part in argv]
         if words and words[0] == "git":
@@ -36,6 +56,8 @@ def _fake_git_and_probe(commit: str):
                 return SimpleNamespace(returncode=0, stdout=commit + "\n", stderr="")
             if "status" in words:
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "ls-files" in words:
+                return SimpleNamespace(returncode=0, stdout=listing, stderr="")
         return SimpleNamespace(returncode=0, stdout="import ok\n", stderr="")
 
     return run
@@ -335,3 +357,131 @@ def test_a_generation_store_that_cannot_be_written_is_a_refusal(
             publish_runtime.main()
     finally:
         fleet.chmod(0o755)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def _publish_one_generation(
+    tmp_path: Path, monkeypatch, checkout: Path, index: dict[str, int],
+) -> Path:
+    """Publish ``checkout`` into a private mirror and return the generation."""
+
+    mirror = tmp_path / "mirror"
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
+    monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
+    monkeypatch.setattr(
+        publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40, index)
+    )
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    assert publish_runtime.main() == 0
+    return mirror
+
+
+def test_a_published_program_is_executable_by_a_uid_that_is_not_the_owner(
+    tmp_path, monkeypatch,
+) -> None:
+    """Netdata runs the published mount collector as its own uid (issue #316).
+
+    ``docs/mount_measurement.md`` installs the collector as a symlink into the
+    live generation on purpose, so a later publication re-points it and no
+    re-link is owed.  That makes a non-owner uid a first-class reader of
+    published bytes, and an owner-only mode denies it both execute and read.
+
+    Before the fix, with the publishing checkout at 0700/0600 as a umask-077
+    worktree leaves it:
+
+        AssertionError: assert 320 == 365
+    """
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    package = checkout / "src" / "prismabuild"
+    (package / "pool.py").chmod(0o700)
+    (package / "core.py").chmod(0o600)
+    index = {
+        "src/prismabuild/__init__.py": 0o100644,
+        "src/prismabuild/pool.py": 0o100755,
+        "src/prismabuild/core.py": 0o100644,
+    }
+
+    mirror = _publish_one_generation(tmp_path, monkeypatch, checkout, index)
+
+    assert _mode(mirror / "src" / "prismabuild" / "pool.py") == 0o555
+    assert _mode(mirror / "src" / "prismabuild" / "core.py") == 0o444
+    # Write stays denied to everyone, owner included: a generation is
+    # append-only history and widening read must not widen that.
+    for path in (mirror / "src" / "prismabuild").rglob("*"):
+        assert _mode(path) & 0o222 == 0
+
+
+def test_the_published_program_bit_is_the_one_git_records(
+    tmp_path, monkeypatch,
+) -> None:
+    """Which members are programs is a repository fact, not a local mode.
+
+    ``shutil.copy2`` preserves the publishing worktree's mode, so the same
+    commit published different modes from different worktrees.  Here the
+    filesystem contradicts the index in both directions, and the index wins.
+
+    Before the fix:
+
+        AssertionError: assert 256 == 365
+    """
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    package = checkout / "src" / "prismabuild"
+    # A program whose worktree copy lost its execute bit ...
+    (package / "pool.py").chmod(0o600)
+    # ... and a plain module whose worktree copy gained one.
+    (package / "core.py").chmod(0o700)
+    index = {
+        "src/prismabuild/__init__.py": 0o100644,
+        "src/prismabuild/pool.py": 0o100755,
+        "src/prismabuild/core.py": 0o100644,
+    }
+
+    mirror = _publish_one_generation(tmp_path, monkeypatch, checkout, index)
+
+    assert _mode(mirror / "src" / "prismabuild" / "pool.py") == 0o555
+    assert _mode(mirror / "src" / "prismabuild" / "core.py") == 0o444
+
+
+def test_the_publishers_umask_does_not_decide_who_can_read_a_generation(
+    tmp_path, monkeypatch,
+) -> None:
+    """Directories and the receipt come from the umask, not from a source file.
+
+    The generation's directories are created by ``mkdir`` and its receipt by
+    ``open("w")``, so under umask 077 both closed to every non-owner reader
+    while every published file was closed by ``copy2`` -- one accident with
+    two spellings.  Published under a hostile umask, the whole tree must still
+    be traversable and readable.
+
+    Before the fix, on the generation directory itself:
+
+        AssertionError: <generation> published 0500, wanted 0555
+        assert 320 == 365
+    """
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    index = {
+        f"src/prismabuild/{name}": 0o100644
+        for name in ("__init__.py", "core.py", "pool.py")
+    }
+    previous = os.umask(0o077)
+    try:
+        mirror = _publish_one_generation(tmp_path, monkeypatch, checkout, index)
+        members = sorted(mirror.rglob("*"))
+    finally:
+        os.umask(previous)
+
+    assert (mirror / "RUNTIME_VERSION.json").is_file()
+    assert members
+    for path in [mirror.resolve(), *members]:
+        mode = _mode(path)
+        wanted = 0o555 if path.is_dir() else 0o444
+        assert mode == wanted, f"{path} published {mode:04o}, wanted {wanted:04o}"
+
