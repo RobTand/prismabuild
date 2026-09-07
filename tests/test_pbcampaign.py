@@ -82,6 +82,80 @@ def _campaign_against_a_worker(queue, manifest: str, *, rows: int, **kwargs):
 # Identity
 # --------------------------------------------------------------------------
 
+@pytest.mark.parametrize("budget", [32, 0.5, "32"])
+def test_gpu_budget_row_seals_the_same_action_as_pbrun(
+    tmp_path, monkeypatch, fleet_paths, capsys, budget,
+):
+    work, queue = fleet_paths
+    queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
+                   capacity={"cpu": 4, "mem_gb": 104, "gpu": 1})
+    row = _row(work, "printf hello", demand={"gpu": 1, "mem_gb": 80},
+               gpu_memory_gb=budget)
+    manifest = _manifest(tmp_path, [row])
+    assert pbcampaign.main(["--transport", "pool", "--detach", manifest]) == 0
+    campaign_key = _one_json_line(capsys.readouterr())["action_key"]
+    record = json.loads((queue.dir(pool.READY) / f"{campaign_key}.json").read_text())
+    request = Path(record["cas_root"]) / "requests" / campaign_key[:2] / f"{campaign_key}.json"
+    params = json.loads(request.read_text())["params"]
+    assert params["gpu_memory_gb"] == float(budget)
+    assert params["demand"]["mem_gb"] == 80
+
+    monkeypatch.setattr(sys, "argv", [
+        "pbrun.py", "--transport", "pool", "--detach", "--cwd", str(work),
+        "--gpu-memory-gb", str(budget), "--gpu", "--demand", "mem_gb=80",
+        "--", *row["argv"],
+    ])
+    assert pbrun.main() == 0
+    assert _one_json_line(capsys.readouterr())["action_key"] == campaign_key
+
+    row["gpu_memory_gb"] = float(budget) + 1
+    assert pbcampaign.main([
+        "--transport", "pool", "--detach", _manifest(tmp_path, [row]),
+    ]) == 0
+    assert _one_json_line(capsys.readouterr())["action_key"] != campaign_key
+
+
+@pytest.mark.parametrize("budget", [
+    True, False, [], {}, "bad", "nan", "inf", float("nan"), float("inf"),
+    0, -1, 1e-12, 2**33, 10**400,
+])
+def test_invalid_gpu_budget_refuses_manifest_before_any_submission(
+    tmp_path, fleet_paths, budget,
+):
+    work, queue = fleet_paths
+    manifest = _manifest(tmp_path, [
+        _row(work, "printf first"),
+        _row(work, "printf second", demand={"gpu": 1}, gpu_memory_gb=budget),
+    ])
+    with pytest.raises(SystemExit, match="row 1: gpu_memory_gb"):
+        pbcampaign.main(["--transport", "pool", "--detach", manifest])
+    assert not list(queue.dir(pool.READY).glob("*.json"))
+
+
+@pytest.mark.parametrize("transport,fields,reason", [
+    ("pool", {}, "requires GPU demand"),
+    ("pool", {"demand": {"gpu": "0"}}, "requires GPU demand"),
+    ("slurm", {"demand": {"gpu": 1}}, "requires pool transport"),
+    ("slurm", {"exclusive": True}, "requires pool transport"),
+])
+def test_unsupported_gpu_budget_refuses_manifest_before_any_submission(
+    tmp_path, fleet_paths, transport, fields, reason,
+):
+    work, queue = fleet_paths
+    manifest = _manifest(tmp_path, [
+        _row(work, "printf first"),
+        _row(work, "printf second", gpu_memory_gb=32, **fields),
+    ])
+    with pytest.raises(SystemExit, match=f"row 1:.*{reason}"):
+        pbcampaign.main(["--transport", transport, "--detach", manifest])
+    assert not list(queue.dir(pool.READY).glob("*.json"))
+
+
+def test_exclusive_row_implies_gpu_demand_for_memory_budget(tmp_path):
+    row = {"argv": ["true"], "exclusive": True, "gpu_memory_gb": 0.5}
+    assert pbcampaign.load_manifest(_manifest(tmp_path, [row]), transport="pool") == [row]
+
+
 def test_a_campaign_rows_key_is_the_key_pbrun_would_have_produced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fleet_paths, capsys
 ) -> None:

@@ -43,6 +43,7 @@ and each one is exactly one ``pbrun`` flag:
 ``snapshot_ref``     ``--snapshot-ref``, once per entry
 ``exclusive``        ``--exclusive``
 ``gpu_capacity``     ``--gpu-capacity``
+``gpu_memory_gb``     ``--gpu-memory-gb``: pool GPU budget in GiB
 ``priority``         ``--priority``
 ``measurement``      ``--measurement``
 ``host_class``       ``--host-class``: a node Feature name, e.g. ``gb10``
@@ -59,7 +60,7 @@ scheduler kills the row at that many seconds whatever it was doing.
 An unknown field is refused rather than ignored: a typo that is silently
 dropped seals an action nobody asked for.
 
-Three rows are refused at load for the reason ``pbrun`` would refuse them at
+Unsupported rows are refused at load for the reason ``pbrun`` would refuse them at
 submit, so a campaign of measurements is refused before it spends the fleet on
 its first row rather than on its last:
 
@@ -76,6 +77,8 @@ its first row rather than on its last:
   row without it: the retry policy is sealed into the action's identity, so a
   row that omits it is a different action from the hand-typed ``pbrun`` that
   passes it.
+* ``gpu_memory_gb`` without GPU demand (explicit or implied by ``exclusive``),
+  or under SLURM. The value must convert to a positive, bounded byte budget.
 
 ``--transport`` is a flag on the campaign and not a row field, because which
 dispatcher carries the work is a fact about the fleet rather than about the
@@ -148,6 +151,7 @@ _VALUE_FIELDS = (
     ("cwd", "--cwd"),
     ("timeout_s", "--timeout-s"),
     ("gpu_capacity", "--gpu-capacity"),
+    ("gpu_memory_gb", "--gpu-memory-gb"),
     ("priority", "--priority"),
     ("host_class", "--host-class"),
     ("max_attempts", "--max-attempts"),
@@ -247,6 +251,14 @@ def _require_row_shape(row, *, index: int) -> None:
     ):
         raise _refuse(index, "timeout_s", "must be a number of seconds",
                       timeout)
+    budget = row.get("gpu_memory_gb")
+    if budget is not None:
+        try:
+            if isinstance(budget, bool) or not isinstance(budget, (int, float, str)):
+                raise ValueError("must be a number of GiB")
+            pbrun.adaptive_gpu.memory_budget_bytes(float(budget))
+        except (ValueError, OverflowError) as exc:
+            raise _refuse(index, "gpu_memory_gb", str(exc), budget) from None
     for field, _flag in _SWITCH_FIELDS:
         value = row.get(field)
         if value is not None and not isinstance(value, bool):
@@ -316,6 +328,15 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         )
     except SystemExit as exc:
         raise ManifestError(f"row {index}: {exc}") from None
+    try:
+        demand = row.get("demand") or {}
+        pbrun.require_gpu_memory_scope(
+            gpu_memory_gb=row.get("gpu_memory_gb"),
+            gpu=bool(row.get("exclusive") or int(demand.get("gpu", 0))),
+            transport=transport,
+        )
+    except ValueError as exc:
+        raise ManifestError(f"row {index}: {exc}") from None
     attempts = row.get("max_attempts")
     if attempts is None:
         return
@@ -345,7 +366,7 @@ def load_manifest(path, *, transport: str = "slurm") -> list[dict]:
     to convert while the row was being turned into a command line, which is
     after the rows before it had been submitted.
 
-    ``transport`` is the campaign's, and only the host-class rule reads it.
+    ``transport`` is the campaign's; scope and GPU-budget rules read it.
     The default is the lane, where a class is honoured, so a caller checking a
     manifest without a fleet in mind is told about the row and not about the
     transport.

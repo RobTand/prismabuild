@@ -1514,6 +1514,11 @@ VRAM budget. On shared-memory devices this explicit GPU cap is an additional
 subset cap, not a second reservation of the same physical DRAM. The exact
 GPU budget follows scope creation, durable recovery and release. SLURM refuses
 this option until its execution contract supports separate VRAM budgets.
+Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
+`pbrun`'s seal path, preserving action identity with an equivalent direct
+submission. Manifest preflight validates the bounded numeric conversion and
+refuses a budget without GPU demand (explicit or implied by `exclusive`) or
+under SLURM before any row is submitted.
 
 ## Model-level Tessera dispatch
 
