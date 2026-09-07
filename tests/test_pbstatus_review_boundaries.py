@@ -88,7 +88,7 @@ def test_error_does_not_report_complete_census(monkeypatch, capsys):
         raise PermissionError('queue unavailable')
     monkeypatch.setattr(pbstatus, 'read_pool', unavailable)
     monkeypatch.setattr(pbstatus, 'read_endings', lambda root, limit: [])
-    monkeypatch.setattr(pbstatus, 'queue_root_note', lambda root: None)
+    monkeypatch.setattr(pbstatus, 'queue_root_note', lambda root, **kwargs: None)
     pbstatus.main(['--transport', 'pool', '--json'])
     report = json.loads(capsys.readouterr().out)
     assert report['complete'] is False, report

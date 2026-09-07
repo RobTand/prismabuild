@@ -1115,7 +1115,7 @@ def job_lines(jobs: Sequence[Mapping[str, object]]) -> list[str]:
     return render_table(headers, rows)
 
 
-def queue_root_note(queue_root: str | Path) -> str | None:
+def queue_root_note(queue_root: str | Path, *, raise_errors: bool = False) -> str | None:
     """Why this root can file no endings, or ``None`` if it could file some.
 
     An empty table used to answer three questions with one sentence: a fleet
@@ -1123,8 +1123,9 @@ def queue_root_note(queue_root: str | Path) -> str | None:
     a queue.  Only the first means wait.  A mistyped ``--queue-root`` read as
     the first, so an operator waited on a screen that could never fill.
 
-    Never raises, for the same reason nothing else here does: a status screen
-    that fails is a screen nobody can use to find out why.
+    By default, read failures become a note for direct display callers.
+    The bounded census requests exceptions so its completeness flag also
+    records the failed read; turning an exception into text must not certify it.
     """
 
     root = Path(queue_root)
@@ -1136,6 +1137,8 @@ def queue_root_note(queue_root: str | Path) -> str | None:
         filed_in = [state for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
                     if (root / state).is_dir()]
     except OSError as exc:
+        if raise_errors:
+            raise
         reason = str(exc.strerror or type(exc).__name__).lower()
         return f"queue root {root} cannot be read: {reason}"
     if not filed_in:
@@ -1736,7 +1739,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # table.
     empty_note = None
     if ending_note is None and not endings:
-        read = bounded("queue-root", lambda: queue_root_note(args.queue_root),
+        read = bounded("queue-root", lambda: queue_root_note(args.queue_root, raise_errors=True),
                        deadline=deadline, abandoned=abandoned)
         if read["status"] == "ok":
             empty_note = read["value"]

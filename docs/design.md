@@ -1609,3 +1609,6 @@ The status read budget starts before default transport metadata is opened. A
 failed lookup reports unknown transport and incomplete status rather than
 guessing a scheduler. Script imports, output delivery, cleanup grace, and the
 explicit SLURM scheduler/lane lookups are outside this pool census budget.
+
+The empty-endings root diagnostic propagates filesystem errors to the bounded
+census, so an error rendered as a note still makes the top-level read incomplete.
