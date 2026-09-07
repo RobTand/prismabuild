@@ -3,9 +3,11 @@
 They drifted once: the skill was narrowed to inference serving only while
 `docs/agent_execution_policy.md` still carried the universal ruling, so the two
 published sources disagreed about whether a benchmark against a live endpoint
-submits. An agent reads whichever it reaches first, and the cost of the drift is
-work routed outside admission or a serving runtime wedged into a reservation it
-cannot complete.
+submits. An agent reads whichever it reaches first, so the drift routed the
+same work two ways depending on which file was open. The exemption is Rob's
+ruling, not a capability claim: a bounded action that starts vLLM can run to
+completion under PrismaBuild (action ``a475cb59`` did) and is exempt all the
+same.
 
 This is a prose test on purpose, and it is narrow on purpose: it does not check
 wording, it checks that neither document has quietly lost the two claims that
@@ -35,9 +37,8 @@ def test_the_exemption_is_stated_as_universal(path: Path):
     text = _vllm_text(path)
     assert "universally" in text, (
         f"{path.relative_to(ROOT)} no longer states the vLLM exemption as "
-        "universal. Rob, 2026-09-06: 'everything vllm is exempt from "
-        "everything. Vllm isn't something that uses chunks of work, it's an "
-        "llm serving runtime.'")
+        "universal. Rob, 2026-09-07: 'vllm is exempt. It can't run in "
+        "prismabuild. This is not complex don't make it so.'")
 
 
 @pytest.mark.parametrize("path", [SKILL, POLICY], ids=["skill", "policy"])
