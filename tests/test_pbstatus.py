@@ -147,13 +147,13 @@ def _calls(fleet: dict) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
-def _run(fleet: dict, capsys, *extra: str) -> str:
-    assert pbstatus.main(fleet["argv"] + list(extra)) == 0
+def _run(fleet: dict, capsys, *extra: str, expected_code: int = 0) -> str:
+    assert pbstatus.main(fleet["argv"] + list(extra)) == expected_code
     return capsys.readouterr().out
 
 
-def _run_json(fleet: dict, capsys, *extra: str) -> dict:
-    return json.loads(_run(fleet, capsys, "--json", *extra))
+def _run_json(fleet: dict, capsys, *extra: str, expected_code: int = 0) -> dict:
+    return json.loads(_run(fleet, capsys, "--json", *extra, expected_code=expected_code))
 
 
 def _record_submission(fleet: dict, key: str, *, job_id: str,
@@ -521,13 +521,13 @@ def test_a_record_that_cannot_be_parsed_is_a_row_not_a_silence(fleet, capsys):
 
     key = "c3" * 32
     path = _truncated_ending(fleet, key)
-    endings = _run_json(fleet, capsys, "--recent", "1")["endings"]
+    endings = _run_json(fleet, capsys, "--recent", "1", expected_code=3)["endings"]
     assert len(endings) == 1
     assert endings[0]["status"] == "unreadable"
     assert endings[0]["unreadable"] == "not valid JSON"
     assert endings[0]["path"] == str(path)
 
-    out = _run(fleet, capsys, "--recent", "1").split("== endings")[1]
+    out = _run(fleet, capsys, "--recent", "1", expected_code=3).split("== endings")[1]
     assert "unreadable" in out
     assert "not valid JSON" in out
     assert str(path) in out
@@ -544,13 +544,13 @@ def test_an_unreadable_record_says_which_way_it_is_unreadable(fleet, capsys):
     unreadable = fleet["queue"] / pool.DONE / f"{'d4' * 32}.json"
     unreadable.chmod(0o000)
     try:
-        endings = _run_json(fleet, capsys)["endings"]
+        endings = _run_json(fleet, capsys, expected_code=3)["endings"]
         assert [row["status"] for row in endings] == ["unreadable"]
         assert endings[0]["unreadable"] == "permission denied"
 
         _truncated_ending(fleet, "e5" * 32)
         reasons = {row["unreadable"]
-                   for row in _run_json(fleet, capsys)["endings"]}
+                   for row in _run_json(fleet, capsys, expected_code=3)["endings"]}
         assert reasons == {"permission denied", "not valid JSON"}
     finally:
         unreadable.chmod(0o644)
