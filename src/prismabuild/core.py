@@ -2501,8 +2501,13 @@ def _assert_regular_identity(
 
     try:
         observed = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
-    except OSError as exc:
+    except FileNotFoundError as exc:
         raise CASTamperError(f"{where} changed during operation: {path}") from exc
+    except OSError as exc:
+        # An unreadable name is not evidence that the held inode changed.
+        # Recovery callers may retire work on tamper, but must retain it when
+        # an NFS or permission fault prevents this final identity check.
+        raise CASUnavailableError(f"cannot inspect {where}: {path}: {exc}") from exc
     held = os.fstat(descriptor)
     if (
         not stat.S_ISREG(observed.st_mode)

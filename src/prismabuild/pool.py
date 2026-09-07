@@ -1195,7 +1195,11 @@ class ResourceLedger:
 
         All-or-nothing on the demand: a multi-resource actor that keeps what it
         managed to get while blocked on what it did not is holding resources it
-        cannot use.
+        cannot use.  That holds for *every* ending, not only the insufficient
+        one: an exception raised anywhere between the first rename and the last
+        metadata write empties the private directory back into ``free/`` before
+        it leaves, because a caller that never receives the handle has no way to
+        return the tokens itself.
         """
 
         wanted = {k: int(v) for k, v in demand.items() if int(v) > 0}
@@ -1254,6 +1258,22 @@ class ResourceLedger:
         except _Insufficient:
             self._empty_into_free(destination)
             return None
+        except BaseException:
+            # All-or-nothing cannot depend on *which* exception ends the
+            # attempt.  ``_Insufficient`` is the only ending this function
+            # authors, and it was the only ending that returned the tokens;
+            # every other one -- ``cpu_allocation`` refusing a token index the
+            # configured topology no longer covers, ``_read_json`` on a torn
+            # ``.adaptive.json``, an ESTALE or ENOSPC out of ``os.rename`` or
+            # either ``_write_json_atomic`` -- left the whole demand under a
+            # private holder.  The caller cannot clean that up: the function
+            # never returns, so no ``handle`` reaches it and
+            # ``abandon_acquire`` has nothing to name.  Only
+            # ``sweep_stale_acquisitions`` recovers it, and its grace is
+            # ``LEASE_TIMEOUT_S``, so a repeating cause starves the box one
+            # five-minute reservation at a time.
+            self._empty_into_free(destination)
+            raise
         return handle
 
     def commit_acquire(self, action_key: str, handle: str) -> int:
@@ -3815,7 +3835,16 @@ class PoolQueue:
         A record whose attempt links no longer verify is filed rather than
         restored.  Restoring it would hand ``reap_stale`` a record that raises
         from ``archive_attempt``, and that exception stops reaping on every box
-        for as long as the record exists.
+        for as long as the record exists.  Verification therefore has to cover
+        every way a link can fail to resolve, not only the ones the queue
+        itself judges: a missing or tampered immutable outcome raises out of
+        ``core``, not out of the pool's contract error, and an escape here
+        causes the exact stall this paragraph is about -- ``reap_stale`` calls
+        this sweep unguarded, and ``serve_once`` calls ``reap_stale`` before it
+        claims.  Being *unable to look* is a third answer and takes neither
+        disposition: the tombstone is left for the next sweep, because filing
+        it would hide it in ``withdrawn/superseded/`` on the strength of a
+        stale directory handle.
 
         The grace is the lease timeout: nothing is blocked behind this except
         the action's own visibility, and a sweep that fires while a finisher is
@@ -3859,8 +3888,26 @@ class PoolQueue:
             if restorable and "attempt_history" in record:
                 try:
                     self.attempt_outcomes(record)
-                except PoolContractError:
+                except (PoolContractError, FileNotFoundError, pb.CASTamperError):
+                    # ``attempt_outcomes`` decides most of this by reading the
+                    # record and raises ``PoolContractError``, but the link it
+                    # checks last is a *file*: ``_open_regular_nofollow``
+                    # raises a bare ``FileNotFoundError`` when the immutable
+                    # outcome is absent and ``CASTamperError`` when the entry
+                    # is not a readonly regular file, and neither derives from
+                    # ``PoolContractError``.  Both are positive evidence that
+                    # the link does not verify, which is this branch's whole
+                    # question, so both file the record rather than restore it.
                     restorable = False
+                except pb.CASUnavailableError:
+                    # "Could not look" is not evidence, and it must not be
+                    # answered either way.  Restoring risks the reaping stall
+                    # this guard exists to prevent; filing moves the record
+                    # into ``withdrawn/superseded/``, which every reader is
+                    # documented to ignore, so a stale handle would lose the
+                    # action permanently.  Leave the tombstone for the next
+                    # sweep -- the only disposition that keeps the evidence.
+                    continue
             if restorable:
                 try:
                     os.link(tombstone, self.item_path(CLAIMED, key))
@@ -4815,13 +4862,30 @@ class PoolQueue:
         worker execute a ready copy after another box has filed its outcome.
         The record's generation is checked separately, so an old outcome does
         not blacklist this content-addressed name.
+
+        **Loud on anything but absence.**  This set is the evidence
+        ``terminal_outcome_covers`` decides on, and every ``OSError`` used to
+        answer it the same way an empty directory does.  ``ESTALE`` on a
+        cached directory handle is the ordinary way a listing fails on this
+        mount -- ``_read_json`` treats it as a first-class event (#208) and
+        ``quarantine_orphans`` re-raises every errno that is not ``ESTALE``
+        rather than swallowing the class -- so one stale handle reported "no
+        outcomes have been filed" for a queue full of them.  ``reap_stale``
+        then found no filed outcome for a generation that had one and put it
+        back in ``ready``, which is the one thing this method's own caller
+        says a CAS hit does not license.  ``_read_json`` states the rule:
+        answering "absent" without the evidence that the directory is live
+        "would turn a broken mount into a confident wrong verdict".
         """
 
         keys: set[str] = set()
         for state in (DONE, FAILED):
             try:
                 names = os.listdir(self.dir(state))
-            except OSError:
+            except (FileNotFoundError, NotADirectoryError):
+                # Absence only.  A queue whose layout has not been created yet
+                # legitimately has no ``done`` and no ``failed``, and that is
+                # the one reading of "no names" this method may make.
                 continue
             keys.update(
                 name[: -len(".json")] for name in names if name.endswith(".json")
@@ -4869,11 +4933,21 @@ class PoolQueue:
         negatively cached and keeps answering ``False`` after the file lands --
         the same reason pbrun's wait loop polls by ``readdir``.  A withdrawal
         that a guard could not see is not a withdrawal.
+
+        Which is why an unreadable directory is not an empty one.  Every
+        ``OSError`` used to answer ``frozenset()`` here, so an ``ESTALE`` on a
+        cached handle said "nothing has been withdrawn" and defeated the
+        sentence above: ``_claim`` reads this set as the load-bearing half of
+        ``withdraw``, and with it empty the cancelled work is claimed and run
+        again -- the race the operator used to have to win by hand.  Loud on
+        anything but absence, for the reason :meth:`terminal_keys` records.
         """
 
         try:
             names = os.listdir(self.dir(WITHDRAWN))
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
+            # Absence only, for the reason ``terminal_keys`` gives: a queue
+            # whose layout has not been created yet has no ``withdrawn``.
             return frozenset()
         return frozenset(
             name[: -len(".json")] for name in names if name.endswith(".json")
