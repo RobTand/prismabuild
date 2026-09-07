@@ -21,6 +21,15 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 import pbrun  # noqa: E402
 
 
+#: A runtime every box can open.  These tests submit from ``tmp_path``, which
+#: is box-local, so without saying otherwise they would also be asserting that
+#: a worktree ``pbrun`` may send work to another box -- and it may not
+#: (``require_reachable_runtime``, #292).  Placement identity is the subject
+#: here; where this pbrun is installed is not, so it is declared rather than
+#: inherited from wherever the suite happens to be checked out.
+PUBLISHED_RUNTIME = Path(
+    "/mnt/shared/prismabuild-fleet/runtime-generations/test-generation")
+
 class _NoReceipt:
     """A CAS that holds no receipt, so pbrun goes on to the scheduler."""
 
@@ -59,6 +68,7 @@ def _sealed_body(argv, monkeypatch, tmp_path):
 
     monkeypatch.setattr(pbrun.pb, "seal_action", _stop)
     monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
     monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
     monkeypatch.setattr(
         pbrun,

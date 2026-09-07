@@ -1548,6 +1548,53 @@ def is_box_local(cwd: Path) -> bool:
     return pool.is_box_local_path(cwd.resolve())
 
 
+def require_reachable_runtime(
+    tags: Sequence[str],
+    *,
+    hostname: str,
+    runtime_root: Path,
+) -> None:
+    """Refuse an action whose sealed runtime the chosen boxes cannot open.
+
+    ``pbrun`` transports the *checkout* through the CAS, so a box-local
+    checkout runs anywhere -- measured, not assumed: a worktree under
+    ``/home/rob/tmp`` submitted through the published runtime executed on
+    dl380g10 clean.  What ``pbrun`` does not transport is itself.  The worker
+    launcher and ``core.py`` are sealed as absolute paths into the *submitting*
+    runtime's tree (``worker_script`` in the pool publication, ``worker_script``
+    and ``job_entry`` in the SLURM lane, and the ``runtime`` block of every
+    receipt), so a ``pbrun`` invoked out of a developer worktree can be executed
+    only by the box that worktree is on.
+
+    ``placement_tags`` cannot see this and should not: it screens argv and the
+    caller's environment, which are the submitter's inputs, not ``pbrun``'s own
+    installation.  So an explicit ``--tag`` -- which by design outranks every
+    pin ``placement_tags`` derives -- sends the action to a box where the
+    launcher path does not exist, and the failure arrives from the far side as
+    ``can't open file '<worktree>/tools/prismabuild_worker.py'``, after a
+    claim, a checkout materialization and a wasted slot.  Measured 2026-09-06
+    on dl380g10, and it is what #292 cost four suite shards.
+
+    This is a statement about *this* runtime, not a placement decision: it
+    narrows nothing the queue may choose, and a placement naming this box is
+    admitted whatever else it also names, so ``--tag x86 --here`` on the x86
+    box is a real request and it is still met.
+    """
+
+    if not pool.is_box_local_path(Path(runtime_root).resolve()):
+        return
+    if hostname in tags:
+        return
+    named = ", ".join(tags) if tags else "any eligible worker"
+    raise SystemExit(
+        f"pbrun: this runtime is box-local ({runtime_root}), so its worker "
+        f"launcher exists only on {hostname}, but the placement admits "
+        f"{named}.  Add --tag {hostname} (or --here) to keep the action on "
+        "the box that has it, or submit through the published runtime at "
+        "/mnt/shared/prismabuild-fleet/repo, which every box can open."
+    )
+
+
 def require_checkout_owned_scripts(
     command: list[str],
     cwd: Path,
@@ -3626,6 +3673,8 @@ def main() -> int:
         # --constraint.  A union rather than a replacement: a hostname pin a
         # box-local executable earned stays, and the class narrows it further.
         tags = pool.normalize_placement_tags([*tags, args.host_class])
+    require_reachable_runtime(
+        tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     placement = {"required_tags": tags}
     if args.exclusive and args.transport == "slurm":
         # SLURM already has a word for the whole device.  ``gpu:1`` and

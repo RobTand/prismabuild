@@ -39,6 +39,15 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+#: A runtime every box can open.  These tests submit from ``tmp_path``, which
+#: is box-local, so without saying otherwise they would also be asserting that
+#: a worktree ``pbrun`` may send work to another box -- and it may not
+#: (``require_reachable_runtime``, #292).  Placement identity is the subject
+#: here; where this pbrun is installed is not, so it is declared rather than
+#: inherited from wherever the suite happens to be checked out.
+PUBLISHED_RUNTIME = Path(
+    "/mnt/shared/prismabuild-fleet/runtime-generations/test-generation")
+
 def _git_checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -362,6 +371,7 @@ def test_effective_placement_is_normalized_into_action_identity(
 
     monkeypatch.setattr(pbrun.pb, "seal_action", capture)
     monkeypatch.setattr(pbrun, "SH", fleet)
+    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
     )
@@ -420,6 +430,7 @@ def test_container_owner_tracks_every_pre_owner_semantic_distinction(
 
     monkeypatch.setattr(pbrun.pb, "seal_action", capture)
     monkeypatch.setattr(pbrun, "SH", fleet)
+    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
     )
@@ -1724,6 +1735,7 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
                    capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
 
     with mock.patch.object(pbrun, "SH", tmp_path), \
+         mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
          mock.patch.object(pbrun, "POLL_S", 0.001), \
              mock.patch.object(socket, "gethostname", return_value=HOST), \
              mock.patch.object(sys, "argv",
@@ -1764,6 +1776,7 @@ def test_a_matching_stale_offer_outvotes_a_fresh_nonmatch_at_submit(
                    capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
 
     with mock.patch.object(pbrun, "SH", tmp_path), \
+         mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
          mock.patch.object(pbrun, "POLL_S", 0.001), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(sys, "argv",
@@ -1835,6 +1848,7 @@ def test_anywhere_and_a_tag_are_refused_together(tmp_path, monkeypatch) -> None:
 
     work = _git_checkout(tmp_path)
     with mock.patch.object(pbrun, "SH", tmp_path), \
+         mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(pbrun, "POLL_S", 0.001), \
          mock.patch.object(sys, "argv",

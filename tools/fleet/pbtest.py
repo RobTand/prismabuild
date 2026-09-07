@@ -20,7 +20,10 @@ Three constraints shape this, and none of them are negotiable:
 * **A pass/fail here is not a measurement.**  x86 against aarch64 is a
   different BLAS and a different FMA order, so this runs *tests*, never a
   timing or numeric arm.  ``--tag`` defaults to ``x86`` to make that explicit
-  at the call site rather than in a comment.
+  at the call site rather than in a comment -- but only when this runtime is
+  the published one.  Out of a worktree ``pbrun`` seals that worktree's worker
+  launcher into the action and only this box can open it, so the default is
+  no tag at all and ``pbrun``'s own host pin stands.
 * **A shard reserves what it is allowed to use.**  ``--threads-per-shard``
   sets each pytest worker's BLAS and OMP ceiling. Multiplying that by
   ``--workers-per-shard`` gives ``pbrun --cpus``, which the lane emits as ``--cpus-per-task``.  A ceiling
@@ -49,6 +52,8 @@ from runtime_paths import (  # noqa: E402
 )
 
 RUNTIME_ROOT = generation_root(__file__)
+sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import pool  # noqa: E402
 #: The submitter each shard is started through, under whichever layout the
 #: runtime containing this file uses.  ``None`` when neither layout has one.
 PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
@@ -256,7 +261,16 @@ def main() -> int:
         sys.stderr.write(f"no test files under {args.paths} in {checkout}\n")
         return 2
     buckets = shard(files, args.shards)
-    tags = args.tag or ["x86"]
+    # ``pbrun`` transports the checkout but never itself: it seals its own
+    # ``prismabuild_worker.py`` as an absolute path into the action.  Out of
+    # the published runtime that path is on every box; out of a worktree it is
+    # on one -- and ``x86`` is an EXPLICIT tag, which by design outranks the
+    # host pin ``pbrun`` would otherwise derive for exactly this reason.  So
+    # the default was not "prefer the idle x86 cores", it was "override the
+    # only correct placement", and the four shards died on dl380g10 with
+    # ``can't open file '<worktree>/tools/prismabuild_worker.py'`` (#292).
+    # Say nothing instead and let ``pbrun`` answer; it pins to this box.
+    tags = args.tag or ([] if pool.is_box_local_path(RUNTIME_ROOT) else ["x86"])
     sizes = [len(b) for b in buckets]
     print(f"{len(files)} files -> {len(buckets)} shards "
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
