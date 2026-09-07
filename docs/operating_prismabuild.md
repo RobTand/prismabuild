@@ -116,10 +116,52 @@ pass, nothing at a negative priority is considered until every item above it
 has been tried. That is what makes `-10` mean "only when nothing else wants
 the box". Agent self-validation -- test shards, the receipt for a PR, a re-run
 to confirm a fix -- submits there (`pbtest.py --priority -10`, `pbrun.py
---priority -10`) and cannot displace campaign work in the queue. What it can
-still do is keep a reservation it was admitted to until it finishes or hits
-its `--timeout-s`; a foreground item that needs those tokens waits that long.
-Preemption of an admitted background item is not implemented.
+--priority -10`) and cannot displace campaign work in the queue.
+
+Restartable background work can also yield the box. When a foreground item
+(priority >= 0) is denied admission and one background holder on that box is running whose tokens,
+released, would let the denied item in, the worker withdraws that holder through
+the ordinary withdrawal ladder and re-publishes it at its own priority. The
+background action is retried later; partial output follows ordinary withdrawal
+cleanup. Each interruption consumes one of its `max_attempts`, and its aging
+count survives. Eligibility requires explicit `--retry-safe`, a remaining
+attempt after the interruption, and a verified generation action. Measurements,
+unknown action identities, and holders with recorded failures are left running.
+Keeping the latter in their original generation preserves their complete failure
+history. Negative priority alone does not authorize a restart.
+
+The existing attempt counter bounds both interruptions and later failures.
+Earlier interrupted generations are linked through immutable withdrawal
+decisions using `supersedes_withdrawal.published_unix`, while
+`attempt_history_missing_before` accounts for that prefix in the new generation.
+A three-attempt action interrupted twice has one launch left; if it fails,
+it ends failed rather than receiving another three attempts.
+
+The release is not immediate. `withdraw` returns `released 0`: the holder's own
+worker stops the payload and returns the tokens at its next checkpoint, so the
+foreground item is admitted on a later poll rather than on the pass that
+preempted. Four bounds keep the cost honest: only a foreground denial triggers
+it, only an eligible `priority < 0` holder is selected, only a holder whose release
+actually closes the gap is stopped, and only one at a time -- tokens a
+withdrawing holder is about to return are counted as promised, so a second pass
+does not cancel a second action for the same gap. A holder that cannot be
+stopped through the ladder -- already withdrawing, waiting on cleanup, or on
+another box -- is skipped, never forced.
+
+`pbstatus` shows the cost. The requeued row in the jobs table names the
+preemption in its NOTE, and the withdrawal in the endings table reads
+`preempted by <key12>`; both carry `preempted_by` as a field in `--json`. The
+immutable withdrawal decision under
+`withdrawn/decisions/<key>/<generation>.json` carries it too.
+
+A submitter waiting on a preempted action is not told it was withdrawn. The
+requeue is a new generation, and a waiter names the generation it submitted, so
+`pbrun` follows a cancellation stamped `preempted_by` to the generation the
+requeue published and reports *that* run's ending -- the retry's, whether it is
+still queued, running, or already done. An operator's withdrawal is unaffected:
+it carries no `preempted_by`, so it ends the wait as it always did, and so does
+a preemption whose requeue was never published, because then the cancellation is
+the whole account of what happened.
 
 ### SLURM partitions
 

@@ -2024,6 +2024,65 @@ def terminal_record(
     return record
 
 
+def _preemption_requeue(q, key: str, ending, generation) -> float | None:
+    """The generation a preemption requeued this one as, or ``None``.
+
+    ``PoolQueue`` stops an admitted background holder to admit foreground work
+    and immediately re-publishes it (#364).  The requeue is a NEW generation --
+    it has to be, because the cancellation it revives is generation-scoped and
+    would otherwise cover its own retry -- so a waiter watching the stopped
+    generation sees a withdrawal and would report exit 143 for work the queue
+    is about to run again.  That would make "retried, not lost" true of the
+    queue and false of everyone waiting on it.
+
+    Deliberately narrow.  It follows only an ending stamped ``preempted_by``,
+    which nothing but admission writes, and only to a generation the queue
+    actually holds -- waiting to run, running, or already ended.  An operator's
+    withdrawal still ends the wait; so does a preemption whose requeue was
+    never published, because then there is no newer generation to find and the
+    cancellation is the whole account of what happened.
+
+    The terminal directories are searched as well as the live ones, because a
+    caller that arrives after the requeued run finished would otherwise be told
+    about the stop and never about the ending that followed it.
+    """
+
+    if generation is None or ending.get("preempted_by") is None:
+        return None
+    if str(ending.get("status") or "") != "withdrawn":
+        return None
+    # Admission holds this lock across withdrawal and replacement publication.
+    # Reading the marker before the replacement exists is an intermediate
+    # transition, not evidence that the preempted action was abandoned.
+    with q._transition_locked(key):
+        records = [record for _, record in q.withdrawal_decisions(key)]
+        records.extend(record for _, record in q.archived_preemption_outcomes(key))
+        for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
+                      pool.WITHDRAWN):
+            try:
+                record = json.loads(
+                    q.item_path(state, key).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        successors = []
+        for record in records:
+            theirs = record.get("published_unix")
+            parent = record.get("supersedes_withdrawal")
+            if (type(theirs) not in (int, float)
+                    or not isinstance(parent, dict)
+                    or parent.get("published_unix") != generation
+                    or parent.get("preempted_by") != ending.get("preempted_by")):
+                continue
+            # Follow the actual handoff, never an unrelated later submission
+            # of the same key. Immutable decisions retain intermediate links
+            # when the action was preempted more than once.
+            if float(theirs) > float(generation):
+                successors.append(float(theirs))
+        return min(successors) if successors else None
+
+
 def landed_outcome(
     q, key: str, *, wait_s: float, generation: float | None = None,
     report_unreadable: bool = False,
@@ -2088,6 +2147,12 @@ def landed_outcome(
                            and existing.get("published_unix") == record.get("published_unix")
                            for _, existing in found):
                     found.append((path, record))
+        if generation is not None and not any(
+                record.get("published_unix") == generation for _, record in found):
+            # A later same-status generation may have replaced the only mutable
+            # terminal row. The preemption successor's immutable attempt still
+            # carries its generation link, complete history and original verdict.
+            found.extend(q.archived_preemption_outcomes(key, generation=generation))
         if generation is not None and found:
             # A legacy ending with no generation remains the fallback when it
             # is the only account of this run.  It must not outrank an exact
@@ -2100,7 +2165,17 @@ def landed_outcome(
                 and not isinstance(entry[1].get("published_unix"), bool)
                 and float(entry[1]["published_unix"]) == float(generation)
             ]
-            return (exact or found)[0]
+            landed = (exact or found)[0]
+            requeued = _preemption_requeue(q, key, landed[1], generation)
+            if requeued is None:
+                return landed
+            # Admission stopped this generation to give a foreground item the
+            # box, and published another one to run it again (#364).  Reporting
+            # the cancellation would tell the caller its work was decided
+            # against, when the queue is already running it: follow the
+            # generation the requeue published instead.
+            generation = requeued
+            continue
         if len(found) == 1:
             return found[0]
         if found:
@@ -2137,7 +2212,10 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     ):
         adopted = q.adopted_attempt_summary(outcome)
         disposition = adopted["disposition"]
-        if disposition != Path(outcome_path).parent.name:
+        archived_source = (
+            outcome.get("preemption_context") is not None
+            and Path(outcome_path) == q.attempt_path(outcome, outcome["attempts"]))
+        if not archived_source and disposition != Path(outcome_path).parent.name:
             raise pool.PoolContractError(
                 "terminal queue directory disagrees with the adopted immutable "
                 f"attempt: {Path(outcome_path).parent.name!r} != {disposition!r}"

@@ -699,6 +699,15 @@ def read_pool(queue_root: str | Path) -> dict:
                     row['reason'] = ('no fresh worker offers; placement unknown' if not live
                                      else 'no matching live worker' if not hosts
                                      else 'awaiting admission; matching worker capacity is not a grant')
+                    row['preempted_by'] = record.get('preempted_by')
+                    if row['preempted_by']:
+                        # This row is a requeue, not a first submission, and an
+                        # operator reading a queue that grew a row it did not
+                        # submit should be told which admission decision put it
+                        # there (#364).
+                        row['reason'] += (
+                            "; requeued after preemption by "
+                            f"{str(row['preempted_by'])[:12]}")
                     if row['unstarted_releases']:
                         # A key the reaper keeps handing back reads exactly
                         # like a key nobody has got to yet, and the reason
@@ -971,6 +980,12 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
             # a different thing from a receipt that was not published.
             "receipt_published": detail.get("receipt_published"),
             "slurm_state": slurm.get("state"),
+            # Why a withdrawal happened, when admission rather than an operator
+            # made it: the foreground action this one yielded the box to
+            # (#364).  A field rather than prose in ``reason`` so a reader can
+            # test it, and present as ``None`` everywhere else for the same
+            # reason ``unreadable`` is.
+            "preempted_by": record.get("preempted_by"),
             # Present on every row so a reader of the JSON can test one field
             # rather than the absence of one.
             "unreadable": None,
@@ -1192,8 +1207,12 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
             else ending.get("receipt_published"),
             ending.get("slurm_state") or ABSENT,
             # The path and the reason, on the one kind of row where every
-            # other column is inside a file nobody could read.
-            f"{reason}: {ending.get('path')}" if reason else ABSENT,
+            # other column is inside a file nobody could read -- and otherwise
+            # the cost of a preemption, which is the one ending whose cause is
+            # another action rather than this one's own exit.
+            f"{reason}: {ending.get('path')}" if reason
+            else f"preempted by {str(ending['preempted_by'])[:12]}"
+            if ending.get("preempted_by") else ABSENT,
         ))
     return render_table(headers, rows)
 

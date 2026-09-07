@@ -67,8 +67,38 @@ considered before that veto is reached. The existing withholding rule still
 protects large items within each band. Priority defaults to 0 and is queue
 metadata outside action identity; `pbtest --priority` forwards it to every
 shard. Agent self-validation uses -10 so queued campaign work at 0 is considered
-first. An admitted background action retains its reservation until completion
-or its execution deadline; queue priority does not preempt running work.
+first. A denied foreground item may also preempt one admitted background holder
+on the same host: the lowest-priority holder whose released tokens would admit
+the denied demand is withdrawn through the existing withdrawal ladder and
+re-published at its original priority and aging count, as a new generation the
+cancellation does not cover. Release is asynchronous, so the denied item is
+admitted on a later pass. Preemption never crosses into the foreground band,
+never stops a holder whose release would not close the gap, and never cancels a
+second holder while a withdrawn one's tokens are still owed. It stops nothing when
+the selected claim concluded or changed before withdrawal, and refuses rather than raises when the holder's
+reservations contradict each other, because neither is the denied item's
+business. Eligibility requires a verified generation action, explicit
+`retry_safe: true`, and an unused attempt after the interrupted launch.
+Measurements, unknown actions and holders with recorded failures remain running;
+the latter keeps its attempt history in the original generation. Priority alone
+never grants retry permission. An interruption consumes one of `max_attempts`
+through the existing `attempts` counter, so repeated preemptions and subsequent
+failures cannot refresh the launch budget. New generations account for earlier
+interruptions through `attempt_history_missing_before`; their immutable
+withdrawal decisions remain linked by `supersedes_withdrawal.published_unix`.
+No failure history is discarded or rewritten. A preempted attempt records
+`preempted_by`; a waiter follows the exact `supersedes_withdrawal` lineage
+through any repeated interruptions and reports that retry's ending. It does
+not adopt an unrelated later generation's verdict merely because the key matches.
+The existing immutable attempt outcome also retains the preemption handoff
+context and interrupted-attempt prefix. If a later same-status generation
+replaces the mutable terminal summary, the waiter reconstructs the original
+retry's ending from that attempt, revalidating canonical history, log digests
+and withdrawal lineage. Recovery writes no queue pointer and names the immutable
+attempt as its source. Attempts predating this context provide no inferred link.
+The withdrawal and replacement publication share the holder's transition lock;
+waiters acquire it before resolving the replacement, so a partially completed
+handoff cannot report cancellation while the replacement is being published.
 
 The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements

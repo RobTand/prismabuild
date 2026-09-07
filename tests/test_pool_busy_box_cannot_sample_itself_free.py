@@ -155,8 +155,10 @@ def test_a_full_box_that_polls_slower_than_the_sampler_never_re_admits(box):
 
     assert queue.passes(small) == 7
     assert queue.item_path(pool.READY, small).exists()
+    # Admission reads local authority. Its asynchronously published diagnostic
+    # copy can still contain an earlier interval when this assertion runs.
     sample = adaptive_cpu.read_json(
-        queue.ledger().base / "adaptive" / "cpu-sample.json")
+        adaptive_cpu.local_state_base(queue.ledger().base) / "cpu-sample.json")
     assert sample.get("observation") == {}, (
         "the observation the borrow gate needs is empty, and stays empty, "
         "because consecutive polls are further apart than MAX_INTERVAL_S")
