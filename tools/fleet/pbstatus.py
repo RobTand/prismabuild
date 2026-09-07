@@ -1193,10 +1193,19 @@ class Deadline:
     mind about how long it has waited when NTP steps the clock.  A budget of
     zero or less means no deadline at all, which is what this command did
     before issue #350 and what ``--timeout-s 0`` still asks for.
+
+    Only zero asks for that, so a non-finite budget is refused rather than
+    quietly granted one.  ``NaN`` compares false against everything, so it
+    would leave ``bounded`` false and select the unbounded path without ever
+    saying so; positive infinity would reach ``select`` as an infinite timeout,
+    which is the same waiting-forever this class exists to end.
     """
 
     def __init__(self, timeout_s: float) -> None:
         self.timeout_s = float(timeout_s)
+        if not math.isfinite(self.timeout_s):
+            raise ValueError(
+                f"a deadline must be a finite number of seconds, not {timeout_s!r}")
         self.bounded = self.timeout_s > 0
         self._expires = time.monotonic() + self.timeout_s if self.bounded else None
 
@@ -1567,6 +1576,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     transport = args.transport or default_transport()
     if args.recent < 0:
         parser.error("--recent cannot be negative")
+    # Finiteness first, because ``-inf < 0`` is true and would answer with the
+    # wrong complaint: the fault in ``nan``, ``inf`` and ``-inf`` alike is that
+    # they are not a number of seconds, and only 0 asks for no deadline.
+    if not math.isfinite(args.timeout_s):
+        parser.error("--timeout-s must be a finite number of seconds; "
+                     "0 means no deadline")
     if args.timeout_s < 0:
         parser.error("--timeout-s cannot be negative; 0 means no deadline")
 

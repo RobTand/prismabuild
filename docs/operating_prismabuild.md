@@ -748,7 +748,10 @@ So the run has a deadline.
     does not buy the second one a fresh budget. The default is 10 seconds,
     which is two orders of magnitude longer than a healthy census and shorter
     than a person's patience. `--timeout-s 0` waits indefinitely, which is the
-    behaviour before #350.
+    behaviour before #350, and it is the only value that asks for that: `nan`,
+    `inf` and `-inf` parse as floats and are refused, because NaN would select
+    the unbounded path silently and infinity would reach `select` as the very
+    wait the deadline exists to end.
 *   Each read of the queue root runs in a forked child the parent abandons at
     the deadline. A `stat` on a hard mount need not return at its caller's
     deadline even after a signal, so no in-process timeout -- thread, alarm or

@@ -332,6 +332,36 @@ def test_a_negative_timeout_is_refused(capsys):
     assert "--timeout-s cannot be negative" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "NaN", "Infinity"])
+def test_a_non_finite_timeout_is_refused(value, capsys):
+    """``float()`` accepts these; a deadline cannot.
+
+    Each one defeats the deadline in its own way and none of them says so.
+    ``nan`` compares false against zero, so it selects the unbounded pre-#350
+    path although only ``--timeout-s 0`` is documented to ask for that; ``inf``
+    reaches ``select`` as an infinite wait, which is the hang this command was
+    given a deadline to stop; ``-inf`` is not a duration at all.
+    """
+    with pytest.raises(SystemExit) as raised:
+        pbstatus.main(["--timeout-s", value])
+    assert raised.value.code == 2
+    assert "--timeout-s must be a finite number of seconds" in capsys.readouterr().err
+
+
+def test_the_deadline_itself_refuses_a_non_finite_budget():
+    """The class holds the rule too, not only the flag that usually sets it.
+
+    ``bounded`` is called by this module with whatever a caller constructed,
+    and a ``Deadline`` that silently means "no deadline" is the failure worth
+    refusing loudly.
+    """
+    for value in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError):
+            pbstatus.Deadline(value)
+    assert pbstatus.Deadline(0).bounded is False
+    assert pbstatus.Deadline(0.5).bounded is True
+
+
 def _fake_proc(root: Path, entries, uptime_s: float = 10_000.0) -> Path:
     """A ``/proc`` with the two fields the peer scan reads.
 
