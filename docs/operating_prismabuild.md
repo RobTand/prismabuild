@@ -116,10 +116,31 @@ pass, nothing at a negative priority is considered until every item above it
 has been tried. That is what makes `-10` mean "only when nothing else wants
 the box". Agent self-validation -- test shards, the receipt for a PR, a re-run
 to confirm a fix -- submits there (`pbtest.py --priority -10`, `pbrun.py
---priority -10`) and cannot displace campaign work in the queue. What it can
-still do is keep a reservation it was admitted to until it finishes or hits
-its `--timeout-s`; a foreground item that needs those tokens waits that long.
-Preemption of an admitted background item is not implemented.
+--priority -10`) and cannot displace campaign work in the queue.
+
+It does not hold the box either. When a foreground item (priority >= 0) is
+denied admission and one background holder on that box is running whose tokens,
+released, would let the denied item in, the worker withdraws that holder through
+the ordinary withdrawal ladder and re-publishes it at its own priority. The
+background action is retried later, not lost; its partial output is discarded
+like any withdrawn attempt, and a preemption does not spend one of its
+`max_attempts`. Its aging count survives, so it keeps its place among other
+background work.
+
+The release is not immediate. `withdraw` returns `released 0`: the holder's own
+worker stops the payload and returns the tokens at its next checkpoint, so the
+foreground item is admitted on a later poll rather than on the pass that
+preempted. Four bounds keep the cost honest: only a foreground denial triggers
+it, only a `priority < 0` holder is eligible, only a holder whose release
+actually closes the gap is stopped, and only one at a time -- tokens a
+withdrawing holder is about to return are counted as promised, so a second pass
+does not cancel a second action for the same gap. A holder that cannot be
+stopped through the ladder -- already withdrawing, waiting on cleanup, or on
+another box -- is skipped, never forced.
+
+`pbstatus` shows the cost. The requeued row carries `preempted_by` naming the
+foreground action, and the immutable withdrawal decision under
+`withdrawn/decisions/<key>/<generation>.json` carries it too.
 
 ### SLURM partitions
 

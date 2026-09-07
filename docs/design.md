@@ -67,8 +67,15 @@ considered before that veto is reached. The existing withholding rule still
 protects large items within each band. Priority defaults to 0 and is queue
 metadata outside action identity; `pbtest --priority` forwards it to every
 shard. Agent self-validation uses -10 so queued campaign work at 0 is considered
-first. An admitted background action retains its reservation until completion
-or its execution deadline; queue priority does not preempt running work.
+first. A denied foreground item may also preempt one admitted background holder
+on the same host: the lowest-priority holder whose released tokens would admit
+the denied demand is withdrawn through the existing withdrawal ladder and
+re-published at its original priority and aging count, as a new generation the
+cancellation does not cover. Release is asynchronous, so the denied item is
+admitted on a later pass. Preemption never crosses into the foreground band,
+never stops a holder whose release would not close the gap, and never cancels a
+second holder while a withdrawn one's tokens are still owed. A preempted attempt
+records `preempted_by` and does not consume one of the action's attempts.
 
 The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements

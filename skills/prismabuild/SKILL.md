@@ -67,6 +67,15 @@ a fix -- submits at `--priority -10` (`pbtest.py --priority -10`, `pbrun.py
 that work is considered only after everything at the default priority has been
 tried and never displaces campaign work in the queue. Campaign work stays at 0.
 
+A `-10` action that is already running also yields the box: when a foreground
+item is denied for tokens a background holder is sitting on, that holder is
+withdrawn through the withdrawal ladder and re-published at `-10` with its aging
+count, so it is retried later rather than lost. Expect an agent shard to be
+stopped and requeued when campaign work arrives; keep shards restartable, and
+read `preempted_by` on the requeued row rather than treating the interruption as
+a failure. The stop is not instant -- the holder returns its tokens at its next
+checkpoint -- so shards that are short still cost the campaign least.
+
 GPU work declares `--gpu` or the appropriate GPU demand. The live pool shares
 one physical GPU among generation actions when fresh broker observations show
 headroom; let admission choose concurrency rather than tuning GPU job slots.

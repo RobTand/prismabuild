@@ -40,7 +40,10 @@ structurally rather than by policy:
   declines to admit a smaller one instead of leapfrogging it.  The counter is
   wired to the decision it describes.  Aging stays inside the band: an item
   published at a negative priority yields to everything above it however long
-  it has waited (#362).
+  it has waited (#362), and once admitted it yields the box as well -- a
+  foreground denial withdraws one background holder whose release admits it,
+  through the ordinary withdrawal ladder, and requeues that holder at its own
+  priority (#364).
 * **Partial-hold waste.**  Acquisition is all-or-nothing: a demand that cannot
   be met in full releases every token it took before returning.
 
@@ -1466,6 +1469,23 @@ class ResourceLedger:
                 counts[kind] = counts.get(kind, 0) + 1
         return counts
 
+    def holder_tokens(self, action_key: str) -> dict[str, int]:
+        """Tokens of each kind ONE action holds here.
+
+        :meth:`held` is the box's total; this is one holder's share of it, and
+        it is what says whether releasing that holder closes a denied item's
+        gap.  Counted from the token files rather than from the action's
+        declared demand, because adaptive CPU and GPU admission can seat an
+        action on fewer physical tokens than it asked for: the demand would
+        promise capacity the release does not actually return.
+        """
+
+        counts: dict[str, int] = {}
+        for path in _glob(self.held_dir / action_key, "*-*"):
+            kind = path.name.rsplit("-", 1)[0]
+            counts[kind] = counts.get(kind, 0) + 1
+        return counts
+
     def held_keys(self) -> list[str]:
         """Which actions hold tokens here.
 
@@ -2169,7 +2189,16 @@ class PoolQueue:
                 "withdrawn_by": superseded.get("withdrawn_by"),
                 "withdrawn_host": superseded.get("withdrawn_host"),
                 "reason": superseded.get("reason"),
+                "preempted_by": superseded.get("preempted_by"),
             }
+            if superseded.get("preempted_by") is not None:
+                # Derived from the cancellation, never passed in: a submission
+                # can only claim to be a preemption's requeue if a withdrawal
+                # that said so is the one it is reviving.  Top-level as well as
+                # nested because this is the live row ``pbstatus`` shows once
+                # the marker is retired, and the visible cost of #364 has to be
+                # on it rather than one dereference away.
+                item["preempted_by"] = str(superseded["preempted_by"])
         path = self.item_path(READY, action_key)
         _write_json_atomic(path, item)
         return path
@@ -2920,6 +2949,186 @@ class PoolQueue:
             # failure. No shared record is written as a fallback.
             pass
 
+    def _requeue_arguments(
+        self, record: Mapping[str, object], *, action_key: str
+    ) -> dict[str, object] | None:
+        """The ``publish`` call that re-submits a claim, or ``None``.
+
+        Built BEFORE anything is stopped, because a claim this queue could not
+        re-publish must be left running: a preemption that cannot requeue is a
+        cancellation, and #364 asks for a retry, not a loss.
+
+        One writer, not a second record shape.  ``publish`` stamps a fresh
+        ``published_unix``, and that is the whole reason this works: the
+        withdrawal that stopped the holder names the generation it cancelled,
+        so a new generation of the same content-addressed key is not covered by
+        it -- which ``_claim`` already calls the ordinary way to ask for the
+        same work again.  ``publish`` also starts the attempt count at zero,
+        which is right: a preempted attempt reached no verdict, so it does not
+        spend one of the action's tries.  Its evidence is the withdrawal
+        decision, which is immutable and generation-scoped.
+        """
+
+        addressing: dict[str, object] = {}
+        if record.get("checkout_snapshot") is not None:
+            addressing["checkout_snapshot"] = record["checkout_snapshot"]
+        elif record.get("checkout_root") is not None:
+            addressing["checkout_root"] = record["checkout_root"]
+        else:
+            return None
+        if record.get("cas_root") is None or record.get("worker_script") is None:
+            return None
+        arguments: dict[str, object] = {
+            "action_key": action_key,
+            "cas_root": record["cas_root"],
+            "worker_script": record["worker_script"],
+            "tags": list(record.get("tags") or []),
+            "needs_gpu": bool(record.get("needs_gpu")),
+            "priority": int(record.get("priority", 0)),
+            "resources": dict(record.get("resources") or {}),
+            **addressing,
+        }
+        for field in ("max_attempts", "retry_safe", "container_owner"):
+            if record.get(field) is not None:
+                arguments[field] = record[field]
+        return arguments
+
+    def _preempt_background_holder(
+        self,
+        ledger: ResourceLedger,
+        *,
+        action_key: str,
+        demand: Mapping[str, int],
+        priority: int,
+    ) -> str | None:
+        """Take the box back for a denied foreground item.  Name who yielded.
+
+        #363 put the priority band ahead of aging, so a ``--priority -10`` item
+        is never *considered* while foreground work is ready.  An item already
+        admitted was outside that: it keeps its reservation until it finishes
+        or hits its own ``--timeout-s``, so "does not displace real work" held
+        in the queue and not at the box.  This is the box half (#364).
+
+        The stop is the existing withdrawal ladder, not a new kill path:
+        ``withdraw`` files the immutable cancellation and, on the holding box,
+        asks the broker to stop the exact attempt.  It releases nothing --
+        ``released`` is ``0`` on every path -- so the denied item is admitted on
+        a later pass, once the holder's own ``finish`` returns the tokens.  The
+        requeue is published straight away and simply waits: ``_claim`` skips a
+        ready record whose key is still in ``claimed/``.
+
+        Four bounds, and each is the objective rather than a threshold:
+
+        * **Only a foreground denial.**  Intra-band fairness is aging's job; a
+          background item that cancelled another would spend its own band's
+          work to buy a place in it.
+        * **Only a background holder.**  ``priority < 0`` is the band the
+          producer opted into by saying "only when nothing else wants the box".
+          A campaign action at 0 is not fair game for one at 5.
+        * **Only when the release closes the gap.**  Stopping work that does
+          not admit the denied item is pure loss on both sides.  Measured from
+          the holder's actual tokens, not its declared demand, because adaptive
+          admission can seat an action on fewer.
+        * **One holder, and none while a release is in flight.**  Tokens a
+          withdrawn holder is about to return are counted as already promised,
+          so the next pass does not cancel a second action for the same gap.
+
+        A holder that cannot be stopped through the ladder is skipped, never
+        forced: one already covered by a withdrawal or waiting on cleanup is
+        counted as pending, one whose claim or requeue cannot be read is left
+        alone, and one on another box was never a candidate -- the holders
+        considered here are the ones on this ledger.
+        """
+
+        if priority < 0:
+            return None
+        wanted = {kind: int(need) for kind, need in demand.items() if int(need) > 0}
+        if not wanted:
+            return None
+        try:
+            self._refuse_if_fenced()
+        except PoolContractError:
+            # A fenced queue takes no submissions, so the requeue this owes the
+            # holder could not be published.  Stopping it anyway would turn a
+            # preemption into a cancellation.
+            return None
+
+        available = ledger.available()
+        pending: dict[str, int] = {}
+        candidates: list[tuple[int, float, str, dict[str, object], dict[str, int]]] = []
+        for holder in ledger.held_keys():
+            if holder == action_key:
+                continue
+            tokens = ledger.holder_tokens(holder)
+            if not tokens:
+                continue
+            try:
+                record = _read_json(self.item_path(CLAIMED, holder))
+            except PoolContractError:
+                continue      # a reservation whose claim nobody can read
+            if record is None:
+                # A reservation with no claim belongs to a reaper, not to this
+                # decision.  Neither preemptable nor promised.
+                continue
+            try:
+                covered = self.withdrawal_covers(record, action_key=holder) is not None
+            except PoolContractError:
+                continue
+            if (covered or record.get("finish_pending") is not None
+                    or record.get("container_cleanup_pending") is not None):
+                for kind, count in tokens.items():
+                    pending[kind] = pending.get(kind, 0) + count
+                continue
+            try:
+                holder_priority = int(record.get("priority", 0))
+                claimed_unix = float(record.get("claimed_unix") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if holder_priority >= 0:
+                continue
+            candidates.append(
+                (holder_priority, claimed_unix, holder, record, tokens))
+
+        def fits(extra: Mapping[str, int]) -> bool:
+            return all(
+                available.get(kind, 0) + pending.get(kind, 0)
+                + int(extra.get(kind, 0)) >= need
+                for kind, need in wanted.items()
+            )
+
+        if fits({}):
+            # Enough is already coming back.  Nothing left to stop.
+            return None
+        usable = [entry for entry in candidates if fits(entry[4])]
+        if not usable:
+            return None
+        # Lowest priority first, then the youngest claim: of two holders that
+        # yield equally, the one that has run least loses least by starting over.
+        usable.sort(key=lambda entry: (entry[0], -entry[1]))
+        _, _, holder, record, _ = usable[0]
+
+        requeue = self._requeue_arguments(record, action_key=holder)
+        if requeue is None:
+            return None
+        self.withdraw(
+            holder,
+            reason=(
+                f"preempted on {socket.gethostname()} so foreground action "
+                f"{action_key[:12]} could be admitted; requeued at priority "
+                f"{requeue['priority']}"
+            ),
+            by=f"prismabuild admission on {socket.gethostname()}",
+            preempted_by=action_key,
+        )
+        # Immediately after, and in this order: ``withdraw`` retires a ready
+        # record its own cancellation covers, and ``publish`` retires the
+        # visible marker into ``superseded/`` so the holder's submitter does
+        # not read its requeued action as terminally withdrawn.  The immutable
+        # decision survives that, which is what the holder's own checkpoint and
+        # ``finish`` read.  The aging sidecar is untouched by both.
+        self.publish(**requeue)
+        return holder
+
     def _claim(
         self,
         *,
@@ -2945,6 +3154,12 @@ class PoolQueue:
         eventually fit withholds the host rather than being overtaken; one it
         could never fit is skipped, because withholding a box for work that
         will never run there is the deadlock, not the fix.
+
+        A denied *foreground* item may also take the box back from an admitted
+        background holder -- see :meth:`_preempt_background_holder`, which
+        bounds that to one holder per pass whose release actually admits the
+        denied item.  The stop is asynchronous, so this pass ends exactly as it
+        did before and a later one makes the claim.
 
         ``capacity`` is the box's offer *now*, not its configuration -- a
         worker clamps it to what work the pool did not schedule has left free
@@ -2987,6 +3202,7 @@ class PoolQueue:
         for generation in list(self._cpu_deferrals):
             if generation not in live_generations:
                 self._cpu_deferrals.pop(generation, None)
+        preempted = False
         for item in ready:
             key = str(item.get("action_key", ""))
             with self._transition_locked(key, blocking=False) as acquired:
@@ -3057,12 +3273,21 @@ class PoolQueue:
                         handle = ledger.begin_acquire(key, reservation_demand, adaptive=adaptive,
                                                       cpu_tiers=cpu_tiers,
                                                       adaptive_gpu=adaptive_gpu)
+                        asked = reservation_demand
                     else:
                         handle = (ledger.begin_acquire(key, demand) if adaptive is None else
                                   ledger.begin_acquire(key, demand, adaptive=adaptive,
                                                        cpu_tiers=cpu_tiers))
+                        asked = demand
                     if handle is None:
                         denials = self.record_pass(key)
+                        if not preempted and self._preempt_background_holder(
+                                ledger, action_key=key, demand=asked,
+                                priority=int(item.get("priority", 0))) is not None:
+                            # One per pass.  The tokens come back when the
+                            # holder stops, so this item is admitted on a later
+                            # pass and this one ends exactly as it did before.
+                            preempted = True
                         if (denials >= STARVATION_FLOOR
                                 and self.withhold_age(key) <= WITHHOLD_CEILING_S):
                             # Wired to the decision: stop letting smaller work pass it.
@@ -5496,9 +5721,16 @@ class PoolQueue:
         *,
         reason: str = "",
         by: str = "",
+        preempted_by: str | None = None,
         signal_child: bool = True,
     ) -> dict[str, object]:
         """Cancel one generation; its owner concludes any claimed attempt.
+
+        ``preempted_by`` names the action this cancellation was made for, when
+        it was made by admission rather than by an operator (#364).  It is
+        stamped on the filed record and on the immutable decision, so the cost
+        of a preemption is readable where the ending is, and by a reader that
+        does not have to parse ``reason``.
 
         The immutable generation decision survives a new publication retiring
         the visible withdrawn record. Claimed records, leases and reservations
@@ -5620,6 +5852,8 @@ class PoolQueue:
                     "reason": str(reason),
                 }
             )
+            if preempted_by is not None:
+                filed["preempted_by"] = str(preempted_by)
             filed = self._persist_withdrawal_decision(filed)
             _write_json_atomic(withdrawn_path, filed)
         else:
