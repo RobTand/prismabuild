@@ -75,6 +75,89 @@ def test_stale_offer_and_lease_are_retained_as_uncertain(live_pool):
     assert result['queue']['claimed'] == 2 and result['queue']['live_workers'] == 1
 
 
+@pytest.mark.parametrize("stall_at", ["workers", "ready", "claimed", "admission", "lease", "passes"])
+def test_pool_freshness_uses_the_completed_census(live_pool, tmp_path, monkeypatch, stall_at):
+    key = "c" * 64
+    live_pool.publish(action_key=key, cas_root=tmp_path / "cas",
+                      checkout_root="/mnt/shared/status-fixture",
+                      worker_script=ROOT / "tools/prismabuild_worker.py",
+                      resources={"cpu": 1}, tags=["cpu-box"])
+    live_pool.record_pass(key)
+    started = time.time()
+    for host in ("cpu-box", "gpu-box"):
+        directory = live_pool.ledger(host).base / "adaptive"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "cpu-sample.json").write_text(json.dumps({"sampled_unix": started}))
+    clock = [started]
+    monkeypatch.setattr(pbstatus.time, "time", lambda: clock[0])
+    original_records, original_read = pbstatus._pool_records, pool._read_json
+
+    def stalled_records(directory):
+        result = original_records(directory)
+        if directory.name == stall_at:
+            clock[0] = started + 1000
+        return result
+
+    def stalled_read(path, **kwargs):
+        result = original_read(path, **kwargs)
+        if ((stall_at == "admission" and path.name == "cpu-sample.json")
+                or (stall_at == "lease" and path.suffix == ".lease")
+                or (stall_at == "passes" and path.parent.name == pool.PASSES)):
+            clock[0] = started + 1000
+        return result
+
+    monkeypatch.setattr(pbstatus, "_pool_records", stalled_records)
+    monkeypatch.setattr(pool, "_read_json", stalled_read)
+    result = pbstatus.read_pool(live_pool.root)
+    assert result["queue"]["sampled_unix"] == started + 1000
+    assert result["queue"]["live_workers"] == 0
+    for node in result["nodes"]:
+        assert node["state"] == "stale" and not node["healthy"]
+        assert node["admission"]["cpu"]["state"] == "stale"
+    for job in result["jobs"]:
+        if job["state"] == "READY":
+            assert job["placeable_hosts"] is None
+            assert "placement unknown" in job["reason"]
+        else:
+            assert job["stale"] and job["lease_age_s"] >= 1000
+
+
+@pytest.mark.parametrize("sidecar", ["admission", "lease", "passes"])
+def test_census_sidecar_errors_keep_the_affected_evidence_unknown(
+    live_pool, tmp_path, monkeypatch, sidecar,
+):
+    key = "c" * 64
+    live_pool.publish(action_key=key, cas_root=tmp_path / "cas",
+                      checkout_root="/mnt/shared/status-fixture",
+                      worker_script=ROOT / "tools/prismabuild_worker.py")
+    denied = {
+        "admission": live_pool.ledger("cpu-box").base / "adaptive" / "cpu-sample.json",
+        "lease": live_pool.lease_path("a" * 64),
+        "passes": live_pool.passes_path(key),
+    }[sidecar]
+    original_read = pool._read_json
+
+    def unreadable(path, **kwargs):
+        if path == denied:
+            raise PermissionError("fixture sidecar denied")
+        return original_read(path, **kwargs)
+
+    monkeypatch.setattr(pool, "_read_json", unreadable)
+    result = pbstatus.read_pool(live_pool.root)
+    if sidecar == "admission":
+        node = next(n for n in result["nodes"] if n["node"] == "cpu-box")
+        assert node["admission"]["cpu"]["state"] == "unavailable"
+        assert "fixture sidecar denied" in node["admission"]["cpu"]["note"]
+    else:
+        affected = "a" * 64 if sidecar == "lease" else key
+        row = next(j for j in result["jobs"] if j["action_key"] == affected)
+        assert row["state"] == "UNREADABLE"
+        assert "fixture sidecar denied" in row["reason"]
+        assert result["queue"]["claimed" if sidecar == "lease" else "ready"] is None
+        assert result["queue"]["empty"] is None
+    assert next(j for j in result["jobs"] if j["action_key"] == "b" * 64)["state"] == "CLAIMED"
+
+
 def test_empty_pool_is_distinct_from_missing_or_unreadable_state(tmp_path, monkeypatch):
     root = tmp_path / 'empty'
     queue = pool.PoolQueue(root)

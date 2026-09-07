@@ -52,6 +52,10 @@ scan. An offer that expires during any read is excluded, including an offer
 read before a later file stalls. Shared filesystem I/O itself remains
 synchronous and has no caller deadline; this expiry rule does not bound a
 queue read or repair an NFS client stall (issue #16).
+The pool status census likewise collects active records and admission, lease,
+and denial sidecars before deriving worker/sample freshness and placement. Its
+`sampled_unix` is the time that collection finished; it remains a non-atomic
+diagnostic snapshot, not a process-liveness or storage-recovery guarantee.
 
 The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements

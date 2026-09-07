@@ -521,17 +521,36 @@ def _age(timestamp: object, now: float) -> float | None:
     return now - timestamp
 
 
-def _admission_sample(path: Path, *, now: float, max_age_s: float) -> dict:
-    """Read persisted evidence only; controller decisions can write state."""
+def _pool_sidecar(path: Path) -> dict | None | Exception:
+    """Retain read failures for the row that owns this observation."""
     try:
-        record = pool._read_json(path)
-        if record is None:
-            return {"state": "unavailable", "note": "no sample recorded"}
-        age = _age(record.get("sampled_unix"), now)
-        return {"state": "fresh" if age is not None and 0 <= age <= max_age_s else "stale",
-                "age_s": age, "record": record}
+        return pool._read_json(path)
     except (OSError, ValueError) as exc:
-        return {"state": "unavailable", "note": str(exc)}
+        return exc
+
+
+def _admission_sample(record: dict | None | Exception, *, now: float, max_age_s: float) -> dict:
+    """Classify persisted evidence after every census read has finished."""
+    if isinstance(record, Exception):
+        return {"state": "unavailable", "note": str(record)}
+    if record is None:
+        return {"state": "unavailable", "note": "no sample recorded"}
+    age = _age(record.get("sampled_unix"), now)
+    return {"state": "fresh" if age is not None and 0 <= age <= max_age_s else "stale",
+            "age_s": age, "record": record}
+
+
+def _valid_pool_offer(host: str, offer: dict | None) -> bool:
+    return (offer is not None and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', host) is not None
+            and offer.get("schema") == pool.POOL_OFFER_SCHEMA_V1
+            and offer.get("host") == host and isinstance(offer.get("capacity"), dict)
+            and isinstance(offer.get("tags"), list)
+            and all(type(v) is int and v >= 0 for v in offer['capacity'].values()))
+
+
+def _valid_pool_item(key: str, record: dict | None) -> bool:
+    return (record is not None and re.fullmatch('[a-f0-9]{64}', key) is not None
+            and record.get('action_key') == key and record.get('schema') == pool.POOL_ITEM_SCHEMA_V1)
 
 
 def read_pool(queue_root: str | Path) -> dict:
@@ -539,22 +558,33 @@ def read_pool(queue_root: str | Path) -> dict:
 
     This is a non-atomic diagnostic census, never a new admission decision.
     File errors retain unknown counts and unreadable rows. PoolQueue supplies
-    the resource, placement, denial-count and lease rules used by workers.
+    the resource and placement rules used by workers. Read all sidecars before
+    sampling time, so a later stalled read cannot extend any earlier lifetime.
     """
     queue = pool.PoolQueue(Path(queue_root).absolute())
-    now = time.time()
     workers, worker_notes = _pool_records(queue.root / pool.WORKERS)
     ready, ready_notes = _pool_records(queue.dir(pool.READY))
     claimed, claim_notes = _pool_records(queue.dir(pool.CLAIMED))
+    admission = {}
+    for host, offer in workers.items():
+        if _valid_pool_offer(host, offer):
+            base = queue.ledger(host).base / 'adaptive'
+            admission[host] = {
+                'cpu': _pool_sidecar(base / 'cpu-sample.json'),
+                'gpu': _pool_sidecar(base / 'gpu-state.json') if offer.get('has_gpu') else None,
+            }
+    sidecars = {}
+    for state, records in ((pool.READY, ready), (pool.CLAIMED, claimed)):
+        for key, record in records.items():
+            if _valid_pool_item(key, record):
+                path = queue.passes_path(key) if state == pool.READY else queue.lease_path(key)
+                sidecars[state, key] = _pool_sidecar(path)
+    now = time.time()
     notes = [*worker_notes, *ready_notes, *claim_notes]
     nodes: list[dict] = []
     live: list[dict] = []
     for host, offer in workers.items():
-        if (offer is None or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', host) is None
-                or offer.get("schema") != pool.POOL_OFFER_SCHEMA_V1
-                or offer.get("host") != host or not isinstance(offer.get("capacity"), dict)
-                or not isinstance(offer.get("tags"), list)
-                or any(type(v) is not int or v < 0 for v in offer['capacity'].values())):
+        if not _valid_pool_offer(host, offer):
             nodes.append({"node": host, "state": "unreadable", "healthy": False,
                           "reason": "invalid worker offer"})
             notes.append(f"pool worker {host}: invalid worker offer")
@@ -565,7 +595,6 @@ def read_pool(queue_root: str | Path) -> dict:
             live.append(offer)
         else:
             notes.append(f"pool worker {host}: stale or invalid offer timestamp")
-        base = queue.ledger(host).base / 'adaptive'
         nodes.append({
             "node": host, "transport": "pool", "state": "live" if fresh else "stale",
             "healthy": fresh, "age_s": age, "capacity": offer.get("capacity"),
@@ -579,9 +608,9 @@ def read_pool(queue_root: str | Path) -> dict:
             "timeout_ceiling_s": offer.get("timeout_ceiling_s"),
             "reason": None if fresh else "offer expired or timestamp invalid",
             "admission": {
-                "cpu": _admission_sample(base / 'cpu-sample.json', now=now,
+                "cpu": _admission_sample(admission[host]['cpu'], now=now,
                                          max_age_s=pool.cpu_admission.MAX_SAMPLE_AGE_S),
-                "gpu": _admission_sample(base / 'gpu-state.json', now=now,
+                "gpu": _admission_sample(admission[host]['gpu'], now=now,
                                          max_age_s=pool.gpu_admission.MAX_SAMPLE_AGE_S)
                        if offer.get('has_gpu') else {"state": "not applicable"},
             },
@@ -594,21 +623,26 @@ def read_pool(queue_root: str | Path) -> dict:
             row = {"action_key": key, "action_key_prefix": key[:12], "transport": "pool",
                    "state": state.upper(), "node": None, "reason": None}
             try:
-                if (record is None or re.fullmatch('[a-f0-9]{64}', key) is None
-                        or record.get('action_key') != key or record.get('schema') != pool.POOL_ITEM_SCHEMA_V1):
+                if not _valid_pool_item(key, record):
                     raise ValueError('invalid action record')
+                sidecar = sidecars[state, key]
+                if isinstance(sidecar, Exception):
+                    raise sidecar
                 row.update(resources=queue.demand_of(record), constraint=record.get('tags'),
                            submitted_host=record.get('published_by'),
                            unstarted_releases=_releases(record),
                            age_s=_age(record.get('claimed_unix') if state == pool.CLAIMED
                                       else record.get('published_unix'), now))
                 if state == pool.READY:
+                    denial = sidecar or {}
+                    count, first = denial.get('passes', 0), denial.get('first_unix')
                     hosts = sorted({str(offer['host']) for offer in queue._matching_offers(record, live=live)})
                     if pool.is_box_local_path(record.get('checkout_root')):
                         hosts = [host for host in hosts if host == record.get('published_by')]
                     row.update(placeable_hosts=hosts if live else None,
-                               admission_passes=queue.passes(key),
-                               admission_wait_s=queue.withhold_age(key))
+                               admission_passes=int(count) if isinstance(count, (int, float)) else 0,
+                               admission_wait_s=max(0.0, now - float(first))
+                               if isinstance(first, (int, float)) else 0.0)
                     row['reason'] = ('no fresh worker offers; placement unknown' if not live
                                      else 'no matching live worker' if not hosts
                                      else 'awaiting admission; matching worker capacity is not a grant')
@@ -638,7 +672,10 @@ def read_pool(queue_root: str | Path) -> dict:
                                cleanup_attempts=record.get('container_cleanup_attempts'),
                                cleanup_pending_s=_age(
                                    record.get('container_cleanup_first_failed_unix'), now))
-                    age = queue.lease_age(key)
+                    beat = None if sidecar is None else sidecar.get('heartbeat_unix')
+                    if sidecar is not None and not isinstance(beat, (int, float)):
+                        raise pool.PoolContractError(f"lease has no heartbeat: {key}")
+                    age = None if sidecar is None else now - float(beat)
                     row['lease_age_s'] = age
                     row['stale'] = age is None or not math.isfinite(age) or not 0 <= age <= pool.LEASE_TIMEOUT_S
                     if row['stale']:
