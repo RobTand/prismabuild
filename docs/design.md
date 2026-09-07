@@ -1599,3 +1599,8 @@ top-level `complete` flag covers all these cases. Terminal directory read
 failures are unavailable sections; an unreadable terminal record retains its
 diagnostic row and names its path in `unavailable_sections`. Missing terminal
 directories remain valid for transports that have not filed outcomes.
+
+A bounded status reader belongs to its calling process. SIGINT/SIGTERM unwind
+through bounded pipe closure and exact-child termination/reaping; failed
+termination retains PID/starttime evidence, including on cancellation. Reader
+EOF does not by itself prove process exit. SIGKILL cannot execute cleanup.

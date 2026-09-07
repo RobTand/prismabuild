@@ -805,6 +805,9 @@ So the run has a deadline.
     short grace, because a timeout alone proves nothing about reaping. A child
     that does not exit is recorded in `abandoned_children` by PID *and*
     `starttime`, since a PID alone is reusable and therefore not an identity.
+    SIGINT or SIGTERM aimed at the parent also closes its pipe and attempts
+    the same bounded cleanup; surviving reader identities are printed to stderr
+    even when cancellation prevents a JSON report. SIGKILL cannot run cleanup.
     At most one queue-root child is left behind per run: the shared budget
     means an expiry in one section leaves nothing for the next.
 *   On start the run counts other `pbstatus` processes on the box already in

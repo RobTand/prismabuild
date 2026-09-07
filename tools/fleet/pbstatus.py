@@ -58,6 +58,7 @@ from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import pool, slurm_lane as sl  # noqa: E402
+from prismabuild.core import _sigterm_unwinds_this_process  # noqa: E402
 
 #: Where the fleet keeps the queue both transports file their endings in.  The
 #: same spelling ``pbrun``, ``pool_reset`` and ``tessera_status`` use.
@@ -1430,9 +1431,38 @@ def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
     if remaining <= 0:
         return {"status": "timed_out", "elapsed_s": 0.0, "started": False}
 
+    # Reuse the worker's signal unwinding contract so a signal aimed only at
+    # this parent still reaches the exact reader it owns through cleanup.
+    with _sigterm_unwinds_this_process():
+        return _bounded_reader(section, read, deadline=deadline,
+                               abandoned=abandoned, cap_s=cap_s)
+
+
+def _stop_reader(pid: int, section: str, started: float, abandoned: list) -> None:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    if not _reap_within(pid, KILL_GRACE_S):
+        child = {"section": section, "pid": pid,
+                 "starttime_ticks": _starttime_ticks(pid),
+                 "since_unix": round(time.time() - (time.monotonic() - started), 3)}
+        abandoned.append(child)
+        # Also report ownership during cancellation, when main cannot emit JSON.
+        print(f"pbstatus: retained reader {json.dumps(child, sort_keys=True)}",
+              file=sys.stderr)
+
+
+def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
+                    cap_s: float | None) -> dict:
     read_fd, write_fd = os.pipe()
     started = time.monotonic()
-    pid = os.fork()
+    try:
+        pid = os.fork()
+    except BaseException:
+        os.close(read_fd)
+        os.close(write_fd)
+        raise
     if pid == 0:                                   # child
         code = 1
         try:
@@ -1464,64 +1494,56 @@ def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
             # to run.
             os._exit(code)
 
-    os.close(write_fd)
-    chunks: list[bytes] = []
-    saw_eof = False
-    while True:
-        left = deadline.remaining() or 0.0
-        if cap_s is not None:
-            left = min(left, cap_s - (time.monotonic() - started))
-        if left <= 0:
-            break
-        try:
-            ready, _, _ = select.select([read_fd], [], [], left)
-        except OSError:
-            break
-        if not ready:
-            break
-        try:
-            chunk = os.read(read_fd, 65536)
-        except OSError:
-            break
-        if not chunk:
-            saw_eof = True
-            break
-        chunks.append(chunk)
+    reaped = False
     try:
-        os.close(read_fd)
-    except OSError:
-        pass
-    elapsed = time.monotonic() - started
+        os.close(write_fd)
+        chunks: list[bytes] = []
+        saw_eof = False
+        while True:
+            left = deadline.remaining() or 0.0
+            if cap_s is not None:
+                left = min(left, cap_s - (time.monotonic() - started))
+            if left <= 0:
+                break
+            try:
+                ready, _, _ = select.select([read_fd], [], [], left)
+            except OSError:
+                break
+            if not ready:
+                break
+            try:
+                chunk = os.read(read_fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                saw_eof = True
+                break
+            chunks.append(chunk)
+        elapsed = time.monotonic() - started
 
-    # EOF is the only proof the payload is whole.  A census can be larger than
-    # the pipe buffer, so "some bytes arrived" is compatible with a child that
-    # is still writing, and reporting that as a parse error would file a mount
-    # timeout under the wrong cause.
-    if saw_eof and chunks:
-        _reap_within(pid, KILL_GRACE_S)
+        # EOF is the only proof the payload is whole.  A census can be larger than
+        # the pipe buffer, so "some bytes arrived" is compatible with a child that
+        # is still writing, and reporting that as a parse error would file a mount
+        # timeout under the wrong cause.
+        if saw_eof and chunks:
+            reaped = _reap_within(pid, KILL_GRACE_S)
+            try:
+                return json.loads(b"".join(chunks).decode("utf-8"))
+            except ValueError as exc:
+                return {"status": "error", "type": "ValueError",
+                        "error": f"unreadable {section} payload: {exc}"}
+        if saw_eof:
+            reaped = _reap_within(pid, KILL_GRACE_S)
+            return {"status": "error", "type": "RuntimeError",
+                    "error": f"the {section} reader exited without a payload"}
+
+        return {"status": "timed_out", "elapsed_s": round(elapsed, 3), "started": True}
+    finally:
         try:
-            return json.loads(b"".join(chunks).decode("utf-8"))
-        except ValueError as exc:
-            return {"status": "error", "type": "ValueError",
-                    "error": f"unreadable {section} payload: {exc}"}
-    if saw_eof:
-        _reap_within(pid, KILL_GRACE_S)
-        return {"status": "error", "type": "RuntimeError",
-                "error": f"the {section} reader exited without a payload"}
-
-    # Nothing whole came back in time.  ``SIGKILL`` stops a runnable child and
-    # some killable kernel waits; an uninterruptible one may remain, and a
-    # timeout is not a reaping proof.  Verify, and retain ownership of what
-    # did not exit.
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
-    if not _reap_within(pid, KILL_GRACE_S):
-        abandoned.append({"section": section, "pid": pid,
-                          "starttime_ticks": _starttime_ticks(pid),
-                          "since_unix": round(time.time() - elapsed, 3)})
-    return {"status": "timed_out", "elapsed_s": round(elapsed, 3), "started": True}
+            os.close(read_fd)
+        finally:
+            if not reaped:
+                _stop_reader(pid, section, started, abandoned)
 
 
 def _starttime_ticks(pid: int) -> int | None:
