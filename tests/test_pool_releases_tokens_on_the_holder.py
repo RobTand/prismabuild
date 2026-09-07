@@ -158,25 +158,26 @@ def test_the_reaper_gains_no_capacity_it_never_had(
     assert queue.ledger().held() == {}
 
 
-def test_an_unknown_holder_releases_nowhere_it_can_name(
+def test_the_ledger_closes_the_case_the_marker_could_not(
     queue: pool.PoolQueue,
 ) -> None:
-    """No marker, no holder, no invention.
+    """Without the marker the holder is still known, and is still credited.
 
-    Without the intent marker the window leaves nothing that names a box, and
-    the honest answer is the one the queue already gives: fall back to the
-    local ledger, where the release finds nothing and moves nothing.
+    This test used to assert the opposite, and its reasoning was sound while
+    the marker was the only evidence: no marker, no name, tokens stranded
+    until an operator returned them by hand.  ``sweep_stale_acquisitions``
+    frees only tokens a claimant took and never committed -- private
+    ``begin_acquire`` directories -- and these are committed under
+    ``held/<key>``, the exact shape its own docstring says the release by key
+    cannot see; ``reclaim_terminal_reservation`` refuses too, wanting a single
+    terminal ``done`` record whose ``finished_host`` equals the holder.
 
-    Those tokens stay stranded, and no automatic path returns them.
-    ``sweep_stale_acquisitions`` frees tokens a claimant took and *never*
-    committed -- private ``begin_acquire`` directories -- and these are
-    committed under ``held/<key>``, the exact shape its own docstring says
-    ``reap_stale``'s release by key cannot see.  ``reclaim_terminal_reservation``
-    refuses too: it wants a single terminal ``done`` record whose
-    ``finished_host`` equals the holder, and a reaped claim either has no
-    terminal at all or names the reaper there.  So an operator returns them by
-    hand.  That is the cost of the missing marker, and it is not a reason to
-    guess a holder here.
+    What changed is that the recovery stopped reading a proxy.  The marker is
+    written *before* the rename that decides ownership; the committed
+    reservation is that rename's own effect, and ``commit_acquire`` is called
+    by the winner and by nobody else.  So ``reservations/<host>/held/<key>/``
+    names the holder exactly, with no marker involved, and #272 made
+    ``resolve_claim_holder`` read it first.
     """
 
     _publish(queue)
@@ -185,9 +186,30 @@ def test_an_unknown_holder_releases_nowhere_it_can_name(
 
     _reap_here(queue)
 
+    assert queue.ledger(HELD_BY).held() == {}
+    assert queue.ledger(HELD_BY).available() == DEMAND
     assert queue.ledger().capacity() == {}, "the reaper invented a holder"
-    assert queue.ledger(HELD_BY).held() == DEMAND, (
-        "tokens moved against a ledger nothing named")
+
+
+def test_with_no_evidence_at_all_no_holder_is_invented(
+    queue: pool.PoolQueue,
+) -> None:
+    """Neither marker nor reservation, and still no guess.
+
+    Both are written by the same ``claim``, so a real window always leaves at
+    least one; removing both is how the fallback itself gets tested.  The
+    answer must stay "nobody said", never the box that happens to be asking.
+    """
+
+    _publish(queue)
+    _lose_the_record_rewrite(queue)
+    queue.item_path(pool.INTENT, KEY).unlink()
+    assert queue.ledger(HELD_BY).release(KEY) == 1
+
+    _reap_here(queue)
+
+    assert queue.ledger().capacity() == {}, "the reaper invented a holder"
+    assert queue.ledger(HELD_BY).held() == {}
 
 
 def test_a_claim_already_filed_elsewhere_still_credits_its_holder(
