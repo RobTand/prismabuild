@@ -1623,3 +1623,29 @@ The assembler uses the producer's checked merge and revalidates part bytes.
 Per-worker source-hash reuse requires unchanged filesystem identity and matching
 expected digests, with before/after export checks. It is cooperative cache
 validation, not a claim of hostile-writer immutability or cross-action residency.
+
+### Status census completeness
+
+`pbstatus` exits 3 when required queue reads time out or fail, active pool
+records are unreadable, or selected terminal records cannot be parsed. Its
+top-level `complete` flag covers all these cases. Terminal directory read
+failures are unavailable sections; an unreadable terminal record retains its
+diagnostic row and names its path in `unavailable_sections`. Missing terminal
+directories remain valid for transports that have not filed outcomes.
+
+A bounded status reader belongs to its calling process. SIGINT/SIGTERM unwind
+through bounded pipe closure and exact-child termination/reaping; failed
+termination retains PID/starttime evidence, including on cancellation. Reader
+EOF does not by itself prove process exit. SIGKILL cannot execute cleanup.
+
+The status read budget starts before default transport metadata is opened. A
+failed lookup reports unknown transport and incomplete status rather than
+guessing a scheduler. Script imports, output delivery, cleanup grace, and the
+explicit SLURM scheduler/lane lookups are outside this pool census budget.
+
+The empty-endings root diagnostic propagates filesystem errors to the bounded
+census, so an error rendered as a note still makes the top-level read incomplete.
+
+These completeness checks use explicit stat calls, preserving ENOENT as missing
+and permission/I/O errors as unavailable. Boolean pathlib predicates are not
+evidence of absence because Python 3.14 suppresses OSError in them.
