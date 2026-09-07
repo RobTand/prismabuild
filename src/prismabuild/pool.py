@@ -2413,6 +2413,7 @@ class PoolQueue:
             scope.started = started
         return scope
 
+    @_serialized_key
     def _recover_resource_scope_creation(self, record: Mapping[str, object]) -> bool:
         """Reconcile durable pre-create identity; never create a kernel group."""
         intent = record.get("resource_scope_intent")
@@ -2473,6 +2474,7 @@ class PoolQueue:
             return "memory_limit_oom"
         return None
 
+    @_serialized_key
     def _start_resource_scope(self, item: Mapping[str, object]) -> resource_scope.ResourceScope:
         key = str(item["action_key"])
         request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
@@ -2545,6 +2547,7 @@ class PoolQueue:
             raise
         return scope
 
+    @_serialized_key
     def cleanup_action_containers(
         self, record: Mapping[str, object], *, reason: str = "completion"
     ) -> dict[str, object]:

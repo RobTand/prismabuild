@@ -772,7 +772,9 @@ def _unreadable_row(entry: os.DirEntry, reason: str) -> dict:
     except OSError:
         mtime = 0.0
     return {
-        "action_key": entry.name[:-5],
+        "action_key": (Path(entry.path).parent.name
+                       if Path(entry.path).parent.parent.name == "decisions"
+                       else entry.name[:-5]),
         "status": "unreadable",
         "transport": UNKNOWN,
         "host": None,

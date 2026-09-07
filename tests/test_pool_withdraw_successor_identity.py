@@ -179,6 +179,7 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
     import pbrun
     import pbstatus
+    import pbwait
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.publish(action_key=KEY, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py")
@@ -197,6 +198,7 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
         queue.withdraw(KEY)
     assert queue.claim() is None
     assert queue.find_key(KEY[:12]) == KEY
+    assert pbwait.resolve_key(queue, KEY[:12], lane_root=tmp_path / "slurm") == KEY
     path, ending = pbrun.landed_outcome(
         queue, KEY, wait_s=0, generation=original["published_unix"])
     assert ending["status"] == "withdrawn"
