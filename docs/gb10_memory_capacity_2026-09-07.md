@@ -1,7 +1,8 @@
 # GB10 memory capacity for full calibration capture
 
-Rob authorized a 96 GiB aggregate memory budget on both GB10 workers in
-[issue #322](https://github.com/RobTand/prismabuild/issues/322). The previous
+Rob authorized increasing the memory limits. The root reviewer selected a
+96 GiB aggregate budget on both GB10 workers from the measured headroom,
+as recorded in [issue #322](https://github.com/RobTand/prismabuild/issues/322). The previous
 versioned ceilings were 72 GiB on sparky and 80 GiB on sparklina (the
 `gx10-6b77` configuration entry with its explicit alias).
 
