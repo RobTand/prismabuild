@@ -707,16 +707,17 @@ def test_snapshot_execution_is_isolated_from_midrun_submitter_mutation(
     )
     cas.publish_action_request(action)
     worker = Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py"
-    item = {
-        "action_key": action["action_key"],
-        "cas_root": str(cas_root),
+    queue.publish(
+        action_key=action["action_key"],
+        cas_root=cas_root,
         # Kept deliberately: the unfixed transport ignores checkout_snapshot
         # and executes this mutable path, making the regression behavioral.
-        "checkout_root": str(source),
-        "checkout_snapshot": snapshot,
-        "worker_script": str(worker),
-        "claimed_by": "test-worker",
-    }
+        checkout_root=source,
+        checkout_snapshot=snapshot,
+        worker_script=worker,
+    )
+    item = queue.claim(owner="test-worker")
+    assert item is not None
     mutated: list[bool] = []
 
     def mutate_after_preflight() -> None:

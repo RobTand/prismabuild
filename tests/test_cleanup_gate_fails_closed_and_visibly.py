@@ -174,16 +174,17 @@ def test_the_reapers_own_retries_are_counted_and_dated(scoped, monkeypatch):
     assert second["container_cleanup_checked_unix"] >= began
 
 
-def test_withdrawing_an_unprovable_claim_counts_its_attempt_too(scoped, monkeypatch):
-    # Three sites retain a claim on unproven cleanup, and a count only two of
-    # them increment measures nothing.
+def test_withdrawal_cleanup_is_counted_by_the_recovering_owner(scoped, monkeypatch):
     queue, item, calls = scoped
     _process(monkeypatch, queue, item, calls)
     queue.execute(item, containment=True)
     _fails_cleanup(monkeypatch, RuntimeError("broker unreachable"))
     key = item["action_key"]
 
+    original = _claimed_record(queue, key)
     queue.withdraw(key, by="an operator", reason="testing")
+    assert _claimed_record(queue, key) == original
+    queue.reap_stale(timeout_s=-1)
 
     assert _claimed_record(queue, key)["container_cleanup_attempts"] == 1
 

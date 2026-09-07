@@ -170,41 +170,21 @@ def test_a_finisher_that_died_holding_the_claim_keeps_its_outcome(
 def test_a_withdrawn_claim_is_never_released_back_into_the_queue(
     queue: pool.PoolQueue,
 ) -> None:
-    """A release does not charge an attempt, so the limit cannot close it.
-
-    ``withdraw`` cancels a live claim by writing ``max_attempts: 1`` onto the
-    claimed record, so that any reaper -- including one running pre-withdraw
-    bytes, which consults no marker -- concludes the action rather than
-    requeueing it.  A release is not counted against that limit, so it would
-    walk straight past the operator's decision and put the action back.  The
-    withdrawal stamp sits on the record beside the limit, which is what makes
-    it readable without the marker.
-    """
+    """Durable cancellation prevents an unstarted release after marker retirement."""
 
     _publish(queue, max_attempts=3, retry_safe=True)
-    assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
+    claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
+    assert claimed is not None
+    original = queue.item_path(pool.CLAIMED, KEY).read_bytes()
+    queue.withdraw(KEY, signal_child=False)
+    assert queue.item_path(pool.CLAIMED, KEY).read_bytes() == original
 
-    real_ledger = queue.ledger
-    captured: dict = {}
-
-    def capture(host=None):                   # type: ignore[no-untyped-def]
-        if not captured:
-            captured.update(
-                json.loads(queue.item_path(pool.CLAIMED, KEY).read_text()))
-        return real_ledger(host)
-
-    with mock.patch.object(queue, "ledger", capture):
-        queue.withdraw(KEY, signal_child=False)
-    assert captured["max_attempts"] == 1, "the retry was not closed"
-    assert captured.get("withdrawn_unix") is not None, "no stamp to read"
-
-    # What a box dying inside ``withdraw`` leaves behind: the stamped claim,
-    # and no lease, because the payload it cancelled is not heartbeating.
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, KEY), captured)
+    # A later publication may retire the summary while the cancelled holder
+    # is still stopping. Its immutable generation decision remains authoritative.
+    queue._supersede_withdrawal(KEY)
     queue.lease_path(KEY).unlink(missing_ok=True)
-    # A reaper that cannot see the marker, which is the case the stamp is for.
     blind = pool.PoolQueue(queue.root)
-    blind.withdrawn_keys = lambda: frozenset()   # type: ignore[method-assign]
+    assert blind.withdrawn_keys() == frozenset()
 
     later = pool._now() + pool.LEASE_TIMEOUT_S
     with mock.patch.object(pool, "_now", lambda: later):
@@ -213,8 +193,9 @@ def test_a_withdrawn_claim_is_never_released_back_into_the_queue(
     assert not queue.item_path(pool.READY, KEY).exists(), (
         "an action the operator cancelled was released back into the queue"
     )
-    filed = json.loads(queue.item_path(pool.FAILED, KEY).read_text())
-    assert filed["status"] == "lease_lost_max_attempts"
+    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert queue.ledger().held() == {}
+    assert queue.withdrawal_covers(claimed)["status"] == "withdrawn"
 
 
 def test_a_claim_lost_before_its_record_was_rewritten_is_released(
