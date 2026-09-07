@@ -122,3 +122,111 @@ rather than a signal or a `D` state alone, decides whether cleanup occurred.
 Validation for this follow-up was read-only process, code, queue, journal and
 telemetry inspection plus review of the prose diff. No tests were run for
 these documentation/comment-only edits; no runtime behavior changed.
+
+## Later diagnosis and scoped recovery, 14:40–14:51 UTC
+
+This later evidence supersedes the earlier diagnostic and recovery limits.
+The operator authorized temporary, isolated tracefs instances and read-only
+kernel-memory inspection. Docker's default AppArmor policy caused the earlier
+inspection denials; an authorized diagnostic container with explicit capabilities
+and read-only bindings could read the existing kernel state. No kernel memory,
+mount configuration, server service, or client-expiry control was changed.
+
+The installed Sparky kernel's `__nfs_lookup_revalidate+0xd4` waits on a dentry's
+`d_fsdata == NFS_FSDATA_BLOCKED`. This is a local uninterruptible wait for a
+pending rename/unlink to finish. The installed unblock code already contains
+the ordering barrier and `wake_up_var`; this incident does not establish the
+historical missing-barrier bug as its cause.
+
+Read-only BTF-offset and `/proc/kcore` inspection identified the sole remaining
+RPC task, debug ID **62544**, as an asynchronous rename owned by original worker
+PID 3315675:
+
+```text
+reservations/sparky/adaptive/.cpu-sample.json.3315675.4c19366e55fc418c8dc32b3925052a16.tmp
+  -> reservations/sparky/adaptive/cpu-sample.json
+```
+
+Its target dentry had `d_fsdata=1`, and `nfs_renamedata.cancelled=1`. The original
+rename was already stalled before the worker was killed: cancellation did not
+establish the initial cause. It left an asynchronous operation alive whose
+completion still controlled the replacement worker's lookup. The NFS client
+had `cl_state=0`, no occupied session slots, and advancing lease renewals.
+The RPC retried from `rpc_prepare_task` on `delayq`.
+
+A separate 35-second trace instance, filtered to that exact old/new filename
+pair, captured two completions **15.359 seconds apart** with error **-10008**:
+NFSv4 `NFS4ERR_DELAY` (the generic NFS trace renders its legacy name `JUKEBOX`).
+This is a retry response, not evidence of an absent transport or session slot.
+Server state then established the conflict:
+
+| Server inode | State | Delegation owner |
+|---|---|---|
+| `00:36:874593`, `adaptive/cpu-sample.json` | `DELEG BREAKING UNLCK`, read delegation | client 9, Sparklina `10.100.99.2`, stateid `0000000121c79d6a9fdaa64bf7874200` |
+| `00:36:854449`, `workers/dl380g10.json` | `DELEG BREAKING UNLCK`, read delegation | client 9, stateid `0000000121c79d6a9fdaa64bc9bc4500` |
+
+Sparklina retained both matching delegations with only the `REFERENCED` flag,
+without `RETURN` or `RETURNING`. Its NFS client state was zero and it had no
+outstanding RPC tasks. The server reported the callback channel UP and current
+renewals but no outstanding callback RPC tasks. Why these breaking delegations
+had not been returned remains unresolved; the snapshots do not establish where
+the recall was lost. Client expiry would have revoked 1,015 read delegations,
+59 write delegations, and 490 read opens in this snapshot, so it was not used.
+
+The narrower recovery uses the normal Linux NFS open path. In
+[`nfs4proc.c` at v6.17](https://github.com/torvalds/linux/blob/v6.17/fs/nfs/nfs4proc.c),
+`_nfs4_do_open` calls `nfs4_return_incompatible_delegation` before OPEN. An
+existing read delegation cannot satisfy `FMODE_WRITE`, so this path performs
+DELEGRETURN. On Sparklina, the operator verified regular-file device/inode
+identity, then opened each of the two authorized paths with
+`O_WRONLY | O_CLOEXEC | O_NOFOLLOW` and immediately closed the descriptor.
+There was no create, truncate, data write, rename, unlink, or chmod in the
+recovery script.
+
+At **14:49:12.882 UTC**, the CPU-sample open completed in **0.561 ms**. Its
+immediate before/after inode, size, mtime and SHA-256 were unchanged:
+`e1664e7e1cee7102d6897fb83ebce0da4e0976721d0e346e3cbfb168c0ca294f`.
+The owner-side trace captured DELEGRETURN **error=0** for inode 874593. The
+Sparky trace then captured the original rename **error=0**. Replacement worker
+3473413, which had a pending SIGKILL by this stage, exited; both its local
+admission FLOCK and NFS transition lock disappeared. No further signal was
+needed for this recovery.
+
+At **14:49:46.108 UTC**, the worker-offer path was still breaking and received
+the same scoped open/close. Resumed server-local PrismaBuild writers replaced
+inode 854449 during that call; the opened inode was already 855626. Its
+immediate post-read returned `ESTALE` amid those replacements, which is retained
+as a failed verification attempt, not represented as a pass. A subsequent
+normal read succeeded with a current `announced_unix` value. No owner-side
+DELEGRETURN trace was retained for this second call because its trace window
+had ended.
+
+Final direct Sparky reads of the exact CPU-sample and DL380 worker-offer paths
+completed in **0.216 ms** and **1.399 ms** respectively. The CPU sample had a
+new current writer timestamp and different inode/bytes after resumed PB
+updates; these were not bytes written by the recovery open. `/proc/3473413`
+was absent, both recorded lock inodes were absent from `/proc/locks`, and the
+original RPC task was gone. The server no longer reported any BREAKING
+delegation in the final snapshot. Both original NFS clients 7 and 9 remained
+confirmed. The isolated trace instances were removed and existing global and
+rasdaemon tracing was preserved. The coordinator separately owns supervisor
+restoration and subsequent admitted-work validation.
+
+Evidence under `/home/rob/tmp/astra-review-20260906/` is indexed, sized and
+SHA-256 hashed by `nfs-recovery-artifact-manifest.json`. Principal artifacts:
+
+- `nfs-kcore-rename.json`, `nfs-sparklina-kcore-delegations.json`, and
+  `nfs-server-client-states.txt`: exact RPC/dentry/delegation attribution.
+- `nfs-rename-trace-20260907.txt`: repeated pre-recovery DELAY responses.
+- `nfs-cpu-delegation-recovery.jsonl` and
+  `nfs-worker-delegation-recovery.jsonl`: operation identities, timings,
+  contents/SHA snapshots, including the second call's failed post-read.
+- `nfs-delegreturn-recovery-trace.txt` and `nfs-rename-recovery-trace.txt`:
+  successful protocol completion and the original rename's terminal result.
+- `nfs-server-recovery-verified.txt`: no remaining BREAKING delegation and
+  preservation of the two client identities.
+
+These are live incident measurements and a scoped manual repair, not a new
+PrismaBuild runtime recovery policy or a tested general NFS fix. The proposed
+caller boundary above remains unimplemented. No tests were run for this
+documentation-only follow-up.
