@@ -400,8 +400,14 @@ def _run_loop(stop_requested):
             # This diagnostic may bypass noisy CPU and host-memory readings,
             # but it is not an escape hatch from the trusted GPU boundary.
             observe_overrides.update(mem_gb=None, load1=None)
+        # The bound method, not its result: ``observe`` reads /proc between the
+        # ledger and the clamp that adds the two together, and reads this on
+        # both sides of that instrument so a sibling loop's release cannot be
+        # counted as both a token this box still holds and memory it has back.
+        # There are 3-16 of these loops per box against one ledger.
+        held = queue.ledger().held
         capacity = dict(declared) if observer is None else observer.offer(
-            declared, queue.ledger().held(), **observe_overrides)
+            declared, held, **observe_overrides)
         queue.ledger().retire_free_capacity(capacity)
         if capacity != announced:
             seen = observer.last if observer is not None else None
