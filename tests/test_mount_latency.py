@@ -12,6 +12,7 @@ import io
 import os
 import json
 from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -20,6 +21,77 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import mount_latency  # noqa: E402
+
+
+@pytest.mark.parametrize("direct_exec", [False, True])
+def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec):
+    """Exercise the installed symlink and Netdata's positional interval argv.
+
+    The Python arm isolates protocol routing from the executable-mode failure.
+    All probes and retained records stay in this host's temporary directory.
+    """
+    plugin = tmp_path / "mount_latency.plugin"
+    plugin.symlink_to(Path(mount_latency.__file__).resolve())
+    lock_dir = tmp_path / "worker-locks"
+    lock_dir.mkdir(mode=0o700)
+    (lock_dir / "admission.lock").touch()
+    command = [str(plugin), "15", "--mount", str(tmp_path / "probe"),
+               "--record-dir", str(tmp_path / "records"),
+               "--lock-dir", str(lock_dir)]
+    if not direct_exec:
+        command.insert(0, sys.executable)
+    with subprocess.Popen(command, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            stdout, stderr = process.communicate(timeout=5)
+    assert not stderr
+    lines = stdout.splitlines()
+    assert lines and lines[0].startswith("CHART "), stdout
+    assert "BEGIN prismabuild.mount_probe_state" in lines
+    assert "SET ok = 1" in lines
+    assert "END" in lines
+    assert "BEGIN prismabuild.admission_gate" in lines
+    assert "SET holders = 0" in lines
+    records = list((tmp_path / "records").glob("*.jsonl"))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text().splitlines()[0])
+    assert record["probe"]["status"] == "ok"
+    assert record["locks"]["present"] is True
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_once_cli_preserves_human_and_json_output(tmp_path, json_mode):
+    command = [sys.executable, mount_latency.__file__, "--once",
+               "--mount", str(tmp_path / "probe"),
+               "--record-dir", str(tmp_path / "records"),
+               "--lock-dir", str(tmp_path / "locks")]
+    if json_mode:
+        command.append("--json")
+    result = subprocess.run(command, text=True, capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert not result.stderr
+    if json_mode:
+        assert json.loads(result.stdout)["probe"]["status"] == "ok"
+    else:
+        assert result.stdout.startswith("[")
+        assert "probe=ok" in result.stdout
+    assert "CHART " not in result.stdout
+
+
+@pytest.mark.parametrize("netdata", [False, True])
+def test_default_record_directory_matches_invocation_mode(monkeypatch, netdata):
+    """Netdata must not silently try to append in Rob's private directory."""
+    recorded = []
+    monkeypatch.setattr(mount_latency.MountSampler, "sample", lambda self: {})
+    monkeypatch.setattr(mount_latency, "append_record",
+                        lambda record, directory: recorded.append(directory))
+    arguments = ["--once"] + (["--netdata"] if netdata else [])
+    assert mount_latency.main(arguments) == 0
+    assert recorded == [Path("/var/lib/netdata/prismabuild") if netdata
+                        else mount_latency.DEFAULT_RECORD_DIR]
 
 
 #: sparky at 21:30 UTC, after the storm and after the remount onto RDMA.

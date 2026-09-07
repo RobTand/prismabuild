@@ -152,12 +152,43 @@ ln -s /mnt/shared/prismabuild-fleet/repo/tools/fleet/mount_latency.py \
       /usr/libexec/netdata/plugins.d/mount_latency.plugin
 ```
 
-with `--record-dir /var/lib/netdata/prismabuild` in the plugin's argument list.
+The published script is executable, and Netdata's invocation
+`mount_latency.plugin <update_every>` automatically selects protocol output.
+In that mode the box-local record directory defaults to
+`/var/lib/netdata/prismabuild`, so the symlink needs no extra arguments or
+wrapper. An explicit `--netdata` selects the same mode when invoking Python
+directly; `--record-dir` can override the directory. Human and JSON `--once`
+reads retain their existing output and `/home/rob/tmp` record default.
 
-One thing that user cannot do: `/proc/<pid>/wchan` is gated by
+The admission-lock leg must target the **worker's** directory. Its default
+uses the collector's UID, so an unconfigured Netdata process would instead look
+for its own locks. Set the existing `--lock-dir` option through Netdata's
+[external-plugin command options](https://learn.netdata.cloud/docs/developer-and-contributor-corner/external-plugins)
+in `/etc/netdata/netdata.conf`, using the actual worker UID (`id -u rob`)
+or its configured `PRISMABUILD_BOX_STATE_ROOT`. For worker UID 1000:
+
+```ini
+[plugin:mount_latency]
+    update every = 15
+    command options = --lock-dir /tmp/prismabuild-admission-1000
+```
+
+That selects the correct path but does not grant access. PrismaBuild keeps
+this directory worker-owned at mode `0700` and repairs broader permissions.
+Do not loosen it for the collector. Under an ordinary separate Netdata UID,
+the admission-gate measurement is therefore unavailable: the JSON record says
+`locks.present: false`, and no gate samples are emitted. Mount/probe/RPC output
+and the local JSONL record still work. Retained gate samples need a separately
+approved collector identity or reader arrangement; this installation does not
+provide one. Run `--once --lock-dir <worker-directory>` as the worker user for
+an accessible one-shot gate reading, and verify `locks.present` before claiming
+that the gate charts have been adopted.
+
+Even with an accessible lock directory, `/proc/<pid>/wchan` is gated by
 `ptrace_may_access`, so running as `netdata` yields `"0"` for every process it
 does not own and `waiter_wchans` reads `{"0": N}`. The **counts and states are
-unaffected** — `/proc/<pid>/stat` is world-readable — so the headline
+unaffected by that wchan restriction** — `/proc/<pid>/stat` is world-readable —
+so the headline
 (`waiters`, `waiters_invisible_to_load`, `max_hold_s`) is intact and only the
 "waiting on *what*" attribution is lost. Run `--once` as the loops' own user
 when you need to tell `__break_lease` from slow work.
