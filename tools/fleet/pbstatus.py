@@ -807,9 +807,13 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
                     if state == pool.WITHDRAWN:
                         withdrawal_mtimes[entry.name[:-5]] = entry.stat().st_mtime
         except FileNotFoundError:
-            if directory.exists():
-                raise  # The directory was readable, but a selected entry was not.
-            continue
+            try:
+                directory.stat()
+            except FileNotFoundError:
+                continue
+            # A predicate would also return False on EACCES/EIO in Python 3.14.
+            # Only a second ENOENT proves this optional directory is absent.
+            raise  # The directory exists, but a selected entry was not readable.
     # A cancellation is durable before its visible summary is written. Keep
     # that ending visible if the operator crashed between the two writes.
     decisions = Path(queue_root) / pool.WITHDRAWN / "decisions"
@@ -1130,12 +1134,20 @@ def queue_root_note(queue_root: str | Path, *, raise_errors: bool = False) -> st
 
     root = Path(queue_root)
     try:
-        if not root.exists():
+        try:
+            root_stat = root.stat()
+        except FileNotFoundError:
             return f"no queue root at {root}: the path does not exist"
-        if not root.is_dir():
+        if not stat.S_ISDIR(root_stat.st_mode):
             return f"no queue root at {root}: the path is not a directory"
-        filed_in = [state for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
-                    if (root / state).is_dir()]
+        filed_in = []
+        for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+            try:
+                terminal_stat = (root / state).stat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(terminal_stat.st_mode):
+                filed_in.append(state)
     except OSError as exc:
         if raise_errors:
             raise

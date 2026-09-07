@@ -34,14 +34,14 @@ def test_unreadable_endings_do_not_certify_a_complete_census(
 def test_queue_root_note_does_not_hide_a_stat_error(tmp_path, monkeypatch, capsys):
     q = pool.PoolQueue(tmp_path / 'queue')
     q.ensure_layout()
-    exists = Path.exists
+    stat = Path.stat
 
-    def refuse_root(path):
+    def refuse_root(path, *args, **kwargs):
         if path == q.root:
             raise PermissionError('root stat unavailable')
-        return exists(path)
+        return stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, 'exists', refuse_root)
+    monkeypatch.setattr(Path, 'stat', refuse_root)
     code = pbstatus.main(['--transport', 'pool', '--json', '--queue-root', str(q.root)])
     report = json.loads(capsys.readouterr().out)
     assert report['complete'] is False, report

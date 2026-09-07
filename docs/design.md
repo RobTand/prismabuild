@@ -1612,3 +1612,7 @@ explicit SLURM scheduler/lane lookups are outside this pool census budget.
 
 The empty-endings root diagnostic propagates filesystem errors to the bounded
 census, so an error rendered as a note still makes the top-level read incomplete.
+
+These completeness checks use explicit stat calls, preserving ENOENT as missing
+and permission/I/O errors as unavailable. Boolean pathlib predicates are not
+evidence of absence because Python 3.14 suppresses OSError in them.
