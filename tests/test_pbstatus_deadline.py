@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 import os
 import signal
+import subprocess
 import sys
 import time
 
@@ -169,6 +170,36 @@ def test_an_abandoned_child_owns_no_inherited_descriptor(tmp_path, monkeypatch):
         for child in abandoned:
             real_kill(child["pid"], signal.SIGKILL)
             os.waitpid(child["pid"], 0)
+
+
+def test_the_reader_answers_when_the_caller_left_a_low_descriptor_free():
+    """The answer pipe must end up above the streams that are about to be
+    replaced, however low the kernel handed it out.
+
+    ``os.pipe`` returns the two lowest free descriptors, so a caller that has
+    closed its own standard streams -- a daemon, a wrapper that closed what it
+    did not need -- gets the pipe on 0 and 1.  Redirecting the child's standard
+    streams to ``/dev/null`` then lands on the writer itself, the payload goes
+    nowhere, and the parent reports a reader that exited without one.  The
+    child is answering; it is being written over.
+
+    Run in a subprocess because the fault needs descriptors 0 and 1 actually
+    closed, which is not a thing to do to the process running the suite.
+    """
+    program = "\n".join([
+        "import json, os, sys",
+        f"sys.path.insert(0, {str(ROOT / 'src')!r})",
+        f"sys.path.insert(0, {str(ROOT / 'tools/fleet')!r})",
+        "import pbstatus",
+        "os.close(0)",
+        "os.close(1)",
+        "result = pbstatus.bounded('probe', lambda: 'answered',",
+        "                          deadline=pbstatus.Deadline(5), abandoned=[])",
+        "sys.stderr.write(json.dumps(result))",
+    ])
+    completed = subprocess.run([sys.executable, "-c", program],
+                               capture_output=True, text=True, timeout=60)
+    assert json.loads(completed.stderr) == {"status": "ok", "value": "answered"}
 
 
 def test_timeout_zero_restores_the_unbounded_in_process_read(tmp_path, monkeypatch, capsys):
