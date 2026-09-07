@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -1310,8 +1311,18 @@ def test_input_ingestion_revalidates_canonical_inode_after_winning_link(
         destination.write_bytes(b"changed input")
 
     monkeypatch.setattr(pb.os, "link", link_then_corrupt)
-    with pytest.raises(pb.CASTamperError, match="verified staging inode"):
+    with pytest.raises(pb.CASTamperError, match="verified staging inode") as caught:
         cas.ingest_input(source, input_id="dataset")
+    identity = json.loads(str(caught.value).split("; identity=", 1)[1])
+    assert set(identity) == {"staged", "published"}
+    assert set(identity["staged"]) == {
+        "st_dev", "st_ino", "st_size", "st_mode", "st_uid", "st_gid", "st_mtime_ns"
+    }
+    assert identity["staged"]["st_mode"] == stat.S_IFREG | 0o444
+    assert identity["published"]["st_mode"] == stat.S_IFREG | 0o644
+    assert identity["staged"]["st_ino"] == identity["published"]["st_ino"]
+    assert identity["staged"]["st_size"] == len(payload)
+    assert identity["published"]["st_size"] == len(b"changed input")
 
 
 def test_blob_publication_skips_only_winning_inode_rehash(
