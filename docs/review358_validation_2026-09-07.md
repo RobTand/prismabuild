@@ -115,3 +115,11 @@ Payload digest:
 `81c0c726211d13b05e579e98b94e9a0558c241a7c938a0cc7bfc2bc29620c50c`.
 Canonical receipt path is under `cas/actions/v3/14/` with the full action key.
 The same evidence directory retains both new verification records and logs.
+
+Root integrated these fixes with main `e20351e5f` in a separate worktree.
+PrismaBuild action `8d62a6e6971cdc5a9536bb6a452d5e719e67041e5bd58212797a4eba382af959`
+repeated the final compile and affected matrix: 192 passed, four subtests
+passed, zero skips, 208 fork warnings in 19.86 seconds (DL380 CPU4/GiB4,
+portable placement, native threads one, priority -10). Root independently
+verified terminal exit, scope cleanup, canonical receipt, payload bytes and
+source bundle; the tested snapshot differs only by its generated closure.
