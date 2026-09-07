@@ -3452,9 +3452,21 @@ class PrismaBuildCAS:
                     if _substantive_file_read_identity(
                         published_identity
                     ) != _substantive_file_read_identity(staged_identity):
+                        fields = (
+                            "st_dev", "st_ino", "st_size", "st_mode",
+                            "st_uid", "st_gid", "st_mtime_ns",
+                        )
+                        identity = {
+                            name: {field: getattr(info, field) for field in fields}
+                            for name, info in (
+                                ("staged", staged_identity),
+                                ("published", published_identity),
+                            )
+                        }
                         raise CASTamperError(
                             "published CAS blob differs from the verified staging "
-                            f"inode: {blob_path}"
+                            f"inode: {blob_path}; identity="
+                            f"{json.dumps(identity, sort_keys=True)}"
                         )
                     _assert_regular_identity(
                         published_fd,

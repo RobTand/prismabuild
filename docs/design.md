@@ -663,7 +663,11 @@ Result-blob publication uses the same consumed-inode rule as input ingestion.
 The successful publisher already computed SHA-256 while copying into a
 private read-only staging inode. After the canonical hard link is durable, it
 reopens that name and requires exact device/inode and substantive metadata
-identity. Receipt readback can then validate the canonical receipt without a
+agreement. A mismatch refusal records both already-observed identities (device,
+inode, size, mode, UID, GID and nanosecond mtime) in the exception so the failing
+field can be diagnosed without a later filesystem read. This evidence does not
+relax the comparison or turn the refusal into a retry.
+Receipt readback can then validate the canonical receipt without a
 second or third payload hash. If another blob or stochastic receipt won, every
 unconsumed winning blob is hashed normally. Returning a path immediately from
 that successful publication reuses this proof; later `lookup()` and
