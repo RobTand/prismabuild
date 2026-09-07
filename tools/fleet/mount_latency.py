@@ -89,6 +89,10 @@ PROBE_DIRNAME = "mount-probe"
 #: that filesystem loses exactly the samples worth having.
 DEFAULT_RECORD_DIR = Path("/home/rob/tmp")
 
+#: The external plugin runs as netdata, which cannot append in Rob's directory.
+#: Provision this host-local directory with netdata ownership before installing.
+NETDATA_RECORD_DIR = Path("/var/lib/netdata/prismabuild")
+
 #: The local log is a backstop, not the archive.  A sample is about 1.7 KB, so
 #: two generations of this hold roughly a day and a half at a 15 s scrape --
 #: long enough that somebody who notices an incident can still read it here,
@@ -1091,9 +1095,10 @@ def main(argv: list[str] | None = None) -> int:
                          "on stdout until stopped")
     ap.add_argument("--interval-s", type=float, default=15.0,
                     help="seconds between readings")
-    ap.add_argument("--record-dir", type=Path, default=DEFAULT_RECORD_DIR,
-                    help="box-local directory for the JSONL log; empty to "
-                         "record nothing")
+    ap.add_argument("--record-dir", type=Path,
+                    help="box-local directory for the JSONL log (default: "
+                         "/var/lib/netdata/prismabuild in Netdata mode, "
+                         "/home/rob/tmp otherwise)")
     ap.add_argument("--lock-dir", type=Path, default=ADMISSION_LOCK_DIR,
                     help="directory holding the admission lock files to watch")
     ap.add_argument("--deadline-s", type=float, default=PROBE_DEADLINE_S,
@@ -1104,6 +1109,13 @@ def main(argv: list[str] | None = None) -> int:
                     help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
+    # Netdata executes mount_latency.plugin <update_every>, without --netdata.
+    # Keep explicit human/JSON one-shot reads usable with a positional interval.
+    args.netdata = args.netdata or (args.update_every is not None
+                                    and not args.once and not args.json)
+    if args.record_dir is None:
+        args.record_dir = (NETDATA_RECORD_DIR if args.netdata
+                           else DEFAULT_RECORD_DIR)
     interval = args.update_every or args.interval_s
     sampler = MountSampler(args.mount, deadline_s=args.deadline_s,
                            lock_dir=args.lock_dir)
