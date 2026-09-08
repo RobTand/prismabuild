@@ -1459,6 +1459,15 @@ recovers, startup generation comparisons remain null; start a new session to
 restore them. Interpreter startup and imports precede this protection, and
 `--deadline-s 0` disables the bound as it does for tool reads.
 
+A reader that remains alive after deadline cleanup is retained by the session.
+Further shared reads are suppressed until a nonblocking wait collects its exit;
+their sections are null and named in `unavailable` as `ReaderStillRunning`.
+`complete` remains false and `abandoned_readers` names the retained PID and
+starttime. This prevents repeated polls from adding blocked readers: at most
+one remains per session. Reads resume after it exits; historical startup
+diagnostics still apply. Independent sessions have independent limits, and
+this cannot force a kernel wait to return.
+
 ### Read what a run cost
 
 Every pull-queue ending also carries `detail.resource_profile`: what the run

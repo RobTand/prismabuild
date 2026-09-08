@@ -1860,6 +1860,17 @@ initialization after Python has loaded the server; it cannot bound interpreter
 startup or imports from an unavailable shared filesystem. The existing
 zero-deadline opt-out also applies to session construction.
 
+A session retains ownership of an unreaped bounded reader across startup and
+all subsequent calls. Before each shared read it polls only its retained child
+with nonblocking `waitpid`. While that child remains alive or its exit cannot
+be established, no further shared read is started: sections are null and named
+in `unavailable` with type `ReaderStillRunning`, `complete` is false, and
+`abandoned_readers` retains the PID/starttime evidence. Once reaped, reads resume.
+This caps retained readers at one per session, including when a reader returned
+a payload but did not exit. It does not limit independent client sessions, and
+cannot force an uninterruptible kernel wait to finish. Startup observation
+diagnostics remain historical even after that reader is reaped.
+
 Two derivations belong to the reader rather than to the queue. A preemption's
 successor generation is re-derived without the transition lock `pbrun` takes,
 because a reporter must not participate in the protocol it describes, and the
