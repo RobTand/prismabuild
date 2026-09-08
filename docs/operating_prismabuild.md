@@ -193,16 +193,19 @@ What is worth knowing before using it:
     ending unrecorded, fails the run through the paths that already refuse
     those, naming both numbers. One that ends badly with everything intact is
     recorded with `backend_status_ignored: true` and the run stands.
-*   **A timed-out action still files the profile it reached.** The timed-out
-    case is the one a profile is most wanted for, and it used to report none at
-    all. The profiler is asked to finish before the group is reaped -- py-spy
-    writes its speedscope on SIGINT and nothing on SIGTERM (measured, 0.4.2:
-    SIGINT to the leader wrote it in 102 ms) -- and what it produced is ingested
-    with `partial: true` and an `action_phase` saying whether the action had
-    reached an ending. The whole settlement is bounded by 12 s, inside the 15 s
-    the pool allows a launcher it has signalled; a backend whose finalize is
-    slower than that loses the profile rather than the worker losing its chance
-    to record the ending, and the ending says so.
+*   **Timeout profiles are best effort; completed windows are checkpointed.**
+    When a windowed profiler exits, its completed report is ingested and
+    referenced in the status sidecar before the worker waits for the action.
+    The checkpoint carries `partial: true`; it is evidence, never a success
+    receipt. A later contained deadline can therefore retain that report even
+    though the broker kills the scope without running Python cleanup.
+    A trace still being generated or ingested at that instant can be lost.
+    For a handled signal outside that hard-stop path, the worker tries to
+    flush, reap and ingest what survives. py-spy writes on SIGINT, not SIGTERM
+    (0.4.2 wrote a measured probe in 102 ms). The flush and reap budgets can
+    together consume the pool's 15-second grace before ingest; preservation
+    is not guaranteed by the 12-second reap budget alone. Recorded partial
+    profiles include the relay's `action_phase` when available.
 *   **`detail.action_returncode` is populated on the pull-queue lane now.** The
     launcher exits 1 for every failed action, so the action's own status cannot
     be its exit status; `core` has written it to a file named by
