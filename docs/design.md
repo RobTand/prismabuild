@@ -384,6 +384,16 @@ matters). Rules:
   first-writer evidence: its adopted status and disposition determine the
   mutable queue destination, summary, and `pbrun` exit status even when a
   finisher and stale reaper race; any disagreement fails closed.
+- **An opt-in profile is a parameter, and a queue hint is not** — `--profile
+  MODE` is sealed in `params.profile`, so a profiled run has its own key. A
+  profiler is inside the measurement: answering a profile request from an
+  unprofiled receipt would return a receipt with no profile, and comparing a
+  profiled arm with an unprofiled one would compare two different executions.
+  `--priority` is the contrast and stays out of the key, being a hint about
+  *when* the same work runs. Omitting `--profile` leaves the key what it was
+  before the flag existed. The blob itself is content-addressed like any
+  payload and referenced from the pool's ending, never from the CAS receipt,
+  whose v3 key set is an immutable interpretation domain.
 - **Effective pool placement is a parameter** — `pbrun` seals the sorted,
   deduplicated conjunction of tags that its placement rule actually returned,
   including a derived hostname pin. The normalized constraint moves the action

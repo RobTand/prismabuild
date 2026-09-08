@@ -93,6 +93,81 @@ These flags say what the action needs and where it may run.
 | `--here` | Pin the action to this box. Combines with `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
+| `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
+
+### `--profile`: an opt-in profile, sealed into the key
+
+`--profile sample` runs py-spy at 100 Hz over the action's whole process tree
+and files the speedscope profile as a CAS blob. The ending carries
+`profile: {mode, backend, backend_version, rate_hz, blob_sha256, bytes,
+samples, blob_path}`, and both `pbrun` and `pbstatus` print the digest and the
+path, so a human opens the blob at <https://www.speedscope.app/>.
+
+`--profile` **is** part of the action's identity, and `--priority` is not. That
+is deliberate. A profiled run of a command somebody already ran must not be
+answered out of the CAS with a receipt that carries no profile, and a profiled
+run must never be an A/B arm against an unprofiled receipt, because the
+profiler is inside the measurement. Omitting the flag leaves the key
+byte-identical to what it was before the flag existed.
+
+What is worth knowing before using it:
+
+*   **Overhead is measured, not asserted.** A fixed-work CPU loop, five
+    unprofiled and five profiled repeats inside one action on dl380g10
+    (`69a4a7fdf902`, 2026-09-07), while other agents' test shards had the box
+    at loadavg 1.4-3.4:
+
+    | arm | mean | stdev | median | min |
+    | --- | --- | --- | --- | --- |
+    | unprofiled | 60.845 s | 1.310 | 60.324 s | 60.107 s |
+    | `--profile sample` | 63.352 s | 2.208 | 61.829 s | 61.711 s |
+
+    Read the claim with its interval, not as one number. The paired deltas
+    are +1.70, +1.58, +1.34, +4.68 and +3.24 s, all positive (paired t 3.93,
+    df 4, p ~ 0.017), so the cost is real. The point estimate is 2.50 % on the
+    medians and 4.12 % on the means; the paired 95 % interval is **1.2-7.0 %**
+    (n = 5, shared box at loadavg 1.4-3.4). The tier's ~5 % budget is met as
+    a point estimate and not established: the interval's upper end crosses
+    it. The rate stays at 100 Hz on that reading; a re-measurement on a quiet
+    box with more repeats is what would settle it. The rate is a property of the mode and is reported
+    in the ending, never sealed: receipts taken across a rate change are
+    comparable only through the `rate_hz` each one carries.
+*   **The backend has to be visible to the launcher's interpreter.** The
+    backend is looked up beside `sys.executable` first and then on `PATH`, and
+    `sys.executable` is the worker loop's `--python`. dl380g10 launches under
+    `/home/rob/venvs/pb-cpu/bin/python` and sparklina under
+    `/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python`; py-spy 0.4.2 is in
+    both, so `--profile sample` is backed on both. sparky's worker loop passes
+    no `--python`, so it launches under `/usr/bin/python3`, and its unit `PATH`
+    has no `~/.local/bin` -- where sparky's py-spy actually lives. There
+    `--profile sample` **refuses** with `profile backend 'py-spy' is not
+    installed on sparky` rather than running unprofiled. Refusing is the
+    designed behaviour; making sparky eligible is a worker-loop change, not a
+    flag.
+*   **py-spy writes its own scratch file under `TMPDIR`** -- the speedscope
+    output goes under the action's working directory, but the profiler's
+    intermediate does not. It reads the action's sealed environment, whose
+    `pbrun` default is already `TMPDIR=/home/rob/tmp`; `--no-default-env` drops
+    that default, and then the scratch lands wherever the replacement points.
+*   **A cache hit answers a profiled key without a new profile.** The receipt
+    is the result and the CAS already holds it, so a re-submission returns
+    before the profiler runs and its ending carries no `profile`. The digest
+    from the run that did the work stays on that attempt's record; look there,
+    not at the newest ending.
+*   **The profiler is the child's parent.** `kernel.yama.ptrace_scope` is 1 on
+    every box, so a profiler beside the action cannot attach to it; py-spy
+    launches the sealed argv instead and samples the tree with
+    `--subprocesses`. The sealed argv is exec'd verbatim underneath, and
+    `preflight_action` still attests `task.argv[0]` off the action.
+*   **A profiled action that produced no profile fails.** The profiler failing
+    is an action failure with a reason, never a run that quietly came back
+    unprofiled; the action's own result is ingested as a CAS blob and named in
+    the failure so it can still be read. A sub-second action is one way to hit
+    this: a sampling profiler that has to find the interpreter first cannot see
+    a child that has already exited.
+
+The backend is a registry (`core.PROFILE_BACKENDS` in the attested worker core), so a later tier
+adds a mode without changing the flag or the record.
 
 `--tag` and `--here` are two constraints, and passing both applies both:
 `--here --tag gb10` places the action on this box, which must also offer the
@@ -478,6 +553,7 @@ an omitted field is not passed at all.
 | `gpu_capacity` | `--gpu-capacity` |
 | `gpu_memory_gb` | `--gpu-memory-gb`, a positive finite GiB budget; pool only, requires GPU demand |
 | `priority` | `--priority` |
+| `profile` | `--profile`, a profiler mode; sealed into the row's action key |
 | `measurement` | `--measurement` |
 | `host_class` | `--host-class`, a pool measurement worker class or SLURM Feature such as `gb10` |
 | `retry_safe` | `--retry-safe` |
@@ -1119,6 +1195,73 @@ writing syscalls replaced by ones that raise. It also never expands an
 attempt's logs -- `pool.attempt_outcomes` reads every stream whole to verify a
 digest, which is right for a verifier and would make a status call on a
 gigabyte of output cost a gigabyte.
+
+### Read what a run cost
+
+Every pull-queue ending also carries `detail.resource_profile`: what the run
+used and what the box was doing while it ran. It is metadata about one run, not
+part of the action, so it never enters the action key and a receipt from before
+it exists is still the same action. There is no flag to turn it on and no
+profile mode to choose: it is on for every action.
+
+What it costs is bounded, not nothing. At finish, reading the box window is
+capped at two seconds plus one `nvidia-smi` read; measured on sparky it takes
+0.14–0.18 s. While the attempt runs, the periodic sampler ticks at most every
+two seconds, and on a contained attempt each tick scans `/proc` for the scope's
+members, because the broker's payload leaf is `drwx------` and its
+`cgroup.procs` cannot be read directly.
+
+Four groups, each naming the source that produced it. A group whose source said
+nothing is absent rather than zero, because "not measured" and "measured as
+idle" call for different responses.
+
+*   `reaped_children` — this parent's `getrusage(RUSAGE_CHILDREN)` around the
+    launch: `user_seconds`, `system_seconds`, the context-switch counts, and
+    `max_rss_watermark_bytes`. Read its `scope` field before its numbers. On a
+    contained run the process this parent launched and reaped is the stdio
+    proxy and the action itself is a child of the root resource broker, so
+    these figures cover the launcher, not the work. `max_rss_bytes` is present
+    only when this child raised the process-wide high-water mark, since a mark
+    that did not move belongs to some earlier child.
+*   `scope` — the exact attempt's own cgroup, which is where a contained
+    action's payload actually is: `memory_peak_bytes` is the peak this action
+    reached, and `cpu_seconds` now comes with the `cpu_user_seconds` /
+    `cpu_system_seconds` split the kernel was already publishing. Cgroup memory
+    charges page cache, so an action that writes a large file reads higher here
+    than `/usr/bin/time -v` reports for the same command.
+*   `process_io` — `/proc/<pid>/io` summed over the processes in the scope, kept
+    across samples so a process that has exited still contributes what it was
+    last seen using. `rchar` / `wchar` are the bytes the action asked for and
+    are exact wherever the file lives; `read_bytes` / `write_bytes` are what
+    reached storage and are zero on a tmpfs for the same write. The sampler runs
+    at most every two seconds, so I/O in the final interval and any process that
+    both starts and ends between two samples is not counted;
+    `processes_observed` says how many were. A process that has exited but has
+    not yet been reaped is a zombie, and a zombie's `/proc/<pid>/io` is
+    `EACCES`: it counts in `processes_unreadable`, keeps whatever it was last
+    seen using, and its remaining bytes arrive when its parent reaps it,
+    because the kernel folds a reaped child's counters into its parent exactly
+    as `getrusage(RUSAGE_CHILDREN)` does. That fold is also why only the
+    scope's roots are retired when they vanish -- anything below a root is
+    already inside the parent that absorbed it, and retiring it as well would
+    count the same bytes twice.
+*   `box_window` — the machine around the action for `[start_unix, end_unix]`.
+    GPU power mean and peak, the fraction of the device's own published power
+    reference, GPU utilisation, the unified memory pool and the memory and I/O
+    pressure stalls come from the `pqteld` flight recorder on the GB10 boxes;
+    CPU busy and CPU pressure come from Netdata on every box, because pqteld
+    records no CPU column at all. On GB10 the power reference is the SoC TDP and
+    covers the CPU too, which `power_reference_scope` says; it is a reference,
+    not a measured saturation point. Reading the window is bounded to about two
+    seconds and can never fail a finish: an unreachable recorder produces
+    `{"source": "unavailable", "reason": ...}` and the action still completes.
+
+`pbstatus` prints peak memory, the bytes moved and the GPU power peak against
+its reference in the endings table's `RESOURCE` column, and `pbrun` ends a run
+with the same line. `pbmetrics` exports the live peaks as
+`prismabuild_attempt_peak_resources` and the endings' windows as
+`prismabuild_terminal_box_window`. Every one of them renders a field no record
+carried as absent, never as zero.
 
 ## Stop work and retry it
 

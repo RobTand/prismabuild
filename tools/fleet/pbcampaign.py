@@ -45,6 +45,7 @@ and each one is exactly one ``pbrun`` flag:
 ``gpu_capacity``     ``--gpu-capacity``
 ``gpu_memory_gb``     ``--gpu-memory-gb``: pool GPU budget in GiB
 ``priority``         ``--priority``
+``profile``          ``--profile``: a profiler mode, sealed into the row's key
 ``measurement``      ``--measurement``
 ``host_class``       ``--host-class``: worker class (pool measurement) or SLURM Feature
 ``retry_safe``       ``--retry-safe``
@@ -153,6 +154,7 @@ _VALUE_FIELDS = (
     ("gpu_capacity", "--gpu-capacity"),
     ("gpu_memory_gb", "--gpu-memory-gb"),
     ("priority", "--priority"),
+    ("profile", "--profile"),
     ("host_class", "--host-class"),
     ("max_attempts", "--max-attempts"),
 )
@@ -190,7 +192,7 @@ _INTEGER_FIELDS = (
 )
 
 #: Fields whose value reaches ``pbrun`` as text.
-_TEXT_FIELDS = ("cwd", "host_class")
+_TEXT_FIELDS = ("cwd", "host_class", "profile")
 
 
 def _refuse(index: int, field: str, wanted: str, value) -> ManifestError:

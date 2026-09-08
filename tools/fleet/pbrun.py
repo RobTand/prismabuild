@@ -2257,6 +2257,10 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         # concluded it, and for a reaped claim those are different machines.
         "claimed_host": claimed_host,
         "elapsed_s": detail.get("elapsed_s"),
+        # What the run cost and how loaded its box was (#372 Tier 0).  Carried
+        # whole rather than flattened, because the record is what a reader
+        # comes back to and the summary is only what fits on a line.
+        "resource_profile": detail.get("resource_profile"),
         "returncode": detail.get("returncode"),
         # The action's own ending, where the transport recorded one.  The
         # launcher's status above is 1 for every failure, so an action that
@@ -2264,6 +2268,9 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         "action_returncode": detail.get("action_returncode"),
         "action_signal": detail.get("action_signal"),
         "receipt_published": detail.get("receipt_published"),
+        # Present as ``None`` on every unprofiled run so a reader tests one
+        # field rather than the absence of one.
+        "profile": detail.get("profile"),
         "attempts": outcome.get("attempts"),
         "withdrawn_by": outcome.get("withdrawn_by"),
         "reason": outcome.get("reason"),
@@ -2452,6 +2459,31 @@ def action_status_suffix(detail: Mapping[str, object]) -> str:
     return f"; rc={detail.get('returncode')} (action exited {action})"
 
 
+def resource_suffix(detail: Mapping[str, object]) -> str:
+    """What the run cost, on the line that says it finished, or nothing.
+
+    Nothing rather than a row of dashes: a run whose box had no recorder should
+    not spend a line saying so every time, and the record still carries the
+    reason under ``detail.resource_profile.box_window``.
+    """
+
+    described = pool.describe_resource_profile(
+        pool.resource_profile_summary(detail))
+    return f"; {described}" if described != "-" else ""
+
+
+def profile_suffix(detail: Mapping[str, object]) -> str:
+    """Where a profiled run left its profile, said on the line that reports it.
+
+    Only on a run that asked for one, so an ordinary ending is unchanged.  The
+    phrasing itself lives in ``core.describe_profile`` so this and
+    ``pbstatus`` abbreviate one digest the same way.
+    """
+
+    described = pb.describe_profile(detail.get("profile"))
+    return f"; {described}" if described else ""
+
+
 def outcome_headline(summary: Mapping[str, object]) -> str:
     """One line saying how a run ended, and where -- and who "where" is.
 
@@ -2484,7 +2516,9 @@ def outcome_headline(summary: Mapping[str, object]) -> str:
         # default.
         return (f"{status} on {finished} "
                 f"in {(detail.get('elapsed_s') or 0):.0f}s"
-                f"{action_status_suffix(detail)}")
+                f"{action_status_suffix(detail)}"
+                f"{resource_suffix(detail)}"
+                f"{profile_suffix(detail)}")
     held = summary.get("claimed_host")
     age = detail.get("lease_age_s")
     if isinstance(age, (int, float)) and not isinstance(age, bool):
@@ -3668,6 +3702,17 @@ def main() -> int:
                          "(slurm_lane.nice_for), scaled so one priority step "
                          "outranks submission order rather than one later "
                          "submission")
+    ap.add_argument("--profile", choices=pb.PROFILE_MODES, default=None,
+                    help="run a profiler around this action's child and store "
+                         "the profile as a CAS blob named on the ending. "
+                         "Unlike a queue hint this IS part of the action's "
+                         "identity: a profiled run has its own key, so it is "
+                         "never answered from an unprofiled receipt and never "
+                         "an A/B arm against one. 'sample' is py-spy at "
+                         f"{pb.PROFILE_SAMPLE_RATE_HZ} Hz over the whole "
+                         "process tree; measured overhead on a fixed-work CPU "
+                         "action is in docs/operating_prismabuild.md, with the "
+                         "box load it was measured under")
     ap.add_argument("--env", action="append", default=[],
                     help="K=V added to the action's environment (repeatable)")
     ap.add_argument("--no-default-env", action="store_true",
@@ -4029,6 +4074,13 @@ def main() -> int:
             body["params"]["gpu_memory_gb"] = args.gpu_memory_gb
     if args.timeout_s is not None:
         body["params"]["execution_timeout_s"] = args.timeout_s
+    if args.profile is not None:
+        # Sealed, and only when asked for.  Present, it makes a profiled run a
+        # different action from its unprofiled twin, which is what stops the
+        # CAS from answering a profile request with a receipt that has none.
+        # Absent, the key is byte-identical to what it was before this flag
+        # existed, so nothing already in the store is orphaned.
+        body["params"][pb.PROFILE_PARAM] = args.profile
     try:
         action = pb.seal_action(body)
     except pb.ActionContractError as exc:
