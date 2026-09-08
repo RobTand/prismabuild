@@ -200,6 +200,13 @@ def main() -> int:
                          "runs sooner, negative yields to everything at 0 and "
                          "aging never lifts it past them (#362). Not part of "
                          "the action identity")
+    ap.add_argument("--profile", default=None,
+                    help="forwarded to every shard's pbrun --profile; a mode "
+                         "runs a profiler around each shard's pytest and files "
+                         "the profile as a CAS blob. It IS part of each "
+                         "shard's action identity, so a profiled suite run is "
+                         "a different set of actions from an unprofiled one "
+                         "and never a cache hit for it")
     ap.add_argument("--json", default="", help="write the per-shard result here")
     ap.add_argument(
         "--transport", choices=TRANSPORTS, default=default_transport(),
@@ -331,6 +338,12 @@ def main() -> int:
             # Zero is pbrun's own default; forwarding only a non-zero hint
             # leaves every existing shard argv byte-identical.
             flags += ["--priority", str(args.priority)]
+        if args.profile is not None:
+            # Same rule, and it matters more here: --profile enters the shard's
+            # action key, so forwarding it unasked would re-key every suite run
+            # on the fleet.  pbrun owns which modes are legal and refuses the
+            # rest, so this passes the word through rather than listing them.
+            flags += ["--profile", str(args.profile)]
         command = flags + [
             "--", "env", "TMPDIR=/home/rob/tmp",
             *threads,
