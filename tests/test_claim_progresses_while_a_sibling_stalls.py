@@ -283,12 +283,13 @@ def test_a_busy_admission_lock_after_the_rename_cannot_undo_the_claim(
         rig, monkeypatch):
     """Past the rename the item is this loop's, and nothing may take it back.
 
-    The narrowed lock is reacquired once, after the lease write, for the
-    host-local borrow record.  ``locked()`` refuses instead of waiting, and a
-    refusal that escaped there would leave ``claim`` answering "nothing to
-    run" for an action that is already renamed into ``claimed/``, holding
-    tokens, and carrying a lease -- work nobody would then execute, and which
-    only the reaper would recover a ``LEASE_TIMEOUT_S`` later.
+    The narrowed lock is never reacquired after the rename -- the borrow
+    record goes in with the decision that spends it -- and this holds that
+    true.  A refusal escaping anywhere past the rename would leave ``claim``
+    answering "nothing to run" for an action that is already renamed into
+    ``claimed/``, holding tokens, and carrying a lease: work nobody would then
+    execute, and which only the reaper would recover a ``LEASE_TIMEOUT_S``
+    later.
     """
 
     held = []

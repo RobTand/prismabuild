@@ -374,9 +374,9 @@ class Controller:
         per candidate for the adaptive and GPU decisions through
         ``begin_acquire`` -- the point at which the tokens leave ``free/``
         and every sibling's ``decision`` and ``available`` can see them
-        reserved.  The record rename, the lease write and the token renames
-        that follow run outside it, and the only thing that comes back under
-        it is ``admitted``'s host-local borrow record.
+        reserved, and at which ``admitted`` records the borrow that decision
+        spent.  The record rename, the lease write and the token renames that
+        follow run outside it, and nothing reacquires it after them.
 
         Even so the holder's time inside is not purely local: CPU samples,
         profiles, interval/borrowing state, holder telemetry and GPU probe
@@ -607,8 +607,34 @@ class Controller:
                 'borrowable_cpus': sorted(borrowable, key=lambda c: sample.get('per_cpu_busy', {}).get(str(c), 0.))}
 
     def admitted(self, metadata):
-        if metadata.get('borrowing'):
-            self.write_state('last-borrow.json', {'sampled_unix': metadata['sampled_unix']})
+        """Spend the sample's borrow freshness; answer what it replaced."""
+        if not metadata.get('borrowing'):
+            return None
+        previous = read_json(self.base / 'last-borrow.json')
+        self.write_state('last-borrow.json', {'sampled_unix': metadata['sampled_unix']})
+        return previous
+
+    def withdrew(self, metadata, previous):
+        """Give the freshness back when the claim it was spent on never happened.
+
+        A borrowing decision is spent at the decision, not at the rename, so a
+        claimant that loses the rename has already consumed the sample.  It
+        never used it: its tokens went back and no borrowed CPU was ever
+        occupied, so keeping the record would refuse the retry that the lost
+        race is supposed to allow.
+
+        Only while the record is still this decision's own.  A newer borrow
+        that landed in between owns it now, and writing an older sample over
+        that one would let the newer sample authorize a second borrow -- the
+        one thing ``admitted`` exists to prevent.  So this is a
+        compare-and-set, and it belongs under the same lock as ``admitted``.
+        """
+        if not metadata.get('borrowing'):
+            return
+        current = read_json(self.base / 'last-borrow.json')
+        if current.get('sampled_unix') != metadata.get('sampled_unix'):
+            return
+        self.write_state('last-borrow.json', previous or {})
 
 
 def record_completion(ledger, item, telemetry):

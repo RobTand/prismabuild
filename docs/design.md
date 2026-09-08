@@ -1501,15 +1501,28 @@ collected once by the broker and shared by all loops.
 
 ## Preferred, overflow and adaptive CPU admission
 
-Host admission uses a nonblocking local FLOCK around candidate evaluation and
-claiming. A losing loop reports `host admission lock busy` to its worker log,
+Host admission uses a nonblocking local FLOCK around the box's headroom
+decision, not around the claim that follows it. A claiming loop takes it for
+the capacity prelude that mints and retires this box's own tokens, and then
+once per candidate for the adaptive CPU decision, the adaptive GPU decision,
+the reservation through `begin_acquire`, and the borrow record that decision
+consumes. `begin_acquire` moves the tokens out of `free/` and into a directory
+every sibling's `decision` and `available` already counts, so the same headroom
+cannot be spent twice once that block returns. Everything after it runs outside
+the lock and nothing reacquires it: the record rename that decides ownership,
+the lease write and the token renames are arbitrated fleet-wide by that rename
+and by the per-key transition lock, to which a host-local FLOCK adds nothing.
+Holding it across them emptied whole boxes out of the claiming population while
+one loop was slow on the shared mount (issue #351).
+A losing loop reports `host admission lock busy` to its worker log,
 with the holder PID observed at refusal (or `unknown`), before returning to
 its normal poll cadence. Output is limited to one line per 60 monotonic seconds
 per queue instance, including across holder changes and successful acquisitions.
 This is an observed refusal at the enclosing gate, not process ownership for
 recovery or evidence about any candidate's placement, CPU or GPU decision.
 The diagnostic adds no shared-filesystem reads or writes. A holder can still
-block on shared I/O inside the critical section; the diagnostic does not bound
+block on shared I/O inside the narrowed critical section, which reads holder
+token metadata and renames under `begin_acquire`; the diagnostic does not bound
 that operation or release its locks and reservations (issues #266 and #351).
 
 CPU and GPU controllers resolve their host-local state paths before taking
@@ -1630,7 +1643,14 @@ shows enough aggregate headroom. Unknown startup intervals are charged in full,
 protected and excluded from the lending set. CPUs assigned to any busy, unknown
 or measurement action remain protected. One sample cannot authorize an
 unbounded burst: a successful borrowing decision consumes its freshness for the
-next borrower.
+next borrower. That consumption is recorded under the host admission lock, in
+the same block as the decision and the reservation it belongs to, before the
+claim rename. A claim that does not happen returns it: every branch that
+abandons the reservation restores the record, since a claimant that lost the
+rename occupied no borrowed CPU and is owed its retry. The restore is a
+compare-and-set under the same lock and never overwrites a newer borrow, and a
+lock busy at that moment leaves the borrow spent, which can only refuse the next
+borrow and never authorize a second one against one sample.
 
 Memory resources retain ordinary all-or-nothing token admission. CPU telemetry
 cannot discount memory or GPU demand. The separate adaptive GPU controller below

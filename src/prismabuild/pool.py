@@ -3238,6 +3238,23 @@ class PoolQueue:
 
         return controller.locked() if controller is not None else nullcontext()
 
+    @staticmethod
+    def _return_borrow(controller: cpu_admission.Controller | None, borrow) -> None:
+        """Return a borrow whose claim did not happen, when the lock is free.
+
+        Host-local and bounded, but it still takes the lock, because restoring
+        the record has to see the record a concurrent ``admitted`` wrote.  A
+        refusal here leaves the borrow spent, which only ever refuses the next
+        borrow and never authorizes a second one against one sample.
+        """
+
+        if controller is None or borrow is None:
+            return
+        metadata, previous = borrow
+        with suppress(cpu_admission.AdmissionBusy):
+            with controller.locked():
+                controller.withdrew(metadata, previous)
+
     def _report_admission_busy(self, refusal: cpu_admission.AdmissionBusy) -> None:
         """Expose the gate before candidate evaluation without shared I/O.
 
@@ -3565,10 +3582,14 @@ class PoolQueue:
         adds anything to, and holding it across the mount is what emptied whole
         boxes out of the claiming population when the mount was slow (#351).
 
-        The one thing that goes back under the lock is ``admitted``, which is
-        host-local bookkeeping and touches nothing on the mount.  A refusal
-        there is swallowed rather than returned, because by then the item is
-        claimed and there is no honest way to report "nothing to run".
+        Nothing reacquires the lock on the way to a claim.  The borrow record
+        that ``admitted`` writes is taken inside the same block as the
+        decision it belongs to, so once the rename happens there is no
+        host-local gate left that could refuse and cost this loop a claim it
+        already made.  The lock is taken again only on the branches that give
+        the reservation back, to give the borrow back with it: a claimant that
+        lost the rename occupied no borrowed CPU, and a refusal there costs
+        one sample's borrow rather than a claim.
         A starved item (``passes >= STARVATION_FLOOR``) that this host could
         eventually fit withholds the host rather than being overtaken; one it
         could never fit is skipped, because withholding a box for work that
@@ -3675,6 +3696,7 @@ class PoolQueue:
                 handle: str | None = None
                 adaptive = None
                 adaptive_gpu = None
+                borrow = None
                 if controller is not None and not demand:
                     # Adaptive admission needs a durable reservation to make an
                     # unknown CPU consumer visible to subsequent measurements.
@@ -3742,10 +3764,34 @@ class PoolQueue:
                                 # the head of the ordering -- but stops holding the box shut
                                 # for work it cannot do anything with.
                                 continue
+                            if adaptive is not None:
+                                # The borrow is spent by the decision that made
+                                # it, under the lock that made it, and before
+                                # anything on the mount can delay it.  That is
+                                # the contract as written: "a successful
+                                # borrowing decision consumes its freshness for
+                                # the next borrower".  By this line the tokens
+                                # have already left ``free/``, so the headroom
+                                # the borrow spent is gone whether or not the
+                                # rename below succeeds, and a sibling deciding
+                                # against a stale ``last-borrow.json`` would be
+                                # deciding against headroom that is not there.
+                                #
+                                # A claim that never happens gives it back:
+                                # every branch below that abandons the
+                                # reservation also returns the borrow, because
+                                # a claimant that lost the rename occupied no
+                                # borrowed CPU and the retry it is owed must
+                                # not be refused for a borrow nobody holds.
+                                # ``withdrew`` restores only its own record, so
+                                # a newer borrow that landed in between keeps
+                                # the sample it spent.
+                                borrow = (adaptive, controller.admitted(adaptive))
                     if (ledger is not None and handle is not None and cpu_tiers is not None
                             and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
                             and self._defer_fallback(item, demand)):
                         ledger.abandon_acquire(handle)
+                        self._return_borrow(controller, borrow)
                         continue
                     # Intent precedes the claim, so a crash in between leaves evidence.
                     self._write_claim_intent(key, owner=owner)
@@ -3760,6 +3806,7 @@ class PoolQueue:
                             # winner's reservation and let a third action be admitted
                             # on top of it.
                             ledger.abandon_acquire(handle)
+                            self._return_borrow(controller, borrow)
                         # Leave no evidence of a claim that did not happen.  The marker
                         # is written by rename, so this claimant's copy replaced
                         # whatever was there -- and if the winner wrote first, the
@@ -3784,6 +3831,7 @@ class PoolQueue:
                         # fresh admission before committing this claimant's tokens.
                         if ledger is not None and handle is not None:
                             ledger.abandon_acquire(handle)
+                            self._return_borrow(controller, borrow)
                         try:
                             os.link(dst, src)
                         except OSError:
@@ -3818,6 +3866,7 @@ class PoolQueue:
                             # restores the item exactly as it was.
                             ledger.abandon_acquire(handle)
                             ledger.release(key)
+                            self._return_borrow(controller, borrow)
                             # Link rather than rename.  ``publish`` writes ``ready``
                             # unconditionally, so a re-submission of this key can
                             # already be sitting there, and a rename would replace that
@@ -3848,6 +3897,7 @@ class PoolQueue:
                             # Already failing; a failure to roll back must not
                             # replace the ending that is on its way out.
                             ledger.abandon_acquire(handle)
+                            self._return_borrow(controller, borrow)
                     raise
                 terminal = self.terminal_outcome_covers(moved, action_key=key)
                 if terminal is not None:
@@ -3921,31 +3971,6 @@ class PoolQueue:
                                      if claimed.get("container_owner") else None),
                 )
                 self.passes_path(key).unlink(missing_ok=True)
-                if controller is not None and adaptive is not None:
-                    # The one thing that goes back under the lock, and the only
-                    # thing: ``admitted`` writes host-local borrow state, reads
-                    # nothing on the mount, and cannot stall a sibling in it.
-                    #
-                    # It records the borrow *after* the rename on purpose.  A
-                    # claimant that loses the rename has borrowed nothing, and
-                    # recording it anyway would spend this box's one borrow per
-                    # host sample on a claim that never happened -- the next
-                    # poll is then refused for a borrow nobody holds, until a
-                    # fresh sample arrives.
-                    #
-                    # A refusal here is swallowed, and it is the only refusal
-                    # in this method that is.  Everything above this line has
-                    # already happened: the record is renamed, the tokens are
-                    # committed, the lease is written, the item IS this
-                    # claimant's.  Letting ``AdmissionBusy`` out would hand
-                    # ``claim`` its "nothing to run" answer for work that is
-                    # already owned and that nobody would then execute.  What
-                    # is given up instead is one sample's worth of the
-                    # lend-a-lightly-used-CPU guard, which the host busy and
-                    # PSI tests re-derive on the next sample.
-                    with suppress(cpu_admission.AdmissionBusy):
-                        with controller.locked():
-                            controller.admitted(adaptive)
                 return claimed
         return None
 
