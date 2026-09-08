@@ -110,7 +110,7 @@ from __future__ import annotations
 
 from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 from typing import NamedTuple
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 import errno
 import fcntl
 from functools import wraps
@@ -3195,19 +3195,24 @@ class PoolQueue:
                 with controller.locked():
                     pass
                 ready = self.ready_items()
-                # Discovery can outlive another claim. Reacquire admission for
-                # all decisions/mutations; _claim checks ownership and the
-                # moved record's actual requirements before committing tokens.
-                with controller.locked():
-                    return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
-                                       capacity=capacity, cpu_tiers=tiers,
-                                       controller=controller,
-                                       gpu_controller=gpu_controller, ready=ready)
+                # ``_claim`` takes admission itself, once per candidate and only
+                # around the decision that has to be exclusive. Wrapping the
+                # whole of it here was the second half of #351: everything it
+                # does after the decision -- the record rename that IS the
+                # claim, the lease write, the token renames -- is on the shared
+                # mount, so one stall in there held the host-wide lock for its
+                # whole duration and every sibling loop on the box answered
+                # ``None``. The box then claimed nothing at all while ready work
+                # waited with free memory and a free GPU.
+                return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
+                                   capacity=capacity, cpu_tiers=tiers,
+                                   controller=controller,
+                                   gpu_controller=gpu_controller, ready=ready)
             except cpu_admission.AdmissionBusy as exc:
-                # Another loop on this box is mid-decision. Record rename,
-                # lease and tokens remain on the shared mount even though CPU
-                # bookkeeping is host-local. Waiting here means waiting on a
-                # filesystem a different machine controls, and the whole box waits with us.
+                # Another loop on this box is mid-decision. Waiting here means
+                # waiting on a host-local lock whose holder is deciding, and
+                # under the enclosing form it meant waiting on a filesystem a
+                # different machine controls, with the whole box waiting too.
                 #
                 # ``None`` is already this method's answer for "nothing this
                 # box may admit right now", and ``serve_once`` documents it as
@@ -3220,6 +3225,18 @@ class PoolQueue:
                 return None
         return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                            capacity=capacity, cpu_tiers=cpu_tiers)
+
+    @staticmethod
+    def _admission_lock(controller: cpu_admission.Controller | None):
+        """Hold host admission for the block, when there is one to hold.
+
+        ``_claim`` runs both with and without adaptive admission -- the legacy
+        path passes no controller and has no host-wide lock at all -- and the
+        two must not be two spellings of the decision.  ``nullcontext`` keeps
+        one body for both.
+        """
+
+        return controller.locked() if controller is not None else nullcontext()
 
     def _report_admission_busy(self, refusal: cpu_admission.AdmissionBusy) -> None:
         """Expose the gate before candidate evaluation without shared I/O.
@@ -3535,6 +3552,18 @@ class PoolQueue:
         When ``capacity`` is given, admission runs *before* the rename and the
         tokens are released again if the rename is lost -- so a worker never
         holds capacity it is not about to use, and never waits while holding.
+
+        With a ``controller``, the host-wide admission lock is taken *here*,
+        and it covers exactly two things: the capacity prelude, and, per
+        candidate, the decision plus ``begin_acquire`` plus the borrow record.
+        That is the whole of what has to be exclusive between the loops of one
+        box, because ``begin_acquire`` moves the tokens out of ``free/`` and
+        into a directory every sibling's ``decision`` and ``available`` already
+        counts.  Everything after it is outside the lock, including the rename
+        -- ownership is decided fleet-wide by that rename and by the per-key
+        transition lock, neither of which a host-local flock adds anything to,
+        and holding it across the mount is what emptied a whole box out of the
+        claiming population when the mount was slow (#351).
         A starved item (``passes >= STARVATION_FLOOR``) that this host could
         eventually fit withholds the host rather than being overtaken; one it
         could never fit is skipped, because withholding a box for work that
@@ -3572,15 +3601,20 @@ class PoolQueue:
         total: dict[str, int] = {}
         if capacity is not None:
             ledger = self.ledger()
-            if cpu_tiers is None:
-                cpu_tiers = _read_json(ledger.base / "cpu-map.json")
-            if cpu_tiers is not None:
-                cpu_tiers = ledger.configure_cpu_tiers(cpu_tiers)
-                if int(capacity.get("cpu", 0)) > sum(map(len, cpu_tiers.values())):
-                    raise PoolContractError("CPU capacity exceeds the inherited CPU map")
-                ledger.retire_free_capacity({"cpu": int(capacity.get("cpu", 0))})
-            ledger.ensure_capacity(capacity)
-            total = ledger.capacity()
+            # Minting and retiring tokens is a read-modify-write of this box's
+            # own capacity, so it stays exclusive -- two loops retiring against
+            # different clamped offers must not interleave.  It is bounded and
+            # it is not the claim: no rename, lease or token move happens here.
+            with self._admission_lock(controller):
+                if cpu_tiers is None:
+                    cpu_tiers = _read_json(ledger.base / "cpu-map.json")
+                if cpu_tiers is not None:
+                    cpu_tiers = ledger.configure_cpu_tiers(cpu_tiers)
+                    if int(capacity.get("cpu", 0)) > sum(map(len, cpu_tiers.values())):
+                        raise PoolContractError("CPU capacity exceeds the inherited CPU map")
+                    ledger.retire_free_capacity({"cpu": int(capacity.get("cpu", 0))})
+                ledger.ensure_capacity(capacity)
+                total = ledger.capacity()
         if ready is None:
             ready = self.ready_items()
         live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
@@ -3642,132 +3676,184 @@ class PoolQueue:
                     # Empty legacy demand has no holder; keep it queued instead.
                     self.record_pass(key)
                     continue
-                if ledger is not None and demand:
-                    if any(total.get(kind, 0) < need for kind, need in reservation_demand.items()):
-                        continue      # never fits this box; not this box's to hold
-                    if controller is not None:
-                        adaptive = controller.decision(item, demand)
-                        if adaptive is None:
-                            self.record_pass(key)
-                            continue
-                    if gpu_controller is not None and demand.get("gpu"):
-                        adaptive_gpu = gpu_controller.decision(item, demand)
-                        if adaptive_gpu is None:
-                            self.record_pass(key)
-                            continue
-                        gpu_controller.reserve_probe(adaptive_gpu)
-                    if adaptive_gpu is not None:
-                        handle = ledger.begin_acquire(key, reservation_demand, adaptive=adaptive,
-                                                      cpu_tiers=cpu_tiers,
-                                                      adaptive_gpu=adaptive_gpu)
-                        asked = reservation_demand
-                    else:
-                        handle = (ledger.begin_acquire(key, demand) if adaptive is None else
-                                  ledger.begin_acquire(key, demand, adaptive=adaptive,
-                                                       cpu_tiers=cpu_tiers))
-                        asked = demand
-                    if handle is None:
-                        denials = self.record_pass(key)
-                        if not preempted and self._preempt_background_holder(
-                                ledger, action_key=key, demand=asked,
-                                priority=int(item.get("priority", 0))) is not None:
-                            # One per pass.  The tokens come back when the
-                            # holder stops, so this item is admitted on a later
-                            # pass and this one ends exactly as it did before.
-                            preempted = True
-                        if (denials >= STARVATION_FLOOR
-                                and self.withhold_age(key) <= WITHHOLD_CEILING_S):
-                            # Wired to the decision: stop letting smaller work pass it.
-                            return None
-                        # Past the ceiling it keeps its passes -- and so its place at
-                        # the head of the ordering -- but stops holding the box shut
-                        # for work it cannot do anything with.
-                        continue
-                if (ledger is not None and handle is not None and cpu_tiers is not None
-                        and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
-                        and self._defer_fallback(item, demand)):
-                    ledger.abandon_acquire(handle)
-                    continue
-                # Intent precedes the claim, so a crash in between leaves evidence.
-                self._write_claim_intent(key, owner=owner)
-                src = self.item_path(READY, key)
-                dst = self.item_path(CLAIMED, key)
+                # From the reservation to ``commit_acquire`` the tokens exist
+                # only under a handle this frame holds: nothing else can name
+                # them, and no sweep will return them before
+                # ``LEASE_TIMEOUT_S``.  Every ending in that window therefore
+                # has to give them back -- including the ones this code does
+                # not author, which is what the bare ``except`` is for.
+                committed = False
                 try:
-                    os.rename(src, dst)
-                except (FileNotFoundError, NotADirectoryError):
-                    if ledger is not None and handle is not None:
-                        # Lost the race: hold nothing -- and return only what THIS
-                        # claimant took.  Releasing by action key here returned the
-                        # winner's reservation and let a third action be admitted
-                        # on top of it.
+                    if ledger is not None and demand:
+                        if any(total.get(kind, 0) < need for kind, need in reservation_demand.items()):
+                            continue      # never fits this box; not this box's to hold
+                        # Host admission's exclusive half, and only that half: read
+                        # the headroom, decide against it, and take the tokens out
+                        # of ``free/`` before letting go.  ``begin_acquire`` moves
+                        # them into ``held/<handle>/``, where every sibling's
+                        # ``decision`` and ``available`` already counts them, so the
+                        # headroom cannot be spent twice once this block returns.
+                        # The claim itself -- the rename that decides ownership --
+                        # is deliberately outside: it is arbitrated fleet-wide by
+                        # the rename, not by a host-local lock, and holding this one
+                        # across it is what took whole boxes out of the claiming
+                        # population when the mount was slow (#351).
+                        with self._admission_lock(controller):
+                            if controller is not None:
+                                adaptive = controller.decision(item, demand)
+                                if adaptive is None:
+                                    self.record_pass(key)
+                                    continue
+                            if gpu_controller is not None and demand.get("gpu"):
+                                adaptive_gpu = gpu_controller.decision(item, demand)
+                                if adaptive_gpu is None:
+                                    self.record_pass(key)
+                                    continue
+                                gpu_controller.reserve_probe(adaptive_gpu)
+                            if adaptive_gpu is not None:
+                                handle = ledger.begin_acquire(key, reservation_demand, adaptive=adaptive,
+                                                              cpu_tiers=cpu_tiers,
+                                                              adaptive_gpu=adaptive_gpu)
+                                asked = reservation_demand
+                            else:
+                                handle = (ledger.begin_acquire(key, demand) if adaptive is None else
+                                          ledger.begin_acquire(key, demand, adaptive=adaptive,
+                                                               cpu_tiers=cpu_tiers))
+                                asked = demand
+                            if handle is None:
+                                denials = self.record_pass(key)
+                                if not preempted and self._preempt_background_holder(
+                                        ledger, action_key=key, demand=asked,
+                                        priority=int(item.get("priority", 0))) is not None:
+                                    # One per pass.  The tokens come back when the
+                                    # holder stops, so this item is admitted on a later
+                                    # pass and this one ends exactly as it did before.
+                                    preempted = True
+                                if (denials >= STARVATION_FLOOR
+                                        and self.withhold_age(key) <= WITHHOLD_CEILING_S):
+                                    # Wired to the decision: stop letting smaller work pass it.
+                                    return None
+                                # Past the ceiling it keeps its passes -- and so its place at
+                                # the head of the ordering -- but stops holding the box shut
+                                # for work it cannot do anything with.
+                                continue
+                            if controller is not None and adaptive is not None:
+                                # The borrow is spent when the tokens are, not when
+                                # the rename is won.  ``decision`` refuses a second
+                                # borrow off the same host sample only if this is
+                                # already written, so recording it on the far side
+                                # of an unlocked rename would let two loops borrow
+                                # the same idle CPUs.  A claimant that then loses
+                                # the rename has cost this box one borrow window,
+                                # which is the safe direction to be wrong in.
+                                controller.admitted(adaptive)
+                    if (ledger is not None and handle is not None and cpu_tiers is not None
+                            and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
+                            and self._defer_fallback(item, demand)):
                         ledger.abandon_acquire(handle)
-                    # Leave no evidence of a claim that did not happen.  The marker
-                    # is written by rename, so this claimant's copy replaced
-                    # whatever was there -- and if the winner wrote first, the
-                    # marker now names the box that LOST while still passing the
-                    # generation check (#272).
-                    #
-                    # Only while it is still this claimant's own: ``owner`` is
-                    # unique per claimant and the marker carries it.  The check and
-                    # the unlink are two operations on a shared mount, so a marker
-                    # written between them is removed as well -- but that leaves no
-                    # marker, which ``resolve_claim_holder`` already answers as
-                    # "nobody said", rather than a marker naming the wrong box.
-                    # The ledger is the exact answer either way; this only keeps
-                    # the fallback from being confidently wrong.
-                    self._discard_claim_intent(key, owner=owner)
-                    continue
-                moved = _read_json(dst) or item
-                if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
-                        or self.demand_of(moved) != demand):
-                    # Admission described the scanned generation. A replacement
-                    # may need a different host or more tokens; put it back for a
-                    # fresh admission before committing this claimant's tokens.
-                    if ledger is not None and handle is not None:
-                        ledger.abandon_acquire(handle)
+                        continue
+                    # Intent precedes the claim, so a crash in between leaves evidence.
+                    self._write_claim_intent(key, owner=owner)
+                    src = self.item_path(READY, key)
+                    dst = self.item_path(CLAIMED, key)
                     try:
-                        os.link(dst, src)
-                    except OSError:
-                        # A still newer submission may own ready already. Leave
-                        # the moved record for the reaper, as below.
-                        pass
-                    else:
-                        dst.unlink(missing_ok=True)
-                        self.item_path(INTENT, key).unlink(missing_ok=True)
-                    continue
-                if ledger is not None and handle is not None:
-                    # Won the rename, so the reservation stops belonging to this
-                    # claimant and starts belonging to the action.  Every branch
-                    # below releases by action key, which is correct only once the
-                    # tokens are filed under it.
-                    if (ledger.commit_acquire(key, handle) < sum(reservation_demand.values())
-                            or (adaptive is not None and _read_json(
-                                ledger.held_dir / key / cpu_admission.METADATA) is None)
-                            or (adaptive_gpu is not None and _read_json(
-                                ledger.held_dir / key / gpu_admission.METADATA) is None)):
-                        # A stale-acquisition sweep took part of the reservation,
-                        # or tokens of an earlier incarnation are filed under this
-                        # key.  Fail closed rather than run unreserved: ``dst`` is
-                        # still byte-identical to the ready record, because the
-                        # rewrite below has not happened yet, so putting it back
-                        # restores the item exactly as it was.
-                        ledger.abandon_acquire(handle)
-                        ledger.release(key)
-                        # Link rather than rename.  ``publish`` writes ``ready``
-                        # unconditionally, so a re-submission of this key can
-                        # already be sitting there, and a rename would replace that
-                        # new generation with these older bytes and lose the
-                        # request.  If it is there, leave the claim for the reaper
-                        # instead: an extra reaper cycle costs one attempt, a
-                        # clobbered generation costs the whole submission.
+                        os.rename(src, dst)
+                    except (FileNotFoundError, NotADirectoryError):
+                        if ledger is not None and handle is not None:
+                            # Lost the race: hold nothing -- and return only what THIS
+                            # claimant took.  Releasing by action key here returned the
+                            # winner's reservation and let a third action be admitted
+                            # on top of it.
+                            ledger.abandon_acquire(handle)
+                        # Leave no evidence of a claim that did not happen.  The marker
+                        # is written by rename, so this claimant's copy replaced
+                        # whatever was there -- and if the winner wrote first, the
+                        # marker now names the box that LOST while still passing the
+                        # generation check (#272).
+                        #
+                        # Only while it is still this claimant's own: ``owner`` is
+                        # unique per claimant and the marker carries it.  The check and
+                        # the unlink are two operations on a shared mount, so a marker
+                        # written between them is removed as well -- but that leaves no
+                        # marker, which ``resolve_claim_holder`` already answers as
+                        # "nobody said", rather than a marker naming the wrong box.
+                        # The ledger is the exact answer either way; this only keeps
+                        # the fallback from being confidently wrong.
+                        self._discard_claim_intent(key, owner=owner)
+                        continue
+                    moved = _read_json(dst) or item
+                    if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
+                            or self.demand_of(moved) != demand):
+                        # Admission described the scanned generation. A replacement
+                        # may need a different host or more tokens; put it back for a
+                        # fresh admission before committing this claimant's tokens.
+                        if ledger is not None and handle is not None:
+                            ledger.abandon_acquire(handle)
                         try:
                             os.link(dst, src)
                         except OSError:
+                            # A still newer submission may own ready already. Leave
+                            # the moved record for the reaper, as below.
                             pass
                         else:
                             dst.unlink(missing_ok=True)
                             self.item_path(INTENT, key).unlink(missing_ok=True)
                         continue
+                    if ledger is not None and handle is not None:
+                        # Won the rename, so the reservation stops belonging to this
+                        # claimant and starts belonging to the action.  Every branch
+                        # below releases by action key, which is correct only once the
+                        # tokens are filed under it.
+                        filed = ledger.commit_acquire(key, handle)
+                        # Past this call the handle directory is empty and the
+                        # tokens answer to the action key, so the branches
+                        # below release by key and the guard must stop trying
+                        # to abandon a handle that owns nothing.
+                        committed = True
+                        if (filed < sum(reservation_demand.values())
+                                or (adaptive is not None and _read_json(
+                                    ledger.held_dir / key / cpu_admission.METADATA) is None)
+                                or (adaptive_gpu is not None and _read_json(
+                                    ledger.held_dir / key / gpu_admission.METADATA) is None)):
+                            # A stale-acquisition sweep took part of the reservation,
+                            # or tokens of an earlier incarnation are filed under this
+                            # key.  Fail closed rather than run unreserved: ``dst`` is
+                            # still byte-identical to the ready record, because the
+                            # rewrite below has not happened yet, so putting it back
+                            # restores the item exactly as it was.
+                            ledger.abandon_acquire(handle)
+                            ledger.release(key)
+                            # Link rather than rename.  ``publish`` writes ``ready``
+                            # unconditionally, so a re-submission of this key can
+                            # already be sitting there, and a rename would replace that
+                            # new generation with these older bytes and lose the
+                            # request.  If it is there, leave the claim for the reaper
+                            # instead: an extra reaper cycle costs one attempt, a
+                            # clobbered generation costs the whole submission.
+                            try:
+                                os.link(dst, src)
+                            except OSError:
+                                pass
+                            else:
+                                dst.unlink(missing_ok=True)
+                                self.item_path(INTENT, key).unlink(missing_ok=True)
+                            continue
+                except BaseException:
+                    # The handle is the only name these tokens have, and it
+                    # lives in this frame.  ``begin_acquire`` keeps its own
+                    # all-or-nothing promise up to the point it returns; after
+                    # that an ESTALE out of the intent marker, an ENOSPC in the
+                    # rename, a torn ``.adaptive.json`` -- anything at all --
+                    # left the whole demand under ``held/claiming.<...>/`` with
+                    # no caller able to return it, recoverable only by
+                    # ``sweep_stale_acquisitions`` a ``LEASE_TIMEOUT_S`` later
+                    # and once per poll for as long as the cause repeated.
+                    if ledger is not None and handle is not None and not committed:
+                        with suppress(Exception):
+                            # Already failing; a failure to roll back must not
+                            # replace the ending that is on its way out.
+                            ledger.abandon_acquire(handle)
+                    raise
                 terminal = self.terminal_outcome_covers(moved, action_key=key)
                 if terminal is not None:
                     # A stale reaper can put a generation back in ``ready`` after
@@ -3840,8 +3926,12 @@ class PoolQueue:
                                      if claimed.get("container_owner") else None),
                 )
                 self.passes_path(key).unlink(missing_ok=True)
-                if controller is not None and adaptive is not None:
-                    controller.admitted(adaptive)
+                # ``controller.admitted`` is NOT called here.  It writes
+                # host-local state and would need the admission lock back,
+                # which is the one thing this path must never take: it is past
+                # the rename, so it owns the item, and a busy refusal here
+                # would throw a claim away.  It runs beside ``begin_acquire``
+                # instead, under the lock that already had to be held.
                 return claimed
         return None
 
