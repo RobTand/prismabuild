@@ -106,7 +106,7 @@ telemetry directory; a recovered scope (`_scope_from_record`) writes to the
 same authority path. Nothing is imported from the shared copies: the #355 rule
 that cold local state trusts no diagnostic copy applies to both records.
 
-**Cold host (root cleared, reboot).** `gpu-state.json` is absent, so
+**Cold host after reboot.** `gpu-state.json` is absent, so
 `low_samples` restarts at one, there is no `power_feedback`, and the consumed
 sample markers are gone. Probing a non-empty GPU needs two continuous fresh
 samples again, which costs one extra admission pass. The consumed-sample
@@ -115,6 +115,27 @@ broker, whose sample ids are new, so the guard's absence cannot be exploited by
 the old sample. Cold telemetry is a missing record, which the existing validity
 predicate treats as "attribute the full reservation" -- the conservative
 answer.
+
+**Local state lost without reboot.** With `PRISMABUILD_BOX_STATE_ROOT` unset,
+the default is `/tmp/prismabuild-admission-<uid>`. Losing `gpu-state.json`
+forgets the pending or plateau `power_feedback`, its power window and consumed
+sample markers even if the GPU holders and broker are still running. The shared
+snapshot cannot restore them. The first valid low-power sample rebuilds
+`low_samples` as one; rereading that same `sample_id` cannot advance it. A
+second continuous fresh sample can reopen probing once holder attribution,
+settling, memory and pressure checks pass. Thus lost state can discard a
+previous plateau decision; conservative attribution does not preserve learned
+feedback. Missing local holder telemetry blocks GPU sharing and grants no CPU
+lending credit until usable local samples return.
+
+This describes loss of adaptive records, not safe deletion of the root while
+workers run. The root also contains permanent admission lock inodes: clearing
+or changing it can let a new loop lock a replacement while an older loop holds
+the original. Preserve the root while any loop or publisher can use it. A
+configured persistent host-local root must be shared by all loops on that box;
+changing it requires quiescing its users first. The current default remains
+under `/tmp`; a persistent default and cleanup of abandoned local telemetry
+remain #266 follow-ups.
 
 **Disagreement.** Admission never reads the shared copies, so there is nothing
 to reconcile and nothing wins: an edited or stale shared record changes no
