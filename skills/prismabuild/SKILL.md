@@ -195,6 +195,10 @@ budget at finish to read the box window, including the GPU reference query
 (0.14–0.18 s measured before the query shared that budget), plus a sampler that
 ticks at most every two seconds while the attempt runs. It never enters the
 action key. Every Netdata chart read also uses only the remaining budget and
+targets 4096 average buckets (Netdata rounds the count to whole time buckets),
+retaining the 4 MiB response cap. Its CPU
+group records `time_group: average` and available CPU/pressure chart intervals;
+means and maxima describe those buckets, not raw-sample peaks. The chart read
 is skipped at expiry, retaining CPU data already collected. The deadline is
 cooperative: filesystem reads, HTTP response processing and process cleanup
 can overrun it. An absent field means the source recorded nothing;

@@ -1506,7 +1506,17 @@ idle" call for different responses.
     reference, GPU utilisation, the unified memory pool and the memory and I/O
     pressure stalls come from the `pqteld` flight recorder on the GB10 boxes;
     CPU busy and CPU pressure come from Netdata on every box, because pqteld
-    records no CPU column at all. On GB10 the power reference is the SoC TDP and
+    records no CPU column at all. Each Netdata query targets 4096 points
+    with average grouping and retains a 4 MiB response cap. Long windows use
+    averaged buckets; Netdata rounds the target to whole time buckets, so it
+    can return more than 4096. `samples` counts measured buckets, and CPU and
+    pressure maxima are maxima of those buckets, not raw-sample peaks. The CPU
+    group records `time_group: average`, `update_every_s` for CPU busy, and
+    `psi_some_avg10_update_every_s` / `psi_full_avg10_update_every_s` for pressure
+    from the wrapped response's `view_update_every`, when valid. This is the
+    bucket interval, not the database collection interval. Missing intervals
+    are absent.
+    On GB10 the power reference is the SoC TDP and
     covers the CPU too, which `power_reference_scope` says; it is a reference,
     not a measured saturation point. Reading the window is bounded to about two
     seconds and can never fail a finish: an unreachable recorder produces
