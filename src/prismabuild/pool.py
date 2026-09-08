@@ -3188,12 +3188,18 @@ class PoolQueue:
             # both controllers before taking the host-wide admission lock.
             gpu_controller = (gpu_admission.Controller(ledger, publisher=controller)
                               if has_gpu else None)
+            evaluating = False
             try:
                 # Preserve the cheap busy refusal before starting shared I/O.
                 # Discovery holds no reservation and needs no host exclusion:
                 # a stalled reader must not prevent a sibling from admitting.
                 with controller.locked():
                     pass
+                # Past the probe, a refusal can only come from ``_claim``'s
+                # per-candidate lock, which is taken after evaluation has
+                # begun. The same ``except`` catches both, so it has to be
+                # told which one it caught rather than assert the earlier one.
+                evaluating = True
                 ready = self.ready_items()
                 # ``_claim`` takes admission itself, once per candidate and only
                 # around the decision that has to be exclusive. Wrapping the
@@ -3221,7 +3227,7 @@ class PoolQueue:
                 # cadence, where announcing lives: the box keeps saying what
                 # it is while a sibling is slow, instead of going silent and
                 # letting its offer expire.
-                self._report_admission_busy(exc)
+                self._report_admission_busy(exc, evaluating=evaluating)
                 return None
         return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                            capacity=capacity, cpu_tiers=cpu_tiers)
@@ -3255,12 +3261,21 @@ class PoolQueue:
             with controller.locked():
                 controller.withdrew(metadata, previous)
 
-    def _report_admission_busy(self, refusal: cpu_admission.AdmissionBusy) -> None:
-        """Expose the gate before candidate evaluation without shared I/O.
+    def _report_admission_busy(self, refusal: cpu_admission.AdmissionBusy,
+                               *, evaluating: bool = False) -> None:
+        """Expose the admission gate that refused, without shared I/O.
 
         Bound output per queue instance (one per worker loop), even when the
         holder changes or acquisitions succeed between refusals. The PID is
         an observation from the failed flock, not durable process ownership.
+
+        ``evaluating`` says which of the two gates refused, because since #351
+        there are two and one caller catches both: the cheap probe before any
+        shared I/O, where evaluation genuinely has not started, and ``_claim``'s
+        per-candidate lock, which is taken after the candidate list is in hand.
+        Reporting the first unconditionally would name the wrong gate every
+        time the second one refused, which is a false reading of a diagnostic
+        whose whole job is to say where the loop stopped.
         """
         now = time.monotonic()
         previous = self._admission_busy_logged_at
@@ -3268,9 +3283,11 @@ class PoolQueue:
             return
         self._admission_busy_logged_at = now
         holder = refusal.holder if refusal.holder is not None else "unknown"
+        stage = ("refused while evaluating candidates" if evaluating
+                 else "candidate evaluation not reached")
         try:
             print(f"pool: worker pid={os.getpid()}: host admission lock busy; "
-                  f"observed holder pid={holder}; candidate evaluation not reached; "
+                  f"observed holder pid={holder}; {stage}; "
                   "retrying on the normal poll cadence",
                   file=sys.stderr, flush=True)
         except (OSError, ValueError):
