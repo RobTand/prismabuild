@@ -3164,13 +3164,22 @@ class PoolQueue:
             gpu_controller = (gpu_admission.Controller(ledger, publisher=controller)
                               if has_gpu else None)
             try:
+                # Preserve the cheap busy refusal before starting shared I/O.
+                # Discovery holds no reservation and needs no host exclusion:
+                # a stalled reader must not prevent a sibling from admitting.
+                with controller.locked():
+                    pass
+                ready = self.ready_items()
+                # Discovery can outlive another claim. Reacquire admission for
+                # all decisions/mutations; _claim checks ownership and the
+                # moved record's actual requirements before committing tokens.
                 with controller.locked():
                     return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                                        capacity=capacity, cpu_tiers=tiers,
                                        controller=controller,
-                                       gpu_controller=gpu_controller)
+                                       gpu_controller=gpu_controller, ready=ready)
             except cpu_admission.AdmissionBusy as exc:
-                # Another loop on this box is mid-decision. The ``ready`` scan, record rename,
+                # Another loop on this box is mid-decision. Record rename,
                 # lease and tokens remain on the shared mount even though CPU
                 # bookkeeping is host-local. Waiting here means waiting on a
                 # filesystem a different machine controls, and the whole box waits with us.
@@ -3489,6 +3498,7 @@ class PoolQueue:
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         controller: cpu_admission.Controller | None = None,
         gpu_controller: gpu_admission.Controller | None = None,
+        ready: list[dict[str, object]] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -3546,7 +3556,8 @@ class PoolQueue:
                 ledger.retire_free_capacity({"cpu": int(capacity.get("cpu", 0))})
             ledger.ensure_capacity(capacity)
             total = ledger.capacity()
-        ready = self.ready_items()
+        if ready is None:
+            ready = self.ready_items()
         live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
                             for item in ready}
         for generation in list(self._cpu_deferrals):

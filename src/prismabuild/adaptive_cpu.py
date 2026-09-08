@@ -372,7 +372,7 @@ class Controller:
         this lock guards is not entirely local: CPU samples, profiles,
         interval/borrowing state, holder telemetry and GPU probe state are
         host-local, but ``decision`` still reads every holder's token metadata
-        on the shared mount, and the ``_claim`` this wraps scans ``ready/``,
+        on the shared mount, and the ``_claim`` this wraps
         renames a record, writes a lease and renames tokens -- also on the
         mount.  So the holder's time inside is bounded by a filesystem
         another machine controls, and a blocking ``LOCK_EX`` made every other

@@ -66,7 +66,13 @@ written *inside* the lock, so it takes the #355 path.
 
 ## What stays shared, and why
 
-The claim is the queue. `ready/` scan, the per-key transition lock, the claim
+The claim is the queue. The `ready/` scan now runs outside host admission after
+a brief busy check; the lock is reacquired before candidate decisions. A scan
+that finishes late cannot displace an intervening claimant, and the moved
+record is revalidated before its reservation is committed. The scan still uses
+the shared mount and has no I/O deadline.
+
+The per-key transition lock, the claim
 intent, the `ready/` to `claimed/` rename and the lease are how every other
 box learns what this box took; they cannot be anywhere but the mount.
 

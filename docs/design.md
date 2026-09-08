@@ -59,6 +59,15 @@ and denial sidecars before deriving worker/sample freshness and placement. Its
 `sampled_unix` is the time that collection finished; it remains a non-atomic
 diagnostic snapshot, not a process-liveness or storage-recovery guarantee.
 
+Adaptive claimants discover ready candidates and their aging sidecars outside
+the host admission lock. A brief nonblocking lock check preserves early busy
+refusal before discovery; admission is reacquired before decisions and queue
+mutations. The candidate list is advisory: an intervening claim wins, and the
+record actually moved must still satisfy placement and resource checks. An
+empty scan is not repeated under admission. This removes scan stalls from the
+critical section but does not bound discovery or shared transition, lease and
+token I/O, which still need ownership-safe recovery qualification (#266).
+
 The pull queue orders ready items by descending priority, then descending
 admission-denial count, then oldest publication time. Aging changes order only
 within a priority band. A denied item past `STARVATION_FLOOR` may withhold its
