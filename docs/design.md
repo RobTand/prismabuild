@@ -1458,7 +1458,11 @@ CPU bookkeeping writes from the critical section; holder telemetry and GPU
 probe state followed (`docs/host_local_reservations.md`, with the before/after
 syscall counts). The shared `reservations/<host>/telemetry/<key>.json` is now
 a copy the executing box's sampler writes after the host-local record, read by
-`pbmetrics` and never by admission. Action requests, holder token metadata,
+`pbmetrics` and never by admission. A reconstructed resource scope restores
+cumulative process I/O from its configured local authority, gated by the
+attempt nonce. Missing or unusable local state never imports the shared copy.
+Scopes without local authority, including late cleanup into a separate attempt
+archive, retain their telemetry-path accounting. Action requests, holder token metadata,
 transitions, leases and token operations still use the shared filesystem: the
 token ledger is cross-host ownership evidence (see holder resolution above) and
 does not move. It is not a bound on the entire claim operation or a claim

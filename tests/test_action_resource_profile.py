@@ -271,6 +271,72 @@ def test_a_second_sampler_continues_the_first_ones_accounting(tmp_path):
     assert carried["processes_live"] == 0
 
 
+def test_rebuilt_sampler_keeps_local_io_after_shared_copy_failure(tmp_path, monkeypatch):
+    """A failed diagnostic copy must not discard the last local accounting."""
+    shared = tmp_path / "shared.json"
+    local = tmp_path / "local.json"
+    group = _fake_cgroup(tmp_path / "cgroup", usage_usec=1, user_usec=1,
+                         system_usec=0, pids=[4242])
+    monkeypatch.setattr(resource_scope, "scope_pids", lambda _: [4242])
+    monkeypatch.setattr(resource_scope, "read_process_io", lambda _: (
+        "4242:1", 1, {name: 9 * MIB for name in resource_scope.IO_COUNTERS}))
+    first = resource_scope.ResourceScope(
+        "a" * 64, "b" * 32, 1 << 30, shared, authority_path=local)
+    first.cgroup_path = group
+    # Leave an older, valid shared sample, then fail its next publication.
+    shared.write_text(json.dumps({"nonce": first.nonce, "process_io": {}}))
+    write = resource_scope._atomic_json
+
+    def fail_shared(path, record):
+        if path == shared:
+            raise OSError("shared copy unavailable")
+        write(path, record)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(resource_scope, "_atomic_json", fail_shared)
+        with pytest.raises(OSError, match="shared copy unavailable"):
+            first.sample()
+    assert json.loads(local.read_text())["process_io"]["wchar"] == 9 * MIB
+
+    # The process has gone by the final sample. Its bytes survive in local
+    # authority, while the shared copy never learned about them.
+    monkeypatch.setattr(resource_scope, "scope_pids", lambda _: [])
+    second = resource_scope.ResourceScope(
+        "a" * 64, "b" * 32, 1 << 30, shared, authority_path=local)
+    second.cgroup_path = group
+    carried = second.sample()["process_io"]
+    assert carried["wchar"] == 9 * MIB
+    assert carried["processes_observed"] == 1
+    assert carried["processes_live"] == 0
+    assert json.loads(shared.read_text())["process_io"] == carried
+
+
+@pytest.mark.parametrize("local_state", ["missing", "malformed", "other_attempt", "unreadable"])
+def test_local_io_authority_never_falls_back_to_shared(tmp_path, monkeypatch, local_state):
+    shared = tmp_path / "shared.json"
+    local = tmp_path / "local.json"
+    shared.write_text(json.dumps({
+        "nonce": "b" * 32,
+        "process_io": {"retired": {name: 9 * MIB for name in resource_scope.IO_COUNTERS}},
+    }))
+    if local_state == "malformed":
+        local.write_text("{")
+    elif local_state == "other_attempt":
+        local.write_text(json.dumps({"nonce": "c" * 32, "process_io": {"retired": {"wchar": 5}}}))
+    read = Path.read_text
+
+    def read_local(path, *args, **kwargs):
+        assert path != shared, "shared diagnostic copy is not accounting authority"
+        if path == local and local_state == "unreadable":
+            raise PermissionError("local telemetry unavailable")
+        return read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_local)
+    scope = resource_scope.ResourceScope(
+        "a" * 64, "b" * 32, 1 << 30, shared, authority_path=local)
+    assert scope._prior_process_io() == {}
+
+
 def test_a_retry_does_not_inherit_the_previous_attempts_readings(tmp_path):
     """The file is named for the action; only the nonce says whose attempt.
 
