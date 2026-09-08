@@ -1857,6 +1857,13 @@ arguments are checked against the advertised types, required fields, property
 names, array items, minima and enums before any tool read. Invalid arguments
 return JSON-RPC `-32602`; operational tool refusals retain `isError` results.
 
+`pb_actions` can match `snapshot_parent` and `snapshot_commit` exactly against
+the sealed `checkout_snapshot` Git fields, as well as live `checkout_root`.
+Filters intersect and operate inside the existing newest-record window; exact
+action keys bypass that window. Git identity is not submitter identity: several
+agents can submit from the same parent, and a snapshot commit includes sealed
+changes. A missing or malformed snapshot never matches a requested Git field.
+
 Session construction also bounds the initial runtime-link read using the
 configured deadline. A failed startup read is retained as `startup-repo-link`
 in every tool response's timeout/error diagnostics, with `complete: false`.

@@ -179,7 +179,8 @@ as an `mcpServers` entry for opencode/Codex -- and use `pb_status`,
 `pb_action`, `pb_actions`, `pb_log`, `pb_verify_claim` and `pb_runtime`
 instead of shelling out to `pbstatus` and parsing its table, which is arranged
 for a person and whose columns move. Filter `pb_actions` by `checkout_root`,
-`published_by` or explicit `keys`: a queue record carries no submitter
+`snapshot_parent`, `snapshot_commit`, `published_by` or explicit `keys`: a queue
+record carries no submitter
 identity, so those are what identify your own work. Read `complete` and
 `timed_out` on every response before believing it -- a section that did not
 answer comes back as `null`, never as an empty list, and a read that failed

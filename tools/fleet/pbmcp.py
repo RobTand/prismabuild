@@ -880,6 +880,8 @@ class Session:
                    priority_min: float | None = None,
                    priority_max: float | None = None,
                    checkout_root: str | None = None,
+                   snapshot_parent: str | None = None,
+                   snapshot_commit: str | None = None,
                    published_by: str | None = None,
                    max_age_s: float | None = None,
                    keys: Sequence[str] | None = None,
@@ -920,6 +922,8 @@ class Session:
                     if _matches(row, tags=tags, priority_min=priority_min,
                                 priority_max=priority_max,
                                 checkout_root=checkout_root,
+                                snapshot_parent=snapshot_parent,
+                                snapshot_commit=snapshot_commit,
                                 published_by=published_by, max_age_s=max_age_s,
                                 now=now)]
             kept.sort(key=lambda row: row.get("published_unix") or 0.0, reverse=True)
@@ -936,6 +940,7 @@ class Session:
                 "states": wanted_states, "tags": list(tags or []),
                 "priority_min": priority_min, "priority_max": priority_max,
                 "checkout_root": checkout_root, "published_by": published_by,
+                "snapshot_parent": snapshot_parent, "snapshot_commit": snapshot_commit,
                 "max_age_s": max_age_s, "keys": selected,
             },
             "identity": {
@@ -943,7 +948,8 @@ class Session:
                 "note": "a queue record carries no submitter identity: publish "
                         "seals published_by (the submitting host) and either "
                         "checkout_root or checkout_snapshot, and nothing that "
-                        "names an agent. Filter by checkout_root, "
+                        "names an agent. Filter by checkout_root, snapshot_parent, "
+                        "snapshot_commit, "
                         "published_by, or the keys you already hold.",
             },
         }
@@ -1227,7 +1233,8 @@ def _row(state: str, record: Mapping[str, object], now: float) -> dict:
 
 
 def _matches(row: Mapping[str, object], *, tags, priority_min, priority_max,
-             checkout_root, published_by, max_age_s, now: float) -> bool:
+             checkout_root, published_by, max_age_s, now: float,
+             snapshot_parent=None, snapshot_commit=None) -> bool:
     if tags:
         have = {str(one) for one in (row.get("tags") or [])}
         if not have.issuperset({str(one) for one in tags}):
@@ -1240,6 +1247,12 @@ def _matches(row: Mapping[str, object], *, tags, priority_min, priority_max,
         if type(priority) not in (int, float) or priority > float(priority_max):
             return False
     if checkout_root is not None and str(row.get("checkout_root") or "") != str(checkout_root):
+        return False
+    snapshot = row.get("checkout_snapshot")
+    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+    if snapshot_parent is not None and snapshot.get("parent") != snapshot_parent:
+        return False
+    if snapshot_commit is not None and snapshot.get("commit") != snapshot_commit:
         return False
     if published_by is not None and str(row.get("published_by") or "") != str(published_by):
         return False
@@ -1304,7 +1317,8 @@ TOOLS: tuple[dict, ...] = (
         "description": "List actions by state, tag, priority band, checkout, "
                        "submitting host or age -- this is how an agent asks "
                        "for its own jobs. A queue record carries no submitter "
-                       "identity, so filter by `checkout_root`, "
+                       "identity, so filter by `checkout_root`, `snapshot_parent`, "
+                       "`snapshot_commit`, "
                        "`published_by`, or the keys you already hold.",
         "inputSchema": {
             "type": "object",
@@ -1322,6 +1336,12 @@ TOOLS: tuple[dict, ...] = (
                 "checkout_root": {"type": "string",
                                   "description": "Exact checkout the action "
                                                  "was submitted from."},
+                "snapshot_parent": {"type": "string",
+                                    "description": "Exact parent Git commit of "
+                                                   "the sealed checkout snapshot."},
+                "snapshot_commit": {"type": "string",
+                                    "description": "Exact Git commit containing "
+                                                   "the sealed checkout snapshot."},
                 "published_by": {"type": "string",
                                  "description": "Hostname that submitted it."},
                 "max_age_s": {"type": "number",
@@ -1488,7 +1508,8 @@ class Server:
             "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             "instructions": (
                 "Read-only view of the PrismaBuild pull queue. Use pb_actions "
-                "to find your own submissions (filter by checkout_root or "
+                "to find your own submissions (filter by checkout_root, "
+                "snapshot_parent, snapshot_commit or "
                 "published_by; the queue records no submitter identity), "
                 "pb_action and pb_log for one of them, and pb_status for the "
                 "fleet. Every response carries complete/timed_out: a quiet "
