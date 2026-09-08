@@ -666,7 +666,11 @@ class Session:
         self.deadline_s = float(deadline_s)
         self.recent = int(recent)
         self.log_tail_bytes = int(log_tail_bytes)
-        self.startup_generation = _link_target(self.repo_link)
+        self._startup_read = Call("startup", deadline_s=self.deadline_s,
+                                  startup_generation=None,
+                                  repo_link=self.repo_link)
+        self.startup_generation = self._startup_read.read(
+            "startup-repo-link", lambda: _link_target(self.repo_link))
 
     # -- dispatch ----------------------------------------------------------
 
@@ -678,6 +682,11 @@ class Session:
         call = Call(name, deadline_s=self.deadline_s,
                     startup_generation=self.startup_generation,
                     repo_link=self.repo_link)
+        # A later successful read cannot reconstruct the startup observation.
+        # Retain its diagnostics, including ownership of any abandoned reader.
+        call.timed_out.extend(self._startup_read.timed_out)
+        call.unavailable.extend(self._startup_read.unavailable)
+        call.abandoned.extend(self._startup_read.abandoned)
         try:
             payload = method(call, **arguments)
         except TypeError as exc:
