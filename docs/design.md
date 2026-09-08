@@ -1411,6 +1411,10 @@ The diagnostic adds no shared-filesystem reads or writes. A holder can still
 block on shared I/O inside the critical section; the diagnostic does not bound
 that operation or release its locks and reservations (issues #266 and #351).
 
+CPU and GPU controllers resolve their host-local state paths before taking
+admission, since deriving the ledger identity may stat the shared mount. This
+keeps that lookup outside the host-wide lock without bounding the lookup itself.
+
 Adaptive CPU bookkeeping is authoritative only on the host, under
 `PRISMABUILD_BOX_STATE_ROOT/<ledger-and-host-digest>.adaptive-cpu-v1/`.
 `cpu-sample.json`, `jobs.json`, `profiles.json` and `last-borrow.json` share

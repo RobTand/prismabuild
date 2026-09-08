@@ -253,3 +253,34 @@ def test_pbstatus_reads_the_published_gpu_snapshot_from_the_shared_path(gpu_rig,
     assert gpu['state'] == 'fresh'
     assert gpu['record']['sample_id'] == '100'
     assert gpu['record']['_snapshot']['source'] == 'host-local'
+
+
+def test_gpu_controller_resolves_ledger_before_holding_admission(gpu_rig, monkeypatch):
+    """A stalled ledger lookup must not park every sibling behind admission."""
+    import contextlib
+
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    shared = queue.ledger().base
+    locked = adaptive_cpu.Controller.locked
+    resolve = Path.resolve
+    inside = False
+
+    @contextlib.contextmanager
+    def observed_lock(controller):
+        nonlocal inside
+        with locked(controller):
+            inside = True
+            try:
+                yield
+            finally:
+                inside = False
+
+    def guarded_resolve(path, *args, **kwargs):
+        if inside and path == shared:
+            pytest.fail('shared ledger resolved while holding admission')
+        return resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(adaptive_cpu.Controller, 'locked', observed_lock)
+    monkeypatch.setattr(Path, 'resolve', guarded_resolve)
+    publish(1)
+    assert claim()
