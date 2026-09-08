@@ -138,6 +138,19 @@ action key and use published `pbwait.py`/`pbstatus.py` to inspect the terminal
 state. Check exit status, actual logs and the CAS receipt/payload. Record test
 counts, skips, devices and missing tooling; do not certify a wrapper's “done”.
 
+Read status and your own actions as data, not as text. Register the read-only
+MCP server -- `claude mcp add --scope local prismabuild -- /usr/bin/python3
+/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbmcp.py`, or the same command
+as an `mcpServers` entry for opencode/Codex -- and use `pb_status`,
+`pb_action`, `pb_actions`, `pb_log`, `pb_verify_claim` and `pb_runtime`
+instead of shelling out to `pbstatus` and parsing its table, which is arranged
+for a person and whose columns move. Filter `pb_actions` by `checkout_root`,
+`published_by` or explicit `keys`: a queue record carries no submitter
+identity, so those are what identify your own work. Read `complete` and
+`timed_out` on every response before believing it -- an empty list with
+`complete: false` is a mount that did not answer, not a quiet queue. The
+server never writes and cannot submit; submission stays with `pbrun`.
+
 If PB is unavailable, diagnose and repair it instead of bypassing admission.
 An OOM ending should name its exact attempt and memory evidence. Do not kill
 processes by a loose name match or release held tokens while owned work lives.
