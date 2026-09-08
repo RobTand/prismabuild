@@ -141,9 +141,11 @@ What is worth knowing before using it:
     installed on sparky` rather than running unprofiled. Refusing is the
     designed behaviour; making sparky eligible is a worker-loop change, not a
     flag.
-*   **py-spy writes its own scratch file under `TMPDIR`.** It inherits the
-    action's sealed environment, so seal `TMPDIR` (pbtest already does) if the
-    box's `/tmp` is not somewhere you want it.
+*   **py-spy writes its own scratch file under `TMPDIR`** -- the speedscope
+    output goes under the action's working directory, but the profiler's
+    intermediate does not. It reads the action's sealed environment, whose
+    `pbrun` default is already `TMPDIR=/home/rob/tmp`; `--no-default-env` drops
+    that default, and then the scratch lands wherever the replacement points.
 *   **A cache hit answers a profiled key without a new profile.** The receipt
     is the result and the CAS already holds it, so a re-submission returns
     before the profiler runs and its ending carries no `profile`. The digest
