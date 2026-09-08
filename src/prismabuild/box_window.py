@@ -302,6 +302,9 @@ def read_window(start_unix: float, end_unix: float, *, host: str,
     nobody has rows for all produce ``{"source": "unavailable", "reason": ...}``.
     The caller is a finish path, and a finish path that can fail on telemetry
     is a finish path that loses actions to its own instrumentation.
+
+    ``gpu_reference`` accepts a keyword-only ``timeout_s`` for the remaining
+    query budget; it is not called once the window's deadline has elapsed.
     """
 
     expires = time.monotonic() + max(0.05, float(deadline_s))
@@ -326,10 +329,14 @@ def read_window(start_unix: float, end_unix: float, *, host: str,
             measured_power = series.get("power_draw_w")
             if (gpu_reference is not None and measured_power is not None
                     and measured_power.count):
-                try:
-                    reference = gpu_reference()
-                except Exception as exc:                       # noqa: BLE001
-                    errors.append(f"GPU power reference unavailable: {exc}")
+                remaining = expires - time.monotonic()
+                if remaining <= 0:
+                    errors.append("deadline reached before GPU power reference")
+                else:
+                    try:
+                        reference = gpu_reference(timeout_s=min(remaining, 1.0))
+                    except Exception as exc:                   # noqa: BLE001
+                        errors.append(f"GPU power reference unavailable: {exc}")
             produced = _pqteld_groups(series, reference)
             if not produced:
                 # The files were there and nothing in them fell in the window.
@@ -364,7 +371,7 @@ def read_window(start_unix: float, end_unix: float, *, host: str,
     return window
 
 
-def gpu_power_reference() -> dict[str, object] | None:
+def gpu_power_reference(*, timeout_s: float = 1.0) -> dict[str, object] | None:
     """The device's own power reference, so no envelope is ever hardcoded.
 
     ``gpu_capacity`` already reads it from the driver and already records that
@@ -375,7 +382,7 @@ def gpu_power_reference() -> dict[str, object] | None:
 
     from . import gpu_capacity
 
-    found, _ = gpu_capacity.devices(timeout_s=1.0)
+    found, _ = gpu_capacity.devices(timeout_s=timeout_s)
     best = None
     for device in found:
         reference = device.get("power_reference_w")

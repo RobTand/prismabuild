@@ -368,6 +368,12 @@ are installed.
 
 ## Cache/action-key semantics (the Bazel steal)
 
+Always-on box-window evidence is outside action identity. Its collectors share
+a cooperative two-second finish budget: the GPU power-reference query receives
+only the remaining budget, capped at one second, and is skipped after expiry.
+Already-recorded power remains available without a reference fraction. This
+does not impose a hard deadline on filesystem reads or process cleanup.
+
 Result address = hash(input artifacts, **code closure**, params, env-that-
 matters). Rules:
 - **Code closure, not repo SHA** — per-task declared file lists (stage-7's
