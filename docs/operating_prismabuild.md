@@ -1406,13 +1406,17 @@ The tools:
     attempt's stdout. A prefix that names more than one action comes back with
     the candidates rather than a guess.
 *   **`pb_actions(filter)`** — list by `states`, `tags`, `priority_min` /
-    `priority_max`, `checkout_root`, `published_by`, `max_age_s` or explicit
+    `priority_max`, `checkout_root`, `snapshot_parent`, `snapshot_commit`,
+    `published_by`, `max_age_s` or explicit
     `keys`. This is "my jobs" for an agent, with one honest limit: a queue
     record carries **no submitter identity**. `publish` seals `published_by`
     (the submitting host) and either `checkout_root` or `checkout_snapshot`,
     and nothing that names an agent -- so an agent identifies its own work by
     the checkout it submitted from, the box it submitted on, or the keys it
-    already holds. The answer says so in its `identity` field.
+    already holds. Snapshot filters compare full Git identities exactly;
+    a parent can match several agents' work. All filters intersect inside
+    the newest-record scan window, and explicit keys bypass that window.
+    The answer says so in its `identity` field.
 *   **`pb_verify_claim(sha256)`** — resolve the `local_result_claim_sha256` a
     run reported to its receipt and payload, reporting each check by name.
     The verdict field is `checks_passed`, not `verified`: it says every check
@@ -1467,6 +1471,15 @@ starttime. This prevents repeated polls from adding blocked readers: at most
 one remains per session. Reads resume after it exits; historical startup
 diagnostics still apply. Independent sessions have independent limits, and
 this cannot force a kernel wait to return.
+
+The server negotiates `2024-11-05` or `2025-06-18`; a client asking for
+`2025-03-26` receives the `2024-11-05` fallback. The
+[March revision requires batch reception](https://modelcontextprotocol.io/specification/2025-03-26/basic#batching),
+which this individual-message stdio server does not implement; the
+[June revision removed batching](https://modelcontextprotocol.io/specification/2025-06-18/changelog).
+Tool arguments that violate the advertised schema return JSON-RPC `-32602`
+before any shared read, including negative line counts or unknown properties.
+Operational refusals still return tool results with `isError`.
 
 ### Read what a run cost
 

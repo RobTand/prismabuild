@@ -1850,6 +1850,20 @@ bounded reader rather than repeating it, so a section that does not answer is
 named in `timed_out` and leaves `complete` false, exactly as the census does;
 partial is reported, never awaited.
 
+The stdio subset negotiates `2024-11-05` or `2025-06-18`. It does not offer
+`2025-03-26`, whose base protocol requires JSON-RPC batch reception; clients
+requesting that revision receive the supported `2024-11-05` fallback. Tool
+arguments are checked against the advertised types, required fields, property
+names, array items, minima and enums before any tool read. Invalid arguments
+return JSON-RPC `-32602`; operational tool refusals retain `isError` results.
+
+`pb_actions` can match `snapshot_parent` and `snapshot_commit` exactly against
+the sealed `checkout_snapshot` Git fields, as well as live `checkout_root`.
+Filters intersect and operate inside the existing newest-record window; exact
+action keys bypass that window. Git identity is not submitter identity: several
+agents can submit from the same parent, and a snapshot commit includes sealed
+changes. A missing or malformed snapshot never matches a requested Git field.
+
 Session construction also bounds the initial runtime-link read using the
 configured deadline. A failed startup read is retained as `startup-repo-link`
 in every tool response's timeout/error diagnostics, with `complete: false`.
@@ -1880,6 +1894,20 @@ queue record; it is recomputed from the action manifest, the record's resolved
 checkout root and the manifest's declared paths, with the producer's own
 canonical hash, and a `checkout_snapshot` submission is refused with its
 reason rather than answered with a guess.
+
+The public read-only `core.local_result_claim_body` is shared by claim
+producers and status consumers. It resolves the checkout strictly before
+hashing, including symlinked checkout roots; MCP invokes it inside a bounded
+read. An inaccessible checkout is unavailable, rather than a digest based on
+an unresolved spelling. The existing claim format and producer identity are
+unchanged.
+
+MCP's record and terminal-entry readers use the public read-only
+`pool.read_queue_record` and `pbstatus.recent_ending_paths` interfaces. Receipt
+self-consistency uses core's immutable `CAS_RECEIPT_BODY_KEYS`,
+`CAS_RECEIPT_KEYS` and `LOCAL_RESULT_CLAIM_BODY_KEYS`, shared with the producer.
+These interfaces do not acquire locks, verify full worker attestations or add
+their own read deadlines; MCP provides the deadline around each filesystem read.
 
 Attempt logs are read by seeking to their end for a capped tail. The verifying
 reader in `pool.attempt_outcomes` reads every stream whole to check a digest,

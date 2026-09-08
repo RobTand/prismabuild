@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -75,7 +76,9 @@ SCHEMA_V1 = "prismaquant.prismabuild.pbmcp.v1"
 #: echoed when it is one of these, per the MCP lifecycle: a server that always
 #: answers with its favourite revision tells the client nothing about whether
 #: they agree.
-PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+# 2025-03-26 requires receiving JSON-RPC batches; this stdio subset handles
+# individual messages. Negotiate a supported revision instead of echoing it.
+PROTOCOL_VERSIONS = ("2025-06-18", "2024-11-05")
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 
 SERVER_NAME = "prismabuild"
@@ -122,6 +125,43 @@ class ToolError(Exception):
     def __init__(self, message: str, **detail: object) -> None:
         super().__init__(message)
         self.detail = detail
+
+
+class InvalidArguments(ToolError):
+    """Arguments violate the advertised input schema before the tool runs."""
+
+
+def _validate_arguments(value: object, schema: Mapping[str, object],
+                        where: str = "arguments") -> None:
+    """Enforce the JSON Schema vocabulary used by this server's tool inputs."""
+    kind = schema["type"]
+    number = type(value) is int or (type(value) is float and math.isfinite(value))
+    valid = {
+        "object": isinstance(value, Mapping),
+        "array": isinstance(value, list),
+        "string": isinstance(value, str),
+        "boolean": type(value) is bool,
+        "number": number,
+        "integer": number and (type(value) is int or value.is_integer()),
+    }
+    if not valid.get(kind, False):
+        raise InvalidArguments(f"{where} must be {kind}")
+    if "minimum" in schema and value < schema["minimum"]:
+        raise InvalidArguments(f"{where} must be at least {schema['minimum']}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise InvalidArguments(f"{where} must be one of {schema['enum']}")
+    if kind == "object":
+        properties = schema["properties"]
+        for key in schema.get("required", ()):
+            if key not in value:
+                raise InvalidArguments(f"{where} requires {key}")
+        for key, item in value.items():
+            if key not in properties:
+                raise InvalidArguments(f"{where} has unknown property {key}")
+            _validate_arguments(item, properties[key], f"{where}.{key}")
+    elif kind == "array":
+        for index, item in enumerate(value):
+            _validate_arguments(item, schema["items"], f"{where}[{index}]")
 
 
 # --------------------------------------------------------------------------
@@ -275,7 +315,7 @@ def _absent(error: OSError) -> bool:
 
 def _read_record(path: Path) -> dict | None:
     try:
-        return pool._read_json(path)
+        return pool.read_queue_record(path)
     except OSError as error:
         if _absent(error):
             return None
@@ -542,14 +582,7 @@ def _derived_claim(record: Mapping[str, object]) -> dict:
     if not isinstance(task, Mapping):
         return {"sha256": None, "request": str(request),
                 "reason": "the action manifest declares no task"}
-    body = {
-        "schema": pb.LOCAL_RESULT_CLAIM_SCHEMA_V1,
-        "action_key": action.get("action_key"),
-        "action_manifest_sha256": pb.canonical_sha256(action),
-        "checkout_root": str(checkout),
-        "working_directory": task.get("working_directory"),
-        "result_path": task.get("result_path"),
-    }
+    body = pb.local_result_claim_body(action, Path(str(checkout)))
     digest = pb.canonical_sha256(body)
     path = Path(str(cas_root)) / "local-results" / "v1" / digest[:2] / f"{digest}.json"
     # ``os.stat`` rather than ``path.is_file()``: a pathlib predicate swallows
@@ -702,6 +735,8 @@ class Session:
         method = getattr(self, name, None)
         if name not in TOOL_NAMES or method is None:
             raise ToolError(f"no such tool: {name}", tools=list(TOOL_NAMES))
+        schema = next(tool["inputSchema"] for tool in TOOLS if tool["name"] == name)
+        _validate_arguments(arguments, schema)
         call = Call(name, deadline_s=self.deadline_s,
                     startup_generation=self.startup_generation,
                     repo_link=self.repo_link,
@@ -838,6 +873,8 @@ class Session:
                    priority_min: float | None = None,
                    priority_max: float | None = None,
                    checkout_root: str | None = None,
+                   snapshot_parent: str | None = None,
+                   snapshot_commit: str | None = None,
                    published_by: str | None = None,
                    max_age_s: float | None = None,
                    keys: Sequence[str] | None = None,
@@ -878,6 +915,8 @@ class Session:
                     if _matches(row, tags=tags, priority_min=priority_min,
                                 priority_max=priority_max,
                                 checkout_root=checkout_root,
+                                snapshot_parent=snapshot_parent,
+                                snapshot_commit=snapshot_commit,
                                 published_by=published_by, max_age_s=max_age_s,
                                 now=now)]
             kept.sort(key=lambda row: row.get("published_unix") or 0.0, reverse=True)
@@ -894,6 +933,7 @@ class Session:
                 "states": wanted_states, "tags": list(tags or []),
                 "priority_min": priority_min, "priority_max": priority_max,
                 "checkout_root": checkout_root, "published_by": published_by,
+                "snapshot_parent": snapshot_parent, "snapshot_commit": snapshot_commit,
                 "max_age_s": max_age_s, "keys": selected,
             },
             "identity": {
@@ -901,7 +941,8 @@ class Session:
                 "note": "a queue record carries no submitter identity: publish "
                         "seals published_by (the submitting host) and either "
                         "checkout_root or checkout_snapshot, and nothing that "
-                        "names an agent. Filter by checkout_root, "
+                        "names an agent. Filter by checkout_root, snapshot_parent, "
+                        "snapshot_commit, "
                         "published_by, or the keys you already hold.",
             },
         }
@@ -958,7 +999,7 @@ class Session:
             payload["checks_passed"] = False
             payload["attestation_verified"] = None
             return payload
-        body = {key: claim.get(key) for key in pb._LOCAL_RESULT_CLAIM_BODY_KEYS}
+        body = {key: claim.get(key) for key in pb.LOCAL_RESULT_CLAIM_BODY_KEYS}
         recomputed = pb.canonical_sha256(body)
         checks["claim_digest_matches_body"] = claim.get("claim_sha256") == recomputed
         checks["claim_addressed_correctly"] = recomputed == digest
@@ -969,9 +1010,9 @@ class Session:
         receipt = call.read("receipt", lambda: _read_record(receipt_path))
         checks["receipt_present"] = receipt is not None
         if receipt is not None:
-            receipt_body = {name: receipt.get(name) for name in pb._RECEIPT_BODY_KEYS}
+            receipt_body = {name: receipt.get(name) for name in pb.CAS_RECEIPT_BODY_KEYS}
             checks["receipt_self_consistent"] = (
-                set(receipt) == set(pb._RECEIPT_KEYS)
+                set(receipt) == set(pb.CAS_RECEIPT_KEYS)
                 and receipt.get("receipt_sha256") == pb.canonical_sha256(receipt_body))
             checks["receipt_binds_the_claims_manifest"] = (
                 receipt.get("action_manifest_sha256")
@@ -1116,7 +1157,7 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
     The window is chosen by ``stat`` and only then read.  Terminal records
     number in the thousands on the live queue and every filter this offers
     lives *inside* a record, so filtering first would mean reading all of
-    them and the deadline would expire on every call.  ``_ending_paths`` is
+    them and the deadline would expire on every call.  ``recent_ending_paths`` is
     ``pbstatus``'s own newest-first selection, reused rather than repeated.
 
     ``truncated`` is returned with the rows because a caller has to be able
@@ -1147,7 +1188,7 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
     terminal = [state for state in states
                 if state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
     if terminal and limit:
-        entries = pbstatus._ending_paths(root, limit)
+        entries = pbstatus.recent_ending_paths(root, limit)
         truncated = len(entries) >= limit
         for entry in entries:
             path = Path(entry.path)
@@ -1185,7 +1226,8 @@ def _row(state: str, record: Mapping[str, object], now: float) -> dict:
 
 
 def _matches(row: Mapping[str, object], *, tags, priority_min, priority_max,
-             checkout_root, published_by, max_age_s, now: float) -> bool:
+             checkout_root, published_by, max_age_s, now: float,
+             snapshot_parent=None, snapshot_commit=None) -> bool:
     if tags:
         have = {str(one) for one in (row.get("tags") or [])}
         if not have.issuperset({str(one) for one in tags}):
@@ -1198,6 +1240,12 @@ def _matches(row: Mapping[str, object], *, tags, priority_min, priority_max,
         if type(priority) not in (int, float) or priority > float(priority_max):
             return False
     if checkout_root is not None and str(row.get("checkout_root") or "") != str(checkout_root):
+        return False
+    snapshot = row.get("checkout_snapshot")
+    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+    if snapshot_parent is not None and snapshot.get("parent") != snapshot_parent:
+        return False
+    if snapshot_commit is not None and snapshot.get("commit") != snapshot_commit:
         return False
     if published_by is not None and str(row.get("published_by") or "") != str(published_by):
         return False
@@ -1262,7 +1310,8 @@ TOOLS: tuple[dict, ...] = (
         "description": "List actions by state, tag, priority band, checkout, "
                        "submitting host or age -- this is how an agent asks "
                        "for its own jobs. A queue record carries no submitter "
-                       "identity, so filter by `checkout_root`, "
+                       "identity, so filter by `checkout_root`, `snapshot_parent`, "
+                       "`snapshot_commit`, "
                        "`published_by`, or the keys you already hold.",
         "inputSchema": {
             "type": "object",
@@ -1280,6 +1329,12 @@ TOOLS: tuple[dict, ...] = (
                 "checkout_root": {"type": "string",
                                   "description": "Exact checkout the action "
                                                  "was submitted from."},
+                "snapshot_parent": {"type": "string",
+                                    "description": "Exact parent Git commit of "
+                                                   "the sealed checkout snapshot."},
+                "snapshot_commit": {"type": "string",
+                                    "description": "Exact Git commit containing "
+                                                   "the sealed checkout snapshot."},
                 "published_by": {"type": "string",
                                  "description": "Hostname that submitted it."},
                 "max_age_s": {"type": "number",
@@ -1446,7 +1501,8 @@ class Server:
             "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             "instructions": (
                 "Read-only view of the PrismaBuild pull queue. Use pb_actions "
-                "to find your own submissions (filter by checkout_root or "
+                "to find your own submissions (filter by checkout_root, "
+                "snapshot_parent, snapshot_commit or "
                 "published_by; the queue records no submitter identity), "
                 "pb_action and pb_log for one of them, and pb_status for the "
                 "fleet. Every response carries complete/timed_out: a quiet "
@@ -1467,6 +1523,9 @@ class Server:
                               "message": "arguments must be an object"}}
         try:
             payload = self.session.call(name, arguments)
+        except InvalidArguments as exc:
+            return {"jsonrpc": "2.0", "id": identifier,
+                    "error": {"code": INVALID_PARAMS, "message": str(exc)}}
         except ToolError as exc:
             return self._result(identifier, _content(
                 {"error": str(exc), **exc.detail}), is_error=True)

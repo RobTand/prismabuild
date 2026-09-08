@@ -169,6 +169,11 @@ _LOCAL_RESULT_CLAIM_BODY_KEYS = frozenset(
     }
 )
 _LOCAL_RESULT_CLAIM_KEYS = _LOCAL_RESULT_CLAIM_BODY_KEYS | {"claim_sha256"}
+# Public, immutable schema surfaces for read-only receipt/claim reporters.
+# These are the producer's key sets, not independent copies of the formats.
+CAS_RECEIPT_BODY_KEYS = _RECEIPT_BODY_KEYS
+CAS_RECEIPT_KEYS = _RECEIPT_KEYS
+LOCAL_RESULT_CLAIM_BODY_KEYS = _LOCAL_RESULT_CLAIM_BODY_KEYS
 _INITIAL_MISS_RENDEZVOUS_MANIFEST_BODY_KEYS = frozenset(
     {
         "schema",
@@ -5975,10 +5980,14 @@ def _refuse_existing_result_symlink_prefix(output: Path, cwd: Path) -> None:
             )
 
 
-def _local_result_claim_body(
+def local_result_claim_body(
     action: Mapping[str, object], checkout: Path
 ) -> dict[str, object]:
-    """Describe exclusive ownership of one action's live-checkout result path."""
+    """Derive a live-checkout claim body without writing a claim or receipt.
+
+    The caller supplies a validated action and an accessible checkout. Path
+    resolution may read the filesystem; status consumers must bound this call.
+    """
 
     task = action["task"]
     if not isinstance(task, Mapping):
@@ -5991,6 +6000,13 @@ def _local_result_claim_body(
         "working_directory": task["working_directory"],
         "result_path": task["result_path"],
     }
+
+
+def _local_result_claim_body(
+    action: Mapping[str, object], checkout: Path
+) -> dict[str, object]:
+    """Compatibility entry point for existing claim producers."""
+    return local_result_claim_body(action, checkout)
 
 
 def _local_result_claim_path(
