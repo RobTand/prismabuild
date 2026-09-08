@@ -1895,6 +1895,13 @@ checkout root and the manifest's declared paths, with the producer's own
 canonical hash, and a `checkout_snapshot` submission is refused with its
 reason rather than answered with a guess.
 
+The public read-only `core.local_result_claim_body` is shared by claim
+producers and status consumers. It resolves the checkout strictly before
+hashing, including symlinked checkout roots; MCP invokes it inside a bounded
+read. An inaccessible checkout is unavailable, rather than a digest based on
+an unresolved spelling. The existing claim format and producer identity are
+unchanged.
+
 Attempt logs are read by seeking to their end for a capped tail. The verifying
 reader in `pool.attempt_outcomes` reads every stream whole to check a digest,
 which is the right contract for a verifier and would make a status call cost

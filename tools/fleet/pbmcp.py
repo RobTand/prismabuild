@@ -582,14 +582,7 @@ def _derived_claim(record: Mapping[str, object]) -> dict:
     if not isinstance(task, Mapping):
         return {"sha256": None, "request": str(request),
                 "reason": "the action manifest declares no task"}
-    body = {
-        "schema": pb.LOCAL_RESULT_CLAIM_SCHEMA_V1,
-        "action_key": action.get("action_key"),
-        "action_manifest_sha256": pb.canonical_sha256(action),
-        "checkout_root": str(checkout),
-        "working_directory": task.get("working_directory"),
-        "result_path": task.get("result_path"),
-    }
+    body = pb.local_result_claim_body(action, Path(str(checkout)))
     digest = pb.canonical_sha256(body)
     path = Path(str(cas_root)) / "local-results" / "v1" / digest[:2] / f"{digest}.json"
     # ``os.stat`` rather than ``path.is_file()``: a pathlib predicate swallows
