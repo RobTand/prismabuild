@@ -150,7 +150,14 @@ class Call:
         self.abandoned: list[dict] = []
 
     def read(self, section: str, read: Callable[[], object], *, default=None):
-        """Run one shared-mount read, or record why its answer is missing."""
+        """Run one shared-mount read, or record why its answer is missing.
+
+        The default is ``None`` and every caller here keeps it, so ``null`` in
+        a payload means "this was not read" everywhere in this file.  An empty
+        list or object is an answer -- no endings, no matching actions, no
+        such action -- and handing one back for a read that never returned
+        makes the payload contradict the ``timed_out`` beside it.
+        """
 
         outcome = pbstatus.bounded(section, read, deadline=self.deadline,
                                    abandoned=self.abandoned)
@@ -344,6 +351,51 @@ def _attempt_records(queue_root: Path, record: Mapping[str, object]) -> list[dic
     return outcomes
 
 
+def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
+    """Preemption handoffs recovered from immutable attempts, without the logs.
+
+    Needed because a mutable ``done``/``failed`` row is one slot per action
+    key: a later generation overwrites it, and an intermediate handoff then
+    survives nowhere but here.  ``pool.archived_preemption_outcomes`` is the
+    verifying reader for this evidence and reaches ``adopted_attempt_summary``,
+    which reads every linked log whole to check its digest -- so an action that
+    printed a gigabyte would cost a gigabyte to ask about.  Only two fields
+    decide a successor, the attempt's own ``published_unix`` and the
+    ``supersedes_withdrawal`` its ``preemption_context`` preserved, and both
+    are on the attempt record itself.  They are lifted directly and the whole
+    answer is stamped ``unlocked_read``, so an unverified reading is never
+    passed off as the verified one.
+    """
+
+    found: list[dict] = []
+    base = Path(queue_root) / pool.ATTEMPTS / key
+    try:
+        with os.scandir(base) as entries:
+            generations = sorted(entry.path for entry in entries if entry.is_dir())
+    except OSError:
+        return found
+    for generation in generations:
+        try:
+            with os.scandir(generation) as entries:
+                attempts = sorted(entry.path for entry in entries
+                                  if entry.is_file() and entry.name.endswith(".json"))
+        except OSError:
+            continue
+        for path in attempts:
+            value = _read_record(Path(path))
+            if value is None:
+                continue
+            context = value.get("preemption_context")
+            if not isinstance(context, Mapping):
+                continue
+            # An intermediate failed attempt is not an ending, which is the
+            # same line ``archived_preemption_outcomes`` draws.
+            if value.get("disposition") not in (pool.DONE, pool.FAILED):
+                continue
+            found.append({**value, **context, "path": path})
+    return found
+
+
 def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> float | None:
     """The generation a preemption requeued this one as, read without the lock.
 
@@ -351,10 +403,11 @@ def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> fl
     because it is deciding what to tell a waiter and must not answer in the
     middle of admission's withdraw-then-republish.  This is reporting, and
     taking that lock would make a read-only server a participant in the
-    protocol it is describing.  So the same rule runs unlocked and the answer
-    is stamped ``unlocked_read``: a ``null`` here means "no successor is
-    visible yet", which covers both "there is none" and "the handoff is in
-    flight".
+    protocol it is describing.  So the same rule runs over the same three
+    sources unlocked -- the immutable withdrawal decisions, the archived
+    preemption handoffs, and the five mutable state rows -- and the answer is
+    stamped ``unlocked_read``: a ``null`` here means "no successor is visible
+    yet", which covers both "there is none" and "the handoff is in flight".
     """
 
     generation = ending.get("published_unix")
@@ -368,6 +421,7 @@ def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> fl
         candidates.extend(record for _path, record in queue.withdrawal_decisions(key))
     except (OSError, pool.PoolContractError):
         pass
+    candidates.extend(_archived_preemption_records(queue_root, key))
     candidates.extend(_records_for(queue_root, key).values())
     successors = []
     for record in candidates:
@@ -591,10 +645,9 @@ class Session:
         limit = self.recent if recent is None else int(recent)
         census = call.read("pool", lambda: pbstatus.read_pool(self.queue_root))
         endings = call.read("endings",
-                            lambda: pbstatus.read_endings(self.queue_root, limit=limit),
-                            default=[])
+                            lambda: pbstatus.read_endings(self.queue_root, limit=limit))
         reservations = call.read("reservations",
-                                 lambda: _reservations(self.queue_root), default={})
+                                 lambda: _reservations(self.queue_root))
         census = census or {}
         return {
             "queue_root": str(self.queue_root),
@@ -613,24 +666,24 @@ class Session:
                   tail_lines: int = DEFAULT_TAIL_LINES) -> dict:
         key = self._one_key(call, key_prefix)
         records = call.read("records",
-                            lambda: _records_for(self.queue_root, key), default={})
-        records = records or {}
-        state = next((one for one in STATES if one in records), None)
-        record = records.get(state) if state else None
+                            lambda: _records_for(self.queue_root, key))
+        state = next((one for one in STATES if one in (records or {})), None)
+        record = (records or {}).get(state) if state else None
         payload: dict[str, object] = {
             "key_prefix": str(key_prefix),
             "action_key": key,
             "state": state,
-            "states": sorted(records),
+            "states": None if records is None else sorted(records),
         }
         if record is None:
-            payload["found"] = False
+            # ``null`` rather than ``False`` when the read never answered: an
+            # unread queue has not told anyone this key is absent.
+            payload["found"] = None if records is None else False
             return payload
         detail = record.get("detail")
         detail = detail if isinstance(detail, Mapping) else {}
         attempts = call.read("attempts",
-                             lambda: _attempt_records(self.queue_root, record),
-                             default=[]) or []
+                             lambda: _attempt_records(self.queue_root, record))
         adopted = attempts[-1] if attempts else None
         payload.update(
             found=True,
@@ -669,9 +722,8 @@ class Session:
                     lambda: _requeued_as(self.queue_root, key, record)),
                 "unlocked_read": True,
             },
-            receipt=call.read("receipt", lambda: _receipt_summary(record), default={}),
-            local_result_claim=call.read("claim", lambda: _derived_claim(record),
-                                         default={}),
+            receipt=call.read("receipt", lambda: _receipt_summary(record)),
+            local_result_claim=call.read("claim", lambda: _derived_claim(record)),
         )
         if adopted is not None:
             payload["log_tail"] = call.read(
@@ -741,21 +793,24 @@ class Session:
         scan = call.read(
             "actions",
             lambda: _scan_actions(self.queue_root, states=wanted_states,
-                                  keys=selected, limit=limit),
-            default={"rows": [], "scanned": 0, "truncated": False})
-        rows = scan.get("rows") or []
-        now = time.time()
-        kept = [row for row in rows
-                if _matches(row, tags=tags, priority_min=priority_min,
-                            priority_max=priority_max, checkout_root=checkout_root,
-                            published_by=published_by, max_age_s=max_age_s, now=now)]
-        kept.sort(key=lambda row: row.get("published_unix") or 0.0, reverse=True)
-        returned = kept[:limit] if limit else kept
+                                  keys=selected, limit=limit))
+        returned = None
+        if scan is not None:
+            now = time.time()
+            kept = [row for row in (scan.get("rows") or [])
+                    if _matches(row, tags=tags, priority_min=priority_min,
+                                priority_max=priority_max,
+                                checkout_root=checkout_root,
+                                published_by=published_by, max_age_s=max_age_s,
+                                now=now)]
+            kept.sort(key=lambda row: row.get("published_unix") or 0.0, reverse=True)
+            returned = kept[:limit] if limit else kept
+        scan = scan or {}
         return {
             "queue_root": str(self.queue_root),
             "actions": returned,
             "scanned": scan.get("scanned"),
-            "returned": len(returned),
+            "returned": None if returned is None else len(returned),
             "limit": limit,
             "truncated": scan.get("truncated"),
             "filter": {
@@ -871,20 +926,21 @@ class Session:
                             streams=["stdout", "stderr"])
         key = self._one_key(call, key_prefix)
         records = call.read("records",
-                            lambda: _records_for(self.queue_root, key), default={}) or {}
-        state = next((one for one in STATES if one in records), None)
-        record = records.get(state) if state else None
+                            lambda: _records_for(self.queue_root, key))
+        state = next((one for one in STATES if one in (records or {})), None)
+        record = (records or {}).get(state) if state else None
         if record is None:
             return {"key_prefix": str(key_prefix), "action_key": key,
-                    "found": False, "log": None}
+                    "found": None if records is None else False, "log": None}
         attempts = call.read("attempts",
-                             lambda: _attempt_records(self.queue_root, record),
-                             default=[]) or []
+                             lambda: _attempt_records(self.queue_root, record))
         if not attempts:
             return {
                 "key_prefix": str(key_prefix), "action_key": key, "found": True,
                 "state": state, "log": None,
-                "reason": ("an attempt publishes its log when it finishes; this "
+                "reason": ("the attempt records did not answer within the "
+                           "deadline" if attempts is None else
+                           "an attempt publishes its log when it finishes; this "
                            "action has no published attempt yet"),
             }
         chosen = (attempts[-1] if attempt is None else

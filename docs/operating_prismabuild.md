@@ -1094,9 +1094,11 @@ The tools:
 
 Every response carries the same envelope, and two of its fields decide whether
 the rest of it can be believed. `complete` is false, and `timed_out` names the
-section, when a read of the mount did not answer inside the deadline: an empty
-`jobs` list with `complete: false` is a mount that did not answer, not a quiet
-queue, and they call for opposite responses. `generation` and
+section, when a read of the mount did not answer inside the deadline. The
+payload never contradicts that: a section that did not answer comes back as
+`null`, never as an empty list or object, so `endings: []` is a queue with no
+recent endings and `endings: null` is a mount that did not answer, and the two
+call for opposite responses. `generation` and
 `generation_stale` say whether `repo/` has moved since the session started --
 after a publication the process is running code the fleet has replaced, which
 nothing inside the process can fix, so it is stamped and the agent decides.
