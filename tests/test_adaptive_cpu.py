@@ -1,5 +1,6 @@
 """Admission follows measured CPU pressure, without inventing memory tokens."""
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -456,3 +457,82 @@ def test_full_width_exception_does_not_ignore_foreign_work_or_pressure(tmp_path,
                   resources={'cpu': 2})
     assert queue.claim(capacity={'cpu': 2}, cpu_tiers={'preferred': [0, 1], 'fallback': []},
                        adaptive_cpu=True) is None
+
+
+def test_a_peer_taking_admission_after_the_lease_cannot_reuse_the_borrowed_sample(
+        rig, monkeypatch):
+    """The borrow is spent at the decision, so nothing after it can lose it.
+
+    Written against the narrowed admission lock: the claim renames, writes its
+    lease and commits its tokens outside the lock, so a sibling loop can hold
+    the box's FLOCK the instant the lease lands.  If the borrow record were
+    written after that, it could not be written at all, and the same host
+    sample would authorize a second borrow -- an unbounded burst against one
+    measurement, which ``docs/design.md`` forbids.
+
+    Contributed as a review regression by the maintenance reviewer on
+    PrismaBuild #403; kept here with the rest of the borrow contract.
+    """
+
+    from prismabuild import adaptive_cpu
+
+    queue, clock, state, key, first, publish, claim, telemetry = rig
+    original = queue.write_lease
+    directory, digest = adaptive_cpu.box_state(queue.ledger().base)
+    descriptor = os.open(Path(directory) / f'{digest}.lock', os.O_RDWR)
+
+    def peer_enters_after_lease(action_key, **kwargs):
+        result = original(action_key, **kwargs)
+        # Non-blocking, so this records whether the peer got in rather than
+        # waiting for it.  Under the narrowed lock it does.
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        return result
+
+    monkeypatch.setattr(queue, 'write_lease', peer_enters_after_lease)
+    try:
+        second = claim()
+        assert second is not None
+        assert second['cpu_allocation']['preferred'] == [0]
+    finally:
+        os.close(descriptor)
+        monkeypatch.setattr(queue, 'write_lease', original)
+
+    # A short borrowing action finishes before the host sample changes.
+    queue.finish(second['action_key'], status='executed', detail={})
+    publish(3)
+    third = claim()
+    assert third is None, 'one host sample authorized a second borrow'
+
+
+def test_returning_a_lost_claim_s_borrow_never_overwrites_a_newer_one(rig):
+    """The restore is this decision's own record or nothing.
+
+    A claimant whose rename is lost gives its borrow back.  If it gave back a
+    record another loop had since written, that newer sample would be free to
+    authorize a second borrow -- the burst the freshness rule forbids, arrived
+    at from the other direction.
+    """
+
+    from prismabuild import adaptive_cpu
+
+    queue, clock, state, key, first, publish, claim, telemetry = rig
+    controller = adaptive_cpu.Controller(queue.ledger(), {'preferred': [0], 'fallback': [1]})
+    spent = {'borrowing': True, 'sampled_unix': clock[0]}
+    previous = controller.admitted(spent)
+    assert previous == {}
+
+    # Another loop borrows against a later sample before the lost claimant
+    # gets around to returning its own.
+    newer = {'borrowing': True, 'sampled_unix': clock[0] + 1}
+    controller.admitted(newer)
+
+    controller.withdrew(spent, previous)
+    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {
+        'sampled_unix': newer['sampled_unix']}, 'an older restore took the newer borrow'
+
+    controller.withdrew(newer, {'sampled_unix': spent['sampled_unix']})
+    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {
+        'sampled_unix': spent['sampled_unix']}, 'a record still its own was not restored'

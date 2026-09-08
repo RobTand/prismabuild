@@ -451,3 +451,50 @@ def test_empty_discovery_is_not_repeated_under_admission(rig, monkeypatch):
     assert calls == [True]
     assert rig.item_path(pool.READY, 'a' * 64).exists()
     assert not rig.ledger().held()
+
+
+def test_a_refusal_past_the_probe_does_not_claim_evaluation_never_started(
+        rig, capsys):
+    """The diagnostic must name the gate that actually refused.
+
+    Since #351 there are two, and one ``except`` catches both: the cheap probe
+    before any shared I/O, and ``_claim``'s per-candidate lock, which is taken
+    with the candidate list already in hand.  The line said "candidate
+    evaluation not reached" for both, so the one reading it would look for a
+    stall before the ``ready`` scan while the loop was in fact refused inside
+    it -- the diagnostic pointing away from where the loop stopped, which is
+    the only thing it is for.
+
+    The peer here arrives the way the real one does, between the probe and the
+    per-candidate decision, so the refusal comes from the real lock rather
+    than from a raise planted in ``_claim``.
+    """
+
+    held = []
+    ready_items = rig.ready_items
+
+    def peer_takes_admission_after_the_probe():
+        result = ready_items()
+        descriptor = os.open(_lock_path(rig), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        held.append(descriptor)
+        return result
+
+    rig.ready_items = peer_takes_admission_after_the_probe
+    try:
+        item = _bounded(lambda: rig.claim(capacity=CAPACITY, cpu_tiers=TIERS,
+                                          adaptive_cpu=True), 'claim')
+    finally:
+        for descriptor in held:
+            os.close(descriptor)
+        del rig.ready_items
+
+    assert held, 'the claim never reached the ready scan'
+    assert item is None, 'a claim refused admission for every candidate returned one'
+    diagnostic = capsys.readouterr().err
+    assert 'host admission lock busy' in diagnostic
+    assert f'observed holder pid={os.getpid()}' in diagnostic
+    assert 'refused while evaluating candidates' in diagnostic
+    assert 'candidate evaluation not reached' not in diagnostic, (
+        'the diagnostic still reports the probe gate for a refusal that '
+        'happened after the candidate list was in hand')
