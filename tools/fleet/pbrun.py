@@ -3597,6 +3597,20 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
     return rc
 
 
+def _profile_mode(text: str) -> str:
+    """``--profile`` values, validated here so a bad one costs no submission.
+
+    A mode may carry one option after a colon (``nsys:600`` traces the first
+    ten minutes), and the whole string is sealed, so two windows are two
+    actions.
+    """
+
+    try:
+        return pb.parse_profile_mode(text)
+    except pb.ProfileBackendUnavailable as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Submit one command to the PrismaBuild fleet and wait for "
@@ -3702,7 +3716,8 @@ def main() -> int:
                          "(slurm_lane.nice_for), scaled so one priority step "
                          "outranks submission order rather than one later "
                          "submission")
-    ap.add_argument("--profile", choices=pb.PROFILE_MODES, default=None,
+    ap.add_argument("--profile", type=_profile_mode, default=None,
+                    metavar="{" + ",".join(pb.PROFILE_MODES) + "}",
                     help="run a profiler around this action's child and store "
                          "the profile as a CAS blob named on the ending. "
                          "Unlike a queue hint this IS part of the action's "
@@ -3710,9 +3725,14 @@ def main() -> int:
                          "never answered from an unprofiled receipt and never "
                          "an A/B arm against one. 'sample' is py-spy at "
                          f"{pb.PROFILE_SAMPLE_RATE_HZ} Hz over the whole "
-                         "process tree; measured overhead on a fixed-work CPU "
-                         "action is in docs/operating_prismabuild.md, with the "
-                         "box load it was measured under")
+                         "process tree; 'nsys' is Nsight Systems over CUDA and "
+                         "NVTX, and takes a window in seconds ('nsys:600' "
+                         "traces the first ten minutes and lets the action run "
+                         "on); 'torch' is a contract the action opts into, "
+                         "exporting its own Chrome trace to the path in "
+                         f"{pb.TorchProfileBackend.OUT_ENV}. Measured overhead "
+                         "per mode is in docs/operating_prismabuild.md, with "
+                         "the box load it was measured under")
     ap.add_argument("--env", action="append", default=[],
                     help="K=V added to the action's environment (repeatable)")
     ap.add_argument("--no-default-env", action="store_true",

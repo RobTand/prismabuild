@@ -93,7 +93,7 @@ These flags say what the action needs and where it may run.
 | `--here` | Pin the action to this box. Combines with `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
-| `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
+| `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree; `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
 
 ### `--profile`: an opt-in profile, sealed into the key
 
@@ -179,10 +179,18 @@ What is worth knowing before using it:
     `83d2530f3eda`, sparky). It is invisible in the flamegraph because py-spy
     excludes idle threads and the relay blocks in `waitpid`; `--idle` shows it
     (49 samples) and is the control arm for that claim.
-*   **The profiler's own ending is reported, and a bad one fails the profile.**
-    `backend_returncode` is on the record. A profiler that exited nonzero is a
-    broken profile even when it left a file behind, and the failure names both
-    numbers: the profiler's, and the action's own out of the relay.
+*   **The profiler's own ending is reported, and judged by what it cost.**
+    `backend_returncode` is on the record; Tier 1 assigned the action's status
+    over it and lost it. A nonzero profiler is not by itself a failure, and
+    that was measured rather than assumed: py-spy 0.4.2 on sparky exits 1 with
+    `Error: No child process (os error 10)` from time to time *having written a
+    complete speedscope* — in one five-arm probe (`b6f2ab795ef6`) the arm that
+    failed this way and the arm after it, whose conditions were a strict
+    superset, left 249 and 271 samples. The rule is what was lost: a profiler
+    that ends badly **and** leaves no usable profile, or leaves the action's
+    ending unrecorded, fails the run through the paths that already refuse
+    those, naming both numbers. One that ends badly with everything intact is
+    recorded with `backend_status_ignored: true` and the run stands.
 *   **A timed-out action still files the profile it reached.** The timed-out
     case is the one a profile is most wanted for, and it used to report none at
     all. The profiler is asked to finish before the group is reaped -- py-spy
@@ -212,6 +220,132 @@ What is worth knowing before using it:
 
 The backend is a registry (`core.PROFILE_BACKENDS` in the attested worker core), so a later tier
 adds a mode without changing the flag or the record.
+
+### `--profile nsys` and `--profile torch`: the GPU modes
+
+`sample` answers "which Python line". Neither of these does. `nsys` answers
+"which kernels, how long, and what was the gap between them", from CUPTI;
+`torch` answers the same question in torch's own vocabulary, with the operator
+that launched each kernel attached. Both are opt-in, both are sealed into the
+action key like `sample`, and both are more expensive than it — reach for them
+when a GPU action is slower than it should be and you do not yet know where.
+
+Which box can honour which mode, asked of each box through its own runtime
+(actions `bdd052675274`, `a9056a8200a3`, 2026-09-07):
+
+| box | `sample` | `nsys` | `torch` |
+| --- | --- | --- | --- |
+| dl380g10 | py-spy 0.4.2 (`venvs/pb-cpu`) | **refuses** — no CUDA toolchain | contract, backed |
+| sparklina | py-spy 0.4.2 (`prismaquant-cu130`) | Nsight Systems 2025.3.2 (`/usr/local/bin/nsys`) | contract, backed |
+| sparky | **refuses** at the worker loop's interpreter (`/usr/bin/python3`, see above); the driver above, running under `prismaquant-cu130`, found py-spy 0.4.2 | Nsight Systems 2025.3.2 (`/usr/local/bin/nsys`) | contract, backed |
+
+`nsys` looks on `PATH` and then at the toolkit's install paths, so it does not
+inherit `sample`'s accident on sparky: the binary is found whatever the worker
+loop's `PATH` is. A box that cannot honour a mode **refuses the action** and
+names itself, as Tier 1 does.
+
+**`nsys`.** The report is a `.nsys-rep` under the action's working directory,
+ingested as the profile blob; the `nsys stats` CUDA kernel-time table is
+ingested beside it as a second, small blob (`kernel_summary_sha256`), because
+a `.nsys-rep` needs Nsight Systems to open and the CSV is the part an agent can
+read. Tracing is `--trace cuda,nvtx --sample none`: CPU sampling is `sample`'s
+job, and every sample nsys takes is trace bytes it also has to write.
+
+*   **A window is optional and sealed.** `--profile nsys:600` traces the first
+    600 seconds and then stops tracing, with `--kill none` pinned so the action
+    is *not* ended by the diagnostic watching it (nsys's own default there is
+    to SIGTERM the application). nsys then exits while the action runs on —
+    measured: a 2 s window ended nsys at 3.3 s with the workload still going at
+    8.4 s — so the worker waits for the action's real ending through the relay,
+    bounded at 900 s. The action is the only thing still running during that
+    wait, so every way out of it reaps the action group first: a deadline
+    landing there, and the bound expiring, both tear the action down before
+    the run fails. The record carries `window_s` and `partial_window: true`.
+*   **There is a size budget**, and it is 2 GiB. Measured growth on sparky
+    (`f09402fe3ce8`): 666 kB, 2.28 MB and 8.80 MB of `.nsys-rep` over 1.94 s,
+    6.71 s and 25.69 s of saturated matmul — about **0.34 MB per second of
+    traced GPU work**, so the budget is a little under two hours of it. A report
+    over the budget fails the action with the remedy (`nsys:<seconds>`) in the
+    message rather than filing a receipt that would answer every later run of
+    that command with an unprofiled cache hit.
+*   **`TMPDIR` must be sealed.** The report follows `-o`, but the `.qdstrm` nsys
+    writes while it traces follows `TMPDIR` alone, and with none that is `/tmp`.
+    `pbrun`'s default environment sets it; `--no-default-env` drops it, and the
+    mode then refuses rather than quietly changing the action's `TMPDIR`
+    underneath it.
+*   **A killed run still files what it reached.** nsys finalizes on SIGTERM:
+    measured, a group SIGTERM 25 s into a traced run left a complete 5.99 MB
+    report after 3.1 s, and the reap allows it 6 s.
+
+**`torch`.** `torch.profiler` is in-process by construction, so no outside
+process can turn it on and PrismaBuild will not monkeypatch an action's
+interpreter to pretend otherwise. The mode is a contract instead: PrismaBuild
+puts a path in **`PRISMABUILD_PROFILE_TORCH_OUT`**, the action exports its
+Chrome trace there, and PrismaBuild validates, sizes, ingests and reports it
+exactly as it does a profile it produced itself. `tools/profile_torch.py` is a
+copyable helper — **copy it into your own repository**, since the action runs
+from a snapshot of your checkout:
+
+```python
+from profile_torch import prismabuild_torch_profile
+
+with prismabuild_torch_profile():
+    train_one_epoch()
+```
+
+*   **An action that ignores the contract fails.** Not `produced: false` with a
+    receipt: a cache hit returns no `profile` key at all, so a receipt filed for
+    a run that produced no profile would make every later identical submission a
+    profile-less hit, with no reason attached, until somebody passed
+    `--recompute`. A refusal is recoverable; a poisoned key is not. The failure
+    names the variable and the helper.
+*   **The path ends in `.json.gz` and torch gzips by suffix** — worth 19x on a
+    real trace (773 kB against 14.7 MB, same run). The helper writes through a
+    staging file and renames, so a killed action leaves an absent trace rather
+    than a truncated one, and it exports on SIGTERM (measured: 4.5 s for 9.0 MB
+    gzipped after 20 s of traced matmuls; the reap allows 6 s).
+*   **The mode never takes over a variable the action already seals.** A
+    collision refuses, because silently replacing it would change what the
+    action does under a diagnostic flag.
+*   **The profiler keeps events in memory until export**, so a long run should
+    pass a `schedule=` and profile a window rather than an epoch. The 2 GiB
+    budget applies here too.
+
+**What they cost.** A fixed-iteration GPU workload (32,000 2048x2048 bf16
+matmuls), five interleaved paired repeats per arm inside one admitted action on
+sparky (`2defaf9735ed`, 2026-09-07), the box otherwise at loadavg 1.3-2.7 and
+the GPU at 91 W of its 140 W envelope while the arms ran:
+
+| arm | wall, mean | paired delta | paired 95 % interval | the action's own loop |
+| --- | --- | --- | --- | --- |
+| unprofiled | 7.74 s | — | — | 6.748 s |
+| `--profile nsys` | 10.80 s | **+3.06 s (+39.6 %)** | +2.90 to +3.22 s, 36.7-42.4 % | 6.806 s |
+| `--profile torch` | 10.66 s | **+2.91 s (+37.7 %)** | +2.72 to +3.11 s, 34.5-40.9 % | 6.705 s |
+
+Read the last column with the others, because it is the more useful number: the
+*traced work itself* is unchanged, inside the run-to-run spread of the
+unprofiled arm (6.64-6.89 s). Essentially all of the cost is fixed — the
+profiler's startup, its finalize, and the ingest of the blob — so the same
+absolute ~3 s is 40 % of an eight-second action and under 1 % of a ten-minute
+one. That also means these percentages are the *worst* case for a GPU action:
+profiling a short one is what makes the ratio look expensive, and a short one
+is the case with least to learn from. `sample`'s ~2.5 % on a 60 s CPU action
+(above) is not comparable — different work, different box, different profiler.
+
+Both traces are far smaller than they look from a single number: nsys wrote
+2.29 MB for those 32,000 iterations and torch 3.05 MB gzipped (239,010 events).
+The torch figure is worth stating precisely because it was 59 MB before the
+helper staged its file with the `.gz` suffix intact — torch gzips by suffix, so
+a staging name that dropped it cost 19x, and that is why `tools/profile_torch.py`
+exists rather than a paragraph telling you to call `export_chrome_trace`.
+
+**A killed run keeps its profile, on every mode.** Measured in the same action:
+with an 8 s deadline against a 256,000-iteration workload, `nsys` filed a
+114 kB partial report, `torch` a 3.23 MB partial trace (253,915 events, exported
+by the helper's SIGTERM handler), and `sample` a 53 kB speedscope (795 samples,
+written on the SIGINT the settle sends before the reap). Each record carries
+`partial: true` and `action_phase: launched`, which is the relay saying the
+action was still running when it was stopped.
 
 `--tag` and `--here` are two constraints, and passing both applies both:
 `--here --tag gb10` places the action on this box, which must also offer the

@@ -77,6 +77,18 @@ sample` and a manifest row's `profile` field forward it. It is backed on dl380g1
 sparklina and refuses on sparky, whose worker loop launches under an
 interpreter that cannot see py-spy.
 
+`--profile nsys` and `--profile torch` are the GPU modes, for an action that is
+slower than it should be when you do not yet know where. `nsys` runs Nsight
+Systems over CUDA and NVTX and files the `.nsys-rep` plus its kernel-time CSV;
+it is backed on both GB10 boxes and refuses on dl380g10, and `nsys:600` traces
+a window in seconds without ending the action. `torch` is a contract rather
+than a wrapper -- PrismaBuild names a path in `PRISMABUILD_PROFILE_TORCH_OUT`
+and the action exports its Chrome trace there (copy `tools/profile_torch.py`);
+an action that ignores it fails rather than filing a profile-less receipt.
+Measured cost on a fixed-work GPU action, five interleaved paired repeats, is
+in `docs/operating_prismabuild.md`; both are dearer than `sample`, and most of
+it is fixed startup rather than a tax on the work.
+
 Agent self-validation -- test shards, the receipt for a PR, a re-run to confirm
 a fix -- submits at `--priority -10` (`pbtest.py --priority -10`, `pbrun.py
 --priority -10`). Ready items are ordered by priority band before aging, so

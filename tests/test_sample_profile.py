@@ -276,6 +276,23 @@ def test_a_backend_that_leaves_no_profile_fails_the_action(
     assert (tmp_path / "cas" / "actions").exists() is False
 
 
+def test_a_reader_is_told_when_a_profile_did_not_survive(tmp_path: Path):
+    """Printing nothing reads as "nobody asked for a profile", which is wrong."""
+
+    assert pb.describe_profile({}) == ""
+    absent = pb.describe_profile(
+        {"mode": "nsys", "backend": "nsys", "produced": False,
+         "reason": "ProfileUnusable: nsys wrote no report"}
+    )
+    assert "not produced" in absent and "nsys wrote no report" in absent
+    partial = pb.describe_profile({
+        "mode": "sample", "backend": "py-spy", "blob_sha256": "ab" * 32,
+        "bytes": 12, "blob_path": "/blobs/ab", "partial": True,
+        "backend_status_ignored": True, "backend_returncode": 1,
+    })
+    assert "partial" in partial and "profiled anyway" in partial
+
+
 def _dying_action(checkout: Path, *, profile: str | None, script: str):
     """The same sealed argv with and without the flag, so the arms compare."""
 
@@ -356,17 +373,20 @@ def test_the_record_names_the_binary_that_did_the_profiling(
     assert profile["produced"] is True
 
 
-def test_a_profiler_that_ends_badly_fails_the_profile_not_the_action(
+def test_a_profiler_that_ends_badly_but_profiled_anyway_is_recorded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """py-spy's own status was overwritten by the action's and never reported.
 
-    A profiler that ended badly is a broken profile even when it left a file
-    behind, and the failure has to say which of the two ended how: the action's
-    own status still comes out of the relay, so it is named in the message.
+    It is reported now -- and not acted on by itself.  py-spy 0.4.2 on sparky
+    exits 1 with ``Error: No child process`` from time to time *having written
+    a complete speedscope* (action ``b6f2ab795ef6``: the failing arm and the
+    arm after it, whose conditions were a strict superset, left 249 and 271
+    samples).  Failing the run there throws away a good action for a race
+    inside the tool watching it.
     """
 
-    class _Failing(_FakeBackend):
+    class _Noisy(_FakeBackend):
         def launch_argv(self, argv, *, profile_path: Path):
             return [
                 "/bin/sh", "-c",
@@ -374,7 +394,29 @@ def test_a_profiler_that_ends_badly_fails_the_profile_not_the_action(
                 str(profile_path), _speedscope("fake"), "--", *argv,
             ]
 
-    monkeypatch.setitem(pb.PROFILE_BACKENDS, "fake", _Failing())
+    monkeypatch.setitem(pb.PROFILE_BACKENDS, "fake", _Noisy())
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    result = pb.run_local_action(
+        _action(checkout, profile="fake"),
+        cas_root=tmp_path / "cas", checkout_root=checkout,
+    )
+    profile = result["profile"]
+    assert profile["backend_returncode"] == 3
+    assert profile["backend_status_ignored"] is True
+    assert "the run stands" in str(profile["backend_status_note"])
+
+
+def test_a_profiler_that_ends_badly_and_profiled_nothing_names_both_numbers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """What was lost is the rule, not what was returned."""
+
+    class _Empty(_FakeBackend):
+        def launch_argv(self, argv, *, profile_path: Path):
+            return ["/bin/sh", "-c", '"$@"; exit 3', "--", *argv]
+
+    monkeypatch.setitem(pb.PROFILE_BACKENDS, "fake", _Empty())
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     with pytest.raises(pb.LocalActionError) as raised:
@@ -383,7 +425,7 @@ def test_a_profiler_that_ends_badly_fails_the_profile_not_the_action(
             cas_root=tmp_path / "cas", checkout_root=checkout,
         )
     message = str(raised.value)
-    assert "the profiler exited with status 3" in message
+    assert "The profiler exited with status 3" in message
     assert "The action itself ended with status 0" in message
 
 
@@ -582,6 +624,38 @@ def test_a_settle_wait_is_bounded_by_the_backend(tmp_path: Path):
     with pytest.raises(pb.ProfileUnusable):
         session.action_returncode()
     assert time.monotonic() - started < 10.0
+
+
+def test_an_action_that_outlives_the_wait_is_reaped(tmp_path: Path):
+    """The action outlives its profiler here, so every exit is a way to orphan it.
+
+    ``nsys --duration`` is the shipped case: the profiler is gone and the
+    workload is still on the GPU holding the output lock.  When the bounded
+    wait gives up, the run fails -- and if nothing tore the action down first,
+    it would keep running past the worker that was supposed to own it.
+    """
+
+    class _Early(_FakeBackend):
+        exits_before_action = True
+        settle_seconds = 0.2
+
+    session = _session(tmp_path, backend=_Early())
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "launched", "child_pid": os.getpid(),
+    })
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+    )
+    try:
+        with pytest.raises(pb.ProfileUnusable):
+            session.action_returncode(process)
+        assert process.poll() is not None, "the action was left running"
+    finally:
+        if process.poll() is None:  # pragma: no cover - only on a failure
+            process.kill()
+            process.wait()
 
 
 def test_an_uncreatable_scratch_directory_refuses_with_a_reason(
