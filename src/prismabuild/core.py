@@ -4662,9 +4662,11 @@ PROFILE_SPEEDSCOPE_SCHEMA = "https://www.speedscope.app/file-format-schema.json"
 #: Samples per second for ``--profile sample``.  Measured through the fleet on
 #: dl380g10 (action ``69a4a7fdf902``, 2026-09-07): a fixed-work ~60 s CPU loop,
 #: five repeats per arm, 60.845 s +/- 1.310 unprofiled against 63.352 s +/-
-#: 2.208 profiled -- 4.12 % on the means, inside the tier's stated budget, on a
-#: box that other work had at loadavg 1.4-3.4.  ``docs/operating_prismabuild.md``
-#: carries the table.  The rate is a property of the mode, not of the
+#: 2.208 profiled -- 2.50 % on the medians, 4.12 % on the means, paired 95 %
+#: interval 1.2-7.0 % (n = 5), on a box that other work had at loadavg
+#: 1.4-3.4.  The tier's ~5 % budget is met as a point estimate, not
+#: established.  ``docs/operating_prismabuild.md`` carries the table and the
+#: paired deltas.  The rate is a property of the mode, not of the
 #: submission, so it is reported in the ending and never sealed into the key.
 PROFILE_SAMPLE_RATE_HZ = 100
 
