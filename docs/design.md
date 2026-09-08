@@ -1328,6 +1328,15 @@ remaining budget independently of lease-heartbeat cadence. Expiry uses the
 existing bounded process-group termination and timeout receipt path. SLURM
 continues enforcing the submitter budget through its scheduler time limit.
 
+The versioned fleet configuration sets both GB10 worker ceilings to 86400
+seconds for dependent full-model calibration capture (issue #385). The CPU
+host retains its 3600-second ceiling. A GB10 action without an explicit budget
+inherits the one-day ceiling; capture requests that budget explicitly. This
+changes only the permitted duration: reservations, physical memory guards,
+containment, priority and admission are unchanged. Supervisors adopt the
+published configuration through the existing idle-worker transition; a live
+attempt retains the ceiling under which it started.
+
 ## Fleet durability and terminal publication (2026-09-05)
 
 The two NFS client exports on dl380g10 now use `sync`, with ZFS
