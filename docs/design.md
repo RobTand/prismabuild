@@ -177,6 +177,16 @@ while holding that lock. A late heartbeat refuses to overwrite a successor's
 lease. Legacy owner-only callers cannot distinguish attempts sharing an owner;
 internal claim, scope and execution writers always supply the snapshot.
 
+A released unstarted claim has no numbered execution outcome. If its original
+caller reports a result while the same publication is ready or claimed with
+that attempt number still uncharged, the late report is retained under
+`withdrawn/superseded/` as `uncharged-late-finish`, after any exact-scope cleanup.
+It cannot occupy the successor's immutable attempt slot, create a terminal,
+or release the successor's reservation. A cleanup refusal retains the existing
+late-finish recovery authority. Charged retries and different publications keep
+their existing numbered, first-writer-wins history. This covers deterministic
+missing-lease/late-caller faults; it is not cross-host NFS-stall qualification.
+
 Execution heartbeats carry an optional `execution_observation`: the direct
 launcher's polled liveness, cumulative stdout/stderr bytes captured at the
 checkpoint, and the time output was last observed to grow. Observation time is

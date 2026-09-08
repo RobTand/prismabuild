@@ -4377,10 +4377,10 @@ class PoolQueue:
                     #
                     # This does not stop a reaper taking a live-but-blocked
                     # claimant's claim -- that is not knowable across boxes.  It
-                    # stops the taking from destroying the work.  The claimant may
-                    # still unblock and run: the same double-run the destructive
-                    # requeue already allowed, reconciled the same way, by
-                    # first-writer-wins on one attempt number.
+                    # stops the taking from destroying the work. A resumed
+                    # claimant must pass the exact-claim launch/heartbeat guards.
+                    # Its late report cannot use the uncharged attempt number:
+                    # that slot now belongs to the successor's first execution.
                     self._file_superseded(
                         record, key=key, kind="unstarted-claim", status="released",
                         released_unix=_now(), released_host=socket.gethostname(),
@@ -5562,6 +5562,10 @@ class PoolQueue:
         outcome, so a reaper that already filed a lease loss for this attempt
         keeps that record and this one does not overwrite it.
 
+        An unstarted release has not charged that number. If the replacement
+        is still at the same number, retain this report as superseded evidence
+        instead; the numbered slot belongs to the replacement's execution.
+
         The caller cleans up any exact broker scope before this archive.
         Action-wide Docker ownership cannot distinguish attempts and is never
         used by this path. A legacy attempt without scope authority can only
@@ -5569,6 +5573,21 @@ class PoolQueue:
         """
 
         attempt = int(snapshot.get("attempts", 0)) + 1
+        if (self.attempt_generation({**snapshot, "action_key": action_key})
+                == self.attempt_generation({**live, "action_key": action_key})
+                and int(live.get("attempts", 0)) < attempt):
+            # An unstarted release keeps the publication and attempt count.
+            # First-writer-wins is unsafe here: filing the predecessor in that
+            # slot makes the successor adopt an outcome it never produced.
+            # Keep the report attributable without charging an execution or
+            # creating a terminal that a waiter could mistake for completion.
+            return self._file_superseded(
+                snapshot, key=action_key, kind="uncharged-late-finish",
+                status=status, detail=dict(detail or {}),
+                finished_unix=_now(), finished_host=socket.gethostname(),
+                reason="replaced claim has no charged attempt; its execution "
+                       "slot belongs to the same-generation successor",
+            )
         archived = dict(snapshot)
         archived["action_key"] = action_key
         archived["finished_unix"] = _now()
@@ -5623,6 +5642,18 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
         record = _read_json(src)
+        if record is None and claim_snapshot is not None:
+            ready = _read_json(self.item_path(READY, action_key))
+            if (ready is not None
+                    and self.attempt_generation(ready) == self.attempt_generation(claim_snapshot)
+                    and int(ready.get("attempts", 0)) <= int(claim_snapshot.get("attempts", 0))):
+                # The released non-attempt can also finish before another box
+                # claims its replacement. Route through exact-scope cleanup and
+                # the unnumbered archive, not the missing-claim terminal path.
+                return self._finish_late(
+                    action_key, status=status, detail=detail,
+                    snapshot=claim_snapshot, live=ready,
+                )
         if (record is not None and claim_snapshot is not None
                 and not _same_claim(record, claim_snapshot)):
             # Whatever is at ``claimed/<key>.json`` now is not the claim this
