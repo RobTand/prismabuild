@@ -345,3 +345,109 @@ def test_a_completion_is_not_learned_while_admission_is_busy(rig, peer, monkeypa
     assert learned is False, 'a completion was learned without holding admission'
     assert adaptive_cpu.read_json(controller.base / 'profiles.json') == before, (
         'the profile was rewritten by a call that never held the lock')
+
+
+def test_stalled_ready_scan_does_not_exclude_a_sibling_claim(rig, monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    original = rig.ready_items
+    outcome = {}
+
+    def paused_scan():
+        snapshot = original()
+        entered.set()
+        assert release.wait(30), 'test did not release the paused ready scan'
+        return snapshot
+
+    monkeypatch.setattr(rig, 'ready_items', paused_scan)
+
+    def run():
+        try:
+            outcome['item'] = rig.claim(capacity=CAPACITY, cpu_tiers=TIERS,
+                                        adaptive_cpu=True)
+        except BaseException as exc:
+            outcome['error'] = exc
+
+    reader = threading.Thread(target=run, daemon=True)
+    reader.start()
+    try:
+        assert entered.wait(30), 'claim did not reach candidate discovery'
+        sibling = pool.PoolQueue(rig.root)
+        winner = sibling.claim(capacity=CAPACITY, cpu_tiers=TIERS,
+                               adaptive_cpu=True)
+        assert winner is not None, 'a stalled ready scan held host admission'
+        assert winner['action_key'] == 'a' * 64
+    finally:
+        release.set()
+        reader.join(30)
+    assert not reader.is_alive()
+    assert 'error' not in outcome, outcome
+    assert outcome['item'] is None, 'late discovery claimed a sibling-owned item'
+    assert rig.ledger().held_keys() == ['a' * 64]
+
+
+def test_busy_admission_refuses_before_ready_discovery(rig, peer, monkeypatch):
+    def forbidden():
+        pytest.fail('busy admission started a shared ready scan')
+
+    monkeypatch.setattr(rig, 'ready_items', forbidden)
+    assert rig.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True) is None
+
+
+@pytest.mark.parametrize('replacement', [
+    {'resources': {'cpu': 2, 'mem_gb': 1}},
+    {'tags': ['another-host']},
+    {'needs_gpu': True},
+])
+def test_prefetched_replacement_requires_fresh_admission(rig, monkeypatch, replacement):
+    original = rig.ready_items
+
+    def replaced_scan():
+        snapshot = original()
+        values = dict(resources={'cpu': 1, 'mem_gb': 1})
+        values.update(replacement)
+        rig.publish(action_key='a' * 64, cas_root='/cas', checkout_root='/co',
+                    worker_script='worker.py', **values)
+        return snapshot
+
+    monkeypatch.setattr(rig, 'ready_items', replaced_scan)
+    assert rig.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True) is None
+    assert not rig.ledger().held()
+    assert not rig.item_path(pool.CLAIMED, 'a' * 64).exists()
+    assert not rig.lease_path('a' * 64).exists()
+    ready = json.loads(rig.item_path(pool.READY, 'a' * 64).read_text())
+    for name, value in replacement.items():
+        assert ready[name] == value
+
+
+def test_admission_is_reacquired_after_discovery(rig, monkeypatch):
+    original = rig.ready_items
+    descriptor = os.open(_lock_path(rig), os.O_CREAT | os.O_RDWR, 0o600)
+
+    def peer_wins_after_scan():
+        snapshot = original()
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return snapshot
+
+    monkeypatch.setattr(rig, 'ready_items', peer_wins_after_scan)
+    try:
+        assert rig.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True) is None
+        assert not rig.ledger().held()
+        assert rig.item_path(pool.READY, 'a' * 64).exists()
+    finally:
+        os.close(descriptor)
+
+
+def test_empty_discovery_is_not_repeated_under_admission(rig, monkeypatch):
+    calls = []
+
+    def empty_scan():
+        calls.append(True)
+        assert len(calls) == 1, 'empty discovery was repeated under admission'
+        return []
+
+    monkeypatch.setattr(rig, 'ready_items', empty_scan)
+    assert rig.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True) is None
+    assert calls == [True]
+    assert rig.item_path(pool.READY, 'a' * 64).exists()
+    assert not rig.ledger().held()
