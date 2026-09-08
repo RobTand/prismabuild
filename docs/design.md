@@ -177,6 +177,26 @@ while holding that lock. A late heartbeat refuses to overwrite a successor's
 lease. Legacy owner-only callers cannot distinguish attempts sharing an owner;
 internal claim, scope and execution writers always supply the snapshot.
 
+Execution heartbeats carry an optional `execution_observation`: the direct
+launcher's polled liveness, cumulative stdout/stderr bytes captured at the
+checkpoint, and the time output was last observed to grow. Observation time is
+sampled locally before lease publication and is never refreshed merely because
+a delayed shared write completes. Lease publication also records the claim's
+publication identity. Status accepts observations only from that exact key,
+owner, host, claim time and publication, with finite ordered timestamps,
+nonnegative integer counters and an actual boolean liveness value. Missing,
+invalid or expired observations report unknown liveness, even with a recent
+heartbeat. The existing lease-expiry interval bounds observation freshness;
+the observation age remains independently visible.
+
+The pipes include inherited application output and launcher messages. Silence,
+buffered output and a live launcher do not establish application progress; an
+exited launcher does not establish that descendants stopped. These fields are
+diagnostics and grant no retry, termination, resource release or execution-budget
+change. Endings retain the last execution observation with its original sample
+time, which can precede the final output and process exit. Ownership-safe
+stalled-claim recovery remains a separate qualification under #234.
+
 Withdrawal records an immutable decision under
 `withdrawn/decisions/<action_key>/<attempt_generation>.json`, using the same
 publication identity as attempt history. The first decision for that generation
