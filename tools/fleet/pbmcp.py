@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -75,7 +76,9 @@ SCHEMA_V1 = "prismaquant.prismabuild.pbmcp.v1"
 #: echoed when it is one of these, per the MCP lifecycle: a server that always
 #: answers with its favourite revision tells the client nothing about whether
 #: they agree.
-PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+# 2025-03-26 requires receiving JSON-RPC batches; this stdio subset handles
+# individual messages. Negotiate a supported revision instead of echoing it.
+PROTOCOL_VERSIONS = ("2025-06-18", "2024-11-05")
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 
 SERVER_NAME = "prismabuild"
@@ -122,6 +125,43 @@ class ToolError(Exception):
     def __init__(self, message: str, **detail: object) -> None:
         super().__init__(message)
         self.detail = detail
+
+
+class InvalidArguments(ToolError):
+    """Arguments violate the advertised input schema before the tool runs."""
+
+
+def _validate_arguments(value: object, schema: Mapping[str, object],
+                        where: str = "arguments") -> None:
+    """Enforce the JSON Schema vocabulary used by this server's tool inputs."""
+    kind = schema["type"]
+    number = type(value) is int or (type(value) is float and math.isfinite(value))
+    valid = {
+        "object": isinstance(value, Mapping),
+        "array": isinstance(value, list),
+        "string": isinstance(value, str),
+        "boolean": type(value) is bool,
+        "number": number,
+        "integer": number and (type(value) is int or value.is_integer()),
+    }
+    if not valid.get(kind, False):
+        raise InvalidArguments(f"{where} must be {kind}")
+    if "minimum" in schema and value < schema["minimum"]:
+        raise InvalidArguments(f"{where} must be at least {schema['minimum']}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise InvalidArguments(f"{where} must be one of {schema['enum']}")
+    if kind == "object":
+        properties = schema["properties"]
+        for key in schema.get("required", ()):
+            if key not in value:
+                raise InvalidArguments(f"{where} requires {key}")
+        for key, item in value.items():
+            if key not in properties:
+                raise InvalidArguments(f"{where} has unknown property {key}")
+            _validate_arguments(item, properties[key], f"{where}.{key}")
+    elif kind == "array":
+        for index, item in enumerate(value):
+            _validate_arguments(item, schema["items"], f"{where}[{index}]")
 
 
 # --------------------------------------------------------------------------
@@ -702,6 +742,8 @@ class Session:
         method = getattr(self, name, None)
         if name not in TOOL_NAMES or method is None:
             raise ToolError(f"no such tool: {name}", tools=list(TOOL_NAMES))
+        schema = next(tool["inputSchema"] for tool in TOOLS if tool["name"] == name)
+        _validate_arguments(arguments, schema)
         call = Call(name, deadline_s=self.deadline_s,
                     startup_generation=self.startup_generation,
                     repo_link=self.repo_link,
@@ -1467,6 +1509,9 @@ class Server:
                               "message": "arguments must be an object"}}
         try:
             payload = self.session.call(name, arguments)
+        except InvalidArguments as exc:
+            return {"jsonrpc": "2.0", "id": identifier,
+                    "error": {"code": INVALID_PARAMS, "message": str(exc)}}
         except ToolError as exc:
             return self._result(identifier, _content(
                 {"error": str(exc), **exc.detail}), is_error=True)

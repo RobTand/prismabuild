@@ -1468,6 +1468,15 @@ one remains per session. Reads resume after it exits; historical startup
 diagnostics still apply. Independent sessions have independent limits, and
 this cannot force a kernel wait to return.
 
+The server negotiates `2024-11-05` or `2025-06-18`; a client asking for
+`2025-03-26` receives the `2024-11-05` fallback. The
+[March revision requires batch reception](https://modelcontextprotocol.io/specification/2025-03-26/basic#batching),
+which this individual-message stdio server does not implement; the
+[June revision removed batching](https://modelcontextprotocol.io/specification/2025-06-18/changelog).
+Tool arguments that violate the advertised schema return JSON-RPC `-32602`
+before any shared read, including negative line counts or unknown properties.
+Operational refusals still return tool results with `isError`.
+
 ### Read what a run cost
 
 Every pull-queue ending also carries `detail.resource_profile`: what the run

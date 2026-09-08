@@ -1850,6 +1850,13 @@ bounded reader rather than repeating it, so a section that does not answer is
 named in `timed_out` and leaves `complete` false, exactly as the census does;
 partial is reported, never awaited.
 
+The stdio subset negotiates `2024-11-05` or `2025-06-18`. It does not offer
+`2025-03-26`, whose base protocol requires JSON-RPC batch reception; clients
+requesting that revision receive the supported `2024-11-05` fallback. Tool
+arguments are checked against the advertised types, required fields, property
+names, array items, minima and enums before any tool read. Invalid arguments
+return JSON-RPC `-32602`; operational tool refusals retain `isError` results.
+
 Session construction also bounds the initial runtime-link read using the
 configured deadline. A failed startup read is retained as `startup-repo-link`
 in every tool response's timeout/error diagnostics, with `complete: false`.
