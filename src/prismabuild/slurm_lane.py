@@ -412,7 +412,14 @@ def read_action_status(path: str | Path) -> dict[str, object]:
         if isinstance(number, int) and not isinstance(number, bool):
             status[field] = number
     if "action_returncode" not in status:
-        return {}
+        # An ending without a returncode is not an ending, and filing a
+        # ``action_signal`` alone would state one.  The rest of the file is
+        # still real: a killed run leaves its partial profile here and no
+        # returncode at all, because there was no ending to record.
+        status.pop("action_signal", None)
+    profile = value.get("profile")
+    if isinstance(profile, Mapping):
+        status["profile"] = dict(profile)
     return status
 
 

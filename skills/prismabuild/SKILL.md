@@ -70,10 +70,24 @@ different action -- never a cache hit for the unprofiled one, and never an A/B
 arm against an unprofiled receipt. Measured overhead on a fixed-work CPU action is
 in `docs/operating_prismabuild.md`, beside the box load it was measured under. A profiled action whose profiler produced nothing fails
 with the reason rather than returning an unprofiled receipt, so do not use it
-on an action too short for a sampler to see. `pbtest.py --profile sample` and a
-manifest row's `profile` field forward it. It is backed on dl380g10 and
+on an action too short for a sampler to see. An action killed by its deadline still files whatever
+profile it had reached, marked `partial`, and a profiled failure carries the
+same `returncode`/`signal` an unprofiled one would. `pbtest.py --profile
+sample` and a manifest row's `profile` field forward it. It is backed on dl380g10 and
 sparklina and refuses on sparky, whose worker loop launches under an
 interpreter that cannot see py-spy.
+
+`--profile nsys` and `--profile torch` are the GPU modes, for an action that is
+slower than it should be when you do not yet know where. `nsys` runs Nsight
+Systems over CUDA and NVTX and files the `.nsys-rep` plus its kernel-time CSV;
+it is backed on both GB10 boxes and refuses on dl380g10, and `nsys:600` traces
+a window in seconds without ending the action. `torch` is a contract rather
+than a wrapper -- PrismaBuild names a path in `PRISMABUILD_PROFILE_TORCH_OUT`
+and the action exports its Chrome trace there (copy `tools/profile_torch.py`);
+an action that ignores it fails rather than filing a profile-less receipt.
+Measured cost on a fixed-work GPU action, five interleaved paired repeats, is
+in `docs/operating_prismabuild.md`; both are dearer than `sample`, and most of
+it is fixed startup rather than a tax on the work.
 
 Agent self-validation -- test shards, the receipt for a PR, a re-run to confirm
 a fix -- submits at `--priority -10` (`pbtest.py --priority -10`, `pbrun.py

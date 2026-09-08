@@ -394,6 +394,34 @@ matters). Rules:
   before the flag existed. The blob itself is content-addressed like any
   payload and referenced from the pool's ending, never from the CAS receipt,
   whose v3 key set is an immutable interpretation domain.
+- **An in-process profiler is a contract, not a monkeypatch** — `torch.profiler`
+  cannot be started from outside the process it profiles, so `--profile torch`
+  names a path in an environment variable and validates what the action wrote
+  there, rather than injecting code into an action's interpreter. The action
+  keeps its own executed contract; PrismaBuild keeps the whole ingest, budget
+  and refusal path it applies to a profiler it ran itself. A mode never takes
+  over a variable the action already seals, and an action that ignores the
+  contract fails: a cache hit carries no `profile` key, so publishing a receipt
+  for a run that produced no profile would answer every later submission of
+  that key with an unprofiled hit and no reason attached.
+- **A profile has a size budget, because evidence is not free** — a trace that
+  fills the disk is a cost the next action pays. The budget is measured against
+  the observed growth rate of the format, a mode that can bound its own capture
+  offers a window sealed into the key, and a profile over the budget fails the
+  run with the remedy in the message rather than filing a receipt without it.
+- **A diagnostic must not change the shape of what it observes** — a profiled
+  action's failure record is the unprofiled one: the same `returncode` and the
+  same `signal`, carried out of the profiler by a relay that can distinguish a
+  signalled child from one that exited 128+n. The profiler's own status is
+  recorded and never silently becomes the action's; it is judged by what it
+  cost, so a profiler that ends badly having produced a usable profile and a
+  recorded ending is marked, not fatal, while one that produced neither fails
+  through the paths that already refuse those. An action stopped by its deadline files the profile it
+  had reached, marked partial and bounded by the time the pool allows a
+  signalled launcher, because the run somebody profiled for being slow is the
+  run whose profile matters. This also covers a deadline during the relay
+  wait after a windowed profiler has exited: the action group is reaped and
+  the completed report is ingested before profile scratch cleanup.
 - **Effective pool placement is a parameter** — `pbrun` seals the sorted,
   deduplicated conjunction of tags that its placement rule actually returned,
   including a derived hostname pin. The normalized constraint moves the action

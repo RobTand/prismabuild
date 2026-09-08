@@ -21,6 +21,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager, suppress
 import errno
 import fcntl
+import gzip
 import hashlib
 import json
 import math
@@ -36,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
 ACTION_SCHEMA_V2 = "prismaquant.prismabuild.action.v2"
@@ -332,6 +334,10 @@ class LocalActionError(PrismaBuildError):
     wants the number as a number no longer has to scrape anything.
     ``returncode`` follows ``subprocess``: a signalled action carries the
     negative signal number, and ``signal`` carries the positive one.
+
+    ``profile`` is the profile of a run that failed, when there is one.  A
+    timed-out action is the case somebody most wants a profile of, so the
+    record travels on the error rather than only on a successful ending.
     """
 
     def __init__(
@@ -339,10 +345,12 @@ class LocalActionError(PrismaBuildError):
         *args: object,
         returncode: int | None = None,
         signal: int | None = None,
+        profile: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__(*args)
         self.returncode = returncode
         self.signal = signal
+        self.profile = profile
 
 
 class InitialMissRendezvousError(LocalActionError):
@@ -4646,13 +4654,25 @@ def _run_initial_miss_rendezvous(
 # **The action's exit status travels out of band.**  py-spy 0.4.2 exits 0
 # whatever the program it ran exited (measured: a child exiting 3 and 7 both gave
 # ``py-spy`` exit 0), so a profiled run that reported the launcher's status would
-# call every failing action a pass.  :func:`exit_status_relay` puts one ``/bin/sh``
-# between the profiler and the sealed argv whose only job is to write ``$?`` where
-# the worker can read it.  The sealed argv is exec'd verbatim underneath, so the
-# executed contract is the same one the unprofiled action has.  One thing is lost
-# and is worth naming: ``$?`` is 128+n for a signalled child and cannot be told
-# apart from a literal ``exit 137``, so a profiled run reports the number and not
-# a separate signal field.
+# call every failing action a pass.  :func:`profile_exit_status_relay` puts one
+# process between the profiler and the sealed argv whose only job is to wait for
+# it and write down how it ended.  The sealed argv is exec'd verbatim underneath,
+# so the executed contract is the same one the unprofiled action has.
+#
+# **The relay waits, so it must be able to see a signal.**  The first version of
+# this relay was ``/bin/sh -c '"$@"; printf %d $? > "$0"'``, and a shell reports
+# a signalled child as 128+n with no way to tell it from a literal ``exit 137``.
+# That made a profiled OOM-kill report ``returncode=137, signal=None`` where the
+# unprofiled path reports ``-9`` and ``signal 9``: the shape of the failure
+# record changed with the flag, which is the one thing an opt-in diagnostic must
+# never do.  The relay is a Python process instead, because ``waitpid`` is the
+# only interface on this box that distinguishes the two.  Its cost was measured
+# rather than assumed (action ``83d2530f3eda`` on sparky, 2026-09-07): under
+# ``py-spy record --subprocesses`` at 100 Hz, three paired repeats of the same
+# fixed-work argv gave 41/46/31 samples through the shell relay and 43/35/49
+# through this one, of which the relay's own interpreter startup accounted for
+# 0/1/1.  py-spy excludes idle threads by default and the relay is blocked in
+# ``waitpid`` for the whole run, so it is not in the flamegraph anybody reads.
 
 #: The document a speedscope reader opens.  Checked rather than assumed: a
 #: profiler that wrote a truncated or empty file has not produced a profile,
@@ -4676,6 +4696,16 @@ PROFILE_SAMPLE_RATE_HZ = 100
 PROFILE_SCRATCH_DIRNAME = ".prismabuild-profile"
 
 
+#: The relay's file format.  Named in the file it writes so a reader that
+#: finds one from another era refuses it instead of misreading it.
+PROFILE_EXIT_STATUS_SCHEMA = "prismabuild.profile_exit_status.v1"
+
+#: How often the worker looks again when it is waiting for an action whose
+#: profiler already exited.  Short enough not to add measurable wall time to a
+#: settle, long enough not to spin on a filesystem for the length of an action.
+_PROFILE_SETTLE_POLL_SECONDS = 0.05
+
+
 class ProfileBackendUnavailable(Exception):
     """This box has no profiler for the mode the action asked for."""
 
@@ -4684,16 +4714,65 @@ class ProfileUnusable(Exception):
     """The profiler ran but left nothing a reader could open."""
 
 
-def profile_exit_status_relay(argv, status_path) -> list[str]:
-    """Run ``argv`` and record its exit status where the worker can read it.
+#: The relay's whole program.  Small enough to read in one sitting, because it
+#: is the only thing standing between a profiler and the truth about how an
+#: action ended.
+#:
+#: ``close_fds=False`` is load-bearing rather than lax: ``_run_local_action``
+#: hands the output lock's descriptor to the action so the exclusion outlives a
+#: killed worker, and Python's default would close it here, one process short of
+#: the argv that has to hold it.
+#:
+#: A launch that never happened is reported as a launch that never happened.
+#: The unprofiled path calls a failing ``Popen`` a worker verdict, not an
+#: action's ending; a relay that wrote ``127`` instead would turn one into the
+#: other, and 127 is a status a shell really can return.
+#:
+#: It writes twice, and both writes are ``os.replace`` of a fully written file,
+#: because a reader of this file has three questions and one write can only
+#: answer two.  ``launched`` says the sealed argv is running and names its pid;
+#: ``ended`` replaces it with how it ended.  A relay that is itself killed --
+#: which is what a pool deadline does, since the pool signals the launcher's
+#: whole session -- leaves ``launched`` behind, and that is how the timeout
+#: path can say "the action started and its ending is unknown" rather than
+#: guessing between a crashed profiler and an action that never began.  Without
+#: the staging file a reader that arrived mid-write would see half a JSON
+#: document and call it malformed.
+PROFILE_RELAY_SOURCE = """\
+import json, os, subprocess, sys
+status_path, argv = sys.argv[1], sys.argv[2:]
+def record(body):
+    body["schema"] = "prismabuild.profile_exit_status.v1"
+    staged = status_path + ".partial"
+    with open(staged, "w") as handle:
+        handle.write(json.dumps(body, sort_keys=True))
+    os.replace(staged, status_path)
+try:
+    child = subprocess.Popen(argv, close_fds=False)
+except OSError as exc:
+    record({"phase": "launch_failed",
+            "launch_error": "%s: %s" % (type(exc).__name__, exc)})
+    sys.exit(1)
+record({"phase": "launched", "child_pid": child.pid})
+code = child.wait()
+record({"phase": "ended", "returncode": code,
+        "signal": -code if code < 0 else None})
+sys.exit(0)
+"""
 
-    ``sh -c SCRIPT a b c...`` sets ``$0`` to ``a`` and ``$@`` to the rest, so
-    the status path rides in ``$0`` and the sealed argv is ``"$@"`` -- quoted,
-    so an argument with a space stays one argument.
+
+def profile_exit_status_relay(argv, status_path) -> list[str]:
+    """Run ``argv`` and record how it ended where the worker can read it.
+
+    ``-I`` is not decoration.  The relay's working directory is the action's
+    checkout, and ``python -c`` would otherwise put that directory on
+    ``sys.path``: an action carrying its own ``json.py`` would be importing
+    into the worker's own status relay.  ``-S`` drops ``site`` as well, whose
+    only job here would be to slow a process that imports four stdlib modules.
     """
 
     return [
-        "/bin/sh", "-c", '"$@"; printf %d $? > "$0"',
+        sys.executable, "-I", "-S", "-c", PROFILE_RELAY_SOURCE,
         str(status_path), *[str(word) for word in argv],
     ]
 
@@ -4738,6 +4817,13 @@ class PySpyProfileBackend:
     """``--profile sample``: py-spy sampling the action's whole process tree."""
 
     mode = "sample"
+    #: py-spy handles SIGINT and nothing else: its termination path is the
+    #: ``ctrlc`` crate, and a SIGTERM kills it with the speedscope unwritten
+    #: (measured on sparky, probe ``f09402fe3ce8``: SIGTERM left no file and no
+    #: exit status; SIGINT to the leader wrote the profile in 102 ms).  A
+    #: killed action's profile depends on asking it the way it listens.
+    flush_signal = signal.SIGINT
+    flush_seconds = 3.0
     name = "py-spy"
     rate_hz = PROFILE_SAMPLE_RATE_HZ
     profile_suffix = "speedscope.json"
@@ -4745,6 +4831,13 @@ class PySpyProfileBackend:
     def __init__(self) -> None:
         self._path: str | None = None
         self._version: str | None = None
+
+    def bind(self, option: str | None) -> "PySpyProfileBackend":
+        if option is not None:
+            raise ProfileBackendUnavailable(
+                f"the sample mode takes no option, and was given {option!r}"
+            )
+        return self
 
     def locate(self) -> str:
         """The py-spy this box will run, or a refusal naming where it looked.
@@ -4785,7 +4878,7 @@ class PySpyProfileBackend:
             self._version = (completed.stdout or completed.stderr).strip()
         return self._version
 
-    def launch_argv(self, argv, *, profile_path: Path, exit_status_path: Path):
+    def launch_argv(self, argv, *, profile_path: Path):
         return [
             self.locate(), "record",
             "--subprocesses",
@@ -4793,28 +4886,437 @@ class PySpyProfileBackend:
             "--format", "speedscope",
             "--output", str(profile_path),
             "--",
-            *profile_exit_status_relay(argv, exit_status_path),
+            *argv,
         ]
 
     def read_profile(self, path: Path) -> dict[str, object]:
         return read_speedscope(path)
 
 
-#: Mode to backend.  Tier 2 adds its entry here and changes nothing else.
-PROFILE_BACKENDS: dict[str, object] = {PySpyProfileBackend.mode: PySpyProfileBackend()}
+#: The largest profile this fleet will file.  A trace is evidence, and
+#: evidence that fills the disk is a cost the next action pays.  Measured
+#: rather than guessed (action ``f09402fe3ce8`` on sparky, 2026-09-07): an nsys
+#: CUDA+NVTX trace of a saturated matmul loop grew 666 kB, 2.28 MB and 8.80 MB
+#: over runs of 1.94 s, 6.71 s and 25.69 s -- about 0.34 MB per second of
+#: traced GPU work -- so this ceiling is a little under two hours of it.  An
+#: action that needs longer asks for a window instead (``--profile nsys:600``).
+PROFILE_BLOB_BUDGET_BYTES = 2 * 1024 ** 3
+
+
+def read_chrome_trace(path: Path) -> dict[str, object]:
+    """Open a Chrome/Perfetto trace and say how many events it holds.
+
+    Written by the action itself under the torch contract, so this is the only
+    place that finds out whether the action really honoured it.  Gzip first
+    because that is what the contract asks for; a plain JSON document at the
+    same path is accepted and recorded as uncompressed rather than refused,
+    since it is the same trace and the reader opens both.
+    """
+
+    raw = Path(path)
+    try:
+        blob = raw.read_bytes()
+    except OSError as exc:
+        raise ProfileUnusable(f"no profile was written to {path}: {exc}") from exc
+    if not blob:
+        raise ProfileUnusable(f"the profile at {path} is empty")
+    compressed = blob[:2] == b"\x1f\x8b"
+    if compressed:
+        try:
+            blob = gzip.decompress(blob)
+        except (OSError, EOFError, zlib.error) as exc:
+            raise ProfileUnusable(
+                f"the profile at {path} is truncated gzip: {exc}"
+            ) from exc
+    try:
+        document = json.loads(blob)
+    except ValueError as exc:
+        raise ProfileUnusable(
+            f"the profile at {path} is not a JSON trace: {exc}"
+        ) from exc
+    if not isinstance(document, dict) or "traceEvents" not in document:
+        raise ProfileUnusable(
+            f"the profile at {path} has no traceEvents; a Chrome trace is "
+            "what torch.profiler.export_chrome_trace writes"
+        )
+    events = document["traceEvents"]
+    record: dict[str, object] = {
+        "events": len(events) if isinstance(events, list) else None,
+        "compressed": compressed,
+    }
+    for field in ("schemaVersion", "deviceProperties"):
+        if field == "schemaVersion" and field in document:
+            record["trace_schema_version"] = document[field]
+    return record
+
+
+class NsysProfileBackend:
+    """Nsight Systems around the sealed argv: what the GPU actually did.
+
+    CUPTI-backed, and priced accordingly -- this is the mode that answers "which
+    kernels, how long, and what was the gap between them", which no sampler can
+    answer.  CPU sampling is left off (``-s none``): ``--profile sample`` is
+    the mode for that question, and every sample nsys takes is trace bytes it
+    also has to write.
+    """
+
+    mode = "nsys"
+    name = "nsys"
+    profile_suffix = "nsys-rep"
+    #: nsys finalizes its report when it is signalled, and needs longer than a
+    #: sampler to do it: measured on sparky (action ``f09402fe3ce8``) a group
+    #: SIGTERM 25 s into a traced run left a complete 5.99 MB ``.nsys-rep``
+    #: after 3.1 s.  The reap gives it that time rather than SIGKILLing a
+    #: report mid-write.  It has no flush signal of its own: SIGTERM is what
+    #: it wants, and SIGTERM is what the reap sends.
+    terminate_grace_seconds = 6.0
+    #: With a window, nsys stops tracing on its own clock and exits while the
+    #: action runs on (measured: a 2 s cap ended nsys at 3.3 s with the
+    #: workload still going at 8.4 s), so the worker waits for the action.
+    settle_seconds = 900.0
+
+    def __init__(self, *, duration_s: int | None = None):
+        self.duration_s = duration_s
+        self._path: str | None = None
+        self._version: str | None = None
+
+    @property
+    def exits_before_action(self) -> bool:
+        return self.duration_s is not None
+
+    def bind(self, option: str | None) -> "NsysProfileBackend":
+        """A per-action copy carrying the sealed window, if there is one.
+
+        The registry holds one instance per mode and an action must not be able
+        to reconfigure it for the next one, so the option makes a copy.
+        """
+
+        if option is None:
+            return self
+        if not re.fullmatch(r"[1-9][0-9]{0,4}", option):
+            raise ProfileBackendUnavailable(
+                f"the nsys window must be whole seconds, 1 to 99999, not "
+                f"{option!r}: --profile nsys:600 traces the first ten minutes"
+            )
+        bound = NsysProfileBackend(duration_s=int(option))
+        bound._path, bound._version = self._path, self._version
+        return bound
+
+    #: Where Nsight Systems installs itself, checked after ``PATH``.  py-spy's
+    #: lesson, in the one form that applies: the worker loop's ``PATH`` is not
+    #: the operator's, and sparky's ``--profile sample`` refuses today for
+    #: exactly that reason.  nsys is a system binary at a known place, so this
+    #: mode does not have to inherit the same accident.
+    INSTALL_CANDIDATES = (
+        "/usr/local/bin/nsys",
+        "/usr/local/cuda/bin/nsys",
+        "/opt/nvidia/nsight-systems/bin/nsys",
+    )
+
+    def locate(self) -> str:
+        if self._path is not None:
+            return self._path
+        found = shutil.which("nsys")
+        if found is None:
+            for candidate in self.INSTALL_CANDIDATES:
+                if Path(candidate).is_file():
+                    found = candidate
+                    break
+        if found is None:
+            raise ProfileBackendUnavailable(
+                "nsys was not found on PATH or at "
+                + ", ".join(self.INSTALL_CANDIDATES)
+                + ".  It ships with the CUDA toolkit as Nsight Systems; a box "
+                "without a GPU toolchain has no business answering an nsys "
+                "request."
+            )
+        self._path = found
+        return found
+
+    @property
+    def version(self) -> str:
+        if self._version is None:
+            completed = subprocess.run(
+                [self.locate(), "--version"],
+                capture_output=True, text=True, check=False,
+            )
+            self._version = (completed.stdout or completed.stderr).strip()
+        return self._version
+
+    def check_environment(self, sealed: Mapping[str, str]) -> None:
+        """Refuse a run whose intermediate would land in ``/tmp``.
+
+        The report goes where ``-o`` says, under the action's own working
+        directory, but the ``.qdstrm`` nsys writes while it traces follows
+        ``TMPDIR`` and nothing else -- measured on sparky with a ``PATH``-only
+        environment, where it went to ``/tmp``.  A trace can be gigabytes, and
+        this fleet does not put gigabytes in ``/tmp``.  ``pbrun``'s default
+        environment already sets ``TMPDIR``; only ``--no-default-env`` reaches
+        this, and the fix is to seal one rather than to have PrismaBuild
+        change the action's temporary directory underneath it.
+        """
+
+        if not (sealed.get("TMPDIR") or "").strip():
+            raise LocalActionError(
+                "the nsys profile mode needs TMPDIR in the action's sealed "
+                "environment: nsys writes its intermediate trace there while "
+                "it runs, and with no TMPDIR that is /tmp, which this fleet "
+                "does not use for anything that can be gigabytes.  pbrun's "
+                "default environment sets it; --no-default-env drops it, so "
+                "seal one with --env TMPDIR=/home/rob/tmp."
+            )
+
+    def _report_base(self, profile_path: Path) -> Path:
+        # ``-o`` names the report without its suffix, and nsys appends
+        # ``.nsys-rep`` itself.
+        return profile_path.with_suffix("")
+
+    def launch_argv(self, argv, *, profile_path: Path):
+        window: list[str] = []
+        if self.duration_s is not None:
+            # ``--kill none`` is load-bearing: nsys's default at the end of a
+            # window is to SIGTERM the application, and a diagnostic that ends
+            # the action it was asked to watch is not a diagnostic.
+            window = ["--duration", str(self.duration_s), "--kill", "none"]
+        return [
+            self.locate(), "profile",
+            "--output", str(self._report_base(profile_path)),
+            "--force-overwrite", "true",
+            "--trace", "cuda,nvtx",
+            "--sample", "none",
+            *window,
+            "--",
+            *argv,
+        ]
+
+    def read_profile(self, path: Path) -> dict[str, object]:
+        report = Path(path)
+        try:
+            size = report.stat().st_size
+        except OSError as exc:
+            raise ProfileUnusable(
+                f"nsys wrote no report at {report}: {exc}"
+            ) from exc
+        if size == 0:
+            raise ProfileUnusable(f"the nsys report at {report} is empty")
+        if size > PROFILE_BLOB_BUDGET_BYTES:
+            raise ProfileUnusable(
+                f"the nsys report is {size} bytes, over this fleet's "
+                f"{PROFILE_BLOB_BUDGET_BYTES}-byte profile budget.  Ask for a "
+                "window instead -- --profile nsys:600 traces the first ten "
+                "minutes -- rather than tracing an action that long end to end."
+            )
+        record: dict[str, object] = {"report_bytes": size}
+        if self.duration_s is not None:
+            record["window_s"] = self.duration_s
+            record["partial_window"] = True
+        return record
+
+    def extra_blobs(self, path: Path) -> list[tuple[str, Path]]:
+        """The kernel-time table, which is the part an agent can read.
+
+        A ``.nsys-rep`` needs Nsight Systems to open; the CSV summary is the
+        answer to "where did the GPU time go" in a form a reader already has.
+        Best-effort by design: a box whose nsys cannot run ``stats`` still
+        files the report.
+
+        A summary with no rows in it is not filed.  A partial report -- the
+        one a killed run leaves -- can carry no completed kernels, and
+        ``nsys stats`` answers that with an empty file or with a header and
+        nothing under it; filing that produced a ``kernel_summary`` blob whose
+        digest was ``e3b0c442``, the hash of no bytes at all, sitting on the
+        record beside a real report as though the table had been read and had
+        found nothing to say.  The reason goes on the ending instead, where a
+        reader looking for the table finds out why it is not there.
+        """
+
+        self._summary_note = None
+        base = Path(path).with_suffix("")
+        summary = base.parent / f"{base.name}_cuda_gpu_kern_sum.csv"
+        completed = subprocess.run(
+            [self.locate(), "stats", "--report", "cuda_gpu_kern_sum",
+             "--format", "csv", "--output", str(base), str(path)],
+            capture_output=True, text=True, check=False,
+        )
+        if completed.returncode != 0:
+            self._summary_note = (
+                f"nsys stats exited {completed.returncode}: "
+                + (completed.stderr or completed.stdout or "").strip()[-200:]
+            )
+            return []
+        if not summary.is_file():
+            self._summary_note = "nsys stats wrote no summary file"
+            return []
+        rows = self._summary_rows(summary)
+        if rows == 0:
+            self._summary_note = (
+                "the CUDA kernel summary has no rows: this report records no "
+                "completed kernel"
+            )
+            return []
+        return [("kernel_summary", summary)]
+
+    @staticmethod
+    def _summary_rows(summary: Path) -> int:
+        """Data rows under the CSV header, or 0 for a file that has none."""
+
+        try:
+            text = summary.read_text(errors="replace")
+        except OSError:
+            return 0
+        lines = [line for line in text.splitlines() if line.strip()]
+        return max(len(lines) - 1, 0)
+
+    def extra_blob_notes(self) -> dict[str, object]:
+        """Why a blob this backend usually files is missing, if it is."""
+
+        note = getattr(self, "_summary_note", None)
+        return {"kernel_summary_absent": note} if note else {}
+
+
+class TorchProfileBackend:
+    """The action profiles itself, and this says where to put the result.
+
+    ``torch.profiler`` is in-process by construction: no outside process can
+    turn it on, and this fleet will not monkeypatch an action's interpreter to
+    pretend otherwise.  So the mode is a contract instead.  PrismaBuild names a
+    path in ``PRISMABUILD_PROFILE_TORCH_OUT``; an action that asked for this
+    mode exports its Chrome trace there
+    (``tools/profile_torch.py`` in this repository is a copyable helper); and
+    PrismaBuild validates, sizes, ingests and reports the file exactly as it
+    does a profile it produced itself.
+
+    An action that asks for the mode and then writes nothing **fails**.  It is
+    tempting to report ``produced: false`` and publish the receipt anyway, but
+    the receipt is what makes the key answerable: ``run_local_action`` returns a
+    cache hit with no ``profile`` key at all, so a receipt filed for a run that
+    produced no profile turns every later identical submission into a
+    profile-less hit, with no reason attached, until somebody thinks to pass
+    ``--recompute``.  A refusal is recoverable; a poisoned key is not.
+    """
+
+    mode = "torch"
+    name = "torch.profiler"
+    profile_suffix = "chrome-trace.json.gz"
+    #: The action exports on SIGTERM if it installed the helper's handler, and
+    #: that export is not instant: measured on sparky (action
+    #: ``f09402fe3ce8``), 20 s of traced matmuls took 4.5 s to write 9.0 MB
+    #: gzipped, 5.8 s from signal to exit.
+    terminate_grace_seconds = 6.0
+    #: There is nothing on the box to hash: the profiler is the action's own
+    #: interpreter, and its version is the action's business.
+    hashable = False
+
+    #: The variable the action reads.  Named on every refusal, because the
+    #: whole contract is one variable and one file.
+    OUT_ENV = "PRISMABUILD_PROFILE_TORCH_OUT"
+
+    def bind(self, option: str | None) -> "TorchProfileBackend":
+        if option is not None:
+            raise ProfileBackendUnavailable(
+                f"the torch mode takes no option, and was given {option!r}"
+            )
+        return self
+
+    def locate(self) -> str:
+        # Backed on every box: the profiler travels in the action.
+        return "in-process (torch.profiler, inside the action)"
+
+    @property
+    def version(self) -> str:
+        return ""
+
+    def environment(self, *, profile_path: Path) -> dict[str, str]:
+        return {self.OUT_ENV: str(profile_path)}
+
+    def launch_argv(self, argv, *, profile_path: Path):
+        # Nothing wraps the action: the profiler is already inside it.
+        return list(argv)
+
+    def read_profile(self, path: Path) -> dict[str, object]:
+        report = Path(path)
+        if not report.exists():
+            raise ProfileUnusable(
+                f"the action never wrote a trace to {report}.  The torch mode "
+                f"is a contract: the action reads {self.OUT_ENV} from its "
+                "environment and exports its Chrome trace there "
+                "(prof.export_chrome_trace(os.environ["
+                f"{self.OUT_ENV!r}]), or copy tools/profile_torch.py).  An "
+                "action that does not is not profiled, and a receipt filed "
+                "for it would answer every later run of the same command with "
+                "an unprofiled cache hit."
+            )
+        size = report.stat().st_size
+        if size > PROFILE_BLOB_BUDGET_BYTES:
+            raise ProfileUnusable(
+                f"the trace is {size} bytes, over this fleet's "
+                f"{PROFILE_BLOB_BUDGET_BYTES}-byte profile budget.  Export a "
+                "schedule (torch.profiler.schedule) rather than the whole run."
+            )
+        return read_chrome_trace(report)
+
+
+#: Mode to backend.  A tier adds its entry here and changes nothing else.
+PROFILE_BACKENDS: dict[str, object] = {
+    backend.mode: backend for backend in (
+        PySpyProfileBackend(), NsysProfileBackend(), TorchProfileBackend(),
+    )
+}
 
 #: What ``--profile`` accepts, in the order a help message should list it.
 PROFILE_MODES: tuple[str, ...] = tuple(sorted(PROFILE_BACKENDS))
+
+#: How a mode carries its one option.  ``nsys:600`` is the whole vocabulary:
+#: a mode name, and a number the backend knows how to read.
+PROFILE_MODE_SEPARATOR = ":"
+
+
+def split_profile_mode(mode: str) -> tuple[str, str | None]:
+    """``"nsys:600"`` into its mode and its option."""
+
+    name, _, option = mode.partition(PROFILE_MODE_SEPARATOR)
+    return name, (option or None)
+
+
+def bind_profile_option(backend: object, mode: str, option: str | None):
+    """Give a backend its sealed option, or refuse one it cannot take.
+
+    ``bind`` is optional in the backend protocol: a mode with nothing to
+    configure does not implement it, and is then refused an option rather than
+    silently ignoring one somebody sealed into a key on purpose.
+    """
+
+    binder = getattr(backend, "bind", None)
+    if binder is not None:
+        return binder(option)
+    if option is not None:
+        raise ProfileBackendUnavailable(
+            f"the {mode} mode takes no option, and was given {option!r}"
+        )
+    return backend
+
+
+def parse_profile_mode(text: str) -> str:
+    """Validate a ``--profile`` value at the client, before it is sealed.
+
+    A mode that only this box's runtime rejects is a wasted submission and a
+    confusing one; the same rule runs here and on the worker.
+    """
+
+    name, option = split_profile_mode(text)
+    bind_profile_option(profile_backend_for(name), name, option)
+    return text
 
 
 def profile_backend_for(mode: str):
     """The backend for a sealed mode, or a refusal naming what is offered."""
 
+    name, _option = split_profile_mode(mode)
     try:
-        return PROFILE_BACKENDS[mode]
+        return PROFILE_BACKENDS[name]
     except KeyError:
         raise ProfileBackendUnavailable(
-            f"unknown profile mode {mode!r}; this runtime offers "
+            f"unknown profile mode {name!r}; this runtime offers "
             + ", ".join(sorted(PROFILE_BACKENDS))
         ) from None
 
@@ -4831,10 +5333,29 @@ def describe_profile(profile) -> str:
         return ""
     digest = str(profile.get("blob_sha256") or "")
     if not digest:
-        return ""
+        # A record with no blob is a record of a profile that did not survive,
+        # and saying so is the point of having recorded it.  Returning "" here
+        # printed nothing at all for a killed run, which reads as "no profile
+        # was asked for" -- the one thing it does not mean.
+        if not profile.get("mode"):
+            return ""
+        return (f"profile {profile.get('mode')} ({profile.get('backend')}) "
+                "not produced: "
+                + str(profile.get("reason") or "no reason recorded"))
+    partial = " (partial: the action was stopped)" if profile.get("partial") \
+        else ""
+    absent = ""
+    if profile.get("kernel_summary_absent"):
+        absent = (", no kernel summary: "
+                  + str(profile.get("kernel_summary_absent")))
+    ignored = ""
+    if profile.get("backend_status_ignored"):
+        ignored = (f", profiler exited "
+                   f"{profile.get('backend_returncode')} but profiled anyway")
     return (f"profile {profile.get('mode')} ({profile.get('backend')}) "
             f"{digest[:12]} {profile.get('bytes')}B at "
-            f"{profile.get('blob_path') or '(path not recorded)'}")
+            f"{profile.get('blob_path') or '(path not recorded)'}"
+            f"{partial}{ignored}{absent}")
 
 
 #: The sealed param that asks for a profile.  Absent on every action that
@@ -4864,6 +5385,12 @@ class _ProfileSession:
         suffix = getattr(backend, "profile_suffix", "profile")
         self.profile_path = directory / f"profile.{suffix}"
         self.exit_status_path = directory / "exit_status"
+        #: The profiler's own exit status, once it has one.  Reported rather
+        #: than discarded: Tier 1 overwrote it with the action's.
+        self.backend_returncode: int | None = None
+        #: ``(name, path)`` a backend adds beside the profile -- a summary
+        #: table, say -- ingested as its own blob and named on the record.
+        self.extra_blobs: list[tuple[str, Path]] = []
 
     def _open(self) -> None:
         """Create the scratch directory, and not one moment earlier.
@@ -4873,30 +5400,82 @@ class _ProfileSession:
         counts an untracked directory as dirt.  A scratch directory created
         before that proof refuses every profiled action; created after it,
         nothing looks at the tree's cleanliness again.
+
+        A directory that cannot be created is a refusal with a reason, in the
+        one exception class ``core.main`` catches.  Raw, it left the worker to
+        traceback out of ``main``, skip the status write, and let the claim be
+        reaped on the next attempt -- an unwritable checkout reported as a
+        mystery instead of as itself.
         """
 
-        self.directory.mkdir(parents=True, exist_ok=True)
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise LocalActionError(
+                f"the profile scratch directory could not be created at "
+                f"{self.directory}: {exc}.  A profiled action needs somewhere "
+                "inside its own working directory to write the profile, so "
+                "this run failed before the action started."
+            ) from exc
 
     def close(self) -> None:
         with suppress(OSError):
             shutil.rmtree(self.directory)
 
+    def environment(self, sealed: Mapping[str, str]) -> dict[str, str]:
+        """Variables this mode adds to the action's own environment.
+
+        Only the torch contract needs one, and it needs one by construction:
+        an in-process profiler cannot be told where to write by an argv it is
+        not in.  A variable the action already seals is a refusal rather than
+        an overwrite -- silently replacing it would change what the action
+        does under a diagnostic flag, which is the one thing this tier must
+        not do.
+        """
+
+        check = getattr(self.backend, "check_environment", None)
+        if check is not None:
+            check(sealed)
+        added = getattr(self.backend, "environment", None)
+        if added is None:
+            return {}
+        variables = dict(added(profile_path=self.profile_path))
+        clashes = sorted(set(variables) & set(sealed))
+        if clashes:
+            raise LocalActionError(
+                f"the {self.mode} profile mode sets {', '.join(clashes)}, "
+                "which this action's sealed environment already sets.  The "
+                "mode cannot take the variable over without changing what the "
+                "action does, so it refuses instead."
+            )
+        return variables
+
     def launch_argv(self, argv: Sequence[object]) -> list[str]:
+        """What the worker launches instead of the sealed argv.
+
+        The relay is wrapped here rather than inside each backend, so that a
+        backend cannot forget it: every mode gets the same exit-status
+        guarantee by construction, and a new backend's only job is to say how
+        to run the argv it is handed.
+        """
+
         self._open()
+        relayed = profile_exit_status_relay(
+            [str(item) for item in argv], self.exit_status_path
+        )
         return [
             str(word)
             for word in self.backend.launch_argv(  # type: ignore[attr-defined]
-                [str(item) for item in argv],
-                profile_path=self.profile_path,
-                exit_status_path=self.exit_status_path,
+                relayed, profile_path=self.profile_path,
             )
         ]
 
-    def action_returncode(self) -> int:
-        """The action's own exit status, out of the relay the launch installed.
+    def exit_status(self) -> dict[str, object]:
+        """The relay's latest record, or a refusal saying why there is none.
 
-        A missing or unreadable relay is a broken profiled run, not a pass: it
-        means nothing here knows what the action did.
+        Read as a whole rather than field by field, because the timeout path
+        wants the phase (did the action even start?) and the settle path wants
+        the pid, while the ordinary path wants only the status.
         """
 
         try:
@@ -4906,11 +5485,153 @@ class _ProfileSession:
                 f"the profiled action left no exit status at "
                 f"{self.exit_status_path}: {exc}"
             ) from exc
-        if re.fullmatch(r"[0-9]{1,3}", raw) is None:
+        try:
+            record = json.loads(raw)
+        except ValueError as exc:
+            raise ProfileUnusable(
+                f"the profiled action's exit status is malformed: {raw!r}"
+            ) from exc
+        if not isinstance(record, dict) or not isinstance(
+            record.get("phase"), str
+        ):
             raise ProfileUnusable(
                 f"the profiled action's exit status is malformed: {raw!r}"
             )
-        return int(raw)
+        if record.get("schema") != PROFILE_EXIT_STATUS_SCHEMA:
+            raise ProfileUnusable(
+                f"the profiled action's exit status is not "
+                f"{PROFILE_EXIT_STATUS_SCHEMA}: {raw!r}"
+            )
+        return record
+
+    def action_returncode(self, process=None) -> int:
+        """How the action ended, out of the relay the launch installed.
+
+        In ``subprocess``'s own convention, so an unprofiled and a profiled run
+        of the same dying action raise the same ``LocalActionError``: a
+        signalled action is the negative signal number, and the caller derives
+        ``signal`` from it exactly as it does without a profiler.
+
+        A missing or unreadable relay is a broken profiled run, not a pass: it
+        means nothing here knows what the action did.
+        """
+
+        record = self._settled_exit_status(process)
+        phase = record["phase"]
+        if phase == "launch_failed":
+            # The unprofiled path calls this a worker verdict rather than an
+            # action's ending, and so does this: no ``returncode`` reaches the
+            # error, so nothing downstream reads a number the action never
+            # produced.
+            raise LocalActionError(
+                f"action execution failed: {record.get('launch_error')}"
+            )
+        if phase == "launched":
+            raise ProfileUnusable(
+                f"the profiler exited while the action (pid "
+                f"{record.get('child_pid')}) was still running, so how the "
+                f"action ended was never recorded"
+            )
+        if phase != "ended":
+            raise ProfileUnusable(
+                f"the profiled action's exit status is malformed: {record!r}"
+            )
+        code = record.get("returncode")
+        if not isinstance(code, int) or isinstance(code, bool):
+            raise ProfileUnusable(
+                f"the profiled action's exit status is malformed: {record!r}"
+            )
+        if not -64 <= code <= 255:
+            raise ProfileUnusable(
+                f"the profiled action's exit status is out of range: {code}"
+            )
+        return code
+
+    def _settled_exit_status(self, process=None) -> dict[str, object]:
+        """The relay's record, waiting out a profiler that exits first.
+
+        Most profilers outlive what they profile, and for those this reads the
+        file once.  ``nsys --duration`` does not: it stops tracing on its own
+        clock and exits while the action runs on -- measured on sparky (action
+        ``83d2530f3eda``), where a 2 s cap ended nsys at 3.3 s and the workload
+        at 8.4 s.  A backend that can do that declares
+        ``exits_before_action``, and the worker waits for the action itself
+        rather than reporting an ending the action had not reached.  The wait
+        is bounded: past ``settle_seconds`` the action is the one thing still
+        running and calling that a profiler failure is more honest than
+        blocking a worker on it forever.
+        """
+
+        record = self.exit_status()
+        if not getattr(self.backend, "exits_before_action", False):
+            return record
+        deadline = time.monotonic() + float(
+            getattr(self.backend, "settle_seconds", 0.0)
+        )
+        # The action outlives its profiler on this path, which makes every way
+        # out of this wait a way to orphan it.  A pool deadline arriving here
+        # signals *this* process, not the action's session, so without the
+        # handler the worker would exit and leave the action holding the GPU
+        # and its copy of the output lock; and a wait that simply expires would
+        # do the same, quietly, on the way to raising.
+        with _sigterm_unwinds_this_process():
+            try:
+                while (record["phase"] == "launched"
+                       and time.monotonic() < deadline):
+                    time.sleep(_PROFILE_SETTLE_POLL_SECONDS)
+                    record = self.exit_status()
+            except BaseException:
+                if process is not None:
+                    _terminate_process_group(process)
+                raise
+        if record["phase"] == "launched" and process is not None:
+            _terminate_process_group(process)
+        return record
+
+    def identity(self) -> dict[str, object]:
+        """Which profiler ran, by name, version, path and digest.
+
+        The path and the digest are here because "py-spy 0.4.2" is a claim
+        about a box and not a fact about a file: two boxes can carry the same
+        version string over different binaries, and an overhead number is only
+        comparable against the binary it was measured on.  A backend that
+        cannot be located records the reason instead -- this runs on the way
+        out of a failure as well as a success.
+        """
+
+        record: dict[str, object] = {
+            "mode": self.mode,
+            "backend": str(getattr(self.backend, "name", self.mode)),
+            "backend_version": str(getattr(self.backend, "version", "")),
+            "rate_hz": getattr(self.backend, "rate_hz", None),
+        }
+        if not getattr(self.backend, "hashable", True):
+            # The profiler is the action's own interpreter; there is no binary
+            # on this box to name, and saying so is more honest than hashing
+            # something that had nothing to do with it.
+            record["backend_path"] = str(
+                self.backend.locate()  # type: ignore[attr-defined]
+            )
+            if self.backend_returncode is not None:
+                record["backend_returncode"] = self.backend_returncode
+            return record
+        try:
+            path = Path(str(self.backend.locate()))  # type: ignore[attr-defined]
+            # Through the symlink, the way the worker's own attestation
+            # records an executable: ``/bin/sh`` and ``/usr/local/bin/nsys``
+            # are both links, and a digest of a link is a digest of a name.
+            resolved = path.resolve()
+            digest, size = _file_identity(resolved, where="profile backend")
+        except (ProfileBackendUnavailable, ActionContractError, OSError) as exc:
+            record["backend_path_error"] = str(exc)
+        else:
+            record["backend_path"] = str(path)
+            record["backend_resolved_path"] = str(resolved)
+            record["backend_sha256"] = digest
+            record["backend_bytes"] = size
+        if self.backend_returncode is not None:
+            record["backend_returncode"] = self.backend_returncode
+        return record
 
     def ingest(self, cas: "PrismaBuildCAS") -> dict[str, object]:
         """Read the profile back and publish it as a content-addressed blob.
@@ -4924,17 +5645,151 @@ class _ProfileSession:
         entry, _won = cas.ingest_input(
             self.profile_path, input_id="prismabuild.profile"
         )
-        record: dict[str, object] = {
-            "mode": self.mode,
-            "backend": str(getattr(self.backend, "name", self.mode)),
-            "backend_version": str(getattr(self.backend, "version", "")),
-            "rate_hz": getattr(self.backend, "rate_hz", None),
+        record = self.identity()
+        record.update({
             "blob_sha256": entry["sha256"],
             "bytes": entry["bytes"],
             "blob_path": str(cas._blob_path(str(entry["sha256"]))),
-        }
+            "produced": True,
+        })
         record.update(read)
+        extra_blobs = list(self.extra_blobs)
+        with suppress(Exception):                     # noqa: BLE001
+            extra_blobs += list(
+                self.backend.extra_blobs(self.profile_path)  # type: ignore[attr-defined]
+            )
+        with suppress(Exception):                     # noqa: BLE001
+            record.update(
+                self.backend.extra_blob_notes()  # type: ignore[attr-defined]
+            )
+        for name, path in extra_blobs:
+            with suppress(ActionContractError, CASTamperError, OSError):
+                extra, _won = cas.ingest_input(
+                    path, input_id="prismabuild.profile." + name
+                )
+                record[name + "_sha256"] = extra["sha256"]
+                record[name + "_bytes"] = extra["bytes"]
+                record[name + "_blob_path"] = str(
+                    cas._blob_path(str(extra["sha256"]))
+                )
         return record
+
+    def note_backend_status(
+        self, returncode: int, record: dict[str, object]
+    ) -> None:
+        """Say how the profiler itself ended, on a record that came back whole.
+
+        Tier 1 threw this number away by assigning the action's over it.  It
+        is worth reporting -- but it is not worth failing a run for on its own,
+        and that was measured rather than assumed.  py-spy 0.4.2 on sparky
+        exits 1 with ``Error: No child process (os error 10)`` from time to
+        time, *having written a complete speedscope*: in one five-arm probe
+        (action ``b6f2ab795ef6``, 2026-09-07) the arm that failed this way
+        (``d_devnull``) still left a profile the reader could open, printing no
+        sample count of its own; the arms that did print one -- including the
+        arm after it, whose conditions were a strict superset -- left 249 and
+        271 samples.  It is a race inside the profiler's own wait, not a fact
+        about the action.
+
+        So the rule is what was lost, not what was returned: a profiler that
+        ends badly *and* leaves no usable profile, or leaves the action's
+        ending unrecorded, fails the run through the paths that already refuse
+        those.  One that ends badly with everything intact is recorded and
+        marked, so a reader can see it without a good run being thrown away
+        for a bug in the tool watching it.
+        """
+
+        self.backend_returncode = int(returncode)
+        record["backend_returncode"] = int(returncode)
+        if returncode == 0:
+            return
+        record["backend_status_ignored"] = True
+        record["backend_status_note"] = (
+            f"the profiler exited with status {returncode} but left a usable "
+            "profile and a recorded action ending, so the run stands"
+        )
+
+
+#: How long the worker may spend turning a killed action into a profile.
+#: The pool signals a launcher that overran its deadline and kills it
+#: ``pool.TIMEOUT_GRACE_S`` -- 15 s -- later, so everything below has to fit
+#: inside that: flush the profiler, reap the group, read the file back.  A
+#: backend whose finalize is slower than its share of this loses the profile
+#: rather than the worker losing its chance to record the ending.
+PROFILE_SETTLE_BUDGET_SECONDS = 12.0
+
+
+def _reap_and_settle(
+    process: "subprocess.Popen[bytes] | None",
+    profile: "_ProfileSession | None",
+    cas: "PrismaBuildCAS | None",
+) -> dict[str, object] | None:
+    """Stop a running action, and keep whatever profile it had reached.
+
+    The timed-out case is the one a profile is most wanted for, and Tier 1
+    threw it away: the timeout raise came before the profile block, so an
+    action that ran into its deadline -- the reason somebody profiled it --
+    reported no profile at all.
+
+    Order is the whole of it.  A profiler is asked to finish *before* the
+    group is reaped, because the reap is what kills it: py-spy writes its
+    speedscope on SIGINT and nothing on SIGTERM (measured, 0.4.2), so a
+    SIGTERM-first settle is a settle with no profile in it.  Sending SIGINT
+    to the profiler alone rather than the group leaves the action running for
+    those few hundred milliseconds, which is the price of having a profile of
+    it; the group reap immediately after ends it.
+
+    Everything here is best-effort by construction.  The caller is on its way
+    out with a worker verdict already decided, and a failure to profile a
+    failure must never replace it.
+    """
+
+    if process is None:
+        return None
+    backend = getattr(profile, "backend", None)
+    flush = getattr(backend, "flush_signal", None)
+    if profile is not None and flush is not None:
+        with suppress(OSError, ProcessLookupError):
+            os.kill(process.pid, flush)
+            deadline = time.monotonic() + float(
+                getattr(backend, "flush_seconds", 3.0)
+            )
+            while process.poll() is None and time.monotonic() < deadline:
+                time.sleep(_PROFILE_SETTLE_POLL_SECONDS)
+    grace = float(
+        getattr(backend, "terminate_grace_seconds", _PROCESS_GROUP_GRACE_SECONDS)
+    )
+    _terminate_process_group(process, grace_s=min(
+        grace, PROFILE_SETTLE_BUDGET_SECONDS / 2.0
+    ))
+    if profile is None or cas is None:
+        return None
+    record: dict[str, object]
+    try:
+        record = profile.ingest(cas)
+    except Exception as exc:                      # noqa: BLE001 - see above
+        record = profile.identity()
+        record["produced"] = False
+        record["reason"] = f"{type(exc).__name__}: {exc}"
+    record["partial"] = True
+    with suppress(ProfileUnusable):
+        status = profile.exit_status()
+        record["action_phase"] = status["phase"]
+    return record
+
+
+def _partial_profile_note(record: Mapping[str, object] | None) -> str:
+    """One clause about a killed run's profile, for the failure message."""
+
+    if record is None:
+        return ""
+    if record.get("produced"):
+        return (f"  Its partial {record.get('mode')} profile is CAS blob "
+                f"{record.get('blob_sha256')} ({record.get('bytes')} bytes); "
+                "it covers only the part of the run that happened before the "
+                "action was stopped.")
+    return (f"  No partial {record.get('mode')} profile survived the stop: "
+            f"{record.get('reason')}")
 
 
 def _profile_session(
@@ -4954,8 +5809,11 @@ def _profile_session(
         return None
     if not isinstance(mode, str):
         raise LocalActionError("action params.profile must be a string mode")
+    name, option = split_profile_mode(mode)
     try:
-        backend = profile_backend_for(mode)
+        backend = bind_profile_option(
+            profile_backend_for(mode), name, option
+        )
     except ProfileBackendUnavailable as exc:
         raise LocalActionError(
             f"this runtime offers no profile mode {mode!r} on "
@@ -4969,7 +5827,7 @@ def _profile_session(
             f"installed on {socket.gethostname()}: {exc}"
         ) from exc
     return _ProfileSession(
-        mode=mode,
+        mode=name,
         backend=backend,
         directory=working_directory / PROFILE_SCRATCH_DIRNAME,
     )
@@ -5657,7 +6515,11 @@ def run_local_action(
         _refuse_existing_result_symlink_prefix(output, cwd)
         process: subprocess.Popen[bytes] | None = None
         launch_argv = list(task["argv"])
+        launch_environment = {
+            str(key): str(value) for key, value in variables.items()
+        }
         if profile is not None:
+            launch_environment.update(profile.environment(launch_environment))
             # The sealed argv is exec'd verbatim underneath what this returns.
             # ``preflight_action`` attests ``task.argv[0]`` off the action, not
             # off this list, so the executable this action names is still the
@@ -5668,9 +6530,7 @@ def run_local_action(
                 process = subprocess.Popen(
                     launch_argv,
                     cwd=cwd,
-                    env={
-                        str(key): str(value) for key, value in variables.items()
-                    },
+                    env=launch_environment,
                     shell=False,
                     stdin=subprocess.DEVNULL,
                     start_new_session=True,
@@ -5681,14 +6541,14 @@ def run_local_action(
                 )
                 returncode = process.wait(timeout=timeout_seconds)
             except subprocess.TimeoutExpired as exc:
-                if process is not None:
-                    _terminate_process_group(process)
+                partial = _reap_and_settle(process, profile, cas)
                 raise LocalActionError(
                     f"action execution timed out: {exc}"
+                    + _partial_profile_note(partial),
+                    profile=partial,
                 ) from exc
             except OSError as exc:
-                if process is not None:
-                    _terminate_process_group(process)
+                _reap_and_settle(process, None, None)
                 raise LocalActionError(f"action execution failed: {exc}") from exc
             except BaseException:
                 # A handled signal (SIGINT/KeyboardInterrupt, and SIGTERM by
@@ -5697,8 +6557,18 @@ def run_local_action(
                 # group before the context manager closes its copy of the
                 # descriptor shared with that child.  If the child cannot be
                 # reaped, its duplicate continues to hold the lock.
-                if process is not None:
-                    _terminate_process_group(process)
+                #
+                # This -- not ``TimeoutExpired`` -- is where a pool deadline
+                # actually lands: ``pool.worker_argv`` passes no
+                # ``--timeout-seconds``, so the pool enforces its deadline by
+                # signalling the launcher's session, which arrives here as the
+                # ``SystemExit`` that ``_sigterm_unwinds_this_process`` raises.
+                # ``main`` never sees a ``LocalActionError`` on this path, so
+                # the partial profile is written to the status file here rather
+                # than left to the handler that does not run.
+                partial = _reap_and_settle(process, profile, cas)
+                if partial is not None:
+                    _write_action_status({"profile": dict(partial)})
                 raise
         profile_record: dict[str, object] | None = None
         if profile is not None:
@@ -5706,8 +6576,12 @@ def run_local_action(
             # 0 whatever it ran), so both facts come out of the session.  The
             # profile is read back before the status is judged: a failing run's
             # profile is usually the reason somebody asked for one.
+            action_status: int | None = None
             try:
-                returncode = profile.action_returncode()
+                # Before the ingest, so the profiler's own status is on the
+                # record this builds rather than added to it afterwards.
+                profile.backend_returncode = returncode
+                action_status = profile.action_returncode(process)
                 profile_record = profile.ingest(cas)
             except ProfileUnusable as exc:
                 raise LocalActionError(
@@ -5715,11 +6589,26 @@ def run_local_action(
                     f"{getattr(profile.backend, 'name', profile.mode)!r} "
                     f"produced no usable profile: {exc}.  A profiled action "
                     "that leaves no profile is not the action that was "
-                    "requested, so this run failed.  The profiler's own "
-                    "message is on the action's own stderr, which its result "
-                    "log captured."
+                    "requested, so this run failed."
+                    + f"  The profiler exited with status {returncode}."
+                    + ("" if action_status is None else
+                       f"  The action itself ended with status "
+                       f"{action_status}.")
+                    + "  The profiler's own message is on the action's own "
+                    "stderr, which its result log captured."
                     + _ingested_result_note(cas, output)
                 ) from exc
+            except BaseException:
+                # A windowed profiler can have exited while its action still
+                # runs. A pool signal during that settle must retain the
+                # completed report before _profile_scratch removes it, just
+                # as a signal during process.wait does above.
+                partial = _reap_and_settle(process, profile, cas)
+                if partial is not None:
+                    _write_action_status({"profile": dict(partial)})
+                raise
+            profile.note_backend_status(returncode, profile_record)
+            returncode = action_status
         if returncode != 0:
             raise LocalActionError(
                 f"action argv exited with status {returncode}"
@@ -5880,18 +6769,43 @@ def _record_action_status(error: LocalActionError) -> None:
     every failure here is swallowed and the original error is raised on.
     """
 
+    body: dict[str, object] = {}
+    if error.returncode is not None:
+        body["action_returncode"] = int(error.returncode)
+        if error.signal is not None:
+            body["action_signal"] = int(error.signal)
+    if error.profile is not None:
+        body["profile"] = dict(error.profile)
+    _write_action_status(body)
+
+
+def _write_action_status(body: Mapping[str, object]) -> None:
+    """Merge fields into the action's status file, or lose them quietly.
+
+    Merging rather than replacing, because two facts about one ending are
+    written from two places: the action's own returncode comes out of
+    ``main``'s handler, and a killed run's partial profile is written from the
+    unwind itself, which that handler never reaches.  A last writer that
+    replaced the file would drop whichever fact arrived first.
+    """
+
     destination = os.environ.get(ACTION_STATUS_PATH_ENV) or ""
-    if not destination or error.returncode is None:
+    if not destination or not body:
         return
-    body: dict[str, object] = {"action_returncode": int(error.returncode)}
-    if error.signal is not None:
-        body["action_signal"] = int(error.signal)
     path = Path(destination)
+    merged: dict[str, object] = {}
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = None
+    if isinstance(existing, dict):
+        merged.update(existing)
+    merged.update(body)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
         tmp.write_text(
-            json.dumps(body, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(merged, sort_keys=True) + "\n", encoding="utf-8"
         )
         os.replace(tmp, path)
     except OSError:
@@ -6044,6 +6958,13 @@ __all__ = [
     "PBRUN_RESULT_PREFIX",
     "PROFILE_BACKENDS",
     "PROFILE_MODES",
+    "PROFILE_EXIT_STATUS_SCHEMA",
+    "read_chrome_trace",
+    "split_profile_mode",
+    "parse_profile_mode",
+    "TorchProfileBackend",
+    "NsysProfileBackend",
+    "PROFILE_BLOB_BUDGET_BYTES",
     "PROFILE_PARAM",
     "PROFILE_SAMPLE_RATE_HZ",
     "PROFILE_SCRATCH_DIRNAME",
