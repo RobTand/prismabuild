@@ -70,8 +70,10 @@ different action -- never a cache hit for the unprofiled one, and never an A/B
 arm against an unprofiled receipt. Measured overhead on a fixed-work CPU action is
 in `docs/operating_prismabuild.md`, beside the box load it was measured under. A profiled action whose profiler produced nothing fails
 with the reason rather than returning an unprofiled receipt, so do not use it
-on an action too short for a sampler to see. `pbtest.py --profile sample` and a
-manifest row's `profile` field forward it. It is backed on dl380g10 and
+on an action too short for a sampler to see. An action killed by its deadline still files whatever
+profile it had reached, marked `partial`, and a profiled failure carries the
+same `returncode`/`signal` an unprofiled one would. `pbtest.py --profile
+sample` and a manifest row's `profile` field forward it. It is backed on dl380g10 and
 sparklina and refuses on sparky, whose worker loop launches under an
 interpreter that cannot see py-spy.
 

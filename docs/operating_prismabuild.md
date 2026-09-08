@@ -99,9 +99,13 @@ These flags say what the action needs and where it may run.
 
 `--profile sample` runs py-spy at 100 Hz over the action's whole process tree
 and files the speedscope profile as a CAS blob. The ending carries
-`profile: {mode, backend, backend_version, rate_hz, blob_sha256, bytes,
-samples, blob_path}`, and both `pbrun` and `pbstatus` print the digest and the
-path, so a human opens the blob at <https://www.speedscope.app/>.
+`profile: {mode, backend, backend_version, backend_path, backend_resolved_path,
+backend_sha256, backend_bytes, backend_returncode, rate_hz, blob_sha256, bytes,
+samples, blob_path, produced}`, and both `pbrun` and `pbstatus` print the digest
+and the path, so a human opens the blob at <https://www.speedscope.app/>. The
+backend fields are there because "py-spy 0.4.2" is a claim about a box and not
+a fact about a file: an overhead number is comparable only against the binary
+it was measured on.
 
 `--profile` **is** part of the action's identity, and `--priority` is not. That
 is deliberate. A profiled run of a command somebody already ran must not be
@@ -159,6 +163,46 @@ What is worth knowing before using it:
     launches the sealed argv instead and samples the tree with
     `--subprocesses`. The sealed argv is exec'd verbatim underneath, and
     `preflight_action` still attests `task.argv[0]` off the action.
+*   **A profiled failure is the same failure.** The action's exit status
+    travels out of band -- py-spy exits 0 whatever it ran -- through a relay
+    process that runs the sealed argv and writes down how it ended. The relay
+    is a Python process because `waitpid` is the only interface here that
+    distinguishes a signalled child from one that exited 128+n: a shell relay
+    reported a profiled OOM-kill as `returncode=137, signal=None` where the
+    unprofiled path reports `-9`/`signal 9`, so the shape of the record changed
+    with the flag. It writes twice, atomically -- `launched {child_pid}` then
+    `ended {returncode, signal}` -- so a killed run can say "the action started
+    and its ending is unknown" instead of guessing. Its own cost is measured:
+    under py-spy at 100 Hz, three paired repeats of a fixed-work argv gave
+    41/46/31 samples through the old shell relay and 43/35/49 through this one,
+    with the relay's interpreter startup accounting for 0/1/1 (action
+    `83d2530f3eda`, sparky). It is invisible in the flamegraph because py-spy
+    excludes idle threads and the relay blocks in `waitpid`; `--idle` shows it
+    (49 samples) and is the control arm for that claim.
+*   **The profiler's own ending is reported, and a bad one fails the profile.**
+    `backend_returncode` is on the record. A profiler that exited nonzero is a
+    broken profile even when it left a file behind, and the failure names both
+    numbers: the profiler's, and the action's own out of the relay.
+*   **A timed-out action still files the profile it reached.** The timed-out
+    case is the one a profile is most wanted for, and it used to report none at
+    all. The profiler is asked to finish before the group is reaped -- py-spy
+    writes its speedscope on SIGINT and nothing on SIGTERM (measured, 0.4.2:
+    SIGINT to the leader wrote it in 102 ms) -- and what it produced is ingested
+    with `partial: true` and an `action_phase` saying whether the action had
+    reached an ending. The whole settlement is bounded by 12 s, inside the 15 s
+    the pool allows a launcher it has signalled; a backend whose finalize is
+    slower than that loses the profile rather than the worker losing its chance
+    to record the ending, and the ending says so.
+*   **`detail.action_returncode` is populated on the pull-queue lane now.** The
+    launcher exits 1 for every failed action, so the action's own status cannot
+    be its exit status; `core` has written it to a file named by
+    `PRISMABUILD_ACTION_STATUS_PATH` since the status contract was added, and
+    the pool now names that file (beside the lease, as `claimed/<key>.status`)
+    and lifts both it and a killed run's partial profile onto the ending. The
+    file is removed as it is read.
+*   **A profile scratch directory that cannot be created refuses the action**
+    with the path and the reason, rather than tracebacking out of the worker
+    and leaving the claim to be reaped with nothing said.
 *   **A profiled action that produced no profile fails.** The profiler failing
     is an action failure with a reason, never a run that quietly came back
     unprofiled; the action's own result is ingested as a CAS blob and named in

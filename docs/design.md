@@ -394,6 +394,15 @@ matters). Rules:
   before the flag existed. The blob itself is content-addressed like any
   payload and referenced from the pool's ending, never from the CAS receipt,
   whose v3 key set is an immutable interpretation domain.
+- **A diagnostic must not change the shape of what it observes** — a profiled
+  action's failure record is the unprofiled one: the same `returncode` and the
+  same `signal`, carried out of the profiler by a relay that can distinguish a
+  signalled child from one that exited 128+n. A profiler that ends badly fails
+  the *profile*, with its own status on the record, and never silently becomes
+  the action's status. An action stopped by its deadline files the profile it
+  had reached, marked partial and bounded by the time the pool allows a
+  signalled launcher, because the run somebody profiled for being slow is the
+  run whose profile matters.
 - **Effective pool placement is a parameter** — `pbrun` seals the sorted,
   deduplicated conjunction of tags that its placement rule actually returned,
   including a derived hostname pin. The normalized constraint moves the action

@@ -276,6 +276,341 @@ def test_a_backend_that_leaves_no_profile_fails_the_action(
     assert (tmp_path / "cas" / "actions").exists() is False
 
 
+def _dying_action(checkout: Path, *, profile: str | None, script: str):
+    """The same sealed argv with and without the flag, so the arms compare."""
+
+    action = _action(checkout, profile=profile)
+    body = {key: value for key, value in action.items() if key != "action_key"}
+    body["task"] = {**body["task"], "argv": [
+        "/bin/bash", "--noprofile", "--norc", "-c", script,
+    ]}
+    return pb.seal_action(body)
+
+
+def _failure_of(action, *, cas_root: Path, checkout: Path):
+    with pytest.raises(pb.LocalActionError) as raised:
+        pb.run_local_action(
+            action, cas_root=cas_root, checkout_root=checkout, recompute=True
+        )
+    return raised.value.returncode, raised.value.signal
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("kill -KILL $$", (-9, 9)),
+        ("kill -TERM $$", (-15, 15)),
+        ("exit 137", (137, None)),
+    ],
+)
+def test_the_failure_record_does_not_change_shape_under_the_flag(
+    tmp_path: Path, fake_backend: _FakeBackend, script: str, expected
+):
+    """A profiled death and an unprofiled death are the same death.
+
+    The first relay was ``/bin/sh -c '"$@"; printf %d $? > "$0"'``, and a shell
+    reports a signalled child as 128+n with no way to tell it from a literal
+    ``exit 137``.  That made a profiled OOM-kill report ``returncode=137,
+    signal=None`` where the unprofiled path reports ``-9`` and ``signal 9``:
+    the shape of the record changed with the diagnostic flag, so an operator
+    reading a failed action could not tell whether the box had killed it.  The
+    third case is here to prove the fix is not the trivial one -- an action
+    that really does exit 137 must still say so, with no signal.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    cas_root = tmp_path / "cas"
+    unprofiled = _failure_of(
+        _dying_action(checkout, profile=None, script=script),
+        cas_root=cas_root, checkout=checkout,
+    )
+    profiled = _failure_of(
+        _dying_action(checkout, profile="fake", script=script),
+        cas_root=cas_root, checkout=checkout,
+    )
+    assert unprofiled == expected
+    assert profiled == unprofiled
+
+
+def test_the_record_names_the_binary_that_did_the_profiling(
+    tmp_path: Path, fake_backend: _FakeBackend
+):
+    """A version string is a claim about a box; a digest is a fact about a file.
+
+    Two boxes can carry one version over different binaries, and an overhead
+    number is only comparable against the binary it was measured on.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    result = pb.run_local_action(
+        _action(checkout, profile="fake"),
+        cas_root=tmp_path / "cas", checkout_root=checkout,
+    )
+    profile = result["profile"]
+    assert profile["backend_path"] == "/bin/sh"
+    assert len(str(profile["backend_sha256"])) == 64
+    assert profile["backend_bytes"] > 0
+    assert profile["backend_returncode"] == 0
+    assert profile["produced"] is True
+
+
+def test_a_profiler_that_ends_badly_fails_the_profile_not_the_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """py-spy's own status was overwritten by the action's and never reported.
+
+    A profiler that ended badly is a broken profile even when it left a file
+    behind, and the failure has to say which of the two ended how: the action's
+    own status still comes out of the relay, so it is named in the message.
+    """
+
+    class _Failing(_FakeBackend):
+        def launch_argv(self, argv, *, profile_path: Path):
+            return [
+                "/bin/sh", "-c",
+                'printf %s "$1" > "$0"; shift 2; "$@"; exit 3',
+                str(profile_path), _speedscope("fake"), "--", *argv,
+            ]
+
+    monkeypatch.setitem(pb.PROFILE_BACKENDS, "fake", _Failing())
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    with pytest.raises(pb.LocalActionError) as raised:
+        pb.run_local_action(
+            _action(checkout, profile="fake"),
+            cas_root=tmp_path / "cas", checkout_root=checkout,
+        )
+    message = str(raised.value)
+    assert "the profiler exited with status 3" in message
+    assert "The action itself ended with status 0" in message
+
+
+def test_a_timed_out_action_still_files_the_profile_it_reached(
+    tmp_path: Path, fake_backend: _FakeBackend
+):
+    """The timed-out case is the one a profile is most wanted for.
+
+    Tier 1 raised the timeout before the profile block, so the run somebody
+    profiled *because* it was slow came back with nothing to look at.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _closure_member(checkout)
+    action = _action(checkout, profile="fake")
+    body = {key: value for key, value in action.items() if key != "action_key"}
+    body["task"] = {**body["task"], "argv": [
+        "/bin/bash", "--noprofile", "--norc", "-c", "sleep 120",
+    ]}
+    with pytest.raises(pb.LocalActionError) as raised:
+        pb.run_local_action(
+            pb.seal_action(body),
+            cas_root=tmp_path / "cas", checkout_root=checkout,
+            timeout_seconds=1.0,
+        )
+    error = raised.value
+    assert "timed out" in str(error)
+    assert error.returncode is None, "a timeout is the worker's verdict"
+    profile = error.profile
+    assert profile["partial"] is True
+    assert profile["produced"] is True
+    # The relay's own record says the action never reached an ending, which is
+    # what distinguishes a killed run from one that failed on its own.
+    assert profile["action_phase"] == "launched"
+    blob = (tmp_path / "cas" / "blobs"
+            / str(profile["blob_sha256"])[:2] / str(profile["blob_sha256"]))
+    assert blob.exists()
+    assert str(profile["blob_sha256"]) in str(error)
+
+
+def test_a_partial_profile_travels_in_the_action_status_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The launcher exits 1 whatever happened, so both facts go in a file.
+
+    The pool kills a launcher that overran its deadline; nothing it printed
+    after that is read.  ``core`` writes what it knows here, and the pool lifts
+    it onto the ending.
+    """
+
+    status = tmp_path / "status.json"
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(status))
+    pb._write_action_status({"profile": {"mode": "fake", "partial": True}})
+    pb._record_action_status(pb.LocalActionError("x", returncode=-9, signal=9))
+    body = json.loads(status.read_text())
+    assert body == {
+        "action_returncode": -9,
+        "action_signal": 9,
+        "profile": {"mode": "fake", "partial": True},
+    }
+
+
+def test_the_pool_lifts_both_facts_off_the_status_file(tmp_path: Path):
+    """And removes it, so the next attempt on this key reads its own."""
+
+    import prismabuild.pool as pool
+
+    path = tmp_path / "k.status"
+    path.write_text(json.dumps({
+        "action_returncode": 7, "action_signal": None,
+        "profile": {"mode": "nsys", "partial": True},
+    }), encoding="utf-8")
+    outcome = pool.PoolQueue._merge_action_status(
+        {"status": "timeout", "returncode": None}, path
+    )
+    assert outcome["action_returncode"] == 7
+    assert "action_signal" not in outcome
+    assert outcome["profile"]["mode"] == "nsys"
+    assert not path.exists()
+
+
+def test_an_ending_without_a_returncode_is_not_filed_as_one(tmp_path: Path):
+    """A signal alone would state an ending the action never reached."""
+
+    from prismabuild import slurm_lane
+
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({
+        "action_signal": 9, "profile": {"mode": "sample", "partial": True},
+    }), encoding="utf-8")
+    status = slurm_lane.read_action_status(path)
+    assert "action_returncode" not in status
+    assert "action_signal" not in status
+    assert status["profile"]["mode"] == "sample"
+
+
+def _session(tmp_path: Path, backend=None) -> "pb._ProfileSession":
+    return pb._ProfileSession(
+        mode="fake",
+        backend=backend if backend is not None else _FakeBackend(),
+        directory=tmp_path / "scratch",
+    )
+
+
+def _write_status(session, body: dict) -> None:
+    session.directory.mkdir(parents=True, exist_ok=True)
+    session.exit_status_path.write_text(json.dumps(body), encoding="utf-8")
+
+
+def test_a_relay_that_never_recorded_an_ending_is_not_a_pass(tmp_path: Path):
+    """``launched`` with no ``ended`` means nobody knows how the action ended.
+
+    It is the state a killed profiler leaves behind, and reading it as success
+    would publish a receipt for an action whose status was never observed.
+    """
+
+    session = _session(tmp_path)
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "launched", "child_pid": 4321,
+    })
+    with pytest.raises(pb.ProfileUnusable) as raised:
+        session.action_returncode()
+    assert "4321" in str(raised.value)
+
+
+def test_a_relay_that_could_not_launch_is_a_worker_verdict(tmp_path: Path):
+    """No ``returncode`` reaches the error: the action never ran to have one."""
+
+    session = _session(tmp_path)
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "launch_failed", "launch_error": "OSError: [Errno 13] denied",
+    })
+    with pytest.raises(pb.LocalActionError) as raised:
+        session.action_returncode()
+    assert raised.value.returncode is None
+    assert "Errno 13" in str(raised.value)
+
+
+def test_an_exit_status_from_another_era_is_refused(tmp_path: Path):
+    session = _session(tmp_path)
+    _write_status(session, {"phase": "ended", "returncode": 0})
+    with pytest.raises(pb.ProfileUnusable):
+        session.action_returncode()
+
+
+def test_a_profiler_that_exits_first_waits_for_the_action(tmp_path: Path):
+    """``nsys --duration`` stops tracing and exits while the action runs on.
+
+    Measured on sparky (action ``83d2530f3eda``): a 2 s cap ended nsys at 3.3 s
+    with the workload still going at 8.4 s.  A backend that can do that says
+    so, and the worker waits for the relay's real ending instead of reporting
+    an ending the action had not reached.
+    """
+
+    class _Early(_FakeBackend):
+        exits_before_action = True
+        settle_seconds = 30.0
+
+    session = _session(tmp_path, backend=_Early())
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "launched", "child_pid": os.getpid(),
+    })
+
+    def _finish() -> None:
+        time.sleep(0.3)
+        _write_status(session, {
+            "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+            "phase": "ended", "returncode": 3, "signal": None,
+        })
+
+    thread = threading.Thread(target=_finish)
+    thread.start()
+    try:
+        assert session.action_returncode() == 3
+    finally:
+        thread.join()
+
+
+def test_a_settle_wait_is_bounded_by_the_backend(tmp_path: Path):
+    """An action that outlives the wait is a profile failure, not a hang."""
+
+    class _Early(_FakeBackend):
+        exits_before_action = True
+        settle_seconds = 0.2
+
+    session = _session(tmp_path, backend=_Early())
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "launched", "child_pid": os.getpid(),
+    })
+    started = time.monotonic()
+    with pytest.raises(pb.ProfileUnusable):
+        session.action_returncode()
+    assert time.monotonic() - started < 10.0
+
+
+def test_an_uncreatable_scratch_directory_refuses_with_a_reason(
+    tmp_path: Path, fake_backend: _FakeBackend
+):
+    """A read-only checkout must fail the action, not the worker.
+
+    ``core.main`` catches ``LocalActionError`` and writes the action's status
+    before re-raising.  An unwrapped ``OSError`` from the scratch ``mkdir``
+    tracebacked out of ``main`` instead, skipping that write, so the claim was
+    reaped and retried on the next attempt with nothing saying why.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout, profile="fake")
+    checkout.chmod(0o500)
+    try:
+        with pytest.raises(pb.LocalActionError) as raised:
+            pb.run_local_action(
+                action, cas_root=tmp_path / "cas", checkout_root=checkout
+            )
+    finally:
+        checkout.chmod(0o700)
+    message = str(raised.value)
+    assert pb.PROFILE_SCRATCH_DIRNAME in message
+    assert "before the action started" in message
+
+
 def test_a_missing_backend_refuses_and_names_the_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

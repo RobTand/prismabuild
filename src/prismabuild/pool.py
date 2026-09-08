@@ -110,7 +110,7 @@ from __future__ import annotations
 
 from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 from typing import NamedTuple
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import errno
 import fcntl
 from functools import wraps
@@ -1672,6 +1672,48 @@ class PoolQueue:
 
     def lease_path(self, action_key: str) -> Path:
         return self.dir(CLAIMED) / f"{action_key}.lease"
+
+    def action_status_path(self, action_key: str) -> Path:
+        """Where the launcher may leave facts its exit status cannot carry.
+
+        The launcher exits 1 for every failed action, so ``detail.returncode``
+        on this lane is the *launcher's* status and the action's own was simply
+        unavailable here -- ``core`` has written it to this file since the
+        status contract was added, and nothing on this lane set the variable
+        that names the file.  A killed run's partial profile comes back the
+        same way, because the launcher is being killed and cannot print it.
+
+        Beside the lease, with a suffix that is neither ``.json`` nor
+        ``.lease``: every reader of ``claimed/`` addresses those two names, so
+        a third is invisible to all of them.  It is unlinked as it is read.
+        """
+
+        return self.dir(CLAIMED) / f"{action_key}.status"
+
+    @staticmethod
+    def _merge_action_status(
+        outcome: dict[str, object], path: Path
+    ) -> dict[str, object]:
+        """Lift the sidecar's fields onto the ending, and remove the file."""
+
+        try:
+            body = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            body = None
+        with suppress(OSError):
+            path.unlink()
+        if not isinstance(body, dict):
+            return outcome
+        for field in ("action_returncode", "action_signal"):
+            value = body.get(field)
+            if isinstance(value, int) and not isinstance(value, bool):
+                outcome[field] = value
+        profile = body.get("profile")
+        if isinstance(profile, dict) and outcome.get("profile") is None:
+            # Only a killed run leaves one here; a run that ended normally
+            # prints its profile on stdout, which is the richer path.
+            outcome["profile"] = profile
+        return outcome
 
     def _entomb_claim(
         self, action_key: str, *, expect: Mapping[str, object] | None = None
@@ -6582,11 +6624,21 @@ class PoolQueue:
         # Read immediately before the launch and again at every way out, so
         # the difference is this child's and not the worker loop's history.
         rusage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+        # Name the file before the launch, and clear anything a previous
+        # attempt on this key left behind, so what is read afterwards is this
+        # attempt's or nothing.
+        status_path = self.action_status_path(key)
+        with suppress(OSError):
+            status_path.unlink()
         process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # The action's own ending, and a killed run's partial profile,
+            # travel in a file because this process's exit status cannot
+            # carry them.
+            env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path)},
             # The launcher leads its own group so the timeout can signal the
             # group rather than the single pid.  ``kill()`` on the pid reaches
             # the launcher only, and leaves the action holding the GPU.
@@ -6627,7 +6679,7 @@ class PoolQueue:
                             scope.terminate_owned(resource_failure)
                             pb._terminate_process_group(process, grace_s=timeout_grace_s)
                             out, err, survived = _drain(process, timeout_s=timeout_grace_s)
-                            return {
+                            return self._merge_action_status({
                                 "status": "failed", "returncode": 137,
                                 "termination_reason": resource_failure,
                                 "termination_evidence": telemetry.get("termination_evidence"),
@@ -6639,7 +6691,7 @@ class PoolQueue:
                                     rusage_before,
                                     resource.getrusage(resource.RUSAGE_CHILDREN)),
                                 "argv": argv, "cpu_allocation": allocation,
-                            }
+                            }, status_path)
                     # Checkpoint two: the cross-box path.  A withdrawal from another
                     # box cannot signal anything on this one, so this poll is what
                     # makes the verb correct from anywhere -- at a cost of at most
@@ -6648,7 +6700,7 @@ class PoolQueue:
                         if scope is not None:
                             scope.terminate_owned("withdrawn")
                         out, err = self._stop_action(process)
-                        return {
+                        return self._merge_action_status({
                             "status": "withdrawn",
                             "returncode": process.returncode,
                             "stdout": out,
@@ -6659,7 +6711,7 @@ class PoolQueue:
                                 resource.getrusage(resource.RUSAGE_CHILDREN)),
                             "argv": argv,
                             "cpu_allocation": allocation,
-                        }
+                        }, status_path)
                     if time.monotonic() >= next_heartbeat:
                         self.write_lease(
                             key, owner=owner, child_pid=process.pid, claim_snapshot=item,
@@ -6679,7 +6731,7 @@ class PoolQueue:
                         out, err, survived = _drain(
                             process, timeout_s=timeout_grace_s
                         )
-                        return {
+                        return self._merge_action_status({
                             "status": "timeout",
                             # Stays None: ``pbrun`` returns any integer
                             # ``returncode`` as its own exit status, and an
@@ -6708,7 +6760,7 @@ class PoolQueue:
                                 resource.getrusage(resource.RUSAGE_CHILDREN)),
                             "argv": argv,
                             "cpu_allocation": allocation,
-                        }
+                        }, status_path)
         except BaseException:
             # The launcher leads its own session now, so a Ctrl-C or any other
             # signal reaching this loop no longer reaches it -- before the new
@@ -6717,6 +6769,8 @@ class PoolQueue:
             # orphan that session was introduced to bound.
             pb._terminate_process_group(process, grace_s=timeout_grace_s)
             _drain(process, timeout_s=timeout_grace_s)
+            with suppress(OSError):
+                status_path.unlink()
             raise
         status = "executed" if process.returncode == 0 else "failed"
         # Checkpoint three: on the way out.  When the operator's own signal
@@ -6742,7 +6796,7 @@ class PoolQueue:
         profile = profile_from_launcher_stdout(out)
         if profile is not None:
             outcome["profile"] = profile
-        return outcome
+        return self._merge_action_status(outcome, status_path)
 
     def _stop_action(self, process: subprocess.Popen) -> tuple[str, str]:
         """Stop a withdrawn action and collect whatever it managed to say.
