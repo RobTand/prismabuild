@@ -32,6 +32,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import time
 import urllib.error
 import urllib.request
@@ -51,6 +52,9 @@ NETDATA_POINTS = 4096
 #: daily CSVs to summarise it would cost more than the deadline allows.
 MAX_WINDOW_DAYS = 3
 KIB = 1024
+_ROOT = Path(__file__).resolve().parents[2]
+_FLEET_CONFIG_PATHS = (_ROOT / "tools" / "fleet_boxes.json",
+                       _ROOT / "tools" / "fleet" / "fleet_boxes.json")
 
 #: pqteld column -> the name this module reports it under.  Every output is
 #: named after the column that produced it: ``psi_mem_full_avg10`` stays
@@ -114,18 +118,61 @@ def _days(start_unix: float, end_unix: float) -> list[str]:
     return days
 
 
+def _recorder_hosts(host: str) -> list[str]:
+    """Only names explicitly declared to be this machine in this generation.
+
+    The recorder captures its hostname at startup, so an OS rename can leave
+    it appending under the former name. Reuse the supervisor's fleet `_alias`
+    declaration; unrelated CSVs in the directory are never identity evidence.
+    """
+
+    names = {host}
+    for path in _FLEET_CONFIG_PATHS:
+        try:
+            config = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        boxes = config.get("boxes") if isinstance(config, dict) else None
+        if not isinstance(boxes, dict):
+            continue
+        groups = []
+        for name, shape in boxes.items():
+            group = {name}
+            if isinstance(shape, dict) and shape.get("_alias") is not None:
+                alias = shape["_alias"]
+                if not isinstance(alias, str):
+                    if name == host:
+                        raise ValueError(f"invalid recorder hostname alias for {host}")
+                    continue
+                group.add(alias)
+            groups.append(group)
+        matches = [group for group in groups if host in group]
+        if matches:
+            names = matches[0]
+            if sum(bool(names & group) for group in groups) != 1:
+                raise ValueError(f"ambiguous fleet hostname alias {host}")
+        break
+    if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) for name in names):
+        raise ValueError("invalid recorder hostname")
+    return sorted(names)
+
+
 def _csv_files(csv_dir: Path, host: str, start_unix: float,
                end_unix: float) -> list[Path]:
     """Every recorder file that can hold a row in the window.
 
     The recorder rotates daily and puts its schema version in the name, so a
     window that crosses midnight or a schema bump spans more than one file.
-    Files are read in name order, which for this naming is time order.
+    Explicit fleet aliases cover a recorder that predates a hostname change.
+    Files are read in name order within each day, without assuming that
+    wall-clock timestamps are ordered across files or rows.
     """
 
     found: list[Path] = []
+    hosts = _recorder_hosts(host)
     for day in _days(start_unix, end_unix):
-        found.extend(sorted(csv_dir.glob(f"pqteld-{host}-{day}.s*.csv")))
+        found.extend(sorted(path for name in hosts
+                            for path in csv_dir.glob(f"pqteld-{name}-{day}.s*.csv")))
     return found
 
 

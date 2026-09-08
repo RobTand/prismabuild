@@ -384,6 +384,14 @@ before another read starts. CSV scanning still starts at the file's beginning
 and does not assume ordered wall-clock timestamps. This bounds continued work
 cooperatively, not the size or duration of an individual filesystem operation.
 
+Recorder filename discovery uses the executing hostname and its explicit
+`fleet_boxes.json` `_alias` equivalence from the collector's own generation.
+Both names can contribute rows after a hostname change; the evidence retains
+the executing hostname. Ambiguous declarations refuse CSV evidence rather than
+merging machines. Missing configuration permits only the exact hostname, and
+directory contents never establish identity. This affects telemetry discovery,
+not placement or action keys.
+
 Netdata chart reads request 4096 points with average grouping, while
 retaining the 4 MiB response read cap. Long windows therefore use averaged
 buckets instead of asking for every stored row and truncating valid JSON.

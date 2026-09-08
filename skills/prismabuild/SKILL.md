@@ -196,6 +196,8 @@ budget at finish to read the box window, including the GPU reference query
 ticks at most every two seconds while the attempt runs. It never enters the
 action key. CSV collection checks expiry before discovery, file opens and
 each header or row read, retaining collected samples with an expiry diagnostic.
+Recorder filenames also honor this generation's explicit fleet hostname alias;
+an OS rename does not require restarting the recorder to recover its data.
 It still scans daily files from the beginning; an individual filesystem read
 can overrun the cooperative deadline. Every Netdata chart read also uses only the remaining budget and
 targets 4096 average buckets (Netdata rounds the count to whole time buckets),
