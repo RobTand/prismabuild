@@ -29,9 +29,11 @@ backend through the same seams the real one uses.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -333,6 +335,65 @@ def test_the_sampling_backend_profiles_the_pipeline_member(tmp_path: Path):
     assert json.loads(blob.read_text())["$schema"] == pb.PROFILE_SPEEDSCOPE_SCHEMA
 
 
+def test_the_output_lock_still_reaches_the_child_through_the_profiler(
+    tmp_path: Path
+):
+    """The action keeps the exclusion its worker was killed holding.
+
+    ``_run_local_action`` passes the output-lock descriptor into the child so
+    the lock outlives a killed worker.  Profiling puts two processes between
+    the worker and the sealed argv, and a descriptor that stopped at either of
+    them would turn a profiled action into one a second worker could run
+    beside -- silently, because nothing else in the run would look different.
+
+    The check is on the pipe's inode rather than the descriptor number, and
+    only inside the launched process group: a number alone matches whatever
+    that process happened to open, and this test's own ancestors carry the
+    same argv text.
+    """
+
+    read_end, _write_end = os.pipe()
+    os.set_inheritable(read_end, True)
+    held = os.readlink(f"/proc/self/fd/{read_end}")
+    sealed = [
+        "/bin/bash", "--noprofile", "--norc", "-c",
+        f"{sys.executable} -c {_WORK!r} 2>&1 | tee {tmp_path / 'log'}; "
+        "exit ${PIPESTATUS[0]}",
+    ]
+    argv = [str(word) for word in pb.PROFILE_BACKENDS["sample"].launch_argv(
+        sealed,
+        profile_path=tmp_path / "p.speedscope.json",
+        exit_status_path=tmp_path / "rc")]
+    child = subprocess.Popen(
+        argv, start_new_session=True, stdin=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, pass_fds=(read_end,))
+    try:
+        group = os.getpgid(child.pid)
+        holders: dict[str, bool] = {}
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and len(holders) < 2:
+            time.sleep(0.1)
+            for entry in Path("/proc").iterdir():
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    if os.getpgid(int(entry.name)) != group:
+                        continue
+                    command = (entry / "cmdline").read_bytes().split(b"\0")[0]
+                    if not command.endswith((b"/sh", b"/bash")):
+                        continue
+                    holders[f"{command.decode()}:{entry.name}"] = any(
+                        os.readlink(str(descriptor)) == held
+                        for descriptor in (entry / "fd").iterdir()
+                    )
+                except (OSError, ProcessLookupError, ValueError):
+                    continue
+    finally:
+        child.wait(timeout=180)
+    assert len(holders) >= 2, f"expected the relay and the sealed shell: {holders}"
+    assert all(holders.values()), holders
+
+
 # -- the record a reader opens ----------------------------------------------
 
 
@@ -351,6 +412,39 @@ def test_the_pool_lifts_the_profile_out_of_the_launcher_result():
     assert pool.profile_from_launcher_stdout("not json at all\n") is None
     assert pool.profile_from_launcher_stdout(
         json.dumps({"status": "published"})) is None
+
+
+def test_the_ending_a_worker_files_carries_the_profile(tmp_path: Path):
+    """Claim, run, finish -- and the reference is in the record on disk.
+
+    The stub launcher prints exactly what ``core.main`` prints, because the
+    pool's whole job here is to move one key from that line into the outcome it
+    files.  A unit test of the lift alone would leave the wiring from
+    ``_execute_in_checkout`` to ``finish`` untested, and that wiring is what a
+    reader of ``pbstatus`` actually depends on.
+    """
+
+    import uuid
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    key = uuid.uuid4().hex + uuid.uuid4().hex
+    stub = tmp_path / "stub_worker.py"
+    stub.write_text(
+        "import json\n"
+        f"print(json.dumps({{'status': 'published', "
+        f"'profile': {_profile_record()!r}}}))\n",
+        encoding="utf-8",
+    )
+    queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
+                  worker_script=str(stub))
+    outcome = queue.serve_once()
+    assert outcome is not None and outcome["status"] == "executed"
+    assert outcome["profile"] == _profile_record()
+    ending = json.loads(
+        queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
+    filed = queue.attempt_outcomes(ending)[-1]
+    assert filed["detail"]["profile"] == _profile_record()
 
 
 def test_pbrun_prints_the_blob_for_a_profiled_ending():

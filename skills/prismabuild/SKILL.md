@@ -67,8 +67,8 @@ ending, for `pbrun`, `pbstatus` and a human with speedscope. Reach for it when
 you need to know where an action's time went, not routinely: unlike
 `--priority` it **is** sealed into the action key, so a profiled run is a
 different action -- never a cache hit for the unprofiled one, and never an A/B
-arm against an unprofiled receipt. Measured overhead is under 1% of wall on a
-fixed-work CPU load. A profiled action whose profiler produced nothing fails
+arm against an unprofiled receipt. Measured overhead on a fixed-work CPU action is
+in `docs/operating_prismabuild.md`, beside the box load it was measured under. A profiled action whose profiler produced nothing fails
 with the reason rather than returning an unprofiled receipt, so do not use it
 on an action too short for a sampler to see. `pbtest.py --profile sample` and a
 manifest row's `profile` field forward it.

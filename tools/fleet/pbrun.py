@@ -3692,8 +3692,9 @@ def main() -> int:
                          "never answered from an unprofiled receipt and never "
                          "an A/B arm against one. 'sample' is py-spy at "
                          f"{pb.PROFILE_SAMPLE_RATE_HZ} Hz over the whole "
-                         "process tree, measured at 0.73%% of wall on a "
-                         "fixed-work CPU load")
+                         "process tree; measured overhead on a fixed-work CPU "
+                         "action is in docs/operating_prismabuild.md, with the "
+                         "box load it was measured under")
     ap.add_argument("--env", action="append", default=[],
                     help="K=V added to the action's environment (repeatable)")
     ap.add_argument("--no-default-env", action="store_true",
