@@ -369,14 +369,22 @@ class Controller:
         """Hold box admission for the block, or raise ``AdmissionBusy`` at once.
 
         The acquisition is non-blocking, and that is the whole point.  What
-        this lock guards is not entirely local: CPU samples, profiles,
-        interval/borrowing state, holder telemetry and GPU probe state are
-        host-local, but ``decision`` still reads every holder's token metadata
-        on the shared mount, and the ``_claim`` this wraps
-        renames a record, writes a lease and renames tokens -- also on the
-        mount.  So the holder's time inside is bounded by a filesystem
-        another machine controls, and a blocking ``LOCK_EX`` made every other
-        loop on the box wait for it.
+        this lock guards is the box's headroom decision, not the claim that
+        follows it.  ``_claim`` takes it for its capacity prelude, and then
+        per candidate for the adaptive and GPU decisions through
+        ``begin_acquire`` -- the point at which the tokens leave ``free/``
+        and every sibling's ``decision`` and ``available`` can see them
+        reserved.  The record rename, the lease write and the token renames
+        that follow run outside it, and the only thing that comes back under
+        it is ``admitted``'s host-local borrow record.
+
+        Even so the holder's time inside is not purely local: CPU samples,
+        profiles, interval/borrowing state, holder telemetry and GPU probe
+        state are host-local, but ``decision`` reads every holder's token
+        metadata on the shared mount and ``begin_acquire`` renames there.  So
+        the holder's time inside is still bounded by a filesystem another
+        machine controls, and a blocking ``LOCK_EX`` made every other loop on
+        the box wait for it.
 
         That is not a worst case, it is a measurement.  On 2026-09-06 one
         client was slow to return an NFS read delegation; the holder sat in
@@ -397,6 +405,15 @@ class Controller:
         admission throughput is unchanged either way, since it is one critical
         section wide in both designs; what changes is that nobody is ever
         parked in the kernel for a remote filesystem's lease timer.
+
+        Refusing fast is not the same as being narrow, and #351 is the
+        difference: while this lock still enclosed the whole of ``_claim``,
+        one loop stalled on the mount refused every sibling for the length of
+        the stall, and the box claimed nothing at all with ready work waiting
+        and its tokens free.  A refusal that arrives instantly is still a
+        refusal.  Keep the block short and host-local; anything on the mount
+        that does not have to be exclusive between this box's loops belongs
+        outside it.
         """
 
         # Never unlink: two generations must not lock different inodes. The
