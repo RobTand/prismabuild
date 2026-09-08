@@ -5119,8 +5119,18 @@ class NsysProfileBackend:
         answer to "where did the GPU time go" in a form a reader already has.
         Best-effort by design: a box whose nsys cannot run ``stats`` still
         files the report.
+
+        A summary with no rows in it is not filed.  A partial report -- the
+        one a killed run leaves -- can carry no completed kernels, and
+        ``nsys stats`` answers that with an empty file or with a header and
+        nothing under it; filing that produced a ``kernel_summary`` blob whose
+        digest was ``e3b0c442``, the hash of no bytes at all, sitting on the
+        record beside a real report as though the table had been read and had
+        found nothing to say.  The reason goes on the ending instead, where a
+        reader looking for the table finds out why it is not there.
         """
 
+        self._summary_note = None
         base = Path(path).with_suffix("")
         summary = base.parent / f"{base.name}_cuda_gpu_kern_sum.csv"
         completed = subprocess.run(
@@ -5128,9 +5138,40 @@ class NsysProfileBackend:
              "--format", "csv", "--output", str(base), str(path)],
             capture_output=True, text=True, check=False,
         )
-        if completed.returncode != 0 or not summary.is_file():
+        if completed.returncode != 0:
+            self._summary_note = (
+                f"nsys stats exited {completed.returncode}: "
+                + (completed.stderr or completed.stdout or "").strip()[-200:]
+            )
+            return []
+        if not summary.is_file():
+            self._summary_note = "nsys stats wrote no summary file"
+            return []
+        rows = self._summary_rows(summary)
+        if rows == 0:
+            self._summary_note = (
+                "the CUDA kernel summary has no rows: this report records no "
+                "completed kernel"
+            )
             return []
         return [("kernel_summary", summary)]
+
+    @staticmethod
+    def _summary_rows(summary: Path) -> int:
+        """Data rows under the CSV header, or 0 for a file that has none."""
+
+        try:
+            text = summary.read_text(errors="replace")
+        except OSError:
+            return 0
+        lines = [line for line in text.splitlines() if line.strip()]
+        return max(len(lines) - 1, 0)
+
+    def extra_blob_notes(self) -> dict[str, object]:
+        """Why a blob this backend usually files is missing, if it is."""
+
+        note = getattr(self, "_summary_note", None)
+        return {"kernel_summary_absent": note} if note else {}
 
 
 class TorchProfileBackend:
@@ -5303,6 +5344,10 @@ def describe_profile(profile) -> str:
                 + str(profile.get("reason") or "no reason recorded"))
     partial = " (partial: the action was stopped)" if profile.get("partial") \
         else ""
+    absent = ""
+    if profile.get("kernel_summary_absent"):
+        absent = (", no kernel summary: "
+                  + str(profile.get("kernel_summary_absent")))
     ignored = ""
     if profile.get("backend_status_ignored"):
         ignored = (f", profiler exited "
@@ -5310,7 +5355,7 @@ def describe_profile(profile) -> str:
     return (f"profile {profile.get('mode')} ({profile.get('backend')}) "
             f"{digest[:12]} {profile.get('bytes')}B at "
             f"{profile.get('blob_path') or '(path not recorded)'}"
-            f"{partial}{ignored}")
+            f"{partial}{ignored}{absent}")
 
 
 #: The sealed param that asks for a profile.  Absent on every action that
@@ -5613,6 +5658,10 @@ class _ProfileSession:
             extra_blobs += list(
                 self.backend.extra_blobs(self.profile_path)  # type: ignore[attr-defined]
             )
+        with suppress(Exception):                     # noqa: BLE001
+            record.update(
+                self.backend.extra_blob_notes()  # type: ignore[attr-defined]
+            )
         for name, path in extra_blobs:
             with suppress(ActionContractError, CASTamperError, OSError):
                 extra, _won = cas.ingest_input(
@@ -5635,10 +5684,12 @@ class _ProfileSession:
         and that was measured rather than assumed.  py-spy 0.4.2 on sparky
         exits 1 with ``Error: No child process (os error 10)`` from time to
         time, *having written a complete speedscope*: in one five-arm probe
-        (action ``b6f2ab795ef6``, 2026-09-07) the arm that failed this way and
-        the arm after it, whose conditions were a strict superset, both left a
-        valid profile with 249 and 271 samples.  It is a race inside the
-        profiler's own wait, not a fact about the action.
+        (action ``b6f2ab795ef6``, 2026-09-07) the arm that failed this way
+        (``d_devnull``) still left a profile the reader could open, printing no
+        sample count of its own; the arms that did print one -- including the
+        arm after it, whose conditions were a strict superset -- left 249 and
+        271 samples.  It is a race inside the profiler's own wait, not a fact
+        about the action.
 
         So the rule is what was lost, not what was returned: a profiler that
         ends badly *and* leaves no usable profile, or leaves the action's

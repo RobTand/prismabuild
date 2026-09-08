@@ -328,3 +328,63 @@ def test_a_mode_never_takes_over_a_variable_the_action_already_seals(
             action, cas_root=tmp_path / "cas", checkout_root=checkout
         )
     assert "already sets" in str(raised.value)
+
+
+def _fake_nsys(tmp_path: Path, body: str, rc: int = 0) -> Path:
+    """An ``nsys`` whose ``stats`` writes exactly ``body`` and exits ``rc``."""
+
+    script = tmp_path / "fake-nsys"
+    script.write_text(
+        "#!/bin/sh\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$prev\" in --output) base=$arg;; esac\n"
+        "  prev=$arg\n"
+        "done\n"
+        # %b so the escapes in the parametrized bodies become real lines.
+        f"printf %b '{body}' > \"$base\"_cuda_gpu_kern_sum.csv\n"
+        f"exit {rc}\n"
+    )
+    script.chmod(0o755)
+    return script
+
+
+@pytest.mark.parametrize(
+    "body, rc, filed, reason",
+    [
+        ("Time,Calls,Name\\n50.0,10,gemm\\n", 0, True, None),
+        ("", 0, False, "no rows"),
+        ("Time,Calls,Name\\n", 0, False, "no rows"),
+        ("Time,Calls,Name\\n50.0,10,gemm\\n", 3, False, "exited 3"),
+    ],
+)
+def test_a_kernel_summary_with_nothing_in_it_is_not_filed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    body: str, rc: int, filed: bool, reason: str | None
+):
+    """A partial report can hold no completed kernel, and the CSV says so.
+
+    Measured: the timeout arm of action ``2defaf9735ed`` filed a
+    ``kernel_summary`` of 0 bytes, digest ``e3b0c442`` -- the hash of no bytes
+    at all -- next to a real 114 kB report, which reads as a table that was
+    produced and had nothing in it rather than a table that does not exist.
+    """
+
+    backend = pb.NsysProfileBackend()
+    monkeypatch.setattr(
+        backend, "locate", lambda: str(_fake_nsys(tmp_path, body, rc))
+    )
+    report = tmp_path / "p.nsys-rep"
+    report.write_bytes(b"x" * 16)
+
+    blobs = backend.extra_blobs(report)
+    notes = backend.extra_blob_notes()
+    if filed:
+        assert [name for name, _ in blobs] == ["kernel_summary"]
+        assert notes == {}
+        return
+    assert blobs == []
+    assert reason in str(notes["kernel_summary_absent"])
+    assert reason in pb.describe_profile({
+        "mode": "nsys", "backend": "nsys", "blob_sha256": "a" * 64,
+        "bytes": 16, **notes,
+    })

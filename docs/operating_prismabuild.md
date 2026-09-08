@@ -185,8 +185,10 @@ What is worth knowing before using it:
     that was measured rather than assumed: py-spy 0.4.2 on sparky exits 1 with
     `Error: No child process (os error 10)` from time to time *having written a
     complete speedscope* — in one five-arm probe (`b6f2ab795ef6`) the arm that
-    failed this way and the arm after it, whose conditions were a strict
-    superset, left 249 and 271 samples. The rule is what was lost: a profiler
+    failed this way (`d_devnull`) still left a profile the reader could open,
+    and it printed no sample count of its own; the arms that did print one,
+    including the arm after it whose conditions were a strict superset, left
+    249 and 271 samples. The rule is what was lost: a profiler
     that ends badly **and** leaves no usable profile, or leaves the action's
     ending unrecorded, fails the run through the paths that already refuse
     those, naming both numbers. One that ends badly with everything intact is
@@ -313,8 +315,11 @@ with prismabuild_torch_profile():
 
 **What they cost.** A fixed-iteration GPU workload (32,000 2048x2048 bf16
 matmuls), five interleaved paired repeats per arm inside one admitted action on
-sparky (`2defaf9735ed`, 2026-09-07), the box otherwise at loadavg 1.3-2.7 and
-the GPU at 91 W of its 140 W envelope while the arms ran:
+sparky (`2defaf9735ed`, 2026-09-07). The receipt's own box window over those
+arms: GPU 69.1 W mean and 96.4 W peak of the 140 W envelope, CPU 7.6 % busy
+mean. Read the power, not the utilization — the same window reads 68 % mean
+GPU utilization, which on GB10 says a kernel was resident and nothing about
+how loaded the SMs were.
 
 | arm | wall, mean | paired delta | paired 95 % interval | the action's own loop |
 | --- | --- | --- | --- | --- |
@@ -326,10 +331,16 @@ Read the last column with the others, because it is the more useful number: the
 *traced work itself* is unchanged, inside the run-to-run spread of the
 unprofiled arm (6.64-6.89 s). Essentially all of the cost is fixed — the
 profiler's startup, its finalize, and the ingest of the blob — so the same
-absolute ~3 s is 40 % of an eight-second action and under 1 % of a ten-minute
-one. That also means these percentages are the *worst* case for a GPU action:
-profiling a short one is what makes the ratio look expensive, and a short one
-is the case with least to learn from. `sample`'s ~2.5 % on a 60 s CPU action
+absolute ~3 s is 40 % of this eight-second action, and a longer action pays a
+smaller fraction of it. How much smaller was not measured, and do not assume it
+keeps shrinking: finalize and ingest scale with the trace, not with the run —
+in the probes, nsys took 3.1 s to finalize a 5.99 MB report and torch 4.5 s to
+export 9.0 MB gzipped, and an unwindowed trace of a ten-minute action is tens
+to hundreds of MB. Use `nsys:<seconds>` to keep the trace, and so the cost,
+bounded. What the paired data does support is the direction: these percentages
+are the *worst* case for a GPU action, because profiling a short one is what
+makes the ratio look expensive, and a short one is the case with least to learn
+from. `sample`'s ~2.5 % on a 60 s CPU action
 (above) is not comparable — different work, different box, different profiler.
 
 Both traces are far smaller than they look from a single number: nsys wrote
