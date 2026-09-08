@@ -315,7 +315,7 @@ def _absent(error: OSError) -> bool:
 
 def _read_record(path: Path) -> dict | None:
     try:
-        return pool._read_json(path)
+        return pool.read_queue_record(path)
     except OSError as error:
         if _absent(error):
             return None
@@ -999,7 +999,7 @@ class Session:
             payload["checks_passed"] = False
             payload["attestation_verified"] = None
             return payload
-        body = {key: claim.get(key) for key in pb._LOCAL_RESULT_CLAIM_BODY_KEYS}
+        body = {key: claim.get(key) for key in pb.LOCAL_RESULT_CLAIM_BODY_KEYS}
         recomputed = pb.canonical_sha256(body)
         checks["claim_digest_matches_body"] = claim.get("claim_sha256") == recomputed
         checks["claim_addressed_correctly"] = recomputed == digest
@@ -1010,9 +1010,9 @@ class Session:
         receipt = call.read("receipt", lambda: _read_record(receipt_path))
         checks["receipt_present"] = receipt is not None
         if receipt is not None:
-            receipt_body = {name: receipt.get(name) for name in pb._RECEIPT_BODY_KEYS}
+            receipt_body = {name: receipt.get(name) for name in pb.CAS_RECEIPT_BODY_KEYS}
             checks["receipt_self_consistent"] = (
-                set(receipt) == set(pb._RECEIPT_KEYS)
+                set(receipt) == set(pb.CAS_RECEIPT_KEYS)
                 and receipt.get("receipt_sha256") == pb.canonical_sha256(receipt_body))
             checks["receipt_binds_the_claims_manifest"] = (
                 receipt.get("action_manifest_sha256")
@@ -1157,7 +1157,7 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
     The window is chosen by ``stat`` and only then read.  Terminal records
     number in the thousands on the live queue and every filter this offers
     lives *inside* a record, so filtering first would mean reading all of
-    them and the deadline would expire on every call.  ``_ending_paths`` is
+    them and the deadline would expire on every call.  ``recent_ending_paths`` is
     ``pbstatus``'s own newest-first selection, reused rather than repeated.
 
     ``truncated`` is returned with the rows because a caller has to be able
@@ -1188,7 +1188,7 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
     terminal = [state for state in states
                 if state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
     if terminal and limit:
-        entries = pbstatus._ending_paths(root, limit)
+        entries = pbstatus.recent_ending_paths(root, limit)
         truncated = len(entries) >= limit
         for entry in entries:
             path = Path(entry.path)

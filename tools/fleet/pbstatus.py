@@ -796,6 +796,16 @@ def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, o
          j.get('reason')) for j in jobs))
 
 
+def recent_ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
+    """Read-only terminal-entry selection shared by structured status readers.
+
+    Returns the newest entries, including durable withdrawal decisions, without
+    expanding record payloads. Filesystem errors propagate; callers must bound
+    the shared-mount read.
+    """
+    return _ending_paths(queue_root, limit)
+
+
 def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
     """The ``limit`` newest terminal records by modification time.
 

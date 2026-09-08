@@ -1902,6 +1902,13 @@ read. An inaccessible checkout is unavailable, rather than a digest based on
 an unresolved spelling. The existing claim format and producer identity are
 unchanged.
 
+MCP's record and terminal-entry readers use the public read-only
+`pool.read_queue_record` and `pbstatus.recent_ending_paths` interfaces. Receipt
+self-consistency uses core's immutable `CAS_RECEIPT_BODY_KEYS`,
+`CAS_RECEIPT_KEYS` and `LOCAL_RESULT_CLAIM_BODY_KEYS`, shared with the producer.
+These interfaces do not acquire locks, verify full worker attestations or add
+their own read deadlines; MCP provides the deadline around each filesystem read.
+
 Attempt logs are read by seeking to their end for a capped tail. The verifying
 reader in `pool.attempt_outcomes` reads every stream whole to check a digest,
 which is the right contract for a verifier and would make a status call cost

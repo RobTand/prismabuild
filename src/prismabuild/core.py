@@ -169,6 +169,11 @@ _LOCAL_RESULT_CLAIM_BODY_KEYS = frozenset(
     }
 )
 _LOCAL_RESULT_CLAIM_KEYS = _LOCAL_RESULT_CLAIM_BODY_KEYS | {"claim_sha256"}
+# Public, immutable schema surfaces for read-only receipt/claim reporters.
+# These are the producer's key sets, not independent copies of the formats.
+CAS_RECEIPT_BODY_KEYS = _RECEIPT_BODY_KEYS
+CAS_RECEIPT_KEYS = _RECEIPT_KEYS
+LOCAL_RESULT_CLAIM_BODY_KEYS = _LOCAL_RESULT_CLAIM_BODY_KEYS
 _INITIAL_MISS_RENDEZVOUS_MANIFEST_BODY_KEYS = frozenset(
     {
         "schema",

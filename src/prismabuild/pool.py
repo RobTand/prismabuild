@@ -437,6 +437,16 @@ def _publish_immutable(path: Path, raw: bytes, *, where: str) -> None:
         )
 
 
+def read_queue_record(path: Path) -> dict[str, object] | None:
+    """Read one JSON object without mutation; missing/empty returns None.
+
+    Invalid records raise PoolContractError; I/O errors including ESTALE stay
+    loud. This direct read has no deadline: callers on shared mounts must bound
+    it. Stale-entry tolerance belongs to offer enumeration, not this API.
+    """
+    return _read_json(path)
+
+
 def _read_json(
     path: Path, *, tolerate_stale: bool = False
 ) -> dict[str, object] | None:
