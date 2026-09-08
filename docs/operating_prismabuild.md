@@ -110,12 +110,45 @@ run must never be an A/B arm against an unprofiled receipt, because the
 profiler is inside the measurement. Omitting the flag leaves the key
 byte-identical to what it was before the flag existed.
 
-Three properties are worth knowing before using it:
+What is worth knowing before using it:
 
-*   **Overhead is measured, not asserted.** On dl380g10, three profiled and
-    three unprofiled repeats of a fixed-work ~60 s CPU action: see the receipts
-    linked from the Tier 1 pull request for the current numbers. The rate is a
-    property of the mode and is reported in the ending, never sealed.
+*   **Overhead is measured, not asserted.** A fixed-work CPU loop, five
+    unprofiled and five profiled repeats inside one action on dl380g10
+    (`69a4a7fdf902`, 2026-09-07), while other agents' test shards had the box
+    at loadavg 1.4-3.4:
+
+    | arm | mean | stdev | median | min |
+    | --- | --- | --- | --- | --- |
+    | unprofiled | 60.845 s | 1.310 | 60.324 s | 60.107 s |
+    | `--profile sample` | 63.352 s | 2.208 | 61.829 s | 61.711 s |
+
+    The claim is the delta on the means: **4.12 %**, inside the tier's ~5 %
+    budget, so the rate stays at 100 Hz. The two arms' ranges overlap on the
+    one repeat in each that started at the highest load; on the medians the
+    delta is 2.50 %. Both figures are on a shared box, so read 4.12 % as the
+    upper bound of the two. The rate is a property of the mode and is reported
+    in the ending, never sealed: receipts taken across a rate change are
+    comparable only through the `rate_hz` each one carries.
+*   **The backend has to be visible to the launcher's interpreter.** The
+    backend is looked up beside `sys.executable` first and then on `PATH`, and
+    `sys.executable` is the worker loop's `--python`. dl380g10 launches under
+    `/home/rob/venvs/pb-cpu/bin/python` and sparklina under
+    `/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python`; py-spy 0.4.2 is in
+    both, so `--profile sample` is backed on both. sparky's worker loop passes
+    no `--python`, so it launches under `/usr/bin/python3`, and its unit `PATH`
+    has no `~/.local/bin` -- where sparky's py-spy actually lives. There
+    `--profile sample` **refuses** with `profile backend 'py-spy' is not
+    installed on sparky` rather than running unprofiled. Refusing is the
+    designed behaviour; making sparky eligible is a worker-loop change, not a
+    flag.
+*   **py-spy writes its own scratch file under `TMPDIR`.** It inherits the
+    action's sealed environment, so seal `TMPDIR` (pbtest already does) if the
+    box's `/tmp` is not somewhere you want it.
+*   **A cache hit answers a profiled key without a new profile.** The receipt
+    is the result and the CAS already holds it, so a re-submission returns
+    before the profiler runs and its ending carries no `profile`. The digest
+    from the run that did the work stays on that attempt's record; look there,
+    not at the newest ending.
 *   **The profiler is the child's parent.** `kernel.yama.ptrace_scope` is 1 on
     every box, so a profiler beside the action cannot attach to it; py-spy
     launches the sealed argv instead and samples the tree with

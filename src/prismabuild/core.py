@@ -4659,9 +4659,12 @@ def _run_initial_miss_rendezvous(
 #: and the run that asked for one has to say so.
 PROFILE_SPEEDSCOPE_SCHEMA = "https://www.speedscope.app/file-format-schema.json"
 
-#: Samples per second for ``--profile sample``.  Measured on a fixed-work
-#: ~20 s CPU load on sparky: 0.73 % over three repeats per arm, which is inside
-#: the tier's stated budget.  It is a property of the mode, not of the
+#: Samples per second for ``--profile sample``.  Measured through the fleet on
+#: dl380g10 (action ``69a4a7fdf902``, 2026-09-07): a fixed-work ~60 s CPU loop,
+#: five repeats per arm, 60.845 s +/- 1.310 unprofiled against 63.352 s +/-
+#: 2.208 profiled -- 4.12 % on the means, inside the tier's stated budget, on a
+#: box that other work had at loadavg 1.4-3.4.  ``docs/operating_prismabuild.md``
+#: carries the table.  The rate is a property of the mode, not of the
 #: submission, so it is reported in the ending and never sealed into the key.
 PROFILE_SAMPLE_RATE_HZ = 100
 
