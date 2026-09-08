@@ -39,7 +39,7 @@ LIVE_MOUNT = "/mnt/shared"
 #: other tool an operator runs.  Each is already imported by its own tests.
 FLEET_TOOLS = (
     "fleet_submit", "pool_reset", "pbrun", "pbstatus", "pbsweep", "pbwait",
-    "pbcampaign",
+    "pbcampaign", "pbmcp",
     "pbtest", "worker_loop", "supervise", "require_pool", "seal_and_publish",
     "tessera_status",
 )

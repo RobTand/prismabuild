@@ -61,6 +61,20 @@ universal setting. Use `pbtest.py` for suite fanout and `pbcampaign.py` for a
 manifest of independent actions. Prefer portable placement; add a host tag only
 for a real dependency or a controlled measurement.
 
+`--profile sample` runs py-spy around the action's child at 100 Hz and files
+the speedscope profile as a CAS blob whose digest and path appear on the
+ending, for `pbrun`, `pbstatus` and a human with speedscope. Reach for it when
+you need to know where an action's time went, not routinely: unlike
+`--priority` it **is** sealed into the action key, so a profiled run is a
+different action -- never a cache hit for the unprofiled one, and never an A/B
+arm against an unprofiled receipt. Measured overhead on a fixed-work CPU action is
+in `docs/operating_prismabuild.md`, beside the box load it was measured under. A profiled action whose profiler produced nothing fails
+with the reason rather than returning an unprofiled receipt, so do not use it
+on an action too short for a sampler to see. `pbtest.py --profile sample` and a
+manifest row's `profile` field forward it. It is backed on dl380g10 and
+sparklina and refuses on sparky, whose worker loop launches under an
+interpreter that cannot see py-spy.
+
 Agent self-validation -- test shards, the receipt for a PR, a re-run to confirm
 a fix -- submits at `--priority -10` (`pbtest.py --priority -10`, `pbrun.py
 --priority -10`). Ready items are ordered by priority band before aging, so
@@ -137,6 +151,37 @@ A submission acknowledgement is not completion. With `--detach`, retain the
 action key and use published `pbwait.py`/`pbstatus.py` to inspect the terminal
 state. Check exit status, actual logs and the CAS receipt/payload. Record test
 counts, skips, devices and missing tooling; do not certify a wrapper's “done”.
+
+Read status and your own actions as data, not as text. Register the read-only
+MCP server -- `claude mcp add --scope local prismabuild -- /usr/bin/python3
+/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbmcp.py`, or the same command
+as an `mcpServers` entry for opencode/Codex -- and use `pb_status`,
+`pb_action`, `pb_actions`, `pb_log`, `pb_verify_claim` and `pb_runtime`
+instead of shelling out to `pbstatus` and parsing its table, which is arranged
+for a person and whose columns move. Filter `pb_actions` by `checkout_root`,
+`published_by` or explicit `keys`: a queue record carries no submitter
+identity, so those are what identify your own work. Read `complete` and
+`timed_out` on every response before believing it -- a section that did not
+answer comes back as `null`, never as an empty list, and a read that failed
+outright is named in `unavailable`. `pb_verify_claim` answers with
+`checks_passed`, not `verified`: `attestation_verified` is `null` because that
+check needs the full action manifest. The
+server never writes and cannot submit; submission stays with `pbrun`.
+
+Every ending carries `detail.resource_profile`, so what a run cost is part of
+what you check rather than something to re-measure: `reaped_children` (the
+parent's rusage around the launch, whose `scope` field says it covers the
+launcher on a contained run), `scope` (the attempt's cgroup — `memory_peak_bytes`
+and the user/system CPU split), `process_io` (`rchar`/`wchar` and
+`read_bytes`/`write_bytes` over the processes in the scope) and `box_window`
+(GPU power against the device's own reference, unified memory, CPU busy and the
+pressure stalls, from `pqteld` and Netdata). It is always on and is not a profile mode: there is
+no flag to choose. Its cost is bounded rather than absent — at most two seconds
+at finish to read the box window (0.14–0.18 s measured), plus a sampler that
+ticks at most every two seconds while the attempt runs. It never enters the
+action key. An absent field means the source recorded nothing;
+it does not mean zero. `pbstatus` shows it in the `RESOURCE` column and
+`pbmetrics` exports it.
 
 If PB is unavailable, diagnose and repair it instead of bypassing admission.
 An OOM ending should name its exact attempt and memory evidence. Do not kill

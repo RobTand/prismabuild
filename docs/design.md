@@ -384,6 +384,16 @@ matters). Rules:
   first-writer evidence: its adopted status and disposition determine the
   mutable queue destination, summary, and `pbrun` exit status even when a
   finisher and stale reaper race; any disagreement fails closed.
+- **An opt-in profile is a parameter, and a queue hint is not** — `--profile
+  MODE` is sealed in `params.profile`, so a profiled run has its own key. A
+  profiler is inside the measurement: answering a profile request from an
+  unprofiled receipt would return a receipt with no profile, and comparing a
+  profiled arm with an unprofiled one would compare two different executions.
+  `--priority` is the contrast and stays out of the key, being a hint about
+  *when* the same work runs. Omitting `--profile` leaves the key what it was
+  before the flag existed. The blob itself is content-addressed like any
+  payload and referenced from the pool's ending, never from the CAS receipt,
+  whose v3 key set is an immutable interpretation domain.
 - **Effective pool placement is a parameter** — `pbrun` seals the sorted,
   deduplicated conjunction of tags that its placement rule actually returned,
   including a derived hostname pin. The normalized constraint moves the action
@@ -1710,3 +1720,29 @@ census, so an error rendered as a note still makes the top-level read incomplete
 These completeness checks use explicit stat calls, preserving ENOENT as missing
 and permission/I/O errors as unavailable. Boolean pathlib predicates are not
 evidence of absence because Python 3.14 suppresses OSError in them.
+
+### Structured status for agent consumers
+
+`pbmcp` serves the same census to a program instead of a person, over MCP's
+stdio JSON-RPC subset, stdlib-only so it runs from a published generation on
+any box with `/usr/bin/python3`. It is a reader: no rename, no lock, no
+`passes` write, no `record_pass`, and no submission -- submission stays behind
+`pbrun`, which is where the permission hooks that gate it live. It reuses the
+bounded reader rather than repeating it, so a section that does not answer is
+named in `timed_out` and leaves `complete` false, exactly as the census does;
+partial is reported, never awaited.
+
+Two derivations belong to the reader rather than to the queue. A preemption's
+successor generation is re-derived without the transition lock `pbrun` takes,
+because a reporter must not participate in the protocol it describes, and the
+answer is stamped `unlocked_read` so an in-flight handoff reads as not yet
+visible rather than as abandoned. The local-result claim digest is not on any
+queue record; it is recomputed from the action manifest, the record's resolved
+checkout root and the manifest's declared paths, with the producer's own
+canonical hash, and a `checkout_snapshot` submission is refused with its
+reason rather than answered with a guess.
+
+Attempt logs are read by seeking to their end for a capped tail. The verifying
+reader in `pool.attempt_outcomes` reads every stream whole to check a digest,
+which is the right contract for a verifier and would make a status call cost
+whatever the action printed.

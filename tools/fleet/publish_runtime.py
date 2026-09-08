@@ -63,6 +63,11 @@ FLEET_SCRIPTS = (
     # runtime_process_census.py is here for the same reason and is only
     # useful there: it reads /proc on the box it runs on.
     "pbstatus.py", "pbmetrics.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
+    # pbmcp.py is the same case as pbstatus.py and then some: an agent
+    # registers it by absolute published path so that every session starts on
+    # the current generation, and the boxes it is registered from are exactly
+    # the ones with no checkout.
+    "pbmcp.py",
     # retire_worker.py belongs to the same set for a sharper reason: the name
     # it retires is a name whose box stopped answering, and the operator who
     # notices is on whichever box is holding the mount.
