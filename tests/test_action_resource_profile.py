@@ -573,26 +573,38 @@ def test_a_reaped_child_is_counted_once_not_twice(tmp_path):
     same bytes had already migrated into the parent that reaped it. A process
     whose parent is in the scope keeps being counted through that parent; only
     the scope's roots are retired.
+
+    The writer says when it has written and then holds itself open, because a
+    process that has exited but not been reaped is a zombie, and a zombie's
+    ``/proc/<pid>/io`` is EACCES: its bytes are readable nowhere until its
+    parent absorbs them. Without that handshake this test is a race, and on a
+    box fast enough to win it, the race reads as a hang.
     """
 
     target = tmp_path / "written"
+    writer_script = tmp_path / "writer.py"
+    writer_script.write_text(
+        "import os, sys\n"
+        "handle = open(sys.argv[1], 'wb')\n"
+        "[handle.write(b'x' * (1024 * 1024)) for _ in range(16)]\n"
+        "handle.flush(); os.fsync(handle.fileno()); handle.close()\n"
+        "sys.stderr.write('written\\n'); sys.stderr.flush()\n"
+        "sys.stdin.readline()\n")
+    helper_script = tmp_path / "helper.py"
+    helper_script.write_text(
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]],\n"
+        "                         stdin=subprocess.PIPE, text=True)\n"
+        "sys.stderr.write('spawned %d\\n' % child.pid)\n"
+        "sys.stderr.flush()\n"
+        "sys.stdin.readline()\n"
+        "child.stdin.close()\n"
+        "child.wait()\n"
+        "sys.stderr.write('reaped\\n')\n"
+        "sys.stderr.flush()\n"
+        "time.sleep(30)\n")
     parent = subprocess.Popen(
-        [sys.executable, "-c",
-         "import subprocess, sys, time\n"
-         "child = subprocess.Popen([sys.executable, '-c',\n"
-         "    \"import os,sys\\n\"\n"
-         "    \"handle = open(sys.argv[1], 'wb')\\n\"\n"
-         "    \"[handle.write(b'x' * (1024 * 1024)) for _ in range(16)]\\n\"\n"
-         "    \"handle.flush(); os.fsync(handle.fileno()); handle.close()\\n\",\n"
-         "    sys.argv[1]])\n"
-         "sys.stderr.write('spawned %d\\n' % child.pid)\n"
-         "sys.stderr.flush()\n"
-         "sys.stdin.readline()\n"
-         "child.wait()\n"
-         "sys.stderr.write('reaped\\n')\n"
-         "sys.stderr.flush()\n"
-         "time.sleep(30)\n",
-         str(target)],
+        [sys.executable, str(helper_script), str(writer_script), str(target)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE, text=True)
     group = _fake_cgroup(tmp_path / "cgroup", usage_usec=1, user_usec=1,
@@ -602,15 +614,23 @@ def test_a_reaped_child_is_counted_once_not_twice(tmp_path):
     scope.unit = "prismabuild-job" + "c" * 32 + ".slice"
     scope.cgroup_path = group
     try:
-        writer = int(parent.stderr.readline().split()[1])
-        # Both in the scope: the writer is still running, or has just finished
-        # and is a zombie its parent has not yet reaped.
-        (group / "cgroup.procs").write_text(f"{parent.pid}\n{writer}\n")
-        while True:
-            seen = scope.sample()["process_io"]
-            if seen["wchar"] >= 16 * MIB:
+        # Both processes write to the same inherited pipe, so read until each
+        # has said its line rather than assuming which lands first.
+        writer = None
+        written = False
+        for _ in range(4):
+            if writer is not None and written:
                 break
-            time.sleep(0.2)
+            line = parent.stderr.readline().strip()
+            if line.startswith("spawned "):
+                writer = int(line.split()[1])
+            elif line == "written":
+                written = True
+        assert writer is not None and written, "the writer never reported"
+        (group / "cgroup.procs").write_text(f"{parent.pid}\n{writer}\n")
+        seen = scope.sample()["process_io"]
+        assert seen["processes_live"] == 2, seen
+        assert seen["wchar"] >= 16 * MIB, seen
         # Now the parent reaps it, and the kernel moves the bytes.
         parent.stdin.write("go\n")
         parent.stdin.flush()

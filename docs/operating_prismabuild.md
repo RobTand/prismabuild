@@ -1059,7 +1059,15 @@ idle" call for different responses.
     reached storage and are zero on a tmpfs for the same write. The sampler runs
     at most every two seconds, so I/O in the final interval and any process that
     both starts and ends between two samples is not counted;
-    `processes_observed` says how many were.
+    `processes_observed` says how many were. A process that has exited but has
+    not yet been reaped is a zombie, and a zombie's `/proc/<pid>/io` is
+    `EACCES`: it counts in `processes_unreadable`, keeps whatever it was last
+    seen using, and its remaining bytes arrive when its parent reaps it,
+    because the kernel folds a reaped child's counters into its parent exactly
+    as `getrusage(RUSAGE_CHILDREN)` does. That fold is also why only the
+    scope's roots are retired when they vanish -- anything below a root is
+    already inside the parent that absorbed it, and retiring it as well would
+    count the same bytes twice.
 *   `box_window` — the machine around the action for `[start_unix, end_unix]`.
     GPU power mean and peak, the fraction of the device's own published power
     reference, GPU utilisation, the unified memory pool and the memory and I/O
