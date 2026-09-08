@@ -605,6 +605,27 @@ def _process_alive(pid: int) -> bool:
     return bool(after_comm) and after_comm[0] != "Z"
 
 
+def _observe_execution(
+    process: subprocess.Popen,
+    previous: Mapping[str, object] | None = None,
+    *, stdout: bytes | None = None, stderr: bytes | None = None,
+) -> dict[str, object]:
+    """Sample our child and cumulative pipe buffers, without shared I/O.
+
+    A live launcher can wait on a silent or blocked payload. Neither its
+    existence nor output is proof of useful application progress or permission
+    to retry. The sample time must survive a delayed heartbeat publication.
+    ``TimeoutExpired`` carries bytes even for a text-mode Popen.
+    """
+    before = previous or {}
+    counts = {"stdout_bytes": len(stdout or b""), "stderr_bytes": len(stderr or b"")}
+    alive = process.poll() is None
+    sampled = _now()
+    changed = any(count > before.get(name, 0) for name, count in counts.items())
+    return {"source": "launcher-pipes", "sampled_unix": sampled, "launcher_alive": alive, **counts,
+            "last_output_unix": sampled if changed else before.get("last_output_unix")}
+
+
 def action_process_groups(launcher_pid: int) -> list[int]:
     """The process groups this launcher's children lead -- i.e. the action.
 
@@ -2597,6 +2618,7 @@ class PoolQueue:
         child_pid: int | None = None,
         container_owner: str | None = None,
         claim_snapshot: Mapping[str, object] | None = None,
+        execution_observation: Mapping[str, object] | None = None,
     ) -> None:
         """Refresh the claim's heartbeat, and say what is running under it.
 
@@ -2620,11 +2642,14 @@ class PoolQueue:
             }
         if container_owner is not None:
             lease["container_owner"] = str(container_owner)
+        if execution_observation is not None:
+            lease["execution_observation"] = dict(execution_observation)
         claim = _read_json(self.item_path(CLAIMED, action_key))
         if (claim is None or claim.get("claimed_by") != owner
                 or (claim_snapshot is not None and not _same_claim(claim, claim_snapshot))):
             raise PoolContractError("claim changed before heartbeat publication")
-        for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup", "claimed_unix"):
+        for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
+                      "claimed_unix", "published_unix"):
             if field in claim:
                 lease[field] = claim[field]
         _write_json_atomic(self.lease_path(action_key), lease)
@@ -6697,10 +6722,12 @@ class PoolQueue:
         # its own session with nothing left to reap it.  Everything after the
         # Popen belongs under the same guard.
         try:
+            observation = _observe_execution(process)
             self.write_lease(
                 key,
                 owner=owner, claim_snapshot=item,
                 child_pid=process.pid,
+                execution_observation=observation,
                 container_owner=(str(item["container_owner"])
                                  if item.get("container_owner") else None),
             )
@@ -6714,7 +6741,9 @@ class PoolQueue:
                         interval = min(interval, max(0.0, deadline - time.monotonic()))
                     out, err = process.communicate(timeout=interval)
                     break
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as exc:
+                    observation = _observe_execution(
+                        process, observation, stdout=exc.output, stderr=exc.stderr)
                     if scope is not None:
                         telemetry = self._sample_resource_scope(scope)
                         resource_failure = self._resource_failure(telemetry)
@@ -6724,6 +6753,7 @@ class PoolQueue:
                             out, err, survived = _drain(process, timeout_s=timeout_grace_s)
                             return self._merge_action_status({
                                 "status": "failed", "returncode": 137,
+                                "execution_observation": observation,
                                 "termination_reason": resource_failure,
                                 "termination_evidence": telemetry.get("termination_evidence"),
                                 "resource_telemetry": telemetry,
@@ -6745,6 +6775,7 @@ class PoolQueue:
                         out, err = self._stop_action(process)
                         return self._merge_action_status({
                             "status": "withdrawn",
+                            "execution_observation": observation,
                             "returncode": process.returncode,
                             "stdout": out,
                             "stderr": err,
@@ -6758,6 +6789,7 @@ class PoolQueue:
                     if time.monotonic() >= next_heartbeat:
                         self.write_lease(
                             key, owner=owner, child_pid=process.pid, claim_snapshot=item,
+                            execution_observation=observation,
                             container_owner=(str(item["container_owner"])
                                              if item.get("container_owner") else None),
                         )
@@ -6776,6 +6808,7 @@ class PoolQueue:
                         )
                         return self._merge_action_status({
                             "status": "timeout",
+                            "execution_observation": observation,
                             # Stays None: ``pbrun`` returns any integer
                             # ``returncode`` as its own exit status, and an
                             # action that finished inside the tick that
@@ -6825,6 +6858,7 @@ class PoolQueue:
             status = "withdrawn"
         outcome = {
             "status": status,
+            "execution_observation": observation,
             "returncode": process.returncode,
             "stdout": out,
             "stderr": err,

@@ -567,6 +567,47 @@ def _age(timestamp: object, now: float) -> float | None:
     return now - timestamp
 
 
+def _execution_observation(claim: dict, lease: dict | None, *, now: float) -> dict:
+    """Interpret optional execution evidence without granting recovery rights."""
+    unknown = {"state": "unavailable", "launcher_alive": None,
+               "age_s": None, "last_output_age_s": None,
+               "note": "execution observation unavailable"}
+    value = (lease or {}).get("execution_observation")
+    if value is None:
+        return unknown
+    identity = (("action_key", "action_key"), ("owner", "claimed_by"),
+                ("host", "claimed_host"), ("claimed_unix", "claimed_unix"),
+                ("published_unix", "published_unix"))
+    if (not isinstance(value, dict)
+            or any(lease.get(left) is None or lease.get(left) != claim.get(right)
+                   for left, right in identity)):
+        return {**unknown, "state": "invalid", "note": "execution observation identity invalid"}
+    sampled = value.get("sampled_unix")
+    output = value.get("last_output_unix")
+    try:
+        age = _age(sampled, now)
+        beat_age = _age(lease.get("heartbeat_unix"), now)
+        output_age = _age(output, now)
+    except OverflowError:
+        return {**unknown, "state": "invalid", "note": "execution observation timestamps invalid"}
+    counts = [value.get(name) for name in ("stdout_bytes", "stderr_bytes")]
+    if (age is None or age < 0 or beat_age is None or beat_age < 0 or age < beat_age
+            or type(value.get("launcher_alive")) is not bool
+            or any(type(count) is not int or count < 0 for count in counts)
+            or (output is not None and (output_age is None or output_age < age))
+            or (output is None and any(counts))):
+        return {**unknown, "state": "invalid", "note": "execution observation values invalid"}
+    if age > pool.LEASE_TIMEOUT_S or beat_age > pool.LEASE_TIMEOUT_S:
+        return {**unknown, "state": "stale", "age_s": age,
+                "note": "execution observation stale; launcher liveness unknown"}
+    alive = value["launcher_alive"]
+    note = ("launcher running" if alive else
+            "launcher exited; descendant liveness unknown")
+    note += ("; no output observed" if output is None else f"; output {output_age:.0f}s ago")
+    return {**value, "state": "fresh", "age_s": age,
+            "last_output_age_s": output_age, "note": note}
+
+
 def _pool_sidecar(path: Path) -> dict | None | Exception:
     """Retain read failures for the row that owns this observation."""
     try:
@@ -753,6 +794,9 @@ def read_pool(queue_root: str | Path) -> dict:
                             if row.get('cleanup_pending_s') is not None:
                                 row['reason'] += (
                                     f" over {row['cleanup_pending_s']:.0f}s")
+                    observation = _execution_observation(record, sidecar, now=now)
+                    row['execution_observation'] = observation
+                    row['reason'] = '; '.join(filter(None, (row.get('reason'), observation['note'])))
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 row.update(state='UNREADABLE', reason=str(exc))
                 valid_counts[state] = None
@@ -789,9 +833,10 @@ def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
 def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, object]) -> list[str]:
     if not jobs:
         return ["no jobs ready or claimed" if summary.get('empty') is True else "pool job state unavailable"]
-    return render_table(("KEY", "STATE", "NODE", "RESOURCES", "AGE", "PASSES", "RELEASES",
+    return render_table(("KEY", "STATE", "NODE", "RESOURCES", "AGE", "LEASE", "OUTPUT", "PASSES", "RELEASES",
                          "MATCHING", "NOTE"), (
         (j['action_key_prefix'], j['state'], j.get('node'), j.get('resources'), j.get('age_s'),
+         j.get('lease_age_s'), (j.get('execution_observation') or {}).get('last_output_age_s'),
          j.get('admission_passes'), j.get('unstarted_releases'), j.get('placeable_hosts'),
          j.get('reason')) for j in jobs))
 

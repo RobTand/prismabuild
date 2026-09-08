@@ -77,6 +77,8 @@ def _process(monkeypatch, queue, item, calls, *, ticks=0):
                 self.remaining -= 1
                 raise subprocess.TimeoutExpired('worker', timeout)
             return 'ok', ''
+        def poll(self):
+            return None if self.remaining else self.returncode
     monkeypatch.setattr(pool.subprocess, 'Popen', Process)
 
 

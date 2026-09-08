@@ -1117,6 +1117,18 @@ It prints three tables:
     the transport that produced it. `--recent N` changes how many are read; the
     default is 20.
 
+Pool jobs display `LEASE` and `OUTPUT` ages separately. A recent lease says
+the worker reported; its `execution_observation` says when the worker last
+polled its direct launcher and saw captured stdout/stderr grow. The note
+distinguishes a running launcher with no observed output, an exited launcher
+whose descendants are unknown, and unavailable or stale observations. Buffered
+or quiet applications can do useful work without printing, and output can grow
+without useful progress. Neither observation authorizes replay or token release.
+The JSON observation carries its own `age_s`, byte counts and last-output time.
+An old observation cannot become fresh through delayed lease publication or
+attach to another claim of the same key. Endings retain the last checkpoint
+under `detail.execution_observation`; it need not include final output or exit.
+
 `pbstatus` never writes, and an unavailable part of the fleet is reported in
 place rather than failing the screen: the tables that were read still print.
 Since #358 that report is also in the exit status, because printing a note is
