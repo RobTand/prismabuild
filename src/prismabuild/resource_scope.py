@@ -84,20 +84,70 @@ def read_cgroup(path: Path) -> dict[str, Any]:
 IO_COUNTERS = ('rchar', 'wchar', 'syscr', 'syscw', 'read_bytes', 'write_bytes')
 
 
+CGROUP_ROOT = Path('/sys/fs/cgroup')
+
+
+def cgroup_membership(path: Path) -> str:
+    """The scope as ``/proc/<pid>/cgroup`` spells it, for membership matching."""
+    try:
+        return '/' + str(Path(path).resolve().relative_to(CGROUP_ROOT))
+    except ValueError:
+        return ''
+
+
+def procs_in_cgroup(membership: str) -> list[int]:
+    """Every process whose own ``/proc`` entry names this scope or a leaf of it.
+
+    The broker keeps the payload leaf ``drwx------ root root``, so the leaf the
+    action actually runs in cannot be listed, entered or read by the worker
+    that launched it -- and that leaf is where every one of its processes is.
+    ``/proc/<pid>/cgroup`` is world-readable and says the same thing from the
+    other side, so membership is read from the processes rather than from a
+    directory this uid may not open.
+    """
+    if not membership:
+        return []
+    found: list[int] = []
+    try:
+        entries = os.listdir('/proc')
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            text = Path('/proc', entry, 'cgroup').read_text()
+        except OSError:
+            continue  # the process exited between listdir and read
+        for line in text.splitlines():
+            parts = line.split(':', 2)
+            if len(parts) != 3 or parts[0] != '0':
+                continue
+            where = parts[2]
+            if where == membership or where.startswith(membership + '/'):
+                found.append(int(entry))
+            break
+    return found
+
+
 def scope_pids(path: Path) -> list[int]:
     """Every process in the scope, including the broker's payload leaf.
 
     The payload is a child of the root broker rather than of the pool worker,
     so no process tree from the worker reaches it. The cgroup is what both have
-    in common, and it is hierarchical: this walks the scope and its leaves.
+    in common, and it is hierarchical -- but only where it can be read. A
+    subdirectory this uid cannot open is not an empty one, so the walk records
+    that it was refused and the membership scan supplies what it could not see.
     """
     found: list[int] = []
+    blocked = False
     stack = [Path(path)]
     while stack:
         group = stack.pop()
         try:
             entries = list(group.iterdir())
         except OSError:
+            blocked = True
             continue
         for entry in entries:
             if entry.is_dir():
@@ -105,12 +155,15 @@ def scope_pids(path: Path) -> list[int]:
         try:
             text = (group / 'cgroup.procs').read_text()
         except OSError:
+            blocked = True
             continue
         for line in text.split():
             try:
                 found.append(int(line))
             except ValueError:
                 continue
+    if blocked:
+        return sorted(set(found) | set(procs_in_cgroup(cgroup_membership(path))))
     return found
 
 

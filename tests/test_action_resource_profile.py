@@ -79,6 +79,16 @@ ALLOCATE = (
 )
 
 
+def _own_cgroup() -> Path:
+    """The cgroup this test process is already in; nothing is created."""
+
+    for line in Path("/proc/self/cgroup").read_text().splitlines():
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[0] == "0":
+            return Path("/sys/fs/cgroup") / parts[2].lstrip("/")
+    pytest.skip("no cgroup v2 membership for this process")
+
+
 def _fake_cgroup(path: Path, *, usage_usec: int, user_usec: int,
                  system_usec: int, pids: list[int]) -> Path:
     path.mkdir(parents=True, exist_ok=True)
@@ -467,3 +477,89 @@ def test_an_ending_from_before_the_profile_renders_absent_not_zero(tmp_path):
     assert "rss=" not in rendered
     assert "gpu=" not in rendered
     assert pbstatus.ABSENT in rendered
+
+
+# -- the payload leaf the worker may not open ---------------------------------
+
+def test_membership_is_read_from_the_processes_not_the_directory(tmp_path):
+    """``/proc/<pid>/cgroup`` answers what a closed leaf directory will not."""
+
+    membership = resource_scope.cgroup_membership(_own_cgroup())
+    assert membership.startswith("/")
+    assert os.getpid() in resource_scope.procs_in_cgroup(membership)
+    # A scope nothing belongs to is empty, and a path outside the cgroup root
+    # is not a scope at all.
+    assert resource_scope.procs_in_cgroup("/prismabuild.slice/nobody.slice") == []
+    assert resource_scope.cgroup_membership(tmp_path) == ""
+
+
+def test_a_leaf_this_uid_cannot_open_is_not_an_empty_one(tmp_path, monkeypatch):
+    """The broker keeps the payload leaf root-only, and that is where the work is.
+
+    Walking the tree and taking the refusal as "no processes here" is how the
+    whole I/O total came back zero on the fleet while the action was writing
+    64 MiB.  A refused directory has to send the reader to the other source,
+    not end the search.
+    """
+
+    group = tmp_path / "cgroup"
+    group.mkdir()
+    (group / "cgroup.procs").write_text("")
+    leaf = group / "payload"
+    leaf.mkdir()
+    (leaf / "cgroup.procs").write_text("4242\n")
+    leaf.chmod(0o000)
+    try:
+        monkeypatch.setattr(resource_scope, "procs_in_cgroup",
+                            lambda membership: [909090])
+        assert 909090 in resource_scope.scope_pids(group)
+    finally:
+        leaf.chmod(0o700)
+
+
+def test_a_tree_that_reads_completely_does_not_scan_proc(tmp_path, monkeypatch):
+    """The scan is what a refusal costs, not what every sample costs."""
+
+    group = tmp_path / "cgroup"
+    group.mkdir()
+    (group / "cgroup.procs").write_text("17\n18\n")
+
+    def refuse(membership):
+        raise AssertionError("a readable tree must not scan /proc")
+
+    monkeypatch.setattr(resource_scope, "procs_in_cgroup", refuse)
+    assert sorted(resource_scope.scope_pids(group)) == [17, 18]
+
+
+def test_the_sampler_finds_a_child_through_this_processes_own_scope(tmp_path):
+    """End to end against a real cgroup: a real child, its real counters."""
+
+    marker = tmp_path / "written"
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import os, sys, time\n"
+         "with open(sys.argv[1], 'wb') as handle:\n"
+         "    for _ in range(12):\n"
+         "        handle.write(b'x' * (1024 * 1024))\n"
+         "    handle.flush()\n"
+         "    os.fsync(handle.fileno())\n"
+         "sys.stderr.write('ready\\n')\n"
+         "sys.stderr.flush()\n"
+         "time.sleep(30)\n",
+         str(marker)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    scope = resource_scope.ResourceScope(
+        "a" * 64, "b" * 32, 1 << 30, tmp_path / "telemetry.json")
+    scope.unit = "prismabuild-job" + "c" * 32 + ".slice"
+    scope.cgroup_path = _own_cgroup()
+    try:
+        assert child.stderr.readline().strip() == "ready"
+        io = scope.sample()["process_io"]
+    finally:
+        child.terminate()
+        child.wait(timeout=30)
+        child.stderr.close()
+    # This process and its child are both in this cgroup, so the total covers
+    # at least the child's own writes.
+    assert io["processes_observed"] >= 2
+    assert io["wchar"] >= 12 * MIB
