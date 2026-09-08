@@ -1468,6 +1468,12 @@ when the budget expires. Daily files are still scanned from the beginning;
 wall-clock corrections mean a row beyond the window is not proof that later
 rows are beyond it. An individual filesystem operation may overrun the budget.
 
+The recorder keeps the hostname it started with. After an OS rename, CSV
+discovery also accepts the explicitly equivalent `_alias` in the generation's
+`fleet_boxes.json`, so an already-running recorder's data remains visible.
+Ambiguous declarations produce a diagnostic; other machines' filenames are
+never guessed to belong to this box. The window retains the executing hostname.
+
 Four groups, each naming the source that produced it. A group whose source said
 nothing is absent rather than zero, because "not measured" and "measured as
 idle" call for different responses.
