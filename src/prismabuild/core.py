@@ -6581,9 +6581,24 @@ def run_local_action(
                 # Before the ingest, so the profiler's own status is on the
                 # record this builds rather than added to it afterwards.
                 profile.backend_returncode = returncode
+                if getattr(profile.backend, "exits_before_action", False):
+                    # The report is complete even though the action may still
+                    # run. Contained deadlines kill the broker scope outright;
+                    # no Python exception handler can save evidence afterwards.
+                    # Checkpoint it before waiting, without publishing success.
+                    profile_record = profile.ingest(cas)
+                    checkpoint = {**profile_record, "partial": True}
+                    with suppress(ProfileUnusable):
+                        checkpoint["action_phase"] = profile.exit_status()["phase"]
+                    _write_action_status({"profile": checkpoint})
                 action_status = profile.action_returncode(process)
-                profile_record = profile.ingest(cas)
+                if profile_record is None:
+                    profile_record = profile.ingest(cas)
             except ProfileUnusable as exc:
+                # An early profiler's unusable report can now refuse before
+                # the relay wait. Its action still belongs to this attempt.
+                if getattr(profile.backend, "exits_before_action", False):
+                    _terminate_process_group(process)
                 raise LocalActionError(
                     f"profile backend "
                     f"{getattr(profile.backend, 'name', profile.mode)!r} "
