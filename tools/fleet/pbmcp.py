@@ -139,7 +139,7 @@ class Call:
     """
 
     def __init__(self, tool: str, *, deadline_s: float, startup_generation: str | None,
-                 repo_link: Path) -> None:
+                 repo_link: Path, abandoned: list[dict] | None = None) -> None:
         self.tool = tool
         self.deadline_s = float(deadline_s)
         self.deadline = pbstatus.Deadline(deadline_s)
@@ -147,7 +147,8 @@ class Call:
         self.repo_link = Path(repo_link)
         self.timed_out: list[str] = []
         self.unavailable: list[dict] = []
-        self.abandoned: list[dict] = []
+        # The session owns retained children across calls, including startup.
+        self.abandoned = abandoned if abandoned is not None else []
 
     def read(self, section: str, read: Callable[[], object], *, default=None):
         """Run one shared-mount read, or record why its answer is missing.
@@ -159,6 +160,26 @@ class Call:
         makes the payload contradict the ``timed_out`` beside it.
         """
 
+        # Never grow a pile of blocked readers as a long-lived client polls.
+        # waitpid is local, nonblocking, and scoped to our retained children;
+        # no signal or shared-mount identity lookup is needed to collect exits.
+        pending = []
+        for child in self.abandoned:
+            try:
+                done, _status = os.waitpid(child["pid"], os.WNOHANG)
+            except ChildProcessError:
+                continue
+            except OSError:
+                done = 0
+            if not done:
+                pending.append(child)
+        self.abandoned[:] = pending
+        if self.abandoned:
+            self.unavailable.append({
+                "section": section, "type": "ReaderStillRunning",
+                "error": "shared read suppressed until the retained reader exits",
+            })
+            return default
         outcome = pbstatus.bounded(section, read, deadline=self.deadline,
                                    abandoned=self.abandoned)
         if outcome["status"] == "ok":
@@ -198,7 +219,7 @@ class Call:
             "tool": self.tool,
             "generated_unix": time.time(),
             "deadline_s": self.deadline_s,
-            "complete": not self.timed_out and not self.unavailable,
+            "complete": not self.timed_out and not self.unavailable and not self.abandoned,
             "timed_out": list(self.timed_out),
             "unavailable": list(self.unavailable),
             "abandoned_readers": list(self.abandoned),
@@ -666,9 +687,11 @@ class Session:
         self.deadline_s = float(deadline_s)
         self.recent = int(recent)
         self.log_tail_bytes = int(log_tail_bytes)
+        self._abandoned_readers: list[dict] = []
         self._startup_read = Call("startup", deadline_s=self.deadline_s,
                                   startup_generation=None,
-                                  repo_link=self.repo_link)
+                                  repo_link=self.repo_link,
+                                  abandoned=self._abandoned_readers)
         self.startup_generation = self._startup_read.read(
             "startup-repo-link", lambda: _link_target(self.repo_link))
 
@@ -681,12 +704,12 @@ class Session:
             raise ToolError(f"no such tool: {name}", tools=list(TOOL_NAMES))
         call = Call(name, deadline_s=self.deadline_s,
                     startup_generation=self.startup_generation,
-                    repo_link=self.repo_link)
+                    repo_link=self.repo_link,
+                    abandoned=self._abandoned_readers)
         # A later successful read cannot reconstruct the startup observation.
         # Retain its diagnostics, including ownership of any abandoned reader.
         call.timed_out.extend(self._startup_read.timed_out)
         call.unavailable.extend(self._startup_read.unavailable)
-        call.abandoned.extend(self._startup_read.abandoned)
         try:
             payload = method(call, **arguments)
         except TypeError as exc:
