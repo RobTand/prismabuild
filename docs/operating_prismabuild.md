@@ -1102,6 +1102,100 @@ Read `status` before `returncode`. A job SLURM killed at its time limit reports
 `status: "timeout"` with `returncode: null`, and a reader that takes zero as
 success is not misled.
 
+## Reading the queue from an agent: the MCP server
+
+An agent -- Claude Code, a Codex or opencode worker -- that wants to know what
+its own submission is doing should not be shelling out to `pbstatus` and
+parsing the table. The table is arranged for a person, its columns move when
+the screen improves, and the sealed demand, the attempt history and the
+receipt are not on it at all. `tools/fleet/pbmcp.py` answers the same
+questions over MCP, as JSON, and does nothing else: it is read-only, every
+read of the shared mount is deadline-bounded, and submission is deliberately
+absent, because submission goes through `pbrun` and that is where the
+permission hooks that gate it live.
+
+Register it in Claude Code, from the directory the session runs in:
+
+    claude mcp add --scope local prismabuild -- \
+        /usr/bin/python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbmcp.py
+
+and remove it with `claude mcp remove prismabuild`. For opencode or Codex, the
+same launch as an `mcpServers` entry:
+
+    {
+      "mcpServers": {
+        "prismabuild": {
+          "command": "/usr/bin/python3",
+          "args": ["/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbmcp.py"]
+        }
+      }
+    }
+
+Two things about that path. It is the published generation, not a checkout, so
+a session always starts on the runtime the fleet is executing; and it is
+`/usr/bin/python3`, because the server is stdlib-only and the boxes that most
+need it are the ones with no venv and no checkout. `--queue-root`,
+`--cas-root`, `--repo-link`, `--deadline-s` (default 5), `--recent` and
+`--log-tail-bytes` are all available; the defaults are the fleet's own.
+
+The tools:
+
+*   **`pb_status`** — the `pbstatus` census: worker offers and their ages,
+    ready and claimed actions with why each is waiting, per-host reservation
+    token counts, and how the most recent actions ended.
+*   **`pb_action(key_prefix)`** — one action, whole: the sealed submission
+    (tags, demand, priority, checkout, `max_attempts`), its state and host,
+    every attempt with its log metadata, the ending and both return codes, the
+    CAS receipt, the derived local-result claim, and a tail of the last
+    attempt's stdout. A prefix that names more than one action comes back with
+    the candidates rather than a guess.
+*   **`pb_actions(filter)`** — list by `states`, `tags`, `priority_min` /
+    `priority_max`, `checkout_root`, `published_by`, `max_age_s` or explicit
+    `keys`. This is "my jobs" for an agent, with one honest limit: a queue
+    record carries **no submitter identity**. `publish` seals `published_by`
+    (the submitting host) and either `checkout_root` or `checkout_snapshot`,
+    and nothing that names an agent -- so an agent identifies its own work by
+    the checkout it submitted from, the box it submitted on, or the keys it
+    already holds. The answer says so in its `identity` field.
+*   **`pb_verify_claim(sha256)`** — resolve the `local_result_claim_sha256` a
+    run reported to its receipt and payload, reporting each check by name.
+    The verdict field is `checks_passed`, not `verified`: it says every check
+    this tool ran passed, and `attestation_verified` stays `null` because
+    validating the worker attestation needs the full action manifest, which is
+    `core.PrismaBuildCAS.lookup`'s job. `hash_payload: true` also reads and
+    hashes the blob, which is off by default because a result blob is a
+    rendered model often enough that hashing one by accident costs an hour of
+    NFS bandwidth.
+*   **`pb_log(key_prefix, tail_lines)`** — a bounded tail of one attempt's
+    `stdout` or `stderr`. The log is never read whole: the reader seeks to the
+    end and reads at most `--log-tail-bytes`.
+*   **`pb_runtime()`** — the published generation, its manifest, which loops
+    are announcing on it, and whether this server was started from it.
+
+Every response carries the same envelope, and two of its fields decide whether
+the rest of it can be believed. `complete` is false, and `timed_out` names the
+section, when a read of the mount did not answer inside the deadline. The
+payload never contradicts that: a section that did not answer comes back as
+`null`, never as an empty list or object, so `endings: []` is a queue with no
+recent endings and `endings: null` is a mount that did not answer, and the two
+call for opposite responses. A read that fails outright -- a stale handle or
+an I/O error on the mount -- is named in `unavailable` and clears `complete`
+the same way: only ENOENT and ENOTDIR are read as absence, so an NFS burst
+cannot come back as `no action starts with that prefix`. `generation` and
+`generation_stale` say whether `repo/` has moved since the session started --
+after a publication the process is running code the fleet has replaced, which
+nothing inside the process can fix, so it is stamped and the agent decides.
+`generation_stale: null` means the link itself could not be read, which is
+never the same as `false`.
+
+Read-only is a property the tests hold it to rather than a promise: the module
+has no mutating call in its import surface, every tool answers against a queue
+root with its write bits removed, and every tool answers again with the
+writing syscalls replaced by ones that raise. It also never expands an
+attempt's logs -- `pool.attempt_outcomes` reads every stream whole to verify a
+digest, which is right for a verifier and would make a status call on a
+gigabyte of output cost a gigabyte.
+
 ### Read what a run cost
 
 Every pull-queue ending also carries `detail.resource_profile`: what the run

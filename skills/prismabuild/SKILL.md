@@ -152,6 +152,22 @@ action key and use published `pbwait.py`/`pbstatus.py` to inspect the terminal
 state. Check exit status, actual logs and the CAS receipt/payload. Record test
 counts, skips, devices and missing tooling; do not certify a wrapper's “done”.
 
+Read status and your own actions as data, not as text. Register the read-only
+MCP server -- `claude mcp add --scope local prismabuild -- /usr/bin/python3
+/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbmcp.py`, or the same command
+as an `mcpServers` entry for opencode/Codex -- and use `pb_status`,
+`pb_action`, `pb_actions`, `pb_log`, `pb_verify_claim` and `pb_runtime`
+instead of shelling out to `pbstatus` and parsing its table, which is arranged
+for a person and whose columns move. Filter `pb_actions` by `checkout_root`,
+`published_by` or explicit `keys`: a queue record carries no submitter
+identity, so those are what identify your own work. Read `complete` and
+`timed_out` on every response before believing it -- a section that did not
+answer comes back as `null`, never as an empty list, and a read that failed
+outright is named in `unavailable`. `pb_verify_claim` answers with
+`checks_passed`, not `verified`: `attestation_verified` is `null` because that
+check needs the full action manifest. The
+server never writes and cannot submit; submission stays with `pbrun`.
+
 Every ending carries `detail.resource_profile`, so what a run cost is part of
 what you check rather than something to re-measure: `reaped_children` (the
 parent's rusage around the launch, whose `scope` field says it covers the
