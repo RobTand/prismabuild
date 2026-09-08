@@ -32,6 +32,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import threading
 import sys
 import time
 
@@ -88,13 +89,14 @@ class _FakeBackend:
     def locate(self) -> str:
         return "/bin/sh"
 
-    def launch_argv(self, argv, *, profile_path: Path, exit_status_path: Path):
-        inner = pb.profile_exit_status_relay(argv, exit_status_path)
+    def launch_argv(self, argv, *, profile_path: Path):
+        # The argv handed to a backend is already relayed: the session owns
+        # the exit-status guarantee so that no backend can forget it.
         if not self.writes_profile:
-            return list(inner)
+            return list(argv)
         return [
             "/bin/sh", "-c", 'printf %s "$1" > "$0"; shift 1; exec "$@"',
-            str(profile_path), _speedscope("fake"), *inner,
+            str(profile_path), _speedscope("fake"), *argv,
         ]
 
     def read_profile(self, path: Path) -> dict:
@@ -360,10 +362,11 @@ def test_the_output_lock_still_reaches_the_child_through_the_profiler(
         f"{sys.executable} -c {_WORK!r} 2>&1 | tee {tmp_path / 'log'}; "
         "exit ${PIPESTATUS[0]}",
     ]
-    argv = [str(word) for word in pb.PROFILE_BACKENDS["sample"].launch_argv(
-        sealed,
-        profile_path=tmp_path / "p.speedscope.json",
-        exit_status_path=tmp_path / "rc")]
+    argv = pb._ProfileSession(
+        mode="sample",
+        backend=pb.PROFILE_BACKENDS["sample"],
+        directory=tmp_path / "scratch",
+    ).launch_argv(sealed)
     child = subprocess.Popen(
         argv, start_new_session=True, stdin=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, pass_fds=(read_end,))
@@ -380,7 +383,13 @@ def test_the_output_lock_still_reaches_the_child_through_the_profiler(
                     if os.getpgid(int(entry.name)) != group:
                         continue
                     command = (entry / "cmdline").read_bytes().split(b"\0")[0]
-                    if not command.endswith((b"/sh", b"/bash")):
+                    # The relay is a Python process (it needs ``waitpid`` to
+                    # tell a signalled action from one that exited 128+n), so
+                    # the two processes between the worker and the work are
+                    # this interpreter and the sealed shell.
+                    if not command.endswith(
+                        (b"/sh", b"/bash", os.fsencode(Path(sys.executable).name))
+                    ):
                         continue
                     holders[f"{command.decode()}:{entry.name}"] = any(
                         os.readlink(str(descriptor)) == held

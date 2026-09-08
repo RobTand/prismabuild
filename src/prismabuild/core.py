@@ -4676,6 +4676,16 @@ PROFILE_SAMPLE_RATE_HZ = 100
 PROFILE_SCRATCH_DIRNAME = ".prismabuild-profile"
 
 
+#: The relay's file format.  Named in the file it writes so a reader that
+#: finds one from another era refuses it instead of misreading it.
+PROFILE_EXIT_STATUS_SCHEMA = "prismabuild.profile_exit_status.v1"
+
+#: How often the worker looks again when it is waiting for an action whose
+#: profiler already exited.  Short enough not to add measurable wall time to a
+#: settle, long enough not to spin on a filesystem for the length of an action.
+_PROFILE_SETTLE_POLL_SECONDS = 0.05
+
+
 class ProfileBackendUnavailable(Exception):
     """This box has no profiler for the mode the action asked for."""
 
@@ -4684,16 +4694,65 @@ class ProfileUnusable(Exception):
     """The profiler ran but left nothing a reader could open."""
 
 
-def profile_exit_status_relay(argv, status_path) -> list[str]:
-    """Run ``argv`` and record its exit status where the worker can read it.
+#: The relay's whole program.  Small enough to read in one sitting, because it
+#: is the only thing standing between a profiler and the truth about how an
+#: action ended.
+#:
+#: ``close_fds=False`` is load-bearing rather than lax: ``_run_local_action``
+#: hands the output lock's descriptor to the action so the exclusion outlives a
+#: killed worker, and Python's default would close it here, one process short of
+#: the argv that has to hold it.
+#:
+#: A launch that never happened is reported as a launch that never happened.
+#: The unprofiled path calls a failing ``Popen`` a worker verdict, not an
+#: action's ending; a relay that wrote ``127`` instead would turn one into the
+#: other, and 127 is a status a shell really can return.
+#:
+#: It writes twice, and both writes are ``os.replace`` of a fully written file,
+#: because a reader of this file has three questions and one write can only
+#: answer two.  ``launched`` says the sealed argv is running and names its pid;
+#: ``ended`` replaces it with how it ended.  A relay that is itself killed --
+#: which is what a pool deadline does, since the pool signals the launcher's
+#: whole session -- leaves ``launched`` behind, and that is how the timeout
+#: path can say "the action started and its ending is unknown" rather than
+#: guessing between a crashed profiler and an action that never began.  Without
+#: the staging file a reader that arrived mid-write would see half a JSON
+#: document and call it malformed.
+PROFILE_RELAY_SOURCE = """\
+import json, os, subprocess, sys
+status_path, argv = sys.argv[1], sys.argv[2:]
+def record(body):
+    body["schema"] = "prismabuild.profile_exit_status.v1"
+    staged = status_path + ".partial"
+    with open(staged, "w") as handle:
+        handle.write(json.dumps(body, sort_keys=True))
+    os.replace(staged, status_path)
+try:
+    child = subprocess.Popen(argv, close_fds=False)
+except OSError as exc:
+    record({"phase": "launch_failed",
+            "launch_error": "%s: %s" % (type(exc).__name__, exc)})
+    sys.exit(1)
+record({"phase": "launched", "child_pid": child.pid})
+code = child.wait()
+record({"phase": "ended", "returncode": code,
+        "signal": -code if code < 0 else None})
+sys.exit(0)
+"""
 
-    ``sh -c SCRIPT a b c...`` sets ``$0`` to ``a`` and ``$@`` to the rest, so
-    the status path rides in ``$0`` and the sealed argv is ``"$@"`` -- quoted,
-    so an argument with a space stays one argument.
+
+def profile_exit_status_relay(argv, status_path) -> list[str]:
+    """Run ``argv`` and record how it ended where the worker can read it.
+
+    ``-I`` is not decoration.  The relay's working directory is the action's
+    checkout, and ``python -c`` would otherwise put that directory on
+    ``sys.path``: an action carrying its own ``json.py`` would be importing
+    into the worker's own status relay.  ``-S`` drops ``site`` as well, whose
+    only job here would be to slow a process that imports four stdlib modules.
     """
 
     return [
-        "/bin/sh", "-c", '"$@"; printf %d $? > "$0"',
+        sys.executable, "-I", "-S", "-c", PROFILE_RELAY_SOURCE,
         str(status_path), *[str(word) for word in argv],
     ]
 
@@ -4785,7 +4844,7 @@ class PySpyProfileBackend:
             self._version = (completed.stdout or completed.stderr).strip()
         return self._version
 
-    def launch_argv(self, argv, *, profile_path: Path, exit_status_path: Path):
+    def launch_argv(self, argv, *, profile_path: Path):
         return [
             self.locate(), "record",
             "--subprocesses",
@@ -4793,7 +4852,7 @@ class PySpyProfileBackend:
             "--format", "speedscope",
             "--output", str(profile_path),
             "--",
-            *profile_exit_status_relay(argv, exit_status_path),
+            *argv,
         ]
 
     def read_profile(self, path: Path) -> dict[str, object]:
@@ -4873,30 +4932,54 @@ class _ProfileSession:
         counts an untracked directory as dirt.  A scratch directory created
         before that proof refuses every profiled action; created after it,
         nothing looks at the tree's cleanliness again.
+
+        A directory that cannot be created is a refusal with a reason, in the
+        one exception class ``core.main`` catches.  Raw, it left the worker to
+        traceback out of ``main``, skip the status write, and let the claim be
+        reaped on the next attempt -- an unwritable checkout reported as a
+        mystery instead of as itself.
         """
 
-        self.directory.mkdir(parents=True, exist_ok=True)
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise LocalActionError(
+                f"the profile scratch directory could not be created at "
+                f"{self.directory}: {exc}.  A profiled action needs somewhere "
+                "inside its own working directory to write the profile, so "
+                "this run failed before the action started."
+            ) from exc
 
     def close(self) -> None:
         with suppress(OSError):
             shutil.rmtree(self.directory)
 
     def launch_argv(self, argv: Sequence[object]) -> list[str]:
+        """What the worker launches instead of the sealed argv.
+
+        The relay is wrapped here rather than inside each backend, so that a
+        backend cannot forget it: every mode gets the same exit-status
+        guarantee by construction, and a new backend's only job is to say how
+        to run the argv it is handed.
+        """
+
         self._open()
+        relayed = profile_exit_status_relay(
+            [str(item) for item in argv], self.exit_status_path
+        )
         return [
             str(word)
             for word in self.backend.launch_argv(  # type: ignore[attr-defined]
-                [str(item) for item in argv],
-                profile_path=self.profile_path,
-                exit_status_path=self.exit_status_path,
+                relayed, profile_path=self.profile_path,
             )
         ]
 
-    def action_returncode(self) -> int:
-        """The action's own exit status, out of the relay the launch installed.
+    def exit_status(self) -> dict[str, object]:
+        """The relay's latest record, or a refusal saying why there is none.
 
-        A missing or unreadable relay is a broken profiled run, not a pass: it
-        means nothing here knows what the action did.
+        Read as a whole rather than field by field, because the timeout path
+        wants the phase (did the action even start?) and the settle path wants
+        the pid, while the ordinary path wants only the status.
         """
 
         try:
