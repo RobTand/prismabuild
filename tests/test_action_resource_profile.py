@@ -271,6 +271,69 @@ def test_a_second_sampler_continues_the_first_ones_accounting(tmp_path):
     assert carried["processes_live"] == 0
 
 
+def test_a_retry_does_not_inherit_the_previous_attempts_readings(tmp_path):
+    """The file is named for the action; only the nonce says whose attempt.
+
+    A retry on the same host finds its predecessor's telemetry file still
+    sitting there, because nothing unlinks it. Adopting it would open attempt
+    two holding attempt one's retired bytes and retire attempt one's dead
+    roots all over again.
+    """
+
+    telemetry = tmp_path / "telemetry.json"
+    group = _fake_cgroup(tmp_path / "cgroup", usage_usec=1, user_usec=1,
+                         system_usec=0, pids=[])
+    telemetry.write_text(json.dumps({
+        "action_key": "a" * 64, "nonce": "b" * 32,
+        "process_io": {"source": "proc_io", "wchar": 9 * MIB,
+                       "write_bytes": 9 * MIB, "processes_observed": 4,
+                       "retired": {name: 9 * MIB
+                                   for name in resource_scope.IO_COUNTERS},
+                       "live": {}, "members": [4242]},
+    }))
+
+    retry = resource_scope.ResourceScope("a" * 64, "d" * 32, 1 << 30, telemetry)
+    retry.unit = "prismabuild-job" + "c" * 32 + ".slice"
+    retry.cgroup_path = group
+    fresh = retry.sample()["process_io"]
+    assert fresh["wchar"] == 0, fresh
+    assert fresh["write_bytes"] == 0, fresh
+    assert fresh["processes_observed"] == 0, fresh
+
+    # The same nonce still continues, or the sampler could not sample twice.
+    same = resource_scope.ResourceScope("a" * 64, "b" * 32, 1 << 30, telemetry)
+    same.unit = retry.unit
+    same.cgroup_path = group
+    assert same.sample()["process_io"]["wchar"] == 9 * MIB
+
+
+def test_collecting_a_measurement_never_decides_the_verdict(tmp_path):
+    """The pool samples outside a guard, so the guard has to be here.
+
+    A prior record shaped wrongly raises something that is neither OSError nor
+    ValueError. Reaching the worker loop with it would file a green action as
+    failed, because the action's own outcome is not what raised.
+    """
+
+    telemetry = tmp_path / "telemetry.json"
+    group = _fake_cgroup(tmp_path / "cgroup", usage_usec=1, user_usec=1,
+                         system_usec=0, pids=[])
+    telemetry.write_text(json.dumps({
+        "action_key": "a" * 64, "nonce": "b" * 32,
+        "process_io": {"source": "proc_io", "retired": "not a mapping"},
+    }))
+    scope = resource_scope.ResourceScope("a" * 64, "b" * 32, 1 << 30, telemetry)
+    scope.unit = "prismabuild-job" + "c" * 32 + ".slice"
+    scope.cgroup_path = group
+
+    record = scope.sample()
+    assert record["process_io"]["source"] == "proc_io"
+    assert record["process_io"]["errors"], record["process_io"]
+    assert "AttributeError" in record["process_io"]["errors"][0]
+    # The cgroup half is untouched: one broken group does not lose the others.
+    assert record["memory_peak_bytes"] is not None
+
+
 # -- the box window -----------------------------------------------------------
 
 PQTELD_HEADER = ("epoch_ms,MemTotal,MemAvailable,psi_mem_full_avg10,"

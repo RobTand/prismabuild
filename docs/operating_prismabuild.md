@@ -1031,8 +1031,15 @@ success is not misled.
 Every pull-queue ending also carries `detail.resource_profile`: what the run
 used and what the box was doing while it ran. It is metadata about one run, not
 part of the action, so it never enters the action key and a receipt from before
-it exists is still the same action. It is not a profile mode — nothing is
-sampled, nothing is slowed, and there is no flag to turn it on.
+it exists is still the same action. There is no flag to turn it on and no
+profile mode to choose: it is on for every action.
+
+What it costs is bounded, not nothing. At finish, reading the box window is
+capped at two seconds plus one `nvidia-smi` read; measured on sparky it takes
+0.14–0.18 s. While the attempt runs, the periodic sampler ticks at most every
+two seconds, and on a contained attempt each tick scans `/proc` for the scope's
+members, because the broker's payload leaf is `drwx------` and its
+`cgroup.procs` cannot be read directly.
 
 Four groups, each naming the source that produced it. A group whose source said
 nothing is absent rather than zero, because "not measured" and "measured as

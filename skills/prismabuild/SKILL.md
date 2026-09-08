@@ -145,9 +145,11 @@ launcher on a contained run), `scope` (the attempt's cgroup — `memory_peak_byt
 and the user/system CPU split), `process_io` (`rchar`/`wchar` and
 `read_bytes`/`write_bytes` over the processes in the scope) and `box_window`
 (GPU power against the device's own reference, unified memory, CPU busy and the
-pressure stalls, from `pqteld` and Netdata). It is always on, costs no wall
-time, and is not a profile mode: there is no flag, nothing is sampled, and it
-never enters the action key. An absent field means the source recorded nothing;
+pressure stalls, from `pqteld` and Netdata). It is always on and is not a profile mode: there is
+no flag to choose. Its cost is bounded rather than absent — at most two seconds
+at finish to read the box window (0.14–0.18 s measured), plus a sampler that
+ticks at most every two seconds while the attempt runs. It never enters the
+action key. An absent field means the source recorded nothing;
 it does not mean zero. `pbstatus` shows it in the `RESOURCE` column and
 `pbmetrics` exports it.
 

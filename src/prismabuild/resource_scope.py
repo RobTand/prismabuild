@@ -319,17 +319,27 @@ class ResourceScope:
                 '--token', self.token, '--', *argv]
 
     def _prior_process_io(self) -> dict[str, Any]:
-        """What an earlier sampler already accounted for this attempt.
+        """What an earlier sampler already accounted for *this* attempt.
 
         The telemetry file is the state, not this object: the pool builds one
         scope to launch the attempt and rebuilds another from the claim record
         to sample it after the child exits, and a total that restarted between
         the two would report the last two seconds as the whole run.
+
+        The file is named for the action, not the attempt, and is never
+        unlinked, so a retry on the same host finds its predecessor's readings
+        sitting there. Only a record carrying this attempt's nonce is this
+        attempt's: anything else is a previous run, and adopting it would open
+        attempt two with attempt one's retired bytes and retire attempt one's
+        dead roots a second time.
         """
         if self._process_io is not None:
             return self._process_io
+        prior = None
         try:
-            prior = json.loads(self.telemetry_path.read_text()).get('process_io')
+            record = json.loads(self.telemetry_path.read_text())
+            if record.get('nonce') == self.nonce:
+                prior = record.get('process_io')
         except (OSError, ValueError, AttributeError):
             prior = None
         self._process_io = prior if isinstance(prior, dict) else {}
@@ -421,10 +431,15 @@ class ResourceScope:
             errors.append(str(exc))
             direct = self._last or dict(cpu_seconds=0.0, memory_current_bytes=0,
                                         memory_peak_bytes=0, oom_kill=0, oom_local=0)
-        # Sampling I/O must not be able to cost the attempt its telemetry.
+        # Sampling I/O must not be able to cost the attempt its telemetry --
+        # and, because the pool samples outside a guard of its own, must not be
+        # able to cost the attempt its verdict either. Collecting a measurement
+        # never decides whether the action passed, so every exception it can
+        # raise, including a TypeError from a malformed prior record, is
+        # recorded here rather than left to the worker loop.
         try:
             process_io = self.sample_process_io()
-        except (OSError, ValueError) as exc:
+        except Exception as exc:
             process_io = {'source': 'proc_io',
                           'errors': [f'{type(exc).__name__}: {exc}']}
         record = {
