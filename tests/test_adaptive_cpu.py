@@ -531,7 +531,8 @@ def test_returning_a_lost_claim_s_borrow_never_overwrites_a_newer_one(rig):
 
     controller.withdrew(spent, previous)
     assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {
-        'sampled_unix': newer['sampled_unix']}, 'an older restore took the newer borrow'
+        'sampled_unix': newer['sampled_unix'],
+        'borrow_id': newer['borrow_id']}, 'an older restore took the newer borrow'
 
     controller.withdrew(newer, {'sampled_unix': spent['sampled_unix']})
     assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {

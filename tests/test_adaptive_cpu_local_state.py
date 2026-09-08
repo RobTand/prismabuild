@@ -48,13 +48,15 @@ def test_cpu_intervals_are_shared_by_new_controllers_but_not_other_ledgers(tmp_p
     ])
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: next(samples))
     first = adaptive_cpu.Controller(queue.ledger(), tiers)
+    borrow = {'borrowing': True, 'sampled_unix': 10.}
     with first.locked():
         assert first.sample() == {}
-        first.admitted({'borrowing': True, 'sampled_unix': 10.})
+        first.admitted(borrow)
     second = adaptive_cpu.Controller(queue.ledger(), tiers)
     with second.locked():
         assert second.sample()['busy_cpus'] == pytest.approx(.2)
-    assert adaptive_cpu.read_json(second.base / 'last-borrow.json') == {'sampled_unix': 10.}
+    assert adaptive_cpu.read_json(second.base / 'last-borrow.json') == {
+        'sampled_unix': 10., 'borrow_id': borrow['borrow_id']}
     other = adaptive_cpu.Controller(pool.PoolQueue(tmp_path / 'other').ledger(), tiers)
     with other.locked():
         assert other.sample() == {}

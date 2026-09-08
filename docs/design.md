@@ -1518,8 +1518,8 @@ once per candidate for the adaptive CPU decision, the adaptive GPU decision,
 the reservation through `begin_acquire`, and the borrow record that decision
 consumes. `begin_acquire` moves the tokens out of `free/` and into a directory
 every sibling's `decision` and `available` already counts, so the same headroom
-cannot be spent twice once that block returns. Everything after it runs outside
-the lock and nothing reacquires it: the record rename that decides ownership,
+cannot be spent twice once that block returns. A successful claim then runs
+outside the lock without reacquiring it: the record rename that decides ownership,
 the lease write and the token renames are arbitrated fleet-wide by that rename
 and by the per-key transition lock, to which a host-local FLOCK adds nothing.
 Holding it across them emptied whole boxes out of the claiming population while
@@ -1661,6 +1661,13 @@ rename occupied no borrowed CPU and is owed its retry. The restore is a
 compare-and-set under the same lock and never overwrites a newer borrow, and a
 lock busy at that moment leaves the borrow spent, which can only refuse the next
 borrow and never authorize a second one against one sample.
+Each consumption has a fresh `borrow_id` stored beside its sample timestamp.
+Return compares both fields, since separate claimants can borrow the same
+sample after a return. The caller retires its return authority before state
+I/O, so repeated cleanup or a write-then-error cannot return a peer's borrow.
+Missing ownership grants no return; an uncertain rollback may conservatively
+leave the sample spent until fresh telemetry arrives. This host-local field
+does not change action identity or CPU/memory reservation sizes.
 
 Memory resources retain ordinary all-or-nothing token admission. CPU telemetry
 cannot discount memory or GPU demand. The separate adaptive GPU controller below
