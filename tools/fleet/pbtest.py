@@ -152,6 +152,8 @@ def discover(checkout: Path, paths: list[str]) -> list[str]:
             found.extend(sorted(target.rglob("test_*.py")))
         elif target.is_file():
             found.append(target)
+        else:
+            raise ValueError(f"test path {raw!r} is not a file or directory in {checkout}")
     return [str(p.relative_to(checkout)) for p in dict.fromkeys(found)]
 
 
@@ -352,7 +354,11 @@ def main() -> int:
         return 2
 
     checkout = Path(args.checkout).resolve()
-    files = discover(checkout, args.paths or ["tests"])
+    try:
+        files = discover(checkout, args.paths or ["tests"])
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(f"cannot discover tests: {exc}\n")
+        return 2
     if not files:
         sys.stderr.write(f"no test files under {args.paths} in {checkout}\n")
         return 2

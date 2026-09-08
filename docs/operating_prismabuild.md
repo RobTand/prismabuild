@@ -893,6 +893,11 @@ Each shard is one `pbrun` action, so the checkout travels through the CAS and
 the interpreter is the target box's, not this one's. `--tag` defaults to `x86`,
 which is also the claim that owns the named interpreter.
 
+Every requested path must be a file or directory. A missing or invalid path
+refuses the whole submission with exit code 2 and a diagnostic before any
+shard starts; valid paths cannot hide a misspelled path by yielding a green
+subset. Directory expansion and duplicate-file removal still apply.
+
 `--workers-per-shard N` runs N pytest workers in each action with `pytest -n N`.
 The default is 1 and needs no plugin; higher values require `pytest-xdist` in
 the target interpreter. The coordinator still uses only the standard library.

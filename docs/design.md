@@ -272,6 +272,11 @@ requests and receipts retain their original meaning.
 
 ## Test fanout submission
 
+`pbtest` validates every requested path before fanout. A path that is neither
+a file nor a directory, or a discovery error, refuses with exit code 2 before
+any shard is submitted. Valid paths never hide a missing member of the request;
+directory discovery and deduplication retain their existing semantics.
+
 `pbtest` file fanout is a public submission contract. CPU-only remains the
 default; `--gpu` adds GPU demand to every shard, with an optional pool-only
 `--gpu-memory-gb` budget validated by the same helpers as `pbrun`. The published
