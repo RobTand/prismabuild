@@ -415,7 +415,7 @@ def _pqteld_csv(csv_dir: Path, host: str, when: float, rows) -> Path:
     return path
 
 
-def _reference():
+def _reference(*, timeout_s=1.0):
     return {"power_reference_w": 140.0, "power_reference_scope": "soc_tdp",
             "power_reference_source": "https://example.invalid/gb10"}
 
@@ -490,6 +490,41 @@ def test_the_window_is_bounded(tmp_path):
         gpu_reference=_reference, deadline_s=1.0)
     assert time.monotonic() - started < 8.0
     assert window["source"] == "unavailable"
+
+
+@pytest.mark.parametrize("csv_elapsed", [0.0, 1.75, 1.999, 2.0, 3.0])
+def test_gpu_reference_uses_only_the_remaining_window_budget(monkeypatch, csv_elapsed):
+    from prismabuild import gpu_capacity
+
+    clock = [100.0]
+    monkeypatch.setattr(box_window.time, "monotonic", lambda: clock[0])
+    power = box_window._Series()
+    power.add(42.0)
+
+    def csv(*args, **kwargs):
+        clock[0] += csv_elapsed
+        return {"power_draw_w": power}, []
+
+    budgets = []
+
+    def devices(*, timeout_s):
+        budgets.append(timeout_s)
+        return [{"power_reference_w": 140.0}], []
+
+    monkeypatch.setattr(box_window, "_pqteld_series", csv)
+    monkeypatch.setattr(gpu_capacity, "devices", devices)
+    window = box_window.read_window(
+        10.0, 20.0, host="testbox", netdata_url=None,
+        gpu_reference=box_window.gpu_power_reference, deadline_s=2.0)
+    # A missing reference never discards power already measured by the recorder.
+    assert window["gpu"]["power_w_peak"] == 42.0
+    if csv_elapsed >= 2.0:
+        assert budgets == [], "a spent finish budget must not launch nvidia-smi"
+        assert "power_reference_w" not in window["gpu"]
+        assert any("deadline" in error for error in window["errors"])
+    else:
+        assert budgets == pytest.approx([min(1.0, 2.0 - csv_elapsed)])
+        assert window["gpu"]["power_peak_fraction_of_reference"] == 0.3
 
 
 def test_netdata_supplies_the_cpu_fields_pqteld_does_not_record(tmp_path, monkeypatch):

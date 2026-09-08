@@ -1448,8 +1448,11 @@ part of the action, so it never enters the action key and a receipt from before
 it exists is still the same action. There is no flag to turn it on and no
 profile mode to choose: it is on for every action.
 
-What it costs is bounded, not nothing. At finish, reading the box window is
-capped at two seconds plus one `nvidia-smi` read; measured on sparky it takes
+At finish, the box-window collectors share a two-second budget. The
+`nvidia-smi` power-reference query receives at most the remaining budget (up to
+one second), and is skipped once that budget is spent; recorded power survives
+without a reference fraction. This is a cooperative deadline, not a hard bound
+on filesystem reads or process cleanup. Earlier measurements on sparky took
 0.14–0.18 s. While the attempt runs, the periodic sampler ticks at most every
 two seconds, and on a contained attempt each tick scans `/proc` for the scope's
 members, because the broker's payload leaf is `drwx------` and its
