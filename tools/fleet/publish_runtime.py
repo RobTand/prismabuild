@@ -94,7 +94,13 @@ FLEET_SCRIPTS = (
 #: Empty: every tool under ``tools/fleet`` is something a box with no checkout
 #: may have to run. The tuple exists so that leaving one out is a decision
 #: somebody wrote down rather than an omission nobody noticed.
-EXCLUDED: tuple[tuple[str, str], ...] = ()
+EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("admission_shared_io.py",
+     "a measurement harness for the admission critical section, run from a "
+     "checkout through pbrun against a private queue root; a box with no "
+     "checkout has no reason to run it and it must never be pointed at the "
+     "live queue"),
+)
 
 #: Not code, but read by published code: the supervisor on each box reads the
 #: fleet's declared shape from here, so a runtime published without it starts

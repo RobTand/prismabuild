@@ -50,7 +50,7 @@ def rig(tmp_path, monkeypatch):
     def claim():
         return queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
     def telemetry(key, *, cpu=.1, complete=True):
-        adaptive_cpu.write_json(queue.ledger().base / 'telemetry' / f'{key}.json', {
+        adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
             'action_key': key, 'sampled_unix': clock[0], 'cpu_seconds': cpu,
             'wall_seconds': clock[0] - 100, 'memory_current_bytes': 100,
             'memory_peak_bytes': 100, 'complete': complete})
@@ -101,7 +101,7 @@ def test_greedier_jobs_stop_new_admission_immediately(rig, state_update):
 def test_untrustworthy_job_attribution_never_grants_borrowed_capacity(rig, fault):
     from prismabuild import adaptive_cpu
     queue, clock, state, key, first, publish, claim, telemetry = rig
-    path = queue.ledger().base / 'telemetry' / f'{key}.json'
+    path = adaptive_cpu.local_telemetry_path(queue.ledger().base, key)
     if fault == 'missing':
         path.unlink()
     elif fault == 'stale':
@@ -341,7 +341,7 @@ def test_proven_idle_preferred_is_borrowed_before_free_fallback(tmp_path, monkey
                   resources={'cpu': 1, 'mem_gb': 1})
     for elapsed in (1, 2):
         clock[0] = 100 + elapsed
-        adaptive_cpu.write_json(queue.ledger().base / 'telemetry' / f'{key}.json', {
+        adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
             'action_key': key, 'complete': True, 'sampled_unix': clock[0],
             'cpu_seconds': elapsed * .1, 'wall_seconds': elapsed})
         if elapsed == 1:

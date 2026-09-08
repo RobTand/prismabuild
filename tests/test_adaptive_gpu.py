@@ -76,7 +76,7 @@ def gpu_rig(tmp_path, monkeypatch):
             record = {'action_key': key, 'nonce': key + '-attempt', 'scope_unit': key + '-scope',
                       'sampled_unix': clock[0], 'cpu_seconds': .01 * (clock[0] - 100),
                       'wall_seconds': clock[0] - 100, 'complete': True}
-            adaptive_cpu.write_json(queue.ledger().base / 'telemetry' / f'{key}.json', record)
+            adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), record)
             sample['jobs'].append({'action_key': key, 'nonce': record['nonce'],
                                    'scope_id': record['scope_unit'], 'complete': True})
     def claim():
@@ -321,7 +321,7 @@ def test_power_plateau_closes_below_soc_fraction_and_survives_departure(gpu_rig)
     for watts in (80.5, 81., 81.5):
         sample['devices'][0]['power_w'] = watts
         tick(); assert claim() is None
-    state = adaptive_cpu.read_json(queue.ledger().base / 'adaptive/gpu-state.json')
+    state = adaptive_cpu.read_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'gpu-state.json')
     assert state['power_feedback']['status'] == 'plateau'
     # A fresh Controller instance and a holder exit must not forget saturation.
     queue.finish(first['action_key'], status='executed', detail={})
@@ -350,7 +350,7 @@ def test_startup_plateau_is_invalidated_by_sustained_activity_rise(gpu_rig, hold
     tick(); second = claim(); assert second
     for _ in range(3):
         tick(); assert claim() is None
-    state = adaptive_cpu.read_json(queue.ledger().base / 'adaptive/gpu-state.json')
+    state = adaptive_cpu.read_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'gpu-state.json')
     assert state['power_feedback']['status'] == 'plateau'
     if holder_exits:
         queue.finish(second['action_key'], status='executed', detail={})
@@ -387,7 +387,7 @@ def test_noisy_power_response_does_not_authorize_an_unbounded_probe(gpu_rig):
     for watts in (42, 60, 55):
         sample['devices'][0]['power_w']=watts
         tick(); assert claim() is None
-    state=adaptive_cpu.read_json(queue.ledger().base/'adaptive/gpu-state.json')
+    state=adaptive_cpu.read_json(adaptive_cpu.local_state_base(queue.ledger().base)/'gpu-state.json')
     assert state['power_feedback']['status']=='plateau'
 
 

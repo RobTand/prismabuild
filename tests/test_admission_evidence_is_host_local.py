@@ -102,12 +102,15 @@ def test_a_shared_telemetry_copy_cannot_grant_borrowed_capacity(cpu_rig):
         clock[0] += 1
         adaptive_cpu.write_json(shared, record(key, cpu))
         assert claim() is None
-    # Only a host-local record is attribution. The same two readings written
-    # where the executing box's sampler writes them lend the CPU.
+    # Only a host-local record is attribution. The same readings written where
+    # the executing box's sampler writes them lend the CPU: a rate takes two
+    # decisions over two records, so the first local reading is still refused.
     local = adaptive_cpu.local_telemetry_path(queue.ledger().base, key)
-    for cpu in (.3, .4):
-        clock[0] += 1
-        adaptive_cpu.write_json(local, record(key, cpu))
+    clock[0] += 1
+    adaptive_cpu.write_json(local, record(key, .3))
+    assert claim() is None
+    clock[0] += 1
+    adaptive_cpu.write_json(local, record(key, .4))
     assert claim()
 
 
