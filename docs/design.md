@@ -1383,7 +1383,10 @@ that operation or release its locks and reservations (issues #266 and #351).
 Adaptive CPU bookkeeping is authoritative only on the host, under
 `PRISMABUILD_BOX_STATE_ROOT/<ledger-and-host-digest>.adaptive-cpu-v1/`.
 `cpu-sample.json`, `jobs.json`, `profiles.json` and `last-borrow.json` share
-the existing admission lock across worker loops. Cold local state starts with
+the existing admission lock across worker loops, and since the second half of
+#266 so do the GPU probe state `gpu-state.json` and each running scope's live
+telemetry under `telemetry/<action-key>.json` in the same directory
+(`docs/host_local_reservations.md`). Cold local state starts with
 no interval or learned credit; it never imports an old shared diagnostic copy.
 Deploy or roll back this authority change with a drained queue, and verify all
 worker loops have adopted the generation before resuming work. Do not mix
@@ -1404,14 +1407,19 @@ Starts are limited to one per second, and completed children are reaped without
 waiting at subsequent publication attempts.
 
 The files under `reservations/<host>/adaptive/` are independent diagnostic
-copies. The CPU copy adds `_snapshot.source=host-local` and a copy timestamp,
-but retains the original `sampled_unix`. `pbstatus` and `pbmetrics` classify
+copies. The CPU and GPU copies add `_snapshot.source=host-local` and a copy
+timestamp, but retain the original `sampled_unix`. `pbstatus` and `pbmetrics` classify
 freshness from that original timestamp; a late copy remains stale and missing
 evidence remains unknown. A snapshot can lag current admission and never grants
 admission credit. Publication failure cannot change a claim result. This removes
-CPU bookkeeping writes from the critical section; holder telemetry, action
-requests, GPU state, transitions, leases and token operations still use the
-shared filesystem. It is not a bound on the entire claim operation or a claim
+CPU bookkeeping writes from the critical section; holder telemetry and GPU
+probe state followed (`docs/host_local_reservations.md`, with the before/after
+syscall counts). The shared `reservations/<host>/telemetry/<key>.json` is now
+a copy the executing box's sampler writes after the host-local record, read by
+`pbmetrics` and never by admission. Action requests, holder token metadata,
+transitions, leases and token operations still use the shared filesystem: the
+token ledger is cross-host ownership evidence (see holder resolution above) and
+does not move. It is not a bound on the entire claim operation or a claim
 that the recurring NFS fault is repaired.
 
 The fleet retains `--all-cores` so all usable CPU capacity remains available.

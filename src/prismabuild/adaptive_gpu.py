@@ -170,10 +170,28 @@ def trusted_sample(path=SAMPLE_PATH):
 
 
 class Controller:
-    def __init__(self, ledger):
+    """Probe state is host-local authority, published as a diagnostic copy.
+
+    ``gpu-state.json`` is read and rewritten on every decision under the host
+    admission lock. It lives beside the CPU controller's state under
+    ``PRISMABUILD_BOX_STATE_ROOT`` and reaches ``reservations/<host>/adaptive/``
+    only through the same independent publisher, after admission is released,
+    when a ``publisher`` (the CPU controller) is given. A shared copy is never
+    read back: a cold host relearns ``low_samples`` from its own samples and
+    holds no probe feedback, which refuses probes until fresh evidence exists.
+    """
+
+    def __init__(self, ledger, publisher=None):
         self.ledger = ledger
-        self.base = ledger.base / 'adaptive'
+        self.base = adaptive_cpu.local_state_base(ledger.base)
+        self._publisher = publisher
         self._sample = None
+
+    def _write_state(self, state):
+        if self._publisher is not None:
+            self._publisher.write_state('gpu-state.json', state)
+        else:
+            adaptive_cpu.write_json(self.base / 'gpu-state.json', state)
 
     def sample(self):
         return trusted_sample()
@@ -248,7 +266,7 @@ class Controller:
                 continuous = 0 < sample['sampled_unix'] - state.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
                 state.update(sample_id=sample['sample_id'], sampled_unix=sample['sampled_unix'],
                              low_samples=min(3, state.get('low_samples', 0) + 1) if low and continuous else int(low))
-            adaptive_cpu.write_json(self.base / 'gpu-state.json', state)
+            self._write_state(state)
             if congested:
                 return None
             if device.get('memory_domain') == 'discrete':
@@ -272,7 +290,7 @@ class Controller:
                 return None
             jobs = {job.get('action_key'): job for job in sample['jobs'] if isinstance(job, dict)}
             for holder, meta in holders:
-                record = adaptive_cpu.read_json(self.ledger.base / 'telemetry' / f'{holder.name}.json')
+                record = adaptive_cpu.read_json(self.base / 'telemetry' / f'{holder.name}.json')
                 job = jobs.get(holder.name, {})
                 if (not meta.get('shape') or meta.get('device_uuid') != device['uuid']
                         or record.get('complete') is not True
@@ -303,4 +321,4 @@ class Controller:
                 'baseline': state['power_window'], 'admitted_unix': metadata['admitted_unix'],
                 'expected_members': sorted(metadata['members_before'] + [
                     f"{metadata['action_key']}:{metadata['admitted_unix']}"])}
-            adaptive_cpu.write_json(self.base / 'gpu-state.json', state)
+            self._write_state(state)

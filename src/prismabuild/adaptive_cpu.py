@@ -337,6 +337,22 @@ def local_state_base(base):
     return state
 
 
+def local_telemetry_path(base, action_key):
+    """Where the executing box records a holder's live telemetry; admission reads only this.
+
+    The record is written by this host's own sampler for this host's own
+    action, and read under this host's own admission lock, so it is host-local
+    in meaning. The copy under ``reservations/<host>/telemetry/`` on the shared
+    mount is the same record written for remote readers (``pbmetrics``) and is
+    never consulted for credit: a stale or edited copy there changes nothing.
+
+    ``local_state_base`` resolves ``base`` (stats on the mount), so the
+    controllers read from their own cached ``base`` inside the lock and only
+    the scope owner, once per scope, derives the path through this function.
+    """
+    return local_state_base(base) / 'telemetry' / f'{action_key}.json'
+
+
 class Controller:
     def __init__(self, ledger, tiers):
         self.ledger = ledger
@@ -355,13 +371,14 @@ class Controller:
         """Hold box admission for the block, or raise ``AdmissionBusy`` at once.
 
         The acquisition is non-blocking, and that is the whole point.  What
-        this lock guards is not entirely local: CPU samples, profiles and
-        interval/borrowing state are host-local, but ``decision`` still reads
-        every holder's metadata and telemetry on the shared mount. The
-        ``_claim`` this wraps then scans ``ready/``, renames a record, writes a lease and
-        renames tokens -- also on the mount.  So the holder's time inside is
-        bounded by a filesystem another machine controls, and a blocking
-        ``LOCK_EX`` made every other loop on the box wait for it.
+        this lock guards is not entirely local: CPU samples, profiles,
+        interval/borrowing state, holder telemetry and GPU probe state are
+        host-local, but ``decision`` still reads every holder's token metadata
+        on the shared mount, and the ``_claim`` this wraps scans ``ready/``,
+        renames a record, writes a lease and renames tokens -- also on the
+        mount.  So the holder's time inside is bounded by a filesystem
+        another machine controls, and a blocking ``LOCK_EX`` made every other
+        loop on the box wait for it.
 
         That is not a worst case, it is a measurement.  On 2026-09-06 one
         client was slow to return an NFS read delegation; the holder sat in
@@ -480,7 +497,10 @@ class Controller:
                 continue
             if measurement or meta.get('measurement'):
                 return None
-            record = read_json(self.ledger.base / 'telemetry' / f'{holder.name}.json')
+            # ``self.base`` rather than ``local_telemetry_path``: that helper
+            # resolves the ledger path, which is three stats on the mount per
+            # call, and this loop runs once per holder under the lock.
+            record = read_json(self.base / 'telemetry' / f'{holder.name}.json')
             valid = (record.get('complete') is True
                      and 0 <= now - record.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
                      and record.get('sampled_unix', 0) >= meta.get('admitted_unix', now)
@@ -515,7 +535,9 @@ class Controller:
                 else:
                     next_recent[holder.name] = record
             cost = float(reserved) if cpu is None else max(.05, cpu * 1.25)
-            allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
+            # Pass the metadata already read; an absent or unreadable file keeps
+            # the ledger's own read and its own refusal on a torn record.
+            allocation = self.ledger.cpu_allocation(holder.name, self.tiers, metadata=meta or None)
             assigned = set(allocation['preferred'] + allocation['fallback'])
             if cpu is not None and meta.get('shape') and cost < reserved:
                 lending_cpus.update(assigned)

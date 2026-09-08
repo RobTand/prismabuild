@@ -97,7 +97,7 @@ def box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     def telemetry(key: str, *, cpu: float = 0.1) -> None:
         adaptive_cpu.write_json(
-            queue.ledger().base / "telemetry" / f"{key}.json",
+            adaptive_cpu.local_telemetry_path(queue.ledger().base, key),
             {"action_key": key, "sampled_unix": clock[0], "cpu_seconds": cpu,
              "wall_seconds": clock[0] - 1000.0, "memory_current_bytes": 100,
              "memory_peak_bytes": 100, "complete": True})
