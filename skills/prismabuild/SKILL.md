@@ -89,6 +89,12 @@ Measured cost on a fixed-work GPU action, five interleaved paired repeats, is
 in `docs/operating_prismabuild.md`; both are dearer than `sample`, and most of
 it is fixed startup rather than a tax on the work.
 
+Torch traces must fit the 2 GiB profile budget both on disk and after gzip
+decoding. Oversized decoded data is refused before JSON parsing; use a shorter
+`torch.profiler.schedule`. Accepted profiles report `decoded_bytes` alongside
+stored `bytes`. JSON object memory is additional, and the validation limit does
+not cap trace growth during capture or preserve an interrupted export.
+
 Agent self-validation -- test shards, the receipt for a PR, a re-run to confirm
 a fix -- submits at `--priority -10` (`pbtest.py --priority -10`, `pbrun.py
 --priority -10`). Ready items are ordered by priority band before aging, so
