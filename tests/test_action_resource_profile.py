@@ -292,19 +292,20 @@ def test_a_retry_does_not_inherit_the_previous_attempts_readings(tmp_path):
                        "live": {}, "members": [4242]},
     }))
 
+    # The same nonce still continues, or the sampler could not sample twice.
+    # It goes first because sampling rewrites the file with its own record.
+    same = resource_scope.ResourceScope("a" * 64, "b" * 32, 1 << 30, telemetry)
+    same.unit = "prismabuild-job" + "c" * 32 + ".slice"
+    same.cgroup_path = group
+    assert same.sample()["process_io"]["wchar"] == 9 * MIB
+
     retry = resource_scope.ResourceScope("a" * 64, "d" * 32, 1 << 30, telemetry)
-    retry.unit = "prismabuild-job" + "c" * 32 + ".slice"
+    retry.unit = same.unit
     retry.cgroup_path = group
     fresh = retry.sample()["process_io"]
     assert fresh["wchar"] == 0, fresh
     assert fresh["write_bytes"] == 0, fresh
     assert fresh["processes_observed"] == 0, fresh
-
-    # The same nonce still continues, or the sampler could not sample twice.
-    same = resource_scope.ResourceScope("a" * 64, "b" * 32, 1 << 30, telemetry)
-    same.unit = retry.unit
-    same.cgroup_path = group
-    assert same.sample()["process_io"]["wchar"] == 9 * MIB
 
 
 def test_collecting_a_measurement_never_decides_the_verdict(tmp_path):
