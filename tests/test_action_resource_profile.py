@@ -492,6 +492,63 @@ def test_the_window_is_bounded(tmp_path):
     assert window["source"] == "unavailable"
 
 
+@pytest.mark.parametrize("csv_elapsed", [0.0, 1.99, 2.0, 3.0])
+def test_netdata_cpu_read_respects_remaining_budget(monkeypatch, csv_elapsed):
+    clock = [100.0]
+    monkeypatch.setattr(box_window.time, "monotonic", lambda: clock[0])
+
+    def csv(*args, **kwargs):
+        clock[0] += csv_elapsed
+        return {}, []
+
+    calls = []
+
+    def chart(url, name, after, before, timeout):
+        calls.append((name, timeout))
+        return None
+
+    monkeypatch.setattr(box_window, "_pqteld_series", csv)
+    window = box_window.read_window(
+        10, 20, host="testbox", chart_reader=chart, deadline_s=2)
+    assert window["source"] == "unavailable"
+    if csv_elapsed >= 2:
+        assert calls == [], "an expired budget must not start a Netdata request"
+        assert "deadline" in window["reason"]
+    else:
+        assert len(calls) == 1
+        assert calls[0][1] == pytest.approx(min(1, 2 - csv_elapsed))
+
+
+@pytest.mark.parametrize("spent", [0.0, 0.99, 1.0, 1.1])
+def test_netdata_pressure_reads_share_budget_and_retain_cpu(monkeypatch, spent):
+    clock = [100.0]
+    monkeypatch.setattr(box_window.time, "monotonic", lambda: clock[0])
+    calls = []
+
+    def chart(url, name, after, before, timeout):
+        calls.append((name, timeout))
+        if name == "system.cpu":
+            clock[0] += spent
+            return {"labels": ["time", "user"], "data": [[10, 25.0]]}
+        # Consume the rest of the budget: full pressure must then be skipped.
+        clock[0] = 101.0
+        return {"labels": ["time", "some 10"], "data": [[10, 3.0]]}
+
+    cpu, errors = box_window._netdata_group(
+        "http://test.invalid", 10, 20, expires=101.0, chart_reader=chart)
+    assert cpu["busy_percent_mean"] == 25.0
+    assert cpu["busy_percent_peak"] == 25.0
+    assert any("deadline" in error for error in errors)
+    if spent >= 1:
+        assert len(calls) == 1
+        assert "psi_some_avg10_max" not in cpu
+    else:
+        assert len(calls) == 2
+        assert calls[1][1] == pytest.approx(1 - spent)
+        assert cpu["psi_some_avg10_max"] == 3.0
+    assert "psi_full_avg10_max" not in cpu
+
+
 @pytest.mark.parametrize("csv_elapsed", [0.0, 1.75, 1.999, 2.0, 3.0])
 def test_gpu_reference_uses_only_the_remaining_window_budget(monkeypatch, csv_elapsed):
     from prismabuild import gpu_capacity

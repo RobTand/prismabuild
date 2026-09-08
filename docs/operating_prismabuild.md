@@ -1452,7 +1452,11 @@ At finish, the box-window collectors share a two-second budget. The
 `nvidia-smi` power-reference query receives at most the remaining budget (up to
 one second), and is skipped once that budget is spent; recorded power survives
 without a reference fraction. This is a cooperative deadline, not a hard bound
-on filesystem reads or process cleanup. Earlier measurements on sparky took
+on filesystem reads, HTTP response processing or process cleanup. Each Netdata
+chart request likewise receives only the remaining budget (up to one second),
+with no minimum timeout grant, and does not start at or after expiry. If a later
+pressure read is skipped, the CPU readings already collected remain available
+with a deadline diagnostic. Earlier measurements on sparky took
 0.14–0.18 s. While the attempt runs, the periodic sampler ticks at most every
 two seconds, and on a contained attempt each tick scans `/proc` for the scope's
 members, because the broker's payload leaf is `drwx------` and its

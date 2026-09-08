@@ -194,7 +194,9 @@ no flag to choose. Its cost is bounded rather than absent — a shared two-secon
 budget at finish to read the box window, including the GPU reference query
 (0.14–0.18 s measured before the query shared that budget), plus a sampler that
 ticks at most every two seconds while the attempt runs. It never enters the
-action key. The deadline is cooperative: filesystem reads and process cleanup
+action key. Every Netdata chart read also uses only the remaining budget and
+is skipped at expiry, retaining CPU data already collected. The deadline is
+cooperative: filesystem reads, HTTP response processing and process cleanup
 can overrun it. An absent field means the source recorded nothing;
 it does not mean zero. `pbstatus` shows it in the `RESOURCE` column and
 `pbmetrics` exports it.
