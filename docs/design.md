@@ -377,6 +377,17 @@ minimum timeout grant; CPU data already collected survives skipped pressure
 reads. This does not impose a hard deadline on filesystem reads, HTTP response
 processing or process cleanup.
 
+Netdata chart reads request 4096 points with average grouping, while
+retaining the 4 MiB response read cap. Long windows therefore use averaged
+buckets instead of asking for every stored row and truncating valid JSON.
+Netdata rounds the point target to whole time buckets, so the returned count
+can exceed 4096. JSON wrapping supplies `view_update_every`, the bucket interval,
+which is distinct from the database's raw `update_every` collection interval.
+The CPU window records `time_group: average` and each available chart's
+`update_every_s` (prefixed `psi_some_avg10_` / `psi_full_avg10_` for pressure).
+Means and maxima describe returned buckets; maxima are not raw-sample peaks.
+Missing intervals stay absent. This changes run evidence, not action identity.
+
 Result address = hash(input artifacts, **code closure**, params, env-that-
 matters). Rules:
 - **Code closure, not repo SHA** — per-task declared file lists (stage-7's

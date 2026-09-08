@@ -43,6 +43,9 @@ DEFAULT_NETDATA_URL = "http://127.0.0.1:19999"
 #: The whole read, both recorders together.  Two seconds is the budget the
 #: finish path can afford; what does not fit is reported as not measured.
 DEFAULT_DEADLINE_S = 2.0
+#: Target chart rows before transfer (Netdata rounds to whole time buckets).
+#: The byte cap still protects against unexpectedly large server responses.
+NETDATA_POINTS = 4096
 #: A window wider than this is not one action's window, and walking a month of
 #: daily CSVs to summarise it would cost more than the deadline allows.
 MAX_WINDOW_DAYS = 3
@@ -224,7 +227,8 @@ def _netdata_chart(url: str, chart: str, after: int, before: int,
     """One bounded chart read, or ``None`` when Netdata does not answer."""
 
     query = (f"{url.rstrip('/')}/api/v1/data?chart={chart}"
-             f"&after={after}&before={before}&format=json")
+             f"&after={after}&before={before}&format=json"
+             f"&points={NETDATA_POINTS}&group=average&options=jsonwrap")
     try:
         with urllib.request.urlopen(query, timeout=timeout_s) as response:
             if response.status != 200:
@@ -232,7 +236,11 @@ def _netdata_chart(url: str, chart: str, after: int, before: int,
             payload = json.loads(response.read(4 * 1024 * 1024).decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError, TimeoutError):
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or not isinstance(payload.get("result"), dict):
+        return None
+    # Plain JSON has only labels/data. The wrapper supplies the returned view's
+    # interval; update_every alone is the database's raw collection interval.
+    return {**payload["result"], "view_update_every": payload.get("view_update_every")}
 
 
 def _netdata_group(url: str, start_unix: float, end_unix: float,
@@ -265,7 +273,13 @@ def _netdata_group(url: str, start_unix: float, end_unix: float,
     group: dict[str, object] = {
         "source": "netdata", "samples": series.count,
         "busy_percent_mean": series.mean, "busy_percent_peak": series.high,
+        # Maxima describe returned average buckets, not raw-sample peaks.
+        "time_group": "average",
     }
+    interval = busy.get("view_update_every")
+    if (isinstance(interval, (int, float)) and not isinstance(interval, bool)
+            and math.isfinite(interval) and interval > 0):
+        group["update_every_s"] = interval
     errors: list[str] = []
     for chart, field in (("system.cpu_some_pressure", "psi_some_avg10_max"),
                          ("system.cpu_full_pressure", "psi_full_avg10_max")):
@@ -290,6 +304,10 @@ def _netdata_group(url: str, start_unix: float, end_unix: float,
         if stalls.count:
             group[field] = stalls.high
             group[field.replace("_max", "_samples")] = stalls.count
+            interval = payload.get("view_update_every")
+            if (isinstance(interval, (int, float)) and not isinstance(interval, bool)
+                    and math.isfinite(interval) and interval > 0):
+                group[field.replace("_max", "_update_every_s")] = interval
     return group, errors
 
 
