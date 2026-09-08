@@ -1850,6 +1850,16 @@ bounded reader rather than repeating it, so a section that does not answer is
 named in `timed_out` and leaves `complete` false, exactly as the census does;
 partial is reported, never awaited.
 
+Session construction also bounds the initial runtime-link read using the
+configured deadline. A failed startup read is retained as `startup-repo-link`
+in every tool response's timeout/error diagnostics, with `complete: false`.
+Later successful reads may identify the current generation but cannot recover
+the startup observation: `generation_stale` and `started_from_generation`
+remain null until a new session starts successfully. This bounds session
+initialization after Python has loaded the server; it cannot bound interpreter
+startup or imports from an unavailable shared filesystem. The existing
+zero-deadline opt-out also applies to session construction.
+
 Two derivations belong to the reader rather than to the queue. A preemption's
 successor generation is re-derived without the transition lock `pbrun` takes,
 because a reporter must not participate in the protocol it describes, and the

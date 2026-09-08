@@ -1452,6 +1452,13 @@ attempt's logs -- `pool.attempt_outcomes` reads every stream whole to verify a
 digest, which is right for a verifier and would make a status call on a
 gigabyte of output cost a gigabyte.
 
+The initial runtime-link read uses `--deadline-s` too. If it fails, the MCP
+handshake can still finish; each tool result retains `startup-repo-link` in
+`timed_out` or `unavailable` and reports `complete: false`. Even after the mount
+recovers, startup generation comparisons remain null; start a new session to
+restore them. Interpreter startup and imports precede this protection, and
+`--deadline-s 0` disables the bound as it does for tool reads.
+
 ### Read what a run cost
 
 Every pull-queue ending also carries `detail.resource_profile`: what the run
