@@ -152,6 +152,21 @@ action key and use published `pbwait.py`/`pbstatus.py` to inspect the terminal
 state. Check exit status, actual logs and the CAS receipt/payload. Record test
 counts, skips, devices and missing tooling; do not certify a wrapper's “done”.
 
+Every ending carries `detail.resource_profile`, so what a run cost is part of
+what you check rather than something to re-measure: `reaped_children` (the
+parent's rusage around the launch, whose `scope` field says it covers the
+launcher on a contained run), `scope` (the attempt's cgroup — `memory_peak_bytes`
+and the user/system CPU split), `process_io` (`rchar`/`wchar` and
+`read_bytes`/`write_bytes` over the processes in the scope) and `box_window`
+(GPU power against the device's own reference, unified memory, CPU busy and the
+pressure stalls, from `pqteld` and Netdata). It is always on and is not a profile mode: there is
+no flag to choose. Its cost is bounded rather than absent — at most two seconds
+at finish to read the box window (0.14–0.18 s measured), plus a sampler that
+ticks at most every two seconds while the attempt runs. It never enters the
+action key. An absent field means the source recorded nothing;
+it does not mean zero. `pbstatus` shows it in the `RESOURCE` column and
+`pbmetrics` exports it.
+
 If PB is unavailable, diagnose and repair it instead of bypassing admission.
 An OOM ending should name its exact attempt and memory evidence. Do not kill
 processes by a loose name match or release held tokens while owned work lives.

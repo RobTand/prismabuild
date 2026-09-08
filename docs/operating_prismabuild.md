@@ -1102,6 +1102,73 @@ Read `status` before `returncode`. A job SLURM killed at its time limit reports
 `status: "timeout"` with `returncode: null`, and a reader that takes zero as
 success is not misled.
 
+### Read what a run cost
+
+Every pull-queue ending also carries `detail.resource_profile`: what the run
+used and what the box was doing while it ran. It is metadata about one run, not
+part of the action, so it never enters the action key and a receipt from before
+it exists is still the same action. There is no flag to turn it on and no
+profile mode to choose: it is on for every action.
+
+What it costs is bounded, not nothing. At finish, reading the box window is
+capped at two seconds plus one `nvidia-smi` read; measured on sparky it takes
+0.14–0.18 s. While the attempt runs, the periodic sampler ticks at most every
+two seconds, and on a contained attempt each tick scans `/proc` for the scope's
+members, because the broker's payload leaf is `drwx------` and its
+`cgroup.procs` cannot be read directly.
+
+Four groups, each naming the source that produced it. A group whose source said
+nothing is absent rather than zero, because "not measured" and "measured as
+idle" call for different responses.
+
+*   `reaped_children` — this parent's `getrusage(RUSAGE_CHILDREN)` around the
+    launch: `user_seconds`, `system_seconds`, the context-switch counts, and
+    `max_rss_watermark_bytes`. Read its `scope` field before its numbers. On a
+    contained run the process this parent launched and reaped is the stdio
+    proxy and the action itself is a child of the root resource broker, so
+    these figures cover the launcher, not the work. `max_rss_bytes` is present
+    only when this child raised the process-wide high-water mark, since a mark
+    that did not move belongs to some earlier child.
+*   `scope` — the exact attempt's own cgroup, which is where a contained
+    action's payload actually is: `memory_peak_bytes` is the peak this action
+    reached, and `cpu_seconds` now comes with the `cpu_user_seconds` /
+    `cpu_system_seconds` split the kernel was already publishing. Cgroup memory
+    charges page cache, so an action that writes a large file reads higher here
+    than `/usr/bin/time -v` reports for the same command.
+*   `process_io` — `/proc/<pid>/io` summed over the processes in the scope, kept
+    across samples so a process that has exited still contributes what it was
+    last seen using. `rchar` / `wchar` are the bytes the action asked for and
+    are exact wherever the file lives; `read_bytes` / `write_bytes` are what
+    reached storage and are zero on a tmpfs for the same write. The sampler runs
+    at most every two seconds, so I/O in the final interval and any process that
+    both starts and ends between two samples is not counted;
+    `processes_observed` says how many were. A process that has exited but has
+    not yet been reaped is a zombie, and a zombie's `/proc/<pid>/io` is
+    `EACCES`: it counts in `processes_unreadable`, keeps whatever it was last
+    seen using, and its remaining bytes arrive when its parent reaps it,
+    because the kernel folds a reaped child's counters into its parent exactly
+    as `getrusage(RUSAGE_CHILDREN)` does. That fold is also why only the
+    scope's roots are retired when they vanish -- anything below a root is
+    already inside the parent that absorbed it, and retiring it as well would
+    count the same bytes twice.
+*   `box_window` — the machine around the action for `[start_unix, end_unix]`.
+    GPU power mean and peak, the fraction of the device's own published power
+    reference, GPU utilisation, the unified memory pool and the memory and I/O
+    pressure stalls come from the `pqteld` flight recorder on the GB10 boxes;
+    CPU busy and CPU pressure come from Netdata on every box, because pqteld
+    records no CPU column at all. On GB10 the power reference is the SoC TDP and
+    covers the CPU too, which `power_reference_scope` says; it is a reference,
+    not a measured saturation point. Reading the window is bounded to about two
+    seconds and can never fail a finish: an unreachable recorder produces
+    `{"source": "unavailable", "reason": ...}` and the action still completes.
+
+`pbstatus` prints peak memory, the bytes moved and the GPU power peak against
+its reference in the endings table's `RESOURCE` column, and `pbrun` ends a run
+with the same line. `pbmetrics` exports the live peaks as
+`prismabuild_attempt_peak_resources` and the endings' windows as
+`prismabuild_terminal_box_window`. Every one of them renders a field no record
+carried as absent, never as zero.
+
 ## Stop work and retry it
 
 ### Withdraw
