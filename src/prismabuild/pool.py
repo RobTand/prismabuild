@@ -6487,7 +6487,7 @@ class PoolQueue:
         # about the line the worker prints and the record's ``status``.
         if status == "failed" and self.withdrawal_covers(item) is not None:
             status = "withdrawn"
-        return {
+        outcome = {
             "status": status,
             "returncode": process.returncode,
             "stdout": out,
@@ -6496,6 +6496,12 @@ class PoolQueue:
             "argv": argv,
             "cpu_allocation": allocation,
         }
+        # One key, lifted by one function, so #372's Tier 0 and Tier 1 touch
+        # this path without touching each other.
+        profile = profile_from_launcher_stdout(out)
+        if profile is not None:
+            outcome["profile"] = profile
+        return outcome
 
     def _stop_action(self, process: subprocess.Popen) -> tuple[str, str]:
         """Stop a withdrawn action and collect whatever it managed to say.
@@ -6599,6 +6605,35 @@ class PoolQueue:
             claim_snapshot=item,
         )
         return outcome
+
+
+def profile_from_launcher_stdout(stdout: str) -> dict[str, object] | None:
+    """The launcher's ``profile`` record, out of the JSON it prints when it ends.
+
+    ``core.main`` prints one result object as its last line; a profiled run
+    carries the CAS reference to its profile under ``profile`` there.  This
+    lifts that one key into the outcome so ``finish`` files it in the ending
+    and a reader tests a field rather than parsing a launcher's stdout.
+
+    Anything else -- an empty stdout, a non-JSON last line, a run with no
+    profile -- is ``None``.  A stdout that cannot be parsed is not a defect
+    here: an unprofiled action's last line is still a result object, and a
+    failing one may print nothing at all.
+    """
+
+    for line in reversed(str(stdout or "").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(value, dict):
+            return None
+        profile = value.get("profile")
+        return profile if isinstance(profile, dict) else None
+    return None
 
 
 def describe_placement_census(census: Mapping[str, object]) -> str:

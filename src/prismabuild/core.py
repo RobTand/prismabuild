@@ -28,10 +28,12 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
+import shutil
 import signal
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -4615,6 +4617,400 @@ def _run_initial_miss_rendezvous(
     return receipt
 
 
+# -- Opt-in profiles (issue #372, Tier 1) ------------------------------------
+#
+# Which profiler runs around an action's child, and what it must leave behind.
+#
+# Tier 1 of issue #372.  A submitter asks for a profile with ``pbrun --profile
+# <mode>``; the mode is sealed into the action's params, and this module says
+# what that mode means on the box that runs it.  Tier 2 adds ``torch``/``nsys``
+# by putting another backend in :data:`BACKENDS`, which is why the selection is a
+# table rather than a branch.
+#
+# Two mechanisms here are measured facts about this fleet rather than choices,
+# and both are load-bearing.
+#
+# **The profiler is the child's parent.**  ``kernel.yama.ptrace_scope`` is 1 on
+# dl380g10, sparky and sparklina (measured 2026-09-07), which lets a process
+# trace only its own descendants.  A profiler started beside the action -- the
+# ``--pid`` shape -- is the action's *sibling*, and attaching was refused with
+# ``Permission Denied``.  ``prctl(PR_SET_PTRACER)`` on the child does not rescue
+# it either: the sealed argv is ``bash -c '... | tee log; exit ${PIPESTATUS[0]}'``
+# and bash *forks* a pipeline member rather than exec'ing it, so the Python
+# process that does the work is a grandchild with no relation of its own, and
+# py-spy answered ``No python processes found``.  Launching the profiler as the
+# argv's parent satisfies the other clause Yama accepts, and it is the only
+# shape that was measured to work on the real argv.  ``--subprocesses`` follows
+# from the same fact: the process the profiler spawns is bash, not Python.
+#
+# **The action's exit status travels out of band.**  py-spy 0.4.2 exits 0
+# whatever the program it ran exited (measured: a child exiting 3 and 7 both gave
+# ``py-spy`` exit 0), so a profiled run that reported the launcher's status would
+# call every failing action a pass.  :func:`exit_status_relay` puts one ``/bin/sh``
+# between the profiler and the sealed argv whose only job is to write ``$?`` where
+# the worker can read it.  The sealed argv is exec'd verbatim underneath, so the
+# executed contract is the same one the unprofiled action has.  One thing is lost
+# and is worth naming: ``$?`` is 128+n for a signalled child and cannot be told
+# apart from a literal ``exit 137``, so a profiled run reports the number and not
+# a separate signal field.
+
+#: The document a speedscope reader opens.  Checked rather than assumed: a
+#: profiler that wrote a truncated or empty file has not produced a profile,
+#: and the run that asked for one has to say so.
+PROFILE_SPEEDSCOPE_SCHEMA = "https://www.speedscope.app/file-format-schema.json"
+
+#: Samples per second for ``--profile sample``.  Measured on a fixed-work
+#: ~20 s CPU load on sparky: 0.73 % over three repeats per arm, which is inside
+#: the tier's stated budget.  It is a property of the mode, not of the
+#: submission, so it is reported in the ending and never sealed into the key.
+PROFILE_SAMPLE_RATE_HZ = 100
+
+#: Where a profile is written while the action runs.  Under the action's own
+#: working directory: it is materialized for this attempt and removed with it,
+#: and ``/tmp`` has taken artifacts on this fleet before.
+PROFILE_SCRATCH_DIRNAME = ".prismabuild-profile"
+
+
+class ProfileBackendUnavailable(Exception):
+    """This box has no profiler for the mode the action asked for."""
+
+
+class ProfileUnusable(Exception):
+    """The profiler ran but left nothing a reader could open."""
+
+
+def profile_exit_status_relay(argv, status_path) -> list[str]:
+    """Run ``argv`` and record its exit status where the worker can read it.
+
+    ``sh -c SCRIPT a b c...`` sets ``$0`` to ``a`` and ``$@`` to the rest, so
+    the status path rides in ``$0`` and the sealed argv is ``"$@"`` -- quoted,
+    so an argument with a space stays one argument.
+    """
+
+    return [
+        "/bin/sh", "-c", '"$@"; printf %d $? > "$0"',
+        str(status_path), *[str(word) for word in argv],
+    ]
+
+
+def read_speedscope(path: Path) -> dict[str, object]:
+    """Open a speedscope file and say how many samples it holds.
+
+    The sample count is reported, never gated on: an action fast enough to end
+    between two ticks leaves a valid profile with no samples in it, and that is
+    a true statement about the action rather than a broken profiler.
+    """
+
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        raise ProfileUnusable(f"no profile was written to {path}: {exc}") from exc
+    if not raw:
+        raise ProfileUnusable(f"the profile at {path} is empty")
+    try:
+        document = json.loads(raw)
+    except ValueError as exc:
+        raise ProfileUnusable(
+            f"the profile at {path} is not readable JSON: {exc}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise ProfileUnusable(f"the profile at {path} is not a speedscope object")
+    if document.get("$schema") != PROFILE_SPEEDSCOPE_SCHEMA:
+        raise ProfileUnusable(
+            f"the profile at {path} does not declare {PROFILE_SPEEDSCOPE_SCHEMA}"
+        )
+    profiles = document.get("profiles")
+    if not isinstance(profiles, list):
+        raise ProfileUnusable(f"the profile at {path} carries no profiles array")
+    samples = 0
+    for entry in profiles:
+        if isinstance(entry, dict) and isinstance(entry.get("samples"), list):
+            samples += len(entry["samples"])
+    return {"samples": samples}
+
+
+class PySpyProfileBackend:
+    """``--profile sample``: py-spy sampling the action's whole process tree."""
+
+    mode = "sample"
+    name = "py-spy"
+    rate_hz = PROFILE_SAMPLE_RATE_HZ
+    profile_suffix = "speedscope.json"
+
+    def __init__(self) -> None:
+        self._path: str | None = None
+        self._version: str | None = None
+
+    def locate(self) -> str:
+        """The py-spy this box will run, or a refusal naming where it looked.
+
+        Beside the interpreter running the worker first, because that is the
+        venv a box's ``worker_loop --python`` names and the one an operator can
+        install into; ``PATH`` second, for a box whose worker inherits one.
+        """
+
+        if self._path is not None:
+            return self._path
+        # ``sys.executable`` unresolved on purpose: a venv's ``bin/python`` is
+        # a symlink to the system interpreter, so resolving it walks out of the
+        # venv and looks for py-spy in ``/usr/bin`` -- which is what happened
+        # on dl380g10, where the tool was installed in ``pb-cpu`` all along.
+        beside = Path(sys.executable).parent / "py-spy"
+        candidates = [str(beside), "py-spy on PATH"]
+        found = str(beside) if beside.is_file() else shutil.which("py-spy")
+        if found is None:
+            raise ProfileBackendUnavailable(
+                "py-spy was not found; looked for " + " and ".join(candidates)
+                + ".  Install it into the venv this box's worker_loop names "
+                  "with --python (pip install py-spy), or put it on that "
+                  "worker's PATH."
+            )
+        self._path = found
+        return found
+
+    @property
+    def version(self) -> str:
+        """What ``py-spy --version`` says, recorded beside the profile."""
+
+        if self._version is None:
+            completed = subprocess.run(
+                [self.locate(), "--version"],
+                capture_output=True, text=True, check=False,
+            )
+            self._version = (completed.stdout or completed.stderr).strip()
+        return self._version
+
+    def launch_argv(self, argv, *, profile_path: Path, exit_status_path: Path):
+        return [
+            self.locate(), "record",
+            "--subprocesses",
+            "--rate", str(self.rate_hz),
+            "--format", "speedscope",
+            "--output", str(profile_path),
+            "--",
+            *profile_exit_status_relay(argv, exit_status_path),
+        ]
+
+    def read_profile(self, path: Path) -> dict[str, object]:
+        return read_speedscope(path)
+
+
+#: Mode to backend.  Tier 2 adds its entry here and changes nothing else.
+PROFILE_BACKENDS: dict[str, object] = {PySpyProfileBackend.mode: PySpyProfileBackend()}
+
+#: What ``--profile`` accepts, in the order a help message should list it.
+PROFILE_MODES: tuple[str, ...] = tuple(sorted(PROFILE_BACKENDS))
+
+
+def profile_backend_for(mode: str):
+    """The backend for a sealed mode, or a refusal naming what is offered."""
+
+    try:
+        return PROFILE_BACKENDS[mode]
+    except KeyError:
+        raise ProfileBackendUnavailable(
+            f"unknown profile mode {mode!r}; this runtime offers "
+            + ", ".join(sorted(PROFILE_BACKENDS))
+        ) from None
+
+
+def describe_profile(profile) -> str:
+    """One clause naming a profiled ending's blob, for every reader to print.
+
+    Kept here rather than at each call site so ``pbrun`` and ``pbstatus`` say
+    the same thing about the same record; a digest two tools abbreviate
+    differently is a digest nobody can grep for.
+    """
+
+    if not isinstance(profile, dict):
+        return ""
+    digest = str(profile.get("blob_sha256") or "")
+    if not digest:
+        return ""
+    return (f"profile {profile.get('mode')} ({profile.get('backend')}) "
+            f"{digest[:12]} {profile.get('bytes')}B at "
+            f"{profile.get('blob_path') or '(path not recorded)'}")
+
+
+#: The sealed param that asks for a profile.  Absent on every action that
+#: does not want one, so an unprofiled key is byte-identical to what it was
+#: before this tier existed.
+PROFILE_PARAM = "profile"
+
+
+class _ProfileSession:
+    """One action's profiler: what to launch, and what it must leave behind.
+
+    Kept in one class, beside one factory, because it is the whole of the
+    launch-side change: ``_run_local_action`` asks for a session, launches what
+    the session says to launch, and settles it afterwards.
+
+    The profiler is the argv's *parent* rather than a process beside it, and
+    the action's own exit status comes back through a relay file rather than
+    through the profiler's exit code.  Both are measured facts about this
+    fleet and this profiler; the block above records what was measured and why
+    the obvious shapes do not work.
+    """
+
+    def __init__(self, *, mode: str, backend: object, directory: Path):
+        self.mode = mode
+        self.backend = backend
+        self.directory = directory
+        suffix = getattr(backend, "profile_suffix", "profile")
+        self.profile_path = directory / f"profile.{suffix}"
+        self.exit_status_path = directory / "exit_status"
+
+    def _open(self) -> None:
+        """Create the scratch directory, and not one moment earlier.
+
+        ``preflight_action`` proves the materialized checkout is the sealed
+        commit with a *clean* working tree, and ``git_checkout_identity``
+        counts an untracked directory as dirt.  A scratch directory created
+        before that proof refuses every profiled action; created after it,
+        nothing looks at the tree's cleanliness again.
+        """
+
+        self.directory.mkdir(parents=True, exist_ok=True)
+
+    def close(self) -> None:
+        with suppress(OSError):
+            shutil.rmtree(self.directory)
+
+    def launch_argv(self, argv: Sequence[object]) -> list[str]:
+        self._open()
+        return [
+            str(word)
+            for word in self.backend.launch_argv(  # type: ignore[attr-defined]
+                [str(item) for item in argv],
+                profile_path=self.profile_path,
+                exit_status_path=self.exit_status_path,
+            )
+        ]
+
+    def action_returncode(self) -> int:
+        """The action's own exit status, out of the relay the launch installed.
+
+        A missing or unreadable relay is a broken profiled run, not a pass: it
+        means nothing here knows what the action did.
+        """
+
+        try:
+            raw = self.exit_status_path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ProfileUnusable(
+                f"the profiled action left no exit status at "
+                f"{self.exit_status_path}: {exc}"
+            ) from exc
+        if re.fullmatch(r"[0-9]{1,3}", raw) is None:
+            raise ProfileUnusable(
+                f"the profiled action's exit status is malformed: {raw!r}"
+            )
+        return int(raw)
+
+    def ingest(self, cas: "PrismaBuildCAS") -> dict[str, object]:
+        """Read the profile back and publish it as a content-addressed blob.
+
+        Through ``ingest_input``, which is how every other payload reaches this
+        CAS: one staging copy, one hashed publication, no receipt.  A profile
+        is evidence about a run, not a result of it.
+        """
+
+        read = self.backend.read_profile(self.profile_path)  # type: ignore[attr-defined]
+        entry, _won = cas.ingest_input(
+            self.profile_path, input_id="prismabuild.profile"
+        )
+        record: dict[str, object] = {
+            "mode": self.mode,
+            "backend": str(getattr(self.backend, "name", self.mode)),
+            "backend_version": str(getattr(self.backend, "version", "")),
+            "rate_hz": getattr(self.backend, "rate_hz", None),
+            "blob_sha256": entry["sha256"],
+            "bytes": entry["bytes"],
+            "blob_path": str(cas._blob_path(str(entry["sha256"]))),
+        }
+        record.update(read)
+        return record
+
+
+def _profile_session(
+    action: Mapping[str, object], *, working_directory: Path
+) -> _ProfileSession | None:
+    """The session this action's sealed params ask for, or ``None``.
+
+    Refusing here is the point of the tier: a box without the backend fails the
+    action and names itself, because a profiled run that came back unprofiled
+    is not the action that was requested and nothing downstream could tell.
+    """
+
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    mode = params.get(PROFILE_PARAM)
+    if mode is None:
+        return None
+    if not isinstance(mode, str):
+        raise LocalActionError("action params.profile must be a string mode")
+    try:
+        backend = profile_backend_for(mode)
+    except ProfileBackendUnavailable as exc:
+        raise LocalActionError(
+            f"this runtime offers no profile mode {mode!r} on "
+            f"{socket.gethostname()}: {exc}"
+        ) from exc
+    try:
+        backend.locate()  # type: ignore[attr-defined]
+    except ProfileBackendUnavailable as exc:
+        raise LocalActionError(
+            f"profile backend {getattr(backend, 'name', mode)!r} is not "
+            f"installed on {socket.gethostname()}: {exc}"
+        ) from exc
+    return _ProfileSession(
+        mode=mode,
+        backend=backend,
+        directory=working_directory / PROFILE_SCRATCH_DIRNAME,
+    )
+
+
+@contextmanager
+def _profile_scratch(session: "_ProfileSession | None"):
+    """Own the profile's scratch directory for exactly the run's lifetime.
+
+    On the same ``with`` as the output lock so every exit -- a timeout, an
+    unwind, a refused closure -- removes it.  A ``--here`` run writes into the
+    caller's live checkout, where a leftover directory is litter somebody else
+    has to explain.
+    """
+
+    if session is None:
+        yield None
+        return
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def _ingested_result_note(cas: "PrismaBuildCAS", output: Path) -> str:
+    """Put the child's own result in the CAS and name it in a failure message.
+
+    A profiled run that failed on its profiler still produced whatever the
+    action produced, and that output is the evidence for diagnosing why.  It is
+    ingested as a blob rather than published as a result: the action failed, so
+    it has no receipt and must run again.
+    """
+
+    if not output.is_file():
+        return ""
+    try:
+        entry, _won = cas.ingest_input(
+            output, input_id="prismabuild.profile.failed-result"
+        )
+    except (ActionContractError, CASTamperError, OSError) as exc:
+        return f"  The action's own result could not be ingested: {exc}"
+    return (f"  The action's own result is ingested as CAS blob "
+            f"{entry['sha256']} ({entry['bytes']} bytes) so the failure can be "
+            "read.")
+
+
 def _validate_execution_paths(
     checkout_root: Path, working_directory: str, result_path: str
 ) -> tuple[Path, Path]:
@@ -5202,11 +5598,16 @@ def run_local_action(
     cwd, output = _validate_execution_paths(
         root, str(task["working_directory"]), str(task["result_path"])
     )
+    # Before the output lock and before any checkout is touched: a box that
+    # cannot honour the profile the action asked for refuses here, having done
+    # nothing.
+    profile = _profile_session(normalized, working_directory=cwd)
     variables = environment["variables"]
     assert isinstance(variables, Mapping)
     recovered_declared_result = False
     reaped_staging_files = 0
-    with _local_output_lock(cas, root, output) as output_lock_descriptor:
+    with _local_output_lock(cas, root, output) as output_lock_descriptor, \
+            _profile_scratch(profile):
         # A concurrent producer may have filled the cache while this worker
         # waited for the checkout/output lock.
         if not recompute:
@@ -5250,10 +5651,17 @@ def run_local_action(
             )
         _refuse_existing_result_symlink_prefix(output, cwd)
         process: subprocess.Popen[bytes] | None = None
+        launch_argv = list(task["argv"])
+        if profile is not None:
+            # The sealed argv is exec'd verbatim underneath what this returns.
+            # ``preflight_action`` attests ``task.argv[0]`` off the action, not
+            # off this list, so the executable this action names is still the
+            # one attested and rechecked after the run.
+            launch_argv = profile.launch_argv(task["argv"])
         with _sigterm_unwinds_this_process():
             try:
                 process = subprocess.Popen(
-                    list(task["argv"]),
+                    launch_argv,
                     cwd=cwd,
                     env={
                         str(key): str(value) for key, value in variables.items()
@@ -5287,9 +5695,31 @@ def run_local_action(
                 if process is not None:
                     _terminate_process_group(process)
                 raise
+        profile_record: dict[str, object] | None = None
+        if profile is not None:
+            # The profiler's own exit status is not the action's (py-spy exits
+            # 0 whatever it ran), so both facts come out of the session.  The
+            # profile is read back before the status is judged: a failing run's
+            # profile is usually the reason somebody asked for one.
+            try:
+                returncode = profile.action_returncode()
+                profile_record = profile.ingest(cas)
+            except ProfileUnusable as exc:
+                raise LocalActionError(
+                    f"profile backend "
+                    f"{getattr(profile.backend, 'name', profile.mode)!r} "
+                    f"produced no usable profile: {exc}.  A profiled action "
+                    "that leaves no profile is not the action that was "
+                    "requested, so this run failed.  The profiler's own "
+                    "message is on the action's own stderr, which its result "
+                    "log captured."
+                    + _ingested_result_note(cas, output)
+                ) from exc
         if returncode != 0:
             raise LocalActionError(
-                f"action argv exited with status {returncode}",
+                f"action argv exited with status {returncode}"
+                + (f"; its profile is CAS blob {profile_record['blob_sha256']}"
+                   if profile_record is not None else ""),
                 returncode=returncode,
                 signal=-returncode if returncode < 0 else None,
             )
@@ -5328,6 +5758,11 @@ def run_local_action(
         "reaped_staging_files": reaped_staging_files,
         "local_result_claim_sha256": claim["claim_sha256"],
     }
+    if profile_record is not None:
+        # Its own key, so a reader tests one field rather than parsing prose,
+        # and so the pool can lift it into the ending without knowing anything
+        # else about this dictionary.
+        result["profile"] = profile_record
     if initial_miss_receipt is not None:
         result["initial_miss_rendezvous"] = initial_miss_receipt
     return result
@@ -5602,6 +6037,12 @@ __all__ = [
     "PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1",
     "PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2",
     "PBRUN_RESULT_PREFIX",
+    "PROFILE_BACKENDS",
+    "PROFILE_MODES",
+    "PROFILE_PARAM",
+    "PROFILE_SAMPLE_RATE_HZ",
+    "PROFILE_SCRATCH_DIRNAME",
+    "PROFILE_SPEEDSCOPE_SCHEMA",
     "PBRUN_STAMP_PREFIX",
     "WORKER_ATTESTATION_SCHEMA_V2",
     "SCONTROL_RETRY_DELAYS_S",
@@ -5615,7 +6056,10 @@ __all__ = [
     "LocalActionError",
     "PrismaBuildCAS",
     "PrismaBuildError",
+    "ProfileBackendUnavailable",
+    "ProfileUnusable",
     "build_code_closure",
+    "describe_profile",
     "executable_toolchain_contract",
     "find_git_worktree_marker",
     "git_checkout_identity",
@@ -5623,7 +6067,10 @@ __all__ = [
     "is_pbrun_generated_path",
     "main",
     "preflight_action",
+    "profile_backend_for",
+    "profile_exit_status_relay",
     "pbrun_git_exclude_patterns",
+    "read_speedscope",
     "repair_local_result",
     "run_local_action",
     "seal_action",

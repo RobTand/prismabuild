@@ -38,7 +38,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
-from prismabuild import profile_backends  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
@@ -53,7 +52,7 @@ def _speedscope(name: str) -> str:
     """The smallest document a speedscope reader will open."""
 
     return json.dumps({
-        "$schema": profile_backends.SPEEDSCOPE_SCHEMA,
+        "$schema": pb.PROFILE_SPEEDSCOPE_SCHEMA,
         "shared": {"frames": [{"name": name}]},
         "profiles": [{
             "type": "sampled",
@@ -88,7 +87,7 @@ class _FakeBackend:
         return "/bin/sh"
 
     def launch_argv(self, argv, *, profile_path: Path, exit_status_path: Path):
-        inner = profile_backends.exit_status_relay(argv, exit_status_path)
+        inner = pb.profile_exit_status_relay(argv, exit_status_path)
         if not self.writes_profile:
             return list(inner)
         return [
@@ -97,18 +96,25 @@ class _FakeBackend:
         ]
 
     def read_profile(self, path: Path) -> dict:
-        return profile_backends.read_speedscope(path)
+        return pb.read_speedscope(path)
 
 
 @pytest.fixture
 def fake_backend(monkeypatch: pytest.MonkeyPatch):
     backend = _FakeBackend()
-    monkeypatch.setitem(profile_backends.BACKENDS, "fake", backend)
+    monkeypatch.setitem(pb.PROFILE_BACKENDS, "fake", backend)
     return backend
 
 
 def _closure_member(checkout: Path) -> None:
     (checkout / "task_code.py").write_text("# closure member\n", encoding="utf-8")
+
+
+#: Long enough for a 100 Hz sampler to see it.  A sub-second action is not
+#: profilable by a sampling profiler that has to find the interpreter first,
+#: and this tier says so out loud rather than returning an empty profile.
+_WORK = ("import math; "
+         "print(sum(sum(math.sqrt(i) for i in range(20000)) for _ in range(160)))")
 
 
 def _action(checkout: Path, *, profile: str | None, result: str = "result.txt"):
@@ -122,7 +128,7 @@ def _action(checkout: Path, *, profile: str | None, result: str = "result.txt"):
     _closure_member(checkout)
     argv = [
         "/bin/bash", "--noprofile", "--norc", "-c",
-        f"{sys.executable} -c 'print(\"work\")' 2>&1 | tee {result}; "
+        f"{sys.executable} -c {_WORK!r} 2>&1 | tee {result}; "
         "exit ${PIPESTATUS[0]}",
     ]
     params: dict[str, object] = {"command": ["work"]}
@@ -133,7 +139,7 @@ def _action(checkout: Path, *, profile: str | None, result: str = "result.txt"):
         "task": {
             "definition_id": "tests/profile",
             "definition_version": "v1",
-            "task_class": "measurement",
+            "task_class": "generation",
             "determinism": "stochastic",
             "artifact_family": "generic",
             "artifact_kind": "generic",
@@ -199,11 +205,11 @@ def test_a_registered_backend_wraps_the_child_and_its_output_is_ingested(
     blob = (tmp_path / "cas" / "blobs"
             / str(profile["blob_sha256"])[:2] / str(profile["blob_sha256"]))
     assert blob.exists()
-    assert json.loads(blob.read_text())["$schema"] == profile_backends.SPEEDSCOPE_SCHEMA
+    assert json.loads(blob.read_text())["$schema"] == pb.PROFILE_SPEEDSCOPE_SCHEMA
     assert blob.stat().st_size == profile["bytes"]
     assert profile["blob_path"] == str(blob)
     # The scratch file is the action's own and does not outlive it.
-    assert not (checkout / profile_backends.SCRATCH_DIRNAME).exists()
+    assert not (checkout / pb.PROFILE_SCRATCH_DIRNAME).exists()
 
 
 def test_an_unprofiled_action_carries_no_profile_key(tmp_path: Path):
@@ -249,7 +255,7 @@ def test_a_backend_that_leaves_no_profile_fails_the_action(
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     monkeypatch.setitem(
-        profile_backends.BACKENDS, "fake", _FakeBackend(writes_profile=False)
+        pb.PROFILE_BACKENDS, "fake", _FakeBackend(writes_profile=False)
     )
     action = _action(checkout, profile="fake")
     with pytest.raises(pb.LocalActionError) as raised:
@@ -273,11 +279,11 @@ def test_a_missing_backend_refuses_and_names_the_host(
 
     class _Absent(_FakeBackend):
         def locate(self) -> str:
-            raise profile_backends.BackendUnavailable(
+            raise pb.ProfileBackendUnavailable(
                 "py-spy is not beside /usr/bin/python3 and not on PATH"
             )
 
-    monkeypatch.setitem(profile_backends.BACKENDS, "fake", _Absent())
+    monkeypatch.setitem(pb.PROFILE_BACKENDS, "fake", _Absent())
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     action = _action(checkout, profile="fake")
@@ -320,10 +326,11 @@ def test_the_sampling_backend_profiles_the_pipeline_member(tmp_path: Path):
     profile = result["profile"]
     assert profile["mode"] == "sample"
     assert profile["backend"] == "py-spy"
-    assert profile["rate_hz"] == profile_backends.SAMPLE_RATE_HZ
+    assert profile["rate_hz"] == pb.PROFILE_SAMPLE_RATE_HZ
+    assert profile["samples"] > 0
     blob = (tmp_path / "cas" / "blobs"
             / str(profile["blob_sha256"])[:2] / str(profile["blob_sha256"]))
-    assert json.loads(blob.read_text())["$schema"] == profile_backends.SPEEDSCOPE_SCHEMA
+    assert json.loads(blob.read_text())["$schema"] == pb.PROFILE_SPEEDSCOPE_SCHEMA
 
 
 # -- the record a reader opens ----------------------------------------------

@@ -93,6 +93,43 @@ These flags say what the action needs and where it may run.
 | `--here` | Pin the action to this box. Combines with `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
+| `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
+
+### `--profile`: an opt-in profile, sealed into the key
+
+`--profile sample` runs py-spy at 100 Hz over the action's whole process tree
+and files the speedscope profile as a CAS blob. The ending carries
+`profile: {mode, backend, backend_version, rate_hz, blob_sha256, bytes,
+samples, blob_path}`, and both `pbrun` and `pbstatus` print the digest and the
+path, so a human opens the blob at <https://www.speedscope.app/>.
+
+`--profile` **is** part of the action's identity, and `--priority` is not. That
+is deliberate. A profiled run of a command somebody already ran must not be
+answered out of the CAS with a receipt that carries no profile, and a profiled
+run must never be an A/B arm against an unprofiled receipt, because the
+profiler is inside the measurement. Omitting the flag leaves the key
+byte-identical to what it was before the flag existed.
+
+Three properties are worth knowing before using it:
+
+*   **Overhead is measured, not asserted.** On dl380g10, three profiled and
+    three unprofiled repeats of a fixed-work ~60 s CPU action: see the receipts
+    linked from the Tier 1 pull request for the current numbers. The rate is a
+    property of the mode and is reported in the ending, never sealed.
+*   **The profiler is the child's parent.** `kernel.yama.ptrace_scope` is 1 on
+    every box, so a profiler beside the action cannot attach to it; py-spy
+    launches the sealed argv instead and samples the tree with
+    `--subprocesses`. The sealed argv is exec'd verbatim underneath, and
+    `preflight_action` still attests `task.argv[0]` off the action.
+*   **A profiled action that produced no profile fails.** The profiler failing
+    is an action failure with a reason, never a run that quietly came back
+    unprofiled; the action's own result is ingested as a CAS blob and named in
+    the failure so it can still be read. A sub-second action is one way to hit
+    this: a sampling profiler that has to find the interpreter first cannot see
+    a child that has already exited.
+
+The backend is a registry (`core.PROFILE_BACKENDS` in the attested worker core), so a later tier
+adds a mode without changing the flag or the record.
 
 `--tag` and `--here` are two constraints, and passing both applies both:
 `--here --tag gb10` places the action on this box, which must also offer the
@@ -478,6 +515,7 @@ an omitted field is not passed at all.
 | `gpu_capacity` | `--gpu-capacity` |
 | `gpu_memory_gb` | `--gpu-memory-gb`, a positive finite GiB budget; pool only, requires GPU demand |
 | `priority` | `--priority` |
+| `profile` | `--profile`, a profiler mode; sealed into the row's action key |
 | `measurement` | `--measurement` |
 | `host_class` | `--host-class`, a pool measurement worker class or SLURM Feature such as `gb10` |
 | `retry_safe` | `--retry-safe` |
