@@ -232,7 +232,8 @@ class ResourceScope:
     def __init__(self, action_key: str, nonce: str, memory_max_bytes: int,
                  telemetry_path: Path, *, docker_owner: str | None = None,
                  shape_key: str | None = None, socket_path: Path = BROKER_SOCKET,
-                 gpu_memory_max_bytes: int | None = None):
+                 gpu_memory_max_bytes: int | None = None,
+                 authority_path: Path | None = None):
         if not re.fullmatch('[a-f0-9]{64}', action_key) or not re.fullmatch('[a-f0-9]{32}', nonce):
             raise ValueError('resource scope needs an action key and 32-hex attempt nonce')
         if isinstance(memory_max_bytes, bool) or not isinstance(memory_max_bytes, int) or memory_max_bytes <= 0:
@@ -246,6 +247,10 @@ class ResourceScope:
         self.gpu_memory_max_bytes = memory_max_bytes if gpu_memory_max_bytes is None else gpu_memory_max_bytes
         self._explicit_gpu_budget = gpu_memory_max_bytes is not None
         self.telemetry_path = Path(telemetry_path)
+        # The host-local record admission reads, written before the shared
+        # ``telemetry_path`` copy that remote readers and the attempt's
+        # evidence (termination, late-cleanup archive) keep using.
+        self.authority_path = None if authority_path is None else Path(authority_path)
         self.socket_path = Path(socket_path)
         self.docker_owner = docker_owner
         self.shape_key = shape_key
@@ -455,8 +460,14 @@ class ResourceScope:
             record['shape_key'] = self.shape_key
         if self._reason:
             record['termination_reason'] = self._reason
-        _atomic_json(self.telemetry_path, record)
+        self.write_telemetry(record)
         return record
+
+    def write_telemetry(self, record: dict) -> None:
+        """Refresh the host-local authority first, then the shared copy."""
+        if self.authority_path is not None:
+            _atomic_json(self.authority_path, record)
+        _atomic_json(self.telemetry_path, record)
 
     def terminate_owned(self, reason: str) -> dict:
         """Broker kills the exact attempt's whole cgroup and audits the reason."""

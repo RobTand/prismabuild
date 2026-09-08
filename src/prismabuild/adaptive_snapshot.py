@@ -1,4 +1,4 @@
-"""Best-effort CPU diagnostic copies, with one publisher per host/ledger.
+"""Best-effort admission diagnostic copies, with one publisher per host/ledger.
 
 Admission never waits for this process. The permanent local publication flock
 is handed to the child across exec; even if the parent exits or the child
@@ -18,7 +18,9 @@ import sys
 import time
 import uuid
 
-FILES = ('cpu-sample.json', 'jobs.json', 'profiles.json', 'last-borrow.json')
+FILES = ('cpu-sample.json', 'jobs.json', 'profiles.json', 'last-borrow.json', 'gpu-state.json')
+#: Records whose copy is stamped as a copy; their readers show the stamp.
+STAMPED = ('cpu-sample.json', 'gpu-state.json')
 MIN_PUBLISH_INTERVAL_S = 1.0
 _ENTRY = Path(__file__).resolve()
 _children: list[subprocess.Popen] = []
@@ -105,7 +107,7 @@ def copy_snapshot(local: Path, shared: Path):
             continue
         if not isinstance(value, dict):
             raise ValueError(f'invalid local CPU state: {name}')
-        if name == 'cpu-sample.json':
+        if name in STAMPED:
             value['_snapshot'] = {'source': 'host-local', 'copied_unix': time.time()}
         _write(shared / name, value)
         copied.append(name)

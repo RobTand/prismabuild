@@ -1987,9 +1987,9 @@ map uses the existing idle-queue procedure.
 
 ### Adaptive CPU admission
 
-CPU samples, learned profiles, interval state and spent borrowing samples live
-in the host-local `PRISMABUILD_BOX_STATE_ROOT` directory, keyed by ledger and
-hostname. The default root is `/tmp/prismabuild-admission-<uid>`. Do not delete
+CPU samples, learned profiles, interval state, spent borrowing samples, the
+GPU probe state and each running scope's live telemetry live in the host-local
+`PRISMABUILD_BOX_STATE_ROOT` directory, keyed by ledger and hostname. The default root is `/tmp/prismabuild-admission-<uid>`. Do not delete
 it while workers run. A cold start relearns intervals and profiles; shared
 copies are never recovery authority. For this authority migration or rollback,
 keep the queue drained until every worker loop reports the selected generation.
@@ -1997,9 +1997,13 @@ Before rollback to shared authority, verify all snapshot publishers have
 actually exited as well; a stalled publisher blocks that rollback.
 
 Remote status readers still read `reservations/<host>/adaptive/`, now populated
-by an independent publisher after admission is released. Its CPU record carries
-`_snapshot.source=host-local`; the original sample timestamp governs freshness,
-so a delayed copy stays stale even if it was just written. These are last
+by an independent publisher after admission is released. Its CPU and GPU
+records carry `_snapshot.source=host-local`; the original sample timestamp
+governs freshness, so a delayed copy stays stale even if it was just written.
+`reservations/<host>/telemetry/<key>.json` is likewise a copy: the executing
+box's sampler writes it right after the host-local record that admission reads,
+and `pbmetrics` reads it unchanged. Editing either copy changes no admission
+decision; a box that lost its local state relearns from its own samples. These are last
 observations, not the host's current admission decision. A blocked copy cannot
 hold admission and cannot spawn successors while it owns the separate local
 publication flock. For an absent or stale copy, inspect `publisher-owner.json`

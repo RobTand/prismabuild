@@ -1078,9 +1078,15 @@ class ResourceLedger:
                                     "and remove cpu-map.json before changing topology")
         return record
 
-    def cpu_allocation(self, holder: str, tiers: Mapping) -> dict:
-        """The actual CPUs represented by this claimant's held tokens."""
-        metadata = _read_json(self.held_dir / holder / cpu_admission.METADATA)
+    def cpu_allocation(self, holder: str, tiers: Mapping, *,
+                       metadata: Mapping[str, object] | None = None) -> dict:
+        """The actual CPUs represented by this claimant's held tokens.
+
+        A caller that has already read the holder's metadata passes it, so the
+        admission loop does not open the same shared file twice per holder.
+        """
+        if metadata is None:
+            metadata = _read_json(self.held_dir / holder / cpu_admission.METADATA)
         if metadata is not None and "allocation" in metadata:
             return metadata["allocation"]
         ordered = list(tiers["preferred"]) + list(tiers["fallback"])
@@ -2651,6 +2657,7 @@ class PoolQueue:
         scope = resource_scope.ResourceScope(
             key, nonce, control.get("memory_max_bytes"),
             self.ledger().base / "telemetry" / f"{key}.json",
+            authority_path=cpu_admission.local_telemetry_path(self.ledger().base, key),
             docker_owner=record.get("container_owner"),
             shape_key=cpu_admission.shape_key(record) if record.get("cas_root") else None,
             **({"gpu_memory_max_bytes": control["gpu_memory_max_bytes"]}
@@ -2681,6 +2688,7 @@ class PoolQueue:
         scope = resource_scope.ResourceScope(
             key, intent.get("nonce"), intent.get("memory_max_bytes"),
             self.ledger().base / "telemetry" / f"{key}.json",
+            authority_path=cpu_admission.local_telemetry_path(self.ledger().base, key),
             docker_owner=record.get("container_owner"),
             **({"gpu_memory_max_bytes": intent["gpu_memory_max_bytes"]}
                if intent.get("gpu_memory_max_bytes") is not None else {}),
@@ -2717,7 +2725,7 @@ class PoolQueue:
             telemetry["complete"] = False
             telemetry["errors"] = [*telemetry.get("errors", []),
                                    "scope accounting start belongs to another boot or is invalid"]
-        resource_scope._atomic_json(scope.telemetry_path, telemetry)
+        scope.write_telemetry(telemetry)
         return telemetry
 
     @staticmethod
@@ -2763,6 +2771,7 @@ class PoolQueue:
         scope = resource_scope.ResourceScope(
             key, uuid.uuid4().hex, memory * 1024 ** 3,
             self.ledger().base / "telemetry" / f"{key}.json",
+            authority_path=cpu_admission.local_telemetry_path(self.ledger().base, key),
             docker_owner=item.get("container_owner"),
             shape_key=cpu_admission.shape_key(item),
             **gpu_kwargs,
@@ -2858,6 +2867,10 @@ class PoolQueue:
             if scope_only:
                 scope.telemetry_path = (scope.telemetry_path.parent / "attempts"
                                         / scope.nonce / scope.telemetry_path.name)
+                # The live host-local record belongs to the successor attempt
+                # of this key; a predecessor's cleanup sample must not become
+                # the attribution admission credits to the live holder.
+                scope.authority_path = None
             scope.terminate_owned(reason)
             containers = ({"complete": True, "used": True, "removed": [], "remaining": []}
                           if scope_only else self._cleanup_action_containers(record))
@@ -2865,6 +2878,11 @@ class PoolQueue:
                 return containers
             telemetry = self._sample_resource_scope(scope)
             released = scope.release()
+            if scope.authority_path is not None:
+                # The scope is empty: nothing will sample it again, and no
+                # holder remains for admission to attribute it to. The shared
+                # copy stays as the attempt's last observation.
+                scope.authority_path.unlink(missing_ok=True)
             cleanup = {"complete": True, "released": released, "telemetry": telemetry,
                        "checked_unix": _now(), "nonce": scope.nonce}
             key = str(record["action_key"])
@@ -3136,7 +3154,8 @@ class PoolQueue:
                     return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                                        capacity=capacity, cpu_tiers=tiers,
                                        controller=controller,
-                                       gpu_controller=gpu_admission.Controller(ledger) if has_gpu else None)
+                                       gpu_controller=(gpu_admission.Controller(ledger, publisher=controller)
+                                                       if has_gpu else None))
             except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision. The ``ready`` scan, record rename,
                 # lease and tokens remain on the shared mount even though CPU
