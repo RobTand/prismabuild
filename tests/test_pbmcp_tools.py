@@ -211,7 +211,12 @@ def test_actions_by_key_bypasses_the_newest_first_window(
 def test_verify_claim_reports_each_check_by_name(session: pbmcp.Session,
                                                  fleet: fx.Fleet) -> None:
     body = session.call("pb_verify_claim", {"sha256": fx.claim_digest(fleet)})
-    assert body["verified"] is True
+    assert body["checks_passed"] is True
+    assert "verified" not in body, (
+        "the verdict this tool can reach is 'every check it ran passed'; a "
+        "field called verified would claim the one it cannot reach")
+    assert body["attestation_verified"] is None, (
+        "the check that is still owed says so as a value, not only in prose")
     checks = body["checks"]
     assert checks["claim_present"] is True
     assert checks["claim_addressed_correctly"] is True
@@ -232,7 +237,8 @@ def test_verify_claim_hashes_the_payload_when_asked(session: pbmcp.Session,
     body = session.call("pb_verify_claim", {"sha256": fx.claim_digest(fleet),
                                             "hash_payload": True})
     assert body["checks"]["payload_sha256_match"] is True
-    assert body["verified"] is True
+    assert body["checks_passed"] is True
+    assert body["attestation_verified"] is None
 
 
 def test_verify_claim_fails_a_payload_that_is_not_what_the_receipt_says(
@@ -247,7 +253,7 @@ def test_verify_claim_fails_a_payload_that_is_not_what_the_receipt_says(
 
     body = session.call("pb_verify_claim", {"sha256": fx.claim_digest(fleet)})
     assert body["checks"]["payload_bytes_match"] is False
-    assert body["verified"] is False
+    assert body["checks_passed"] is False
 
 
 def test_verify_claim_says_a_missing_claim_is_missing(
@@ -255,7 +261,8 @@ def test_verify_claim_says_a_missing_claim_is_missing(
 ) -> None:
     body = session.call("pb_verify_claim", {"sha256": "0" * 64})
     assert body["checks"]["claim_present"] is False
-    assert body["verified"] is False
+    assert body["checks_passed"] is False
+    assert body["attestation_verified"] is None
 
 
 def test_verify_claim_refuses_something_that_is_not_a_digest(

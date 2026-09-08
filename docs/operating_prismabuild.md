@@ -1083,9 +1083,13 @@ The tools:
     already holds. The answer says so in its `identity` field.
 *   **`pb_verify_claim(sha256)`** — resolve the `local_result_claim_sha256` a
     run reported to its receipt and payload, reporting each check by name.
-    `hash_payload: true` also reads and hashes the blob, which is off by
-    default because a result blob is a rendered model often enough that
-    hashing one by accident costs an hour of NFS bandwidth.
+    The verdict field is `checks_passed`, not `verified`: it says every check
+    this tool ran passed, and `attestation_verified` stays `null` because
+    validating the worker attestation needs the full action manifest, which is
+    `core.PrismaBuildCAS.lookup`'s job. `hash_payload: true` also reads and
+    hashes the blob, which is off by default because a result blob is a
+    rendered model often enough that hashing one by accident costs an hour of
+    NFS bandwidth.
 *   **`pb_log(key_prefix, tail_lines)`** — a bounded tail of one attempt's
     `stdout` or `stderr`. The log is never read whole: the reader seeks to the
     end and reads at most `--log-tail-bytes`.
@@ -1098,7 +1102,10 @@ section, when a read of the mount did not answer inside the deadline. The
 payload never contradicts that: a section that did not answer comes back as
 `null`, never as an empty list or object, so `endings: []` is a queue with no
 recent endings and `endings: null` is a mount that did not answer, and the two
-call for opposite responses. `generation` and
+call for opposite responses. A read that fails outright -- a stale handle or
+an I/O error on the mount -- is named in `unavailable` and clears `complete`
+the same way: only ENOENT and ENOTDIR are read as absence, so an NFS burst
+cannot come back as `no action starts with that prefix`. `generation` and
 `generation_stale` say whether `repo/` has moved since the session started --
 after a publication the process is running code the fleet has replaced, which
 nothing inside the process can fix, so it is stamped and the agent decides.

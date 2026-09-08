@@ -147,8 +147,11 @@ instead of shelling out to `pbstatus` and parsing its table, which is arranged
 for a person and whose columns move. Filter `pb_actions` by `checkout_root`,
 `published_by` or explicit `keys`: a queue record carries no submitter
 identity, so those are what identify your own work. Read `complete` and
-`timed_out` on every response before believing it -- an empty list with
-`complete: false` is a mount that did not answer, not a quiet queue. The
+`timed_out` on every response before believing it -- a section that did not
+answer comes back as `null`, never as an empty list, and a read that failed
+outright is named in `unavailable`. `pb_verify_claim` answers with
+`checks_passed`, not `verified`: `attestation_verified` is `null` because that
+check needs the full action manifest. The
 server never writes and cannot submit; submission stays with `pbrun`.
 
 If PB is unavailable, diagnose and repair it instead of bypassing admission.

@@ -235,10 +235,31 @@ def _link_target(repo_link: Path) -> str | None:
 # Queue reading -- every one of these opens for reading and nothing else
 # --------------------------------------------------------------------------
 
+def _absent(error: OSError) -> bool:
+    """Whether this error says "nothing is there", not "the mount did not answer".
+
+    ``ENOENT`` and ``ENOTDIR`` are absence: a key that was never published, a
+    state directory a queue has not created yet.  Every other ``OSError`` --
+    ``ESTALE`` and ``EIO`` are the two the fleet actually sees (#208) -- is a
+    mount that failed to answer, and ``pool._read_json`` keeps those loud on
+    purpose.  A reader that swallowed them would answer "no action starts with
+    that prefix" during an NFS burst, with ``complete: true`` next to it, and
+    those two sentences call for opposite responses.  Every call site below
+    runs inside a ``call.read`` lambda, so a raised error becomes a named
+    section with ``complete: false``, never an internal-error frame.
+    """
+
+    return isinstance(error, (FileNotFoundError, NotADirectoryError))
+
+
 def _read_record(path: Path) -> dict | None:
     try:
         return pool._read_json(path)
-    except (OSError, ValueError, pool.PoolContractError):
+    except OSError as error:
+        if _absent(error):
+            return None
+        raise
+    except (ValueError, pool.PoolContractError):
         return None
 
 
@@ -247,8 +268,10 @@ def _keys_in(directory: Path) -> list[str]:
         with os.scandir(directory) as entries:
             return sorted(entry.name[:-5] for entry in entries
                           if entry.name.endswith(".json") and entry.is_file())
-    except OSError:
-        return []
+    except OSError as error:
+        if _absent(error):
+            return []
+        raise
 
 
 def _valid_prefix(key_prefix: object) -> str:
@@ -288,14 +311,16 @@ def _resolve_prefix(queue_root: Path, key_prefix: str) -> list[str]:
         with os.scandir(decisions) as entries:
             found.update(entry.name for entry in entries
                          if entry.is_dir() and entry.name.startswith(prefix))
-    except OSError:
-        pass
+    except OSError as error:
+        if not _absent(error):
+            raise
     try:
         with os.scandir(Path(queue_root) / pool.ATTEMPTS) as entries:
             found.update(entry.name for entry in entries
                          if entry.is_dir() and entry.name.startswith(prefix))
-    except OSError:
-        pass
+    except OSError as error:
+        if not _absent(error):
+            raise
     return sorted(found)
 
 
@@ -372,14 +397,18 @@ def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
     try:
         with os.scandir(base) as entries:
             generations = sorted(entry.path for entry in entries if entry.is_dir())
-    except OSError:
-        return found
+    except OSError as error:
+        if _absent(error):
+            return found
+        raise
     for generation in generations:
         try:
             with os.scandir(generation) as entries:
                 attempts = sorted(entry.path for entry in entries
                                   if entry.is_file() and entry.name.endswith(".json"))
-        except OSError:
+        except OSError as error:
+            if not _absent(error):
+                raise
             continue
         for path in attempts:
             value = _read_record(Path(path))
@@ -419,7 +448,10 @@ def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> fl
     candidates: list[Mapping[str, object]] = []
     try:
         candidates.extend(record for _path, record in queue.withdrawal_decisions(key))
-    except (OSError, pool.PoolContractError):
+    except OSError as error:
+        if not _absent(error):
+            raise
+    except pool.PoolContractError:
         pass
     candidates.extend(_archived_preemption_records(queue_root, key))
     candidates.extend(_records_for(queue_root, key).values())
@@ -499,7 +531,16 @@ def _derived_claim(record: Mapping[str, object]) -> dict:
     }
     digest = pb.canonical_sha256(body)
     path = Path(str(cas_root)) / "local-results" / "v1" / digest[:2] / f"{digest}.json"
-    return {"sha256": digest, "path": str(path), "present": path.is_file(),
+    # ``os.stat`` rather than ``path.is_file()``: a pathlib predicate swallows
+    # OSError on Python 3.14, so a stale handle would read as "absent".
+    try:
+        os.stat(path)
+        present = True
+    except OSError as error:
+        if not _absent(error):
+            raise
+        present = False
+    return {"sha256": digest, "path": str(path), "present": present,
             "request": str(request), "derived_from": body}
 
 
@@ -580,8 +621,10 @@ def _reservations(queue_root: Path) -> dict:
     try:
         with os.scandir(root) as entries:
             names = sorted(entry.name for entry in entries if entry.is_dir())
-    except OSError:
-        return hosts
+    except OSError as error:
+        if _absent(error):
+            return hosts
+        raise
     for host in names:
         free: dict[str, int] = {}
         for name in _names_in(root / host / "free"):
@@ -600,8 +643,10 @@ def _names_in(directory: Path) -> list[str]:
     try:
         with os.scandir(directory) as entries:
             return sorted(entry.name for entry in entries)
-    except OSError:
-        return []
+    except OSError as error:
+        if _absent(error):
+            return []
+        raise
 
 
 # --------------------------------------------------------------------------
@@ -849,6 +894,11 @@ class Session:
         What is *not* checked is said as plainly: the worker attestation
         inside the receipt binds to the full action manifest, and validating
         it is ``core.PrismaBuildCAS.lookup``'s job, which needs that manifest.
+        That is why the verdict field is ``checks_passed`` and not
+        ``verified``: every check this tool ran passed is a smaller claim than
+        the claim is verified, and ``attestation_verified`` stays ``null`` to
+        say which check is still owed.  A reader that wants the whole verdict
+        goes to the verifier that holds the manifest.
         """
 
         digest = str(sha256).strip().lower()
@@ -873,7 +923,8 @@ class Session:
             "claim": claim, "checks": checks, "not_checked": not_checked,
         }
         if claim is None:
-            payload["verified"] = False
+            payload["checks_passed"] = False
+            payload["attestation_verified"] = None
             return payload
         body = {key: claim.get(key) for key in pb._LOCAL_RESULT_CLAIM_BODY_KEYS}
         recomputed = pb.canonical_sha256(body)
@@ -911,9 +962,10 @@ class Session:
                             checks["payload_sha256_match"] = (
                                 observed.get("sha256") == blob_digest)
                     payload["payload"] = observed
-        payload["verified"] = all(
+        payload["checks_passed"] = all(
             value is True for name, value in checks.items()
             if not (name == "payload_sha256_match" and not hash_payload))
+        payload["attestation_verified"] = None
         return payload
 
     # -- pb_log ------------------------------------------------------------
@@ -1217,7 +1269,10 @@ TOOLS: tuple[dict, ...] = (
                        "and payload and report each check by name: claim "
                        "address and digest, receipt self-consistency and "
                        "binding, payload presence and length. Pass "
-                       "hash_payload to also read and hash the blob.",
+                       "hash_payload to also read and hash the blob. "
+                       "checks_passed covers only the checks this tool ran; "
+                       "attestation_verified is null because validating the "
+                       "worker attestation needs the full action manifest.",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -17,6 +17,7 @@ process useless has moved the hang rather than removed it.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -236,3 +237,62 @@ def test_the_generation_link_is_read_under_the_deadline_too(
     assert body["generation_stale"] is None
     assert "repo-link" in body["timed_out"]
     assert body["complete"] is False
+
+
+def test_a_stale_handle_is_not_reported_as_an_absent_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ESTALE during a prefix scan must not become "no action starts with".
+
+    The precedent is #208: an NFS burst turned two tidied-away offer files
+    into ``ESTALE`` on a whole directory read, and a reader that treated the
+    error as absence killed a submission that had queued nothing. ``pbmcp``
+    reads the same mount from a longer-lived process, so the same burst would
+    have it answer "there is no such action" with ``complete: true`` beside
+    it -- a confident wrong verdict about somebody's running job.
+    """
+
+    fleet = fx.build(tmp_path)
+    session = pbmcp.Session(queue_root=fleet.queue_root,
+                            cas_root=fleet.cas_root, repo_link=fleet.repo_link,
+                            deadline_s=DEADLINE_S)
+    real_scandir = os.scandir
+
+    def stale(path, *args, **kwargs):
+        if str(path).startswith(str(fleet.queue_root)):
+            raise OSError(errno.ESTALE, "Stale file handle", str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(pbmcp.os, "scandir", stale)
+    with pytest.raises(pbmcp.ToolError) as raised:
+        session.call("pb_action", {"key_prefix": fx.DONE_KEY[:12]})
+    assert "did not answer" in str(raised.value), (
+        "an unreadable queue is not an empty one")
+    assert raised.value.detail["unavailable"], "name the section that failed"
+
+    body = session.call("pb_actions", {})
+    assert body["complete"] is False
+    assert body["actions"] is None
+
+
+def test_a_stale_handle_on_the_record_is_not_a_missing_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same rule one level down: a record that cannot be read is not absent."""
+
+    fleet = fx.build(tmp_path)
+    session = pbmcp.Session(queue_root=fleet.queue_root,
+                            cas_root=fleet.cas_root, repo_link=fleet.repo_link,
+                            deadline_s=DEADLINE_S)
+
+    def stale(path, **kwargs):
+        raise OSError(errno.ESTALE, "Stale file handle", str(path))
+
+    monkeypatch.setattr(pbmcp.pool, "_read_json", stale)
+    body = session.call("pb_action", {"key_prefix": fx.DONE_KEY[:12]})
+
+    assert body["complete"] is False
+    assert body["found"] is None, (
+        "found: false is the queue saying the key is not there; a stale "
+        "handle says nothing of the kind")
+    assert body["states"] is None
