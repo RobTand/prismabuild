@@ -1436,7 +1436,12 @@ idle" call for different responses.
     as `getrusage(RUSAGE_CHILDREN)` does. That fold is also why only the
     scope's roots are retired when they vanish -- anything below a root is
     already inside the parent that absorbed it, and retiring it as well would
-    count the same bytes twice.
+    count the same bytes twice. When the worker reconstructs a scope, it
+    restores these counters from configured host-local telemetry with the same
+    attempt nonce. A failed shared diagnostic copy cannot discard saved local
+    counters. Missing or unusable local state starts without prior counters;
+    the shared copy is not a fallback. Scopes without local authority retain
+    their telemetry-path accounting, including separate late-cleanup archives.
 *   `box_window` — the machine around the action for `[start_unix, end_unix]`.
     GPU power mean and peak, the fraction of the device's own published power
     reference, GPU utilisation, the unified memory pool and the memory and I/O

@@ -331,9 +331,13 @@ class ResourceScope:
         to sample it after the child exits, and a total that restarted between
         the two would report the last two seconds as the whole run.
 
-        The file is named for the action, not the attempt, and is never
-        unlinked, so a retry on the same host finds its predecessor's readings
-        sitting there. Only a record carrying this attempt's nonce is this
+        Use configured host-local authority; the shared diagnostic copy can
+        lag or fail after a successful local write. Missing local state never
+        imports that copy. Callers without local authority use telemetry_path,
+        including late cleanup into an attempt-specific archive.
+
+        A file named for the action can contain a predecessor's readings
+        when a retry on the same host starts. Only this attempt's nonce is this
         attempt's: anything else is a previous run, and adopting it would open
         attempt two with attempt one's retired bytes and retire attempt one's
         dead roots a second time.
@@ -342,7 +346,8 @@ class ResourceScope:
             return self._process_io
         prior = None
         try:
-            record = json.loads(self.telemetry_path.read_text())
+            path = self.authority_path if self.authority_path is not None else self.telemetry_path
+            record = json.loads(path.read_text())
             if record.get('nonce') == self.nonce:
                 prior = record.get('process_io')
         except (OSError, ValueError, AttributeError):

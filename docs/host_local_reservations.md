@@ -43,6 +43,13 @@ pool constructs a scope (`_start_resource_scope`, `_scope_from_record`,
 action key, so a restarted worker loop that recovers a scope samples into the
 file admission is already reading.
 
+A reconstructed scope also restores cumulative process I/O from this local
+file, retaining counters saved before a failed shared copy. Only a matching
+attempt nonce is accepted. Missing, unreadable or malformed local state starts
+without prior counters; it never falls back to the diagnostic copy. Scopes
+without an `authority_path` continue restoring from `telemetry_path`, including
+the separate late-cleanup archive below.
+
 A `scope_only` cleanup (a late finisher for a key whose successor attempt is
 live) sets `authority_path = None`: its final sample goes only to the shared
 `telemetry/attempts/<nonce>/<key>.json` archive, never into the local record
