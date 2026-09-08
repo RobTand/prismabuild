@@ -5790,12 +5790,12 @@ class PoolQueue:
         record = _read_json(src)
         if record is None and claim_snapshot is not None:
             ready = _read_json(self.item_path(READY, action_key))
-            if (ready is not None
-                    and self.attempt_generation(ready) == self.attempt_generation(claim_snapshot)
-                    and int(ready.get("attempts", 0)) <= int(claim_snapshot.get("attempts", 0))):
-                # The released non-attempt can also finish before another box
-                # claims its replacement. Route through exact-scope cleanup and
-                # the unnumbered archive, not the missing-claim terminal path.
+            if ready is not None:
+                # A queued successor is as live as a claimed successor. This
+                # includes charged retries and replacement publications, not
+                # only unstarted releases. The late archive distinguishes their
+                # numbered history from an uncharged slot; the missing-claim
+                # terminal path would end work still waiting in READY (#234).
                 return self._finish_late(
                     action_key, status=status, detail=detail,
                     snapshot=claim_snapshot, live=ready,
