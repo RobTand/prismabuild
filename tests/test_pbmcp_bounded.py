@@ -60,9 +60,57 @@ def test_a_census_that_never_returns_is_reported_not_awaited(
     assert "pool" in body["timed_out"]
     assert elapsed < DEADLINE_S * 5, (
         f"the call spent {elapsed:.1f}s on a {DEADLINE_S}s deadline")
-    # The endings share the budget and are reported the same way rather than
-    # returned as an empty list that reads like an empty queue.
+    # The census is reported as absent rather than as an empty node list that
+    # would read like a fleet with nothing running on it.
     assert body["nodes"] is None
+
+
+def test_a_timed_out_section_is_null_not_an_empty_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One convention across every tool: ``null`` means "not read".
+
+    An empty list is an answer -- no endings, no matching actions, no such
+    action -- and a section that never came back has not answered.  Handing
+    back ``[]`` or ``{}`` for a read that timed out makes the two
+    indistinguishable to anything but a reader that also checks
+    ``timed_out``, and the whole point of the envelope is that the payload
+    does not quietly contradict it.
+    """
+
+    fleet = fx.build(tmp_path)
+
+    def never(*_args, **_kwargs):
+        time.sleep(600)
+
+    for name in ("read_endings",):
+        monkeypatch.setattr(pbmcp.pbstatus, name, never)
+    for name in ("_reservations", "_scan_actions", "_records_for"):
+        monkeypatch.setattr(pbmcp, name, never)
+    session = pbmcp.Session(queue_root=fleet.queue_root,
+                            cas_root=fleet.cas_root, repo_link=fleet.repo_link,
+                            deadline_s=DEADLINE_S)
+
+    status = session.call("pb_status")
+    assert "endings" in status["timed_out"] and status["endings"] is None
+    assert "reservations" in status["timed_out"] and status["reservations"] is None
+
+    listing = session.call("pb_actions")
+    assert "actions" in listing["timed_out"]
+    assert listing["actions"] is None
+    assert listing["scanned"] is None
+    assert listing["truncated"] is None
+    assert listing["returned"] is None
+
+    action = session.call("pb_action", {"key_prefix": fx.DONE_KEY[:12]})
+    assert "records" in action["timed_out"]
+    assert action["found"] is None, "a read that never happened found nothing"
+    assert action["states"] is None
+
+    log = session.call("pb_log", {"key_prefix": fx.DONE_KEY[:12]})
+    assert "records" in log["timed_out"]
+    assert log["found"] is None
+    assert log["log"] is None
 
 
 def test_a_record_read_that_blocks_on_the_mount_is_bounded(
