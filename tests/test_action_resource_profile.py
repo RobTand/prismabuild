@@ -563,3 +563,68 @@ def test_the_sampler_finds_a_child_through_this_processes_own_scope(tmp_path):
     # at least the child's own writes.
     assert io["processes_observed"] >= 2
     assert io["wchar"] >= 12 * MIB
+
+
+def test_a_reaped_child_is_counted_once_not_twice(tmp_path):
+    """``/proc/<pid>/io`` folds a reaped child into its parent, like rusage.
+
+    Measured on the fleet: an action that wrote 64 MiB was reported as
+    129 MiB, because the exited writer's last reading was retired *and* the
+    same bytes had already migrated into the parent that reaped it. A process
+    whose parent is in the scope keeps being counted through that parent; only
+    the scope's roots are retired.
+    """
+
+    target = tmp_path / "written"
+    parent = subprocess.Popen(
+        [sys.executable, "-c",
+         "import subprocess, sys, time\n"
+         "child = subprocess.Popen([sys.executable, '-c',\n"
+         "    \"import os,sys\\n\"\n"
+         "    \"handle = open(sys.argv[1], 'wb')\\n\"\n"
+         "    \"[handle.write(b'x' * (1024 * 1024)) for _ in range(16)]\\n\"\n"
+         "    \"handle.flush(); os.fsync(handle.fileno()); handle.close()\\n\",\n"
+         "    sys.argv[1]])\n"
+         "sys.stderr.write('spawned %d\\n' % child.pid)\n"
+         "sys.stderr.flush()\n"
+         "sys.stdin.readline()\n"
+         "child.wait()\n"
+         "sys.stderr.write('reaped\\n')\n"
+         "sys.stderr.flush()\n"
+         "time.sleep(30)\n",
+         str(target)],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE, text=True)
+    group = _fake_cgroup(tmp_path / "cgroup", usage_usec=1, user_usec=1,
+                         system_usec=0, pids=[])
+    scope = resource_scope.ResourceScope(
+        "a" * 64, "b" * 32, 1 << 30, tmp_path / "telemetry.json")
+    scope.unit = "prismabuild-job" + "c" * 32 + ".slice"
+    scope.cgroup_path = group
+    try:
+        writer = int(parent.stderr.readline().split()[1])
+        # Both in the scope: the writer is still running, or has just finished
+        # and is a zombie its parent has not yet reaped.
+        (group / "cgroup.procs").write_text(f"{parent.pid}\n{writer}\n")
+        while True:
+            seen = scope.sample()["process_io"]
+            if seen["wchar"] >= 16 * MIB:
+                break
+            time.sleep(0.2)
+        # Now the parent reaps it, and the kernel moves the bytes.
+        parent.stdin.write("go\n")
+        parent.stdin.flush()
+        assert parent.stderr.readline().strip() == "reaped"
+        (group / "cgroup.procs").write_text(f"{parent.pid}\n")
+        after = scope.sample()["process_io"]
+    finally:
+        parent.terminate()
+        parent.wait(timeout=30)
+        parent.stderr.close()
+        parent.stdin.close()
+
+    assert after["processes_live"] == 1
+    assert after["wchar"] >= 16 * MIB
+    assert after["wchar"] < 32 * MIB, (
+        "the reaped writer was counted twice: once retired, once inside the "
+        "parent that absorbed it")

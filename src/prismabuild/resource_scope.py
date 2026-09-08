@@ -167,33 +167,49 @@ def scope_pids(path: Path) -> list[int]:
     return found
 
 
-def read_process_io(pid: int) -> tuple[str, dict[str, int]] | None:
-    """One process's I/O counters, keyed so a reused pid is a different process.
+def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
+    """A process's identity, its parent, and its counters when readable.
 
     ``starttime`` from ``/proc/<pid>/stat`` is what makes the key exact: pids
     are recycled, and folding a new process's counters into an old one's
     accounting would silently invent I/O the action never did.
+
+    The parent comes back because ``/proc/<pid>/io`` is not a per-process
+    counter alone: on reap the kernel adds a child's totals into its parent's,
+    exactly as ``RUSAGE_CHILDREN`` does. So a process whose parent is also in
+    the scope keeps contributing through that parent after it exits, and adding
+    its last reading to a retired total as well would count it twice. Measured
+    on the fleet: a 64 MiB write reported as 129 MiB.
+
+    Identity and counters are separate answers because they fail separately.
+    ``/proc/<pid>/io`` needs ptrace-read access and a process this uid may not
+    inspect refuses it while ``stat`` still answers. ``None`` for the counters
+    means "here, but not readable"; ``None`` for the whole result means gone.
     """
     try:
         stat = Path(f'/proc/{pid}/stat').read_text()
-        counters = dict(line.split(':', 1) for line in
-                        Path(f'/proc/{pid}/io').read_text().splitlines() if ':' in line)
     except (OSError, ValueError):
         return None
     try:
         # The command field is parenthesised and may itself contain spaces, so
         # the fields after it are found from the last ')' rather than by split.
         fields = stat[stat.rindex(')') + 1:].split()
-        starttime = fields[19]
+        parent, starttime = int(fields[1]), fields[19]
     except (ValueError, IndexError):
         return None
+    identity = f'{pid}:{starttime}'
+    try:
+        counters = dict(line.split(':', 1) for line in
+                        Path(f'/proc/{pid}/io').read_text().splitlines() if ':' in line)
+    except (OSError, ValueError):
+        return identity, parent, None
     values: dict[str, int] = {}
     for name in IO_COUNTERS:
         try:
             values[name] = int(counters[name])
         except (KeyError, ValueError):
-            return None
-    return f'{pid}:{starttime}', values
+            return identity, parent, None
+    return identity, parent, values
 
 
 def _atomic_json(path: Path, record: dict) -> None:
@@ -326,43 +342,69 @@ class ResourceScope:
         has to run while the work is alive; the finish path is already too
         late. A process that both starts and ends between two samples is
         therefore not counted, and ``processes_observed`` says how many were.
+
+        Departure is not the same as loss. The kernel adds a reaped child's
+        totals into its parent's, so a process whose parent is also in the
+        scope goes on being counted through that parent and must not be added
+        to a retired total as well. Only the scope's roots -- those whose
+        parent is outside it, and whose own counters have therefore absorbed
+        everything beneath them by the time they exit -- are retired.
         """
         prior = self._prior_process_io()
         live_before = dict(prior.get('live') or {})
         retired = {name: int((prior.get('retired') or {}).get(name, 0))
                    for name in IO_COUNTERS}
         observed = int(prior.get('processes_observed') or 0)
-        errors = list(prior.get('errors') or [])[-8:]
+        members = {int(pid) for pid in (prior.get('members') or [])}
+        errors: list[str] = []
         if self.cgroup_path is None:
             errors.append('resource scope is not created')
             pids: list[int] = []
         else:
             pids = scope_pids(self.cgroup_path)
-        live: dict[str, dict[str, int]] = {}
+        members |= set(pids)
+        live: dict[str, dict[str, Any]] = {}
         unreadable = 0
         for pid in pids:
             entry = read_process_io(pid)
             if entry is None:
-                unreadable += 1
-                continue
-            identity, counters = entry
+                continue  # exited between the scan and the read
+            identity, parent, counters = entry
             if identity not in live_before:
                 observed += 1
-            live[identity] = counters
+            if counters is None:
+                # Present, and this uid may not inspect it. Keep whatever it
+                # was last seen using -- retiring it here would count it twice
+                # the moment it becomes readable again.
+                unreadable += 1
+                previous = live_before.get(identity) or {}
+                live[identity] = {'ppid': parent,
+                                  **{name: int(previous.get(name, 0))
+                                     for name in IO_COUNTERS}}
+                continue
+            live[identity] = {'ppid': parent, **counters}
         if unreadable:
-            errors.append(f'{unreadable} process(es) in the scope could not be read')
+            errors.append(f'{unreadable} live process(es) in the scope '
+                          f'could not be inspected by this uid')
         for identity, counters in live_before.items():
-            if identity not in live:
-                for name in IO_COUNTERS:
-                    retired[name] += int(counters.get(name, 0))
+            if identity in live:
+                continue
+            if int(counters.get('ppid', 0)) in members:
+                continue  # its parent's own counters absorbed it on reap
+            for name in IO_COUNTERS:
+                retired[name] += int(counters.get(name, 0))
         record: dict[str, Any] = {'source': 'proc_io'}
         for name in IO_COUNTERS:
             record[name] = retired[name] + sum(
                 int(counters.get(name, 0)) for counters in live.values())
         record['processes_observed'] = observed
         record['processes_live'] = len(live)
+        record['processes_unreadable'] = unreadable
         record['retired'] = retired
         record['live'] = live
+        # Bounded by the attempt's own process count, and the reason a departed
+        # process can be told from a reaped one on the next sample.
+        record['members'] = sorted(members)[-4096:]
         if errors:
             record['errors'] = errors[-8:]
         self._process_io = record

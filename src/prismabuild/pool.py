@@ -6474,12 +6474,12 @@ class PoolQueue:
                 profile["scope"] = scope
             measured_io = telemetry.get("process_io")
             if isinstance(measured_io, Mapping):
-                # Totals only.  ``live`` and ``retired`` are the sampler's
-                # working state for the next tick, not something a receipt
-                # read years later has any use for.
+                # Totals only.  ``live``, ``retired`` and ``members`` are the
+                # sampler's working state for the next tick, not something a
+                # receipt read years later has any use for.
                 profile["process_io"] = {
                     key: value for key, value in measured_io.items()
-                    if key not in ("live", "retired")
+                    if key not in ("live", "retired", "members")
                 }
 
         profile["box_window"] = self._box_window(start, finished_unix)
