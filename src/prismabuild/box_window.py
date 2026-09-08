@@ -240,7 +240,9 @@ def _netdata_group(url: str, start_unix: float, end_unix: float,
     """CPU busy and CPU pressure, which no pqteld column carries."""
 
     after, before = int(start_unix), int(math.ceil(end_unix))
-    remaining = max(0.05, expires - time.monotonic())
+    remaining = expires - time.monotonic()
+    if remaining <= 0:
+        return None, ["deadline reached before netdata system.cpu"]
     busy = chart_reader(url, "system.cpu", after, before, min(remaining, 1.0))
     if not isinstance(busy, dict) or not isinstance(busy.get("data"), list):
         return None, ["netdata system.cpu unavailable"]
@@ -267,10 +269,10 @@ def _netdata_group(url: str, start_unix: float, end_unix: float,
     errors: list[str] = []
     for chart, field in (("system.cpu_some_pressure", "psi_some_avg10_max"),
                          ("system.cpu_full_pressure", "psi_full_avg10_max")):
-        if time.monotonic() > expires:
+        remaining = expires - time.monotonic()
+        if remaining <= 0:
             errors.append(f"deadline reached before {chart}")
             break
-        remaining = max(0.05, expires - time.monotonic())
         payload = chart_reader(url, chart, after, before, min(remaining, 1.0))
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             continue
@@ -347,7 +349,7 @@ def read_window(start_unix: float, end_unix: float, *, host: str,
     except Exception as exc:                                   # noqa: BLE001
         errors.append(f"pqteld unreadable: {type(exc).__name__}: {exc}")
 
-    if netdata_url and time.monotonic() <= expires:
+    if netdata_url and time.monotonic() < expires:
         try:
             cpu, netdata_errors = _netdata_group(
                 netdata_url, start_unix, end_unix, expires=expires,

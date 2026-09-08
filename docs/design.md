@@ -372,7 +372,10 @@ Always-on box-window evidence is outside action identity. Its collectors share
 a cooperative two-second finish budget: the GPU power-reference query receives
 only the remaining budget, capped at one second, and is skipped after expiry.
 Already-recorded power remains available without a reference fraction. This
-does not impose a hard deadline on filesystem reads or process cleanup.
+same remaining-budget rule applies to every Netdata chart request, with no
+minimum timeout grant; CPU data already collected survives skipped pressure
+reads. This does not impose a hard deadline on filesystem reads, HTTP response
+processing or process cleanup.
 
 Result address = hash(input artifacts, **code closure**, params, env-that-
 matters). Rules:
