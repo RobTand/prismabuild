@@ -120,6 +120,7 @@ import json
 import math
 import os
 from pathlib import Path
+import resource
 import shutil
 import signal
 import socket
@@ -139,6 +140,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
+from . import box_window
 from . import resource_scope
 from . import posix_lock
 
@@ -146,6 +148,10 @@ POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
 POOL_LEASE_SCHEMA_V1 = "prismaquant.prismabuild.pool_lease.v1"
 POOL_OUTCOME_SCHEMA_V1 = "prismaquant.prismabuild.pool_outcome.v1"
+#: What one run cost and how loaded its box was, filed with the outcome.  Issue
+#: #372 Tier 0: metadata about a run, never part of the action it was a run of,
+#: so a receipt that carries it and one from before it are the same action.
+RESOURCE_PROFILE_SCHEMA_V1 = "prismabuild.resource_profile.v1"
 POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
 
@@ -810,6 +816,131 @@ ACQUIRING_PREFIX = "claiming."
 #: alone would be enough for two different workers, but not for one worker's
 #: two attempts at the same action, which is the case the reaper creates.
 _CLAIM_IDENTITY = ("claimed_by", "claimed_unix", "published_unix", "attempts")
+
+
+#: The resource fields every ending row carries, absent on a record filed
+#: before issue #372 Tier 0.  Present as ``None`` rather than missing, for the
+#: same reason ``unreadable`` is: a reader tests one field instead of the
+#: absence of one, and "not measured" never renders as a measurement of zero.
+RESOURCE_SUMMARY_FIELDS = ("memory_peak_bytes", "io_read_bytes", "io_write_bytes",
+                           "gpu_power_peak_w", "gpu_power_reference_w",
+                           "gpu_power_peak_fraction")
+
+
+def _measured(value: object) -> float | int | None:
+    """A finite measurement, or ``None`` for anything that is not one.
+
+    ``bool`` is excluded on purpose: ``True`` is an ``int`` in Python and would
+    otherwise render as a peak of one byte.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(float(value)) else None
+
+
+def resource_profile_summary(detail: Mapping[str, object]) -> dict[str, object]:
+    """The three facts an ending can report about what its run cost.
+
+    Peak memory and I/O come from the exact attempt's own accounting; GPU power
+    comes from the box window, against the reference the device published, so
+    the fraction says what it is a fraction of.
+    """
+
+    summary: dict[str, object] = {field: None for field in RESOURCE_SUMMARY_FIELDS}
+    profile = detail.get("resource_profile")
+    if not isinstance(profile, Mapping):
+        return summary
+    scope = profile.get("scope")
+    if isinstance(scope, Mapping):
+        summary["memory_peak_bytes"] = _measured(scope.get("memory_peak_bytes"))
+    measured_io = profile.get("process_io")
+    if isinstance(measured_io, Mapping):
+        summary["io_read_bytes"] = _measured(measured_io.get("read_bytes"))
+        summary["io_write_bytes"] = _measured(measured_io.get("write_bytes"))
+    window = profile.get("box_window")
+    gpu = window.get("gpu") if isinstance(window, Mapping) else None
+    if isinstance(gpu, Mapping):
+        summary["gpu_power_peak_w"] = _measured(gpu.get("power_w_peak"))
+        summary["gpu_power_reference_w"] = _measured(gpu.get("power_reference_w"))
+        summary["gpu_power_peak_fraction"] = _measured(
+            gpu.get("power_peak_fraction_of_reference"))
+    return summary
+
+
+def _si_bytes(value: object) -> str:
+    """Bytes at a glance, without pretending to a precision nobody reads."""
+
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "-"
+    size = float(value)
+    for unit in ("B", "K", "M", "G", "T"):
+        if abs(size) < 1024 or unit == "T":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}T"
+
+
+def describe_resource_profile(ending: Mapping[str, object]) -> str:
+    """One column for the three, or ``-`` where none of them was measured.
+
+    Kept beside the measurement rather than at each call site, for the same
+    reason ``describe_placement_census`` is: a number two tools describe
+    differently is a number nobody can grep for.  ``pbstatus`` prints it in the
+    endings table and ``pbrun`` in the line it ends a run with.
+    """
+
+    parts = []
+    if ending.get("memory_peak_bytes") is not None:
+        parts.append(f"rss={_si_bytes(ending['memory_peak_bytes'])}")
+    written, read = ending.get("io_write_bytes"), ending.get("io_read_bytes")
+    if written is not None or read is not None:
+        parts.append(f"io w={_si_bytes(written)} r={_si_bytes(read)}")
+    peak = ending.get("gpu_power_peak_w")
+    if peak is not None:
+        reference = ending.get("gpu_power_reference_w")
+        fraction = ending.get("gpu_power_peak_fraction")
+        cell = f"gpu={float(peak):.1f}W"
+        if reference is not None:
+            cell += f"/{float(reference):.1f}W"
+        if fraction is not None:
+            cell += f"({float(fraction) * 100:.0f}%)"
+        parts.append(cell)
+    return " ".join(parts) if parts else "-"
+
+
+def _reaped_children(
+    before: resource.struct_rusage, after: resource.struct_rusage
+) -> dict[str, object]:
+    """What this parent's own kernel accounting says the child cost.
+
+    Bracketing ``RUSAGE_CHILDREN`` around one launch gives that launch's
+    figures, because every field but one is a running sum.  The exception is
+    ``ru_maxrss``, which is a high-water mark over every child the process has
+    ever reaped: it can be raised by this child but never lowered by it, so a
+    mark that did not move is not this action's peak and is reported as absent
+    rather than as somebody else's number.  The watermark itself is kept, since
+    a peak this child could not have exceeded is still a bound on it.
+
+    ``scope`` is on the record because the answer is not the action on a
+    contained run.  There the payload is a child of the root resource broker
+    and what this parent launched and reaped is the stdio proxy, so these
+    figures cover the launcher.  The action's own peak and I/O come from its
+    cgroup and from the ``/proc`` counters of the processes inside it.
+    """
+
+    watermark = int(after.ru_maxrss) * 1024   # ru_maxrss is KiB on Linux
+    return {
+        "source": "getrusage_children",
+        "scope": "this parent's launched child and the descendants it reaped",
+        "user_seconds": after.ru_utime - before.ru_utime,
+        "system_seconds": after.ru_stime - before.ru_stime,
+        "voluntary_context_switches": int(after.ru_nvcsw - before.ru_nvcsw),
+        "involuntary_context_switches": int(after.ru_nivcsw - before.ru_nivcsw),
+        "max_rss_watermark_bytes": watermark,
+        "max_rss_bytes": (watermark if after.ru_maxrss > before.ru_maxrss
+                          else None),
+    }
 
 
 def _same_claim(
@@ -6278,7 +6409,103 @@ class PoolQueue:
                                termination_evidence=telemetry.get("termination_evidence"))
                 outcome["stderr"] = str(outcome.get("stderr") or "") + (
                     f"\nPrismaBuild: action resource containment stopped this attempt: {resource_failure}.\n")
+        # Last, because it folds what every step above measured -- and inside a
+        # guard, because an action that ran must not be filed as a failure by
+        # the instrumentation that was only describing it.
+        try:
+            outcome["resource_profile"] = self._resource_profile(item, outcome)
+        except Exception as exc:                                 # noqa: BLE001
+            outcome["resource_profile"] = {
+                "schema": RESOURCE_PROFILE_SCHEMA_V1,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
         return outcome
+
+    def _resource_profile(self, item: Mapping[str, object],
+                          outcome: dict[str, object]) -> dict[str, object]:
+        """What this run cost, and what the box was doing while it ran.
+
+        Three sources, each named where it lands, because they do not measure
+        the same thing and a reader has to be able to tell which one a number
+        came from.  ``reaped_children`` is this parent's kernel accounting for
+        what it launched; ``scope`` and ``process_io`` are the exact attempt's
+        cgroup and the processes inside it, which is where a contained run's
+        payload actually is; ``box_window`` is the machine around it.
+
+        A group whose source said nothing is absent, never zero: "not measured"
+        and "measured as idle" are the two answers this record exists to keep
+        apart.  None of it is sealed into the action -- it is metadata about
+        one run of an action, and two runs of the same action stay the same
+        action.
+        """
+
+        finished_unix = _now()
+        profile: dict[str, object] = {
+            "schema": RESOURCE_PROFILE_SCHEMA_V1,
+            "host": socket.gethostname(),
+            "finished_unix": finished_unix,
+        }
+        claimed = item.get("claimed_unix")
+        if (type(claimed) in (int, float) and math.isfinite(float(claimed))
+                and 0 < float(claimed) <= finished_unix):
+            start, start_source = float(claimed), "claimed_unix"
+        else:
+            # A claim with no usable stamp still ran for a measured time, and
+            # the window has to start somewhere a reader can name.
+            elapsed = outcome.get("elapsed_s")
+            span = float(elapsed) if type(elapsed) in (int, float) else 0.0
+            start, start_source = finished_unix - span, "elapsed_s"
+        profile["start_unix"] = start
+        profile["start_source"] = start_source
+        profile["wall_seconds"] = finished_unix - start
+
+        reaped = outcome.pop("child_rusage", None)
+        if isinstance(reaped, dict):
+            profile["reaped_children"] = reaped
+
+        telemetry = outcome.get("resource_telemetry")
+        if isinstance(telemetry, Mapping):
+            scope = {"source": "cgroup"}
+            for field in ("cpu_seconds", "cpu_user_seconds", "cpu_system_seconds",
+                          "memory_current_bytes", "memory_peak_bytes"):
+                if telemetry.get(field) is not None:
+                    scope[field] = telemetry[field]
+            if len(scope) > 1:
+                profile["scope"] = scope
+            measured_io = telemetry.get("process_io")
+            if isinstance(measured_io, Mapping):
+                # Totals only.  ``live`` and ``retired`` are the sampler's
+                # working state for the next tick, not something a receipt
+                # read years later has any use for.
+                profile["process_io"] = {
+                    key: value for key, value in measured_io.items()
+                    if key not in ("live", "retired")
+                }
+
+        profile["box_window"] = self._box_window(start, finished_unix)
+        return profile
+
+    @staticmethod
+    def _box_window(start_unix: float, finished_unix: float) -> dict[str, object]:
+        """The box's own view of these seconds, or why there isn't one.
+
+        Bounded and total: the finish path may not fail on telemetry, so every
+        way this can go wrong ends in ``unavailable`` with the reason on the
+        record.  An action lost to its own instrumentation would be a worse
+        defect than the blindness this is fixing.
+        """
+
+        try:
+            return box_window.read_window(
+                start_unix, finished_unix, host=socket.gethostname(),
+                csv_dir=box_window.default_csv_dir(),
+                gpu_reference=box_window.gpu_power_reference)
+        except Exception as exc:                                 # noqa: BLE001
+            return {"schema": box_window.BOX_WINDOW_SCHEMA_V1,
+                    "host": socket.gethostname(),
+                    "start_unix": start_unix, "end_unix": finished_unix,
+                    "source": "unavailable",
+                    "reason": f"{type(exc).__name__}: {exc}"}
 
     def _execute_in_checkout(
         self,
@@ -6352,6 +6579,9 @@ class PoolQueue:
             # The broker launches taskset inside the aggregate slice. The
             # stdio proxy itself is not an attributed action process.
             argv = scope.wrap_argv(argv)
+        # Read immediately before the launch and again at every way out, so
+        # the difference is this child's and not the worker loop's history.
+        rusage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -6405,6 +6635,9 @@ class PoolQueue:
                                 "stdout": out, "stderr": err,
                                 "action_survived_kill": survived,
                                 "elapsed_s": _now() - started,
+                                "child_rusage": _reaped_children(
+                                    rusage_before,
+                                    resource.getrusage(resource.RUSAGE_CHILDREN)),
                                 "argv": argv, "cpu_allocation": allocation,
                             }
                     # Checkpoint two: the cross-box path.  A withdrawal from another
@@ -6421,6 +6654,9 @@ class PoolQueue:
                             "stdout": out,
                             "stderr": err,
                             "elapsed_s": _now() - started,
+                            "child_rusage": _reaped_children(
+                                rusage_before,
+                                resource.getrusage(resource.RUSAGE_CHILDREN)),
                             "argv": argv,
                             "cpu_allocation": allocation,
                         }
@@ -6467,6 +6703,9 @@ class PoolQueue:
                             # released for a GPU somebody still holds.
                             "action_survived_kill": survived,
                             "elapsed_s": _now() - started,
+                            "child_rusage": _reaped_children(
+                                rusage_before,
+                                resource.getrusage(resource.RUSAGE_CHILDREN)),
                             "argv": argv,
                             "cpu_allocation": allocation,
                         }
@@ -6493,6 +6732,8 @@ class PoolQueue:
             "stdout": out,
             "stderr": err,
             "elapsed_s": _now() - started,
+            "child_rusage": _reaped_children(
+                rusage_before, resource.getrusage(resource.RUSAGE_CHILDREN)),
             "argv": argv,
             "cpu_allocation": allocation,
         }

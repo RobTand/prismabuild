@@ -220,27 +220,45 @@ def test_process_io_survives_the_process_that_earned_it(tmp_path):
 
 
 def test_a_second_sampler_continues_the_first_ones_accounting(tmp_path):
-    """The telemetry file is the state, so a rebuilt scope does not restart."""
+    """The telemetry file is the state, so a rebuilt scope does not restart.
 
+    The pool builds one scope to launch an attempt and rebuilds another from
+    the claim record to sample it after the child has gone.  A total that
+    started again between the two would report the last tick as the whole run.
+    """
+
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys, time\n"
+         "sys.stdout.write('x' * (5 * 1024 * 1024))\n"
+         "sys.stdout.flush()\n"
+         "sys.stderr.write('ready\\n')\n"
+         "sys.stderr.flush()\n"
+         "time.sleep(30)\n"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     group = _fake_cgroup(tmp_path / "cgroup", usage_usec=1, user_usec=1,
-                         system_usec=0, pids=[])
+                         system_usec=0, pids=[child.pid])
     telemetry = tmp_path / "telemetry.json"
     first = resource_scope.ResourceScope("a" * 64, "b" * 32, 1 << 30, telemetry)
     first.unit = "prismabuild-job" + "c" * 32 + ".slice"
     first.cgroup_path = group
-    record = first.sample()
-    record["process_io"]["rchar"] = 4096
-    record["process_io"]["wchar"] = 8192
-    record["process_io"]["processes_observed"] = 3
-    resource_scope._atomic_json(telemetry, record)
+    try:
+        assert child.stderr.readline().strip() == "ready"
+        seen = first.sample()["process_io"]
+    finally:
+        child.terminate()
+        child.wait(timeout=30)
+        child.stderr.close()
+    assert seen["wchar"] >= 5 * MIB
 
+    (group / "cgroup.procs").write_text("")
     second = resource_scope.ResourceScope("a" * 64, "b" * 32, 1 << 30, telemetry)
     second.unit = first.unit
     second.cgroup_path = group
     carried = second.sample()["process_io"]
-    assert carried["rchar"] >= 4096
-    assert carried["wchar"] >= 8192
-    assert carried["processes_observed"] >= 3
+    assert carried["wchar"] >= seen["wchar"]
+    assert carried["processes_observed"] == 1
+    assert carried["processes_live"] == 0
 
 
 # -- the box window -----------------------------------------------------------
@@ -434,7 +452,8 @@ def test_pbstatus_endings_report_peak_memory_io_and_gpu_power(tmp_path):
     assert row["gpu_power_peak_fraction"] == pytest.approx(0.3)
     rendered = "\n".join(pbstatus.ending_lines([row]))
     assert "RESOURCE" in rendered
-    assert "42" in rendered and "140" in rendered
+    assert "rss=3.0G" in rendered
+    assert "gpu=42.0W/140.0W(30%)" in rendered
 
 
 def test_an_ending_from_before_the_profile_renders_absent_not_zero(tmp_path):
@@ -444,5 +463,7 @@ def test_an_ending_from_before_the_profile_renders_absent_not_zero(tmp_path):
     assert row["io_write_bytes"] is None
     assert row["gpu_power_peak_w"] is None
     rendered = "\n".join(pbstatus.ending_lines([row]))
-    assert " 0 " not in rendered.split("RESOURCE")[-1]
+    # Not measured is not measured as zero, and does not print as a number.
+    assert "rss=" not in rendered
+    assert "gpu=" not in rendered
     assert pbstatus.ABSENT in rendered

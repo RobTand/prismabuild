@@ -58,13 +58,89 @@ def read_cgroup(path: Path) -> dict[str, Any]:
     cpu = dict(line.split() for line in (path / 'cpu.stat').read_text().splitlines())
     events = dict(line.split() for line in (path / 'memory.events').read_text().splitlines())
     local_events = dict(line.split() for line in (path / 'memory.events.local').read_text().splitlines())
-    return {
+    counters = {
         'cpu_seconds': int(cpu['usage_usec']) / 1_000_000,
         'memory_current_bytes': int((path / 'memory.current').read_text()),
         'memory_peak_bytes': int((path / 'memory.peak').read_text()),
         'oom_kill': int(events.get('oom_kill', 0)),
         'oom_local': int(local_events['oom']),
     }
+    # The kernel has always published the split; nothing read it, so an action
+    # that spent its time in the kernel and one that spent it in user code
+    # arrived at the receipt looking identical. Absent rather than zero on a
+    # kernel that does not publish it: a missing split is not an idle kernel.
+    for field, key in (('cpu_user_seconds', 'user_usec'),
+                       ('cpu_system_seconds', 'system_usec')):
+        if key in cpu:
+            counters[field] = int(cpu[key]) / 1_000_000
+    return counters
+
+
+#: The ``/proc/<pid>/io`` counters worth carrying. ``rchar``/``wchar`` count
+#: the bytes the process asked for, and are exact wherever the file lives;
+#: ``read_bytes``/``write_bytes`` count what reached storage, and are zero on a
+#: tmpfs for the same write. Both, because neither answers the other's
+#: question.
+IO_COUNTERS = ('rchar', 'wchar', 'syscr', 'syscw', 'read_bytes', 'write_bytes')
+
+
+def scope_pids(path: Path) -> list[int]:
+    """Every process in the scope, including the broker's payload leaf.
+
+    The payload is a child of the root broker rather than of the pool worker,
+    so no process tree from the worker reaches it. The cgroup is what both have
+    in common, and it is hierarchical: this walks the scope and its leaves.
+    """
+    found: list[int] = []
+    stack = [Path(path)]
+    while stack:
+        group = stack.pop()
+        try:
+            entries = list(group.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                stack.append(entry)
+        try:
+            text = (group / 'cgroup.procs').read_text()
+        except OSError:
+            continue
+        for line in text.split():
+            try:
+                found.append(int(line))
+            except ValueError:
+                continue
+    return found
+
+
+def read_process_io(pid: int) -> tuple[str, dict[str, int]] | None:
+    """One process's I/O counters, keyed so a reused pid is a different process.
+
+    ``starttime`` from ``/proc/<pid>/stat`` is what makes the key exact: pids
+    are recycled, and folding a new process's counters into an old one's
+    accounting would silently invent I/O the action never did.
+    """
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text()
+        counters = dict(line.split(':', 1) for line in
+                        Path(f'/proc/{pid}/io').read_text().splitlines() if ':' in line)
+    except (OSError, ValueError):
+        return None
+    try:
+        # The command field is parenthesised and may itself contain spaces, so
+        # the fields after it are found from the last ')' rather than by split.
+        fields = stat[stat.rindex(')') + 1:].split()
+        starttime = fields[19]
+    except (ValueError, IndexError):
+        return None
+    values: dict[str, int] = {}
+    for name in IO_COUNTERS:
+        try:
+            values[name] = int(counters[name])
+        except (KeyError, ValueError):
+            return None
+    return f'{pid}:{starttime}', values
 
 
 def _atomic_json(path: Path, record: dict) -> None:
@@ -110,6 +186,7 @@ class ResourceScope:
         self.token: str | None = None
         self._last: dict[str, Any] = {}
         self._reason: str | None = None
+        self._process_io: dict[str, Any] | None = None
 
     def _request(self, op: str, **extra) -> dict:
         request = {'op': op, 'action_key': self.action_key, 'nonce': self.nonce, **extra}
@@ -172,6 +249,72 @@ class ResourceScope:
                 '--action-key', self.action_key, '--nonce', self.nonce,
                 '--token', self.token, '--', *argv]
 
+    def _prior_process_io(self) -> dict[str, Any]:
+        """What an earlier sampler already accounted for this attempt.
+
+        The telemetry file is the state, not this object: the pool builds one
+        scope to launch the attempt and rebuilds another from the claim record
+        to sample it after the child exits, and a total that restarted between
+        the two would report the last two seconds as the whole run.
+        """
+        if self._process_io is not None:
+            return self._process_io
+        try:
+            prior = json.loads(self.telemetry_path.read_text()).get('process_io')
+        except (OSError, ValueError, AttributeError):
+            prior = None
+        self._process_io = prior if isinstance(prior, dict) else {}
+        return self._process_io
+
+    def sample_process_io(self) -> dict[str, Any]:
+        """Sum the scope's processes now, keeping what departed ones earned.
+
+        ``/proc/<pid>/io`` disappears the moment a process is reaped, so this
+        has to run while the work is alive; the finish path is already too
+        late. A process that both starts and ends between two samples is
+        therefore not counted, and ``processes_observed`` says how many were.
+        """
+        prior = self._prior_process_io()
+        live_before = dict(prior.get('live') or {})
+        retired = {name: int((prior.get('retired') or {}).get(name, 0))
+                   for name in IO_COUNTERS}
+        observed = int(prior.get('processes_observed') or 0)
+        errors = list(prior.get('errors') or [])[-8:]
+        if self.cgroup_path is None:
+            errors.append('resource scope is not created')
+            pids: list[int] = []
+        else:
+            pids = scope_pids(self.cgroup_path)
+        live: dict[str, dict[str, int]] = {}
+        unreadable = 0
+        for pid in pids:
+            entry = read_process_io(pid)
+            if entry is None:
+                unreadable += 1
+                continue
+            identity, counters = entry
+            if identity not in live_before:
+                observed += 1
+            live[identity] = counters
+        if unreadable:
+            errors.append(f'{unreadable} process(es) in the scope could not be read')
+        for identity, counters in live_before.items():
+            if identity not in live:
+                for name in IO_COUNTERS:
+                    retired[name] += int(counters.get(name, 0))
+        record: dict[str, Any] = {'source': 'proc_io'}
+        for name in IO_COUNTERS:
+            record[name] = retired[name] + sum(
+                int(counters.get(name, 0)) for counters in live.values())
+        record['processes_observed'] = observed
+        record['processes_live'] = len(live)
+        record['retired'] = retired
+        record['live'] = live
+        if errors:
+            record['errors'] = errors[-8:]
+        self._process_io = record
+        return record
+
     def sample(self) -> dict[str, Any]:
         errors: list[str] = []
         try:
@@ -183,12 +326,19 @@ class ResourceScope:
             errors.append(str(exc))
             direct = self._last or dict(cpu_seconds=0.0, memory_current_bytes=0,
                                         memory_peak_bytes=0, oom_kill=0, oom_local=0)
+        # Sampling I/O must not be able to cost the attempt its telemetry.
+        try:
+            process_io = self.sample_process_io()
+        except (OSError, ValueError) as exc:
+            process_io = {'source': 'proc_io',
+                          'errors': [f'{type(exc).__name__}: {exc}']}
         record = {
             'action_key': self.action_key, 'nonce': self.nonce,
             'host': socket.gethostname(), 'scope_unit': self.unit,
             'sampled_unix': time.time(), 'wall_seconds': time.monotonic() - self.started,
             **direct, 'memory_max_bytes': self.memory_max_bytes,
             'gpu_memory_max_bytes': self.gpu_memory_max_bytes,
+            'process_io': process_io,
             'complete': not errors, 'errors': errors,
         }
         if self.shape_key:

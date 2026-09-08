@@ -167,6 +167,12 @@ class _HostAttempts:
     #: with complete, fresh, exact-scope samples, even if another claim makes
     #: the host aggregate unavailable.
     counters: dict[tuple[str, str], tuple[float, float]] = field(default_factory=dict)
+    #: ``resource -> value`` for the host's live claims: the largest peak any
+    #: one of them reported, and the bytes they have moved between them.
+    #: Absent, not zero, for a resource none of them measured -- a sampler that
+    #: could not read ``/proc`` and a claim that did no I/O must not read the
+    #: same.
+    peaks: dict[str, float] = field(default_factory=dict)
 
     @property
     def complete(self) -> bool:
@@ -241,6 +247,18 @@ def _attempt_telemetry(
             host_attempts.counters[(key, str(nonce))] = (cpu_seconds, wall_seconds)
             host_attempts.cpu += cpu_seconds / wall_seconds
             host_attempts.memory_bytes += current
+            peak = _number(record.get("memory_peak_bytes"))
+            if peak is not None:
+                host_attempts.peaks["memory_peak_bytes"] = max(
+                    host_attempts.peaks.get("memory_peak_bytes", peak), peak)
+            measured_io = record.get("process_io")
+            if isinstance(measured_io, Mapping):
+                for source, name in (("read_bytes", "io_read_bytes"),
+                                     ("write_bytes", "io_write_bytes")):
+                    moved = _number(measured_io.get(source))
+                    if moved is not None:
+                        host_attempts.peaks[name] = (
+                            host_attempts.peaks.get(name, 0.0) + moved)
         answer[host] = host_attempts
     return answer
 
@@ -332,6 +350,10 @@ def _terminal_metrics(
 
     outcomes: dict[tuple[str, str], int] = defaultdict(int)
     timings: dict[tuple[str, str], list[float]] = defaultdict(list)
+    #: The heaviest reading each box's endings reported in the window, by
+    #: metric.  Absent for a host whose endings carried no box window, which is
+    #: how a box with no flight recorder differs from a box that idled.
+    window_peaks: dict[tuple[str, str], float] = {}
     for row in selected:
         host = _host(row.get("host")) or "unknown"
         outcome = str(row.get("status") or "unknown")
@@ -339,6 +361,19 @@ def _terminal_metrics(
         outcomes[(host, outcome)] += 1
         if row.get("unreadable"):
             continue
+        for field, metric in (
+            ("gpu_power_peak_w", "gpu_power_peak_watts"),
+            ("gpu_power_reference_w", "gpu_power_reference_watts"),
+            ("gpu_power_peak_fraction", "gpu_power_peak_fraction"),
+            ("memory_peak_bytes", "memory_peak_bytes"),
+            ("io_write_bytes", "io_write_bytes"),
+            ("io_read_bytes", "io_read_bytes"),
+        ):
+            value = _number(row.get(field))
+            if value is None:
+                continue
+            key = (host, metric)
+            window_peaks[key] = max(window_peaks.get(key, value), value)
         try:
             record = pool._read_json(Path(str(row["path"])))
         except (OSError, ValueError):
@@ -377,6 +412,13 @@ def _terminal_metrics(
         target.add(sum(values) / len(values), host=host, stat="mean")
         target.add(max(values), host=host, stat="max")
         timing_jobs.add(len(values), host=host, phase=phase)
+    box = metrics.family(
+        "prismabuild_terminal_box_window",
+        "Heaviest per-action resource reading among the host's terminal records in the bounded window; GPU power is measured against the device's own published reference, and every metric is absent rather than zero where no record carried it.",
+    )
+    for (host, metric), value in sorted(window_peaks.items()):
+        box.add(value, host=host, metric=metric)
+
     readable = accessible and all(not row.get("unreadable") for row in selected)
     terminal_success.add(1 if readable else 0)
     return readable
@@ -718,6 +760,13 @@ def collect_metrics(
         "prismabuild_attempt_recent_cores_jobs",
         "Live claims the host's recent-cores figure was differenced over; it is the denominator, not a total.",
     )
+    peaks = metrics.family(
+        "prismabuild_attempt_peak_resources",
+        "What the host's live claims have used at their heaviest: memory_peak_bytes is the largest single claim's peak, and the io_ figures are the bytes they have moved between them. Absent rather than zero where the sampler measured nothing.",
+    )
+    for host, values in sorted(observations.items()):
+        for name, value in sorted(values.peaks.items()):
+            peaks.add(value, host=host, resource=name)
     for host, values in sorted(observations.items()):
         # The count of live claims and how stale the oldest is are reported for
         # every host that has any, so a withheld aggregate is legible as a

@@ -885,6 +885,7 @@ def _unreadable_row(entry: os.DirEntry, reason: str) -> dict:
         "action_signal": None,
         "receipt_published": None,
         "slurm_state": None,
+        **{field: None for field in pool.RESOURCE_SUMMARY_FIELDS},
         "unreadable": reason,
         # The record's own finished time is unreadable too, so the file's
         # modification time is what places the row. It is the same clock
@@ -986,6 +987,9 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
             # test it, and present as ``None`` everywhere else for the same
             # reason ``unreadable`` is.
             "preempted_by": record.get("preempted_by"),
+            # What the run cost and how loaded its box was (#372 Tier 0).
+            # Absent, not zero, on every record filed before it existed.
+            **pool.resource_profile_summary(detail),
             # Present on every row so a reader of the JSON can test one field
             # rather than the absence of one.
             "unreadable": None,
@@ -1186,7 +1190,7 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
         return [note or "no endings filed under done/, failed/ or withdrawn/"]
     headers = (
         "KEY", "STATUS", "VIA", "HOST", "ELAPSED", "RC", "ACTION RC",
-        "RECEIPT", "SLURM", "NOTE",
+        "RECEIPT", "SLURM", "RESOURCE", "NOTE",
     )
     rows = []
     for ending in endings:
@@ -1206,6 +1210,11 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
             ABSENT if ending.get("receipt_published") is None
             else ending.get("receipt_published"),
             ending.get("slurm_state") or ABSENT,
+            # Peak memory, the bytes the action moved, and the GPU power it
+            # drew against the device's own reference -- one column, because
+            # three numbers nobody can see beside the run they belong to are
+            # three numbers nobody reads.
+            pool.describe_resource_profile(ending),
             # The path and the reason, on the one kind of row where every
             # other column is inside a file nobody could read -- and otherwise
             # the cost of a preemption, which is the one ending whose cause is

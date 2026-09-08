@@ -2257,6 +2257,10 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         # concluded it, and for a reaped claim those are different machines.
         "claimed_host": claimed_host,
         "elapsed_s": detail.get("elapsed_s"),
+        # What the run cost and how loaded its box was (#372 Tier 0).  Carried
+        # whole rather than flattened, because the record is what a reader
+        # comes back to and the summary is only what fits on a line.
+        "resource_profile": detail.get("resource_profile"),
         "returncode": detail.get("returncode"),
         # The action's own ending, where the transport recorded one.  The
         # launcher's status above is 1 for every failure, so an action that
@@ -2452,6 +2456,19 @@ def action_status_suffix(detail: Mapping[str, object]) -> str:
     return f"; rc={detail.get('returncode')} (action exited {action})"
 
 
+def resource_suffix(detail: Mapping[str, object]) -> str:
+    """What the run cost, on the line that says it finished, or nothing.
+
+    Nothing rather than a row of dashes: a run whose box had no recorder should
+    not spend a line saying so every time, and the record still carries the
+    reason under ``detail.resource_profile.box_window``.
+    """
+
+    described = pool.describe_resource_profile(
+        pool.resource_profile_summary(detail))
+    return f"; {described}" if described != "-" else ""
+
+
 def outcome_headline(summary: Mapping[str, object]) -> str:
     """One line saying how a run ended, and where -- and who "where" is.
 
@@ -2484,7 +2501,8 @@ def outcome_headline(summary: Mapping[str, object]) -> str:
         # default.
         return (f"{status} on {finished} "
                 f"in {(detail.get('elapsed_s') or 0):.0f}s"
-                f"{action_status_suffix(detail)}")
+                f"{action_status_suffix(detail)}"
+                f"{resource_suffix(detail)}")
     held = summary.get("claimed_host")
     age = detail.get("lease_age_s")
     if isinstance(age, (int, float)) and not isinstance(age, bool):
