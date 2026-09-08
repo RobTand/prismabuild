@@ -360,11 +360,9 @@ class Controller:
         self.cpus = list(tiers['preferred']) + list(tiers['fallback'])
         self.base = local_state_base(ledger.base)
         self._host_sample = None
-        self._dirty = False
 
     def write_state(self, name, value):
         write_json(self.base / name, value)
-        self._dirty = True
 
     @contextmanager
     def locked(self):
@@ -424,8 +422,7 @@ class Controller:
             # No shared operation or inherited admission descriptor in the
             # publisher. A blocked diagnostic copy occupies only its own
             # host-local publication lock, never this admission lock.
-            if acquired and self._dirty:
-                self._dirty = False
+            if acquired:
                 adaptive_snapshot.publish(self.base, self.ledger.base / 'adaptive')
 
     def sample(self):

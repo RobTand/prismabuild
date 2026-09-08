@@ -193,3 +193,129 @@ def test_shared_cpu_sample_is_not_an_authoritative_input(tmp_path, monkeypatch):
     # belong to an earlier boot/generation and must not supply lending credit.
     with controller.locked():
         assert controller.sample() == {}
+
+
+@pytest.mark.parametrize('refusal', ['rate_limit', 'busy', 'launch_failure'])
+def test_snapshot_retries_unchanged_state_from_a_new_controller(tmp_path, monkeypatch, refusal):
+    """A skipped copy must survive the controller that wrote its last update."""
+    import fcntl
+    import json
+    import os
+
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    tiers = {'preferred': [0], 'fallback': []}
+    first = adaptive_cpu.Controller(queue.ledger(), tiers)
+    shared = queue.ledger().base / 'adaptive' / 'gpu-state.json'
+    with first.locked():
+        first.write_state('gpu-state.json', {'sampled_unix': 10., 'sample_id': 'old'})
+    for child in adaptive_snapshot._children:
+        assert child.wait(timeout=10) == 0
+    assert json.loads(shared.read_text())['sample_id'] == 'old'
+
+    descriptor = None
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(adaptive_snapshot, 'MIN_PUBLISH_INTERVAL_S',
+                          10000. if refusal == 'rate_limit' else 0.)
+            if refusal == 'busy':
+                descriptor = os.open(first.base / 'publish.lock', os.O_RDWR)
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif refusal == 'launch_failure':
+                patch.setattr(adaptive_snapshot.subprocess, 'Popen',
+                              lambda *a, **kw: (_ for _ in ()).throw(OSError('no interpreter')))
+            with first.locked():
+                first.write_state('gpu-state.json', {'sampled_unix': 11., 'sample_id': 'new'})
+        assert json.loads(shared.read_text())['sample_id'] == 'old'
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+    monkeypatch.setattr(adaptive_snapshot, 'MIN_PUBLISH_INTERVAL_S', 0.)
+    # claim() creates a controller on every poll. No fresh CPU/GPU sample is
+    # available on this pass, so it writes no admission state at all.
+    replacement = adaptive_cpu.Controller(queue.ledger(), tiers)
+    with replacement.locked():
+        pass
+    for child in adaptive_snapshot._children:
+        assert child.wait(timeout=10) == 0
+    assert json.loads(shared.read_text())['sample_id'] == 'new'
+
+    # Once caught up, another unchanged pass must not rewrite the shared mount.
+    before = shared.stat().st_mtime_ns
+    with adaptive_cpu.Controller(queue.ledger(), tiers).locked():
+        pass
+    for child in adaptive_snapshot._children:
+        assert child.wait(timeout=10) == 0
+    assert shared.stat().st_mtime_ns == before
+
+
+def test_failed_copy_retries_without_another_state_write(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    tiers = {'preferred': [0], 'fallback': []}
+    controller = adaptive_cpu.Controller(queue.ledger(), tiers)
+    shared = queue.ledger().base / 'adaptive'
+    shared.parent.mkdir(parents=True, exist_ok=True)
+    shared.write_text('destination temporarily unavailable')
+    with controller.locked():
+        controller.write_state('gpu-state.json', {'sampled_unix': 11.})
+    child = adaptive_snapshot._children.pop()
+    assert child.wait(timeout=10) == 1
+    result = adaptive_cpu.read_json(controller.base / 'publisher-result.json')
+    assert result['status'] == 'failed'
+    shared.unlink()
+    monkeypatch.setattr(adaptive_snapshot, 'MIN_PUBLISH_INTERVAL_S', 0.)
+    with adaptive_cpu.Controller(queue.ledger(), tiers).locked():
+        pass
+    for child in adaptive_snapshot._children:
+        assert child.wait(timeout=10) == 0
+    assert adaptive_cpu.read_json(shared / 'gpu-state.json')['sampled_unix'] == 11.
+
+
+def test_update_during_a_copy_is_retried_after_that_publisher_exits(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    tiers = {'preferred': [0], 'fallback': []}
+    first = adaptive_cpu.Controller(queue.ledger(), tiers)
+    shared = queue.ledger().base / 'adaptive'
+    real_popen = subprocess.Popen
+    script = f"""
+import sys, time
+from pathlib import Path
+sys.path.insert(0, {str(Path(adaptive_snapshot.__file__).parent.parent)!r})
+from prismabuild import adaptive_snapshot as snap
+local, shared = Path(sys.argv[1]), Path(sys.argv[2])
+original = snap._write
+def write(path, value):
+    if path == shared / 'gpu-state.json':
+        (local / 'blocked').write_text('old GPU state already read')
+        while not (local / 'release').exists():
+            time.sleep(.01)
+    return original(path, value)
+snap._write = write
+raise SystemExit(snap.main(sys.argv[1:]))
+"""
+
+    def launch(argv, **kwargs):
+        return real_popen([argv[0], '-c', script, *argv[2:]], **kwargs)
+
+    monkeypatch.setattr(adaptive_snapshot.subprocess, 'Popen', launch)
+    monkeypatch.setattr(adaptive_snapshot, 'MIN_PUBLISH_INTERVAL_S', 0.)
+    with first.locked():
+        first.write_state('gpu-state.json', {'sampled_unix': 10.})
+    child = adaptive_snapshot._children[-1]
+    try:
+        deadline = time.monotonic() + 10
+        while not (first.base / 'blocked').exists():
+            assert child.poll() is None
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+        with adaptive_cpu.Controller(queue.ledger(), tiers).locked():
+            first.write_state('gpu-state.json', {'sampled_unix': 11.})
+    finally:
+        (first.base / 'release').touch()
+        assert child.wait(timeout=10) == 0
+    assert adaptive_cpu.read_json(shared / 'gpu-state.json')['sampled_unix'] == 10.
+    with adaptive_cpu.Controller(queue.ledger(), tiers).locked():
+        pass
+    for child in adaptive_snapshot._children:
+        assert child.wait(timeout=10) == 0
+    assert adaptive_cpu.read_json(shared / 'gpu-state.json')['sampled_unix'] == 11.

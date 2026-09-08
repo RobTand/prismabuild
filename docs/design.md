@@ -1440,6 +1440,13 @@ remain in `publisher-owner.json`; `publisher-result.json` names that nonce on
 completion or error. No timeout, signal or assumed reaping releases the slot.
 Starts are limited to one per second, and completed children are reaped without
 waiting at subsequent publication attempts.
+Every acquired admission pass checks whether the local files differ from the
+last successful publisher's source signature, even when that pass wrote no
+new state. Rate-limited, busy or failed copies therefore retry across controller
+and worker replacement; unchanged successful copies do not rewrite the mount.
+The child captures the local file signature before copying and records it only
+as successful after completion, so a concurrent state update stays pending.
+These file identities are diagnostic retry hints, never admission authority.
 
 The files under `reservations/<host>/adaptive/` are independent diagnostic
 copies. The CPU and GPU copies add `_snapshot.source=host-local` and a copy

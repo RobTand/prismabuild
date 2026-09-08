@@ -47,6 +47,23 @@ def _start_ticks(pid):
         return None
 
 
+def _source_signature(local: Path):
+    """Identify local atomic replacements, without reading the shared copy.
+
+    This is a diagnostic retry hint, never admission authority. Capture it
+    before copying: a write during the copy must still request a later pass.
+    """
+    signature = {}
+    for name in FILES:
+        try:
+            info = (local / name).stat()
+        except FileNotFoundError:
+            continue
+        signature[name] = [info.st_dev, info.st_ino, info.st_size,
+                           info.st_mtime_ns, info.st_ctime_ns]
+    return signature
+
+
 def publish(local: Path, shared: Path):
     """Try to start a copy; return immediately if another publisher owns it.
 
@@ -65,6 +82,11 @@ def publish(local: Path, shared: Path):
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            return None
+        signature = _source_signature(local)
+        result = _read(local / 'publisher-result.json')
+        if not signature or (result.get('status') == 'published'
+                             and result.get('source_signature') == signature):
             return None
         now = time.monotonic()
         owner = _read(local / 'publisher-owner.json')
@@ -119,6 +141,7 @@ def main(argv):
     descriptor, nonce = int(argv[2]), argv[3]
     result = {'nonce': nonce, 'pid': os.getpid(), 'start_ticks': _start_ticks(os.getpid())}
     try:
+        result['source_signature'] = _source_signature(local)
         result.update(status='published', files=copy_snapshot(local, shared))
         returncode = 0
     except Exception as exc:
