@@ -184,8 +184,12 @@ that attempt number still uncharged, the late report is retained under
 It cannot occupy the successor's immutable attempt slot, create a terminal,
 or release the successor's reservation. A cleanup refusal retains the existing
 late-finish recovery authority. Charged retries and different publications keep
-their existing numbered, first-writer-wins history. This covers deterministic
-missing-lease/late-caller faults; it is not cross-host NFS-stall qualification.
+their existing numbered, first-writer-wins history. A late report uses that
+same archive and exact-scope cleanup path while any successor is still READY,
+including a charged retry or a replacement publication. It cannot publish a
+terminal beside that queued successor or stop its waiter early. This covers
+deterministic lease-loss/late-caller faults; it is not cross-host NFS-stall
+qualification.
 
 Execution heartbeats carry an optional `execution_observation`: the direct
 launcher's polled liveness, cumulative stdout/stderr bytes captured at the
