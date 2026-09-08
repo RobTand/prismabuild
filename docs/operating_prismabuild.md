@@ -122,11 +122,14 @@ What is worth knowing before using it:
     | unprofiled | 60.845 s | 1.310 | 60.324 s | 60.107 s |
     | `--profile sample` | 63.352 s | 2.208 | 61.829 s | 61.711 s |
 
-    The claim is the delta on the means: **4.12 %**, inside the tier's ~5 %
-    budget, so the rate stays at 100 Hz. The two arms' ranges overlap on the
-    one repeat in each that started at the highest load; on the medians the
-    delta is 2.50 %. Both figures are on a shared box, so read 4.12 % as the
-    upper bound of the two. The rate is a property of the mode and is reported
+    Read the claim with its interval, not as one number. The paired deltas
+    are +1.70, +1.58, +1.34, +4.68 and +3.24 s, all positive (paired t 3.93,
+    df 4, p ~ 0.017), so the cost is real. The point estimate is 2.50 % on the
+    medians and 4.12 % on the means; the paired 95 % interval is **1.2-7.0 %**
+    (n = 5, shared box at loadavg 1.4-3.4). The tier's ~5 % budget is met as
+    a point estimate and not established: the interval's upper end crosses
+    it. The rate stays at 100 Hz on that reading; a re-measurement on a quiet
+    box with more repeats is what would settle it. The rate is a property of the mode and is reported
     in the ending, never sealed: receipts taken across a rate change are
     comparable only through the `rate_hz` each one carries.
 *   **The backend has to be visible to the launcher's interpreter.** The
