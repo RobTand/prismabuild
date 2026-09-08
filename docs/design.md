@@ -1661,6 +1661,13 @@ rename occupied no borrowed CPU and is owed its retry. The restore is a
 compare-and-set under the same lock and never overwrites a newer borrow, and a
 lock busy at that moment leaves the borrow spent, which can only refuse the next
 borrow and never authorize a second one against one sample.
+Each consumption has a fresh `borrow_id` stored beside its sample timestamp.
+Return compares both fields, since separate claimants can borrow the same
+sample after a return. The caller retires its return authority before state
+I/O, so repeated cleanup or a write-then-error cannot return a peer's borrow.
+Missing ownership grants no return; an uncertain rollback may conservatively
+leave the sample spent until fresh telemetry arrives. This host-local field
+does not change action identity or CPU/memory reservation sizes.
 
 Memory resources retain ordinary all-or-nothing token admission. CPU telemetry
 cannot discount memory or GPU demand. The separate adaptive GPU controller below

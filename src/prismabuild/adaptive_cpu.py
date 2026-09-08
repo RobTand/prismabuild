@@ -17,6 +17,7 @@ from pathlib import Path
 import socket
 import stat
 import time
+import uuid
 
 from . import adaptive_snapshot
 
@@ -611,7 +612,9 @@ class Controller:
         if not metadata.get('borrowing'):
             return None
         previous = read_json(self.base / 'last-borrow.json')
-        self.write_state('last-borrow.json', {'sampled_unix': metadata['sampled_unix']})
+        metadata['borrow_id'] = uuid.uuid4().hex
+        self.write_state('last-borrow.json', {
+            'sampled_unix': metadata['sampled_unix'], 'borrow_id': metadata['borrow_id']})
         return previous
 
     def withdrew(self, metadata, previous):
@@ -631,8 +634,15 @@ class Controller:
         """
         if not metadata.get('borrowing'):
             return
+        # A host sample can be returned and borrowed again. Its timestamp is
+        # not the owner of that later borrow. Retire this caller's authority
+        # before I/O too: a write followed by an exception is still a return.
+        borrow_id = metadata.pop('borrow_id', None)
+        if not borrow_id:
+            return
         current = read_json(self.base / 'last-borrow.json')
-        if current.get('sampled_unix') != metadata.get('sampled_unix'):
+        if (current.get('borrow_id') != borrow_id
+                or current.get('sampled_unix') != metadata.get('sampled_unix')):
             return
         self.write_state('last-borrow.json', previous or {})
 
