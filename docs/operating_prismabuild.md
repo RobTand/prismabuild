@@ -2057,6 +2057,11 @@ broker attachment, an unaccounted container or incomplete telemetry refuses
 lending. A new worker needs broker installation and qualification before it can
 join this execution path; runtime publication alone does not install the broker.
 
+After a skipped or failed snapshot copy, later admission passes retry from the
+host-local files even when they have no new CPU/GPU sample to write. This also
+works after worker replacement. A successful unchanged copy is not republished;
+its original sample timestamps still determine whether readers call it stale.
+
 ### Adaptive GPU admission and memory budgets
 
 Each current GB10 worker advertises one physical GPU. Normal pool generation

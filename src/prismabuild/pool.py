@@ -3149,13 +3149,16 @@ class PoolQueue:
         tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
         if adaptive_cpu and capacity is not None and tiers is not None:
             controller = cpu_admission.Controller(ledger, tiers)
+            # Resolving the ledger identity may stat the shared mount. Prepare
+            # both controllers before taking the host-wide admission lock.
+            gpu_controller = (gpu_admission.Controller(ledger, publisher=controller)
+                              if has_gpu else None)
             try:
                 with controller.locked():
                     return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                                        capacity=capacity, cpu_tiers=tiers,
                                        controller=controller,
-                                       gpu_controller=(gpu_admission.Controller(ledger, publisher=controller)
-                                                       if has_gpu else None))
+                                       gpu_controller=gpu_controller)
             except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision. The ``ready`` scan, record rename,
                 # lease and tokens remain on the shared mount even though CPU
