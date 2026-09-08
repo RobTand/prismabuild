@@ -1,11 +1,10 @@
 """Fan a test suite out across the pool instead of running it on one box.
 
-The full suite is the coordinator's to run, and running it serially on a GB10
-is the single largest avoidable load on a box that should be doing GPU work.
-dl380g10 has 80 x86 cores sitting idle next to the same shared storage, so the
-suite goes there in shards and the sparks keep their cores.
+The coordinator discovers files and submits independent shards; PB chooses
+their placement and concurrency. CPU suites default to the x86 class, while
+explicit GPU suites default to GB10. Each shard reserves its aggregate demand.
 
-Three constraints shape this, and none of them are negotiable:
+Four constraints shape this:
 
 * **The checkout is transported by pbrun.** ``pbrun`` seals a Git snapshot in
   the CAS and each worker materializes it on local disk. The payload therefore
@@ -53,7 +52,8 @@ from runtime_paths import (  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import pool  # noqa: E402
+from prismabuild import adaptive_gpu, pool  # noqa: E402
+from pbrun import require_gpu_memory_scope  # noqa: E402
 #: The submitter each shard is started through, under whichever layout the
 #: runtime containing this file uses.  ``None`` when neither layout has one.
 PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
@@ -165,6 +165,68 @@ def shard(files: list[str], count: int) -> list[list[str]]:
     return buckets
 
 
+# A closed vocabulary prevents resource controls, config indirection, and
+# extra file populations from hiding in forwarded arguments. Extend this list
+# deliberately for new plugins, after checking their execution semantics.
+PYTEST_SWITCHES = {"--strict-cuda", "--strict-markers", "--strict-config",
+                   "--collect-only", "--co", "--disable-warnings", "-x"}
+PYTEST_VALUES = {"-k", "-m", "--dist", "--surface-json", "--durations",
+                 "--durations-min", "--maxfail", "--tb"}
+
+
+def parse_pytest_args(raw: str, *, gpu: bool, workers: int) -> list[str]:
+    """Validate and normalize a JSON argv without importing target plugins."""
+    values = json.loads(raw)
+    if not isinstance(values, list) or any(
+        not isinstance(v, str) or not v or "\0" in v for v in values
+    ):
+        raise ValueError("--pytest-args must be a JSON array of nonempty strings")
+    result: list[str] = []
+    index = 0
+    while index < len(values):
+        option, equals, value = values[index].partition("=")
+        index += 1
+        if option in PYTEST_SWITCHES and not equals:
+            if option == "--strict-cuda" and not gpu:
+                raise ValueError("--strict-cuda requires --gpu")
+            result.append(option)
+            continue
+        if option not in PYTEST_VALUES:
+            raise ValueError(f"unsupported pytest option {option!r}; use "
+                             "--workers-per-shard for parallelism and paths for files")
+        if not equals:
+            if index == len(values):
+                raise ValueError(f"{option} requires a value")
+            value = values[index]
+            index += 1
+        if not value or value.startswith("-"):
+            raise ValueError(f"{option} requires a nonempty value, not another option")
+        if option == "--dist":
+            if workers == 1:
+                raise ValueError("--dist requires --workers-per-shard greater than 1")
+            if value not in {"load", "loadscope", "loadfile", "loadgroup", "worksteal"}:
+                raise ValueError("--dist must partition tests; 'each' duplicates the population")
+        if option == "--surface-json" and not Path(value).name:
+            raise ValueError("--surface-json requires a filename")
+        result += [option, value]
+    return result
+
+
+def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
+    """Give report outputs stable, distinct names even on shared storage."""
+    result = list(arguments)
+    for position, option in enumerate(arguments):
+        if option != "--surface-json":
+            continue
+        raw = arguments[position + 1]
+        path = Path(raw)
+        result[position + 1] = (
+            raw.replace("{shard}", str(index)) if "{shard}" in raw else
+            str(path.with_name(f"{path.stem}.shard-{index}{path.suffix}"))
+        )
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkout", required=True,
@@ -172,7 +234,7 @@ def main() -> int:
     ap.add_argument("--python", required=True,
                     help="interpreter on the TARGET box, not this one")
     ap.add_argument("--tag", action="append", default=[],
-                    help="placement tag; defaults to x86")
+                    help="placement tag; published default is x86, or gb10 with --gpu")
     ap.add_argument("--shards", type=int, default=20,
                     help="how many actions the suite is split into, "
                          "round-robin over the discovered files; more than "
@@ -190,6 +252,14 @@ def main() -> int:
                          "--threads-per-shard 0, which sets no ceiling at all")
     ap.add_argument("--mem-gb", type=int, default=3,
                     help="memory each shard demands of its box")
+    ap.add_argument("--gpu", action="store_true",
+                    help="request a GPU for every shard; a tag alone does not request one")
+    ap.add_argument("--gpu-memory-gb", type=float, default=None,
+                    help="per-shard GPU memory budget, requires --gpu and pool transport")
+    ap.add_argument("--pytest-args", default=None,
+                    help="JSON array of population/report options; resource and config "
+                         "overrides are refused. --surface-json paths get a shard suffix "
+                         "or expand {shard}. Replaces pytest addopts when supplied")
     ap.add_argument("--timeout-s", type=float, default=None,
                     help="an explicit deadline for each shard; unset means none")
     ap.add_argument("--wait-s", type=float, default=10800.0,
@@ -222,6 +292,20 @@ def main() -> int:
                          "--checkout; a directory contributes every "
                          "test_*.py under it")
     args = ap.parse_args()
+
+    try:
+        if args.mem_gb < 1:
+            raise ValueError("--mem-gb must be at least 1")
+        require_gpu_memory_scope(gpu_memory_gb=args.gpu_memory_gb,
+                                 gpu=args.gpu, transport=args.transport)
+        if args.gpu_memory_gb is not None:
+            adaptive_gpu.memory_budget_bytes(args.gpu_memory_gb)
+        pytest_args = (parse_pytest_args(args.pytest_args, gpu=args.gpu,
+                                        workers=args.workers_per_shard)
+                       if args.pytest_args is not None else [])
+    except ValueError as exc:
+        sys.stderr.write(f"pbtest: {exc}\n")
+        return 2
 
     if PBRUN is None:
         looked = " and ".join(
@@ -282,7 +366,8 @@ def main() -> int:
     # only correct placement", and the four shards died on dl380g10 with
     # ``can't open file '<worktree>/tools/prismabuild_worker.py'`` (#292).
     # Say nothing instead and let ``pbrun`` answer; it pins to this box.
-    tags = args.tag or ([] if pool.is_box_local_path(RUNTIME_ROOT) else ["x86"])
+    tags = args.tag or ([] if pool.is_box_local_path(RUNTIME_ROOT) else
+                        ["gb10" if args.gpu else "x86"])
     sizes = [len(b) for b in buckets]
     print(f"{len(files)} files -> {len(buckets)} shards "
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
@@ -331,6 +416,10 @@ def main() -> int:
             # cache hit.
             "--cpus", str(cpus_per_shard),
         ]
+        if args.gpu:
+            flags += ["--gpu"]
+        if args.gpu_memory_gb is not None:
+            flags += ["--gpu-memory-gb", str(args.gpu_memory_gb)]
         if args.timeout_s is not None:
             flags += ["--timeout-s", str(args.timeout_s)]
         flags += ["--wait-s", str(args.wait_s)]
@@ -344,12 +433,18 @@ def main() -> int:
             # on the fleet.  pbrun owns which modes are legal and refuses the
             # rest, so this passes the word through rather than listing them.
             flags += ["--profile", str(args.profile)]
+        # Explicit forwarding replaces addopts from both environment and
+        # project config: either can hide -n auto or --dist each. The original
+        # no-forwarding command remains byte-identical for existing receipts.
+        explicit_env = ["PYTEST_ADDOPTS="] if args.pytest_args is not None else []
+        explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
         command = flags + [
             "--", "env", "TMPDIR=/home/rob/tmp",
-            *threads,
+            *threads, *explicit_env,
             "PYTHONPATH=src:experiments",
             args.python, "-m", "pytest", "-q", "--no-header",
-            "-p", "no:cacheprovider", *pytest_workers, *bucket,
+            "-p", "no:cacheprovider", *explicit_options,
+            *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
         procs.append((index, bucket, subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))

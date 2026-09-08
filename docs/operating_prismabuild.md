@@ -906,6 +906,50 @@ exit 2 before any action is submitted.
 The CPU demand is sealed into each shard's action, so a suite fanned out at a
 different width is a different action rather than a cache hit of the last run.
 
+`--gpu` requests a GPU for **every shard**. A placement tag alone never grants
+CUDA visibility. With the published runtime, the default tag changes from
+`x86` to `gb10`; override `--tag` for another class with the named interpreter.
+`--mem-gb` still reserves the aggregate host memory for one shard (default
+3 GiB), including all pytest workers. Pool `--gpu-memory-gb N` sets its GPU
+subset/VRAM budget, defaulting to the host budget when omitted. It requires
+`--gpu`, must represent a positive finite byte budget, and is refused with
+SLURM, which cannot enforce this separate budget. PB owns GPU placement and
+sharing; shard count supplies work and does not prescribe GPU concurrency.
+
+Use `--pytest-args` with a JSON array to forward population and report options:
+
+    tools/fleet/pbtest.py --checkout /home/rob/tessera \
+        --python /home/rob/venvs/pq-cu130/bin/python --tag gb10 \
+        --gpu --mem-gb 8 --gpu-memory-gb 4 \
+        --workers-per-shard 2 --threads-per-shard 1 \
+        --pytest-args '["--strict-cuda", "--surface-json", "surface.json", "--dist", "worksteal"]' tests
+
+The supported switches are `--strict-cuda` (requires `--gpu`),
+`--strict-markers`, `--strict-config`, `--collect-only`/`--co`,
+`--disable-warnings`, and `-x`. Options with a value are `-k`, `-m`, `--dist`,
+`--surface-json`, `--durations`, `--durations-min`, `--maxfail`, and `--tb`;
+both separate values and `--option=value` work. Target pytest/plugins still
+validate their values and must support the selected options. `--dist` requires
+multiple workers and accepts `load`, `loadscope`, `loadfile`, `loadgroup`, or
+`worksteal`; `each` would repeat the population and is refused.
+
+Forwarded arguments cannot add files, change worker counts, select another
+config, or inject plugins/ini overrides. Unknown options are refused before
+submission; new plugin options require an explicit vocabulary extension.
+When `--pytest-args` is supplied (even `[]`), it replaces both project and
+environment `addopts` so those cannot silently contradict the reservations.
+Pass the wanted supported options explicitly. Without this option, existing
+pytest configuration behavior is unchanged.
+
+`--surface-json surface.json` becomes `surface.shard-0.json`,
+`surface.shard-1.json`, etc. An explicit `{shard}` in the path expands to the
+zero-based shard index instead. The path travels in each sealed command;
+relative paths are in the worker's snapshot, so use a unique shared directory
+when reports must remain accessible after checkout cleanup. PB does not
+automatically collect arbitrary plugin reports into the CAS; verify their
+payloads separately. Use a new directory per invocation when retaining
+different runs. File discovery and partitioning remain PB's responsibility.
+
 Each shard prints its pytest terminal summary, and `--json` records the same
 text plus a `ran` flag. `ran` is true when pytest reported a terminal summary
 — the `1 failed, 531 passed, 1 skipped in 17.82s` line — and false otherwise.

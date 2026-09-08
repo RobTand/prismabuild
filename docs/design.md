@@ -270,6 +270,23 @@ remain caller-owned. Parallel test processes must reserve their combined CPU
 and memory demand. These defaults change new action identities; old immutable
 requests and receipts retain their original meaning.
 
+## Test fanout submission
+
+`pbtest` file fanout is a public submission contract. CPU-only remains the
+default; `--gpu` adds GPU demand to every shard, with an optional pool-only
+`--gpu-memory-gb` budget validated by the same helpers as `pbrun`. The published
+default placement class is `x86` for CPU and `gb10` for GPU, overridable by
+explicit tags. CPU demand remains pytest workers times their native thread
+ceiling, or a larger explicit reservation; host memory covers the entire shard.
+
+Structured `--pytest-args` forwarding uses a closed population/report vocabulary
+and replaces environment/project `addopts` when supplied. Worker count, config
+indirection, extra file paths, and xdist's population-duplicating `each` mode
+are refused rather than overriding PB's reservations or file partitioning.
+Surface report names expand `{shard}` or receive `.shard-N` before the final
+suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
+identity through `pbrun`; no second dispatcher or placement policy is added.
+
 ## Problem
 
 Campaign work (screens, per-point KL fan-outs, per-tensor encodes, A/Bs)
