@@ -1462,6 +1462,12 @@ two seconds, and on a contained attempt each tick scans `/proc` for the scope's
 members, because the broker's payload leaf is `drwx------` and its
 `cgroup.procs` cannot be read directly.
 
+CSV collection checks expiry before discovery, each open and each header or
+row read. It retains samples already read and records a deadline diagnostic
+when the budget expires. Daily files are still scanned from the beginning;
+wall-clock corrections mean a row beyond the window is not proof that later
+rows are beyond it. An individual filesystem operation may overrun the budget.
+
 Four groups, each naming the source that produced it. A group whose source said
 nothing is absent rather than zero, because "not measured" and "measured as
 idle" call for different responses.
