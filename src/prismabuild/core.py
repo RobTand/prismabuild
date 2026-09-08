@@ -4911,23 +4911,44 @@ def read_chrome_trace(path: Path) -> dict[str, object]:
     because that is what the contract asks for; a plain JSON document at the
     same path is accepted and recorded as uncompressed rather than refused,
     since it is the same trace and the reader opens both.
+
+    The file and its decoded JSON each have the profile byte budget. Read at
+    most one byte beyond the decoded limit before parsing: checking only the
+    compressed size lets a small gzip allocate an arbitrarily large document.
+    JSON's object allocations are additional to this byte budget.
     """
 
     raw = Path(path)
+    compressed = False
     try:
-        blob = raw.read_bytes()
+        with raw.open("rb") as source:
+            if os.fstat(source.fileno()).st_size > PROFILE_BLOB_BUDGET_BYTES:
+                raise ProfileUnusable(
+                    f"the trace exceeds the {PROFILE_BLOB_BUDGET_BYTES}-byte "
+                    "profile budget. Export a shorter torch.profiler.schedule."
+                )
+            compressed = source.read(2) == b"\x1f\x8b"
+            source.seek(0)
+            if compressed:
+                try:
+                    with gzip.GzipFile(fileobj=source, mode="rb") as decoded:
+                        blob = decoded.read(PROFILE_BLOB_BUDGET_BYTES + 1)
+                except (OSError, EOFError, zlib.error) as exc:
+                    raise ProfileUnusable(
+                        f"the profile at {path} is truncated gzip: {exc}"
+                    ) from exc
+            else:
+                blob = source.read(PROFILE_BLOB_BUDGET_BYTES + 1)
     except OSError as exc:
         raise ProfileUnusable(f"no profile was written to {path}: {exc}") from exc
+    if len(blob) > PROFILE_BLOB_BUDGET_BYTES:
+        raise ProfileUnusable(
+            f"the decoded trace exceeds the {PROFILE_BLOB_BUDGET_BYTES}-byte "
+            "profile budget. Export a shorter torch.profiler.schedule; "
+            "gzip compression does not reduce the decoded trace size."
+        )
     if not blob:
         raise ProfileUnusable(f"the profile at {path} is empty")
-    compressed = blob[:2] == b"\x1f\x8b"
-    if compressed:
-        try:
-            blob = gzip.decompress(blob)
-        except (OSError, EOFError, zlib.error) as exc:
-            raise ProfileUnusable(
-                f"the profile at {path} is truncated gzip: {exc}"
-            ) from exc
     try:
         document = json.loads(blob)
     except ValueError as exc:
@@ -4943,6 +4964,7 @@ def read_chrome_trace(path: Path) -> dict[str, object]:
     record: dict[str, object] = {
         "events": len(events) if isinstance(events, list) else None,
         "compressed": compressed,
+        "decoded_bytes": len(blob),
     }
     for field in ("schemaVersion", "deviceProperties"):
         if field == "schemaVersion" and field in document:

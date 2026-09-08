@@ -461,6 +461,12 @@ matters). Rules:
   the observed growth rate of the format, a mode that can bound its own capture
   offers a window sealed into the key, and a profile over the budget fails the
   run with the remedy in the message rather than filing a receipt without it.
+  Torch's 2 GiB limit applies to both the stored file and decoded JSON bytes.
+  Gzip decoding reads at most one byte beyond that limit and refuses before
+  JSON parsing; concatenated gzip members share the same decoded budget.
+  Accepted profiles report `decoded_bytes`. JSON object memory is additional;
+  this validation limit does not cap trace growth on disk during capture or
+  preserve a trace interrupted before ingestion. Action identity is unchanged.
 - **A diagnostic must not change the shape of what it observes** — a profiled
   action's failure record is the unprofiled one: the same `returncode` and the
   same `signal`, carried out of the profiler by a relay that can distinguish a

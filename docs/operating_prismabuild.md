@@ -314,7 +314,14 @@ with prismabuild_torch_profile():
     action does under a diagnostic flag.
 *   **The profiler keeps events in memory until export**, so a long run should
     pass a `schedule=` and profile a window rather than an epoch. The 2 GiB
-    budget applies here too.
+    budget applies to both the stored file and decoded JSON. Gzip decoding
+    stops after at most one byte over that budget, before JSON parsing, even
+    across concatenated gzip members. Accepted profiles report `decoded_bytes`
+    beside the stored blob's `bytes`. JSON object allocations add to the
+    decoded buffer's memory; this is a validation byte limit, not a memory
+    reservation or a disk limit while capture is running. Oversized decoded
+    traces fail with a request to export a shorter schedule, without a success
+    receipt.
 
 **What they cost.** A fixed-iteration GPU workload (32,000 2048x2048 bf16
 matmuls), five interleaved paired repeats per arm inside one admitted action on

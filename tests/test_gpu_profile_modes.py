@@ -309,6 +309,24 @@ def test_an_action_that_ignores_the_contract_fails_the_run(tmp_path: Path):
     assert not (tmp_path / "cas" / "actions").exists()
 
 
+def test_an_oversized_decoded_trace_cannot_publish_a_success_receipt(tmp_path, monkeypatch):
+    monkeypatch.setattr(pb, "PROFILE_BLOB_BUDGET_BYTES", 1024)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _torch_action(checkout, script=(
+        "printf ok > result.txt; "
+        f'/usr/bin/python3 -c "'
+        "import gzip, json, os; "
+        f"gzip.open(os.environ['{pb.TorchProfileBackend.OUT_ENV}'], 'wb')"
+        ".write(json.dumps({'traceEvents': [], 'padding': 'x' * 2048})"
+        '.encode())"'
+    ))
+    with pytest.raises(pb.LocalActionError, match="decoded.*profile budget"):
+        pb.run_local_action(action, cas_root=tmp_path / "cas", checkout_root=checkout)
+    assert (checkout / "result.txt").read_text() == "ok"
+    assert pb.PrismaBuildCAS(tmp_path / "cas").lookup(action) is None
+
+
 def test_a_mode_never_takes_over_a_variable_the_action_already_seals(
     tmp_path: Path
 ):
