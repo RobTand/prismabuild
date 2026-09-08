@@ -1518,8 +1518,8 @@ once per candidate for the adaptive CPU decision, the adaptive GPU decision,
 the reservation through `begin_acquire`, and the borrow record that decision
 consumes. `begin_acquire` moves the tokens out of `free/` and into a directory
 every sibling's `decision` and `available` already counts, so the same headroom
-cannot be spent twice once that block returns. Everything after it runs outside
-the lock and nothing reacquires it: the record rename that decides ownership,
+cannot be spent twice once that block returns. A successful claim then runs
+outside the lock without reacquiring it: the record rename that decides ownership,
 the lease write and the token renames are arbitrated fleet-wide by that rename
 and by the per-key transition lock, to which a host-local FLOCK adds nothing.
 Holding it across them emptied whole boxes out of the claiming population while
