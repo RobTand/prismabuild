@@ -3554,16 +3554,21 @@ class PoolQueue:
         holds capacity it is not about to use, and never waits while holding.
 
         With a ``controller``, the host-wide admission lock is taken *here*,
-        and it covers exactly two things: the capacity prelude, and, per
-        candidate, the decision plus ``begin_acquire`` plus the borrow record.
-        That is the whole of what has to be exclusive between the loops of one
-        box, because ``begin_acquire`` moves the tokens out of ``free/`` and
-        into a directory every sibling's ``decision`` and ``available`` already
-        counts.  Everything after it is outside the lock, including the rename
-        -- ownership is decided fleet-wide by that rename and by the per-key
-        transition lock, neither of which a host-local flock adds anything to,
-        and holding it across the mount is what emptied a whole box out of the
-        claiming population when the mount was slow (#351).
+        and it covers the capacity prelude and, per candidate, the decision
+        through ``begin_acquire``.  That is what has to be exclusive between
+        the loops of one box, because ``begin_acquire`` moves the tokens out of
+        ``free/`` and into a directory every sibling's ``decision`` and
+        ``available`` already counts, so the same headroom cannot be spent
+        twice once it returns.  Everything after it runs outside the lock,
+        including the rename: ownership is decided fleet-wide by that rename
+        and by the per-key transition lock, neither of which a host-local flock
+        adds anything to, and holding it across the mount is what emptied whole
+        boxes out of the claiming population when the mount was slow (#351).
+
+        The one thing that goes back under the lock is ``admitted``, which is
+        host-local bookkeeping and touches nothing on the mount.  A refusal
+        there is swallowed rather than returned, because by then the item is
+        claimed and there is no honest way to report "nothing to run".
         A starved item (``passes >= STARVATION_FLOOR``) that this host could
         eventually fit withholds the host rather than being overtaken; one it
         could never fit is skipped, because withholding a box for work that
@@ -3737,16 +3742,6 @@ class PoolQueue:
                                 # the head of the ordering -- but stops holding the box shut
                                 # for work it cannot do anything with.
                                 continue
-                            if controller is not None and adaptive is not None:
-                                # The borrow is spent when the tokens are, not when
-                                # the rename is won.  ``decision`` refuses a second
-                                # borrow off the same host sample only if this is
-                                # already written, so recording it on the far side
-                                # of an unlocked rename would let two loops borrow
-                                # the same idle CPUs.  A claimant that then loses
-                                # the rename has cost this box one borrow window,
-                                # which is the safe direction to be wrong in.
-                                controller.admitted(adaptive)
                     if (ledger is not None and handle is not None and cpu_tiers is not None
                             and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
                             and self._defer_fallback(item, demand)):
@@ -3926,12 +3921,31 @@ class PoolQueue:
                                      if claimed.get("container_owner") else None),
                 )
                 self.passes_path(key).unlink(missing_ok=True)
-                # ``controller.admitted`` is NOT called here.  It writes
-                # host-local state and would need the admission lock back,
-                # which is the one thing this path must never take: it is past
-                # the rename, so it owns the item, and a busy refusal here
-                # would throw a claim away.  It runs beside ``begin_acquire``
-                # instead, under the lock that already had to be held.
+                if controller is not None and adaptive is not None:
+                    # The one thing that goes back under the lock, and the only
+                    # thing: ``admitted`` writes host-local borrow state, reads
+                    # nothing on the mount, and cannot stall a sibling in it.
+                    #
+                    # It records the borrow *after* the rename on purpose.  A
+                    # claimant that loses the rename has borrowed nothing, and
+                    # recording it anyway would spend this box's one borrow per
+                    # host sample on a claim that never happened -- the next
+                    # poll is then refused for a borrow nobody holds, until a
+                    # fresh sample arrives.
+                    #
+                    # A refusal here is swallowed, and it is the only refusal
+                    # in this method that is.  Everything above this line has
+                    # already happened: the record is renamed, the tokens are
+                    # committed, the lease is written, the item IS this
+                    # claimant's.  Letting ``AdmissionBusy`` out would hand
+                    # ``claim`` its "nothing to run" answer for work that is
+                    # already owned and that nobody would then execute.  What
+                    # is given up instead is one sample's worth of the
+                    # lend-a-lightly-used-CPU guard, which the host busy and
+                    # PSI tests re-derive on the next sample.
+                    with suppress(cpu_admission.AdmissionBusy):
+                        with controller.locked():
+                            controller.admitted(adaptive)
                 return claimed
         return None
 

@@ -277,3 +277,40 @@ def test_an_exception_before_the_rename_returns_the_reservation(rig, monkeypatch
     assert rig.ledger().available() == rig.ledger().capacity()
     assert sorted(p.name for p in rig.dir(pool.READY).iterdir()) == sorted(
         f'{key}.json' for key in KEYS), 'the items did not stay ready'
+
+
+def test_a_busy_admission_lock_after_the_rename_cannot_undo_the_claim(
+        rig, monkeypatch):
+    """Past the rename the item is this loop's, and nothing may take it back.
+
+    The narrowed lock is reacquired once, after the lease write, for the
+    host-local borrow record.  ``locked()`` refuses instead of waiting, and a
+    refusal that escaped there would leave ``claim`` answering "nothing to
+    run" for an action that is already renamed into ``claimed/``, holding
+    tokens, and carrying a lease -- work nobody would then execute, and which
+    only the reaper would recover a ``LEASE_TIMEOUT_S`` later.
+    """
+
+    held = []
+    write_lease = rig.write_lease
+
+    def lease_then_hold_admission(action_key, **kwargs):
+        result = write_lease(action_key, **kwargs)
+        descriptor = os.open(_lock_path(rig), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        held.append(descriptor)
+        return result
+
+    monkeypatch.setattr(rig, 'write_lease', lease_then_hold_admission)
+    try:
+        claimed = _bounded(lambda: _claim(rig), 'claim')
+    finally:
+        for descriptor in held:
+            os.close(descriptor)
+
+    assert held, 'the claim never reached the lease write'
+    assert claimed is not None, (
+        'a busy host-local lock after the rename lost a claim that was '
+        'already made')
+    assert rig.ledger().held_keys() == [claimed['action_key']]
+    assert rig.item_path(pool.CLAIMED, claimed['action_key']).exists()
