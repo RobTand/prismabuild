@@ -6598,6 +6598,15 @@ def run_local_action(
                     "stderr, which its result log captured."
                     + _ingested_result_note(cas, output)
                 ) from exc
+            except BaseException:
+                # A windowed profiler can have exited while its action still
+                # runs. A pool signal during that settle must retain the
+                # completed report before _profile_scratch removes it, just
+                # as a signal during process.wait does above.
+                partial = _reap_and_settle(process, profile, cas)
+                if partial is not None:
+                    _write_action_status({"profile": dict(partial)})
+                raise
             profile.note_backend_status(returncode, profile_record)
             returncode = action_status
         if returncode != 0:

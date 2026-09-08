@@ -419,7 +419,9 @@ matters). Rules:
   through the paths that already refuse those. An action stopped by its deadline files the profile it
   had reached, marked partial and bounded by the time the pool allows a
   signalled launcher, because the run somebody profiled for being slow is the
-  run whose profile matters.
+  run whose profile matters. This also covers a deadline during the relay
+  wait after a windowed profiler has exited: the action group is reaped and
+  the completed report is ingested before profile scratch cleanup.
 - **Effective pool placement is a parameter** — `pbrun` seals the sorted,
   deduplicated conjunction of tags that its placement rule actually returned,
   including a derived hostname pin. The normalized constraint moves the action
