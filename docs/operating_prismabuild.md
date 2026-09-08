@@ -693,6 +693,14 @@ launching the worker, using a monotonic clock. Queue waiting does not consume
 that budget; `--wait-s` controls the submitter's wait separately. A short budget
 does not wait for the next lease heartbeat before being enforced.
 
+The published fleet configuration gives Sparky and Sparklina 86400-second
+ceilings and dl380g10 a 3600-second ceiling. The GB10 one-day bound accommodates
+the dependent GLM calibration capture (issue #385); it does not reserve more
+memory or bypass admission. Specify the action's own deadline, and check the
+live worker offer before submitting long work. After runtime publication,
+supervisors replace only idle workers, so an already running attempt keeps
+its original ceiling. Omitting an action deadline inherits the worker ceiling.
+
 When a `--timeout-s` you asked for does expire, the worker takes the action's
 whole process group down before it reports the timeout: SIGTERM, a grace
 period, then SIGKILL against whatever is still running. A descendant that
