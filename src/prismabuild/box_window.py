@@ -22,8 +22,9 @@ answers at all, the window is ``unavailable`` with the reason, because a
 receipt that says nothing was measured is worth more than one that implies an
 idle box.
 
-Reading is bounded and never raises into a caller: the deadline is the budget,
-and running out of it produces ``unavailable``, not an exception.
+Reading uses a cooperative deadline and never raises into a caller. Expiry
+preserves collected samples with a diagnostic, or produces ``unavailable``
+when nothing was measured. It cannot interrupt a filesystem read in progress.
 """
 from __future__ import annotations
 
@@ -135,13 +136,26 @@ def _pqteld_series(csv_dir: Path, host: str, start_unix: float, end_unix: float,
     wanted = (*_GPU_COLUMNS, *_MEMORY_COLUMNS)
     series = {name: _Series() for name in wanted}
     errors: list[str] = []
+
+    def expired() -> bool:
+        if time.monotonic() >= expires:
+            errors.append("deadline reached while reading pqteld")
+            return True
+        return False
+
     first_ms, last_ms = start_unix * 1000.0, end_unix * 1000.0
+    if expired():
+        return series, errors
     files = _csv_files(Path(csv_dir), host, start_unix, end_unix)
     if not files:
         return {}, [f"no pqteld CSV for {host} covering the window"]
     for path in files:
+        if expired():
+            return series, errors
         try:
             with path.open("r", encoding="utf-8", errors="replace") as handle:
+                if expired():
+                    return series, errors
                 header = handle.readline().rstrip("\n").split(",")
                 index = {name: header.index(name) for name in wanted
                          if name in header}
@@ -150,10 +164,15 @@ def _pqteld_series(csv_dir: Path, host: str, start_unix: float, end_unix: float,
                     continue
                 stamp = header.index("epoch_ms")
                 width = len(header)
-                for rows, line in enumerate(handle):
-                    if not rows % 4096 and time.monotonic() > expires:
-                        errors.append("deadline reached while reading pqteld")
+                while True:
+                    # Check before requesting the next row, including one that
+                    # will turn out to be outside the window. A previous read
+                    # can spend the entire remaining budget.
+                    if expired():
                         return series, errors
+                    line = handle.readline()
+                    if not line:
+                        break
                     cells = line.rstrip("\n").split(",")
                     if len(cells) != width:
                         continue  # a torn final row, not a schema change

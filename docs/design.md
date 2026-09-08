@@ -377,6 +377,13 @@ minimum timeout grant; CPU data already collected survives skipped pressure
 reads. This does not impose a hard deadline on filesystem reads, HTTP response
 processing or process cleanup.
 
+The pqteld collector checks expiry before file discovery, each file open,
+the header read and every subsequent row read. A read already in progress may
+overrun the budget; its measured row is retained with an expiry diagnostic
+before another read starts. CSV scanning still starts at the file's beginning
+and does not assume ordered wall-clock timestamps. This bounds continued work
+cooperatively, not the size or duration of an individual filesystem operation.
+
 Netdata chart reads request 4096 points with average grouping, while
 retaining the 4 MiB response read cap. Long windows therefore use averaged
 buckets instead of asking for every stored row and truncating valid JSON.

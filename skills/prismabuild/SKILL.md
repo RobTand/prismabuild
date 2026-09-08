@@ -194,7 +194,10 @@ no flag to choose. Its cost is bounded rather than absent — a shared two-secon
 budget at finish to read the box window, including the GPU reference query
 (0.14–0.18 s measured before the query shared that budget), plus a sampler that
 ticks at most every two seconds while the attempt runs. It never enters the
-action key. Every Netdata chart read also uses only the remaining budget and
+action key. CSV collection checks expiry before discovery, file opens and
+each header or row read, retaining collected samples with an expiry diagnostic.
+It still scans daily files from the beginning; an individual filesystem read
+can overrun the cooperative deadline. Every Netdata chart read also uses only the remaining budget and
 targets 4096 average buckets (Netdata rounds the count to whole time buckets),
 retaining the 4 MiB response cap. Its CPU
 group records `time_group: average` and available CPU/pressure chart intervals;
