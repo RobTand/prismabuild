@@ -21,14 +21,20 @@ class Recorder:
         self.clock[0] += self.open_cost
         recorder = self
 
-        class Stream(io.StringIO):
+        class Stream(io.BytesIO):
             def readline(self, *args):
                 recorder.reads += 1
                 line = super().readline(*args)
                 recorder.clock[0] += recorder.read_cost
                 return line
 
-        return Stream("epoch_ms,power_draw_w\n1000,10\n2000,90\n3000,20\n")
+            def read(self, *args):
+                recorder.reads += 1
+                data = super().read(*args)
+                recorder.clock[0] += recorder.read_cost
+                return data
+
+        return Stream(b"epoch_ms,power_draw_w\n1000,10\n2000,90\n3000,20\n")
 
 
 @pytest.mark.parametrize("now", [10, 11])
@@ -75,9 +81,9 @@ def test_row_that_spends_budget_keeps_sample_but_starts_no_next_row(monkeypatch,
     monkeypatch.setattr(box_window, "_csv_files", lambda *args: [recorder])
     window = box_window.read_window(1, 3, host="test", csv_dir=tmp_path,
                                     netdata_url=None, deadline_s=2)
-    assert recorder.reads == 2  # header and one measured row
+    assert recorder.reads == 2  # header and one tail block
     assert window["gpu"]["samples"] == 1
-    assert window["gpu"]["power_w_peak"] == 10
+    assert window["gpu"]["power_w_peak"] == 20
     assert any("deadline" in error for error in window["errors"])
 
 

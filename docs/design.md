@@ -555,12 +555,18 @@ minimum timeout grant; CPU data already collected survives skipped pressure
 reads. This does not impose a hard deadline on filesystem reads, HTTP response
 processing or process cleanup.
 
-The pqteld collector checks expiry before file discovery, each file open,
-the header read and every subsequent row read. A read already in progress may
-overrun the budget; its measured row is retained with an expiry diagnostic
-before another read starts. CSV scanning still starts at the file's beginning
-and does not assume ordered wall-clock timestamps. This bounds continued work
-cooperatively, not the size or duration of an individual filesystem operation.
+The pqteld collector checks expiry before discovery, each open, the header,
+each seek/read block and between parsed rows. It visits files in reverse
+discovery order and rows from each captured EOF backwards in 64 KiB blocks,
+so old day rows do not consume the budget before a recent action's samples.
+A read already in progress may overrun the budget; its first complete row is
+processed before checking expiry again. Memory holds a block plus a spanning
+row. Aggregates retain the last measured cell in original file/append order.
+Timestamp comparisons only filter rows: clock corrections prohibit early
+stopping, so a complete window may still require scanning whole day files.
+Appends after EOF capture belong to a later read; short block reads report a
+file error. This is cooperative accounting, not a hard filesystem deadline,
+an atomic recorder snapshot or a timestamp index. Action identity is unchanged.
 
 Recorder filename discovery uses the executing hostname and its explicit
 `fleet_boxes.json` `_alias` equivalence from the collector's own generation.

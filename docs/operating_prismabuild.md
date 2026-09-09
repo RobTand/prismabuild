@@ -1523,11 +1523,28 @@ two seconds, and on a contained attempt each tick scans `/proc` for the scope's
 members, because the broker's payload leaf is `drwx------` and its
 `cgroup.procs` cannot be read directly.
 
-CSV collection checks expiry before discovery, each open and each header or
-row read. It retains samples already read and records a deadline diagnostic
-when the budget expires. Daily files are still scanned from the beginning;
-wall-clock corrections mean a row beyond the window is not proof that later
-rows are beyond it. An individual filesystem operation may overrun the budget.
+CSV collection visits files in reverse discovery order and reads rows backwards
+from each captured EOF in 64 KiB blocks. Recent appended samples therefore get
+the budget before old day rows. Expiry is checked before discovery, opens,
+header/block reads and between parsed rows. A block read that spends the budget
+may contribute its first complete row; an expiry diagnostic marks an incomplete
+scan. Counts/means/extrema include measured rows, and last-value fields retain
+the last measured cell in original append/file order. Clock corrections prohibit
+stopping at an out-of-window timestamp, so complete coverage may still require
+scanning whole daily files. Appends after EOF capture wait for a later read;
+short reads report a file error. Memory holds one block plus a spanning row.
+An individual filesystem operation may overrun the cooperative budget.
+
+A controlled scan on Sparky (Python 3.12.3, one PB-assigned CPU, GPU disabled)
+used a 73,418,530-byte synthetic day file, 172,800 rows and 84 columns. Five
+interleaved pairs with a 50 ms budget returned 0/120 recent samples before this
+change and 120/120 after it. Complete scans returned all samples in both arms;
+their medians were 0.316 s before and 0.331 s after. This improves which samples
+survive expiry, not full-scan speed. Both cProfile views and the Netdata/pqteld
+host window are retained in action `951132997970`, CAS receipt
+`72e6b411d0add2d6a1a757796719c7806b3403c1ce3c4e30d8bcc8ffcdfc6fb2`.
+The reduced budget is a controlled boundary check, not a claim that this file
+exhausted the normal two-second budget.
 
 The recorder keeps the hostname it started with. After an OS rename, CSV
 discovery also accepts the explicitly equivalent `_alias` in the generation's
