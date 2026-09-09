@@ -278,3 +278,36 @@ def test_a_report_before_attesting_carries_no_claim(tmp_path):
     client = agent(tmp_path, poster=None)
     (tmp_path / 'state').mkdir(parents=True, exist_ok=True)
     assert 'attestation' not in client.report('current')
+
+
+def test_the_mode_is_reachable_from_the_command_line(tmp_path, monkeypatch):
+    """The parent invokes the child by argv, so the dispatch is part of the contract.
+
+    `trusted` is stood down because it demands a root-owned enrollment file and
+    this runs unprivileged; everything it guards is exercised where it is used.
+    """
+    import sys
+
+    config = tmp_path / 'client-upgrade.json'
+    config.write_text(json.dumps({'generation_store': str(tmp_path / 'fleet' / 'runtime-generations'),
+                                  'reader_uid': os.getuid()}))
+    monkeypatch.setattr(upgrade, 'trusted', Path)
+    monkeypatch.setattr(sys, 'argv', ['upgrade_client.py', '--config', str(config),
+                                      '--post-rollout-marker', 'agents/two.json'])
+    monkeypatch.setattr(sys, 'stdin', type('S', (), {'buffer': io_of(b'{"b": 2}\n')})())
+    assert upgrade.main() == 0
+    assert (tmp_path / 'fleet/rollout/agents/two.json').read_bytes() == b'{"b": 2}\n'
+
+
+def test_the_command_line_refuses_a_path_that_is_not_plain_descent(tmp_path, monkeypatch):
+    import sys
+
+    config = tmp_path / 'client-upgrade.json'
+    config.write_text(json.dumps({'generation_store': str(tmp_path / 'fleet' / 'runtime-generations'),
+                                  'reader_uid': os.getuid()}))
+    monkeypatch.setattr(upgrade, 'trusted', Path)
+    monkeypatch.setattr(sys, 'argv', ['upgrade_client.py', '--config', str(config),
+                                      '--post-rollout-marker', '../../escape'])
+    monkeypatch.setattr(sys, 'stdin', type('S', (), {'buffer': io_of(b'{}')})())
+    with pytest.raises(ValueError):
+        upgrade.main()
