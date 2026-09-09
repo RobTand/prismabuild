@@ -110,3 +110,60 @@ def test_missing_scope_membership_path_is_diagnostic(discovery):
     scope.cgroup_path = Path('/outside-configured-cgroup-root')
     record = scope.sample_process_io()
     assert record.get('errors') and record['processes_observed'] == 0
+
+
+@pytest.fixture
+def hierarchy(discovery):
+    scope, state = discovery
+    scope.cgroup_path.mkdir()
+    (scope.cgroup_path / 'cgroup.procs').write_text('43434343\n')
+    child = scope.cgroup_path / 'payload'
+    child.mkdir()
+    (child / 'cgroup.procs').write_text('42424242\n')
+    return scope, state, child
+
+
+@pytest.mark.parametrize('failure', [PermissionError('denied'),
+                                     OSError(errno.EIO, 'metadata unavailable')])
+def test_unreadable_entry_metadata_uses_membership_fallback(hierarchy, monkeypatch, failure):
+    scope, _, child = hierarchy
+    original = resource_scope.os.stat
+
+    def stat(path, *args, **kwargs):
+        if not isinstance(path, int) and Path(path) == child:
+            raise failure
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(resource_scope.os, 'stat', stat)
+    record = scope.sample_process_io()
+    assert record['wchar'] == 200 and record['processes_observed'] == 2
+    assert not record.get('errors'), 'successful fallback recovered the census'
+
+
+@pytest.mark.parametrize('bad_pid', ['not-a-pid', '0', '-12'])
+def test_malformed_hierarchy_membership_uses_procfs_fallback(hierarchy, bad_pid):
+    scope, _, child = hierarchy
+    (child / 'cgroup.procs').write_text(bad_pid + '\n')
+    record = scope.sample_process_io()
+    assert record['wchar'] == 200 and record['processes_observed'] == 2
+    assert set(record['live']) == {'42424242:100', '43434343:100'}
+    assert not record.get('errors')
+
+
+def test_failed_fallback_keeps_directly_discovered_peer(hierarchy):
+    scope, state, child = hierarchy
+    (child / 'cgroup.procs').write_text('malformed\n')
+    state['entries'] = PermissionError('procfs unavailable')
+    record = scope.sample_process_io()
+    assert record['wchar'] == 100 and record['processes_observed'] == 1
+    assert record.get('errors'), 'neither discovery source could recover the child'
+
+
+@pytest.mark.parametrize('members', ['42424242\n', ''])
+def test_readable_hierarchy_does_not_need_procfs(hierarchy, members):
+    scope, state, child = hierarchy
+    (child / 'cgroup.procs').write_text(members)
+    state['entries'] = PermissionError('procfs must not be needed')
+    record = scope.sample_process_io()
+    assert record['wchar'] == (200 if members else 100)
+    assert not record.get('errors')
