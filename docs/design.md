@@ -201,10 +201,15 @@ the claim and reservation, then cleanup on the owning host retires its exact
 scope before retry. Successor scopes survive late original-owner calls, and
 the original waiters subsequently return the successor results. Successful
 harness teardown preserves production's termination audit.
+The optional Docker mode also places one sleeping CPU-only container in each
+scope, using the ordinary shim. The recorded DL380/Sparky run checks inherited
+CPU affinity, container removal before retry, successor container survival
+after late calls, and final removal through production cleanup.
 
 These campaigns depend on the owning host remaining available and supply the
 successor's queue result through the harness. They do not qualify Docker
-cleanup, permanent host loss/reboot, induced kernel NFS stalls, execution-budget
+recovery on Sparklina, late Docker creation RPCs, permanent host loss/reboot,
+induced kernel NFS stalls, execution-budget
 accounting during stalls, normal scope creation/preflight, or normal execution
 result collection. The runbook retains the failed campaigns and receipt tables;
 the remaining #234 requirements cannot be inferred from those passing cases.
