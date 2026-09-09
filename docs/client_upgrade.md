@@ -54,6 +54,19 @@ The persistent drain gate survives a broker restart. Scope creation racing with
 the gate receives a retryable maintenance refusal. Unreleased scopes and unknown
 or populated groups prevent upgrading; an idle-looking process list is not proof.
 
+A drain records the holder that opened it, and only that holder reopens
+admission. The updater states `client-upgrade` and releases nothing else: a tick
+that finds a host already current leaves an operator's stop in place and reports
+`held` with the holder's name, and a transaction that meets one stops before
+touching the service. A caller that states no holder, including any client older
+than this change, opens a drain recorded as `unattributed`; such a drain carries
+no claim and stays releasable by every root caller, which is what lets a drain
+opened through one broker close through the broker that replaced it mid-upgrade.
+`maintenance_force_end` is the way past a holder who is gone, and it stamps
+`forced_end_of` and `forced_end_by` into the gate so a forced release never
+reads as an ordinary one. Beginning a drain that is already open never rewrites
+the stated reason or the time admission closed.
+
 A root-owned transaction journal and previous file copies precede service stop.
 Failure restores the previous files and verifies the restarted broker before
 reopening admission. A subsequent invocation recovers an interrupted transaction
@@ -70,7 +83,7 @@ journalctl -u prismabuild-client-upgrade.service
 ```
 
 Status reports desired generation/commit/hashes, actual installed hashes, check
-time and `current`, `draining`, `updated`, `rolled_back` or `error`. A timer being
+time and `current`, `draining`, `held`, `updated`, `rolled_back` or `error`. A timer being
 active alone does not demonstrate convergence. Check the latest record and the
 broker's health; preserve transaction and journal evidence on failure.
 

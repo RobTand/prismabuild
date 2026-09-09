@@ -28,6 +28,14 @@ MEMBERS = {
 # broker starts requiring a newly listed optional module.
 OPTIONAL_MEMBERS = {'gpu_capacity.py': 'src/prismabuild/gpu_capacity.py'}
 SERVICE = 'prismabuild-resource-broker.service'
+#: The holder this agent claims on a drain it opens. It must stay stable across
+#: client generations: a transaction opens a drain under one generation and can
+#: close it under the next, and only the holder reopens admission.
+MAINTENANCE_OWNER = 'client-upgrade'
+#: Mirrors resource_broker.MAINTENANCE_UNOWNED. A drain opened through a broker
+#: that predates holders carries this identity, and no caller may read it as a
+#: stop somebody is holding.
+MAINTENANCE_UNOWNED = 'unattributed'
 MAX_MEMBER = 4 * 1024 * 1024
 MAX_EXPORT = 32 * 1024 * 1024
 CLIENT_UPGRADE_PROTOCOL = 2
@@ -154,11 +162,11 @@ def desired_as_reader(config_path, config):
         return decode_export(output.read(MAX_EXPORT + 1))
 
 
-def request(endpoint, operation):
+def request(endpoint, operation, **fields):
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(10)
         client.connect(str(endpoint))
-        client.sendall((json.dumps({'op': operation}) + '\n').encode())
+        client.sendall((json.dumps({'op': operation, **fields}) + '\n').encode())
         data = bytearray()
         while b'\n' not in data:
             chunk = client.recv(65536)
@@ -195,8 +203,56 @@ class Upgrader:
         return self.command(['/usr/bin/systemctl', verb, SERVICE], check=check,
                             capture_output=True, text=True, timeout=45)
 
-    def call(self, op):
-        return self.rpc(self.endpoint, 'maintenance_' + op)
+    def call(self, op, **fields):
+        return self.rpc(self.endpoint, 'maintenance_' + op, **fields)
+
+    @staticmethod
+    def held_elsewhere(status):
+        """The stated holder of the drain in `status`, when it is not ours.
+
+        A broker that predates drain holders states none, and a drain nobody
+        claimed records no stop this agent must respect. Both read as releasable
+        here, which is exactly how this agent behaved before holders existed and
+        is what keeps a bridge generation from deadlocking on a gate it cannot
+        attribute.
+        """
+        if status.get('draining') is not True or status.get('maintenance_protocol', 1) < 2:
+            return None
+        holder = status.get('maintenance_owner')
+        return None if holder in (MAINTENANCE_OWNER, MAINTENANCE_UNOWNED) else holder
+
+    def open_drain(self):
+        """Close admission, claiming the drain for this agent where it can.
+
+        The owner travels only when a status reply proves the running broker
+        understands the field. This agent converges host by host, so a new
+        client talks to a broker that predates holders for a whole bridge
+        generation, and that broker refuses any request field it does not know.
+
+        A drain another holder already stated is returned untouched, because
+        asking again must not become a takeover. The caller decides what to do
+        with somebody else's stop.
+        """
+        probe = self.call('status')
+        if self.held_elsewhere(probe) is not None:
+            return probe
+        if probe.get('maintenance_protocol', 1) >= 2:
+            return self.call('begin', owner=MAINTENANCE_OWNER)
+        return self.call('begin')
+
+    def close_drain(self, status):
+        """Reopen admission under this agent's own claim.
+
+        `status` is the reply that just proved this broker healthy, so the
+        decision reads the broker running now rather than the one running when
+        the drain opened: a transaction restarts the service between the two,
+        and a rollback starts an older one that would refuse the field. A drain
+        nobody claimed is released either way, which is how a drain opened
+        through an older broker still closes against a newer one.
+        """
+        if status.get('maintenance_protocol', 1) >= 2:
+            return self.call('end', owner=MAINTENANCE_OWNER)
+        return self.call('end')
 
     def healthy(self):
         last = None
@@ -255,7 +311,10 @@ class Upgrader:
         # The persisted broker gate survives restart. If the service is alive,
         # independently prove the gate and idleness again before stopping it.
         if self.ctl('is-active', check=False).returncode == 0:
-            status = self.call('begin')
+            status = self.open_drain()
+            holder = self.held_elsewhere(status)
+            if holder is not None:
+                raise RuntimeError('rollback deferred: maintenance drain is held by ' + holder)
             if status.get('active_scopes') != 0 or status.get('draining') is not True:
                 raise RuntimeError('rollback deferred: broker still owns active work')
             self.ctl('stop')
@@ -263,8 +322,7 @@ class Upgrader:
         if self.installed(previous) != previous:
             raise RuntimeError('restored client hash mismatch')
         self.ctl('start')
-        self.healthy()
-        self.call('end')
+        self.close_drain(self.healthy())
         self.journal.unlink()
         sync_dir(self.state)
         return self.report('rolled_back', desired=transaction['desired'],
@@ -299,7 +357,19 @@ class Upgrader:
             if status.get('health') is not True or not self.loaded_matches(status):
                 raise RuntimeError('installed files match publication but running broker is unhealthy or stale')
             if status.get('draining') is True:
-                self.call('end')
+                # Nothing here needs this host stopped, so release only a drain
+                # this agent is named on. An operator's stop, and any drain this
+                # agent cannot show is its own, outlives a tick that finds the
+                # host already current: that release is the defect this path had.
+                # A broker without holders cannot say whose drain this is, and
+                # released it here before holders existed.
+                if status.get('maintenance_protocol', 1) < 2:
+                    self.call('end')
+                elif status.get('maintenance_owner') == MAINTENANCE_OWNER:
+                    self.close_drain(status)
+                else:
+                    return self.report('held', desired=version, installed=installed,
+                                       drain_owner=status.get('maintenance_owner'))
             return self.report('current', desired=version, installed=installed)
         # Keep an explicit union so additions and removals both carry their
         # previous existence through failures and process restarts.
@@ -334,7 +404,13 @@ class Upgrader:
             sync_dir(path)
         # No new scope can cross this operation's Authority.lock. Existing
         # attempts finish normally while subsequent timer ticks observe them.
-        status = self.call('begin')
+        status = self.open_drain()
+        holder = self.held_elsewhere(status)
+        if holder is not None:
+            # Somebody stopped this host on purpose. Upgrading through that stop
+            # would restart the broker service under them, and this agent could
+            # not reopen admission afterwards anyway.
+            return self.report('held', desired=version, installed=installed, drain_owner=holder)
         if status.get('draining') is not True:
             raise RuntimeError('broker failed to close admission')
         if status.get('active_scopes') != 0:
@@ -348,8 +424,7 @@ class Upgrader:
             if self.installed() != version['files']:
                 raise RuntimeError('installed client hash mismatch')
             self.ctl('start')
-            self.healthy()
-            self.call('end')
+            self.close_drain(self.healthy())
             self.journal.unlink()
             sync_dir(self.state)
         except Exception as exc:
