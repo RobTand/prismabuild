@@ -5680,6 +5680,14 @@ class _ProfileSession:
             "produced": True,
         })
         record.update(read)
+        # Optional summary extraction/ingest can outlive the pool deadline.
+        # The broker then kills this scope without Python cleanup: preserve
+        # the primary blob's reference before starting that supplemental work.
+        # This is evidence only; normal completion returns the richer record.
+        checkpoint = {**record, "partial": True}
+        with suppress(ProfileUnusable):
+            checkpoint["action_phase"] = self.exit_status()["phase"]
+        _write_action_status({"profile": checkpoint})
         extra_blobs = list(self.extra_blobs)
         with suppress(Exception):                     # noqa: BLE001
             extra_blobs += list(

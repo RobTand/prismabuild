@@ -671,8 +671,11 @@ matters). Rules:
   through the paths that already refuse those. An action stopped by its deadline files the profile it
   had reached, marked partial and bounded by the time the pool allows a
   signalled launcher, because the run somebody profiled for being slow is the
-  run whose profile matters. A windowed profiler's completed report is
-  ingested and checkpointed in the attempt's status sidecar before waiting
+  run whose profile matters. A validated primary profile is checkpointed in
+  the attempt's status sidecar after CAS ingestion and before optional summary
+  extraction or supplemental blob ingestion. Normal completion returns the
+  richer record; an interrupted supplement cannot hide the saved primary.
+  A windowed profiler also checkpoints the enriched report before waiting
   for the action. A contained deadline kills the broker scope without Python
   cleanup, so only already-checkpointed evidence is guaranteed to survive
   that path; an unfinished or not-yet-ingested trace can still be lost.

@@ -89,6 +89,12 @@ Measured cost on a fixed-work GPU action, five interleaved paired repeats, is
 in `docs/operating_prismabuild.md`; both are dearer than `sample`, and most of
 it is fixed startup rather than a tax on the work.
 
+After validation and CAS ingestion, the primary profile is checkpointed before
+optional summary extraction or supplemental blob ingestion. A deadline during
+that optional work retains the primary report on the ending, marked `partial`.
+Normal completion returns the richer profile. This checkpoint publishes no
+action success and cannot preserve a trace that has not reached ingestion.
+
 Torch traces must fit the 2 GiB profile budget both on disk and after gzip
 decoding. Oversized decoded data is refused before JSON parsing; use a shorter
 `torch.profiler.schedule`. Accepted profiles report `decoded_bytes` alongside
