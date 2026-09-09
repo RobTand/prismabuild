@@ -552,7 +552,10 @@ departures (ENOENT/ESRCH) are ordinary. Valid discovered members and recovered
 known-member counters remain available, but they do not prove a complete census.
 An unknown record can belong to another scope; the diagnostic establishes
 incomplete discovery, not missing I/O attributable to this action. Successful
-fallback after a protected cgroup directory read is not itself an error. This
+fallback after a protected cgroup directory read is not itself an error.
+Unreadable entry metadata and malformed or nonpositive `cgroup.procs` entries
+also trigger that fallback, preserving valid members found by the hierarchy
+walk. Metadata errors must not become a false non-directory result. This
 changes diagnostic evidence only; it does not recover unseen processes or alter
 admission, containment, or action identity.
 

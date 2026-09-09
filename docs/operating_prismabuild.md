@@ -1604,7 +1604,9 @@ idle" call for different responses.
     appear in `errors`, even if known-member recovery succeeds. Valid
     observations remain available as partial evidence. ENOENT/ESRCH departures
     are ordinary; a successful procfs fallback after a protected directory read
-    is also ordinary. Unknown membership can belong to another scope, so the
+    is also ordinary. Unreadable entry metadata and malformed or nonpositive
+    `cgroup.procs` entries use the same fallback, retaining directly discovered
+    members even if procfs also fails. Unknown membership can belong to another scope, so the
     diagnostic does not establish that this action lost I/O. No error-free
     sample guarantees atomic membership or discovery of short-lived children.
     A process that has exited but has

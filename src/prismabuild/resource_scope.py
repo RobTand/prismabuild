@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import stat
 import sys
 import time
 from typing import Any
@@ -168,8 +169,14 @@ def scope_pids(path: Path, *, errors: list[str] | None = None) -> list[int]:
             blocked = True
             continue
         for entry in entries:
-            if entry.is_dir():
-                stack.append(entry)
+            try:
+                # is_dir() can turn an unreadable stat into False. Unknown
+                # entry type may hide a payload leaf; use the same fallback
+                # as an unreadable directory, without losing readable peers.
+                if stat.S_ISDIR(entry.stat().st_mode):
+                    stack.append(entry)
+            except OSError:
+                blocked = True
         try:
             text = (group / 'cgroup.procs').read_text()
         except OSError:
@@ -177,9 +184,14 @@ def scope_pids(path: Path, *, errors: list[str] | None = None) -> list[int]:
             continue
         for line in text.split():
             try:
-                found.append(int(line))
+                pid = int(line)
             except ValueError:
+                blocked = True
                 continue
+            if pid <= 0:
+                blocked = True
+                continue
+            found.append(pid)
     if blocked:
         fallback = procs_in_cgroup(cgroup_membership(path), errors=errors)
         return sorted(set(found) | set(fallback))
