@@ -2846,6 +2846,9 @@ class PoolQueue:
         live = _read_json(path)
         if live is None or not _same_claim(live, item):
             raise PoolContractError("claim changed before scope creation")
+        # Heartbeat validation happens after the claim write. Refuse a stale
+        # caller here so that write cannot first erase a successor's scope.
+        _check_claim_lease_identity(key, live, _read_json(self.lease_path(key)))
         intent = {"action_key": key, "nonce": scope.nonce,
                   "memory_max_bytes": scope.memory_max_bytes,
                   "socket_path": str(scope.socket_path), **gpu_kwargs}
@@ -2864,6 +2867,7 @@ class PoolQueue:
             live = _read_json(path)
             if live is None or not _same_claim(live, item):
                 raise PoolContractError("claim changed before scope launch")
+            _check_claim_lease_identity(key, live, _read_json(self.lease_path(key)))
             live["resource_scope"] = control
             _write_json_atomic(path, live)
             if isinstance(item, dict):
@@ -2872,7 +2876,12 @@ class PoolQueue:
                              claim_snapshot=item, container_owner=item.get("container_owner"))
         except BaseException:
             # Nothing has launched yet, so this scope can be stopped without
-            # any process census. Broker failures remain visible to recovery.
+            # any process census. Ownership may now belong to a successor;
+            # retain our stop marker only in this attempt's diagnostic archive.
+            # Broker failures remain visible to recovery.
+            scope.telemetry_path = (scope.telemetry_path.parent / "attempts"
+                                    / scope.nonce / scope.telemetry_path.name)
+            scope.authority_path = None
             scope.terminate_owned("scope ownership could not be persisted")
             scope.release()
             raise

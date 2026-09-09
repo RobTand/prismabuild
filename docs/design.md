@@ -212,6 +212,17 @@ release, even when the ledger names the same host. Missing legacy lease fields
 supply no additional proof. This closes a stale-claim/fresh-lease case; it does
 not make two shared reads an atomic snapshot or qualify jointly stale evidence.
 
+Scope startup applies the same claim/lease consistency check before writing
+the creation intent and again after the broker reply, before writing the
+created scope. The subsequent heartbeat check is too late to protect those
+claim writes. A contradiction before intent persistence creates no broker
+scope; one found after creation stops and releases only the caller's newly
+created, unlaunched scope, archiving its stop marker under that attempt's nonce.
+Successor claim and lease bytes, telemetry and
+reservations remain unchanged. These reads hold per-key transition exclusion,
+outside host admission, and do not qualify jointly stale observations or
+bound shared-filesystem latency.
+
 A released unstarted claim has no numbered execution outcome. If its original
 caller reports a result while the same publication is ready or claimed with
 that attempt number still uncharged, the late report is retained under

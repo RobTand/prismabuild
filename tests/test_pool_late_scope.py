@@ -132,6 +132,62 @@ def test_conflicting_live_nonce_refuses_cleanup_before_any_broker_operation(scop
     _assert_successor_untouched(queue, newer, observed, saved)
 
 
+@pytest.mark.parametrize("reused_owner", [False, True])
+@pytest.mark.parametrize("phase", ["before_intent", "after_create"])
+def test_stale_scope_start_preserves_successor_claim_and_lease(
+    scoped, monkeypatch, reused_owner, phase,
+):
+    queue, first, newer, observed, saved = _replaced_scope(scoped, monkeypatch)
+    # A caller paused before scope startup retains this earlier snapshot.
+    first.pop("resource_scope")
+    first.pop("resource_scope_intent")
+    if reused_owner:
+        first["claimed_by"] = newer["claimed_by"]
+        first["published_unix"] = newer["published_unix"]
+    key = first["action_key"]
+    claim_path = queue.item_path(pool.CLAIMED, key)
+    lease_path = queue.lease_path(key)
+    read = pool._read_json
+    request = resource_scope.ResourceScope._request
+
+    if phase == "after_create":
+        # Initially consistent reads; the later broker reply exposes a fresh
+        # successor lease while the caller's claim observation remains old.
+        pool._write_json_atomic(claim_path, first)
+        pool._write_json_atomic(lease_path, {
+            "owner": first["claimed_by"], "host": first["claimed_host"],
+            "claimed_unix": first["claimed_unix"],
+            "published_unix": first["published_unix"],
+        })
+
+    def broker(scope, op, **extra):
+        reply = request(scope, op, **extra)
+        if op == "create":
+            assert phase == "after_create", "conflicting lease must prevent broker creation"
+            claim_path.write_bytes(saved[claim_path])
+            lease_path.write_bytes(saved[lease_path])
+        return reply
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pool, "_read_json",
+                      lambda path: dict(first) if path == claim_path else read(path))
+        patch.setattr(resource_scope.ResourceScope, "_request", broker)
+        with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
+            queue._start_resource_scope(first)
+    _assert_successor_untouched(queue, newer, observed, saved)
+    if phase == "before_intent":
+        assert observed == []
+        assert "resource_scope_intent" not in first
+    else:
+        nonce = first["resource_scope_intent"]["nonce"]
+        assert observed == [(nonce, "create"), (nonce, "stop"), (nonce, "release")]
+        assert "resource_scope" not in first
+        marker = queue.ledger().base / "telemetry" / "attempts" / nonce / (key + ".termination.json")
+        stopped = json.loads(marker.read_text())
+        assert stopped["scope_unit"] != newer["resource_scope"]["scope_id"]
+        assert stopped["reason"] == "scope ownership could not be persisted"
+
+
 def test_cleanup_preserves_an_existing_immutable_attempt_and_retains_its_proof(scoped, monkeypatch):
     queue, first, newer, observed, saved = _replaced_scope(scoped, monkeypatch)
     queue.archive_attempt(first, attempt=1, status='lease_lost',
