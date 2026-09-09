@@ -209,6 +209,21 @@ def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
             values[name] = int(counters[name])
         except (KeyError, ValueError):
             return identity, parent, None
+    # These are separate procfs reads: the original process may have exited
+    # and its PID may now name another process. Never attach that successor's
+    # counters to the identity read before collection. Ordinary state/comm
+    # changes do not change the incarnation, so compare only starttime.
+    try:
+        after = Path(f'/proc/{pid}/stat').read_text()
+        after_starttime = after[after.rindex(')') + 1:].split()[19]
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, IndexError):
+        # Unknown is not departed: keep any earlier sample alive rather than
+        # retiring a root and counting it again when reads recover.
+        return identity, parent, None
+    if after_starttime != starttime:
+        return None
     return identity, parent, values
 
 
