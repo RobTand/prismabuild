@@ -67,14 +67,20 @@ python3 /mnt/shared/prismabuild-fleet/repo/tools/pbcampaign.py manifest.json --w
 For complete case coverage, submit all four independent pairs in one manifest:
 late success and late failure (`--late-status failed`), in both directions.
 Use a distinct fresh root per pair. Aggregate offered demand is CPU8/mem16 GiB,
-with one native thread per actor. Do not mark these shared-state actors
-retry-safe or reuse their roots. Failed namespaces are bounded evidence;
+with one native thread per actor. Do not mark the outer shared-state PB actors
+retry-safe or reuse their roots. The inner fictional queue item is deliberately
+retry-safe with two attempts so the harness can exercise its recovery contract.
+Failed namespaces are bounded evidence;
 they hold only isolated bookkeeping, not production resource reservations.
 
 Both actors must have successful terminal records and canonical CAS receipts.
 Verify exit status, immutable stdout/stderr hashes and lengths, actual JSON
 result payloads, scope cleanup, distinct host attribution and source snapshots.
 A successful peer alone does not prove that the original waiter completed.
+The immediate `waiter.is_alive()` checks are only early diagnostics: a poller
+might not yet have observed a wrongly published terminal. The peer’s exact
+pre/post state comparisons establish successor preservation; the final waiter
+result establishes continuity.
 Retain failed actors and their paired timeouts with the successful evidence.
 
 ## Limits
@@ -143,3 +149,58 @@ Full keys, manifests, source verification, payloads and retained failures:
 `results-verified.json`, `first-campaign-verified.json`,
 `second-campaign-verified.json`). The three isolated shared namespaces are
 retained as bounded evidence, including the interrupted inner test queues.
+
+## Sparklina path — 2026-09-09 UTC
+
+The unchanged harness from main `10253c42ccc5d8ee8974fcaf5e951f3d2881f5f6`
+passed all eight actors on DL380 and Sparklina: late success and late failure
+in both directions. This covers the client mount that the preceding run did
+not select. The manifest uses `sparklina` instead of `gb10` specifically for
+that missing client-path dependency, with `x86` for the other actor. PB owns
+placement; every independent actor is a campaign row.
+
+Published runtime remained `650893b19fd0-1788912745-bc21f351ad74`. Aggregate
+offered demand was CPU8/mem16 GiB, CPU1/mem2 GiB per actor, priority -10, native
+threads 1. All work was CPU-only. PB expanded Sparklina from three to six
+announced loops while admitting the campaign. The actors wait on each other;
+this is protocol qualification, with no throughput or saturation claim.
+
+| Actor key | Role / host | CAS receipt |
+| --- | --- | --- |
+| `225d14ec46e0` | original / dl380g10 | `e5d0ddfb6d0b0414433439fc230bf09f838e40adffac7c890877f43fcc0482cd` |
+| `6389d181bc75` | peer / sparklina | `49a6e2649c8a3406ba2a18ea69fb3a90e7547f5f9ac50348274ae4aa3344bf52` |
+| `89f5b3241172` | original / dl380g10 | `a74f249c0e5d7f8d2e8155669d58e6c30bd0bf91ea6b5eb9cf20a5dda44ee4f3` |
+| `bd6cd89fecab` | peer / sparklina | `c75c37f05b3092ade4ca14622f856a34ff107af4f4dd4f1eb03d61af0a19603e` |
+| `acc857f7af5b` | original / sparklina | `76e858bed34b7ccd718261e3a89427bc537b5903a9f9ca1ee0cf7d4aa2bf0f79` |
+| `9f33e09b5fec` | peer / dl380g10 | `8791d296785505e7620f71625b91f9996849071de3195127feb6254bbb33947f` |
+| `d30bcf751e56` | original / sparklina | `a799621a527b651dc06579c8a8068035532393d0a5afde6183e4eebdc81db70f` |
+| `d9e4c10e9162` | peer / dl380g10 | `e5f3a84e24cab04f82bffd4f96d8223d06e70eee2fa6c47a36f27bcbd49ab66a` |
+
+Independent verification checked all eight terminal return codes (zero),
+immutable stdout/stderr lengths and SHA-256 digests, canonical CAS receipts
+and actual JSON payloads, completed outer scope release, and sealed source
+bundles. Each bundle contains the unchanged harness, pool and waiter bytes
+from the source parent above. All four inner terminal hashes, both immutable
+attempts and their logs, distinct host identities and empty final ledgers
+were read back independently. Each original waiter returned zero with the
+successor’s output. All late calls archived; there were no failed actors in
+this campaign and no pytest collection or skips. Earlier negative runs remain
+retained in the preceding section.
+
+The coordinator’s first glob of the new namespace returned no entries while
+actors were running. A direct server read subsequently found the completed
+server-original case, and later explicit client reads and complete verification
+succeeded. The empty glob was not taken as evidence of absent work; this
+observation does not establish a kernel stall or its cause.
+
+This closes the Sparklina queue-method coverage gap only. Induced kernel NFS
+stalls, real broker/Docker cleanup, host-loss uncertainty, execution-budget
+behavior during stalls and waiter completion after a late-call
+`AmbiguousClaimHolder` refusal remain unqualified. No production runtime code
+changed, so no fleet publication is required for this evidence update.
+
+Full keys, campaign manifest, verified receipts and source/result readbacks:
+`/home/rob/tmp/pb-234-sparklina/` (`campaign.json`,
+`final-campaign-verified.json`, `results-verified.json`). The fresh isolated
+namespace is retained as bounded evidence; all four inner queues completed
+and their ledgers are empty.
