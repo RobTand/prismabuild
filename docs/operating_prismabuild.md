@@ -194,8 +194,11 @@ What is worth knowing before using it:
     those, naming both numbers. One that ends badly with everything intact is
     recorded with `backend_status_ignored: true` and the run stands.
 *   **Timeout profiles are best effort; completed windows are checkpointed.**
-    When a windowed profiler exits, its completed report is ingested and
-    referenced in the status sidecar before the worker waits for the action.
+    A validated primary profile is referenced in the status sidecar after CAS
+    ingestion, before optional kernel-summary extraction or supplemental blob
+    ingestion. If that optional work is interrupted, the ending retains the
+    primary report. Normal completion returns the richer profile. A windowed
+    profiler also checkpoints the enriched report before waiting for the action.
     The checkpoint carries `partial: true`; it is evidence, never a success
     receipt. A later contained deadline can therefore retain that report even
     though the broker kills the scope without running Python cleanup.
