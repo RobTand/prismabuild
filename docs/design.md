@@ -1665,6 +1665,15 @@ same commit. Locally installed privileged clients converge through a root timer
 that verifies manifest members, closes new admission under the broker lock,
 waits for active scopes, and validates the replacement before reopening work.
 An interrupted or unhealthy replacement restores verified previous bytes.
+The maintenance gate records its holder; a named drain can be released only by
+that holder or an explicit forced release that records both identities. Repeated
+begin requests preserve the original reason and timestamp. The updater names
+itself `client-upgrade` and leaves another named holder's drain in place, including
+when its installed files are already current. For rolling client compatibility,
+unnamed legacy drains remain releasable by any root caller, and the updater sends
+ownership fields only after a broker status reply advertises support. The gate
+retains its v1 schema so older brokers can read it; ownership protection requires
+adoption of the newer broker and updater.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not

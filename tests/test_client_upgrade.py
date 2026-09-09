@@ -11,6 +11,38 @@ upgrade = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(upgrade)
 
 
+#: The wire's own strings, spelled out rather than imported: this fake stands in
+#: for the broker, so it must not agree with the client by construction. They
+#: mirror resource_broker.MAINTENANCE_UNOWNED and upgrade_client.MAINTENANCE_OWNER.
+UNOWNED = 'unattributed'
+CLIENT = 'client-upgrade'
+
+
+class FakeBroker:
+    """The broker's maintenance wire, at a chosen protocol version.
+
+    `protocol` 1 is the broker that predates drain holders: it states no holder,
+    and it refuses any request field it does not know. A test flips it to 2 to
+    stand a host halfway through the generation that introduces them.
+    """
+
+    def __init__(self):
+        self.holder = None
+        self.active = 0
+        self.running = True
+        self.operations = []
+        self.fail_health = False
+        self.protocol = 2
+
+    @property
+    def draining(self):
+        return self.holder is not None
+
+    @draining.setter
+    def draining(self, value):
+        self.holder = UNOWNED if value else None
+
+
 @pytest.fixture
 def setup(tmp_path):
     store = tmp_path / 'generations'
@@ -35,19 +67,33 @@ def setup(tmp_path):
         'generation': generation.name, 'commit': 'a' * 40, 'files': files}))
     config = dict(runtime=str(generation), generation_store=str(store),
                   install_dir=str(install), state_dir=str(state))
-    backend = SimpleNamespace(draining=False, active=0, running=True,
-                              operations=[], fail_health=False)
+    backend = FakeBroker()
 
-    def rpc(endpoint, op):
+    def rpc(endpoint, op, **fields):
         backend.operations.append(op)
-        if op == 'maintenance_begin':
-            backend.draining = True
-        if op == 'maintenance_end':
-            backend.draining = False
+        if backend.protocol < 2 and fields:
+            # The broker that predates drain holders validates its fields
+            # strictly and refuses anything it does not know.
+            raise RuntimeError('invalid maintenance fields')
+        owner = fields.get('owner', UNOWNED)
+        if op in ('maintenance_begin', 'maintenance_end'):
+            blocked = backend.holder not in (None, owner, UNOWNED)
+            if blocked:
+                raise RuntimeError('maintenance drain is held by ' + backend.holder)
+            if op == 'maintenance_end':
+                backend.holder = None
+            elif backend.holder is None:
+                # Beginning a drain that is already open changes nothing, so
+                # the holder recorded first is the holder this keeps.
+                backend.holder = owner
+        held = ({'maintenance_owner': backend.holder}
+                if backend.protocol >= 2 and backend.holder is not None else {})
+        version = {'maintenance_protocol': backend.protocol} if backend.protocol >= 2 else {}
         if backend.fail_health and op == 'maintenance_status':
-            return dict(ok=True, health=False, draining=backend.draining, active_scopes=0)
+            return dict(ok=True, health=False, draining=backend.draining, active_scopes=0,
+                        **version, **held)
         return dict(ok=True, health=True, draining=backend.draining,
-                    active_scopes=backend.active,
+                    active_scopes=backend.active, **version, **held,
                     installed_sha256={name: upgrade.digest((install / name).read_bytes())
                                       for name in (*upgrade.MEMBERS, *(['gpu_capacity.py']
                                           if (install / 'gpu_capacity.py').exists() else []))
@@ -81,8 +127,8 @@ def test_updates_exact_hashes_and_reopens_only_after_health(setup):
     result = updater.run()
     assert result['state'] == 'updated'
     assert result['installed'] == result['desired']['files']
-    assert backend.operations == ['maintenance_begin', 'stop', 'start',
-                                  'maintenance_status', 'maintenance_end']
+    assert backend.operations == ['maintenance_status', 'maintenance_begin', 'stop',
+                                  'start', 'maintenance_status', 'maintenance_end']
     assert not updater.journal.exists()
     backend.operations.clear()
     assert updater.run()['state'] == 'current'
@@ -95,7 +141,7 @@ def test_active_jobs_drain_without_restart_and_next_tick_upgrades(setup):
     backend.active = 2
     assert updater.run()['state'] == 'draining'
     assert updater.installed() == old
-    assert backend.operations == ['maintenance_begin']
+    assert backend.operations == ['maintenance_status', 'maintenance_begin']
     assert backend.draining
     backend.active = 0
     assert updater.run()['state'] == 'updated'
@@ -144,7 +190,7 @@ def test_recovery_after_reopening_admission_never_stops_new_work(setup):
     backend.operations.clear()
     with pytest.raises(RuntimeError, match='still owns active work'):
         updater.run()
-    assert backend.operations == ['is-active', 'maintenance_begin']
+    assert backend.operations == ['is-active', 'maintenance_status', 'maintenance_begin']
     assert updater.journal.exists()
 
 
@@ -190,9 +236,49 @@ def test_same_generation_changed_hashes_still_converge(setup):
 def test_current_version_clears_orphaned_drain(setup):
     updater, backend, _ = setup
     updater.run()
+    backend.holder = CLIENT
+    assert updater.run()['state'] == 'current'
+    assert not backend.draining
+
+
+def test_current_version_leaves_a_drain_another_holder_stated(setup):
+    updater, backend, _ = setup
+    updater.run()
+    backend.holder = 'rob'
+    backend.operations.clear()
+    result = updater.run()
+    assert result['state'] == 'held' and result['drain_owner'] == 'rob'
+    assert backend.holder == 'rob'
+    assert 'maintenance_end' not in backend.operations
+
+
+def test_current_version_clears_an_unattributed_drain_on_an_older_broker(setup):
+    updater, backend, _ = setup
+    updater.run()
+    backend.protocol = 1
     backend.draining = True
     assert updater.run()['state'] == 'current'
     assert not backend.draining
+
+
+def test_transaction_closes_a_drain_it_opened_before_the_broker_gained_holders(setup):
+    # The generation that introduces holders installs the new broker inside the
+    # transaction, so the drain opens on the old one and closes on the new one.
+    updater, backend, _ = setup
+    backend.protocol = 1
+    started = updater.command
+
+    def command(argv, **kwargs):
+        result = started(argv, **kwargs)
+        if argv[1] == 'start':
+            backend.protocol = 2
+        return result
+
+    updater.command = command
+    assert updater.run()['state'] == 'updated'
+    assert not backend.draining
+    assert backend.operations == ['maintenance_status', 'maintenance_begin', 'stop',
+                                  'start', 'maintenance_status', 'maintenance_end']
 
 
 def test_corrupted_backup_refuses_recovery_without_stopping_service(setup):
@@ -312,7 +398,7 @@ def test_dependency_addition_waits_for_active_jobs_without_staging_into_install(
     backend.active = 1
     assert updater.run()['state'] == 'draining'
     assert not (updater.install / 'gpu_capacity.py').exists()
-    assert backend.operations == ['maintenance_begin']
+    assert backend.operations == ['maintenance_status', 'maintenance_begin']
     backend.active = 0
     assert updater.run()['state'] == 'updated'
 

@@ -27,6 +27,15 @@ import threading
 import time
 
 HEX64=re.compile(r'[0-9a-f]{64}\Z');HEX32=re.compile(r'[0-9a-f]{32}\Z')
+MAINTENANCE_SCHEMA='prismabuild.resource-maintenance.v1'
+# A drain opened without a stated holder. Callers that predate drain ownership
+# cannot name themselves, so their gates carry this identity and stay releasable
+# by any root caller, exactly as every gate was before ownership existed.
+MAINTENANCE_UNOWNED='unattributed'
+# Raised when the maintenance wire gains a field a caller must ask for. A client
+# reads this from a status reply before it sends an owner, because an earlier
+# broker refuses an unknown request field outright (Authority.admin).
+MAINTENANCE_PROTOCOL=2
 
 def scope_id(key, nonce):
     return 'prismabuild-job'+hashlib.sha256((key+nonce).encode()).hexdigest()[:32]+'.slice'
@@ -172,7 +181,7 @@ class Authority:
         self.state_dir=Path(state_dir);self.uid=int(uid);self.backend=backend
         self.max_memory_bytes=int(max_memory_bytes);self.lock=threading.RLock();self.records={}
         self.maintenance_path=self.state_dir.parent/'maintenance.json'
-        self.maintenance={'schema':'prismabuild.resource-maintenance.v1','draining':False}
+        self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':False}
         self.installed_sha256={};self.installation_paths={};self.health_check=lambda:True
         self.state_dir.mkdir(parents=True,exist_ok=True,mode=0o700)
         info=self.state_dir.lstat()
@@ -195,8 +204,9 @@ class Authority:
             if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o022:
                 raise ValueError('unsafe maintenance gate')
             value=json.loads(self.maintenance_path.read_text())
-            if (not isinstance(value,dict) or value.get('schema')!='prismabuild.resource-maintenance.v1'
-                    or type(value.get('draining')) is not bool):raise ValueError('invalid maintenance gate')
+            if (not isinstance(value,dict) or value.get('schema')!=MAINTENANCE_SCHEMA
+                    or type(value.get('draining')) is not bool
+                    or not isinstance(value.get('owner',MAINTENANCE_UNOWNED),str)):raise ValueError('invalid maintenance gate')
             self.maintenance=value
     @staticmethod
     def identity(request):
@@ -208,7 +218,7 @@ class Authority:
         if not isinstance(request,dict):raise ValueError('request must be an object')
         op=request.get('op')
         if not isinstance(op,str):raise ValueError('operation must be a string')
-        if op in {'maintenance_begin','maintenance_status','maintenance_end'}:
+        if op in {'maintenance_begin','maintenance_status','maintenance_end','maintenance_force_end'}:
             return self.admin(uid,request)
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
         if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
@@ -342,22 +352,56 @@ class Authority:
                 'termination_evidence','last_cleanup_reason') if key in record}
 
     def admin(self,uid,request):
+        """Operate the one gate that stops this host, as a claim with a holder.
+
+        Every caller here is root, so the caller UID cannot tell the periodic
+        client upgrade apart from a person who stopped this host deliberately.
+        The holder does that instead: a drain records who opened it, and only
+        that caller reopens admission.
+
+        A caller that states no owner gets MAINTENANCE_UNOWNED, and a gate held
+        under that identity stays open to every root caller. That is deliberate
+        and it is the whole mixed-version story: a client that predates this
+        field cannot name itself, and must still be able to close the drain it
+        opened through a broker that has since been replaced underneath it.
+        A holder that is named is refused to everybody else, and only
+        `maintenance_force_end` passes it, recording what it took so that a
+        forced release never reads as an ordinary one.
+
+        Beginning a drain that is already open never rewrites the gate. The
+        stated reason and the time admission closed are the record of the stop
+        that is already in force, and a later caller restating its own claim
+        must not replace them.
+        """
         if uid!=0:raise PermissionError('maintenance requires root')
         op=request['op']
-        allowed={'op','reason'} if op=='maintenance_begin' else {'op'}
-        if set(request)-allowed or ('reason' in request and not isinstance(request['reason'],str)):
+        allowed=({'op','reason','owner'} if op=='maintenance_begin'
+                 else {'op'} if op=='maintenance_status' else {'op','owner'})
+        if (set(request)-allowed or ('reason' in request and not isinstance(request['reason'],str))
+                or ('owner' in request and (not isinstance(request['owner'],str) or not request['owner'].strip()))):
             raise ValueError('invalid maintenance fields')
+        owner=request.get('owner',MAINTENANCE_UNOWNED)[:200]
         with self.lock:
+            held=self.maintenance.get('owner',MAINTENANCE_UNOWNED) if self.maintenance['draining'] else None
+            # An unclaimed drain belongs to nobody, so it is not somebody else's.
+            foreign=held not in (None,owner,MAINTENANCE_UNOWNED)
             if op=='maintenance_begin':
-                value={'schema':'prismabuild.resource-maintenance.v1','draining':True,
-                       'changed_unix':time.time(),'reason':request.get('reason','automatic upgrade')[:1000]}
-                _atomic(self.maintenance_path,value,mode=0o644);self.maintenance=value
+                if foreign:raise PermissionError('maintenance drain is held by '+held)
+                if held is None:
+                    value={'schema':MAINTENANCE_SCHEMA,'draining':True,'changed_unix':time.time(),
+                           'reason':request.get('reason','automatic upgrade')[:1000],'owner':owner}
+                    _atomic(self.maintenance_path,value,mode=0o644);self.maintenance=value
             status=self._maintenance_status()
-            if op=='maintenance_end':
+            if op in {'maintenance_end','maintenance_force_end'}:
+                if foreign and op=='maintenance_end':
+                    raise PermissionError('maintenance drain is held by '+held)
                 if not status['health']:raise ValueError('resource broker is not healthy; maintenance remains active')
-                value={'schema':'prismabuild.resource-maintenance.v1','draining':False,'changed_unix':time.time()}
+                value={'schema':MAINTENANCE_SCHEMA,'draining':False,'changed_unix':time.time()}
+                # A forced release is evidence, not a state: it stays in the gate
+                # until the next drain overwrites it, naming both parties.
+                if foreign:value.update({'forced_end_of':held,'forced_end_by':owner})
                 _atomic(self.maintenance_path,value,mode=0o644);self.maintenance=value
-                status['draining']=False
+                status['draining']=False;status.pop('maintenance_owner',None)
             return status
 
     def _maintenance_status(self):
@@ -405,10 +449,15 @@ class Authority:
                     errors.append('installed privileged file changed: '+name)
             if not self.health_check():errors.append('resource monitor is not healthy')
         except (OSError,ValueError,KeyError) as exc:errors.append(str(exc)[:1500])
+        # maintenance_protocol is unconditional: a caller decides whether it may
+        # send an owner from its presence, and a gate that happens to be open
+        # would otherwise read exactly like a broker that has no holders at all.
         return {'ok':True,'draining':self.maintenance['draining'],'active_scopes':len(active),
                 'active_scope_ids':sorted(active)[:128],'active_scopes_truncated':len(active)>128,
                 'health':not errors,'errors':[error[:500] for error in errors[:32]],
-                'errors_truncated':len(errors)>32,
+                'errors_truncated':len(errors)>32,'maintenance_protocol':MAINTENANCE_PROTOCOL,
+                **({'maintenance_owner':self.maintenance.get('owner',MAINTENANCE_UNOWNED)}
+                   if self.maintenance['draining'] else {}),
                 'installed_sha256':dict(self.installed_sha256)}
 
     def run(self,uid,pid,request,stdio):
