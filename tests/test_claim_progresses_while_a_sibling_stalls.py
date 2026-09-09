@@ -501,7 +501,7 @@ def test_preemption_after_accounting_keeps_host_exclusion(rig, monkeypatch, cont
         return None
 
     monkeypatch.setattr(rig, 'record_pass', account)
-    monkeypatch.setattr(rig, '_preempt_background_holder', preempt)
+    monkeypatch.setattr(rig, '_select_background_holder', preempt)
     try:
         assert _bounded(lambda: _claim(rig), 'claim after refusal') is None
     finally:
