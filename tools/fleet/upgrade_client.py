@@ -239,30 +239,41 @@ def proc_census(root='/proc'):
     markers for processes that have since exited, and a box does shed idle
     loops while it drains.
 
-    A process that exits between the listing and the read is simply absent,
-    which is the same answer as never having been there.
+    Only a process directory proved gone may be omitted after a failed read.
+    Inaccessible or malformed evidence raises: an incomplete census must never
+    become an empty list that certifies a stopped box.
     """
     census = []
-    try:
-        entries = sorted(Path(root).iterdir())
-    except OSError:
-        return census
+    entries = sorted(Path(root).iterdir())
+
+    def starttime(line, pid):
+        # comm may itself contain spaces and parentheses.
+        prefix, separator, rest = line.rpartition(')')
+        fields = rest.split()
+        if (not separator or not prefix.startswith(f'{pid} (')
+                or len(fields) <= 19 or not fields[19].isdigit()
+                or int(fields[19]) <= 0):
+            raise ValueError(f'invalid process identity for pid {pid}')
+        return fields[19]
+
     for entry in entries:
         if not entry.name.isdigit():
             continue
         try:
             stat_line = (entry / 'stat').read_text()
+            before = starttime(stat_line, entry.name)
             cmdline = (entry / 'cmdline').read_bytes()
-        except OSError:
-            continue
-        # comm is parenthesised and may itself contain spaces and parentheses,
-        # so the fields are counted from the last ')' and not by splitting.
-        _, _, rest = stat_line.rpartition(')')
-        fields = rest.split()
-        if len(fields) <= 19:
-            continue
+            after = starttime((entry / 'stat').read_text(), entry.name)
+        except (OSError, ValueError):
+            try:
+                entry.stat()
+            except FileNotFoundError:
+                continue
+            raise
+        if before != after:
+            raise ValueError(f'process identity changed for pid {entry.name}')
         argv = [part for part in cmdline.decode('utf-8', 'replace').split('\0') if part]
-        census.append((int(entry.name), fields[19], argv))
+        census.append((int(entry.name), before, argv))
     return census
 
 
@@ -288,8 +299,10 @@ def drained(census, markers, changed_unix, active_scopes):
     generation the fleet is halfway through leaving.
     """
     unparked = [pid for pid, starttime in serving(census)
-                if park_marker_name(pid, starttime, changed_unix) not in markers]
-    return (not unparked and active_scopes == 0), unparked
+                if changed_unix is None
+                or park_marker_name(pid, starttime, changed_unix) not in markers]
+    return (changed_unix is not None and not unparked
+            and type(active_scopes) is int and active_scopes == 0), unparked
 
 
 class Upgrader:
@@ -411,8 +424,19 @@ class Upgrader:
         """
         if status.get('draining') is not True:
             return {}
-        settled, unparked = drained(self.procs(), self.parked(),
-                                    gate_changed_unix(self.gate),
+        changed = gate_changed_unix(self.gate)
+        try:
+            census = self.procs()
+            markers = self.parked()
+        except (OSError, ValueError) as error:
+            return {'drained': False, 'unparked': [],
+                    'active_scopes': status.get('active_scopes'),
+                    'evidence_errors': [f'process census incomplete: {error}']}
+        if changed is None or gate_changed_unix(self.gate) != changed:
+            return {'drained': False, 'unparked': [],
+                    'active_scopes': status.get('active_scopes'),
+                    'evidence_errors': ['maintenance gate missing or changed during census']}
+        settled, unparked = drained(census, markers, changed,
                                     status.get('active_scopes'))
         return {'drained': settled, 'unparked': unparked,
                 'active_scopes': status.get('active_scopes')}

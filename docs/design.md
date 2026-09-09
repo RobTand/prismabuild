@@ -1683,6 +1683,10 @@ certify a drained host. The updater creates the directory for the unprivileged
 worker uid and reports whether every serving process has a marker for the
 current drain and the broker reports no active scopes. Processes count by argv
 basename, including a one-shot invoked through the symlink or a local checkout.
+Unreadable or malformed process evidence prevents a positive result and is
+reported explicitly; only a process directory proved gone may be omitted after
+a read failure. Process start identity is checked around the argv read. Missing
+gate identity or a gate change during the census also prevents certification.
 The drain identity comes from the gate file. This is an observation of the
 current processes, not an admission barrier or a guarantee against future
 process launches; it neither opens nor closes a drain.
