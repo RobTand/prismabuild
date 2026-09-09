@@ -1690,6 +1690,21 @@ gate identity or a gate change during the census also prevents certification.
 The drain identity comes from the gate file. This is an observation of the
 current processes, not an admission barrier or a guarantee against future
 process launches; it neither opens nor closes a drain.
+The updater also states, fleet-wide, which version of itself is running. It is
+installed by a copy step rather than by the runtime symlink, so no shared
+record answers for it: the loops' `runtime_commit` answers for the loops, a
+generation receipt says what a host is supposed to install, and what it
+actually installed is root-owned host-local state. On the first tick after a
+version of it is installed, it posts `rollout/agents/<host>.<sha256>.json`
+beside the generation store through an unprivileged child, because NFS
+root_squash denies root there. The name carries the hash, so a tick that finds
+its own claim already posted costs one `stat` and no write, and that `stat`
+runs as root because the fleet root is world readable. Markers in that tree are
+write-once: content lands in a `.tmp-` sibling and is linked onto its final
+name, so a name that exists refuses the write instead of replacing what
+somebody else recorded. Posting is best effort and failure is recorded rather
+than raised; whether a rollout may proceed is a separate question, asked by
+whoever reads these files.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not

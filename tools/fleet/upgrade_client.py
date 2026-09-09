@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 MEMBERS = {
     'resource_broker.py': 'tools/resource_broker.py',
@@ -60,9 +61,26 @@ SERVING_NAMES = frozenset({'worker_loop.py', 'worker.py'})
 #: test rather than shared.
 _KEY_SAFE = frozenset('0123456789abcdefghijklmnopqrstuvwxyz'
                       'ABCDEFGHIJKLMNOPQRSTUVWXYZ._')
+#: Hostnames legitimately carry hyphens (`gx10-6b77`), and a marker name in the
+#: rollout tree is parsed on dots, so a hyphen costs nothing there. That is the
+#: whole reason this is a different set from the park marker's, which is parsed
+#: on hyphens and must not contain one.
+_NAME_SAFE = _KEY_SAFE | frozenset('-')
 MAX_MEMBER = 4 * 1024 * 1024
 MAX_EXPORT = 32 * 1024 * 1024
+MAX_MARKER = 64 * 1024
 CLIENT_UPGRADE_PROTOCOL = 2
+#: Where the fleet records a rollout, beside the generation store rather than
+#: inside it: a sealed generation is immutable, and these files are written
+#: while one is being replaced.
+ROLLOUT_DIRNAME = 'rollout'
+AGENTS_DIRNAME = 'agents'
+ATTESTATION_SCHEMA = 'prismabuild.rollout_barrier.agent.v1'
+#: A marker path is plain descent and nothing else. The leading class refuses
+#: `.`, `..` and the `.tmp-` siblings a write in progress leaves behind, so a
+#: caller cannot name one and a listing cannot mistake one for a marker.
+MARKER_SEGMENT = re.compile(r'[0-9A-Za-z][0-9A-Za-z._-]{0,127}\Z')
+MARKER_DEPTH = 4
 
 
 def digest(data):
@@ -221,14 +239,22 @@ def gate_changed_unix(path):
     return value.get('changed_unix')
 
 
+def sanitized(value, safe):
+    """`value` with every character outside `safe` replaced, never dropped.
+
+    Replacing rather than dropping keeps the length, so two distinct inputs
+    cannot collapse onto one name.
+    """
+    return ''.join(c if c in safe else '_' for c in str(value))
+
+
 def park_marker_name(pid, starttime, changed_unix):
     """The name a loop parked on `changed_unix` writes for itself.
 
     The start time is field 22 of the process's stat, so a marker left by a pid
     that has since been reused names the earlier process and not this one.
     """
-    key = 'unknown' if changed_unix is None else ''.join(
-        c if c in _KEY_SAFE else '_' for c in str(changed_unix))
+    key = 'unknown' if changed_unix is None else sanitized(changed_unix, _KEY_SAFE)
     return f'{pid}-{starttime}-{key}'
 
 
@@ -305,12 +331,186 @@ def drained(census, markers, changed_unix, active_scopes):
             and type(active_scopes) is int and active_scopes == 0), unparked
 
 
+def rollout_root(config):
+    """Where this fleet records a rollout.
+
+    A sibling of the generation store, because the store's contents are sealed
+    read-only the moment they are published and these files are written while
+    one generation is being replaced by another. An explicit `rollout_root`
+    exists so a qualification harness can move the whole tree somewhere it can
+    write, the same way `maintenance_gate` moves the drain.
+    """
+    override = config.get('rollout_root')
+    if override:
+        return Path(override)
+    return Path(config['generation_store']).parent / ROLLOUT_DIRNAME
+
+
+def marker_parts(relpath):
+    """`relpath` split into segments, refusing anything but plain descent.
+
+    Checked in both halves of the write. The parent builds these names itself,
+    so the check is not defending against the parent; it is what lets the
+    unprivileged child accept a path from its argv at all, given that the
+    program it is a mode of runs as root the rest of the time.
+    """
+    parts = PurePosixPath(relpath).parts
+    if not 1 <= len(parts) <= MARKER_DEPTH:
+        raise ValueError(f'unsafe rollout marker path: {relpath!r}')
+    for part in parts:
+        if MARKER_SEGMENT.fullmatch(part) is None:
+            raise ValueError(f'unsafe rollout marker path: {relpath!r}')
+    return parts
+
+
+def marker_path(root, relpath):
+    """Where `relpath` lands under `root`, once it is shown to be safe."""
+    return Path(root).joinpath(*marker_parts(relpath))
+
+
+def make_dir(path):
+    """One directory, world readable whatever umask the caller happens to carry.
+
+    Every host reads this tree as the squashed uid. A directory created under a
+    strict umask inherited from a service unit is one nobody else can enter,
+    and the existence check that holds this to one write per agent version
+    would then miss on every tick and write again every time. The budget would
+    be gone and the status would not say so.
+
+    Only a directory this call created is given a mode; one that was already
+    there was somebody else's decision.
+    """
+    try:
+        path.mkdir()
+    except FileExistsError:
+        return False
+    path.chmod(0o755)
+    return True
+
+
+def post_marker(root, relpath, content):
+    """Create one rollout marker, once, and never rewrite one.
+
+    The tree is write-once by measurement, not by taste: issue #16 timed a
+    `rename()` into a contended directory on this mount at 3 ms while a read of
+    a frequently rewritten file in the same directory took 68,996 ms. Nothing
+    here is appended, truncated or rewritten.
+
+    The content lands in a `.tmp-<uuid4>` sibling and is *linked* onto its final
+    name. A rename would silently replace a marker an earlier tick or another
+    host already posted, and `link` refuses instead, which is the whole point:
+    the name carries the claim, so a second post of one name is a second
+    statement of the same fact and not a correction of it.
+
+    Directories are created with `mkdir`, which fails EEXIST, rather than by
+    renaming one into place, which succeeds onto an empty directory.
+    """
+    content = bytes(content)
+    if len(content) > MAX_MARKER:
+        raise ValueError('oversized rollout marker')
+    parts = marker_parts(relpath)
+    root = Path(root)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    for step in (root, *(root.joinpath(*parts[:n]) for n in range(1, len(parts)))):
+        make_dir(step)
+    target = root.joinpath(*parts)
+    temp = target.parent / ('.tmp-' + uuid.uuid4().hex)
+    try:
+        with temp.open('wb') as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temp.chmod(0o644)
+        try:
+            os.link(temp, target)
+        except FileExistsError:
+            return False
+    finally:
+        temp.unlink(missing_ok=True)
+    sync_dir(target.parent)
+    return True
+
+
+def post_child(config, relpath, stream):
+    """The unprivileged half of a marker write.
+
+    NFS root_squash denies root on the shared mount, so a write goes the same
+    way the runtime read does: this root-owned program re-executed after
+    permanently dropping to the reader uid. The uid is checked here rather than
+    trusted from the caller, because that check is what makes it safe for this
+    to be a mode of a program that otherwise runs as root.
+
+    Content arrives on stdin rather than in the argv, so it never appears in a
+    process listing and carries no length limit but this one.
+    """
+    uid = config.get('reader_uid', 1000)
+    if type(uid) is not int or uid <= 0:
+        raise SystemExit('runtime reader_uid must be an unprivileged UID')
+    if os.getuid() != uid or os.geteuid() != uid:
+        raise SystemExit('rollout marker writes require the configured unprivileged reader UID')
+    content = stream.read(MAX_MARKER + 1)
+    if len(content) > MAX_MARKER:
+        raise SystemExit('oversized rollout marker')
+    post_marker(rollout_root(config), relpath, content)
+    return 0
+
+
+def post_as_reader(config_path, config, relpath, content):
+    """Spawn the unprivileged half, and fail loudly if it could not write."""
+    uid = config.get('reader_uid', 1000)
+    if type(uid) is not int or uid <= 0:
+        raise ValueError('runtime reader_uid must be an unprivileged UID')
+    gid = pwd.getpwuid(uid).pw_gid
+    script = trusted(Path(__file__).absolute())
+    marker_path(rollout_root(config), relpath)
+    with tempfile.TemporaryFile() as source:
+        source.write(content)
+        source.flush()
+        source.seek(0)
+        result = subprocess.run(
+            ['/usr/bin/python3', '-I', str(script), '--post-rollout-marker', str(relpath),
+             '--config', str(config_path)], user=uid, group=gid, extra_groups=[],
+            env={'PATH': '/usr/bin:/bin'}, cwd='/', stdin=source,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30, check=False)
+    if result.returncode:
+        raise RuntimeError('unprivileged rollout marker write failed: '
+                           + result.stderr.decode(errors='replace')[-2000:])
+
+
+def self_digest():
+    """The hash of this agent's own bytes, as they are installed.
+
+    Read from the file rather than from the install manifest, so the claim is
+    about the code that is running and not about what a directory listing said
+    at some other moment. A transaction replaces this file while the process
+    that started it is still running the older source, which is exactly the
+    moment the two answers differ.
+    """
+    return digest(bounded_read(Path(__file__).absolute(), MAX_MEMBER))
+
+
+def attestation_name(host, client_sha):
+    """`<host>.<sha>.json`, split from the right so an FQDN host still parses."""
+    return f'{sanitized(host, _NAME_SAFE)}.{sanitized(client_sha, _NAME_SAFE)}.json'
+
+
+def attestation_body(host, client_sha):
+    return {'schema': ATTESTATION_SCHEMA, 'host': host, 'client_sha256': client_sha,
+            'client_upgrade_protocol': CLIENT_UPGRADE_PROTOCOL,
+            'posted_unix': time.time()}
+
+
 class Upgrader:
     def __init__(self, config, *, rpc=request, command=subprocess.run, sleep=time.sleep,
-                 reader=desired, procs=proc_census):
+                 reader=desired, procs=proc_census, poster=None):
         self.config = config
         self.reader = reader
         self.procs = procs
+        # Both children need the enrollment file's path, which only the caller
+        # has, so both arrive already bound to it. An agent given no poster
+        # cannot write to the shared mount and says so by attesting nothing.
+        self.poster = poster
+        self.attestation = None
         self.gate = Path(config.get('maintenance_gate', MAINTENANCE_GATE))
         # Derived from the gate rather than named again, so a loop and this
         # agent pointed at one gate cannot disagree about where the markers are.
@@ -325,8 +525,13 @@ class Upgrader:
         self.journal = self.state / 'transaction.json'
 
     def report(self, state, **details):
+        # Whatever this tick decided about its own version travels in every
+        # state, because the states that report a problem are the ones where
+        # somebody wants to know which agent produced it.
+        claim = {'attestation': self.attestation} if self.attestation else {}
         value = {'schema': 'prismabuild.client_upgrade.v1', 'state': state,
-                 'host': socket.gethostname(), 'checked_unix': time.time(), **details}
+                 'host': socket.gethostname(), 'checked_unix': time.time(),
+                 **claim, **details}
         atomic(self.status, value)
         print(json.dumps(value, sort_keys=True), flush=True)
         return value
@@ -385,6 +590,44 @@ class Upgrader:
         if status.get('maintenance_protocol', 1) >= 2:
             return self.call('end', owner=MAINTENANCE_OWNER)
         return self.call('end')
+
+    @property
+    def rollout(self):
+        # Resolved on use rather than in the constructor: an agent that never
+        # attests never needs the shared mount named.
+        return rollout_root(self.config)
+
+    def attest(self):
+        """Record, fleet-wide, that this version of the agent has run here.
+
+        A coordinated rollout can only be armed once every roster host runs an
+        agent that understands the barrier, and nothing on the shared mount
+        says so today. The loops' `runtime_commit` answers for the loops. The
+        generation receipt says what a host is supposed to install. What it
+        actually installed is root-owned host-local state under `state_dir`,
+        readable only on the box itself, because this agent is installed by a
+        copy step and not by the runtime symlink.
+
+        One write per host per version of this file, keyed on the version, so a
+        tick that finds its own claim already posted costs one `stat`. That
+        `stat` runs as root: the fleet root is `drwxrwxr-x rob rob`, so the
+        squashed uid reads it fine and only the write needs the child.
+
+        Best effort. Whether a rollout may be armed is somebody else's
+        question, and an agent that could not answer it still has its members
+        to converge.
+        """
+        if self.poster is None:
+            return None
+        try:
+            relpath = f'{AGENTS_DIRNAME}/{attestation_name(socket.gethostname(), self_digest())}'
+            if not marker_path(self.rollout, relpath).exists():
+                body = attestation_body(socket.gethostname(), self_digest())
+                self.poster(relpath, json.dumps(body, sort_keys=True).encode() + b'\n')
+            self.attestation = {'marker': relpath}
+        except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
+            self.attestation = {'error': str(exc)}
+        return self.attestation
 
     def ensure_parked_root(self):
         """Create the directory a parked loop records itself in, and hand it over.
@@ -537,6 +780,9 @@ class Upgrader:
         # The loops record that they parked in a directory under a root-owned
         # path they cannot create. This is the only root actor on a timer.
         self.ensure_parked_root()
+        # Before anything can replace this file: the claim is about the bytes
+        # that are running, and a transaction changes the bytes on disk.
+        self.attest()
         if self.journal.exists():
             return self.recover(json.loads(self.journal.read_text()))
         version, blobs = self.reader(self.config)
@@ -633,8 +879,11 @@ def main():
     parser.add_argument('--status', action='store_true',
                         help='print the latest local upgrade result without changing clients')
     parser.add_argument('--export-runtime', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--post-rollout-marker', metavar='RELPATH', help=argparse.SUPPRESS)
     args = parser.parse_args()
     config = json.loads(trusted(args.config).read_text())
+    if args.post_rollout_marker:
+        return post_child(config, args.post_rollout_marker, sys.stdin.buffer)
     if args.export_runtime:
         uid = config.get('reader_uid', 1000)
         if os.getuid() != uid or os.geteuid() != uid or uid == 0:
@@ -657,7 +906,10 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        updater = Upgrader(config, reader=lambda value: desired_as_reader(args.config, value))
+        updater = Upgrader(
+            config,
+            reader=lambda value: desired_as_reader(args.config, value),
+            poster=lambda relpath, content: post_as_reader(args.config, config, relpath, content))
         try:
             outcome = updater.run()
             return 1 if outcome['state'] == 'rolled_back' else 0
