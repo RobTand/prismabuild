@@ -220,6 +220,9 @@ counters as partial evidence even when known-member recovery succeeds. Unknown
 membership may belong to another scope; it does not prove this action lost I/O.
 Unreadable cgroup entry metadata and malformed or nonpositive `cgroup.procs`
 entries trigger procfs fallback while retaining directly discovered members.
+Accepted process-I/O reads retain the parent PID from the identity recheck,
+preserving observed orphan counters when reparenting occurs during collection.
+Reparenting between samples and unseen final I/O remain sampling limitations.
 
 CSV collection checks expiry before discovery, file opens and
 each header or row read, retaining collected samples with an expiry diagnostic.

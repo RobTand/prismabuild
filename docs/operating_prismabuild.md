@@ -1595,7 +1595,10 @@ idle" call for different responses.
     `processes_observed` says how many were. A PID that changes identity
     during counter collection contributes no new reading:
     the sampler rechecks starttime and discards counters when the original
-    process cannot be revalidated. This is not an atomic scope-membership
+    process cannot be revalidated. An accepted reading uses the rechecked
+    parent PID too, so orphaning during collection does not leave a stale
+    parent relationship that discards the child's observed bytes on departure.
+    Reparenting between samples can still be missed. This is not an atomic scope-membership
     snapshot. An unreadable or malformed initial identity read retains that
     PID's prior counters and reports an unreadable process; it does not retire
     a root or invent a new identity. A missing procfs record still denotes
