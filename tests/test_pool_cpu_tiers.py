@@ -139,3 +139,15 @@ def test_legacy_cpu_reservation_prevents_map_activation(tmp_path):
     with pytest.raises(pool.PoolContractError, match='drain legacy CPU'):
         ledger.configure_cpu_tiers({'preferred': [0], 'fallback': []})
     assert ledger.held()['cpu'] == 1
+
+
+def test_cpu_map_validation_only_never_initializes_legacy_ledger(tmp_path):
+    ledger = pool.PoolQueue(tmp_path / 'queue').ledger()
+    ledger.ensure_capacity({'cpu': 1})
+    assert ledger.acquire('a' * 64, {'cpu': 1})
+    tiers = {'preferred': [0], 'fallback': []}
+    assert ledger.configure_cpu_tiers(tiers, initialize=False) is None
+    assert not (ledger.base / 'cpu-map.json').exists()
+    assert ledger.held()['cpu'] == 1
+    with pytest.raises(pool.PoolContractError, match='drain legacy CPU'):
+        ledger.configure_cpu_tiers(tiers)

@@ -144,6 +144,98 @@ def test_two_claims_in_a_row_are_both_admitted(rig):
     assert sorted(rig.ledger().held_keys()) == sorted(KEYS)
 
 
+def test_sibling_claims_while_existing_cpu_map_read_stalls(rig, monkeypatch):
+    """The fixed topology is not changing headroom; reading it needs no gate."""
+    rig.ledger().configure_cpu_tiers(TIERS)
+    entered, release = threading.Event(), threading.Event()
+    original = pool._read_json
+    outcome = {}
+
+    def stalled_read(path, **kwargs):
+        if (threading.current_thread() is stalled
+                and Path(path) == rig.ledger().base / 'cpu-map.json'):
+            entered.set()
+            assert release.wait(30), 'test did not release CPU map read'
+        return original(path, **kwargs)
+
+    def run():
+        try:
+            outcome['item'] = _claim(rig)
+        except BaseException as exc:
+            outcome['error'] = exc
+
+    stalled = threading.Thread(target=run, daemon=True)
+    monkeypatch.setattr(pool, '_read_json', stalled_read)
+    stalled.start()
+    try:
+        assert entered.wait(30), 'claim did not read CPU map'
+        winner = _bounded(lambda: _claim(pool.PoolQueue(rig.root)), 'sibling claim')
+        assert winner is not None, 'CPU map read held admission and blocked sibling work'
+    finally:
+        release.set()
+        stalled.join(30)
+    assert not stalled.is_alive()
+    assert 'error' not in outcome, outcome
+    assert outcome['item'] is not None
+    assert outcome['item']['action_key'] != winner['action_key']
+    assert sorted(rig.ledger().held_keys()) == sorted(KEYS)
+
+
+def test_existing_cpu_map_read_does_not_hold_admission(rig, monkeypatch):
+    rig.ledger().configure_cpu_tiers(TIERS)
+    original = pool._read_json
+    reads = []
+
+    def checked_read(path, **kwargs):
+        if Path(path) == rig.ledger().base / 'cpu-map.json':
+            reads.append(path)
+            assert _admission_is_free(rig), 'existing CPU map read held host admission'
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(pool, '_read_json', checked_read)
+    assert _claim(rig) is not None
+    assert reads, 'claim skipped topology validation'
+
+
+def test_missing_cpu_map_initialization_stays_under_admission(rig, monkeypatch):
+    original = pool.pb._atomic_publish
+    initialized = []
+
+    def checked_publish(path, *args, **kwargs):
+        if Path(path) == rig.ledger().base / 'cpu-map.json':
+            assert not _admission_is_free(rig), 'topology initialization lost exclusion'
+            initialized.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(pool.pb, '_atomic_publish', checked_publish)
+    assert _claim(rig) is not None
+    assert len(initialized) == 1
+    assert json.loads(initialized[0].read_text()) == TIERS
+
+
+def test_cpu_map_preparation_does_not_bypass_busy_admission(rig, monkeypatch):
+    rig.ledger().configure_cpu_tiers(TIERS)
+    original = pool._read_json
+    descriptor = os.open(_lock_path(rig), os.O_CREAT | os.O_RDWR, 0o600)
+    entered = []
+
+    def lock_after_read(path, **kwargs):
+        record = original(path, **kwargs)
+        if Path(path) == rig.ledger().base / 'cpu-map.json' and not entered:
+            entered.append(path)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return record
+
+    monkeypatch.setattr(pool, '_read_json', lock_after_read)
+    try:
+        assert _bounded(lambda: _claim(rig), 'claim after topology read') is None
+    finally:
+        os.close(descriptor)
+    assert entered
+    assert rig.ledger().held() == {}
+    assert {r['action_key'] for r in rig.ready_items()} == set(KEYS)
+
+
 def test_a_sibling_claims_the_other_item_while_one_loop_stalls(rig, monkeypatch):
     """The whole defect, in one assertion.
 
