@@ -72,7 +72,8 @@ in `docs/operating_prismabuild.md`, beside the box load it was measured under. A
 with the reason rather than returning an unprofiled receipt, so do not use it
 on an action too short for a sampler to see. An action killed by its deadline still files whatever
 profile it had reached, marked `partial`, and a profiled failure carries the
-same `returncode`/`signal` an unprofiled one would. `pbtest.py --profile
+same `returncode`/`signal` an unprofiled one would, plus its complete profile:
+a run that exited nonzero files the final report, not the partial checkpoint. `pbtest.py --profile
 sample` and a manifest row's `profile` field forward it. It is backed on dl380g10 and
 sparklina and refuses on sparky, whose worker loop launches under an
 interpreter that cannot see py-spy.
@@ -94,8 +95,10 @@ After validation and CAS ingestion, the primary profile is checkpointed before
 optional summary extraction or supplemental blob ingestion. A deadline during
 that optional work retains the primary report on the ending, marked `partial`.
 Normal completion returns the richer profile and, after successful result
-publication, refreshes the sidecar with it for stdout-parse fallback. A failed
-status write can still leave the earlier checkpoint. This checkpoint publishes no
+publication, refreshes the sidecar with it for stdout-parse fallback. A nonzero
+exit never reaches publication, so the complete report travels on the error and
+is written beside the returncode. A failed status write can still leave the
+earlier checkpoint. This checkpoint publishes no
 action success and cannot preserve a trace that has not reached ingestion.
 Optional `nsys stats` extraction has a five-second subprocess timeout and
 0.5-second TERM/KILL waits for its own process group. A timeout retains the
