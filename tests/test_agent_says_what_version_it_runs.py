@@ -311,3 +311,88 @@ def test_the_command_line_refuses_a_path_that_is_not_plain_descent(tmp_path, mon
     monkeypatch.setattr(sys, 'stdin', type('S', (), {'buffer': io_of(b'{}')})())
     with pytest.raises(ValueError):
         upgrade.main()
+
+
+def test_the_tree_is_readable_under_a_strict_umask(tmp_path):
+    """A directory nobody else can enter turns one stat per tick into one write.
+
+    The tree is read by every host as the squashed uid. A service unit that
+    carries a strict umask would otherwise make the existence check miss every
+    time, silently, while the status still reported a posted marker.
+    """
+    previous = os.umask(0o077)
+    try:
+        upgrade.post_marker(tmp_path / 'fleet' / 'rollout', 'agents/one.json', b'{}\n')
+    finally:
+        os.umask(previous)
+    for directory in ('fleet/rollout', 'fleet/rollout/agents'):
+        assert (tmp_path / directory).stat().st_mode & 0o777 == 0o755
+
+
+def test_a_directory_that_was_already_there_keeps_its_mode(tmp_path):
+    """Only a directory this write created is given a mode."""
+    root = tmp_path / 'fleet' / 'rollout'
+    (root / 'agents').mkdir(parents=True)
+    (root / 'agents').chmod(0o700)
+    upgrade.post_marker(root, 'agents/one.json', b'{}\n')
+    assert (root / 'agents').stat().st_mode & 0o777 == 0o700
+
+
+def test_the_parent_hands_the_child_a_dropped_credential_invocation(tmp_path, monkeypatch):
+    """The other half of reachable: the parent has to produce that argv.
+
+    The call itself needs CAP_SETGID for `extra_groups`, so what is checked
+    here is the shape of the invocation and not its effect.
+    """
+    seen = {}
+
+    def record(argv, **kwargs):
+        seen['argv'] = argv
+        seen.update(kwargs)
+        # The parent hands over a temporary file it closes on return, so the
+        # content is read here, where the child would read it.
+        seen['content'] = kwargs['stdin'].read()
+        return type('R', (), {'returncode': 0, 'stderr': b''})()
+
+    config_path = tmp_path / 'client-upgrade.json'
+    config = {'generation_store': str(tmp_path / 'fleet' / 'runtime-generations'),
+              'reader_uid': os.getuid()}
+    monkeypatch.setattr(upgrade, 'trusted', Path)
+    monkeypatch.setattr(upgrade.subprocess, 'run', record)
+    upgrade.post_as_reader(config_path, config, 'agents/one.json', b'{}\n')
+
+    assert '-I' in seen['argv']
+    assert seen['argv'][seen['argv'].index('--post-rollout-marker') + 1] == 'agents/one.json'
+    assert seen['argv'][seen['argv'].index('--config') + 1] == str(config_path)
+    assert seen['user'] == os.getuid()
+    assert seen['extra_groups'] == []
+    assert seen['env'] == {'PATH': '/usr/bin:/bin'}
+    assert seen['cwd'] == '/'
+    assert seen['content'] == b'{}\n'
+
+
+def test_the_parent_refuses_a_path_before_it_spawns_anything(tmp_path, monkeypatch):
+    """A name that cannot be written is not worth a subprocess."""
+    def refuse(*args, **kwargs):
+        raise AssertionError('spawned a child for a path it should have refused')
+
+    monkeypatch.setattr(upgrade, 'trusted', Path)
+    monkeypatch.setattr(upgrade.subprocess, 'run', refuse)
+    with pytest.raises(ValueError):
+        upgrade.post_as_reader(tmp_path / 'c.json',
+                               {'generation_store': str(tmp_path / 'rg'),
+                                'reader_uid': os.getuid()},
+                               '../../escape', b'{}\n')
+
+
+def test_a_child_that_fails_is_reported_not_swallowed(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        return type('R', (), {'returncode': 1, 'stderr': b'permission denied'})()
+
+    monkeypatch.setattr(upgrade, 'trusted', Path)
+    monkeypatch.setattr(upgrade.subprocess, 'run', fail)
+    with pytest.raises(RuntimeError, match='permission denied'):
+        upgrade.post_as_reader(tmp_path / 'c.json',
+                               {'generation_store': str(tmp_path / 'rg'),
+                                'reader_uid': os.getuid()},
+                               'agents/one.json', b'{}\n')

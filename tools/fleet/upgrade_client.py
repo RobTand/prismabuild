@@ -333,8 +333,8 @@ def rollout_root(config):
     return Path(config['generation_store']).parent / ROLLOUT_DIRNAME
 
 
-def marker_path(root, relpath):
-    """Resolve `relpath` under `root`, refusing anything but plain descent.
+def marker_parts(relpath):
+    """`relpath` split into segments, refusing anything but plain descent.
 
     Checked in both halves of the write. The parent builds these names itself,
     so the check is not defending against the parent; it is what lets the
@@ -347,7 +347,32 @@ def marker_path(root, relpath):
     for part in parts:
         if MARKER_SEGMENT.fullmatch(part) is None:
             raise ValueError(f'unsafe rollout marker path: {relpath!r}')
-    return Path(root).joinpath(*parts)
+    return parts
+
+
+def marker_path(root, relpath):
+    """Where `relpath` lands under `root`, once it is shown to be safe."""
+    return Path(root).joinpath(*marker_parts(relpath))
+
+
+def make_dir(path):
+    """One directory, world readable whatever umask the caller happens to carry.
+
+    Every host reads this tree as the squashed uid. A directory created under a
+    strict umask inherited from a service unit is one nobody else can enter,
+    and the existence check that holds this to one write per agent version
+    would then miss on every tick and write again every time. The budget would
+    be gone and the status would not say so.
+
+    Only a directory this call created is given a mode; one that was already
+    there was somebody else's decision.
+    """
+    try:
+        path.mkdir()
+    except FileExistsError:
+        return False
+    path.chmod(0o755)
+    return True
 
 
 def post_marker(root, relpath, content):
@@ -370,8 +395,12 @@ def post_marker(root, relpath, content):
     content = bytes(content)
     if len(content) > MAX_MARKER:
         raise ValueError('oversized rollout marker')
-    target = marker_path(root, relpath)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    parts = marker_parts(relpath)
+    root = Path(root)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    for step in (root, *(root.joinpath(*parts[:n]) for n in range(1, len(parts)))):
+        make_dir(step)
+    target = root.joinpath(*parts)
     temp = target.parent / ('.tmp-' + uuid.uuid4().hex)
     try:
         with temp.open('wb') as stream:
