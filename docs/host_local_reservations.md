@@ -93,7 +93,7 @@ box learns what this box took; they cannot be anywhere but the mount.
 
 Preemption selects a background holder under host admission, then releases
 admission before withdrawing it and publishing its retry. A separate permanent
-host-local `<ledger-and-host-digest>.preemption.lock` spans selection through
+host-local `<ledger-and-host-digest>.preemption` spans selection through
 the completed handoff. Acquisition is nonblocking: a stalled handoff stops
 other preemption selections while ordinary fitting claims continue. The
 holder's shared transition lock still spans withdrawal and retry publication,

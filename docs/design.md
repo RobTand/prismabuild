@@ -97,7 +97,7 @@ lock and the holder's per-key transition lock. A stalled handoff prevents
 another preemption selection, but fitting ordinary claims can proceed. The
 withdrawal still revalidates the exact selected claim, and no tokens are
 returned before the holder's normal cleanup. The preemption lock is a permanent
-`<ledger-and-host-digest>.preemption.lock` inode under the same box-state root
+`<ledger-and-host-digest>.preemption` inode under the same box-state root
 as admission; it is never removed or released on a timeout. Changing the root
 or mixing generations that do and do not use this lock requires drained work
 and completed worker rotation before submissions resume.

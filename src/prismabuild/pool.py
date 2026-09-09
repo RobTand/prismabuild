@@ -3546,7 +3546,9 @@ class PoolQueue:
         a process stuck in a shared syscall must retain the handoff slot.
         """
         directory, digest = cpu_admission.box_state(ledger.base)
-        descriptor = os.open(directory / (digest + '.preemption.lock'),
+        # The admission monitor inventories *.lock in this directory. This
+        # distinct suffix keeps a stalled handoff out of its host-gate census.
+        descriptor = os.open(directory / (digest + '.preemption'),
                              os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
             info = os.fstat(descriptor)

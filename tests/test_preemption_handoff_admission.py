@@ -6,12 +6,17 @@ Events hold one handoff open while a separate queue instance tries to claim.
 import json
 import multiprocessing
 import os
+from pathlib import Path
+import sys
 import threading
 import time
 
 import pytest
 
 from prismabuild import adaptive_cpu, pool
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+import mount_latency
 
 
 CAPACITY = {"cpu": 3, "mem_gb": 8}
@@ -156,3 +161,12 @@ def test_handoff_error_releases_exclusion_without_returning_live_tokens(rig, mon
     decisions = [d for key in (BACKGROUND, OTHER_BACKGROUND)
                  for _, d in rig.withdrawal_decisions(key)]
     assert len(decisions) == 1
+
+
+def test_preemption_handoff_is_not_reported_as_host_admission(rig):
+    with rig._preemption_locked(rig.ledger()) as acquired:
+        assert acquired
+        census = mount_latency.lock_contention(lock_dir=adaptive_cpu.BOX_STATE_ROOT)
+        assert census["present"] and census["identity_complete"]
+        assert census["files"] == 1, "handoff inode entered the admission census"
+        assert census["holders"] == 0
