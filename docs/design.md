@@ -1677,11 +1677,19 @@ adoption of the newer broker and updater.
 A loop that parks on a drain records that it parked, one file per process per
 drain under `/run/prismabuild/rollout/parked/`, named for the gate's
 `changed_unix` so a marker left by an earlier drain reads as the earlier drain.
-The marker also carries the PID and procfs start time. A future drain reader
-must match the current drain and every live loop's process identity while the
-gate stays closed; marker readers and privileged directory provisioning are
-not implemented in this slice. The write is best effort, so a loop that cannot
-record its park still parks and missing evidence cannot certify a drained host.
+The marker also carries the PID and procfs start time. The write is best effort,
+so a loop that cannot record its park still parks and missing evidence cannot
+certify a drained host. The updater creates the directory for the unprivileged
+worker uid and reports whether every serving process has a marker for the
+current drain and the broker reports no active scopes. Processes count by argv
+basename, including a one-shot invoked through the symlink or a local checkout.
+Unreadable or malformed process evidence prevents a positive result and is
+reported explicitly; only a process directory proved gone may be omitted after
+a read failure. Process start identity is checked around the argv read. Missing
+gate identity or a gate change during the census also prevents certification.
+The drain identity comes from the gate file. This is an observation of the
+current processes, not an admission barrier or a guarantee against future
+process launches; it neither opens nor closes a drain.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not
