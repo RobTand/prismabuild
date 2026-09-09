@@ -188,6 +188,43 @@ def test_stale_scope_start_preserves_successor_claim_and_lease(
         assert stopped["reason"] == "scope ownership could not be persisted"
 
 
+@pytest.mark.parametrize("reused_owner", [False, True])
+def test_stale_create_recovery_preserves_successor_before_lease_refusal(
+    scoped, monkeypatch, reused_owner,
+):
+    queue, first, newer, observed, saved = _replaced_scope(scoped, monkeypatch)
+    # The create reached the broker, but its reply never reached this caller.
+    control = first.pop("resource_scope")
+    if reused_owner:
+        first["claimed_by"] = newer["claimed_by"]
+        first["published_unix"] = newer["published_unix"]
+    claim_path = queue.item_path(pool.CLAIMED, first["action_key"])
+    read = pool._read_json
+    request = resource_scope.ResourceScope._request
+
+    def broker(scope, op, **extra):
+        result = request(scope, op, **extra)
+        return {**result, **control} if op == "recover_create" else result
+
+    monkeypatch.setattr(resource_scope.ResourceScope, "_request", broker)
+    with monkeypatch.context() as patch:
+        patch.setattr(pool, "_read_json",
+                      lambda path: dict(first) if path == claim_path else read(path))
+        result = queue.cleanup_action_containers(first, scope_only=True)
+    assert result["complete"] is False
+    assert "contradictory claim and lease identity" in result["error"]
+    _assert_successor_untouched(queue, newer, observed, saved)
+    assert observed == [(control["nonce"], "recover_create")]
+    assert "resource_scope" not in first
+
+    # Once reads agree again, exact predecessor recovery and cleanup can
+    # finish without replacing the live claim or releasing its reservation.
+    assert queue.cleanup_action_containers(first, scope_only=True)["complete"]
+    _assert_successor_untouched(queue, newer, observed, saved)
+    assert (control["nonce"], "stop") in observed
+    assert (control["nonce"], "release") in observed
+
+
 def test_cleanup_preserves_an_existing_immutable_attempt_and_retains_its_proof(scoped, monkeypatch):
     queue, first, newer, observed, saved = _replaced_scope(scoped, monkeypatch)
     queue.archive_attempt(first, attempt=1, status='lease_lost',
