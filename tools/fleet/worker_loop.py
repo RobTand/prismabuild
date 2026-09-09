@@ -81,17 +81,123 @@ GENERATION_VERSION = RUNTIME_ROOT / "RUNTIME_VERSION.json"
 #: The stable name crosses the generation boundary on every idle poll, which
 #: is how a loop notices that the publisher activated a successor.
 RUNTIME_VERSION = SH / "repo" / "RUNTIME_VERSION.json"
-MAINTENANCE_GATE = Path("/run/prismabuild/maintenance.json")
+#: The path is read at import so a qualification harness can point a loop
+#: child at a private gate.  ``/run/prismabuild`` is ``root:root 0755`` and
+#: nothing running as uid 1000 can write under it, so a test that could not
+#: move this path could not exercise the drain at all.
+MAINTENANCE_GATE = Path(os.environ.get("PRISMABUILD_MAINTENANCE_GATE")
+                        or "/run/prismabuild/maintenance.json")
+
+#: Where a parked loop records that it parked.  ``/run`` is tmpfs cleared only
+#: at boot, and no loop survives a boot either, so a missing marker here is
+#: never a stale absence.  That is exactly the inference a drain proof has to
+#: make, and it is the reason ``adaptive_cpu.box_state()`` cannot serve:
+#: ``BOX_STATE_ROOT`` defaults under ``/tmp``, which is cleared on some of
+#: these hosts, and that module requires a missing file there to be read as
+#: "no information" rather than as a fact.
+#:
+#: The directory is created and handed to this uid by the root upgrade agent.
+#: The loop never creates it: under the real gate it could not, and a loop
+#: that silently made its own would be recording into a place no reader looks.
+PARKED_ROOT = MAINTENANCE_GATE.parent / "rollout" / "parked"
+
+#: What may appear in a marker name.  ``changed_unix`` arrives from a JSON
+#: document this process does not write, so it is spelled into the filename
+#: rather than trusted as one.
+_KEY_SAFE = frozenset("0123456789abcdefghijklmnopqrstuvwxyz"
+                      "ABCDEFGHIJKLMNOPQRSTUVWXYZ._")
 
 
-def maintenance_requested() -> bool:
+def read_maintenance_gate() -> dict | None:
+    """The drain in force on this box, or ``None`` when there is none.
+
+    Split out of :func:`maintenance_requested` so a caller can read the
+    drain's ``changed_unix`` without restating the rules below, which is the
+    only way to get them wrong in two places.  Every answer here is the answer
+    the boolean has always given:
+
+    * no gate file at all means no drain;
+    * a gate that cannot be read or parsed means draining, because the other
+      reading admits work on a parse error;
+    * a value that is not an object means draining, for the same reason;
+    * ``draining`` anything other than ``False`` means draining.
+
+    An open gate returns ``None`` rather than the parsed object, so a caller
+    testing truthiness cannot mistake ``{"draining": false}`` for a stop.
+    """
+
     try:
         value = json.loads(MAINTENANCE_GATE.read_text())
     except FileNotFoundError:
-        return False
+        return None
     except (OSError, ValueError):
-        return True
-    return not isinstance(value, dict) or value.get("draining") is not False
+        return {"draining": True}
+    if not isinstance(value, dict):
+        return {"draining": True}
+    return None if value.get("draining") is False else value
+
+
+def maintenance_requested() -> bool:
+    return read_maintenance_gate() is not None
+
+
+def _proc_starttime(pid: int) -> str:
+    """Field 22 of ``/proc/<pid>/stat``, which makes a marker survive pid reuse.
+
+    ``comm`` is field 2, is parenthesised, and may itself contain spaces and
+    parentheses, so the fields are counted from the last ``)`` rather than by
+    splitting the line.
+    """
+
+    try:
+        line = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return "unknown"
+    _, _, rest = line.rpartition(")")
+    fields = rest.split()
+    return fields[19] if len(fields) > 19 else "unknown"
+
+
+def _gate_key(gate: dict) -> str:
+    """This drain's identity, as the broker already stamps it.
+
+    ``maintenance_begin`` stamps a new drain with a fresh ``changed_unix``
+    and preserves it while that drain remains held, so the field names
+    this drain and not the last one, and a reader matching on it reads a marker
+    left by an earlier drain as what it is. ``reason`` is descriptive text,
+    not the identity of a drain.
+
+    A gate with no identity gets a key no reader matches, which leaves the host
+    reading as not drained.
+    """
+
+    value = gate.get("changed_unix") if isinstance(gate, dict) else None
+    if value is None:
+        return "unknown"
+    return "".join(c if c in _KEY_SAFE else "_" for c in str(value))
+
+
+def post_park_marker(gate: dict) -> Path | None:
+    """Record that this process is parked on ``gate``, once, and return the path.
+
+    Best effort by contract, and the direction of the failure is the point: a
+    loop that cannot write the marker parks anyway, the host then reads as not
+    drained, and whatever is waiting on the drain keeps waiting.  The opposite
+    arrangement would let a box that failed to record itself pass for stopped.
+
+    Reposting on every poll is idempotent: the name is fixed by the
+    pid and the drain, and the create is exclusive.
+    """
+
+    marker = PARKED_ROOT / (f"{os.getpid()}-{_proc_starttime(os.getpid())}"
+                            f"-{_gate_key(gate)}")
+    try:
+        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+    except FileExistsError:
+        return marker
+    except OSError:
+        return None
+    return marker
 
 
 def _generation_at(path: Path) -> str:
@@ -369,7 +475,9 @@ def _run_loop(stop_requested):
                   + "; exiting so the supervisor reloads it",
                   flush=True)
             return 0
-        if maintenance_requested():
+        gate = read_maintenance_gate()
+        if gate is not None:
+            post_park_marker(gate)
             print(f"[{host}] resource broker draining for maintenance; admission paused", flush=True)
             if args.once:
                 return 0
