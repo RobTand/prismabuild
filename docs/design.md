@@ -223,6 +223,14 @@ reservations remain unchanged. These reads hold per-key transition exclusion,
 outside host admission, and do not qualify jointly stale observations or
 bound shared-filesystem latency.
 
+Recovery of a lost scope-create reply also checks claim/lease consistency
+before writing recovered authority into a matching live claim. A contradiction
+retains the durable creation intent and all successor state, and reports
+incomplete cleanup for a later retry. The exact-nonce broker recovery may have
+already succeeded; refusal neither creates another scope nor releases tokens.
+When a fresh read identifies a different successor, the predecessor's recovered
+authority remains confined to its own cleanup record and diagnostic archive.
+
 A released unstarted claim has no numbered execution outcome. If its original
 caller reports a result while the same publication is ready or claimed with
 that attempt number still uncharged, the late report is retained under

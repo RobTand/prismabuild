@@ -2765,6 +2765,9 @@ class PoolQueue:
         path = self.item_path(CLAIMED, key)
         live = _read_json(path)
         if live is not None and _same_claim(live, record):
+            # A recovered broker reply must not overwrite a successor before
+            # the subsequent heartbeat detects its contradictory lease.
+            _check_claim_lease_identity(key, live, _read_json(self.lease_path(key)))
             live["resource_scope"] = control
             _write_json_atomic(path, live)
             self.write_lease(key, owner=str(record.get("claimed_by") or ""),
