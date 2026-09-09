@@ -1705,6 +1705,23 @@ name, so a name that exists refuses the write instead of replacing what
 somebody else recorded. Posting is best effort and failure is recorded rather
 than raised; whether a rollout may proceed is a separate question, asked by
 whoever reads these files.
+Publication reads that tree. `publish_runtime.py` takes `--rollout`, whose
+default `rolling` is what every publication has always done: each box swaps
+when its own updater next looks. Under `barrier` it refuses to publish unless
+every box the fleet roster declares has already posted an attestation naming
+the sha256 this publication records for the updater, and the refusal names the
+boxes that are silent or stale. A box answers under its roster key or under its
+declared alias, since the second GB10 is keyed `gx10-6b77` and reports itself
+as `sparklina`. The check runs before any generation bytes are staged, and an
+activation of an existing generation is proved the same way against the receipt
+it restores. A marker counts only when its body reproduces its own file name
+through the updater's own name function, and the publisher reads that function
+and the member key from the updater module in the checkout it is publishing
+rather than holding a second copy of either spelling. One consequence is
+arithmetic rather than policy: a generation that changes the updater cannot be
+its own first barrier publication, because no box can have attested bytes that
+did not exist when it started, so the operator publishes rolling, lets the
+fleet converge, and then publishes under a barrier.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not
