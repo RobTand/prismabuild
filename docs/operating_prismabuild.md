@@ -298,7 +298,9 @@ puts a path in **`PRISMABUILD_PROFILE_TORCH_OUT`**, the action exports its
 Chrome trace there, and PrismaBuild validates, sizes, ingests and reports it
 exactly as it does a profile it produced itself. `tools/profile_torch.py` is a
 copyable helper — **copy it into your own repository**, since the action runs
-from a snapshot of your checkout:
+from a snapshot of your checkout. It is available without a PrismaBuild source
+checkout at `/mnt/shared/prismabuild-fleet/repo/tools/profile_torch.py`, hashed
+and sealed with the published generation:
 
 ```python
 from profile_torch import prismabuild_torch_profile

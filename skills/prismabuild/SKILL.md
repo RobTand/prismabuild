@@ -83,7 +83,8 @@ Systems over CUDA and NVTX and files the `.nsys-rep` plus its kernel-time CSV;
 it is backed on both GB10 boxes and refuses on dl380g10, and `nsys:600` traces
 a window in seconds without ending the action. `torch` is a contract rather
 than a wrapper -- PrismaBuild names a path in `PRISMABUILD_PROFILE_TORCH_OUT`
-and the action exports its Chrome trace there (copy `tools/profile_torch.py`);
+and the action exports its Chrome trace there (copy the generation's
+`/mnt/shared/prismabuild-fleet/repo/tools/profile_torch.py` into your repository);
 an action that ignores it fails rather than filing a profile-less receipt.
 Measured cost on a fixed-work GPU action, five interleaved paired repeats, is
 in `docs/operating_prismabuild.md`; both are dearer than `sample`, and most of

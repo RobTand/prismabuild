@@ -116,6 +116,10 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
 #: no workers at all.
 FLEET_DATA = ("fleet_boxes.json",)
 
+# These originate at tools/, without a second tools/fleet/ spelling. The
+# torch helper is copied by consumers following the published profile guide.
+TOP_LEVEL_SCRIPTS = ("prismabuild_worker.py", "profile_torch.py")
+
 # The dashboard deploy tests travel with the runtime, so their implementation
 # and maintained dashboard must travel too. This does not start monitoring or
 # modify an existing Grafana deployment during worker publication.
@@ -267,8 +271,8 @@ def _source_for(name: str) -> Path:
         base = name.rsplit("/", 1)[1]
         source = CHECKOUT / "tools" / "fleet" / base
         return source if source.is_file() else CHECKOUT / "tools" / base
-    if name == "tools/prismabuild_worker.py":
-        return CHECKOUT / "tools" / "prismabuild_worker.py"
+    if name in {f"tools/{script}" for script in TOP_LEVEL_SCRIPTS}:
+        return CHECKOUT / name
     if name.startswith("tools/"):
         base = name.rsplit("/", 1)[1]
         source = CHECKOUT / "tools" / "fleet" / base
@@ -308,9 +312,10 @@ def _publication_manifest() -> dict[str, str]:
     hook = CHECKOUT / ".githooks" / "pre-push"
     if hook.is_file():
         published[".githooks/pre-push"] = _sha256(hook)
-    worker = CHECKOUT / "tools" / "prismabuild_worker.py"
-    if worker.is_file():
-        published["tools/prismabuild_worker.py"] = _sha256(worker)
+    for name in TOP_LEVEL_SCRIPTS:
+        source = CHECKOUT / "tools" / name
+        if source.is_file():
+            published[f"tools/{name}"] = _sha256(source)
     for source in sorted((CHECKOUT / "tests").glob("*.py")):
         published[f"tests/{source.name}"] = _sha256(source)
     for name in OBSERVABILITY_FILES:
