@@ -161,11 +161,11 @@ def _proc_starttime(pid: int) -> str:
 def _gate_key(gate: dict) -> str:
     """This drain's identity, as the broker already stamps it.
 
-    ``maintenance_begin`` rewrites the whole gate value with a fresh
-    ``changed_unix`` (``tools/resource_broker.py:351-354``), so the field names
+    ``maintenance_begin`` stamps a new drain with a fresh ``changed_unix``
+    and preserves it while that drain remains held, so the field names
     this drain and not the last one, and a reader matching on it reads a marker
-    left by an earlier drain as what it is.  Keying on ``reason`` instead would
-    not survive: the upgrade agent's own ``begin`` overwrites it.
+    left by an earlier drain as what it is. ``reason`` is descriptive text,
+    not the identity of a drain.
 
     A gate with no identity gets a key no reader matches, which leaves the host
     reading as not drained.
@@ -185,7 +185,7 @@ def post_park_marker(gate: dict) -> Path | None:
     drained, and whatever is waiting on the drain keeps waiting.  The opposite
     arrangement would let a box that failed to record itself pass for stopped.
 
-    Reposting on every poll is free and idempotent: the name is fixed by the
+    Reposting on every poll is idempotent: the name is fixed by the
     pid and the drain, and the create is exclusive.
     """
 
