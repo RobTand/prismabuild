@@ -261,10 +261,13 @@ def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
     # These are separate procfs reads: the original process may have exited
     # and its PID may now name another process. Never attach that successor's
     # counters to the identity read before collection. Ordinary state/comm
-    # changes do not change the incarnation, so compare only starttime.
+    # changes do not change the incarnation, so compare only starttime. Keep
+    # the refreshed parent too: orphaning during these reads can turn a child
+    # into a scope root whose counters must be retired when it disappears.
     try:
         after = Path(f'/proc/{pid}/stat').read_text()
-        after_starttime = after[after.rindex(')') + 1:].split()[19]
+        after_fields = after[after.rindex(')') + 1:].split()
+        after_parent, after_starttime = int(after_fields[1]), after_fields[19]
     except FileNotFoundError:
         return None
     except (OSError, ValueError, IndexError):
@@ -273,7 +276,7 @@ def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
         return identity, parent, None
     if after_starttime != starttime:
         return None
-    return identity, parent, values
+    return identity, after_parent, values
 
 
 def _atomic_json(path: Path, record: dict) -> None:

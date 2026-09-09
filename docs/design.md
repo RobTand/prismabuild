@@ -534,6 +534,11 @@ a different incarnation, that observation contributes no new counters. This
 prevents replacement bytes being attached to the earlier sampled identity;
 it is not an atomic process-tree snapshot or complete short-lived-child
 accounting. This changes diagnostic evidence, not action identity.
+An accepted reading retains the parent PID from that identity recheck. A child
+orphaned during counter collection can thereby become a scope root, preserving
+its observed counters on departure instead of assuming its former parent
+absorbed them. Reparenting outside the read interval and unseen final I/O remain
+sampling limitations.
 If the initial identity read is unavailable or malformed, the sampler retains
 that PID's previous reading without new counters or a new process identity.
 It records an unreadable process and does not retire the prior root merely

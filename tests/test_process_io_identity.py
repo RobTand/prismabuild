@@ -8,10 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from prismabuild import resource_scope
 
 
-def _stat(starttime, *, state='S', command='payload (worker)'):
+def _stat(starttime, *, state='S', command='payload (worker)', parent=1):
     # Fields 3 through 22; starttime is field 22, not a whitespace token
     # counted from the start of the parenthesized command name.
-    fields = [state, '1'] + ['0'] * 17 + [str(starttime)]
+    fields = [state, str(parent)] + ['0'] * 17 + [str(starttime)]
     return '4242 (' + command + ') ' + ' '.join(fields)
 
 
@@ -132,3 +132,55 @@ def test_first_identity_outage_does_not_invent_a_process_or_bytes(monkeypatch, t
     state['stat'] = _stat(100)
     known = scope.sample_process_io()
     assert known['processes_observed'] == 2 and known['wchar'] == 120
+
+
+@pytest.mark.parametrize('parent', [4343, 'unreadable'])
+def test_second_identity_read_refreshes_parent_or_refuses_counters(monkeypatch, parent):
+    _proc_reads(monkeypatch, after=_stat(100, parent=parent))
+    result = resource_scope.read_process_io(4242)
+    if parent == 'unreadable':
+        assert result == ('4242:100', 1, None)
+    else:
+        assert result == ('4242:100', parent,
+                          {name: 9000000 for name in resource_scope.IO_COUNTERS})
+
+
+def test_child_orphaned_during_counter_read_keeps_observed_io(monkeypatch, tmp_path):
+    scope = resource_scope.ResourceScope('a' * 64, 'b' * 32, 1024,
+                                         tmp_path / 'telemetry.json')
+    scope.cgroup_path = tmp_path / 'scope'
+    state = {'phase': 0, 'child_reads': 0}
+    monkeypatch.setattr(resource_scope, 'scope_pids',
+                        lambda _, **kw: ([4343, 4242] if state['phase'] == 0 else
+                                         [4242] if state['phase'] == 1 else []))
+    original = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path == Path('/proc/4343/stat'):
+            return _stat(99).replace('4242', '4343', 1)
+        if path == Path('/proc/4242/stat'):
+            state['child_reads'] += 1
+            # Parent exits after the first stat read in the second sample.
+            parent = 1 if state['phase'] == 1 and state['child_reads'] == 2 else 4343
+            return _stat(100, parent=parent)
+        if path in (Path('/proc/4343/io'), Path('/proc/4242/io')):
+            amount = 20 if path.parts[2] == '4343' else 100
+            return ''.join(f'{name}: {amount}\n' for name in resource_scope.IO_COUNTERS)
+        if path in (Path('/proc/4343/cgroup'), Path('/proc/4242/cgroup')):
+            raise FileNotFoundError('departed')
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', read)
+    assert scope.sample_process_io()['wchar'] == 120
+    state.update(phase=1, child_reads=0)
+    assert scope.sample_process_io()['wchar'] == 120
+    # Reconstructed scopes must retain the corrected parent relationship too.
+    import json
+    scope.telemetry_path.write_text(json.dumps({'nonce': scope.nonce,
+                                              'process_io': scope._process_io}))
+    scope._process_io = None
+    state['phase'] = 2
+    final = scope.sample_process_io()
+    assert final['wchar'] == 120, 'orphan bytes were discarded as if the old parent reaped them'
+    assert final['retired']['wchar'] == 120
+    assert final['processes_live'] == 0 and final['processes_observed'] == 2
