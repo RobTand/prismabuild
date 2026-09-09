@@ -3,6 +3,7 @@ from contextlib import ExitStack
 import json
 from pathlib import Path
 import sys
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -75,3 +76,41 @@ def test_teardown_still_stops_and_releases_unrecovered_scope(registered_cleanup)
     assert not scope.cgroup_path.exists()
     audit = json.loads(scope.telemetry_path.with_suffix(".termination.json").read_text())
     assert audit["reason"] == "disposable claim qualification cleanup"
+
+
+@pytest.mark.parametrize("wrong", ["scope", "action", "parent", "running"])
+def test_docker_teardown_refuses_unowned_or_running_container(monkeypatch, wrong):
+    scope = SimpleNamespace(unit="prismabuild-job" + "b" * 32 + ".slice", action_key="a" * 64)
+    row = {"Id": "c" * 64, "Config": {"Labels": {
+        "prismabuild.scope": scope.unit, "prismabuild.action": scope.action_key}},
+        "HostConfig": {"CgroupParent": scope.unit}, "State": {"Running": False}}
+    if wrong in ("scope", "action"):
+        row["Config"]["Labels"]["prismabuild." + wrong] = "foreign"
+    elif wrong == "parent":
+        row["HostConfig"]["CgroupParent"] = "foreign"
+    else:
+        row["State"]["Running"] = True
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if "ps" in argv:
+            return SimpleNamespace(stdout=row["Id"] + "\n")
+        assert "inspect" in argv, "must refuse before container removal"
+        return SimpleNamespace(stdout=json.dumps([row]))
+
+    monkeypatch.setattr(qualification.subprocess, "run", run)
+    with pytest.raises(AssertionError):
+        qualification.remove_stopped_scope_containers(scope)
+    assert not any("rm" in argv for argv in calls)
+
+
+def test_docker_daemon_error_does_not_prove_cleanup(monkeypatch):
+    scope = SimpleNamespace(unit="prismabuild-job" + "b" * 32 + ".slice", action_key="a" * 64)
+
+    def unavailable(argv, **kwargs):
+        raise subprocess.CalledProcessError(1, argv, stderr="daemon unavailable")
+
+    monkeypatch.setattr(qualification.subprocess, "run", unavailable)
+    with pytest.raises(subprocess.CalledProcessError):
+        qualification.remove_stopped_scope_containers(scope)

@@ -6,7 +6,8 @@ admitted actors on different hosts. Each pair owns a fresh queue beneath
 By default the inner claims are test data with no payload or broker scope.
 The outer PrismaBuild actions provide actual admission and containment.
 The optional `--real-scope` mode below adds bounded direct payloads to the
-isolated claims. Teardown stops only scopes that still exist, preserving the
+isolated claims; adding `--docker-image` also exercises a sleeping container
+in each scope. Teardown stops only scopes that still exist, preserving the
 production termination audit after successful recovery. It still reaps its
 payload proxies and asks the broker to confirm release.
 
@@ -104,8 +105,8 @@ This is queue-method qualification on the real shared mount, with a delayed
 caller and an injected ownership contradiction. It does not induce an NFS
 kernel stall, stop a production worker, test host loss, or qualify execution
 budgets during a stall. Inner broker cleanup is exercised only when
-`--real-scope` is requested. Neither mode exercises Docker cleanup or makes
-a performance or saturation claim. The remaining #234 requirements must not
+`--real-scope` is requested, and Docker cleanup only with `--docker-image`.
+These modes make no performance or saturation claim. The remaining #234 requirements must not
 be inferred from a passing campaign.
 
 ## Real direct scopes
@@ -156,6 +157,32 @@ cleanup. Completion here depends on the original host remaining available
 to clean its scope. It does not qualify permanent host loss, reboot recovery,
 an induced kernel NFS stall, Docker cleanup, or execution-budget accounting
 during a stall.
+
+### Docker scopes
+
+Add `--real-scope --docker-image ubuntu:24.04` to both actors to put a sleeping
+container beside each direct parent/descendant pair. The image must already
+be cached on every eligible host and provide `/bin/sh` and `sleep`. The shim
+uses `--pull never`, disabled networking and no privileged or GPU access.
+The actor records the actual image ID, exact container ID and scope label,
+checks its 128 MiB memory/swap caps and verifies the container PID belongs to
+the scope with the actor's inherited PB CPU affinity. The container and direct
+payloads share that 128 MiB parent; CPU1/mem2 GiB per actor remains sufficient.
+The single inner launcher invokes the ordinary shim from within its scope.
+
+The original container must remain running after the injected cleanup refusal,
+then disappear through production cleanup before READY is published. The
+successor container must survive the late original calls and disappear on
+normal successor finish. These checks occur before harness teardown, so its
+fallback removal cannot make production cleanup pass. Exceptional teardown
+verifies the exact scope, action label, cgroup parent and stopped state before
+removing any remaining container object. A daemon error never proves absence.
+All container and direct payload lifetimes remain bounded to 600 seconds.
+
+The mode still depends on both hosts being available and injects no delayed
+Docker daemon RPC, host loss or kernel stall. Cross-host retries do not qualify
+same-host overlapping attempts. Sparklina's Docker path needs its own recorded
+qualification; the first Docker campaign below landed only on DL380 and Sparky.
 
 ## Recorded run — 2026-09-09 UTC
 
@@ -519,3 +546,67 @@ Evidence is retained at `/home/rob/tmp/pb-234-cleanup-evidence/`:
 `scope-absence.json`, `prior-audit-readback.json`, `campaign.json` and
 `runtime-verified.json`. Both new isolated queues are complete with empty
 ledgers; the prior corrupted audit files have not been rewritten.
+
+## Docker cleanup qualification — 2026-09-09 UTC
+
+Eight CPU-only actors passed four pairs: late success and failure, in both
+directions between DL380 and Sparky. All four original waiters returned the
+successor result with two immutable attempts and empty inner ledgers. Foreign
+cleanup and the caller-local injected broker failure retained the claim and
+reservation. Original containers remained alive through the injected failure,
+then production cleanup removed them before retry. Successor containers
+survived every forced late-caller refusal and were removed on normal finish.
+
+All eight exact cgroups and container IDs were independently read back on
+their owning hosts after teardown: absent. All eight production termination
+audits still retain `lease_lost` for originals and `executed` for successors,
+matching their broker stop reasons. No actor failed or was skipped.
+
+| Actor key | Role / host | CAS receipt |
+| --- | --- | --- |
+| `7c2dc514fa9a` | original / dl380g10 | `4ff70f42a80cb0951b1c3bf519870cc5406d9e70bf6bd0e7049adcbef792831f` |
+| `1dc96877c37e` | peer / sparky | `b1f6884e8e092f548af58cc44e925a70beca74f642605b3d6c4b96b3ccd50a63` |
+| `d36ba988909f` | original / dl380g10 | `d38461bbfb8138410c7453b8a157af286ba8b1b03d213a31acc28295d394636a` |
+| `bbf93769b4e9` | peer / sparky | `8148eb43bf68f99919aa01f170ac63dd9932c5f41e5a0c53bdc8b8cb55e59b13` |
+| `ccc0dd043e14` | original / sparky | `46da7d3535bb87160fd9c0cde221615bcd0824686f01d758bd4d9c0b4146777a` |
+| `81be99f5b4de` | peer / dl380g10 | `0bf2ee9cd7ed84a262b55bcd4167a88b065d55bc2314c8032b1411607214227e` |
+| `e71a50d8500b` | original / sparky | `34e2498fb12da0de3492b23a0702df3f97f22742b20a9844e792e0a0aee7a97b` |
+| `b9fceec55a94` | peer / dl380g10 | `aac246687f613f3f005bde629b6dcf1eb24fa7e4419004b590e4be6a02102312` |
+
+Published PB admitted the campaign with CPU8/mem16 GiB aggregate, CPU1/mem2 GiB
+per actor, priority -10 and native threads 1. PB selected the hosts using
+`x86`/`gb10` constraints; Sparklina was eligible but not selected. Each actor
+received one preferred CPU, inherited by its container. The checked local
+`ubuntu:24.04` images were
+`sha256:a6f81fb630d51837271b89f8193810a5fc493fa4f30a55d7ebcdb3a66f3cc63a`
+on DL380 and
+`sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517`
+on Sparky. No image was pulled, no GPU executed and no performance claim made.
+
+Final targeted validation passed **17 tests**, no skips, on Sparky with
+CPU2/mem3 GiB, two pytest workers and native threads 1: action
+`37ead80c87b485c251b46ff9db3392e6618cb5ddaaecb80a4064b01611114eb2`, receipt
+`22d18a6b580f220cd5d05ce72b7f62100a55e0fe3cbb427855485eeae9f61c9e`.
+This includes refusal to remove containers with mismatched ownership or a
+running state, and refusal to treat a Docker daemon error as absence. An
+earlier 12-test run passed before those five additional safety checks.
+This extends qualification coverage; no production defect was found or fixed.
+
+Verification read terminal exits, immutable log lengths/SHA-256, canonical
+CAS receipts and actual JSON payloads, completed outer scope releases, sealed
+harness/test/production source bytes, environments and affinity. Each campaign
+snapshot uses unchanged production recovery code from main `033f007667b4`.
+This opt-in source-snapshot harness needs no runtime publication. The fleet
+remained on `650893b19fd0-1788912745-bc21f351ad74`; all 417 hashes were verified.
+
+The qualification does not cover Sparklina Docker recovery, overlapping
+same-host attempts, delayed Docker creation RPCs, permanent host loss/reboot,
+induced kernel NFS stalls, stall-budget accounting, production scope
+creation/preflight or normal execution-result collection. #234 stays open.
+
+Evidence: `/home/rob/tmp/pb-due-234-266-413/` (`campaign.json`,
+`campaign-verified.json`, `actor-payloads-verified.json`, `source-verified.json`,
+`inner-state-verified.json`, `scope-absence.json`, `targeted-verified.json`).
+The four completed queues under
+`/mnt/shared/pb-qualification/docker-recovery-975ea7aa9092` are retained as
+bounded evidence; their ledgers are empty and every created scope is retired.

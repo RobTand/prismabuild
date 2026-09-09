@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import select
 import subprocess
@@ -49,12 +50,71 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def start_scope(q, claim, stack):
+def scope_containers(scope):
+    """Read exact-scope containers; a daemon error never proves absence."""
+    prefix = ["/usr/bin/docker", "--host", "unix:///var/run/docker.sock"]
+    found = subprocess.run([*prefix, "ps", "-aq", "--no-trunc", "--filter",
+                            f"label=prismabuild.scope={scope.unit}"],
+                           capture_output=True, text=True, check=True, timeout=20)
+    ids = found.stdout.split()
+    assert all(re.fullmatch(r"[a-f0-9]{64}", cid) for cid in ids), ids
+    if not ids:
+        return []
+    inspected = subprocess.run([*prefix, "inspect", *ids],
+                               capture_output=True, text=True, check=True, timeout=20)
+    rows = json.loads(inspected.stdout)
+    assert {row["Id"] for row in rows} == set(ids)
+    for row in rows:
+        assert row["Config"]["Labels"]["prismabuild.scope"] == scope.unit
+        assert row["Config"]["Labels"]["prismabuild.action"] == scope.action_key
+        assert row["HostConfig"]["CgroupParent"] == scope.unit
+    return rows
+
+
+def remove_stopped_scope_containers(scope):
+    """Exceptional teardown removes only verified, already stopped objects."""
+    rows = scope_containers(scope)
+    assert all(row["State"]["Running"] is False for row in rows), rows
+    if rows:
+        subprocess.run(["/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
+                        "rm", *[row["Id"] for row in rows]],
+                       capture_output=True, text=True, check=True, timeout=20)
+    assert scope_containers(scope) == []
+
+
+def check_container_alive(scope, container):
+    rows = scope_containers(scope)
+    assert len(rows) == 1 and rows[0]["Id"] == container["id"], rows
+    row = rows[0]
+    assert row["State"]["Running"] is True
+    assert row["State"]["Pid"] in scope_pids(scope.cgroup_path)
+    assert sorted(os.sched_getaffinity(row["State"]["Pid"])) == container["affinity"]
+
+
+def inspect_started_container(scope, image, cid):
+    assert re.fullmatch(r"[a-f0-9]{64}", cid), cid
+    rows = scope_containers(scope)
+    assert len(rows) == 1 and rows[0]["Id"] == cid, rows
+    row = rows[0]
+    assert row["HostConfig"]["Memory"] == scope.memory_max_bytes
+    assert row["HostConfig"]["MemorySwap"] == scope.memory_max_bytes
+    assert not row["HostConfig"]["Privileged"] and not row["HostConfig"]["DeviceRequests"]
+    assert row["HostConfig"]["NetworkMode"] == "none"
+    info = {"id": cid, "image_id": row["Image"], "image_requested": image,
+            "affinity": sorted(os.sched_getaffinity(0)),
+            "memory_max_bytes": row["HostConfig"]["Memory"],
+            "scope_id": scope.unit}
+    check_container_alive(scope, info)
+    return info
+
+
+def start_scope(q, claim, stack, docker_image=None):
     """Attach an exact disposable broker scope to isolated queue test data.
 
     This uses the established scope-qualification API, not the production
     launch/preflight path. The 128 MiB cap and inherited CPU affinity fit the
-    outer actor's CPU1/mem2 GiB reservation. No GPU or Docker payload is used.
+    outer actor's CPU1/mem2 GiB reservation, including an optional sleeping
+    Docker payload in that same scope. No GPU payload is used.
     """
     key = claim["action_key"]
     scope = ResourceScope(key, uuid.uuid4().hex, 128 * 1024**2,
@@ -69,6 +129,8 @@ def start_scope(q, claim, stack):
             scope.terminate_owned("disposable claim qualification cleanup")
         for process in processes:
             process.communicate(timeout=10)
+        if docker_image:
+            remove_stopped_scope_containers(scope)
         deadline = time.monotonic() + 5
         while True:
             try:
@@ -94,15 +156,29 @@ child = subprocess.Popen([sys.executable, '-c',
     'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print("ready",flush=True); time.sleep(600)'],
     stdout=subprocess.PIPE, text=True)
 assert child.stdout.readline().strip() == 'ready'
+cid = None
+if len(sys.argv) > 1:
+    created = subprocess.run([sys.argv[1], 'run', '--detach', '--pull', 'never',
+        '--network', 'none', '--entrypoint', '/bin/sh', sys.argv[2],
+        '-c', 'exec sleep 600'], capture_output=True, text=True, check=True, timeout=30)
+    cid = created.stdout.strip()
 print(json.dumps({'pid':os.getpid(), 'child_pid':child.pid,
     'affinity':sorted(os.sched_getaffinity(0)),
-    'cgroup':pathlib.Path('/proc/self/cgroup').read_text()}),flush=True)
+    'cgroup':pathlib.Path('/proc/self/cgroup').read_text(), 'container_id':cid}),flush=True)
 time.sleep(600)
 """
-    process = subprocess.Popen(scope.wrap_argv([sys.executable, "-c", payload]),
+    argv = [sys.executable, "-c", payload]
+    env = dict(os.environ)
+    if docker_image:
+        # The single inner launcher invokes the ordinary shim from within its
+        # scope. Kernel ancestry selects that scope and inherited PB CPU mask.
+        argv.extend([str(Path(__file__).resolve().parent / "docker"), docker_image])
+        env.update(PRISMABUILD_CONTAINER_OWNER=key,
+                   PRISMABUILD_CONTAINER_MARKER=str(q.container_marker(key)))
+    process = subprocess.Popen(scope.wrap_argv(argv), env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     processes.append(process)
-    assert select.select([process.stdout], [], [], 20)[0], "scope payload startup stalled"
+    assert select.select([process.stdout], [], [], 40 if docker_image else 20)[0], "scope payload startup stalled"
     line = process.stdout.readline()
     assert line.strip(), "scope payload exited before its startup record"
     started = json.loads(line)
@@ -110,8 +186,11 @@ time.sleep(600)
     assert scope.unit in started["cgroup"]
     members = scope_pids(scope.cgroup_path)
     assert {started["pid"], started["child_pid"]} <= set(members)
-    return scope, process, {**started, "scope_id": scope.unit, "nonce": scope.nonce,
-                            "memory_max_bytes": scope.memory_max_bytes}
+    info = {**started, "scope_id": scope.unit, "nonce": scope.nonce,
+            "memory_max_bytes": scope.memory_max_bytes}
+    if docker_image:
+        info["container"] = inspect_started_container(scope, docker_image, started["container_id"])
+    return scope, process, info
 
 
 def retained_scope(q, first):
@@ -127,7 +206,7 @@ def retained_scope(q, first):
     return live
 
 
-def recover_real_scope(q, first, scope, process, root):
+def recover_real_scope(q, first, scope, process, root, container=None):
     wait(root / "foreign-cleanup-refused.json")
     key = first["action_key"]
     retained_scope(q, first)
@@ -149,6 +228,8 @@ def recover_real_scope(q, first, scope, process, root):
     live = retained_scope(q, first)
     assert "qualification injected broker unavailability" in live["container_cleanup_pending"]["error"]
     assert process.poll() is None and len(scope_pids(scope.cgroup_path)) >= 2
+    if container:
+        check_container_alive(scope, container)
     put(root / "local-cleanup-refused.json", {"calls": calls, "payload_alive": True})
     wait(root / "cleanup-refusal-checked.json")
     deadline = time.monotonic() + 10
@@ -159,6 +240,8 @@ def recover_real_scope(q, first, scope, process, root):
     process.communicate(timeout=10)
     assert process.returncode != 0 and scope_pids(scope.cgroup_path) == []
     assert not scope.cgroup_path.exists()
+    if container:
+        assert scope_containers(scope) == [], "production did not remove the original container"
     assert q.ledger().held() == {}
     attempt = json.loads(q.attempt_path(first, 1).read_text())
     telemetry = attempt["detail"]["resource_telemetry"]
@@ -167,7 +250,8 @@ def recover_real_scope(q, first, scope, process, root):
     assert released["released"] and released["scope_id"] == scope.unit
     put(root / "local-reaped.json", {"scope_id": scope.unit,
         "nonce": scope.nonce, "proxy_returncode": process.returncode,
-        "scope_absent": True, "broker_released": True})
+        "scope_absent": True, "broker_released": True,
+        "container_removed": container["id"] if container else None})
 
 
 def late_finish(q, key, first, status):
@@ -207,18 +291,20 @@ def refused_late_finish(q, key, first, status):
     return {**result, "injected_claim_reads": injected_reads}
 
 
-def original(root, late_status, stale_claim_read=False, *, stack, real_scope=False):
+def original(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
+             docker_image=None):
     root.mkdir(parents=True, exist_ok=False)
     q = pool.PoolQueue(root / "queue")
     key = hashlib.sha256(str(root).encode()).hexdigest()
     q.publish(action_key=key, cas_root=root / "cas", checkout_root=root / "checkout",
               worker_script=root / "unused.py", resources={"cpu": 1},
-              max_attempts=2, retry_safe=True)
+              max_attempts=2, retry_safe=True,
+              container_owner=key if docker_image else None)
     first = q.claim(owner=f"original:{os.getpid()}", capacity={"cpu": 1})
     assert first is not None
     scope_info = None
     if real_scope:
-        scope, process, scope_info = start_scope(q, first, stack)
+        scope, process, scope_info = start_scope(q, first, stack, docker_image)
     outcome = []
     errors = []
 
@@ -234,7 +320,7 @@ def original(root, late_status, stale_claim_read=False, *, stack, real_scope=Fal
     put(root / "first.json", first)
     # Deliberately cease heartbeats in this isolated queue only.
     if real_scope:
-        recover_real_scope(q, first, scope, process, root)
+        recover_real_scope(q, first, scope, process, root, scope_info.get("container"))
     ready = wait(root / "ready.json")
     assert ready["host"] != socket.gethostname()
     # The peer verifies its exact pre/post bytes. A marker in another directory
@@ -268,7 +354,8 @@ def original(root, late_status, stale_claim_read=False, *, stack, real_scope=Fal
             "late_ready": ready_result, "late_claimed": claimed_result}
 
 
-def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False):
+def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
+         docker_image=None):
     first = wait(root / "first.json")
     assert first["claimed_host"] != socket.gethostname(), "requires distinct hosts"
     q = pool.PoolQueue(root / "queue")
@@ -324,7 +411,7 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False):
     assert successor["published_unix"] == first["published_unix"]
     scope_info = None
     if real_scope:
-        scope, process, scope_info = start_scope(q, successor, stack)
+        scope, process, scope_info = start_scope(q, successor, stack, docker_image)
     claim_hash = digest(claim)
     lease_hash = digest(q.lease_path(key))
     put(root / "successor.json", {"host": socket.gethostname(),
@@ -339,6 +426,8 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False):
     assert not q.item_path(pool.FAILED, key).exists()
     if real_scope:
         assert process.poll() is None and len(scope_pids(scope.cgroup_path)) >= 2
+        if docker_image:
+            check_container_alive(scope, scope_info["container"])
     ending = q.finish(key, status="executed", detail={"returncode": 0,
         "stdout": "successor result"}, claim_snapshot=successor)
     if real_scope:
@@ -361,6 +450,8 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False):
         cleanup = record["resource_scope_cleanup"]
         assert cleanup["complete"] and cleanup["released"]["ok"]
         assert cleanup["nonce"] == scope.nonce
+        if docker_image:
+            assert scope_containers(scope) == [], "production did not remove the successor container"
     result = {"terminal_sha256": digest(ending), "history_count": len(history),
               "ambiguity_retained": True, "host": socket.gethostname(),
               "real_scope": scope_info,
@@ -380,7 +471,11 @@ def main():
     parser.add_argument("--real-scope", action="store_true",
                         help="qualify foreign/local cleanup refusal and exact broker "
                              "cleanup of bounded direct payloads")
+    parser.add_argument("--docker-image", help="with --real-scope, also qualify a sleeping "
+                        "container using this cached image's /bin/sh and sleep")
     args = parser.parse_args()
+    if args.docker_image and not args.real_scope:
+        parser.error("--docker-image requires --real-scope")
     if (not os.environ.get("PRISMABUILD_CONTAINER_OWNER")
             or "prismabuild-job" not in Path("/proc/self/cgroup").read_text()):
         parser.error("submit this qualification through published pbcampaign")
@@ -393,7 +488,7 @@ def main():
     actor = original if args.role == "original" else peer
     with ExitStack() as stack:
         result = actor(root, args.late_status, args.stale_claim_read,
-                       stack=stack, real_scope=args.real_scope)
+                       stack=stack, real_scope=args.real_scope, docker_image=args.docker_image)
     print(json.dumps({"role": args.role, "host": socket.gethostname(),
                       "result": result}, sort_keys=True))
 
