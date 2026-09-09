@@ -80,6 +80,13 @@ def test_old_queue_timestamp_does_not_consume_execution_budget(tmp_path):
     item['published_unix'] = 1
     item['claimed_unix'] = 1
     pool._write_json_atomic(queue.item_path(pool.CLAIMED, item['action_key']), item)
+    # Age the same ownership generation in both records; a contradictory lease
+    # tests stale-owner refusal instead of execution-budget accounting.
+    lease_path = queue.lease_path(item['action_key'])
+    lease = json.loads(lease_path.read_text())
+    lease.update(published_unix=1, claimed_unix=1)
+    pool._write_json_atomic(lease_path, lease)
     outcome = queue.execute(item, heartbeat_s=30)
     assert outcome['status'] == 'executed'
     assert outcome['returncode'] == 0
+
