@@ -304,6 +304,17 @@ invalid or expired observations report unknown liveness, even with a recent
 heartbeat. The existing lease-expiry interval bounds observation freshness;
 the observation age remains independently visible.
 
+The pool's local execution deadline excludes synchronous checkpoint intervals:
+initial observation/lease publication and the observation, scope sample,
+withdrawal read and heartbeat work between subprocess waits. Each completed
+checkpoint shifts the monotonic deadline by only its own elapsed duration;
+previously charged spawn/wait time remains spent. The shorter sealed budget
+and worker ceiling still governs, including budgets shorter than a heartbeat.
+This prevents delayed worker bookkeeping from exhausting a payload's remaining
+budget. It does not infer progress from observation fields, exclude payload
+kernel stalls or stalled subprocess waits, or bound a blocked checkpoint.
+Resource failures and withdrawals retain precedence and exact-scope cleanup.
+
 The pipes include inherited application output and launcher messages. Silence,
 buffered output and a live launcher do not establish application progress; an
 exited launcher does not establish that descendants stopped. These fields are
