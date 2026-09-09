@@ -26,6 +26,17 @@ another directory's entries on an NFS client. Therefore the peer supplies the
 pre-mutation hashes and verifies the post-mutation state at its source; the
 original verifies the eventual terminal after its normal waiter completes.
 
+To require that refusal path deterministically, add `--stale-claim-read` to
+both actors. During the late CLAIMED finish only, the original actor replaces
+its own thread's claim-file read with the first claim. The successor's ledger
+is still read from the shared filesystem, so production ownership resolution
+must refuse the contradiction. The waiter and all other paths keep their real
+reads, and the replacement is restored even if the finish raises. The result
+records the injected-read count and the production refusal reason; the peer
+requires the refusal marker before checking preservation and finishing. An
+archived late result fails this mode. This models an inconsistent client view;
+it does not induce or explain NFS cache incoherence or a kernel stall.
+
 ## Running
 
 Use an isolated Git checkout and a fresh root for each pair. Submit both roles
@@ -204,3 +215,64 @@ Full keys, campaign manifest, verified receipts and source/result readbacks:
 `final-campaign-verified.json`, `results-verified.json`). The fresh isolated
 namespace is retained as bounded evidence; all four inner queues completed
 and their ledgers are empty.
+
+## Forced late-caller refusal — 2026-09-09 UTC
+
+The `--stale-claim-read` mode passed **16 admitted actors**, eight pairs:
+late success and failure in both directions between DL380 and each of Sparky
+and Sparklina. All eight CLAIMED late calls raised the production
+`AmbiguousClaimHolder` contradiction refusal; each recorded one injected claim
+read. All eight original waiters subsequently returned the successor result.
+Each peer independently verified unchanged successor claim/lease bytes,
+reservation and first attempt before completing. All READY late calls archived.
+Final readback found two immutable attempts per pair and empty inner ledgers.
+
+Source parent was `da36ec2bb5c6598f0f86de837b0dd305cce885d0`; every sealed
+harness matched the code added here, and every `pool.py` and `pbrun.py` matched
+that parent. The published runtime remained
+`650893b19fd0-1788912745-bc21f351ad74`. Published `pbcampaign.py` supplied all
+16 independent CPU-only actors, aggregate CPU16/mem32 GiB, CPU1/mem2 GiB each,
+priority -10, native threads 1. The two client tags specifically qualify their
+different mount paths. All actors received one preferred CPU and no fallback
+CPU. These actors chiefly wait on shared state; this is not a utilization or
+performance experiment.
+
+| Actor key | Role / host | CAS receipt |
+| --- | --- | --- |
+| `002f5a89f8e2` | original / dl380g10 | `08143ea8697bf757e58878f4ce877b9047a35a43355a87a425b1e950e24790c5` |
+| `130ea9a6ce9e` | peer / sparky | `8c4df9cdd1c3561be131f86040061da1a86c243143bc98f374e698d180df63c7` |
+| `1984bdd259d0` | original / sparklina | `2b2f6d17214a64f33cb7f866dafec0d2955f51c73fd42d75cafb0cd9ca04ea16` |
+| `1c812ecc24e8` | peer / dl380g10 | `0c080140ea591384585700c8ae96be93ef5941b049111d5f5724d0da40506075` |
+| `2fbd08d9152e` | peer / dl380g10 | `b92862b7c86058663c445377bd0f0bd9aacdf5a9f3bda7fcf7d09b2d5c257a80` |
+| `3263604cfefd` | peer / sparky | `c67528338ca815b82d831ea20bf8cd0e0e805457348e6a60163ee11ca2778d8a` |
+| `62db0835ed82` | peer / sparklina | `046cede8e33bbf6707650020fba0d2bc2fb4ab7752055f576cde9fb4eddb08a0` |
+| `863415d80de1` | peer / dl380g10 | `6878ae48d049c4d41acd64e2dfc931b62b7ff13ae8cb194f3abf4529bfe8b478` |
+| `8a41a1938482` | original / dl380g10 | `681ca8f94416110ecb085bc8218f3b019339c5be1d0e5d4c9638eea2626d1ffd` |
+| `953db54316c5` | original / dl380g10 | `ff083fd47026aa06f128d2d6c466ca73ace16828d3e6ee0e8917dfb153eb361e` |
+| `b29f59b5d130` | original / sparky | `8e3817f8372c39c0fd019b0f7af1d227e09c5c13382f52721d3767e6d511d5f0` |
+| `b4c7e8e1b1b3` | original / sparklina | `102032db6335adb7e9abd86827e4afa57af678ba304c26cb090b176e0df634dc` |
+| `d5c238e05f44` | original / dl380g10 | `c6bb9437dbda3619870e7fdf0100d019168e957c636a980fe808d729866e8608` |
+| `e3f878edf918` | peer / sparklina | `79b903cb484dd8ce947fa47276a2b48e9ac8bf6007bad81c0ad51a0e1985f7a1` |
+| `e945f2a9e270` | original / sparky | `48828f6d720c35e86bd19aaf0ad9993720ac340f52b47df5007ab10a056256cf` |
+| `f891c9ef8899` | peer / dl380g10 | `e0bc8151a06760457ca6cdf89a10a7e927d378565c32536b0f8808da09bff996` |
+
+Independent verification checked every terminal rc0, immutable stdout/stderr
+length and SHA-256, canonical CAS receipt and actual JSON payload, completed
+outer scope release, sealed source bundles and command/environment. It also
+read back every inner terminal, both immutable attempts and logs, distinct host
+identities, empty ledgers and original waiter result. No actors failed in this
+campaign; no pytest collection or skips apply. Earlier negative campaigns above
+remain retained.
+
+This qualifies refusal-to-completion under a caller-only injected stale read.
+It does not reproduce the earlier spontaneous NFS inconsistency or establish
+its cause. Induced kernel NFS stalls, real inner broker/Docker cleanup,
+host-loss uncertainty and execution-budget behavior during stalls remain
+unqualified for #234. No production behavior changed, so fleet publication is
+unnecessary: the opt-in tool runs from admitted source snapshots.
+
+Full keys, manifest, source/result verification and resource evidence:
+`/home/rob/tmp/pb-234-refusal/` (`campaign.json`,
+`final-campaign-verified.json`, `results-verified.json`,
+`resources-verified.json`). The isolated namespace is retained as bounded
+evidence; all eight inner queues completed and their ledgers are empty.
