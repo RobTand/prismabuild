@@ -80,7 +80,12 @@ def setup(tmp_path):
             blocked = backend.holder not in (None, owner, UNOWNED)
             if blocked:
                 raise RuntimeError('maintenance drain is held by ' + backend.holder)
-            backend.holder = owner if op == 'maintenance_begin' else None
+            if op == 'maintenance_end':
+                backend.holder = None
+            elif backend.holder is None:
+                # Beginning a drain that is already open changes nothing, so
+                # the holder recorded first is the holder this keeps.
+                backend.holder = owner
         held = ({'maintenance_owner': backend.holder}
                 if backend.protocol >= 2 and backend.holder is not None else {})
         version = {'maintenance_protocol': backend.protocol} if backend.protocol >= 2 else {}
