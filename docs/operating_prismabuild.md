@@ -1567,7 +1567,12 @@ idle" call for different responses.
     snapshot. An unreadable or malformed initial identity read retains that
     PID's prior counters and reports an unreadable process; it does not retire
     a root or invent a new identity. A missing procfs record still denotes
-    departure. A process that has exited but has
+    departure. If a scope scan omits a previously sampled PID, the sampler
+    checks its cgroup membership: a still-contained process is resampled,
+    while unknown membership retains prior counters with an unreadable
+    diagnostic. This prevents retiring and recounting a surviving root after
+    a partial scan; it cannot recover processes never observed.
+    A process that has exited but has
     not yet been reaped is a zombie, and a zombie's `/proc/<pid>/io` is
     `EACCES`: it counts in `processes_unreadable`, keeps whatever it was last
     seen using, and its remaining bytes arrive when its parent reaps it,
