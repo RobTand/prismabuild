@@ -509,3 +509,67 @@ def test_action_request_preparation_does_not_grant_capacity(rig, monkeypatch, ch
     assert rig.ledger().held() == {}
     assert rig.ledger().available() == rig.ledger().capacity()
     assert all(rig.item_path(pool.READY, key).exists() for key in KEYS)
+
+
+def test_empty_poll_cannot_block_a_sibling_on_capacity_refresh(rig, monkeypatch):
+    """An old empty READY view must not hold admission ahead of new work."""
+    # This loop saw an empty queue just before the two rig items arrived.
+    # A sibling's subsequent discovery sees both real records.
+    monkeypatch.setattr(rig, 'ready_items', lambda: [])
+    ledger = rig.ledger()
+    monkeypatch.setattr(rig, 'ledger', lambda: ledger)
+    refresh = ledger.configure_cpu_tiers
+    reached_or_done, release = threading.Event(), threading.Event()
+    outcome = {}
+
+    def stalled_refresh(tiers):
+        reached_or_done.set()
+        assert release.wait(30), 'test did not release capacity refresh'
+        return refresh(tiers)
+
+    monkeypatch.setattr(ledger, 'configure_cpu_tiers', stalled_refresh)
+
+    def run():
+        try:
+            outcome['item'] = _claim(rig)
+        except BaseException as exc:
+            outcome['error'] = exc
+        finally:
+            reached_or_done.set()
+
+    stalled = threading.Thread(target=run, daemon=True)
+    stalled.start()
+    try:
+        assert reached_or_done.wait(30), 'empty poll neither returned nor refreshed'
+        winner = _bounded(lambda: _claim(pool.PoolQueue(rig.root)), 'new-work sibling', 10.)
+        assert winner is not None, (
+            'an empty poll held admission during shared capacity refresh and '
+            'blocked newly arrived work')
+    finally:
+        release.set()
+        stalled.join(30)
+    assert not stalled.is_alive() and 'error' not in outcome, outcome
+    assert outcome['item'] is None
+    assert rig.ledger().held_keys() == [winner['action_key']]
+
+
+def test_empty_adaptive_poll_leaves_capacity_and_active_holders_untouched(rig, monkeypatch):
+    """Empty discovery needs no ledger writes; the next candidate reconciles."""
+    first = _claim(rig)
+    assert first is not None
+    ledger = rig.ledger()
+    capacity, held = ledger.capacity(), ledger.held()
+    # Seed old fallback pacing state: absence from READY retires that hint.
+    rig._cpu_deferrals[('f' * 64, '1.0')] = time.monotonic()
+    with monkeypatch.context() as patch:
+        patch.setattr(rig, 'ready_items', lambda: [])
+        assert rig.claim(capacity={'cpu': 1, 'mem_gb': 4}, cpu_tiers=TIERS,
+                         adaptive_cpu=True) is None
+    assert ledger.capacity() == capacity, 'empty discovery rewrote capacity'
+    assert ledger.held() == held
+    assert not rig._cpu_deferrals
+    # The lower offer still applies when this loop actually sees a candidate.
+    assert rig.claim(capacity={'cpu': 1, 'mem_gb': 4}, cpu_tiers=TIERS,
+                     adaptive_cpu=True) is None
+    assert ledger.capacity()['cpu'] == 1
+    assert ledger.held() == held

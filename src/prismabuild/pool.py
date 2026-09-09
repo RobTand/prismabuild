@@ -3201,6 +3201,13 @@ class PoolQueue:
                 # told which one it caught rather than assert the earlier one.
                 evaluating = True
                 ready = self.ready_items()
+                if not ready:
+                    # No candidate needs capacity reconciled on this pass. The
+                    # shared ledger prelude can stall while holding admission;
+                    # do not let an empty snapshot block a sibling's new work.
+                    # Match _claim's retirement of absent-generation hints.
+                    self._cpu_deferrals.clear()
+                    return None
                 # ``_claim`` takes admission itself, once per candidate and only
                 # around the decision that has to be exclusive. Wrapping the
                 # whole of it here was the second half of #351: everything it
