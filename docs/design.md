@@ -546,6 +546,16 @@ an unreadable diagnostic and contributes no new bytes. Confirmed departure
 still retires roots. This protects known members against partial scans, not
 discovery of processes never observed or atomic membership during collection.
 
+The procfs discovery fallback reports enumeration failures and counts unreadable
+or malformed cgroup membership records in process-I/O `errors`. Confirmed
+departures (ENOENT/ESRCH) are ordinary. Valid discovered members and recovered
+known-member counters remain available, but they do not prove a complete census.
+An unknown record can belong to another scope; the diagnostic establishes
+incomplete discovery, not missing I/O attributable to this action. Successful
+fallback after a protected cgroup directory read is not itself an error. This
+changes diagnostic evidence only; it does not recover unseen processes or alter
+admission, containment, or action identity.
+
 Always-on box-window evidence is outside action identity. Its collectors share
 a cooperative two-second finish budget: the GPU power-reference query receives
 only the remaining budget, capped at one second, and is skipped after expiry.

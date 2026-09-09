@@ -67,7 +67,7 @@ def _sampling_proc(monkeypatch, tmp_path):
     scope = resource_scope.ResourceScope('a' * 64, 'b' * 32, 1024,
                                          tmp_path / 'telemetry.json')
     scope.cgroup_path = tmp_path / 'scope'
-    monkeypatch.setattr(resource_scope, 'scope_pids', lambda _: [4242, 4343])
+    monkeypatch.setattr(resource_scope, 'scope_pids', lambda _, **kw: [4242, 4343])
     state = {'stat': _stat(100), 'bytes': 100, 'peer_bytes': 20}
     original = Path.read_text
 

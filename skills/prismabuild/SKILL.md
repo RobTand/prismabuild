@@ -201,7 +201,11 @@ no flag to choose. Its cost is bounded rather than absent — a shared two-secon
 budget at finish to read the box window, including the GPU reference query
 (0.14–0.18 s measured before the query shared that budget), plus a sampler that
 ticks at most every two seconds while the attempt runs. It never enters the
-action key. CSV collection checks expiry before discovery, file opens and
+action key. Procfs discovery failures appear in `process_io.errors`, retaining observed
+counters as partial evidence even when known-member recovery succeeds. Unknown
+membership may belong to another scope; it does not prove this action lost I/O.
+
+CSV collection checks expiry before discovery, file opens and
 each header or row read, retaining collected samples with an expiry diagnostic.
 Recorder filenames also honor this generation's explicit fleet hostname alias;
 an OS rename does not require restarting the recorder to recover its data.
