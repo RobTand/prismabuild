@@ -100,9 +100,14 @@ contracts, which this issue forbids. Per-holder metadata (`.adaptive.json`,
 foreign release, so it stays with the tokens. What admission does about it is
 read it once per holder instead of twice.
 
-The GPU action contract (`adaptive_gpu.action_contract`) reads the sealed
-request from the CAS on the mount inside the section. It is the action's own
-identity, not host bookkeeping, and is out of scope here.
+CPU action identity and the GPU action contract (`adaptive_gpu.action_contract`)
+still read the sealed request from the CAS on the mount. The pool now resolves
+these immutable facts before candidate admission, retaining per-key exclusion,
+and passes them into the controllers without a locked request re-read. Host
+samples, holder accounting and resource acquisition remain inside admission;
+a delayed request read cannot grant capacity. Standalone controller calls can
+still resolve their own request facts. Request reads have no I/O deadline, so
+this removes another host-lock stall path without bounding the whole claim.
 
 ## Recovery and ownership
 

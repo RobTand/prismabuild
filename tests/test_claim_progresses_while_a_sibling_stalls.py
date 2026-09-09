@@ -344,11 +344,11 @@ def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusa
     if refusal == 'cpu':
         decision = adaptive_cpu.Controller.decision
         monkeypatch.setattr(adaptive_cpu.Controller, 'decision',
-                            lambda self, item, demand: None if item['action_key'] == KEYS[0]
-                            else decision(self, item, demand))
+                            lambda self, item, demand, **kwargs: None if item['action_key'] == KEYS[0]
+                            else decision(self, item, demand, **kwargs))
     if refusal == 'gpu':
         monkeypatch.setattr(pool.gpu_admission.Controller, 'decision',
-                            lambda self, item, demand: None)
+                            lambda self, item, demand, **kwargs: None)
 
     entered, release = threading.Event(), threading.Event()
     account = getattr(rig, operation)
@@ -416,6 +416,96 @@ def test_preemption_after_accounting_keeps_host_exclusion(rig, monkeypatch, cont
         for fd in descriptors:
             os.close(fd)
     assert preemptions == ([] if contended else list(KEYS))
+    assert rig.ledger().held() == {}
+    assert rig.ledger().available() == rig.ledger().capacity()
+    assert all(rig.item_path(pool.READY, key).exists() for key in KEYS)
+
+
+@pytest.mark.parametrize(('gpu', 'read_number'), [(False, 1), (True, 2), (True, 3)])
+def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, read_number):
+    """Sealed request reads need no host exclusion, unlike capacity decisions."""
+    monkeypatch.setattr(pool.gpu_admission.Controller, 'sample', lambda self: {})
+    capacity = dict(CAPACITY, gpu=1) if gpu else CAPACITY
+    if gpu:
+        path = rig.item_path(pool.READY, KEYS[0])
+        item = json.loads(path.read_text())
+        item['resources']['gpu'] = 1
+        path.write_text(json.dumps(item))
+    entered, release = threading.Event(), threading.Event()
+    read_json = adaptive_cpu.read_json
+    reads = []
+    outcome = {}
+
+    def paused_read(path):
+        path = Path(path)
+        if path.name == KEYS[0] + '.json' and 'requests' in path.parts:
+            reads.append(path)
+            if len(reads) == read_number:
+                entered.set()
+                assert release.wait(30), 'test did not release the action request read'
+        return read_json(path)
+
+    monkeypatch.setattr(adaptive_cpu, 'read_json', paused_read)
+
+    def claim(queue):
+        return queue.claim(capacity=capacity, cpu_tiers=TIERS,
+                           adaptive_cpu=True, has_gpu=gpu)
+
+    def run():
+        try:
+            outcome['item'] = claim(rig)
+        except BaseException as exc:
+            outcome['error'] = exc
+
+    stalled = threading.Thread(target=run, daemon=True)
+    stalled.start()
+    try:
+        assert entered.wait(30), 'candidate did not read its sealed request'
+        winner = _bounded(lambda: claim(pool.PoolQueue(rig.root)), 'sibling claim', 10.)
+        assert winner is not None and winner['action_key'] == KEYS[1], (
+            'a stalled sealed request read held host admission and prevented useful work')
+    finally:
+        release.set()
+        stalled.join(30)
+    assert not stalled.is_alive() and 'error' not in outcome, outcome
+    if gpu:
+        # No trusted GPU sample: the original candidate still cannot reserve.
+        assert outcome['item'] is None
+        assert rig.item_path(pool.READY, KEYS[0]).exists()
+        assert rig.ledger().held_keys() == [KEYS[1]]
+    else:
+        assert outcome['item']['action_key'] == KEYS[0]
+        assert sorted(rig.ledger().held_keys()) == sorted(KEYS)
+
+
+@pytest.mark.parametrize('change', ['busy', 'pressure'])
+def test_action_request_preparation_does_not_grant_capacity(rig, monkeypatch, change):
+    """A delayed immutable read cannot bypass the subsequent live host gates."""
+    read_json = adaptive_cpu.read_json
+    descriptors, prepared = [], []
+
+    def changed_host(path):
+        result = read_json(path)
+        if Path(path).name == KEYS[0] + '.json' and 'requests' in Path(path).parts:
+            assert _admission_is_free(rig)
+            prepared.append(path)
+            if change == 'busy':
+                fd = os.open(_lock_path(rig), os.O_RDWR)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                descriptors.append(fd)
+            else:
+                monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+                    'sampled_unix': time.time(), 'busy_cpus': 4., 'psi_some': 0.,
+                    'cpu_count': 4, 'interval_s': 1.})
+        return result
+
+    monkeypatch.setattr(adaptive_cpu, 'read_json', changed_host)
+    try:
+        assert _bounded(lambda: _claim(rig), 'claim after request preparation') is None
+    finally:
+        for fd in descriptors:
+            os.close(fd)
+    assert len(prepared) == 1, 'identity was re-read inside the decision'
     assert rig.ledger().held() == {}
     assert rig.ledger().available() == rig.ledger().capacity()
     assert all(rig.item_path(pool.READY, key).exists() for key in KEYS)
