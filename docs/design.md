@@ -1674,6 +1674,13 @@ unnamed legacy drains remain releasable by any root caller, and the updater send
 ownership fields only after a broker status reply advertises support. The gate
 retains its v1 schema so older brokers can read it; ownership protection requires
 adoption of the newer broker and updater.
+A loop that parks on a drain records that it parked, one file per process per
+drain under `/run/prismabuild/rollout/parked/`, named for the gate's
+`changed_unix` so a marker left by an earlier drain reads as the earlier drain.
+A drain is then evidence rather than elapsed time: a reader that finds a marker
+for every serving process on the box knows admission has stopped there. The
+write is best effort and the directory belongs to the root updater, so a loop
+that cannot record its park still parks and the host reads as not drained.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not
