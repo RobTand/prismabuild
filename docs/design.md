@@ -191,6 +191,12 @@ terminal beside that queued successor or stop its waiter early. This covers
 deterministic lease-loss/late-caller faults; it is not cross-host NFS-stall
 qualification.
 
+The [cross-host recovery qualification](claim_recovery_qualification.md)
+records admitted queue-method actors on DL380 and Sparky in both directions,
+including late success/failure, immutable history and waiter continuity. Those
+inner claims launch no payload or broker scope. The campaign does not qualify
+induced kernel stalls, scoped cleanup under host loss, or Sparklina's mount.
+
 Execution heartbeats carry an optional `execution_observation`: the direct
 launcher's polled liveness, cumulative stdout/stderr bytes captured at the
 checkpoint, and the time output was last observed to grow. Observation time is
