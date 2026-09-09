@@ -3,8 +3,10 @@
 `tools/fleet/qualify_claim_recovery.py` checks the #234 queue protocol with two
 admitted actors on different hosts. Each pair owns a fresh queue beneath
 `/mnt/shared/pb-qualification`; neither actor touches production queue records.
-The inner claims are test data and never launch payloads or create broker
-scopes. The outer PrismaBuild actions provide actual admission and containment.
+By default the inner claims are test data with no payload or broker scope.
+The outer PrismaBuild actions provide actual admission and containment.
+The optional `--real-scope` mode below adds bounded direct payloads to the
+isolated claims.
 
 The original actor publishes once, claims, starts the normal `pbrun` waiter,
 and deliberately stops refreshing its lease. The peer first injects a second
@@ -98,10 +100,60 @@ Retain failed actors and their paired timeouts with the successful evidence.
 
 This is queue-method qualification on the real shared mount, with a delayed
 caller and an injected ownership contradiction. It does not induce an NFS
-kernel stall, stop a production worker, exercise an inner broker scope or
-Docker cleanup, test host loss, or qualify execution-budget accounting during
-a stall. It makes no performance or saturation claim. Those remaining #234
-requirements must not be inferred from a passing campaign.
+kernel stall, stop a production worker, test host loss, or qualify execution
+budgets during a stall. Inner broker cleanup is exercised only when
+`--real-scope` is requested. Neither mode exercises Docker cleanup or makes
+a performance or saturation claim. The remaining #234 requirements must not
+be inferred from a passing campaign.
+
+## Real direct scopes
+
+Add `--real-scope` to both roles to exercise cleanup through the installed
+broker. Each actor creates a disposable 128 MiB scope using the established
+resource-scope qualification API, attaches its exact control record to the
+isolated claim, and launches a sleeping Python parent and descendant. The
+descendant ignores SIGTERM; the broker must stop the whole scope. Startup
+checks both PIDs' scope membership and the inherited PB CPU affinity.
+This is not a test of production scope creation/preflight or normal launcher
+result collection. The successor's successful queue result is supplied by
+the harness, as in the data-only mode.
+
+The peer first verifies the existing contradictory-holder refusal. After
+removing its injected ledger entry, it tries the expired claim again: the
+real scope belongs to another host, so recovery must retain the claim, lease
+and original reservation, without publishing READY or an attempt outcome.
+The original actor then injects one failure of its exact scope's local
+`terminate_owned` call. It verifies the same retained state and that the real
+payload is still alive; the peer independently checks the retained state.
+This is caller-local fault injection, not an outage of the installed broker.
+
+With that injection removed, the owning host reaps through unchanged queue
+code. Before allowing the peer to claim, it checks the launcher's nonzero
+exit, disappearance of the kernel group, the broker's released status, and
+the first immutable attempt's matching telemetry nonce. The peer creates a
+different real scope for the successor. That payload must survive the late
+old-owner calls; normal successor finish must then retire only its own scope.
+The original waiter still has to return the successor result, with two
+immutable attempts and empty inner ledgers. `--stale-claim-read` can be
+combined with this mode to require the late CLAIMED ownership refusal too.
+
+Reserve CPU1/mem2 GiB per actor, with one native thread. The additional inner
+scope is a broker-created sibling of the outer scope, as in
+`qualify_resource_scope.py`; its bounded demand is included in the outer
+reservation, not a second admission. Payloads inherit the assigned CPU mask
+and disabled GPU visibility. Both are bounded to 600 seconds if the actor
+dies; normal and exceptional exits terminate and release their exact scopes.
+No loose process-name matching or production queue mutation is used. Use an outer execution budget of 600 seconds; the original waiter has a
+480-second test budget in this mode (120 seconds in data-only mode). These
+test bounds allow the extra real cleanup and shared-mount handshakes; they
+do not change production execution budgets. The same fresh-root, no-retry
+and receipt-verification requirements apply.
+
+A foreign host's refusal is the expected safe result while it cannot prove
+cleanup. Completion here depends on the original host remaining available
+to clean its scope. It does not qualify permanent host loss, reboot recovery,
+an induced kernel NFS stall, Docker cleanup, or execution-budget accounting
+during a stall.
 
 ## Recorded run — 2026-09-09 UTC
 
@@ -276,3 +328,91 @@ Full keys, manifest, source/result verification and resource evidence:
 `final-campaign-verified.json`, `results-verified.json`,
 `resources-verified.json`). The isolated namespace is retained as bounded
 evidence; all eight inner queues completed and their ledgers are empty.
+
+## Real direct-scope recovery — 2026-09-09 UTC
+
+The `--real-scope --stale-claim-read` campaign passed **eight actors**, four
+pairs covering late success and failure in both directions between DL380 and
+Sparky. All four foreign cleanup attempts retained the original claim and
+reservation; all four caller-local injected broker failures did the same while
+the payload remained alive. The owning host then released its exact scope
+before the peer claimed. All four successor scopes survived the late calls,
+and all four original waiters returned the successor result. Every case has
+two immutable attempts and empty final inner ledgers. All READY late calls
+archived; all CLAIMED late calls raised the required ownership refusal.
+
+Source parent was `ebfbe7de98ae80b151eeb09223eb93246eed5903`. Independently
+verified each terminal rc0, immutable log lengths/hashes, canonical CAS result
+payload, completed outer scope release, and sealed harness bytes. The pool,
+waiter, resource-scope client and proxy bytes match that parent. Inner
+terminal/history readback verified the matching cleanup nonce and broker
+release evidence. Each payload inherited its actor's one assigned preferred
+CPU; none used fallback CPUs. Each inner scope was capped at 128 MiB.
+
+Published pbcampaign offered CPU8/mem16 GiB aggregate, CPU1/mem2 GiB per actor,
+priority -10, native threads 1, outer timeout 600 seconds. No GPU work, pytest
+collection or skips apply. This is protocol qualification; its predominantly
+waiting actors provide no performance or saturation claim. The installed
+broker file on both hosts had SHA-256
+`62eeeb05c274c979b49c20b9a4c54adfb89796fe3d537847d201c51227db70df`;
+PID/start-time and entrypoint reads identify the serving processes.
+
+| Actor key | Role / host | CAS receipt |
+| --- | --- | --- |
+| `4454400d7229` | original / dl380g10 | `81d4735d6f0b41a824b4777b6a3cc28aec596246bf9417bd5232d239fc0602df` |
+| `f5129c4e0961` | peer / sparky | `ead33024e11f2de368d606b2b93f3841e5bdc435c1037ae5c766925c792a2572` |
+| `c4766268d187` | original / dl380g10 | `6b97e4c0391d4cddb62f36f9ce52a619942a2dec7613c7b52760a17ee1724dd0` |
+| `82b62d064f9f` | peer / sparky | `975f850388800d90c3ae1710cc8173c8c1978c29a6c525846963265a1633a423` |
+| `77326a2969b6` | original / sparky | `f14bedb36a4652d5dceed71c542e9dbcf92708bc1b1da465dd1157ad5f1f0ef5` |
+| `d2355230baba` | peer / dl380g10 | `932fa9380c178b1b233181212ee0f75fabcbfb7d8931a1f483da9a0dd94ecf09` |
+| `0c74afee65ba` | original / sparky | `b3565953279d68df9fc35b839bcf41140df5b685431eabcb1ad8651050ce21ed` |
+| `7b98dbbb4fd1` | peer / dl380g10 | `4ae0146a4b79dd87a7f1d070a8b06b20a9e7b74be759d7e0d0adbd8a8e08265d` |
+
+The default data-only mode also passed an admitted two-actor pair on DL380
+and Sparky, with the same final harness bytes: `1172e39bc3ff` /
+`4a2f063b4466`, receipts
+`d71d12e9434fc84ca97a7730db2a73bb265f002e9ff980b8a0ae4091b538a08e` /
+`8cf283ac0ed04a4f01a540b557eb761e65bdcb4d84e0c184c02dd092f1565b49`.
+Both logs, CAS payloads, source bundles, scope releases, waiter result, inner
+history and empty ledgers were independently checked.
+
+The first real-scope campaign did not pass: twelve actors failed and four
+unstarted actors were withdrawn after their partners failed. These failures
+are retained, not replaced by the final results:
+
+- `80a27aed3c9f` and `0d3bcdf3c332` read READY immediately after a marker in
+  another NFS directory and received ENOENT. The corrected harness waits for
+  the exact READY and attempt records before reading their bytes.
+- `247e81fe0d78` and `9649cf192fd4` exhausted the old 120-second waiter while
+  the additional real-scope/shared-mount protocol was still running. The
+  real-scope waiter is now 480 seconds; data-only mode keeps 120 seconds.
+  Other paired actors timed out waiting for their failed partners.
+- Sparklina's four actors never started. Its logs and offers showed external
+  GPU/memory load reducing the PB memory budget to zero, alongside admission
+  lock-busy diagnostics. No per-candidate denial was recorded. Their partners
+  timed out; maintenance withdrew only the four exact unstarted keys and did
+  not interrupt the external workload or retry that unchanged condition.
+- `aee04e52fc04` also received `scope still populated` during exceptional
+  cleanup. Teardown now reaps its proxy and retries that exact broker refusal
+  for up to five seconds. All eight scopes created by the failed campaign
+  were subsequently proved released and absent by admitted cleanup actions
+  `88415d213ef7` and `d99545655a7a`, with verified receipts
+  `3a48364386763b5252b369db9e017d4c6ac598fd3c57f7a2e250a3e87fe14e2e` and
+  `29dc0f7e2755d564395f48331fa777491084637d1786d1a6e67cde324c37386a`.
+  The failed inner queue records remain isolated diagnostic evidence; they
+  are not live fleet reservations.
+
+This qualifies real direct-scope cleanup only on DL380 and Sparky, with the
+owning host available. Sparklina's real-scope path, Docker cleanup, permanent
+host loss/reboot, induced NFS kernel stalls and execution budgets during
+stalls remain unqualified. Production recovery behavior is unchanged; no
+fleet publication is needed for this opt-in source-snapshot harness. Runtime
+`650893b19fd0-1788912745-bc21f351ad74` remained deployed with all 417 manifest
+hashes verified.
+
+Full keys, manifests, failed results, cleanup receipts, source verification
+and inner-state readback: `/home/rob/tmp/pb-234-real-scope/`
+(`final-campaign-verified.json`, `results-verified.json`,
+`resources-verified.json`, `first-campaign-verified.json`,
+`cleanup-verified.json`, `default-results-verified.json`). Final and failed
+namespaces are retained as bounded evidence; all created real scopes retired.

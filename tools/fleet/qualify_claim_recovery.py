@@ -3,24 +3,29 @@
 Run `original` and `peer` through pbcampaign on different host classes, with
 the same fresh --root beneath /mnt/shared/pb-qualification. This exercises
 production queue methods on isolated records, not a production worker fault.
-The inner claims never launch payloads or create broker scopes. The enclosing
-PB actions provide resource admission and containment for both actors.
+By default inner claims are data only. --real-scope adds bounded direct
+payloads in broker scopes; their demand is included in the enclosing PB actions.
 """
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import os
 from pathlib import Path
 import socket
+import select
+import subprocess
 import sys
 import threading
 import time
+import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from prismabuild import pool
+from prismabuild.resource_scope import ResourceScope, scope_pids
 import pbrun
 
 
@@ -42,6 +47,124 @@ def wait(path, timeout=120):
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def start_scope(q, claim, stack):
+    """Attach an exact disposable broker scope to isolated queue test data.
+
+    This uses the established scope-qualification API, not the production
+    launch/preflight path. The 128 MiB cap and inherited CPU affinity fit the
+    outer actor's CPU1/mem2 GiB reservation. No GPU or Docker payload is used.
+    """
+    key = claim["action_key"]
+    scope = ResourceScope(key, uuid.uuid4().hex, 128 * 1024**2,
+                          q.ledger().base / "telemetry" / f"{key}.json")
+    scope.create()
+    processes = []
+
+    def cleanup():
+        scope.terminate_owned("disposable claim qualification cleanup")
+        for process in processes:
+            process.communicate(timeout=10)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                scope.release()
+                break
+            except OSError as exc:
+                if "scope still populated" not in str(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.05)
+
+    stack.callback(cleanup)
+    control = scope.control_record()
+    control.update(started_monotonic=scope.started,
+                   boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip())
+    claim["resource_scope"] = control
+    put(q.item_path(pool.CLAIMED, key), claim)
+    q.write_lease(key, owner=claim["claimed_by"], claim_snapshot=claim)
+    # Both parent and descendant remain alive until exact-scope termination.
+    # The child ignores SIGTERM to exercise whole-scope cleanup, not just its
+    # launcher. It still has a bounded fallback lifetime if the actor fails.
+    payload = """import json, os, pathlib, subprocess, sys, time
+child = subprocess.Popen([sys.executable, '-c',
+    'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print("ready",flush=True); time.sleep(600)'],
+    stdout=subprocess.PIPE, text=True)
+assert child.stdout.readline().strip() == 'ready'
+print(json.dumps({'pid':os.getpid(), 'child_pid':child.pid,
+    'affinity':sorted(os.sched_getaffinity(0)),
+    'cgroup':pathlib.Path('/proc/self/cgroup').read_text()}),flush=True)
+time.sleep(600)
+"""
+    process = subprocess.Popen(scope.wrap_argv([sys.executable, "-c", payload]),
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    processes.append(process)
+    assert select.select([process.stdout], [], [], 20)[0], "scope payload startup stalled"
+    line = process.stdout.readline()
+    assert line.strip(), "scope payload exited before its startup record"
+    started = json.loads(line)
+    assert started["affinity"] == sorted(os.sched_getaffinity(0))
+    assert scope.unit in started["cgroup"]
+    members = scope_pids(scope.cgroup_path)
+    assert {started["pid"], started["child_pid"]} <= set(members)
+    return scope, process, {**started, "scope_id": scope.unit, "nonce": scope.nonce,
+                            "memory_max_bytes": scope.memory_max_bytes}
+
+
+def retained_scope(q, first):
+    key = first["action_key"]
+    live = json.loads(q.item_path(pool.CLAIMED, key).read_text())
+    assert pool._same_claim(live, first)
+    assert live["resource_scope"] == first["resource_scope"]
+    assert q.ledger(first["claimed_host"]).held() == {"cpu": 1}
+    assert q.lease_path(key).is_file()
+    assert not any(q.item_path(state, key).exists()
+                   for state in (pool.READY, pool.DONE, pool.FAILED))
+    assert not q.attempt_path(first, 1).exists()
+    return live
+
+
+def recover_real_scope(q, first, scope, process, root):
+    wait(root / "foreign-cleanup-refused.json")
+    key = first["action_key"]
+    retained_scope(q, first)
+    caller = threading.get_ident()
+    terminate = ResourceScope.terminate_owned
+    calls = 0
+
+    def unavailable(target, reason):
+        nonlocal calls
+        if (threading.get_ident() == caller and target.action_key == key
+                and target.nonce == scope.nonce):
+            calls += 1
+            raise OSError("qualification injected broker unavailability")
+        return terminate(target, reason)
+
+    with patch.object(ResourceScope, "terminate_owned", unavailable):
+        assert q.reap_stale(timeout_s=1) == []
+    assert calls == 1
+    live = retained_scope(q, first)
+    assert "qualification injected broker unavailability" in live["container_cleanup_pending"]["error"]
+    assert process.poll() is None and len(scope_pids(scope.cgroup_path)) >= 2
+    put(root / "local-cleanup-refused.json", {"calls": calls, "payload_alive": True})
+    wait(root / "cleanup-refusal-checked.json")
+    deadline = time.monotonic() + 10
+    while q.reap_stale(timeout_s=1) != [key]:
+        retained_scope(q, first)
+        assert time.monotonic() < deadline, "scope cleanup did not complete"
+        time.sleep(.1)
+    process.communicate(timeout=10)
+    assert process.returncode != 0 and scope_pids(scope.cgroup_path) == []
+    assert not scope.cgroup_path.exists()
+    assert q.ledger().held() == {}
+    attempt = json.loads(q.attempt_path(first, 1).read_text())
+    telemetry = attempt["detail"]["resource_telemetry"]
+    assert telemetry["nonce"] == scope.nonce
+    released = scope._request("status")
+    assert released["released"] and released["scope_id"] == scope.unit
+    put(root / "local-reaped.json", {"scope_id": scope.unit,
+        "nonce": scope.nonce, "proxy_returncode": process.returncode,
+        "scope_absent": True, "broker_released": True})
 
 
 def late_finish(q, key, first, status):
@@ -81,7 +204,7 @@ def refused_late_finish(q, key, first, status):
     return {**result, "injected_claim_reads": injected_reads}
 
 
-def original(root, late_status, stale_claim_read=False):
+def original(root, late_status, stale_claim_read=False, *, stack, real_scope=False):
     root.mkdir(parents=True, exist_ok=False)
     q = pool.PoolQueue(root / "queue")
     key = hashlib.sha256(str(root).encode()).hexdigest()
@@ -90,12 +213,15 @@ def original(root, late_status, stale_claim_read=False):
               max_attempts=2, retry_safe=True)
     first = q.claim(owner=f"original:{os.getpid()}", capacity={"cpu": 1})
     assert first is not None
+    scope_info = None
+    if real_scope:
+        scope, process, scope_info = start_scope(q, first, stack)
     outcome = []
     errors = []
 
     def follow():
         try:
-            outcome.append(pbrun.await_outcome(q, key, wait_s=120,
+            outcome.append(pbrun.await_outcome(q, key, wait_s=480 if real_scope else 120,
                                               generation=first["published_unix"]))
         except BaseException as exc:
             errors.append(repr(exc))
@@ -103,7 +229,9 @@ def original(root, late_status, stale_claim_read=False):
     waiter = threading.Thread(target=follow, daemon=True)
     waiter.start()
     put(root / "first.json", first)
-    # Deliberately cease heartbeats. No inner process or broker scope exists.
+    # Deliberately cease heartbeats in this isolated queue only.
+    if real_scope:
+        recover_real_scope(q, first, scope, process, root)
     ready = wait(root / "ready.json")
     assert ready["host"] != socket.gethostname()
     # The peer verifies its exact pre/post bytes. A marker in another directory
@@ -132,11 +260,12 @@ def original(root, late_status, stale_claim_read=False):
     assert q.ledger(successor["host"]).held() == {}
     return {**terminal, "key": key, "host": socket.gethostname(), "peer": successor["host"],
             "late_status": late_status, "waiter_result": outcome[0],
+            "real_scope": scope_info,
             "first_attempt_sha256": ready["attempt_sha256"],
             "late_ready": ready_result, "late_claimed": claimed_result}
 
 
-def peer(root, late_status, stale_claim_read=False):
+def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False):
     first = wait(root / "first.json")
     assert first["claimed_host"] != socket.gethostname(), "requires distinct hosts"
     q = pool.PoolQueue(root / "queue")
@@ -160,12 +289,26 @@ def peer(root, late_status, stale_claim_read=False):
     assert not q.item_path(pool.FAILED, key).exists()
     # Remove exactly the evidence injected by this actor; preserve the original.
     q.ledger().release(key)
-    assert q.reap_stale(timeout_s=1) == [key]
+    if real_scope:
+        assert q.reap_stale(timeout_s=1) == []
+        live = retained_scope(q, first)
+        error = live["container_cleanup_pending"]["error"]
+        assert "resource scope cleanup must run on its claiming host" in error
+        put(root / "foreign-cleanup-refused.json", {"error": error})
+        wait(root / "local-cleanup-refused.json")
+        retained_scope(q, first)
+        put(root / "cleanup-refusal-checked.json", {"claim_and_reservation_retained": True})
+        wait(root / "local-reaped.json")
+    else:
+        assert q.reap_stale(timeout_s=1) == [key]
     assert q.ledger(first["claimed_host"]).held() == {}
     ready = q.item_path(pool.READY, key)
-    assert json.loads(ready.read_text())["attempts"] == 1
+    # In real-scope mode the other host published these entries. Its marker
+    # in the root directory is not a negative-dentry barrier for this one.
+    assert wait(ready)["attempts"] == 1
     ready_hash = digest(ready)
     attempt = q.attempt_path(first, 1)
+    wait(attempt)
     attempt_hash = digest(attempt)
     put(root / "ready.json", {"host": socket.gethostname(),
         "ready_sha256": ready_hash, "attempt_sha256": attempt_hash})
@@ -176,6 +319,9 @@ def peer(root, late_status, stale_claim_read=False):
     successor = q.claim(owner=f"peer:{os.getpid()}", capacity={"cpu": 1})
     assert successor is not None and successor["attempts"] == 1
     assert successor["published_unix"] == first["published_unix"]
+    scope_info = None
+    if real_scope:
+        scope, process, scope_info = start_scope(q, successor, stack)
     claim_hash = digest(claim)
     lease_hash = digest(q.lease_path(key))
     put(root / "successor.json", {"host": socket.gethostname(),
@@ -188,16 +334,33 @@ def peer(root, late_status, stale_claim_read=False):
     assert digest(attempt) == attempt_hash and q.ledger().held() == {"cpu": 1}
     assert not q.item_path(pool.DONE, key).exists()
     assert not q.item_path(pool.FAILED, key).exists()
+    if real_scope:
+        assert process.poll() is None and len(scope_pids(scope.cgroup_path)) >= 2
     ending = q.finish(key, status="executed", detail={"returncode": 0,
         "stdout": "successor result"}, claim_snapshot=successor)
+    if real_scope:
+        deadline = time.monotonic() + 10
+        while ending != q.item_path(pool.DONE, key):
+            assert q.ledger().held() == {"cpu": 1}
+            assert time.monotonic() < deadline, "successor cleanup did not complete"
+            time.sleep(.1)
+            ending = q.finish(key, status="executed", detail={"returncode": 0,
+                "stdout": "successor result"}, claim_snapshot=successor)
     record = json.loads(ending.read_text())
     history = q.attempt_outcomes(record)  # Revalidates immutable log hashes.
     assert [row["claimed_by"] for row in history] == [first["claimed_by"], successor["claimed_by"]]
     assert history[0]["status"] == "lease_lost"
     assert history[-1]["stdout"] == "successor result"
     assert q.ledger().held() == q.ledger(first["claimed_host"]).held() == {}
+    if real_scope:
+        process.communicate(timeout=10)
+        assert process.returncode != 0 and not scope.cgroup_path.exists()
+        cleanup = record["resource_scope_cleanup"]
+        assert cleanup["complete"] and cleanup["released"]["ok"]
+        assert cleanup["nonce"] == scope.nonce
     result = {"terminal_sha256": digest(ending), "history_count": len(history),
               "ambiguity_retained": True, "host": socket.gethostname(),
+              "real_scope": scope_info,
               "original_host": first["claimed_host"], "late_status": late_status}
     put(root / "terminal.json", result)
     return result
@@ -211,6 +374,9 @@ def main():
     parser.add_argument("--stale-claim-read", action="store_true",
                         help="inject the old claim into only the late caller's read; "
                              "require ownership refusal and waiter completion")
+    parser.add_argument("--real-scope", action="store_true",
+                        help="qualify foreign/local cleanup refusal and exact broker "
+                             "cleanup of bounded direct payloads")
     args = parser.parse_args()
     if (not os.environ.get("PRISMABUILD_CONTAINER_OWNER")
             or "prismabuild-job" not in Path("/proc/self/cgroup").read_text()):
@@ -222,7 +388,9 @@ def main():
     if not root.is_relative_to(allowed) or root == allowed:
         parser.error("--root must be a fresh directory beneath /mnt/shared/pb-qualification")
     actor = original if args.role == "original" else peer
-    result = actor(root, args.late_status, args.stale_claim_read)
+    with ExitStack() as stack:
+        result = actor(root, args.late_status, args.stale_claim_read,
+                       stack=stack, real_scope=args.real_scope)
     print(json.dumps({"role": args.role, "host": socket.gethostname(),
                       "result": result}, sort_keys=True))
 
