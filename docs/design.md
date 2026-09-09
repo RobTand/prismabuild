@@ -1681,6 +1681,15 @@ A drain is then evidence rather than elapsed time: a reader that finds a marker
 for every serving process on the box knows admission has stopped there. The
 write is best effort and the directory belongs to the root updater, so a loop
 that cannot record its park still parks and the host reads as not drained.
+The updater creates that directory and gives it to the unprivileged worker uid,
+and it is the reader: on a tick where a drain is in force it takes one process
+census, names everything that could still claim work, and records in its status
+whether the box has stopped and which processes have not. A process counts by
+the basename in its argv rather than by a generation-store prefix, because a
+hand-run one-shot reaches the same queue while carrying no such prefix. The
+drain's identity comes from the gate file, since the status reply states that a
+drain is open and not when it opened. This is observation: it opens and closes
+no drain and decides nothing.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not
