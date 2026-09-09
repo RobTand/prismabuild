@@ -96,10 +96,14 @@ FLEET_SCRIPTS = (
     "upgrade_client.py", "install_client_upgrader.sh",
 )
 #: Fleet tools deliberately left out of the generation, each with the reason.
-#: Empty: every tool under ``tools/fleet`` is something a box with no checkout
-#: may have to run. The tuple exists so that leaving one out is a decision
+#: Runtime tools travel; qualification harnesses use submitted checkouts.
+#: The tuple exists so that leaving one out is a decision
 #: somebody wrote down rather than an omission nobody noticed.
 EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("qualify_claim_recovery.py",
+     "paired queue-recovery qualification actors run from an isolated "
+     "checkout through pbcampaign against a fresh private queue root; "
+     "not an operator command for a box without a checkout"),
     ("admission_shared_io.py",
      "a measurement harness for the admission critical section, run from a "
      "checkout through pbrun against a private queue root; a box with no "
