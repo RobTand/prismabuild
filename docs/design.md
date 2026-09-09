@@ -675,6 +675,12 @@ matters). Rules:
   the attempt's status sidecar after CAS ingestion and before optional summary
   extraction or supplemental blob ingestion. Normal completion returns the
   richer record; an interrupted supplement cannot hide the saved primary.
+  Optional `nsys stats` extraction waits at most five seconds, then terminates
+  its own process group with 0.5-second TERM and KILL waits. A timeout omits
+  the summary with a diagnostic and preserves the primary profile and action
+  verdict. Signal unwinding also reaps that group. The wait bound does not
+  bound filesystem reads, CAS ingestion, or uninterruptible kernel cleanup;
+  the enclosing broker scope remains the containment authority.
   A windowed profiler also checkpoints the enriched report before waiting
   for the action. A contained deadline kills the broker scope without Python
   cleanup, so only already-checkpointed evidence is guaranteed to survive

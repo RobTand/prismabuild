@@ -209,6 +209,12 @@ What is worth knowing before using it:
     together consume the pool's 15-second grace before ingest; preservation
     is not guaranteed by the 12-second reap budget alone. Recorded partial
     profiles include the relay's `action_phase` when available.
+    Optional `nsys stats` has a five-second subprocess timeout, followed by
+    0.5-second TERM and KILL waits for its owned process group. On timeout the
+    primary report remains usable and `kernel_summary_absent` explains why
+    there is no summary; the timeout does not change the action's verdict.
+    This bounds the subprocess wait, not filesystem reads or CAS ingestion.
+    Uninterruptible cleanup still depends on the enclosing broker scope.
 *   **`detail.action_returncode` is populated on the pull-queue lane now.** The
     launcher exits 1 for every failed action, so the action's own status cannot
     be its exit status; `core` has written it to a file named by

@@ -4977,6 +4977,11 @@ def read_chrome_trace(path: Path) -> dict[str, object]:
     return record
 
 
+# Optional extraction must leave room for the primary report and the ending.
+PROFILE_SUMMARY_TIMEOUT_SECONDS = 5.0
+_PROFILE_SUMMARY_REAP_GRACE_SECONDS = 0.5
+
+
 class NsysProfileBackend:
     """Nsight Systems around the sealed argv: what the GPU actually did.
 
@@ -5160,15 +5165,42 @@ class NsysProfileBackend:
         self._summary_note = None
         base = Path(path).with_suffix("")
         summary = base.parent / f"{base.name}_cuda_gpu_kern_sum.csv"
-        completed = subprocess.run(
-            [self.locate(), "stats", "--report", "cuda_gpu_kern_sum",
-             "--format", "csv", "--output", str(base), str(path)],
-            capture_output=True, text=True, check=False,
-        )
-        if completed.returncode != 0:
+        with _sigterm_unwinds_this_process():
+            process = subprocess.Popen(
+                [self.locate(), "stats", "--report", "cuda_gpu_kern_sum",
+                 "--format", "csv", "--output", str(base), str(path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                start_new_session=True,
+            )
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=PROFILE_SUMMARY_TIMEOUT_SECONDS
+                )
+            except subprocess.TimeoutExpired:
+                # The leader may already have exited while its descendants
+                # retain the pipes. Reap the owned group, not just the leader.
+                _terminate_process_group(
+                    process, grace_s=_PROFILE_SUMMARY_REAP_GRACE_SECONDS
+                )
+                self._summary_note = (
+                    f"nsys stats timed out after {PROFILE_SUMMARY_TIMEOUT_SECONDS:g} "
+                    "seconds; primary report retained"
+                )
+                return []
+            except BaseException:
+                _terminate_process_group(
+                    process, grace_s=_PROFILE_SUMMARY_REAP_GRACE_SECONDS
+                )
+                raise
+            finally:
+                # Do not communicate again without a deadline: an unkillable
+                # descendant can still hold a pipe. The broker owns the scope.
+                process.stdout.close()
+                process.stderr.close()
+        if process.returncode != 0:
             self._summary_note = (
-                f"nsys stats exited {completed.returncode}: "
-                + (completed.stderr or completed.stdout or "").strip()[-200:]
+                f"nsys stats exited {process.returncode}: "
+                + (stderr or stdout or "").strip()[-200:]
             )
             return []
         if not summary.is_file():
