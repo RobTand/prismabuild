@@ -68,6 +68,17 @@ empty scan is not repeated under admission. This removes scan stalls from the
 critical section but does not bound discovery or shared transition, lease and
 token I/O, which still need ownership-safe recovery qualification (#266).
 
+CPU/GPU policy refusals and unfunded reservations record denial aging outside
+host admission, while retaining the candidate's per-key transition lock.
+Withholding-age reads also run outside admission. A denied reservation owns
+no tokens or probe/borrow credit. Background preemption selection still requires
+host exclusion to serialize pending releases; it reacquires admission
+nonblockingly after aging and re-reads capacity and holders. A busy gate leaves
+the candidate queued with its recorded denial. Funded reservation, GPU probe
+consumption and CPU borrow consumption remain one admission critical section.
+Shared holder scans, token moves and preemption I/O remain inside exclusion;
+this narrower refusal path does not make admission NFS-free.
+
 The pull queue orders ready items by descending priority, then descending
 admission-denial count, then oldest publication time. Aging changes order only
 within a priority band. A denied item past `STARVATION_FLOOR` may withhold its

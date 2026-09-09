@@ -3752,74 +3752,56 @@ class PoolQueue:
                         # the rename, not by a host-local lock, and holding this one
                         # across it is what took whole boxes out of the claiming
                         # population when the mount was slow (#351).
+                        refused = False
                         with self._admission_lock(controller):
                             if controller is not None:
                                 adaptive = controller.decision(item, demand)
-                                if adaptive is None:
-                                    self.record_pass(key)
-                                    continue
-                            if gpu_controller is not None and demand.get("gpu"):
+                                refused = adaptive is None
+                            if not refused and gpu_controller is not None and demand.get("gpu"):
                                 adaptive_gpu = gpu_controller.decision(item, demand)
-                                if adaptive_gpu is None:
-                                    self.record_pass(key)
-                                    continue
-                            if adaptive_gpu is not None:
-                                handle = ledger.begin_acquire(key, reservation_demand, adaptive=adaptive,
-                                                              cpu_tiers=cpu_tiers,
-                                                              adaptive_gpu=adaptive_gpu)
-                                asked = reservation_demand
-                            else:
-                                handle = (ledger.begin_acquire(key, demand) if adaptive is None else
-                                          ledger.begin_acquire(key, demand, adaptive=adaptive,
-                                                               cpu_tiers=cpu_tiers))
-                                asked = demand
-                            if handle is None:
-                                denials = self.record_pass(key)
-                                if not preempted and self._preempt_background_holder(
+                                refused = adaptive_gpu is None
+                            if not refused:
+                                if adaptive_gpu is not None:
+                                    handle = ledger.begin_acquire(
+                                        key, reservation_demand, adaptive=adaptive,
+                                        cpu_tiers=cpu_tiers, adaptive_gpu=adaptive_gpu)
+                                    asked = reservation_demand
+                                else:
+                                    handle = (ledger.begin_acquire(key, demand) if adaptive is None else
+                                              ledger.begin_acquire(key, demand, adaptive=adaptive,
+                                                                   cpu_tiers=cpu_tiers))
+                                    asked = demand
+                                if handle is not None:
+                                    # A funded reservation spends its probe and borrow
+                                    # freshness under the same exclusion as its decision.
+                                    # Ordinary abandonment returns only owned credit;
+                                    # failure to persist rolls the reservation back.
+                                    if adaptive_gpu is not None:
+                                        gpu_probe = gpu_controller.reserve_probe(adaptive_gpu)
+                                    if adaptive is not None:
+                                        borrow = (adaptive, controller.admitted(adaptive))
+                        if refused:
+                            # Aging is shared diagnostic/fairness bookkeeping, not
+                            # capacity authority. Keep its I/O outside host admission.
+                            # The per-key transition lock still protects this item.
+                            self.record_pass(key)
+                            continue
+                        if handle is None:
+                            denials = self.record_pass(key)
+                            if not preempted:
+                                # Selection must still serialize across this host:
+                                # two denials must not stop two holders for one gap.
+                                # Re-read capacity/pending releases after accounting;
+                                # contention leaves this unfunded candidate queued.
+                                with self._admission_lock(controller):
+                                    preempted = self._preempt_background_holder(
                                         ledger, action_key=key, demand=asked,
-                                        priority=int(item.get("priority", 0))) is not None:
-                                    # One per pass.  The tokens come back when the
-                                    # holder stops, so this item is admitted on a later
-                                    # pass and this one ends exactly as it did before.
-                                    preempted = True
-                                if (denials >= STARVATION_FLOOR
-                                        and self.withhold_age(key) <= WITHHOLD_CEILING_S):
-                                    # Wired to the decision: stop letting smaller work pass it.
-                                    return None
-                                # Past the ceiling it keeps its passes -- and so its place at
-                                # the head of the ordering -- but stops holding the box shut
-                                # for work it cannot do anything with.
-                                continue
-                            if adaptive_gpu is not None:
-                                # Only a funded candidate spends GPU sample credit.
-                                # Keep reservation and consumption under admission
-                                # exclusion, before publishing a runnable claim.
-                                # A memory refusal must leave the sample available
-                                # to a smaller candidate in this same pass.
-                                gpu_probe = gpu_controller.reserve_probe(adaptive_gpu)
-                            if adaptive is not None:
-                                # The borrow is spent by the decision that made
-                                # it, under the lock that made it, and before
-                                # anything on the mount can delay it.  That is
-                                # the contract as written: "a successful
-                                # borrowing decision consumes its freshness for
-                                # the next borrower".  By this line the tokens
-                                # have already left ``free/``, so the headroom
-                                # the borrow spent is gone whether or not the
-                                # rename below succeeds, and a sibling deciding
-                                # against a stale ``last-borrow.json`` would be
-                                # deciding against headroom that is not there.
-                                #
-                                # A claim that never happens gives it back:
-                                # every branch below that abandons the
-                                # reservation also returns the borrow, because
-                                # a claimant that lost the rename occupied no
-                                # borrowed CPU and the retry it is owed must
-                                # not be refused for a borrow nobody holds.
-                                # ``withdrew`` restores only its own record, so
-                                # a newer borrow that landed in between keeps
-                                # the sample it spent.
-                                borrow = (adaptive, controller.admitted(adaptive))
+                                        priority=int(item.get("priority", 0))) is not None
+                            if (denials >= STARVATION_FLOOR
+                                    and self.withhold_age(key) <= WITHHOLD_CEILING_S):
+                                return None
+                            # Past the ceiling, retain aging but let smaller work run.
+                            continue
                     if (ledger is not None and handle is not None and cpu_tiers is not None
                             and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
                             and self._defer_fallback(item, demand)):
