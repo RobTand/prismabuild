@@ -10,12 +10,19 @@ from test_pbstatus import pbstatus
 
 
 @pytest.mark.parametrize('prints', [True, False])
-def test_execution_ticks_report_output_without_inventing_quiet_progress(tmp_path, monkeypatch, prints):
+@pytest.mark.parametrize('exit_before_observation', [True, False])
+def test_execution_ticks_report_output_without_inventing_quiet_progress(
+        tmp_path, monkeypatch, prints, exit_before_observation):
     script = tmp_path / 'worker.py'
+    release = tmp_path / 'release'
     script.write_text(
-        'import sys, time\n'
+        'import sys, time\nfrom pathlib import Path\n'
         + ('print("hello", flush=True)\nprint("warning", file=sys.stderr, flush=True)\n' if prints else '')
-        + 'time.sleep(0.35)\n')
+        + f'release = Path({str(release)!r})\n'
+        + 'deadline = time.monotonic() + 5\n'
+        + 'while not release.exists():\n'
+        + '    if time.monotonic() >= deadline: sys.exit(2)\n'
+        + '    time.sleep(0.005)\n')
     queue = pool.PoolQueue(tmp_path / 'queue')
     key = uuid.uuid4().hex * 2
     queue.publish(action_key=key, cas_root='/cas', checkout_root=tmp_path, worker_script=script)
@@ -23,24 +30,47 @@ def test_execution_ticks_report_output_without_inventing_quiet_progress(tmp_path
     ticks = []
     original = queue.write_lease
 
+    def captured_output():
+        observed = ticks[-1]['execution_observation']
+        return not prints or (observed['stdout_bytes'] and observed['stderr_bytes'])
+
     def record(*args, **kwargs):
         original(*args, **kwargs)
         ticks.append(json.loads(queue.lease_path(key).read_text()))
+        if not exit_before_observation and len(ticks) >= 3 and captured_output():
+            release.touch()
 
+    original_observe = pool._observe_execution
+
+    def observe(process, previous=None, **kwargs):
+        if exit_before_observation and len(ticks) >= 2 and captured_output():
+            # The launcher can exit after communicate times out and before
+            # poll. Exercise that legal boundary without fabricating liveness.
+            release.touch()
+            process.wait(timeout=5)
+        return original_observe(process, previous, **kwargs)
+
+    monkeypatch.setattr(pool, '_observe_execution', observe)
     monkeypatch.setattr(queue, 'write_lease', record)
     result = queue.execute(item, heartbeat_s=0.05)
     assert result['status'] == 'executed'
     observations = [tick.get('execution_observation') for tick in ticks]
     assert observations and all(isinstance(value, dict) for value in observations), (
         'execution heartbeats omit launcher liveness and last output observation')
-    assert all(value['launcher_alive'] is True for value in observations)
+    assert all(type(value['launcher_alive']) is bool for value in observations)
+    assert any(value['launcher_alive'] is True for value in observations)
+    if exit_before_observation:
+        assert observations[-1]['launcher_alive'] is False
     assert all(value['sampled_unix'] <= tick['heartbeat_unix']
                for value, tick in zip(observations, ticks))
     if prints:
         noisy = [value for value in observations if value['stdout_bytes']]
         assert noisy and noisy[-1]['stdout_bytes'] == len(b'hello\n')
         assert noisy[-1]['stderr_bytes'] == len(b'warning\n')
-        assert len({value['last_output_unix'] for value in noisy}) == 1
+        for before, after in zip(noisy, noisy[1:]):
+            if (before['stdout_bytes'], before['stderr_bytes']) == (
+                    after['stdout_bytes'], after['stderr_bytes']):
+                assert before['last_output_unix'] == after['last_output_unix']
     else:
         assert all(value['last_output_unix'] is None for value in observations)
         assert all(value['stdout_bytes'] == value['stderr_bytes'] == 0 for value in observations)
