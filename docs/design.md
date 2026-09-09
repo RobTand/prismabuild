@@ -72,6 +72,16 @@ refresh and capacity clamp continue on their normal cadence. This removes scan
 stalls from the critical section but does not bound discovery or shared transition, lease and
 token I/O, which still need ownership-safe recovery qualification (#266).
 
+When the claimant supplies CPU tiers, validation of an existing `cpu-map.json`
+also runs before host admission. That map is immutable while workers run;
+changing it requires stopped workers and drained reservations. A missing map
+is initialized only after acquiring admission, with the existing legacy-holder
+guard and atomic publication. Legacy callers with no supplied tiers still
+resolve the map in the capacity prelude. Validation grants no capacity: minting,
+retirement, holder accounting and reservations remain under the same exclusion.
+An intervening busy gate leaves the candidate queued. Map reads remain
+synchronous and can delay their own caller.
+
 CPU/GPU policy refusals and unfunded reservations record denial aging outside
 host admission, while retaining the candidate's per-key transition lock.
 Withholding-age reads also run outside admission. A denied reservation owns

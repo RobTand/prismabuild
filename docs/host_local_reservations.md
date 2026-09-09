@@ -77,6 +77,16 @@ nonempty candidate pass still reconciles capacity before making a decision;
 the worker's separate offer refresh and capacity clamp are unchanged. This does
 not remove capacity I/O from nonempty passes or bound an NFS call.
 
+For a claimant with supplied CPU tiers, an existing `cpu-map.json` is validated
+outside host admission. Its topology is fixed until workers are stopped and
+reservations drained, so this read needs no headroom exclusion. A missing map
+still initializes under admission after checking for legacy CPU holders; a
+caller without supplied tiers still resolves it in the capacity prelude.
+Capacity reconciliation and token acquisition remain serialized and consume no
+prefetched capacity. An intervening busy gate refuses normally. This removes
+the steady-state topology-read stall from the lock without bounding that read
+or moving the map's authority.
+
 The per-key transition lock, the claim
 intent, the `ready/` to `claimed/` rename and the lease are how every other
 box learns what this box took; they cannot be anywhere but the mount.

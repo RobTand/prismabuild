@@ -1112,12 +1112,19 @@ class ResourceLedger:
 
         return self.base / "minted"
 
-    def configure_cpu_tiers(self, tiers: Mapping[str, Sequence[int]]) -> dict:
+    def configure_cpu_tiers(
+        self, tiers: Mapping[str, Sequence[int]], *, initialize: bool = True,
+    ) -> dict | None:
         """Bind token ordinals to CPUs once; all loops on a host must agree.
 
         Changing this map requires stopping workers, draining reservations,
         and removing cpu-map.json before restarting. Never reinterpret a held
         ordinal under another affinity or topology.
+
+        With ``initialize=False``, only validate an existing map; absence
+        returns ``None`` without touching holders or publishing a map. This
+        immutable read needs no host admission. Initialization still belongs
+        to the serialized capacity prelude.
         """
         record = {kind: list(tiers[kind]) for kind in ("preferred", "fallback")}
         cpus = record["preferred"] + record["fallback"]
@@ -1127,6 +1134,8 @@ class ResourceLedger:
         path = self.base / "cpu-map.json"
         existing = _read_json(path)
         if existing is None:
+            if not initialize:
+                return None
             if self.held().get("cpu", 0):
                 raise PoolContractError("drain legacy CPU reservations before enabling CPU tiers")
             self.base.mkdir(parents=True, exist_ok=True)
@@ -3703,6 +3712,12 @@ class PoolQueue:
         total: dict[str, int] = {}
         if capacity is not None:
             ledger = self.ledger()
+            # The CPU map is immutable while workers run. Validate an existing
+            # map before admission so a shared read cannot block sibling work.
+            # A missing map still needs serialized initialization below; no
+            # capacity or reservation state is prefetched here.
+            configured_tiers = (ledger.configure_cpu_tiers(cpu_tiers, initialize=False)
+                                if cpu_tiers is not None else None)
             # Minting and retiring tokens is a read-modify-write of this box's
             # own capacity, so it stays exclusive -- two loops retiring against
             # different clamped offers must not interleave.  It is bounded and
@@ -3711,7 +3726,8 @@ class PoolQueue:
                 if cpu_tiers is None:
                     cpu_tiers = _read_json(ledger.base / "cpu-map.json")
                 if cpu_tiers is not None:
-                    cpu_tiers = ledger.configure_cpu_tiers(cpu_tiers)
+                    cpu_tiers = (configured_tiers if configured_tiers is not None else
+                                 ledger.configure_cpu_tiers(cpu_tiers))
                     if int(capacity.get("cpu", 0)) > sum(map(len, cpu_tiers.values())):
                         raise PoolContractError("CPU capacity exceeds the inherited CPU map")
                     ledger.retire_free_capacity({"cpu": int(capacity.get("cpu", 0))})
