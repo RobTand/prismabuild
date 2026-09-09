@@ -462,3 +462,60 @@ Additional evidence: `sparklina-campaign-verified.json`,
 `sparklina-results-verified.json`, `sparklina-resources-verified.json`,
 `sparklina-campaign.json` and `sparklina-submission.json` in the same evidence
 directory. The additional completed namespace is retained with empty ledgers.
+
+## Termination audit preservation — 2026-09-09 UTC
+
+Review of #410 found that harness teardown stopped an already released scope,
+rewriting its production termination audit with `disposable claim qualification
+cleanup`. Retained original files confirmed the mismatch: their outer `reason`
+was the harness reason while the broker's `stop_reason` still named `lease_lost`
+or `executed`. These older records remain unchanged as bounded evidence.
+
+Teardown now skips that stop when the exact local cgroup is absent, while
+retaining proxy reaping and the broker release check. Regression against
+unchanged main `6d9eb471de80` produced **two expected failures and one pass**
+(action `cab1e05dc51d`, rc1, no success receipt). It exercises the actual
+callback and audit writer with a simulated broker; interrupted-setup cleanup
+remains covered. Fixed-code targeted validation passed **26 tests**, no skips,
+with two pytest workers (action `83548150c21d`, receipt
+`0cd9dac1958b939aa6d56de351f1018f2695b66d347d78a41e0268afdbfbefb1`).
+Two earlier regression submissions failed collection due to a missing tool
+import path (`06a98d8e8d45`) and missing parametrized function argument
+(`1c9c4b5fb262`); neither is counted as reproducing the production defect.
+
+Four real-scope actors then passed two DL380-original/Sparky-peer cases, one
+late success and one late failure, using the fixed harness. Both original
+waiters returned the successor result, each with two immutable attempts and
+empty inner ledgers. After all actors exited and teardown completed, direct
+readback verified all four final termination audits retained the production
+reason, matching the broker's stop reason: `lease_lost` for the originals and
+`executed` for the successors. Exact host cgroup readbacks found all four
+scopes absent. No actor failed in this campaign.
+
+| Actor key | Role / host | CAS receipt |
+| --- | --- | --- |
+| `7254ed067732` | original / dl380g10 | `fb51d7b02a89ed680f7a5c89d2f0c76e697bc8c72901d7e135bd70141785ef74` |
+| `07618c67afdc` | peer / sparky | `d992a4ae78e2bdae07976097b901a8c584b16d3d0d04a6593bed048dbc3618ad` |
+| `70362710375f` | original / dl380g10 | `61dc8fe3caf043bd82de4eb49116079312792d1306f30edabc897035c71a8f73` |
+| `e4c76a22f6bc` | peer / sparky | `e9d1a35a4645762cc0e75fe4c6955922d1bf82e32f4fc3652e56ae7859b8c2be` |
+
+Every terminal exit, immutable log size/hash, canonical CAS receipt/result
+payload, completed outer scope release and sealed harness/test/production
+source bytes was independently checked. Published PB admitted every action,
+priority -10, native threads 1. The portable targeted suite requested CPU2 /
+mem3 GiB; the campaign offered CPU4 / mem8 GiB total, CPU1 / mem2 GiB per
+actor. Class constraints express the distinct-host protocol dependency.
+Each real payload inherited its actor's single preferred CPU and 128 MiB
+inner memory cap. These waiting actors provide no performance claim.
+
+No production recovery contract changed and no fleet publication is needed
+for this opt-in source-snapshot harness. Docker cleanup, permanent host loss,
+induced kernel NFS stalls and execution budgets during stalls remain outside
+this qualification; #234 stays open. All 417 deployed runtime manifest hashes
+were verified for generation `650893b19fd0-1788912745-bc21f351ad74`.
+
+Evidence is retained at `/home/rob/tmp/pb-234-cleanup-evidence/`:
+`verified-receipts.json`, `campaign-verified.json`, `results-verified.json`,
+`scope-absence.json`, `prior-audit-readback.json`, `campaign.json` and
+`runtime-verified.json`. Both new isolated queues are complete with empty
+ledgers; the prior corrupted audit files have not been rewritten.
