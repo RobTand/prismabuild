@@ -6709,6 +6709,15 @@ def run_local_action(
                    if profile_record is not None else ""),
                 returncode=returncode,
                 signal=-returncode if returncode < 0 else None,
+                # The same reason the timed-out path carries one: a failing run
+                # is the run somebody most wants a profile of.  Publication is
+                # below this raise, so the refresh a successful run gets never
+                # happens here, and without this the only profile left beside
+                # the job is the in-flight checkpoint ``ingest`` wrote -- marked
+                # partial, for a report that is complete.  The message already
+                # names the blob; a reader should not have to scrape prose for
+                # a record this frame is holding.
+                profile=profile_record,
             )
         if not output.exists() and not output.is_symlink():
             raise LocalActionError(

@@ -171,3 +171,71 @@ def test_unvalidated_or_unstored_profile_is_not_checkpointed(tmp_path, monkeypat
     with pytest.raises((pb.ProfileUnusable, OSError)):
         session.ingest(cas)
     assert not status.exists()
+
+
+@pytest.mark.parametrize('early', [False, True])
+def test_a_failed_profiled_action_records_its_complete_profile(tmp_path, monkeypatch, early):
+    """A failing run is the run somebody most wants a profile of.
+
+    The payload runs, the profiler produces a complete report of it, and the
+    action then exits nonzero. Result publication never happens on that path,
+    so the refresh that a successful run gets never runs either, and the only
+    profile left beside the job is the in-flight checkpoint that `ingest`
+    writes -- marked partial, for a report that is not partial at all. The
+    error already names the CAS blob in its message text; a reader should not
+    have to scrape prose for evidence the process is holding.
+    """
+    class Supplement(_FakeBackend):
+        exits_before_action = early
+
+        def extra_blobs(self, path):
+            extra = path.with_name('kernels.csv')
+            extra.write_text('name,time\nmm,1\n')
+            return [('kernel_summary', extra)]
+
+    monkeypatch.setitem(pb.PROFILE_BACKENDS, 'fake', Supplement())
+    status = tmp_path / 'status.json'
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(status))
+    checkout = tmp_path / 'checkout'
+    checkout.mkdir()
+    action = _action(checkout, profile='fake', exit_code=7)
+
+    with pytest.raises(pb.LocalActionError) as raised:
+        pb.run_local_action(action, cas_root=tmp_path / 'cas', checkout_root=checkout)
+    error = raised.value
+    assert error.returncode == 7
+    assert error.profile is not None, 'the failing run kept no profile'
+    assert 'partial' not in error.profile
+    # The blob the message names and the record the error carries are the same
+    # object, so a reader has one place to look rather than two.
+    assert error.profile['blob_sha256'] in str(error)
+
+    pb._record_action_status(error)
+    ending = pool.PoolQueue._merge_action_status(
+        {'status': 'failed', 'returncode': 1}, status)
+    assert ending['action_returncode'] == 7
+    assert 'partial' not in ending['profile'], 'a complete report filed as partial'
+    assert ending['profile'] == error.profile
+    assert Path(ending['profile']['kernel_summary_blob_path']).read_text() == 'name,time\nmm,1\n'
+    assert not status.exists()
+
+
+def test_an_unprofiled_failure_still_records_only_its_ending(tmp_path, monkeypatch):
+    """No profile was asked for, so none is invented: a reader can still tell
+    a run that produced no profile from one whose profile went missing."""
+    status = tmp_path / 'status.json'
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(status))
+    checkout = tmp_path / 'checkout'
+    checkout.mkdir()
+    action = _action(checkout, profile=None, exit_code=3)
+
+    with pytest.raises(pb.LocalActionError) as raised:
+        pb.run_local_action(action, cas_root=tmp_path / 'cas', checkout_root=checkout)
+    assert raised.value.returncode == 3
+    assert raised.value.profile is None
+
+    pb._record_action_status(raised.value)
+    ending = pool.PoolQueue._merge_action_status(
+        {'status': 'failed', 'returncode': 1}, status)
+    assert ending['action_returncode'] == 3
+    assert 'profile' not in ending

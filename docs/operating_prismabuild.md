@@ -204,8 +204,11 @@ What is worth knowing before using it:
     though the broker kills the scope without running Python cleanup.
     Successful result publication refreshes the sidecar with the final profile
     too, preserving complete evidence and summaries when the last launcher
-    stdout line cannot be parsed. Status writes are best effort; a failed
-    refresh can leave the earlier checkpoint.
+    stdout line cannot be parsed. A run that exited nonzero never reaches
+    publication and carries the same complete report on its error instead, so
+    its sidecar holds the final profile rather than the partial checkpoint.
+    Status writes are best effort; a failed refresh can leave the earlier
+    checkpoint.
     A trace still being generated or ingested at that instant can be lost.
     For a handled signal outside that hard-stop path, the worker tries to
     flush, reap and ingest what survives. py-spy writes on SIGINT, not SIGTERM
