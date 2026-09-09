@@ -1564,7 +1564,10 @@ idle" call for different responses.
     during counter collection contributes no new reading:
     the sampler rechecks starttime and discards counters when the original
     process cannot be revalidated. This is not an atomic scope-membership
-    snapshot. A process that has exited but has
+    snapshot. An unreadable or malformed initial identity read retains that
+    PID's prior counters and reports an unreadable process; it does not retire
+    a root or invent a new identity. A missing procfs record still denotes
+    departure. A process that has exited but has
     not yet been reaped is a zombie, and a zombie's `/proc/<pid>/io` is
     `EACCES`: it counts in `processes_unreadable`, keeps whatever it was last
     seen using, and its remaining bytes arrive when its parent reaps it,

@@ -534,6 +534,11 @@ a different incarnation, that observation contributes no new counters. This
 prevents replacement bytes being attached to the earlier sampled identity;
 it is not an atomic process-tree snapshot or complete short-lived-child
 accounting. This changes diagnostic evidence, not action identity.
+If the initial identity read is unavailable or malformed, the sampler retains
+that PID's previous reading without new counters or a new process identity.
+It records an unreadable process and does not retire the prior root merely
+because identity could not be inspected. A missing procfs record still denotes
+departure; later confirmed PID reuse is accounted as a separate incarnation.
 
 Always-on box-window evidence is outside action identity. Its collectors share
 a cooperative two-second finish budget: the GPU power-reference query receives
