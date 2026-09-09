@@ -61,14 +61,35 @@ def test_unresolved_issue_is_not_reported_closed_or_repeated_immediately(runner,
     assert len(runner.calls) == 1
 
 
-def test_changed_and_new_issues_remain_eligible_after_a_run(runner, monkeypatch):
+def test_new_issue_during_run_remains_eligible_without_repeating_visited_issue(runner, monkeypatch):
     snapshots = iter([{"196": "first"}, {"196": "updated", "200": "new"},
                       {"196": "updated", "200": "new"}, {}])
     monkeypatch.setattr(MODULE, "issues", lambda: next(snapshots))
     runner.run()
     runner.run()
     assert len(runner.calls) == 2
-    assert "#196, #200" in runner.calls[1][1]["input"]
+    assert "#200" in runner.calls[1][1]["input"]
+    assert "#196" not in runner.calls[1][1]["input"]
+
+
+def test_own_update_does_not_rearm_next_poll(runner, monkeypatch):
+    snapshots = iter([{"196": "first"}, {"196": "agent-comment"},
+                      {"196": "agent-comment"}, {"196": "agent-comment"}])
+    monkeypatch.setattr(MODULE, "issues", lambda: next(snapshots))
+    assert runner.run() == 0
+    assert runner.run() == 0
+    assert len(runner.calls) == 1
+    assert runner.state()["open_issues"] == ["196"]
+
+
+def test_update_after_completed_run_remains_immediately_eligible(runner, monkeypatch):
+    snapshots = iter([{"196": "first"}, {"196": "agent-comment"},
+                      {"196": "later-update"}, {"196": "later-update"}])
+    monkeypatch.setattr(MODULE, "issues", lambda: next(snapshots))
+    runner.run()
+    runner.run()
+    assert len(runner.calls) == 2
+    assert "#196" in runner.calls[1][1]["input"]
 
 
 def test_unchanged_blocker_is_revisited_after_six_hours(runner, monkeypatch):

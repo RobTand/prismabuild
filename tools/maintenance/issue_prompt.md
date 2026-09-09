@@ -18,7 +18,11 @@ merge and normal publication when needed; verify deployed adoption. Close an iss
 only when the actual reported problem is resolved with attributable evidence.
 Never treat a passing wrapper or a submitted job as proof. Keep unrelated changes
 in separate commits. Do not send Slack, email, or other human messages. GitHub
-issue/PR updates documenting this authorized maintenance are in scope. Record a
+issue/PR updates documenting this authorized maintenance are in scope. A check
+that finds no change posts nothing. Do not repeat an unchanged blocker or prior
+validation in another issue/PR comment; retain routine readbacks in the local run
+report. Comment when there is new evidence, an ownership change, a fix, a changed
+blocker or a deployment result. Record a
 specific blocker when external access or a user decision is indispensable; do not
 keep retrying an unchanged blocker during the same run. Leave unresolved issues
 open. Re-check for new issues before finishing, without duplicating another agent's

@@ -9,7 +9,14 @@ poll, but the maintenance agent inspects linked PRs and work already in progress
 
 The oneshot service and an advisory lock prevent overlapping maintenance runs.
 An unresolved issue is retried after six hours, or sooner when GitHub reports it
-changed. Issues arriving during a run remain eligible for the next check. Network
+changed after the completed visit's final GitHub readback. A successful visit
+stores that post-run timestamp, so its own comments do not trigger another run.
+External updates to a visited issue during the run are also absorbed and may
+wait for the six-hour retry; the poll does not distinguish comment authors.
+New issues arriving during a run remain eligible for the next check, as do
+unvisited issues changed during it. Failed invocations remain eligible for retry.
+A check that finds no change posts no GitHub comment: routine readbacks and
+unchanged blockers belong in the local run report. Network
 or authentication failures fail the check visibly; they do not imply an empty
 queue. Agent sessions use the installed Codex configuration/model, existing Rob
 authentication, and the authorized unrestricted, noninteractive execution mode.
@@ -27,6 +34,11 @@ systemctl --user daemon-reload
 systemctl --user enable --now prismabuild-issues.timer
 systemctl --user start prismabuild-issues.service
 ```
+
+Updates to the script or prompt require reinstalling those stable copies. The
+next timer invocation reads the new files; do not restart an active maintenance
+service merely to adopt them. An already running watcher retains its loaded
+code and may schedule one final follow-up using the previous timestamp rule.
 
 `systemctl --user status prismabuild-issues.timer` shows the next check;
 `journalctl --user -u prismabuild-issues.service` shows polling failures and run
