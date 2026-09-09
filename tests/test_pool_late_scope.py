@@ -242,3 +242,30 @@ def test_repeated_late_finish_uses_pending_authority_after_successor_concludes(s
     assert path == queue.attempt_path(first, 1) and not pending.exists()
     assert terminal.read_bytes() == original
     assert json.loads(path.read_text())['detail']['resource_scope_cleanup']['complete']
+
+
+@pytest.mark.parametrize("status", ["executed", "failed"])
+@pytest.mark.parametrize("reused_owner", [False, True])
+def test_same_host_stale_claim_cannot_clean_up_or_replace_successor(
+    scoped, monkeypatch, status, reused_owner,
+):
+    queue, first, newer, observed, saved = _replaced_scope(scoped, monkeypatch)
+    key = first["action_key"]
+    if reused_owner:
+        # A long-lived worker can own successive attempts. The lease's claim
+        # timestamp must distinguish them even when owner and host agree.
+        first["claimed_by"] = newer["claimed_by"]
+        first["published_unix"] = newer["published_unix"]
+    read = pool._read_json
+    claim_path = queue.item_path(pool.CLAIMED, key)
+
+    def stale_claim(path):
+        return dict(first) if path == claim_path else read(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pool, "_read_json", stale_claim)
+        with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
+            queue.finish(key, status=status, detail={"returncode": 0 if status == "executed" else 7},
+                         claim_snapshot=first)
+    _assert_successor_untouched(queue, newer, observed, saved)
+    assert observed == [], "contradictory identity must refuse before broker cleanup"

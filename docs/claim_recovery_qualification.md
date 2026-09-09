@@ -1,7 +1,8 @@
 # Cross-host claim recovery qualification
 
 `tools/fleet/qualify_claim_recovery.py` checks the #234 queue protocol with two
-admitted actors on different hosts. Each pair owns a fresh queue beneath
+admitted actors on different hosts by default, or on one host with
+`--same-host`. Each pair owns a fresh queue beneath
 `/mnt/shared/pb-qualification`; neither actor touches production queue records.
 By default the inner claims are test data with no payload or broker scope.
 The outer PrismaBuild actions provide actual admission and containment.
@@ -183,6 +184,27 @@ The mode still depends on both hosts being available and injects no delayed
 Docker daemon RPC, host loss or kernel stall. Cross-host retries do not qualify
 same-host overlapping attempts. The first Docker campaign below landed only on
 DL380 and Sparky; the later Sparklina campaign records that client's path separately.
+
+### Same-host delayed callers
+
+Add `--same-host` to both actors and use the same hostname tag for the pair.
+PB still submits, admits and places each actor. The tag is a qualification
+requirement: a pair landing on different hosts fails this mode. Use fresh
+namespaces for each host, late status and stale-read setting.
+
+The peer injects contradictory bookkeeping into a separate fictional host
+ledger so it never releases the original's real inner ledger by mistake.
+It skips the inapplicable foreign-host cleanup refusal, and still checks the
+injected local cleanup refusal and exact original cleanup before retry. The
+old caller remains alive while the successor's scope and container run on the
+same host. Both ordinary reads and `--stale-claim-read` must preserve that
+successor and complete the original waiter. The stale mode requires an explicit
+ownership refusal. Available claim/lease identity fields are compared before
+ordinary finish cleanup; a shared host name alone cannot distinguish attempts.
+
+This does not run two payload attempts simultaneously: the original scope is
+retired before the successor launches. It does not qualify delayed Docker
+creation RPCs or jointly stale claim and lease observations.
 
 ## Recorded run — 2026-09-09 UTC
 
@@ -662,3 +684,91 @@ queue result. Same-host overlap, delayed Docker RPCs, permanent host loss/reboot
 induced kernel NFS stalls, stall-budget accounting and normal production
 startup/result collection remain unqualified. This is not a GPU performance
 measurement or a resolution of the remaining #234 requirements.
+
+## Same-host stale-claim recovery — 2026-09-09 UTC
+
+Qualification on baseline main `3489b2ca8` exposed a production defect: an
+injected old claim could agree with the caller and the host-level ledger while
+the actual lease named the same-host successor. Ordinary finish reached
+action-wide Docker cleanup, removed the successor container, overwrote its
+claim and returned it to READY. All six stale-read pairs failed across DL380,
+Sparky and Sparklina; the six ordinary-read pairs passed. The paired failures
+include handshake timeouts after the original assertion failed. Independent
+owner-host readback confirmed both exact scopes and all action-labelled
+containers absent after exceptional teardown. Failed inner READY records remain
+isolated evidence; they are never submitted to the production queue.
+
+Four separate PB unit regressions failed at the action-wide cleanup trap on
+unchanged production source, including same-owner attempts distinguished by
+claim time. Finish now refuses contradictory available claim/lease owner, host,
+claim-time or publication evidence before any cleanup or mutation. Missing
+legacy fields add no proof. This is a caller-local inconsistent-read injection,
+not an induced kernel NFS stall or a guarantee for jointly stale evidence.
+
+Fixed validation: **56 targeted and 178 integration tests passed, no skips**.
+Integration covered finish/reaper races, scope creation and cleanup, unstarted
+claims, immutable history and waiter behavior; CPU12/mem16 GiB aggregate, twelve
+pytest workers, portable placement, DL380 execution. Receipt:
+`8ead05c3d8e563b1299cef8c1205c101d324dd494796b77193bae04f457d9dd5`.
+
+**28 fixed actors passed**: late success and failure with ordinary and forced
+stale reads on each of the three hosts (24 actors), plus cross-host forced-read
+compatibility between DL380 and a PB-selected GB10 (four actors, Sparky selected).
+All 14 original waiters returned successor results with two immutable attempts
+and empty ledgers. Local cleanup refusals retained live original containers;
+production cleanup removed them before retry. Successor containers survived
+late calls and disappeared on normal finish. All 28 exact scopes and container
+IDs were independently absent on their owning hosts. Same-host audit sidecars
+name the final successor; original recovery telemetry remains in immutable
+attempt 1 and late-cleanup evidence is separated by nonce.
+
+CPU1/mem2 GiB per actor, aggregate offered CPU28/mem56 GiB, native threads 1,
+priority -10, inherited PB preferred CPU affinity, no GPU payload. Same-host
+pairs require matching hostname tags; cross-host pairs require x86/GB10. PB owns
+placement and admission. Each inner scope shares its 128 MiB cap with its Docker
+container. Checked terminal exits, immutable logs and lengths, canonical CAS
+receipts/payloads, sealed source bytes, scope releases, image IDs and CPU masks.
+
+| Actor key | Role / host | CAS receipt |
+| --- | --- | --- |
+| `e345c571a80e` | original / dl380g10 | `97d3a1447b2c470abb660779625dbd1dca4dcf094d1b0def76ddcca4d7c28058` |
+| `f7a47264fb7a` | peer / dl380g10 | `9050763270d7e0b44abbe9cdf3769b02d7c32b418db754e2fc7d8646bea74b87` |
+| `ed895b6ed32f` | original / dl380g10 | `6989b58c29fdc539d8288072281f1ce4796c225030c03a6fcff394b7d24f2d85` |
+| `f5abea62ab52` | peer / dl380g10 | `1262fff65321bd3016721e0c16c5b5d69cb3532f3519050542a1ccad5675e79e` |
+| `10d9016591a6` | original / dl380g10 | `3ae429458ddd1eaba0137120c3047d0f824041da0e31b4b59de369a29f3ad8af` |
+| `36c698df5d0d` | peer / dl380g10 | `661ca78a87bf4d5e4fc7c03302331907154d8cc0cd2134780d7bdb72c7c437ac` |
+| `60e78276cc4a` | original / dl380g10 | `6f8644d2a6e0479b5f7e227077bc289ad021fbf34033c0dc2bc9a97d353ffa89` |
+| `f9f0cc6158f8` | peer / dl380g10 | `f31fc8ce7668b8c5d4e41ee625d1c99599e1e023f28a7834f6f4190448a158f4` |
+| `39d0677d6e29` | original / sparky | `f294b5a35f415d7c8fc2f5c4776436c56607f12e3f3c94097b50a13ba1591d68` |
+| `cec1a3f3af69` | peer / sparky | `f7b64f7b15fe3434e547cf670c57d25740d8df130d6cf6c48292e60ac30413a7` |
+| `068ba45241ae` | original / sparky | `6192af3487e9d1cd86f08ff61d7f2e2934599f20587d5635590ff52e0c8103f5` |
+| `f269fc30a427` | peer / sparky | `c7776edeb0faf7a2ccfe97403adee1ed007c68dde6de0ca26ce094df026332bd` |
+| `9ef78aa17c5e` | original / sparky | `151e9f8a57b444159e34492bb7a26dae8cb045917977fcfa341d95dfd4109d2d` |
+| `9d9954619e28` | peer / sparky | `b64b139fc5108edb5d9d68a231aa19bfd6478ca0a980ab7386fe8e2170847b1b` |
+| `8323571a4cb8` | original / sparky | `d32d2be9411387ef4d138ad95607d1d337ef93e27fd641799b4f03e1ac02786e` |
+| `ac1529a6a2d4` | peer / sparky | `02072404b5197cca325bf55da092dab990ff721ed2dc24e465f5dc366e1bab2d` |
+| `911a6f526485` | original / sparklina | `9930efb1faccce2a859a6e8e9ced2a057233ca46f59804cc58dbf103d6f1acc1` |
+| `ffde038c4fbe` | peer / sparklina | `f8956db51bc7d4e8a271afd136d6f4832ee09bc1dce778183b375e36562bd06b` |
+| `d1e9f4662b24` | original / sparklina | `40f558fae8062b0ee0a014d9cb83436541579401dca36945a0bda85326792120` |
+| `ab7d95c215e2` | peer / sparklina | `5be78ccc11f2b508126ead31e3622c2438cd3406560c3e3faeea67eb63317384` |
+| `ac008ad37fa5` | original / sparklina | `160e79fcf566fe294f73f5312600fce631d308806c9a3bef00cc80c53b2aa8b0` |
+| `c1ffd072039f` | peer / sparklina | `64e91b05a5d1c4e3f0699336abf478fc651656a6e700ebda7cbb6970a6d930d4` |
+| `7f0ca9810996` | original / sparklina | `52447bf4eb7abb96f5a3b874777dec6659d9179ab07334f192bbaaa10485a6d5` |
+| `cccd003cbe0b` | peer / sparklina | `7d3c80c46fad3e727e6754f2d32f3e5ad99f60efcd0f227e75bbe01036d0fd7e` |
+| `d4240772322a` | original / dl380g10 | `7dba8fe5e6b9c02f2beb5f6af7266fb6783e6c7717512904845fe37935255d1d` |
+| `4dbf22c6b338` | peer / sparky | `359c896139b6c5e46ffb2ab6f14976cffe2794b27d4c8921907f6ff234d9d595` |
+| `005cdbed7dd7` | original / dl380g10 | `a0e1fb111e1e74f033abff1e03b0d62ce08400de75f28385e1639cc9d1de5757` |
+| `1a0006edfe95` | peer / sparky | `7aa8469ff25ddef08e0b88713e33e3c7e78cd29dd4c82ebdab8fc8894d34b5a5` |
+
+Evidence: `/home/rob/tmp/pb-maintenance-samehost/`, including original/fixed
+campaign manifests, receipt indexes, actor/source verification, inner-state
+and owner-host scope/container checks. Fixed namespaces under
+`/mnt/shared/pb-qualification/samehost-fixed-e42d1ac7a802/` retain empty ledgers;
+baseline namespaces under `samehost-b35e7badbdc5/` retain bounded failure evidence.
+
+The old caller overlaps the successor, but the original payload is already
+retired. Simultaneous payload attempts, delayed Docker RPCs, jointly stale
+claim/lease evidence, permanent host loss/reboot, kernel NFS stalls, stall-budget
+accounting and normal production startup/result collection remain unqualified.
+#234 remains open. Runtime publication and deployed adoption are tracked in the
+PR delivery comment, separately from these source-snapshot results.
