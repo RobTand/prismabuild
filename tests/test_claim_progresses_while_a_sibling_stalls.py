@@ -34,6 +34,7 @@ Issue #351.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 from pathlib import Path
 import sys
@@ -315,3 +316,106 @@ def test_a_busy_admission_lock_after_the_rename_cannot_undo_the_claim(
         'already made')
     assert rig.ledger().held_keys() == [claimed['action_key']]
     assert rig.item_path(pool.CLAIMED, claimed['action_key']).exists()
+
+
+@pytest.mark.parametrize(('refusal', 'operation'), [
+    ('cpu', 'record_pass'), ('gpu', 'record_pass'),
+    ('tokens', 'record_pass'), ('tokens', 'withhold_age'),
+])
+def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusal, operation):
+    """An unfunded candidate's aging write must not hold host admission (#266)."""
+    capacity = dict(CAPACITY, gpu=1)
+
+    def claim(queue):
+        return queue.claim(capacity=capacity, cpu_tiers=TIERS,
+                           adaptive_cpu=True, has_gpu=True)
+
+    if refusal == 'tokens':
+        # A real committed holder leaves enough for B, but not A's memory.
+        rig.publish(action_key='c' * 64, cas_root=str(rig.root / 'cas'),
+                    checkout_root=str(rig.root), worker_script='worker.py',
+                    resources={'cpu': 1, 'mem_gb': 1}, priority=10)
+        assert claim(rig)['action_key'] == 'c' * 64
+    if refusal in ('gpu', 'tokens'):
+        path = rig.item_path(pool.READY, KEYS[0])
+        item = json.loads(path.read_text())
+        item['resources'].update({'gpu': 1} if refusal == 'gpu' else {'mem_gb': 4})
+        path.write_text(json.dumps(item))
+    if refusal == 'cpu':
+        decision = adaptive_cpu.Controller.decision
+        monkeypatch.setattr(adaptive_cpu.Controller, 'decision',
+                            lambda self, item, demand: None if item['action_key'] == KEYS[0]
+                            else decision(self, item, demand))
+    if refusal == 'gpu':
+        monkeypatch.setattr(pool.gpu_admission.Controller, 'decision',
+                            lambda self, item, demand: None)
+
+    entered, release = threading.Event(), threading.Event()
+    account = getattr(rig, operation)
+    if operation == 'withhold_age':
+        monkeypatch.setattr(pool, 'STARVATION_FLOOR', 1)
+    outcome = {}
+
+    def stalled_pass(key):
+        assert key == KEYS[0]
+        entered.set()
+        assert release.wait(30), 'test did not release refusal accounting'
+        return account(key)
+
+    monkeypatch.setattr(rig, operation, stalled_pass)
+
+    def run():
+        try:
+            outcome['item'] = claim(rig)
+        except BaseException as exc:
+            outcome['error'] = exc
+
+    stalled = threading.Thread(target=run, daemon=True)
+    stalled.start()
+    try:
+        assert entered.wait(30), 'candidate did not reach refusal accounting'
+        winner = _bounded(lambda: claim(pool.PoolQueue(rig.root)), 'sibling claim', 10.)
+        assert winner is not None and winner['action_key'] == KEYS[1], (
+            f'{refusal} refusal accounting held admission and prevented useful work')
+    finally:
+        release.set()
+        stalled.join(30)
+    assert not stalled.is_alive() and 'error' not in outcome, outcome
+    assert outcome['item'] is None
+    assert rig.item_path(pool.READY, KEYS[0]).exists()
+    expected = [KEYS[1]] + (['c' * 64] if refusal == 'tokens' else [])
+    assert sorted(rig.ledger().held_keys()) == sorted(expected)
+
+
+@pytest.mark.parametrize('contended', [False, True])
+def test_preemption_after_accounting_keeps_host_exclusion(rig, monkeypatch, contended):
+    """The unlocked accounting interval grants no authority to stop a holder."""
+    monkeypatch.setattr(pool.ResourceLedger, 'begin_acquire', lambda *a, **kw: None)
+    record_pass = rig.record_pass
+    descriptors, preemptions = [], []
+
+    def account(key):
+        assert _admission_is_free(rig)
+        result = record_pass(key)
+        if contended:
+            fd = os.open(_lock_path(rig), os.O_RDWR)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            descriptors.append(fd)
+        return result
+
+    def preempt(*args, **kwargs):
+        assert not _admission_is_free(rig)
+        preemptions.append(kwargs['action_key'])
+        return None
+
+    monkeypatch.setattr(rig, 'record_pass', account)
+    monkeypatch.setattr(rig, '_preempt_background_holder', preempt)
+    try:
+        assert _bounded(lambda: _claim(rig), 'claim after refusal') is None
+    finally:
+        for fd in descriptors:
+            os.close(fd)
+    assert preemptions == ([] if contended else list(KEYS))
+    assert rig.ledger().held() == {}
+    assert rig.ledger().available() == rig.ledger().capacity()
+    assert all(rig.item_path(pool.READY, key).exists() for key in KEYS)
