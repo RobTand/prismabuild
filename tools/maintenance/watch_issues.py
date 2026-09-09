@@ -71,9 +71,14 @@ def run_once(checkout, state_dir, prompt_file, retry_seconds=21600):
         attempted = {number: record for number, record in previous.items() if number in remaining}
         for number in eligible:
             if number in remaining and result.returncode == 0:
-                # Preserve updates made during the run for the next poll. A
-                # failed agent invocation also remains eligible for retry.
-                attempted[number] = {"updated_at": current[number], "finished_at": finished}
+                # Record what the issue looks like AFTER the run, not before it.
+                # The run comments on what it visits, which bumps updated_at; the
+                # pre-run timestamp would make every visit re-arm itself on the
+                # next poll, so the loop's only output becomes a readback saying
+                # nothing changed. An update that lands during the run is absorbed
+                # here and waits for the retry window. A failed agent invocation
+                # remains eligible immediately.
+                attempted[number] = {"updated_at": remaining[number], "finished_at": finished}
         state.update(attempted=attempted, finished_at=finished,
                      exit_code=result.returncode, open_issues=sorted(remaining, key=int))
         save(path, state)
