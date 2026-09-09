@@ -10,6 +10,13 @@ children execute directly; do not submit recursively. Read-only inspection,
 source edits and Git operations may run on the coordinator. If the fleet is
 unavailable, repair it; do not silently fall back to local tests or GPU work.
 
+Everything vLLM is exempt, universally (Rob, 2026-09-07): a serve, a census, a
+routing run, a benchmark against a live endpoint, its GPU containers. Run it
+directly, without submission. It is a ruling, not a claim about what the fleet
+could technically admit, so do not argue it from a wrapper's capability. A
+running vLLM is still external load for admission, so account for it when
+declaring demand. Work that does not run vLLM still submits.
+
 Read `docs/design.md` before changing execution, identity or queue contracts;
 update it with contract/default changes. Preserve existing worktrees and dirty
 work. Reproduce behavioral bugs before fixing them and validate the integrated

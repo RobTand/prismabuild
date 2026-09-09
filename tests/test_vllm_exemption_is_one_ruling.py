@@ -1,4 +1,4 @@
-"""The skill and the policy doc must state the same vLLM exemption.
+"""Every published policy source must state the same vLLM exemption.
 
 They drifted once: the skill was narrowed to inference serving only while
 `docs/agent_execution_policy.md` still carried the universal ruling, so the two
@@ -23,6 +23,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skills" / "prismabuild" / "SKILL.md"
 POLICY = ROOT / "docs" / "agent_execution_policy.md"
+#: ``AGENTS.md`` is the source an agent reaches FIRST in this repo, and it
+#: carried the routing rule as an absolute while the other two carried the
+#: exemption.  A binding that covers the documents an agent reads second is
+#: not a binding on what it does.
+AGENTS = ROOT / "AGENTS.md"
+SOURCES = [SKILL, POLICY, AGENTS]
+IDS = ["skill", "policy", "agents"]
 
 
 def _vllm_text(path: Path) -> str:
@@ -32,7 +39,7 @@ def _vllm_text(path: Path) -> str:
     return lowered
 
 
-@pytest.mark.parametrize("path", [SKILL, POLICY], ids=["skill", "policy"])
+@pytest.mark.parametrize("path", SOURCES, ids=IDS)
 def test_the_exemption_is_stated_as_universal(path: Path):
     text = _vllm_text(path)
     assert "universally" in text, (
@@ -41,7 +48,7 @@ def test_the_exemption_is_stated_as_universal(path: Path):
         "prismabuild. This is not complex don't make it so.'")
 
 
-@pytest.mark.parametrize("path", [SKILL, POLICY], ids=["skill", "policy"])
+@pytest.mark.parametrize("path", SOURCES, ids=IDS)
 def test_a_benchmark_against_a_live_endpoint_is_named_as_exempt(path: Path):
     """The clause the narrowing removed, and the one that decides real cases.
 
@@ -57,7 +64,7 @@ def test_a_benchmark_against_a_live_endpoint_is_named_as_exempt(path: Path):
 
 def test_the_external_load_qualifier_survives_in_both():
     """Exempt from submission is not invisible to admission."""
-    for path in (SKILL, POLICY):
+    for path in SOURCES:
         assert "external load" in _vllm_text(path), (
             f"{path.relative_to(ROOT)} dropped the external-load qualifier; "
             "an exempt serve still consumes CPU, memory and GPU no "
