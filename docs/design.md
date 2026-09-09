@@ -192,10 +192,22 @@ deterministic lease-loss/late-caller faults; it is not cross-host NFS-stall
 qualification.
 
 The [cross-host recovery qualification](claim_recovery_qualification.md)
-records admitted queue-method actors on DL380 and Sparky in both directions,
-including late success/failure, immutable history and waiter continuity. Those
-inner claims launch no payload or broker scope. The campaign does not qualify
-induced kernel stalls, scoped cleanup under host loss, or Sparklina's mount.
+records admitted queue-method actors in both directions between DL380 and each
+of Sparky and Sparklina, including late success/failure, immutable history and
+waiter continuity. Default-mode inner claims launch no payload or broker scope.
+The optional real-scope campaigns use bounded direct payloads and descendants:
+foreign-host cleanup refusal and a caller-local injected broker failure retain
+the claim and reservation, then cleanup on the owning host retires its exact
+scope before retry. Successor scopes survive late original-owner calls, and
+the original waiters subsequently return the successor results. Successful
+harness teardown preserves production's termination audit.
+
+These campaigns depend on the owning host remaining available and supply the
+successor's queue result through the harness. They do not qualify Docker
+cleanup, permanent host loss/reboot, induced kernel NFS stalls, execution-budget
+accounting during stalls, normal scope creation/preflight, or normal execution
+result collection. The runbook retains the failed campaigns and receipt tables;
+the remaining #234 requirements cannot be inferred from those passing cases.
 
 Execution heartbeats carry an optional `execution_observation`: the direct
 launcher's polled liveness, cumulative stdout/stderr bytes captured at the
