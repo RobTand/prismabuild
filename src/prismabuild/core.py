@@ -6750,6 +6750,10 @@ def run_local_action(
         # and so the pool can lift it into the ending without knowing anything
         # else about this dictionary.
         result["profile"] = profile_record
+        # Result publication succeeded. Replace the in-flight checkpoint so
+        # the pool's fallback has the same complete evidence if the final
+        # stdout line is lost or interleaved with late payload output.
+        _write_action_status({"profile": profile_record})
     if initial_miss_receipt is not None:
         result["initial_miss_rendezvous"] = initial_miss_receipt
     return result

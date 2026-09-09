@@ -93,7 +93,9 @@ it is fixed startup rather than a tax on the work.
 After validation and CAS ingestion, the primary profile is checkpointed before
 optional summary extraction or supplemental blob ingestion. A deadline during
 that optional work retains the primary report on the ending, marked `partial`.
-Normal completion returns the richer profile. This checkpoint publishes no
+Normal completion returns the richer profile and, after successful result
+publication, refreshes the sidecar with it for stdout-parse fallback. A failed
+status write can still leave the earlier checkpoint. This checkpoint publishes no
 action success and cannot preserve a trace that has not reached ingestion.
 Optional `nsys stats` extraction has a five-second subprocess timeout and
 0.5-second TERM/KILL waits for its own process group. A timeout retains the
