@@ -77,12 +77,12 @@ def test_a_visit_does_not_re_arm_itself(runner, monkeypatch):
     # comment must not make the issue eligible again on the next poll: that is a
     # loop whose only output is a readback saying nothing changed.
     snapshots = iter([{"196": "first"}, {"196": "commented-by-the-run"},
-                      {"196": "commented-by-the-run"}])
+                      {"196": "commented-by-the-run"}, {"196": "commented-by-the-run"}])
     monkeypatch.setattr(MODULE, "issues", lambda: next(snapshots))
     runner.run()
     assert len(runner.calls) == 1
     assert runner.run() == 0
-    assert len(runner.calls) == 1
+    assert len(runner.calls) == 1, "the run's own comment re-armed the next check"
 
 
 def test_update_after_a_run_is_still_eligible(runner, monkeypatch):
