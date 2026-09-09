@@ -17,6 +17,7 @@ import socket
 import sys
 import threading
 import time
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from prismabuild import pool
@@ -56,7 +57,31 @@ def late_finish(q, key, first, status):
     return {"disposition": "archived", "path": str(path)}
 
 
-def original(root, late_status):
+def refused_late_finish(q, key, first, status):
+    """Model a stale claim read only in this caller, leaving its waiter live."""
+    read = pool._read_json
+    caller = threading.get_ident()
+    claim_path = q.item_path(pool.CLAIMED, key)
+    injected_reads = 0
+
+    def stale_read(path):
+        nonlocal injected_reads
+        if threading.get_ident() == caller and path == claim_path:
+            injected_reads += 1
+            return dict(first)
+        return read(path)
+
+    # The successor ledger stays real. Production must detect that the stale
+    # original claim and that ledger contradict each other and refuse to finish.
+    # This does not change shared bytes or simulate a kernel/filesystem stall.
+    with patch.object(pool, "_read_json", stale_read):
+        result = late_finish(q, key, first, status)
+    assert injected_reads > 0, "stale claim read was not exercised"
+    assert result["disposition"] == "ownership_refused", result
+    return {**result, "injected_claim_reads": injected_reads}
+
+
+def original(root, late_status, stale_claim_read=False):
     root.mkdir(parents=True, exist_ok=False)
     q = pool.PoolQueue(root / "queue")
     key = hashlib.sha256(str(root).encode()).hexdigest()
@@ -94,7 +119,8 @@ def original(root, late_status):
         pass
     else:
         raise AssertionError("late heartbeat accepted")
-    claimed_result = late_finish(q, key, first, late_status)
+    finish = refused_late_finish if stale_claim_read else late_finish
+    claimed_result = finish(q, key, first, late_status)
     assert waiter.is_alive() and not outcome and not errors
     put(root / "late-claimed.json", {"heartbeat_refused": True,
                                     "waiter_pending": True, **claimed_result})
@@ -110,7 +136,7 @@ def original(root, late_status):
             "late_ready": ready_result, "late_claimed": claimed_result}
 
 
-def peer(root, late_status):
+def peer(root, late_status, stale_claim_read=False):
     first = wait(root / "first.json")
     assert first["claimed_host"] != socket.gethostname(), "requires distinct hosts"
     q = pool.PoolQueue(root / "queue")
@@ -154,7 +180,10 @@ def peer(root, late_status):
     lease_hash = digest(q.lease_path(key))
     put(root / "successor.json", {"host": socket.gethostname(),
         "claim_sha256": claim_hash, "lease_sha256": lease_hash})
-    wait(root / "late-claimed.json")
+    late = wait(root / "late-claimed.json")
+    if stale_claim_read:
+        assert late["disposition"] == "ownership_refused"
+        assert late["injected_claim_reads"] > 0
     assert digest(claim) == claim_hash and digest(q.lease_path(key)) == lease_hash
     assert digest(attempt) == attempt_hash and q.ledger().held() == {"cpu": 1}
     assert not q.item_path(pool.DONE, key).exists()
@@ -179,6 +208,9 @@ def main():
     parser.add_argument("role", choices=["original", "peer"])
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--late-status", required=True, choices=["executed", "failed"])
+    parser.add_argument("--stale-claim-read", action="store_true",
+                        help="inject the old claim into only the late caller's read; "
+                             "require ownership refusal and waiter completion")
     args = parser.parse_args()
     if (not os.environ.get("PRISMABUILD_CONTAINER_OWNER")
             or "prismabuild-job" not in Path("/proc/self/cgroup").read_text()):
@@ -190,7 +222,7 @@ def main():
     if not root.is_relative_to(allowed) or root == allowed:
         parser.error("--root must be a fresh directory beneath /mnt/shared/pb-qualification")
     actor = original if args.role == "original" else peer
-    result = actor(root, args.late_status)
+    result = actor(root, args.late_status, args.stale_claim_read)
     print(json.dumps({"role": args.role, "host": socket.gethostname(),
                       "result": result}, sort_keys=True))
 
