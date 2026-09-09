@@ -64,8 +64,12 @@ the host admission lock. A brief nonblocking lock check preserves early busy
 refusal before discovery; admission is reacquired before decisions and queue
 mutations. The candidate list is advisory: an intervening claim wins, and the
 record actually moved must still satisfy placement and resource checks. An
-empty scan is not repeated under admission. This removes scan stalls from the
-critical section but does not bound discovery or shared transition, lease and
+empty scan returns without entering the shared capacity prelude or repeating
+discovery under admission, and clears absent-generation fallback pacing hints.
+Capacity reconciliation still precedes every nonempty candidate pass; active
+holders are unchanged by the empty-poll return. The worker's independent offer
+refresh and capacity clamp continue on their normal cadence. This removes scan
+stalls from the critical section but does not bound discovery or shared transition, lease and
 token I/O, which still need ownership-safe recovery qualification (#266).
 
 CPU/GPU policy refusals and unfunded reservations record denial aging outside

@@ -70,7 +70,12 @@ The claim is the queue. The `ready/` scan now runs outside host admission after
 a brief busy check; the lock is reacquired before candidate decisions. A scan
 that finishes late cannot displace an intervening claimant, and the moved
 record is revalidated before its reservation is committed. The scan still uses
-the shared mount and has no I/O deadline.
+the shared mount and has no I/O deadline. An adaptive loop with an empty READY
+snapshot returns before shared capacity reconciliation, so an idle poll cannot
+hold admission in that prelude ahead of a sibling's newly arrived work. Every
+nonempty candidate pass still reconciles capacity before making a decision;
+the worker's separate offer refresh and capacity clamp are unchanged. This does
+not remove capacity I/O from nonempty passes or bound an NFS call.
 
 The per-key transition lock, the claim
 intent, the `ready/` to `claimed/` rename and the lease are how every other
