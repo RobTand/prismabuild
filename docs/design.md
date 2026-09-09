@@ -539,6 +539,12 @@ that PID's previous reading without new counters or a new process identity.
 It records an unreadable process and does not retire the prior root merely
 because identity could not be inspected. A missing procfs record still denotes
 departure; later confirmed PID reuse is accounted as a separate incarnation.
+When a scope census omits a previously sampled PID, the sampler checks that
+PID's cgroup membership before retiring it. A still-contained process is
+resampled; unreadable or malformed membership retains the prior reading with
+an unreadable diagnostic and contributes no new bytes. Confirmed departure
+still retires roots. This protects known members against partial scans, not
+discovery of processes never observed or atomic membership during collection.
 
 Always-on box-window evidence is outside action identity. Its collectors share
 a cooperative two-second finish budget: the GPU power-reference query receives

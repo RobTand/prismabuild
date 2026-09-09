@@ -167,6 +167,22 @@ def scope_pids(path: Path) -> list[int]:
     return found
 
 
+def _process_in_scope(pid: int, path: Path | None) -> bool:
+    """Recheck an omitted member; unreadable membership is not departure."""
+    try:
+        text = Path(f'/proc/{pid}/cgroup').read_text()
+    except FileNotFoundError:
+        return False
+    membership = cgroup_membership(path) if path is not None else ''
+    if not membership:
+        raise ValueError('resource scope has no cgroup membership path')
+    for line in text.splitlines():
+        parts = line.split(':', 2)
+        if len(parts) == 3 and parts[:2] == ['0', ''] and parts[2].startswith('/'):
+            return parts[2] == membership or parts[2].startswith(membership + '/')
+    raise ValueError(f'cannot parse process {pid} cgroup membership')
+
+
 def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
     """A process's identity, its parent, and its counters when readable.
 
@@ -402,6 +418,19 @@ class ResourceScope:
         members |= set(pids)
         live: dict[str, dict[str, Any]] = {}
         unreadable = 0
+        # A cgroup walk or its procfs fallback may omit a live process. Check
+        # previously sampled members individually before interpreting absence
+        # as departure: retiring a surviving root counts it again on recovery.
+        missing = {int(identity.split(':', 1)[0]) for identity in live_before} - set(pids)
+        for pid in sorted(missing):
+            try:
+                if _process_in_scope(pid, self.cgroup_path):
+                    pids.append(pid)
+            except (OSError, ValueError):
+                unreadable += 1
+                live.update((identity, counters) for identity, counters
+                            in live_before.items()
+                            if identity.startswith(f'{pid}:'))
         for pid in pids:
             try:
                 entry = read_process_io(pid)
