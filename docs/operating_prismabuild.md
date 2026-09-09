@@ -695,9 +695,11 @@ Changing that budget changes the action key. SLURM receives the corresponding
 `--time`; the pool applies the shorter of that budget and its worker's
 `--timeout-s` safety ceiling (7200 seconds by default). Without an explicit
 budget, SLURM receives no `--time` and the pool retains its worker ceiling.
-Pool execution timing starts after checkout materialization, immediately before
-launching the worker, using a monotonic clock. Queue waiting does not consume
-that budget; `--wait-s` controls the submitter's wait separately. A short budget
+Pool execution timing starts immediately before launching the worker, after
+checkout materialization, withdrawal checks, scope preparation and status-file
+cleanup, using a monotonic clock. Delays in that preparation do not spend the
+action budget. After launch begins, blocked liveness I/O still consumes it.
+Queue waiting does not consume that budget; `--wait-s` controls the submitter's wait separately. A short budget
 does not wait for the next lease heartbeat before being enforced.
 
 The published fleet configuration gives Sparky and Sparklina 86400-second

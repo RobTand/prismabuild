@@ -6931,7 +6931,6 @@ class PoolQueue:
                         *argv]
         owner = str(item.get("claimed_by") or "")
         started = _now()
-        deadline = None if timeout_s is None else time.monotonic() + timeout_s
         # Withdrawal checkpoint one of three: before the launch.  A cancellation
         # that landed in the microseconds between ``claim``'s rename and this
         # call would otherwise start the work anyway, and then have to stop it.
@@ -6959,6 +6958,9 @@ class PoolQueue:
         status_path = self.action_status_path(key)
         with suppress(OSError):
             status_path.unlink()
+        # No payload exists during withdrawal, scope preparation or status-file
+        # cleanup. Shared I/O there must not spend its execution budget.
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
         process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,

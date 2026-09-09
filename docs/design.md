@@ -1521,9 +1521,12 @@ positive finite number of seconds. Its value participates in the action key.
 The pool reads and validates this value from the CAS request, not the mutable
 queue record, and applies the shorter of it and the worker's timeout ceiling.
 Without the field, existing actions retain the worker ceiling. The pool starts
-its monotonic budget after checkout materialization and before launcher spawn;
-queue waiting does not consume it. Communication waits are capped by the
-remaining budget independently of lease-heartbeat cadence. Expiry uses the
+its monotonic budget immediately before launcher spawn, after checkout
+materialization, withdrawal checks, scope preparation and status-file cleanup.
+Those prelaunch operations and queue waiting do not consume it. Once launch
+begins, blocked heartbeat or telemetry operations still consume the budget;
+stalled-execution accounting remains unqualified under issue #234. Communication
+waits are capped by the remaining budget independently of lease-heartbeat cadence. Expiry uses the
 existing bounded process-group termination and timeout receipt path. SLURM
 continues enforcing the submitter budget through its scheduler time limit.
 

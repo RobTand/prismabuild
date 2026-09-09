@@ -80,6 +80,90 @@ def test_old_queue_timestamp_does_not_consume_execution_budget(tmp_path):
     item['published_unix'] = 1
     item['claimed_unix'] = 1
     pool._write_json_atomic(queue.item_path(pool.CLAIMED, item['action_key']), item)
+    # Age the same ownership generation in both records; a contradictory lease
+    # tests stale-owner refusal instead of execution-budget accounting.
+    lease_path = queue.lease_path(item['action_key'])
+    lease = json.loads(lease_path.read_text())
+    lease.update(published_unix=1, claimed_unix=1)
+    pool._write_json_atomic(lease_path, lease)
     outcome = queue.execute(item, heartbeat_s=30)
     assert outcome['status'] == 'executed'
     assert outcome['returncode'] == 0
+
+
+@pytest.mark.parametrize('stage', ['withdrawal', 'scope', 'status_cleanup'])
+def test_prelaunch_delay_does_not_consume_execution_budget(tmp_path, monkeypatch, stage):
+    """Preparation can stall before a launcher exists; its budget stays intact."""
+    import time
+    from types import SimpleNamespace
+
+    queue, item = _claimed(tmp_path, 5)
+    offset = [0.0]
+    monkeypatch.setattr(pool, 'time', SimpleNamespace(
+        monotonic=lambda: time.monotonic() + offset[0],
+        time=time.time, sleep=time.sleep))
+    delayed = []
+
+    def delay():
+        delayed.append(stage)
+        offset[0] += 10
+
+    if stage == 'withdrawal':
+        original = queue.withdrawal_covers
+
+        def withdrawal(item):
+            if not delayed:
+                delay()
+            return original(item)
+
+        monkeypatch.setattr(queue, 'withdrawal_covers', withdrawal)
+    elif stage == 'scope':
+        def start_scope(item):
+            delay()
+            return None
+
+        monkeypatch.setattr(queue, '_start_resource_scope', start_scope)
+    else:
+        original = Path.unlink
+        status_path = queue.action_status_path(item['action_key'])
+
+        def unlink(path, *args, **kwargs):
+            if path == status_path and not delayed:
+                delay()
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, 'unlink', unlink)
+
+    outcome = queue.execute(item, containment=(stage == 'scope'),
+                            heartbeat_s=30, timeout_grace_s=0.2)
+    assert delayed == [stage]
+    assert outcome['status'] == 'executed'
+    assert outcome['returncode'] == 0
+    cas = pb.PrismaBuildCAS(item['cas_root'])
+    key = item['action_key']
+    action = json.loads((cas.root / 'requests' / key[:2] / f'{key}.json').read_text())
+    receipt = cas.lookup(action)
+    assert receipt is not None
+    assert cas.result_path(receipt, action).read_text() == 'ok'
+
+
+def test_postlaunch_delay_still_consumes_execution_budget(tmp_path, monkeypatch):
+    """This fix excludes preparation only; a live launch keeps its deadline."""
+    import time
+    from types import SimpleNamespace
+
+    queue, item = _claimed(tmp_path, 5)
+    offset = [0.0]
+    monkeypatch.setattr(pool, 'time', SimpleNamespace(
+        monotonic=lambda: time.monotonic() + offset[0],
+        time=time.time, sleep=time.sleep))
+    original = queue.write_lease
+
+    def write_lease(*args, **kwargs):
+        original(*args, **kwargs)
+        offset[0] += 10
+
+    monkeypatch.setattr(queue, 'write_lease', write_lease)
+    outcome = queue.execute(item, heartbeat_s=30, timeout_grace_s=0.2)
+    assert outcome['status'] == 'timeout'
+    assert outcome['returncode'] is None
