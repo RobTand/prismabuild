@@ -121,19 +121,25 @@ _WORK = ("import math; "
          "print(sum(sum(math.sqrt(i) for i in range(20000)) for _ in range(160)))")
 
 
-def _action(checkout: Path, *, profile: str | None, result: str = "result.txt"):
+def _action(checkout: Path, *, profile: str | None, result: str = "result.txt",
+            exit_code: int = 0):
     """A portable action that writes its result through the pipeline shape.
 
     ``| tee`` is not decoration: it is what ``pbrun`` seals, and bash forks a
     pipeline member rather than exec'ing it, which is exactly the shape that
     decides whether a profiler can see the child at all.
+
+    ``exit_code`` makes the action fail *after* doing its work, which is what a
+    failing test run looks like: the payload ran, the profiler has a complete
+    report of it, and the ending is nonzero.  Zero leaves the argv, and so the
+    action key, exactly as it was.
     """
 
     _closure_member(checkout)
+    ending = "exit ${PIPESTATUS[0]}" if not exit_code else f"exit {exit_code}"
     argv = [
         "/bin/bash", "--noprofile", "--norc", "-c",
-        f"{sys.executable} -c {_WORK!r} 2>&1 | tee {result}; "
-        "exit ${PIPESTATUS[0]}",
+        f"{sys.executable} -c {_WORK!r} 2>&1 | tee {result}; " + ending,
     ]
     params: dict[str, object] = {"command": ["work"]}
     if profile is not None:
