@@ -1825,9 +1825,14 @@ incomplete, stale or unknown-device observations refuse new GPU admissions,
 including cold start. A fresh complete snapshot permits one cold-start action.
 Two consecutive low-load samples permit one additional generation action per
 new sample, after every running GPU action has complete current attempt
-attribution and at least two seconds to start. Sample credit is persisted before
-reservation mutation: crashes may lose a probe opportunity but cannot reuse it.
-Released or retried actions cannot reset that sample's spent credit.
+attribution and at least two seconds to start. A candidate first acquires its
+provisional aggregate reservation, then persists sample consumption under the
+same host admission lock, before publishing a runnable claim. A hard-resource
+refusal consumes no sample, allowing a smaller candidate to use it. Failure to
+persist consumption returns the provisional reservation through the existing
+exception cleanup; it never launches work. Crashes after consumption may lose
+a probe opportunity but cannot reuse it. Released or retried actions cannot
+reset that sample's spent credit.
 
 After each concurrency probe, at least three fresh samples after startup must
 show how device power responds before another probe is allowed. The controller

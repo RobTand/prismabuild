@@ -3753,7 +3753,6 @@ class PoolQueue:
                                 if adaptive_gpu is None:
                                     self.record_pass(key)
                                     continue
-                                gpu_controller.reserve_probe(adaptive_gpu)
                             if adaptive_gpu is not None:
                                 handle = ledger.begin_acquire(key, reservation_demand, adaptive=adaptive,
                                                               cpu_tiers=cpu_tiers,
@@ -3781,6 +3780,13 @@ class PoolQueue:
                                 # the head of the ordering -- but stops holding the box shut
                                 # for work it cannot do anything with.
                                 continue
+                            if adaptive_gpu is not None:
+                                # Only a funded candidate spends GPU sample credit.
+                                # Keep reservation and consumption under admission
+                                # exclusion, before publishing a runnable claim.
+                                # A memory refusal must leave the sample available
+                                # to a smaller candidate in this same pass.
+                                gpu_controller.reserve_probe(adaptive_gpu)
                             if adaptive is not None:
                                 # The borrow is spent by the decision that made
                                 # it, under the lock that made it, and before
