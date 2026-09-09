@@ -124,6 +124,7 @@ import resource
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -3469,6 +3470,7 @@ class PoolQueue:
         action_key: str,
         demand: Mapping[str, int],
         priority: int,
+        controller: cpu_admission.Controller | None = None,
     ) -> str | None:
         """Take the box back for a denied foreground item.  Name who yielded.
 
@@ -3509,6 +3511,12 @@ class PoolQueue:
         counted as pending, one whose claim or requeue cannot be read is left
         alone, and one on another box was never a candidate -- the holders
         considered here are the ones on this ledger.
+
+        Selection reads capacity under host admission, but withdrawal and
+        retry publication do not hold that gate. A separate nonblocking local
+        lock spans both phases: while a handoff stalls, another loop may admit
+        fitting work but cannot select a second victim before the first
+        cancellation is visible. Neither phase returns the victim's tokens.
         """
 
         if priority < 0:
@@ -3516,6 +3524,49 @@ class PoolQueue:
         wanted = {kind: int(need) for kind, need in demand.items() if int(need) > 0}
         if not wanted:
             return None
+        with self._preemption_locked(ledger) as acquired:
+            if not acquired:
+                return None
+            with self._admission_lock(controller):
+                selected = self._select_background_holder(
+                    ledger, action_key=action_key, wanted=wanted)
+            if selected is None:
+                return None
+            holder, record = selected
+            return self._preempt_selected_holder(
+                holder, record, action_key=action_key)
+
+    @staticmethod
+    @contextmanager
+    def _preemption_locked(ledger: ResourceLedger):
+        """Serialize handoffs without excluding ordinary host admission.
+
+        Resolve the box identity before admission. Never unlink the permanent
+        inode, inherit it across exec, or release it on an assumed timeout:
+        a process stuck in a shared syscall must retain the handoff slot.
+        """
+        directory, digest = cpu_admission.box_state(ledger.base)
+        descriptor = os.open(directory / (digest + '.preemption.lock'),
+                             os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(descriptor)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1):
+                raise RuntimeError('unsafe PrismaBuild preemption lock file')
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            yield True
+        finally:
+            os.close(descriptor)
+
+    def _select_background_holder(
+        self, ledger: ResourceLedger, *, action_key: str,
+        wanted: Mapping[str, int],
+    ) -> tuple[str, dict[str, object]] | None:
+        """Read the current gap and pending releases under host admission."""
         try:
             self._refuse_if_fenced()
         except PoolContractError:
@@ -3577,7 +3628,12 @@ class PoolQueue:
         # yield equally, the one that has run least loses least by starting over.
         usable.sort(key=lambda entry: (entry[0], -entry[1]))
         _, _, holder, record, _ = usable[0]
+        return holder, record
 
+    def _preempt_selected_holder(
+        self, holder: str, record: Mapping[str, object], *, action_key: str,
+    ) -> str | None:
+        """Complete one handoff outside admission, rechecking exact ownership."""
         # Keep cancellation and replacement publication in one transition.
         # Waiters take this same key lock before following the cancellation,
         # so an intermediate marker cannot become a terminal verdict.
@@ -3865,14 +3921,13 @@ class PoolQueue:
                         if handle is None:
                             denials = self.record_pass(key)
                             if not preempted:
-                                # Selection must still serialize across this host:
-                                # two denials must not stop two holders for one gap.
-                                # Re-read capacity/pending releases after accounting;
-                                # contention leaves this unfunded candidate queued.
-                                with self._admission_lock(controller):
-                                    preempted = self._preempt_background_holder(
-                                        ledger, action_key=key, demand=asked,
-                                        priority=int(item.get("priority", 0))) is not None
+                                # Selection reacquires admission, while the separate
+                                # handoff lock spans withdrawal/requeue as well. A
+                                # stalled handoff cannot stop ordinary fitting work.
+                                preempted = self._preempt_background_holder(
+                                    ledger, action_key=key, demand=asked,
+                                    priority=int(item.get("priority", 0)),
+                                    controller=controller) is not None
                             if (denials >= STARVATION_FLOOR
                                     and self.withhold_age(key) <= WITHHOLD_CEILING_S):
                                 return None

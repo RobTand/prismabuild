@@ -90,8 +90,19 @@ host exclusion to serialize pending releases; it reacquires admission
 nonblockingly after aging and re-reads capacity and holders. A busy gate leaves
 the candidate queued with its recorded denial. Funded reservation, GPU probe
 consumption and CPU borrow consumption remain one admission critical section.
-Shared holder scans, token moves and preemption I/O remain inside exclusion;
-this narrower refusal path does not make admission NFS-free.
+Selection and its withdrawal/requeue handoff also share a separate nonblocking
+host-local preemption lock. Admission is released after selecting a victim;
+withdrawal, broker stop requests and retry publication hold only the preemption
+lock and the holder's per-key transition lock. A stalled handoff prevents
+another preemption selection, but fitting ordinary claims can proceed. The
+withdrawal still revalidates the exact selected claim, and no tokens are
+returned before the holder's normal cleanup. The preemption lock is a permanent
+`<ledger-and-host-digest>.preemption.lock` inode under the same box-state root
+as admission; it is never removed or released on a timeout. Changing the root
+or mixing generations that do and do not use this lock requires drained work
+and completed worker rotation before submissions resume.
+Shared capacity/holder scans and token moves remain under host admission;
+this separation does not make admission NFS-free or bound a shared syscall.
 
 CPU action identity and GPU exclusivity/memory-contract reads from sealed CAS
 requests run before candidate admission, retaining the per-key transition lock.

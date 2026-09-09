@@ -91,6 +91,19 @@ The per-key transition lock, the claim
 intent, the `ready/` to `claimed/` rename and the lease are how every other
 box learns what this box took; they cannot be anywhere but the mount.
 
+Preemption selects a background holder under host admission, then releases
+admission before withdrawing it and publishing its retry. A separate permanent
+host-local `<ledger-and-host-digest>.preemption.lock` spans selection through
+the completed handoff. Acquisition is nonblocking: a stalled handoff stops
+other preemption selections while ordinary fitting claims continue. The
+holder's shared transition lock still spans withdrawal and retry publication,
+and withdrawal revalidates the selected claim. Tokens remain held until normal
+cleanup. A crash releases the local lock through descriptor lifetime, never
+through a timeout or deletion of its inode; the next selection re-reads current
+capacity and pending withdrawals. Shared selection reads remain under admission.
+Deploy this lock change with drained work and complete worker adoption before
+resuming submissions; older claimants do not participate in handoff exclusion.
+
 The token ledger stays shared because it is cross-host evidence, not a private
 cache:
 
