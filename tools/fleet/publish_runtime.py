@@ -666,7 +666,15 @@ def _require_attested_fleet(agent_sha: str) -> None:
             continue
         spelling = key if len(names) == 1 else f"{key} ({'/'.join(sorted(names))})"
         if not held:
-            missing.append(f"  {spelling}: has posted no attestation")
+            # A box that has posted nothing at all is more often a box with no
+            # agent installed than a box one tick behind, and rolling does not
+            # install one.  Say so here rather than let the advice below be
+            # read as covering a case it does not.
+            missing.append(
+                f"  {spelling}: has posted no attestation. A box with no "
+                "client upgrade agent installed cannot hold a barrier at all; "
+                "see docs/client_upgrade.md."
+            )
         else:
             running = ", ".join(sorted(short[:12] for short in held))
             missing.append(f"  {spelling}: running {running}")

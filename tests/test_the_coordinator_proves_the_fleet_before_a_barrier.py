@@ -198,6 +198,9 @@ def test_a_silent_box_is_named_in_the_refusal(fleet):
         publish_runtime._require_attested_fleet(SHA)
     message = str(raised.value)
     assert "gx10-6b77 (gx10-6b77/sparklina): has posted no attestation" in message
+    # Rolling installs nothing, so the advice below must not be the only thing
+    # a box with no agent at all is told.
+    assert "cannot hold a barrier at all" in message
     assert "sparky:" not in message
     assert "--rollout rolling" in message
 
