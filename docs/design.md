@@ -1836,8 +1836,23 @@ same host admission lock, before publishing a runnable claim. A hard-resource
 refusal consumes no sample, allowing a smaller candidate to use it. Failure to
 persist consumption returns the provisional reservation through the existing
 exception cleanup; it never launches work. Crashes after consumption may lose
-a probe opportunity but cannot reuse it. Released or retried actions cannot
-reset that sample's spent credit.
+a probe opportunity but cannot reuse it. Released or retried launched actions
+cannot reset that sample's spent credit.
+
+Four ordinary pre-launch abandonment paths may return their sample credit:
+fallback deferral, a lost claim rename, changed placement/demand in the moved
+record, and a reservation rejected after commit. After returning the reservation,
+the claimant reacquires host admission nonblockingly and compares a unique
+consumption nonce and both sample identity fields. A newer probe, including reuse
+of the same sample, cannot be refunded by an older claimant. The return restores
+only the prior consumed sample fields and removes only its unchanged pending
+power feedback; intervening observations remain intact. The prior nonce is not
+restored, so an older return authority cannot be revived. The in-memory return
+ticket is retired before I/O. Lock contention, missing ownership, crashes and
+uncertain errors may lose credit until fresh telemetry, never launch without a
+reservation or grant a second probe. Exception rollback and ordinary completion
+do not return GPU credit. These host-local fields do not change action identity,
+memory budgets or physical GPU reservations.
 
 After each concurrency probe, at least three fresh samples after startup must
 show how device power responds before another probe is allowed. The controller

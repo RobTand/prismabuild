@@ -15,6 +15,7 @@ from pathlib import Path
 import stat
 import statistics
 import time
+import uuid
 
 from . import adaptive_cpu
 
@@ -314,6 +315,10 @@ class Controller:
         """Spend sample before claiming work; a crash can lose credit, never reuse it."""
         if metadata.get('probe'):
             state = adaptive_cpu.read_json(self.base / 'gpu-state.json')
+            previous = {key: state[key] for key in (
+                'consumed_sample_id', 'consumed_sampled_unix') if key in state}
+            probe_id = uuid.uuid4().hex
+            state['consumed_probe_id'] = probe_id
             state['consumed_sample_id'] = metadata['sample_id']
             state['consumed_sampled_unix'] = metadata['sampled_unix']
             state['power_feedback'] = {
@@ -322,3 +327,34 @@ class Controller:
                 'expected_members': sorted(metadata['members_before'] + [
                     f"{metadata['action_key']}:{metadata['admitted_unix']}"])}
             self._write_state(state)
+            return {'probe_id': probe_id, 'sample_id': metadata['sample_id'],
+                    'sampled_unix': metadata['sampled_unix'], 'previous': previous,
+                    'feedback': state['power_feedback']}
+
+    def return_probe(self, ticket):
+        """Return an unlaunched probe under admission exclusion, once, if still owned.
+
+        Restore only consumption, preserving intervening observations. A newer
+        probe owns its credit even when it consumed the very same sample.
+        Callers use this only after ordinary abandonment, never uncertain errors
+        or completion of launched work. Crash/restart has no return authority.
+        """
+        if not ticket:
+            return
+        probe_id = ticket.pop('probe_id', None)  # Retire authority before any I/O.
+        if not probe_id:
+            return
+        state = adaptive_cpu.read_json(self.base / 'gpu-state.json')
+        if (state.get('consumed_probe_id') != probe_id
+                or state.get('consumed_sample_id') != ticket['sample_id']
+                or state.get('consumed_sampled_unix') != ticket['sampled_unix']):
+            return
+        state.pop('consumed_probe_id')
+        for key in ('consumed_sample_id', 'consumed_sampled_unix'):
+            state.pop(key, None)
+        state.update(ticket['previous'])
+        # Decision may already have invalidated or updated the feedback. Never
+        # resurrect its predecessor or overwrite a later power observation.
+        if state.get('power_feedback') == ticket['feedback']:
+            state.pop('power_feedback', None)
+        self._write_state(state)

@@ -3261,6 +3261,15 @@ class PoolQueue:
             with controller.locked():
                 controller.withdrew(metadata, previous)
 
+    @staticmethod
+    def _return_gpu_probe(controller, gpu_controller, ticket) -> None:
+        """Return ordinary unlaunched probe credit; lock contention loses credit."""
+        if controller is None or gpu_controller is None or ticket is None:
+            return
+        with suppress(cpu_admission.AdmissionBusy):
+            with controller.locked():
+                gpu_controller.return_probe(ticket)
+
     def _report_admission_busy(self, refusal: cpu_admission.AdmissionBusy,
                                *, evaluating: bool = False) -> None:
         """Expose the admission gate that refused, without shared I/O.
@@ -3714,6 +3723,7 @@ class PoolQueue:
                 adaptive = None
                 adaptive_gpu = None
                 borrow = None
+                gpu_probe = None
                 if controller is not None and not demand:
                     # Adaptive admission needs a durable reservation to make an
                     # unknown CPU consumer visible to subsequent measurements.
@@ -3786,7 +3796,7 @@ class PoolQueue:
                                 # exclusion, before publishing a runnable claim.
                                 # A memory refusal must leave the sample available
                                 # to a smaller candidate in this same pass.
-                                gpu_controller.reserve_probe(adaptive_gpu)
+                                gpu_probe = gpu_controller.reserve_probe(adaptive_gpu)
                             if adaptive is not None:
                                 # The borrow is spent by the decision that made
                                 # it, under the lock that made it, and before
@@ -3815,6 +3825,7 @@ class PoolQueue:
                             and self._defer_fallback(item, demand)):
                         ledger.abandon_acquire(handle)
                         self._return_borrow(controller, borrow)
+                        self._return_gpu_probe(controller, gpu_controller, gpu_probe)
                         continue
                     # Intent precedes the claim, so a crash in between leaves evidence.
                     self._write_claim_intent(key, owner=owner)
@@ -3830,6 +3841,7 @@ class PoolQueue:
                             # on top of it.
                             ledger.abandon_acquire(handle)
                             self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
                         # Leave no evidence of a claim that did not happen.  The marker
                         # is written by rename, so this claimant's copy replaced
                         # whatever was there -- and if the winner wrote first, the
@@ -3855,6 +3867,7 @@ class PoolQueue:
                         if ledger is not None and handle is not None:
                             ledger.abandon_acquire(handle)
                             self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
                         try:
                             os.link(dst, src)
                         except OSError:
@@ -3890,6 +3903,7 @@ class PoolQueue:
                             ledger.abandon_acquire(handle)
                             ledger.release(key)
                             self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
                             # Link rather than rename.  ``publish`` writes ``ready``
                             # unconditionally, so a re-submission of this key can
                             # already be sitting there, and a rename would replace that
