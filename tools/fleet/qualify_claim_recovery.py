@@ -63,7 +63,10 @@ def start_scope(q, claim, stack):
     processes = []
 
     def cleanup():
-        scope.terminate_owned("disposable claim qualification cleanup")
+        # Production recovery may already have retired this exact scope.
+        # A redundant stop would overwrite its termination audit reason.
+        if scope.cgroup_path.exists():
+            scope.terminate_owned("disposable claim qualification cleanup")
         for process in processes:
             process.communicate(timeout=10)
         deadline = time.monotonic() + 5

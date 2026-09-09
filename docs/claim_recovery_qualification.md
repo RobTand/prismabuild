@@ -6,7 +6,9 @@ admitted actors on different hosts. Each pair owns a fresh queue beneath
 By default the inner claims are test data with no payload or broker scope.
 The outer PrismaBuild actions provide actual admission and containment.
 The optional `--real-scope` mode below adds bounded direct payloads to the
-isolated claims.
+isolated claims. Teardown stops only scopes that still exist, preserving the
+production termination audit after successful recovery. It still reaps its
+payload proxies and asks the broker to confirm release.
 
 The original actor publishes once, claims, starts the normal `pbrun` waiter,
 and deliberately stops refreshing its lease. The peer first injects a second
