@@ -161,6 +161,44 @@ def test_published_skill_companion_documents_resolve_inside_the_generation(
                 pending.append(document.parent / unquote(parsed.path))
 
 
+def test_published_torch_helper_can_be_copied_without_a_source_checkout(
+    tmp_path, monkeypatch,
+) -> None:
+    """The published torch-mode guide's copyable helper must actually travel."""
+    import hashlib
+    import json
+
+    mirror = tmp_path / "fleet" / "repo"
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    assert publish_runtime.main() == 0
+    generation = mirror.resolve()
+    helper = generation / "tools/profile_torch.py"
+    assert helper.is_file(), "published torch guide names an absent helper"
+    receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
+    assert helper.read_bytes() == (ROOT / "tools/profile_torch.py").read_bytes()
+    assert hashlib.sha256(helper.read_bytes()).hexdigest() == receipt["files"]["tools/profile_torch.py"]
+    assert stat.S_IMODE(helper.stat().st_mode) == 0o444
+
+    # Follow the guide: copy into the consumer's own tree. An unprofiled
+    # consumer must be able to import and use it even with no torch installed.
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    copied = consumer / "profile_torch.py"
+    shutil.copyfile(helper, copied)
+    monkeypatch.chdir(consumer)
+    monkeypatch.delenv("PRISMABUILD_PROFILE_TORCH_OUT", raising=False)
+    monkeypatch.setitem(sys.modules, "torch", None)
+    monkeypatch.setitem(sys.modules, "torch.profiler", None)
+    spec = importlib.util.spec_from_file_location("copied_torch_helper", copied)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with module.prismabuild_torch_profile() as profiler:
+        assert profiler is None
+
+
 def test_publish_never_exposes_a_mixed_generation(tmp_path, monkeypatch) -> None:
     commit = "a" * 40
     checkout = _checkout(tmp_path / "checkout", "new")
