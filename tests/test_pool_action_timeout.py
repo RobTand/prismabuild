@@ -148,7 +148,7 @@ def test_prelaunch_delay_does_not_consume_execution_budget(tmp_path, monkeypatch
 
 
 def test_postlaunch_delay_still_consumes_execution_budget(tmp_path, monkeypatch):
-    """This fix excludes preparation only; a live launch keeps its deadline."""
+    """Time spent waiting for the payload still consumes the sealed budget."""
     import time
     from types import SimpleNamespace
 
@@ -157,13 +157,21 @@ def test_postlaunch_delay_still_consumes_execution_budget(tmp_path, monkeypatch)
     monkeypatch.setattr(pool, 'time', SimpleNamespace(
         monotonic=lambda: time.monotonic() + offset[0],
         time=time.time, sleep=time.sleep))
-    original = queue.write_lease
+    # Keep subprocess's own clock real; inject delay only into the pool's
+    # view of a real timed-out wait. Checkpoint I/O is tested separately.
+    import subprocess
 
-    def write_lease(*args, **kwargs):
-        original(*args, **kwargs)
-        offset[0] += 10
+    class DelayedWait(subprocess.Popen):
+        def communicate(self, *args, **kwargs):
+            try:
+                return super().communicate(*args, **kwargs)
+            except subprocess.TimeoutExpired:
+                offset[0] += 10
+                raise
 
-    monkeypatch.setattr(queue, 'write_lease', write_lease)
-    outcome = queue.execute(item, heartbeat_s=30, timeout_grace_s=0.2)
+    monkeypatch.setattr(pool, 'subprocess', SimpleNamespace(
+        Popen=DelayedWait, PIPE=subprocess.PIPE,
+        TimeoutExpired=subprocess.TimeoutExpired))
+    outcome = queue.execute(item, heartbeat_s=0.05, timeout_grace_s=0.2)
     assert outcome['status'] == 'timeout'
     assert outcome['returncode'] is None

@@ -6993,6 +6993,7 @@ class PoolQueue:
         # its own session with nothing left to reap it.  Everything after the
         # Popen belongs under the same guard.
         try:
+            checkpoint_started = time.monotonic()
             observation = _observe_execution(process)
             self.write_lease(
                 key,
@@ -7002,6 +7003,11 @@ class PoolQueue:
                 container_owner=(str(item["container_owner"])
                                  if item.get("container_owner") else None),
             )
+            # Shared checkpoint I/O can stall independently of the payload.
+            # Pause only that measured interval, retaining all budget already
+            # spent in spawn/communicate. This is not a fresh timeout grant.
+            if deadline is not None:
+                deadline += time.monotonic() - checkpoint_started
             # Refresh the lease while the child runs; a long action must not be
             # reaped out from under itself.
             next_heartbeat = time.monotonic() + heartbeat_s
@@ -7013,6 +7019,7 @@ class PoolQueue:
                     out, err = process.communicate(timeout=interval)
                     break
                 except subprocess.TimeoutExpired as exc:
+                    checkpoint_started = time.monotonic()
                     observation = _observe_execution(
                         process, observation, stdout=exc.output, stderr=exc.stderr)
                     if scope is not None:
@@ -7065,6 +7072,8 @@ class PoolQueue:
                                              if item.get("container_owner") else None),
                         )
                         next_heartbeat = time.monotonic() + heartbeat_s
+                    if deadline is not None:
+                        deadline += time.monotonic() - checkpoint_started
                     if deadline is not None and time.monotonic() >= deadline:
                         # Worst case this branch spends three grace budgets
                         # -- TERM wait, KILL wait, drain (~45 s) -- without

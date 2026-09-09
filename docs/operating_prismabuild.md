@@ -698,7 +698,13 @@ budget, SLURM receives no `--time` and the pool retains its worker ceiling.
 Pool execution timing starts immediately before launching the worker, after
 checkout materialization, withdrawal checks, scope preparation and status-file
 cleanup, using a monotonic clock. Delays in that preparation do not spend the
-action budget. After launch begins, blocked liveness I/O still consumes it.
+action budget. After launch, the pool pauses the deadline around synchronous
+checkpoints: launcher observation, lease publication, scope sampling and
+withdrawal reads. Only time inside those calls is excluded; previously spent
+execution time is never reset, and waits for the payload still consume the
+remaining budget. This does not detect or discount kernel stalls inside a
+payload or a blocked subprocess wait, and does not bound checkpoint I/O itself.
+Withdrawal and resource failures still take precedence when checks return.
 Queue waiting does not consume that budget; `--wait-s` controls the submitter's wait separately. A short budget
 does not wait for the next lease heartbeat before being enforced.
 
