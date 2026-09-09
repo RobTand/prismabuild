@@ -35,6 +35,11 @@ systemctl --user enable --now prismabuild-issues.timer
 systemctl --user start prismabuild-issues.service
 ```
 
+Updates to the script or prompt require reinstalling those stable copies. The
+next timer invocation reads the new files; do not restart an active maintenance
+service merely to adopt them. An already running watcher retains its loaded
+code and may schedule one final follow-up using the previous timestamp rule.
+
 `systemctl --user status prismabuild-issues.timer` shows the next check;
 `journalctl --user -u prismabuild-issues.service` shows polling failures and run
 locations. `~/.local/state/prismabuild-maintenance/state.json` records check times,
