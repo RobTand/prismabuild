@@ -8,7 +8,7 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import pwd
 import re
 import socket
@@ -36,6 +36,30 @@ MAINTENANCE_OWNER = 'client-upgrade'
 #: that predates holders carries this identity, and no caller may read it as a
 #: stop somebody is holding.
 MAINTENANCE_UNOWNED = 'unattributed'
+#: The gate that stops this host. Root reads it directly: the status reply
+#: states whether a drain is open but not when it opened, and the marker names
+#: a parked loop leaves are keyed on when.
+MAINTENANCE_GATE = '/run/prismabuild/maintenance.json'
+#: What can still claim work off the shared queue on this box, matched on the
+#: basename of any argv element.
+#:
+#: Not on a generation-store prefix. A supervised loop carries the resolved
+#: generation path, because the supervisor resolves it before spawning, but
+#: `worker.py` is run by hand -- from the stable symlink, or from a checkout --
+#: and it reaches the same live queue regardless, because the queue root is
+#: written into the file. A prefix match would see every supervised loop and
+#: miss every one-shot, which is the one this agent most needs to see.
+#:
+#: A basename match has false positives: an editor, a grep, a test named after
+#: the file. Each one leaves this box reading as still admitting, and something
+#: waiting on the drain keeps waiting, which is the direction to be wrong in.
+SERVING_NAMES = frozenset({'worker_loop.py', 'worker.py'})
+#: Mirrors worker_loop._KEY_SAFE. The two modules cannot import each other --
+#: the loop runs unprivileged out of a published generation, this runs as root
+#: out of the install directory -- so the spelling is asserted between them by
+#: test rather than shared.
+_KEY_SAFE = frozenset('0123456789abcdefghijklmnopqrstuvwxyz'
+                      'ABCDEFGHIJKLMNOPQRSTUVWXYZ._')
 MAX_MEMBER = 4 * 1024 * 1024
 MAX_EXPORT = 32 * 1024 * 1024
 CLIENT_UPGRADE_PROTOCOL = 2
@@ -179,10 +203,105 @@ def request(endpoint, operation, **fields):
     return reply
 
 
+def gate_changed_unix(path):
+    """When the drain in force closed admission, or None when that is unknown.
+
+    A gate that is absent, unreadable, unparsable, not an object, or states no
+    open drain all answer None. None is not "no drain": it is "no key", and a
+    caller with no key matches no park marker, so the box reads as still
+    admitting. That is the safe direction and it is why this reader does not
+    restate the loop's fail-closed rules -- it cannot fail open.
+    """
+    try:
+        value = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(value, dict) or value.get('draining') is not True:
+        return None
+    return value.get('changed_unix')
+
+
+def park_marker_name(pid, starttime, changed_unix):
+    """The name a loop parked on `changed_unix` writes for itself.
+
+    The start time is field 22 of the process's stat, so a marker left by a pid
+    that has since been reused names the earlier process and not this one.
+    """
+    key = 'unknown' if changed_unix is None else ''.join(
+        c if c in _KEY_SAFE else '_' for c in str(changed_unix))
+    return f'{pid}-{starttime}-{key}'
+
+
+def proc_census(root='/proc'):
+    """Every live process as (pid, starttime, argv), from one snapshot.
+
+    Taken fresh each time it is asked. A census accumulated across ticks counts
+    markers for processes that have since exited, and a box does shed idle
+    loops while it drains.
+
+    A process that exits between the listing and the read is simply absent,
+    which is the same answer as never having been there.
+    """
+    census = []
+    try:
+        entries = sorted(Path(root).iterdir())
+    except OSError:
+        return census
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat_line = (entry / 'stat').read_text()
+            cmdline = (entry / 'cmdline').read_bytes()
+        except OSError:
+            continue
+        # comm is parenthesised and may itself contain spaces and parentheses,
+        # so the fields are counted from the last ')' and not by splitting.
+        _, _, rest = stat_line.rpartition(')')
+        fields = rest.split()
+        if len(fields) <= 19:
+            continue
+        argv = [part for part in cmdline.decode('utf-8', 'replace').split('\0') if part]
+        census.append((int(entry.name), fields[19], argv))
+    return census
+
+
+def serving(census):
+    """The (pid, starttime) of everything in `census` that could claim work."""
+    return [(pid, starttime) for pid, starttime, argv in census
+            if any(PurePosixPath(part).name in SERVING_NAMES for part in argv)]
+
+
+def drained(census, markers, changed_unix, active_scopes):
+    """Whether this box has stopped admitting, and which processes have not.
+
+    Two conditions, and neither is a clock. Every process that could claim has
+    left a park marker for this drain, and the broker holds no active scope.
+
+    A loop holding a claim is inside serve_once, not at the top of its poll
+    where the marker is written, so a marker for every serving process already
+    means no loop here holds one. Reading the shared queue would add nothing
+    and would spend the resource this whole design conserves.
+
+    `worker.py` writes no marker at all, so a live one-shot leaves this box
+    un-drained whatever else is true, which is what stops it claiming under a
+    generation the fleet is halfway through leaving.
+    """
+    unparked = [pid for pid, starttime in serving(census)
+                if park_marker_name(pid, starttime, changed_unix) not in markers]
+    return (not unparked and active_scopes == 0), unparked
+
+
 class Upgrader:
-    def __init__(self, config, *, rpc=request, command=subprocess.run, sleep=time.sleep, reader=desired):
+    def __init__(self, config, *, rpc=request, command=subprocess.run, sleep=time.sleep,
+                 reader=desired, procs=proc_census):
         self.config = config
         self.reader = reader
+        self.procs = procs
+        self.gate = Path(config.get('maintenance_gate', MAINTENANCE_GATE))
+        # Derived from the gate rather than named again, so a loop and this
+        # agent pointed at one gate cannot disagree about where the markers are.
+        self.parked_root = self.gate.parent / 'rollout' / 'parked'
         self.install = Path(config['install_dir'])
         self.state = Path(config['state_dir'])
         self.endpoint = config.get('socket', '/run/prismabuild/resources.sock')
@@ -253,6 +372,50 @@ class Upgrader:
         if status.get('maintenance_protocol', 1) >= 2:
             return self.call('end', owner=MAINTENANCE_OWNER)
         return self.call('end')
+
+    def ensure_parked_root(self):
+        """Create the directory a parked loop records itself in, and hand it over.
+
+        `/run/prismabuild` is root-owned, so a loop running as the unprivileged
+        worker uid cannot create this itself. This agent is the only root actor
+        on a timer, which makes it the one that can. It is given to the same uid
+        the runtime read already drops to.
+
+        Best effort, and a failure is reported rather than raised: an agent that
+        could not create a directory has still to converge its members.
+        """
+        uid = self.config.get('reader_uid', 1000)
+        try:
+            self.parked_root.mkdir(parents=True, exist_ok=True)
+            os.chown(self.parked_root, uid, pwd.getpwuid(uid).pw_gid)
+            self.parked_root.chmod(0o755)
+        except (OSError, KeyError):
+            return False
+        return True
+
+    def parked(self):
+        try:
+            return {entry.name for entry in self.parked_root.iterdir()}
+        except OSError:
+            return set()
+
+    def drain_evidence(self, status):
+        """What this box can still admit, given the drain `status` reports.
+
+        Observation only. Nothing here opens or closes a drain, and nothing
+        here decides anything: it puts the answer where a person and, later, a
+        rollout coordinator can read it.
+
+        An admitting box owes no proof, and the census costs a walk of /proc,
+        so a box that is not draining is not asked.
+        """
+        if status.get('draining') is not True:
+            return {}
+        settled, unparked = drained(self.procs(), self.parked(),
+                                    gate_changed_unix(self.gate),
+                                    status.get('active_scopes'))
+        return {'drained': settled, 'unparked': unparked,
+                'active_scopes': status.get('active_scopes')}
 
     def healthy(self):
         last = None
@@ -347,6 +510,9 @@ class Upgrader:
         return result
 
     def run(self):
+        # The loops record that they parked in a directory under a root-owned
+        # path they cannot create. This is the only root actor on a timer.
+        self.ensure_parked_root()
         if self.journal.exists():
             return self.recover(json.loads(self.journal.read_text()))
         version, blobs = self.reader(self.config)
@@ -369,7 +535,8 @@ class Upgrader:
                     self.close_drain(status)
                 else:
                     return self.report('held', desired=version, installed=installed,
-                                       drain_owner=status.get('maintenance_owner'))
+                                       drain_owner=status.get('maintenance_owner'),
+                                       **self.drain_evidence(status))
             return self.report('current', desired=version, installed=installed)
         # Keep an explicit union so additions and removals both carry their
         # previous existence through failures and process restarts.
@@ -410,12 +577,13 @@ class Upgrader:
             # Somebody stopped this host on purpose. Upgrading through that stop
             # would restart the broker service under them, and this agent could
             # not reopen admission afterwards anyway.
-            return self.report('held', desired=version, installed=installed, drain_owner=holder)
+            return self.report('held', desired=version, installed=installed, drain_owner=holder,
+                               **self.drain_evidence(status))
         if status.get('draining') is not True:
             raise RuntimeError('broker failed to close admission')
         if status.get('active_scopes') != 0:
             return self.report('draining', desired=version, installed=installed,
-                               active_scopes=status.get('active_scopes'))
+                               **self.drain_evidence(status))
         transaction = {'desired': version, 'previous': previous}
         atomic(self.journal, transaction)
         try:
