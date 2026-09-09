@@ -238,3 +238,78 @@ def test_the_census_reads_this_process(tmp_path):
     start, argv = census[os.getpid()]
     assert start == starttime_of_self()
     assert argv and Path(argv[0]).name
+
+
+@pytest.mark.parametrize('census,markers', [([], set()),
+    (CENSUS[:1], {upgrade.park_marker_name(101, '900', None)})])
+def test_unknown_gate_never_proves_a_drain(census, markers):
+    assert upgrade.drained(census, markers, None, 0)[0] is False
+
+
+def private_proc(tmp_path):
+    root = tmp_path / 'proc'
+    process = root / '101'
+    process.mkdir(parents=True)
+    (process / 'stat').write_text('101 (worker (loop)) S ' + '0 ' * 18 + '900 0')
+    (process / 'cmdline').write_bytes(b'python3\0/checkout/worker_loop.py\0')
+    return root, process
+
+
+@pytest.mark.parametrize('failure', ['directory', 'permission', 'malformed', 'missing_stat', 'reused'])
+def test_incomplete_census_cannot_certify_a_drain(tmp_path, monkeypatch, failure):
+    root, process = private_proc(tmp_path)
+    if failure == 'directory':
+        root = tmp_path / 'unavailable-proc'
+    elif failure == 'malformed':
+        (process / 'stat').write_text('broken stat')
+    elif failure == 'missing_stat':
+        (process / 'stat').unlink()
+    elif failure == 'permission':
+        original = Path.read_bytes
+        def unreadable(path):
+            if path == process / 'cmdline':
+                raise PermissionError('census denied')
+            return original(path)
+        monkeypatch.setattr(Path, 'read_bytes', unreadable)
+    else:
+        original = Path.read_bytes
+        def reused(path):
+            result = original(path)
+            if path == process / 'cmdline':
+                (process / 'stat').write_text('101 (replacement) S ' + '0 ' * 18 + '901 0')
+            return result
+        monkeypatch.setattr(Path, 'read_bytes', reused)
+    gate = tmp_path / 'maintenance.json'
+    gate.write_text(json.dumps({'draining': True, 'changed_unix': 12.5}))
+    client = agent(tmp_path, gate)
+    client.procs = lambda: upgrade.proc_census(root)
+    client.ensure_parked_root()
+    (client.parked_root / upgrade.park_marker_name(101, '900', 12.5)).touch()
+    evidence = client.drain_evidence({'draining': True, 'active_scopes': 0})
+    assert evidence['drained'] is False
+    assert evidence['evidence_errors']
+
+
+def test_gate_changing_during_census_does_not_certify_either_drain(tmp_path):
+    gate = tmp_path / 'maintenance.json'
+    gate.write_text(json.dumps({'draining': True, 'changed_unix': 12.5}))
+    client = agent(tmp_path, gate)
+    def change_gate():
+        gate.write_text(json.dumps({'draining': True, 'changed_unix': 13.5}))
+        return []
+    client.procs = change_gate
+    assert client.drain_evidence({'draining': True, 'active_scopes': 0})['drained'] is False
+
+
+def test_process_that_disappears_during_census_is_not_a_live_unknown(tmp_path, monkeypatch):
+    root, process = private_proc(tmp_path)
+    original = Path.read_bytes
+    def exited(path):
+        if path == process / 'cmdline':
+            (process / 'cmdline').unlink()
+            (process / 'stat').unlink()
+            process.rmdir()
+            raise FileNotFoundError('exited')
+        return original(path)
+    monkeypatch.setattr(Path, 'read_bytes', exited)
+    assert upgrade.proc_census(root) == []
