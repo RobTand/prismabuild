@@ -4427,10 +4427,14 @@ class PoolQueue:
                             or not isinstance(pending_finish.get("status"), str)
                             or not isinstance(pending_finish.get("detail"), dict)):
                         raise PoolContractError(f"invalid pending finish for {key}")
-                    result = self.finish(
-                        key, status=pending_finish["status"],
-                        detail=pending_finish["detail"], claim_snapshot=record,
-                    )
+                    try:
+                        result = self.finish(
+                            key, status=pending_finish["status"],
+                            detail=pending_finish["detail"], claim_snapshot=record,
+                        )
+                    except AmbiguousClaimHolder as exc:
+                        print(f"pool reaper: {exc}", file=sys.stderr)
+                        continue
                     if result == self.item_path(READY, key):
                         requeued.append(key)
                     continue
@@ -4507,6 +4511,10 @@ class PoolQueue:
                 # Contradictory ledger evidence must stop even cleanup from making
                 # a choice. Refuse just this claim so healthy work can still recover.
                 try:
+                    # A host's token holder names the key, not its attempt. An
+                    # expired lease can still contradict a stale claim read;
+                    # refuse before payload cleanup or any ownership mutation.
+                    _check_claim_lease_identity(key, record, _read_json(self.lease_path(key)))
                     holder = self.resolve_claim_holder(key, record)
                 except AmbiguousClaimHolder as exc:
                     print(f"pool reaper: {exc}", file=sys.stderr)
