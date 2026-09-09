@@ -432,10 +432,11 @@ class ResourceScope:
 
         Departure is not the same as loss. The kernel adds a reaped child's
         totals into its parent's, so a process whose parent is also in the
-        scope goes on being counted through that parent and must not be added
-        to a retired total as well. Only the scope's roots -- those whose
-        parent is outside it, and whose own counters have therefore absorbed
-        everything beneath them by the time they exit -- are retired.
+        scope goes on being counted through a surviving sampled ancestor and
+        must not be added to a retired total as well. If the whole observed
+        ancestry departed between samples, no fresh ancestor reading contains
+        that transfer: retire each member's last counters instead. Unobserved
+        final I/O remains unavailable; this is not an exact exit-time census.
         """
         prior = self._prior_process_io()
         live_before = dict(prior.get('live') or {})
@@ -497,11 +498,32 @@ class ResourceScope:
         if unreadable:
             errors.append(f'{unreadable} live process(es) in the scope '
                           f'could not be inspected')
+        # Historical PID membership cannot prove a transfer: the parent may
+        # have departed in the same interval, or its PID may now be reused.
+        # Follow the previously observed ancestry to an identical surviving
+        # incarnation. A surviving grandparent can absorb both a parent and
+        # child, so looking only for a live direct parent would double count.
+        previous_by_pid = {int(identity.split(':', 1)[0]): identity
+                           for identity in live_before}
         for identity, counters in live_before.items():
             if identity in live:
                 continue
-            if int(counters.get('ppid', 0)) in members:
-                continue  # its parent's own counters absorbed it on reap
+            ancestor = identity
+            visited = {identity}
+            inherited = False
+            while True:
+                parent = previous_by_pid.get(int(live_before[ancestor].get('ppid', 0)))
+                if parent is None or parent in visited:
+                    break
+                if int(parent.split(':', 1)[1]) > int(ancestor.split(':', 1)[1]):
+                    break  # a newer incarnation cannot be this process's parent
+                if parent in live:
+                    inherited = True
+                    break
+                visited.add(parent)
+                ancestor = parent
+            if inherited:
+                continue
             for name in IO_COUNTERS:
                 retired[name] += int(counters.get(name, 0))
         record: dict[str, Any] = {'source': 'proc_io'}
@@ -513,8 +535,8 @@ class ResourceScope:
         record['processes_unreadable'] = unreadable
         record['retired'] = retired
         record['live'] = live
-        # Bounded by the attempt's own process count, and the reason a departed
-        # process can be told from a reaped one on the next sample.
+        # Retained for diagnostic/schema compatibility only. PID membership
+        # does not establish that a surviving process inherited departed I/O.
         record['members'] = sorted(members)[-4096:]
         if errors:
             record['errors'] = errors[-8:]

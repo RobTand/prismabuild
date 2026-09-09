@@ -559,8 +559,14 @@ When a scope census omits a previously sampled PID, the sampler checks that
 PID's cgroup membership before retiring it. A still-contained process is
 resampled; unreadable or malformed membership retains the prior reading with
 an unreadable diagnostic and contributes no new bytes. Confirmed departure
-still retires roots. This protects known members against partial scans, not
-discovery of processes never observed or atomic membership during collection.
+retires last observed counters when no ancestor from the previous sample
+survives with the same PID/starttime. If a child and parent both depart between
+samples, retire both last readings: the stale parent reading predates the reap.
+A surviving ancestor, including a grandparent, continues to carry inherited
+counters without separate retirement. Historical PID membership alone cannot
+establish inheritance. This preserves observed departed subtrees, not their
+unobserved final I/O or an atomic process-tree census. This protects known
+members against partial scans, not discovery of processes never observed or atomic membership during collection.
 
 The procfs discovery fallback reports enumeration failures and counts unreadable
 or malformed cgroup membership records in process-I/O `errors`. Confirmed
