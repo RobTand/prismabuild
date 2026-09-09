@@ -1,6 +1,7 @@
 """Two admitted actors qualify queue recovery across a shared filesystem.
 
-Run `original` and `peer` through pbcampaign on different host classes, with
+Run `original` and `peer` through pbcampaign on different host classes (or
+with --same-host and matching hostname tags), with
 the same fresh --root beneath /mnt/shared/pb-qualification. This exercises
 production queue methods on isolated records, not a production worker fault.
 By default inner claims are data only. --real-scope adds bounded direct
@@ -207,7 +208,7 @@ def retained_scope(q, first):
 
 
 def recover_real_scope(q, first, scope, process, root, container=None):
-    wait(root / "foreign-cleanup-refused.json")
+    wait(root / "peer-cleanup-ready.json")
     key = first["action_key"]
     retained_scope(q, first)
     caller = threading.get_ident()
@@ -292,7 +293,7 @@ def refused_late_finish(q, key, first, status):
 
 
 def original(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
-             docker_image=None):
+             docker_image=None, same_host=False):
     root.mkdir(parents=True, exist_ok=False)
     q = pool.PoolQueue(root / "queue")
     key = hashlib.sha256(str(root).encode()).hexdigest()
@@ -322,7 +323,7 @@ def original(root, late_status, stale_claim_read=False, *, stack, real_scope=Fal
     if real_scope:
         recover_real_scope(q, first, scope, process, root, scope_info.get("container"))
     ready = wait(root / "ready.json")
-    assert ready["host"] != socket.gethostname()
+    assert (ready["host"] == socket.gethostname()) == same_host, "wrong actor topology"
     # The peer verifies its exact pre/post bytes. A marker in another directory
     # cannot certify that this client's negative dentries have expired.
     ready_result = late_finish(q, key, first, late_status)
@@ -348,16 +349,16 @@ def original(root, late_status, stale_claim_read=False, *, stack, real_scope=Fal
     assert q.ledger(first["claimed_host"]).held() == {}
     assert q.ledger(successor["host"]).held() == {}
     return {**terminal, "key": key, "host": socket.gethostname(), "peer": successor["host"],
-            "late_status": late_status, "waiter_result": outcome[0],
+            "late_status": late_status, "waiter_result": outcome[0], "same_host": same_host,
             "real_scope": scope_info,
             "first_attempt_sha256": ready["attempt_sha256"],
             "late_ready": ready_result, "late_claimed": claimed_result}
 
 
 def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
-         docker_image=None):
+         docker_image=None, same_host=False):
     first = wait(root / "first.json")
-    assert first["claimed_host"] != socket.gethostname(), "requires distinct hosts"
+    assert (first["claimed_host"] == socket.gethostname()) == same_host, "wrong actor topology"
     q = pool.PoolQueue(root / "queue")
     key = first["action_key"]
     claim = q.item_path(pool.CLAIMED, key)
@@ -365,26 +366,29 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
     lease = q.lease_path(key).read_bytes()
     # An explicitly fabricated ownership contradiction must retain both ledgers.
     # This isolated ledger is data only; actual resources belong to outer PB.
-    q.ledger().ensure_capacity({"cpu": 1})
-    assert q.ledger().acquire(key, {"cpu": 1})
+    injected = q.ledger("qualification-contradiction" if same_host else None)
+    injected.ensure_capacity({"cpu": 1})
+    assert injected.acquire(key, {"cpu": 1})
     deadline = time.monotonic() + 120
     while q.lease_age(key) <= 1:
         assert time.monotonic() < deadline
         time.sleep(0.1)
     assert q.reap_stale(timeout_s=1) == []
     assert claim.read_bytes() == before and q.lease_path(key).read_bytes() == lease
-    assert q.ledger().held() == q.ledger(first["claimed_host"]).held() == {"cpu": 1}
+    assert injected.held() == q.ledger(first["claimed_host"]).held() == {"cpu": 1}
     assert not q.item_path(pool.READY, key).exists()
     assert not q.item_path(pool.DONE, key).exists()
     assert not q.item_path(pool.FAILED, key).exists()
     # Remove exactly the evidence injected by this actor; preserve the original.
-    q.ledger().release(key)
+    injected.release(key)
     if real_scope:
-        assert q.reap_stale(timeout_s=1) == []
-        live = retained_scope(q, first)
-        error = live["container_cleanup_pending"]["error"]
-        assert "resource scope cleanup must run on its claiming host" in error
-        put(root / "foreign-cleanup-refused.json", {"error": error})
+        if not same_host:
+            assert q.reap_stale(timeout_s=1) == []
+            live = retained_scope(q, first)
+            error = live["container_cleanup_pending"]["error"]
+            assert "resource scope cleanup must run on its claiming host" in error
+            put(root / "foreign-cleanup-refused.json", {"error": error})
+        put(root / "peer-cleanup-ready.json", {"same_host": same_host})
         wait(root / "local-cleanup-refused.json")
         retained_scope(q, first)
         put(root / "cleanup-refusal-checked.json", {"claim_and_reservation_retained": True})
@@ -455,7 +459,8 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
     result = {"terminal_sha256": digest(ending), "history_count": len(history),
               "ambiguity_retained": True, "host": socket.gethostname(),
               "real_scope": scope_info,
-              "original_host": first["claimed_host"], "late_status": late_status}
+              "original_host": first["claimed_host"], "late_status": late_status,
+              "same_host": same_host, "foreign_cleanup_checked": real_scope and not same_host}
     put(root / "terminal.json", result)
     return result
 
@@ -468,6 +473,8 @@ def main():
     parser.add_argument("--stale-claim-read", action="store_true",
                         help="inject the old claim into only the late caller's read; "
                              "require ownership refusal and waiter completion")
+    parser.add_argument("--same-host", action="store_true",
+                        help="require both actors on one host; qualify late calls against a local successor")
     parser.add_argument("--real-scope", action="store_true",
                         help="qualify foreign/local cleanup refusal and exact broker "
                              "cleanup of bounded direct payloads")
@@ -488,7 +495,8 @@ def main():
     actor = original if args.role == "original" else peer
     with ExitStack() as stack:
         result = actor(root, args.late_status, args.stale_claim_read,
-                       stack=stack, real_scope=args.real_scope, docker_image=args.docker_image)
+                       stack=stack, real_scope=args.real_scope, docker_image=args.docker_image,
+                       same_host=args.same_host)
     print(json.dumps({"role": args.role, "host": socket.gethostname(),
                       "result": result}, sort_keys=True))
 

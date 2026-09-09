@@ -5835,6 +5835,29 @@ class PoolQueue:
                 # Its successor may have finished since the first refusal.
                 # The saved exact-scope transition still owns this retry.
                 return self._retry_late_finish(late_path, pending_late)
+        if record is not None:
+            # Host-level token ownership cannot distinguish successive attempts
+            # on one box. A stale claim read can agree with this caller while
+            # the lease names its successor. Refuse before action-wide Docker
+            # cleanup or any claim/telemetry write; the later entomb comparison
+            # cannot undo payload removal. Missing legacy fields add no proof.
+            lease = _read_json(self.lease_path(action_key))
+            if lease is not None:
+                conflicts = [
+                    claim_field for claim_field, lease_field in (
+                        ("claimed_by", "owner"), ("claimed_host", "host"),
+                        ("claimed_unix", "claimed_unix"),
+                        ("published_unix", "published_unix"),
+                    )
+                    if record.get(claim_field) is not None
+                    and lease.get(lease_field) is not None
+                    and record[claim_field] != lease[lease_field]
+                ]
+                if conflicts:
+                    raise AmbiguousClaimHolder(
+                        f"contradictory claim and lease identity for {action_key}: "
+                        f"{', '.join(conflicts)}; claim and reservations retained"
+                    )
         read_claim = dict(record) if record is not None else None
         # Cleanup annotates this mapping with the completed scope evidence.
         # Keep the live record itself so the terminal retains that annotation;

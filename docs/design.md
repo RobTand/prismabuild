@@ -203,6 +203,13 @@ while holding that lock. A late heartbeat refuses to overwrite a successor's
 lease. Legacy owner-only callers cannot distinguish attempts sharing an owner;
 internal claim, scope and execution writers always supply the snapshot.
 
+Before ordinary finish cleanup, available claim and lease identities must
+agree on owner, host, claim time and publication. A contradiction refuses the
+finish before broker or action-wide Docker cleanup, telemetry writes or token
+release, even when the ledger names the same host. Missing legacy lease fields
+supply no additional proof. This closes a stale-claim/fresh-lease case; it does
+not make two shared reads an atomic snapshot or qualify jointly stale evidence.
+
 A released unstarted claim has no numbered execution outcome. If its original
 caller reports a result while the same publication is ready or claimed with
 that attempt number still uncharged, the late report is retained under
@@ -232,8 +239,14 @@ scope, using the ordinary shim. The recorded DL380/Sparky and DL380/Sparklina ru
 CPU affinity, container removal before retry, successor container survival
 after late calls, and final removal through production cleanup.
 
+The same-host mode retains the old caller while a successor scope and container
+run locally. It requires identity refusal under an injected stale claim read,
+and checks ordinary late calls, cleanup retention and original waiter continuity.
+The original payload scope is retired before the successor launches.
+
 These campaigns depend on the owning host remaining available and supply the
-successor's queue result through the harness. They do not qualify same-host overlapping attempts,
+successor's queue result through the harness. They do not qualify simultaneous
+payload attempts or jointly stale claim/lease evidence,
 late Docker creation RPCs, permanent host loss/reboot,
 induced kernel NFS stalls, execution-budget
 accounting during stalls, normal scope creation/preflight, or normal execution
