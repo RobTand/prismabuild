@@ -62,11 +62,11 @@ def gpu_rig(tmp_path, monkeypatch):
     capacity = {'cpu': 8, 'mem_gb': 4, 'gpu': 1}
     args = dict(capacity=capacity, cpu_tiers={'preferred': list(range(8)), 'fallback': []},
                 adaptive_cpu=True, has_gpu=True)
-    def publish(index, memory=1):
+    def publish(index, memory=1, cpu=1):
         key = f'{index:064x}'
         queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
                       checkout_root=str(tmp_path), worker_script='worker.py',
-                      resources={'cpu': 1, 'mem_gb': memory, 'gpu': 1}, needs_gpu=True)
+                      resources={'cpu': cpu, 'mem_gb': memory, 'gpu': 1}, needs_gpu=True)
         return key
     def tick(seconds=2):
         clock[0] += seconds
@@ -276,6 +276,195 @@ def test_memory_refusal_leaves_gpu_sample_for_smaller_candidate(gpu_rig):
     assert queue.item_path(pool.READY, too_large).exists()
     assert queue.ledger().held()['mem_gb'] == 2
     assert set(queue.ledger().held_keys()) == {holder, smaller}
+
+
+def test_fallback_deferral_leaves_gpu_sample_for_preferred_candidate(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, _ = gpu_rig
+    tiers = {'preferred': [0, 1], 'fallback': list(range(2, 8))}
+    def claim():
+        return queue.claim(capacity=capacity, cpu_tiers=tiers,
+                           adaptive_cpu=True, has_gpu=True)
+    holder = publish(1)
+    assert claim()['action_key'] == holder
+    remote_tiers = {'preferred': list(range(8)), 'fallback': []}
+    remote = queue.ledger('another-host')
+    remote.configure_cpu_tiers(remote_tiers)
+    remote.ensure_capacity(capacity)
+    queue.announce(host='another-host', tags=[], has_gpu=True, capacity=capacity,
+                   cpu_tiers=remote_tiers)
+    deferred = publish(2, cpu=2)
+    smaller = publish(3)
+    tick()
+    admitted = claim()
+    assert queue._cpu_deferrals, 'the real fallback deferral must run'
+    assert admitted is not None, 'fallback deferral spent the next candidate GPU sample'
+    assert admitted['action_key'] == smaller
+    assert admitted['cpu_allocation'] == {'preferred': [1], 'fallback': []}
+    assert queue.item_path(pool.READY, deferred).exists()
+    assert set(queue.ledger().held_keys()) == {holder, smaller}
+    assert queue.ledger().held()['mem_gb'] == 2
+    assert claim() is None  # Successful admission still spends this sample.
+
+
+@pytest.mark.parametrize('fault', ['rename_lost', 'demand_changed', 'reservation_swept'])
+def test_ordinary_abandonment_leaves_gpu_sample_for_next_candidate(gpu_rig, monkeypatch, fault):
+    from prismabuild import adaptive_gpu
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    holder = publish(1)
+    first = claim()
+    abandoned = publish(2)
+    successor = publish(3)
+    tick()
+    reached = []
+    intent = queue._write_claim_intent
+    commit = pool.ResourceLedger.commit_acquire
+
+    def change_before_rename(key, **kwargs):
+        intent(key, **kwargs)
+        if key != abandoned:
+            return
+        reached.append(fault)
+        path = queue.item_path(pool.READY, key)
+        if fault == 'rename_lost':
+            path.unlink()
+        elif fault == 'demand_changed':
+            item = adaptive_cpu.read_json(path)
+            item['resources']['cpu'] = 2
+            adaptive_cpu.write_json(path, item)
+
+    def sweep_metadata(ledger, key, handle):
+        filed = commit(ledger, key, handle)
+        if key == abandoned:
+            reached.append(fault)
+            (ledger.held_dir / key / adaptive_gpu.METADATA).unlink()
+        return filed
+
+    if fault == 'reservation_swept':
+        monkeypatch.setattr(pool.ResourceLedger, 'commit_acquire', sweep_metadata)
+    else:
+        monkeypatch.setattr(queue, '_write_claim_intent', change_before_rename)
+    admitted = claim()
+    assert reached == [fault]
+    assert admitted is not None, f'{fault} spent the next candidate GPU sample'
+    assert admitted['action_key'] == successor
+    assert set(queue.ledger().held_keys()) == {holder, successor}
+    assert queue.ledger().held()['mem_gb'] == 2
+    assert queue.ledger().capacity() == capacity
+    assert adaptive_cpu.read_json(queue.item_path(pool.CLAIMED, holder)) == first
+    assert not queue.item_path(pool.CLAIMED, abandoned).exists()
+
+
+@pytest.fixture
+def unlaunched_probe(gpu_rig):
+    from prismabuild import adaptive_gpu
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(1)
+    assert claim()
+    candidate = publish(2)
+    tick()
+    cpu = adaptive_cpu.Controller(queue.ledger(),
+                                  {'preferred': list(range(8)), 'fallback': []})
+    gpu = adaptive_gpu.Controller(queue.ledger(), publisher=cpu)
+
+    def reserve():
+        # Model the interval after ordinary reservation abandonment: no payload
+        # launched, the existing holder is untouched, only sample credit remains.
+        gpu._sample = None
+        with cpu.locked():
+            metadata = gpu.decision(adaptive_cpu.read_json(queue.item_path(pool.READY, candidate)),
+                                    {'gpu': 1, 'cpu': 1, 'mem_gb': 1})
+            assert metadata
+            handle = queue.ledger().begin_acquire(candidate, {'gpu': 1, 'mem_gb': 1},
+                                                  adaptive_gpu=metadata)
+            assert handle
+            ticket = gpu.reserve_probe(metadata)
+        queue.ledger().abandon_acquire(handle)
+        return ticket
+
+    return cpu, gpu, reserve, claim, tick
+
+
+@pytest.mark.parametrize('same_sample', [False, True])
+def test_gpu_refund_cannot_return_an_intervening_probe(unlaunched_probe, same_sample):
+    from copy import deepcopy
+    cpu, gpu, reserve, claim, tick = unlaunched_probe
+    first = reserve()
+    if same_sample:
+        # Retain a stale copy too: nonce identity must protect same-sample reuse,
+        # independently of the in-process ticket being consumed only once.
+        stale = deepcopy(first)
+        with cpu.locked():
+            gpu.return_probe(first)
+        first = stale
+    else:
+        tick()
+    second = reserve()
+    assert second['probe_id'] != first['probe_id']
+    before = adaptive_cpu.read_json(gpu.base / 'gpu-state.json')
+    with cpu.locked():
+        gpu.return_probe(first)
+    assert adaptive_cpu.read_json(gpu.base / 'gpu-state.json') == before
+    assert claim() is None, 'an older refund returned the intervening probe'
+
+
+def test_gpu_refund_preserves_intervening_observation(unlaunched_probe):
+    cpu, gpu, reserve, claim, tick = unlaunched_probe
+    ticket = reserve()
+    tick()
+    gpu._sample = None
+    with cpu.locked():
+        # A later decision updates power/low-load history and invalidates the
+        # abandoned membership's feedback without consuming another probe.
+        assert gpu.decision({'action_key': 'f' * 64}, {'gpu': 1, 'mem_gb': 1})
+        observed = adaptive_cpu.read_json(gpu.base / 'gpu-state.json')
+        assert 'power_feedback' not in observed
+        gpu.return_probe(ticket)
+    after = adaptive_cpu.read_json(gpu.base / 'gpu-state.json')
+    for key in ('sample_id', 'sampled_unix', 'low_samples', 'power_window', 'power_members'):
+        assert after[key] == observed[key]
+    assert 'power_feedback' not in after
+    assert claim()
+
+
+@pytest.mark.parametrize('written', [False, True])
+def test_gpu_refund_write_error_cannot_be_replayed(unlaunched_probe, monkeypatch, written):
+    cpu, gpu, reserve, claim, tick = unlaunched_probe
+    ticket = reserve()
+    write = gpu._write_state
+
+    def fail(state):
+        if written:
+            write(state)
+        raise OSError('refund persistence unavailable')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(gpu, '_write_state', fail)
+        with cpu.locked(), pytest.raises(OSError, match='refund persistence unavailable'):
+            gpu.return_probe(ticket)
+    if written:
+        newer = reserve()  # Reuses the returned sample.
+        assert newer
+    before = adaptive_cpu.read_json(gpu.base / 'gpu-state.json')
+    with cpu.locked():
+        gpu.return_probe(ticket)
+    assert adaptive_cpu.read_json(gpu.base / 'gpu-state.json') == before
+    assert claim() is None
+
+
+def test_gpu_refund_busy_admission_keeps_sample_spent(unlaunched_probe, monkeypatch):
+    from contextlib import contextmanager
+    cpu, gpu, reserve, claim, tick = unlaunched_probe
+    ticket = reserve()
+
+    @contextmanager
+    def busy():
+        raise adaptive_cpu.AdmissionBusy('test contention')
+        yield
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cpu, 'locked', busy)
+        pool.PoolQueue._return_gpu_probe(cpu, gpu, ticket)
+    assert claim() is None
 
 
 @pytest.mark.parametrize('written', [False, True])
