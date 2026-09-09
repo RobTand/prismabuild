@@ -311,7 +311,7 @@ class Controller:
                 'memory_domain': device.get('memory_domain', 'unknown')}
 
     def reserve_probe(self, metadata):
-        """Spend sample before mutation; a crash can lose credit, never reuse it."""
+        """Spend sample before claiming work; a crash can lose credit, never reuse it."""
         if metadata.get('probe'):
             state = adaptive_cpu.read_json(self.base / 'gpu-state.json')
             state['consumed_sample_id'] = metadata['sample_id']

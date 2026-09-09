@@ -263,6 +263,52 @@ def test_abandoned_probe_does_not_return_virtual_tokens(gpu_rig):
     assert adaptive_gpu.Controller(queue.ledger()).decision(item, {'gpu':1,'mem_gb':1}) is None
 
 
+def test_memory_refusal_leaves_gpu_sample_for_smaller_candidate(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    holder = publish(1)
+    assert claim()['action_key'] == holder
+    too_large = publish(2, memory=4)  # Only three GiB remain reserved-free.
+    smaller = publish(3)
+    tick()
+    admitted = claim()
+    assert admitted is not None, 'memory-refused candidate spent the GPU sample'
+    assert admitted['action_key'] == smaller
+    assert queue.item_path(pool.READY, too_large).exists()
+    assert queue.ledger().held()['mem_gb'] == 2
+    assert set(queue.ledger().held_keys()) == {holder, smaller}
+
+
+@pytest.mark.parametrize('written', [False, True])
+def test_gpu_sample_write_failure_releases_provisional_reservation(gpu_rig, monkeypatch, written):
+    from prismabuild import adaptive_gpu
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    holder = publish(1)
+    first = claim()
+    candidate = publish(2)
+    before = queue.ledger().available()
+    tick()
+    reserve = adaptive_gpu.Controller.reserve_probe
+
+    def fail(controller, metadata):
+        if written:
+            reserve(controller, metadata)
+        raise OSError('sample persistence unavailable')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(adaptive_gpu.Controller, 'reserve_probe', fail)
+        with pytest.raises(OSError, match='sample persistence unavailable'):
+            claim()
+    assert queue.ledger().available() == before
+    assert set(queue.ledger().held_keys()) == {holder}
+    assert queue.item_path(pool.READY, candidate).exists()
+    assert not queue.item_path(pool.CLAIMED, candidate).exists()
+    assert adaptive_cpu.read_json(queue.item_path(pool.CLAIMED, holder)) == first
+    if written:
+        assert claim() is None  # Uncertain writes never refund a spent sample.
+    else:
+        assert claim()['action_key'] == candidate
+
+
 def test_action_contract_seals_exclusivity_and_memory_budget(tmp_path):
     from prismabuild import adaptive_gpu, core
     from test_core import _body
