@@ -1,5 +1,6 @@
 """A repeated action key cannot acquire a predecessor's ownership paths."""
 from concurrent.futures import ThreadPoolExecutor
+import pytest
 from prismabuild import pool
 from test_pool_resource_scope import scoped
 
@@ -95,3 +96,42 @@ def test_claim_census_does_not_trust_cached_negative_name(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "exists", lambda path: False if path == claimed else exists(path))
     assert queue.claim(owner="second", capacity={"cpu": 2}) is None
     assert pool._same_claim(pool._read_json(claimed), first)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("owner", "other-worker"), ("host", "other-host"),
+    ("claimed_unix", 1.0), ("published_unix", 1.0),
+])
+def test_heartbeat_retains_each_conflicting_lease_identity(tmp_path, field, value):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    publish(queue, KEY)
+    first = queue.claim(owner="worker", capacity={"cpu": 1})
+    lease = pool._read_json(queue.lease_path(KEY))
+    lease[field] = value
+    pool._write_json_atomic(queue.lease_path(KEY), lease)
+    before = queue.lease_path(KEY).read_bytes()
+    claim = queue.item_path(pool.CLAIMED, KEY).read_bytes()
+    with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
+        queue.write_lease(KEY, owner="worker", claim_snapshot=first)
+    assert queue.lease_path(KEY).read_bytes() == before
+    assert queue.item_path(pool.CLAIMED, KEY).read_bytes() == claim
+    assert queue.ledger().held() == {"cpu": 1}
+
+
+def test_heartbeat_upgrades_compatible_legacy_lease_and_refreshes_observation(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    publish(queue, KEY)
+    first = queue.claim(owner="worker", capacity={"cpu": 1})
+    lease = pool._read_json(queue.lease_path(KEY))
+    for field in ("claimed_unix", "published_unix"):
+        lease.pop(field)
+    pool._write_json_atomic(queue.lease_path(KEY), lease)
+    for pid in (123, 456):
+        observation = {"last_progress_unix": float(pid)}
+        queue.write_lease(KEY, owner="worker", child_pid=pid,
+                          claim_snapshot=first, execution_observation=observation)
+        refreshed = pool._read_json(queue.lease_path(KEY))
+        assert refreshed["child_pid"] == pid
+        assert refreshed["execution_observation"] == observation
+        for field in ("claimed_unix", "published_unix"):
+            assert refreshed[field] == first[field]

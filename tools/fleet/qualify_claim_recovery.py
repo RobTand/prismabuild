@@ -282,14 +282,21 @@ def refused_late_finish(q, key, first, status):
             return dict(first)
         return read(path)
 
-    # The successor ledger stays real. Production must detect that the stale
-    # original claim and that ledger contradict each other and refuse to finish.
+    # The successor lease and ledger stay real. Production must detect that
+    # the stale original claim contradicts them and refuse heartbeat and finish.
     # This does not change shared bytes or simulate a kernel/filesystem stall.
     with patch.object(pool, "_read_json", stale_read):
+        try:
+            q.write_lease(key, owner=first["claimed_by"], claim_snapshot=first)
+        except pool.AmbiguousClaimHolder as exc:
+            heartbeat_refusal = str(exc)
+        else:
+            raise AssertionError("stale-claim heartbeat overwrote the successor lease")
         result = late_finish(q, key, first, status)
     assert injected_reads > 0, "stale claim read was not exercised"
     assert result["disposition"] == "ownership_refused", result
-    return {**result, "injected_claim_reads": injected_reads}
+    return {**result, "injected_claim_reads": injected_reads,
+            "stale_heartbeat_refusal": heartbeat_refusal}
 
 
 def original(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
@@ -424,6 +431,7 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
     if stale_claim_read:
         assert late["disposition"] == "ownership_refused"
         assert late["injected_claim_reads"] > 0
+        assert late["stale_heartbeat_refusal"]
     assert digest(claim) == claim_hash and digest(q.lease_path(key)) == lease_hash
     assert digest(attempt) == attempt_hash and q.ledger().held() == {"cpu": 1}
     assert not q.item_path(pool.DONE, key).exists()

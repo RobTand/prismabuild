@@ -203,8 +203,10 @@ while holding that lock. A late heartbeat refuses to overwrite a successor's
 lease. Legacy owner-only callers cannot distinguish attempts sharing an owner;
 internal claim, scope and execution writers always supply the snapshot.
 
-Before ordinary finish cleanup, available claim and lease identities must
-agree on owner, host, claim time and publication. A contradiction refuses the
+Before heartbeat publication or ordinary finish cleanup, available claim and
+lease identities must agree on owner, host, claim time and publication. A
+contradiction refuses the heartbeat before it overwrites the existing lease, preserving the evidence
+the finish guard needs even when a stale claim matches the caller. It refuses
 finish before broker or action-wide Docker cleanup, telemetry writes or token
 release, even when the ledger names the same host. Missing legacy lease fields
 supply no additional proof. This closes a stale-claim/fresh-lease case; it does

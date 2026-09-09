@@ -33,14 +33,15 @@ pre-mutation hashes and verifies the post-mutation state at its source; the
 original verifies the eventual terminal after its normal waiter completes.
 
 To require that refusal path deterministically, add `--stale-claim-read` to
-both actors. During the late CLAIMED finish only, the original actor replaces
-its own thread's claim-file read with the first claim. The successor's ledger
-is still read from the shared filesystem, so production ownership resolution
-must refuse the contradiction. The waiter and all other paths keep their real
+both actors. During an extra late heartbeat and the late CLAIMED finish, the
+original actor replaces its own thread's claim-file read with the first claim.
+The successor's lease and ledger are still read from the shared filesystem, so
+production ownership resolution must refuse the contradiction. The waiter and all other paths keep their real
 reads, and the replacement is restored even if the finish raises. The result
 records the injected-read count and the production refusal reason; the peer
-requires the refusal marker before checking preservation and finishing. An
-archived late result fails this mode. This models an inconsistent client view;
+requires both heartbeat and finish refusal markers before checking preservation
+and finishing. An archived late result fails this mode. This models an
+inconsistent client view;
 it does not induce or explain NFS cache incoherence or a kernel stall.
 
 ## Running
@@ -772,3 +773,38 @@ claim/lease evidence, permanent host loss/reboot, kernel NFS stalls, stall-budge
 accounting and normal production startup/result collection remain unqualified.
 #234 remains open. Runtime publication and deployed adoption are tracked in the
 PR delivery comment, separately from these source-snapshot results.
+
+## Stale heartbeat preservation — 2026-09-09
+
+A follow-up to #422 reproduced an old heartbeat overwriting a successor lease
+when its caller read the stale original claim. That erased the evidence the
+ordinary finish guard needed. Heartbeat and finish now share the available
+claim/lease identity check; conflicting owner, host, claim time or publication
+refuses before mutation. Compatible legacy leases and repeated observations
+still refresh. The extra lease read is synchronous, outside host admission;
+this is not a storage-stall bound or a jointly stale observation solution.
+
+Four unchanged-source baseline regressions failed at the expected missing
+refusal. Targeted validation passed 60 tests. Final integration passed 185
+without skips, CAS receipt
+`e457c2d36175f2dd7e715edfb4a6a00e753800932f7a4b8e959e26356ea39592`.
+An intermediate command named a nonexistent test file and collected no tests;
+a subsequent run exposed an incomplete simulated operator reset that retained
+the predecessor lease. The fixture now removes that lease with the claim.
+
+Eight real Docker actors passed: a same-host pair on DL380, Sparky and
+Sparklina, plus a DL380-to-Sparky pair. Each injected a caller-local stale claim
+for heartbeat and finish, retained successor claim/lease/reservation bytes,
+and returned the successor's result to the original waiter. All four isolated
+queues have two verified immutable attempts and empty ledgers; direct owner-host
+readback found all eight exact scopes and containers absent. The cross-host
+handshake progressed slowly through shared-file visibility; this was not an
+induced kernel stall or a performance measurement.
+
+All execution used published PB, priority -10, native threads 1 and assigned
+CPU affinity. Integration reserved CPU8/mem12 GiB; actors reserved CPU1/mem2
+GiB each, aggregate CPU8/mem16 GiB. No GPU payload. Terminal exits, immutable
+logs, CAS receipt payloads and exact source snapshots were checked. Evidence
+and full actor receipts: `/home/rob/tmp/pb-maintenance-due-latest/`.
+The broader #234 recovery gates above and #266 shared token authority remain
+unresolved; neither issue is closed by this qualification.

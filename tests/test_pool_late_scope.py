@@ -269,3 +269,35 @@ def test_same_host_stale_claim_cannot_clean_up_or_replace_successor(
                          claim_snapshot=first)
     _assert_successor_untouched(queue, newer, observed, saved)
     assert observed == [], "contradictory identity must refuse before broker cleanup"
+
+
+@pytest.mark.parametrize("reused_owner", [False, True])
+@pytest.mark.parametrize("with_snapshot", [False, True])
+def test_stale_heartbeat_cannot_erase_successor_lease_evidence(
+    scoped, monkeypatch, reused_owner, with_snapshot,
+):
+    queue, first, newer, observed, saved = _replaced_scope(scoped, monkeypatch)
+    key = first["action_key"]
+    if reused_owner:
+        first["claimed_by"] = newer["claimed_by"]
+        first["published_unix"] = newer["published_unix"]
+    read = pool._read_json
+    claim_path = queue.item_path(pool.CLAIMED, key)
+
+    def stale_claim(path):
+        return dict(first) if path == claim_path else read(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pool, "_read_json", stale_claim)
+        with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
+            queue.write_lease(
+                key, owner=first["claimed_by"], child_pid=123456,
+                claim_snapshot=first if with_snapshot else None,
+                execution_observation={"last_progress_unix": 1.0},
+            )
+        # The fresh lease remains available to the stale finisher's guard.
+        with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
+            queue.finish(key, status="executed", detail={"returncode": 0},
+                         claim_snapshot=first)
+    _assert_successor_untouched(queue, newer, observed, saved)
+    assert observed == []

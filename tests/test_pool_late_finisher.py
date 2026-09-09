@@ -101,6 +101,7 @@ def test_a_late_result_is_archived_when_its_attempt_is_free(
     # was concluded by an operator's reset and re-claimed, so no attempt was
     # archived for attempt 1.
     queue.item_path(pool.CLAIMED, KEY_A).unlink()
+    queue.lease_path(KEY_A).unlink()
     queue.ledger().release(KEY_A)
     _publish(queue, max_attempts=3, retry_safe=True)
     retry = queue.claim(owner="attempt-2", capacity={"cpu": 1})

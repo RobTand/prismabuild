@@ -990,6 +990,34 @@ def _same_claim(
     )
 
 
+def _check_claim_lease_identity(
+    action_key: str, claim: Mapping[str, object], lease: Mapping[str, object] | None,
+) -> None:
+    """Refuse conflicting observations before replacing or cleaning ownership.
+
+    Host-level reservations do not distinguish attempts on the same box.
+    Missing legacy fields supply no extra proof; jointly stale reads remain
+    outside this consistency check.
+    """
+    if lease is None:
+        return
+    conflicts = [
+        claim_field for claim_field, lease_field in (
+            ("claimed_by", "owner"), ("claimed_host", "host"),
+            ("claimed_unix", "claimed_unix"),
+            ("published_unix", "published_unix"),
+        )
+        if claim.get(claim_field) is not None
+        and lease.get(lease_field) is not None
+        and claim[claim_field] != lease[lease_field]
+    ]
+    if conflicts:
+        raise AmbiguousClaimHolder(
+            f"contradictory claim and lease identity for {action_key}: "
+            f"{', '.join(conflicts)}; claim and reservations retained"
+        )
+
+
 def _is_acquisition(name: str) -> bool:
     """Whether a holder directory belongs to a claimant rather than an action.
 
@@ -2648,6 +2676,9 @@ class PoolQueue:
         if (claim is None or claim.get("claimed_by") != owner
                 or (claim_snapshot is not None and not _same_claim(claim, claim_snapshot))):
             raise PoolContractError("claim changed before heartbeat publication")
+        # A stale claim read must not erase the successor lease's ownership
+        # evidence, including the evidence used by finish's cleanup guard.
+        _check_claim_lease_identity(action_key, claim, _read_json(self.lease_path(action_key)))
         for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
                       "claimed_unix", "published_unix"):
             if field in claim:
@@ -5841,23 +5872,7 @@ class PoolQueue:
             # the lease names its successor. Refuse before action-wide Docker
             # cleanup or any claim/telemetry write; the later entomb comparison
             # cannot undo payload removal. Missing legacy fields add no proof.
-            lease = _read_json(self.lease_path(action_key))
-            if lease is not None:
-                conflicts = [
-                    claim_field for claim_field, lease_field in (
-                        ("claimed_by", "owner"), ("claimed_host", "host"),
-                        ("claimed_unix", "claimed_unix"),
-                        ("published_unix", "published_unix"),
-                    )
-                    if record.get(claim_field) is not None
-                    and lease.get(lease_field) is not None
-                    and record[claim_field] != lease[lease_field]
-                ]
-                if conflicts:
-                    raise AmbiguousClaimHolder(
-                        f"contradictory claim and lease identity for {action_key}: "
-                        f"{', '.join(conflicts)}; claim and reservations retained"
-                    )
+            _check_claim_lease_identity(action_key, record, _read_json(self.lease_path(action_key)))
         read_claim = dict(record) if record is not None else None
         # Cleanup annotates this mapping with the completed scope evidence.
         # Keep the live record itself so the terminal retains that annotation;
