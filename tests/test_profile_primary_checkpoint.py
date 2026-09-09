@@ -109,6 +109,54 @@ def test_normal_completion_keeps_richer_profile(tmp_path, monkeypatch):
     assert ending['profile'] == profile and not status.exists()
 
 
+@pytest.mark.parametrize('early', [False, True])
+def test_successful_profile_survives_unparseable_stdout_as_complete(tmp_path, monkeypatch, early):
+    class Supplement(_FakeBackend):
+        exits_before_action = early
+        settle_seconds = 10
+
+        def launch_argv(self, argv, *, profile_path):
+            if not early:
+                return super().launch_argv(argv, profile_path=profile_path)
+            # Like a duration-limited profiler: the report is ready while the
+            # relayed action continues in the same owned process group.
+            code = '''
+import sys, subprocess, time
+from pathlib import Path
+child = subprocess.Popen(sys.argv[4:])
+deadline = time.monotonic() + 10
+while not Path(sys.argv[3]).exists():
+    assert child.poll() is None, 'relay exited without its startup record'
+    assert time.monotonic() < deadline, 'relay never started'
+    time.sleep(.01)
+Path(sys.argv[1]).write_text(sys.argv[2])
+'''
+            return [sys.executable, '-c', code, str(profile_path),
+                    _speedscope('early'), str(profile_path.with_name('exit_status')), *argv]
+
+        def extra_blobs(self, path):
+            extra = path.with_name('kernels.csv')
+            extra.write_text('name,time\nmm,1\n')
+            return [('kernel_summary', extra)]
+
+    monkeypatch.setitem(pb.PROFILE_BACKENDS, 'fake', Supplement())
+    status = tmp_path / 'status.json'
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(status))
+    checkout = tmp_path / 'checkout'
+    checkout.mkdir()
+    action = _action(checkout, profile='fake')
+    result = pb.run_local_action(action, cas_root=tmp_path / 'cas', checkout_root=checkout)
+    assert pb.PrismaBuildCAS(tmp_path / 'cas').lookup(action) == result['receipt']
+    # A trailing payload line hides the final JSON from the stdout parser.
+    stdout = json.dumps(result) + '\nlate payload output\n'
+    assert pool.profile_from_launcher_stdout(stdout) is None
+    ending = pool.PoolQueue._merge_action_status({'status': 'executed', 'returncode': 0}, status)
+    assert ending['profile'] == result['profile'], 'success adopted the in-flight checkpoint'
+    assert 'partial' not in ending['profile']
+    assert Path(ending['profile']['kernel_summary_blob_path']).read_text() == 'name,time\nmm,1\n'
+    assert not status.exists()
+
+
 @pytest.mark.parametrize('failure', ['invalid', 'ingest'])
 def test_unvalidated_or_unstored_profile_is_not_checkpointed(tmp_path, monkeypatch, failure):
     status = tmp_path / 'status.json'

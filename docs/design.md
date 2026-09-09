@@ -678,6 +678,10 @@ matters). Rules:
   the attempt's status sidecar after CAS ingestion and before optional summary
   extraction or supplemental blob ingestion. Normal completion returns the
   richer record; an interrupted supplement cannot hide the saved primary.
+  After successful result publication, the final profile replaces the partial
+  sidecar checkpoint as well, so fallback from an unparseable launcher stdout
+  retains complete evidence and supplemental references. Status writes remain
+  best effort; a failed refresh can leave the earlier checkpoint.
   Optional `nsys stats` extraction waits at most five seconds, then terminates
   its own process group with 0.5-second TERM and KILL waits. A timeout omits
   the summary with a diagnostic and preserves the primary profile and action

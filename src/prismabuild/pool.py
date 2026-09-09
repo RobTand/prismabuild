@@ -1784,8 +1784,9 @@ class PoolQueue:
                 outcome[field] = value
         profile = body.get("profile")
         if isinstance(profile, dict) and outcome.get("profile") is None:
-            # Only a killed run leaves one here; a run that ended normally
-            # prints its profile on stdout, which is the richer path.
+            # A stopped run can leave a partial checkpoint; a successful one
+            # refreshes it with the final profile. Prefer stdout when parsed,
+            # and otherwise retain the evidence from the sidecar.
             outcome["profile"] = profile
         return outcome
 

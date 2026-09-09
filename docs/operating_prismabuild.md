@@ -202,6 +202,10 @@ What is worth knowing before using it:
     The checkpoint carries `partial: true`; it is evidence, never a success
     receipt. A later contained deadline can therefore retain that report even
     though the broker kills the scope without running Python cleanup.
+    Successful result publication refreshes the sidecar with the final profile
+    too, preserving complete evidence and summaries when the last launcher
+    stdout line cannot be parsed. Status writes are best effort; a failed
+    refresh can leave the earlier checkpoint.
     A trace still being generated or ingested at that instant can be lost.
     For a handled signal outside that hard-stop path, the worker tries to
     flush, reap and ingest what survives. py-spy writes on SIGINT, not SIGTERM
