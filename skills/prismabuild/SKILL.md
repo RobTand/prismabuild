@@ -205,8 +205,11 @@ action key. CSV collection checks expiry before discovery, file opens and
 each header or row read, retaining collected samples with an expiry diagnostic.
 Recorder filenames also honor this generation's explicit fleet hostname alias;
 an OS rename does not require restarting the recorder to recover its data.
-It still scans daily files from the beginning; an individual filesystem read
-can overrun the cooperative deadline. Every Netdata chart read also uses only the remaining budget and
+CSV files are visited in reverse discovery order, with rows read backwards from
+captured EOF in 64 KiB blocks so recent samples get the budget first. Clock
+corrections prohibit timestamp-based early stopping; complete coverage can still
+require a full-day scan. Appends after EOF capture wait for a later read, and an
+individual filesystem read can overrun the cooperative deadline. Every Netdata chart read also uses only the remaining budget and
 targets 4096 average buckets (Netdata rounds the count to whole time buckets),
 retaining the 4 MiB response cap. Its CPU
 group records `time_group: average` and available CPU/pressure chart intervals;

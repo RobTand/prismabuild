@@ -48,6 +48,8 @@ DEFAULT_DEADLINE_S = 2.0
 #: Target chart rows before transfer (Netdata rounds to whole time buckets).
 #: The byte cap still protects against unexpectedly large server responses.
 NETDATA_POINTS = 4096
+#: Read recent recorder rows first without loading the daily file into memory.
+CSV_READ_BLOCK_BYTES = 64 * 1024
 #: A window wider than this is not one action's window, and walking a month of
 #: daily CSVs to summarise it would cost more than the deadline allows.
 MAX_WINDOW_DAYS = 3
@@ -164,7 +166,7 @@ def _csv_files(csv_dir: Path, host: str, start_unix: float,
     The recorder rotates daily and puts its schema version in the name, so a
     window that crosses midnight or a schema bump spans more than one file.
     Explicit fleet aliases cover a recorder that predates a hostname change.
-    Files are read in name order within each day, without assuming that
+    Paths are returned in name order within each day, without assuming that
     wall-clock timestamps are ordered across files or rows.
     """
 
@@ -174,6 +176,51 @@ def _csv_files(csv_dir: Path, host: str, start_unix: float,
         found.extend(sorted(path for name in hosts
                             for path in csv_dir.glob(f"pqteld-{name}-{day}.s*.csv")))
     return found
+
+
+def _reverse_csv_rows(handle, start: int, expired):
+    """Rows after the header, newest append first, from a fixed EOF.
+
+    Timestamps need not be ordered. Exhausting the budget should lose old
+    day rows before the recent action's rows, but an out-of-window timestamp
+    is never a reason to stop. Memory is one block plus an unfinished row.
+    """
+    if expired():
+        return
+    position = handle.seek(0, os.SEEK_END)
+    pending: list[bytes] = []
+    while position > start:
+        if expired():
+            return
+        size = min(CSV_READ_BLOCK_BYTES, position - start)
+        position -= size
+        handle.seek(position)
+        if expired():
+            return
+        chunk = handle.read(size)
+        if len(chunk) != size:
+            raise OSError('recorder file changed during reverse read')
+        parts = chunk.split(b'\n')
+        ready: list[bytes] = []
+        if len(parts) > 1:
+            ready.append(parts[-1] + b''.join(reversed(pending)))
+            ready.extend(reversed(parts[1:-1]))
+            pending = [parts[0]]
+        else:
+            pending.append(parts[0])
+        if position == start:
+            ready.append(b''.join(reversed(pending)))
+            pending = []
+        first = True
+        for row in ready:
+            if not row:
+                continue
+            # As with a forward readline, retain the first row from a read
+            # that spent the budget; do not start processing another one.
+            if not first and expired():
+                return
+            first = False
+            yield row
 
 
 def _pqteld_series(csv_dir: Path, host: str, start_unix: float, end_unix: float,
@@ -196,14 +243,14 @@ def _pqteld_series(csv_dir: Path, host: str, start_unix: float, end_unix: float,
     files = _csv_files(Path(csv_dir), host, start_unix, end_unix)
     if not files:
         return {}, [f"no pqteld CSV for {host} covering the window"]
-    for path in files:
+    for path in reversed(files):
         if expired():
             return series, errors
         try:
-            with path.open("r", encoding="utf-8", errors="replace") as handle:
+            with path.open("rb") as handle:
                 if expired():
                     return series, errors
-                header = handle.readline().rstrip("\n").split(",")
+                header = handle.readline().decode('utf-8', errors='replace').rstrip("\r\n").split(",")
                 index = {name: header.index(name) for name in wanted
                          if name in header}
                 if "epoch_ms" not in header:
@@ -211,16 +258,8 @@ def _pqteld_series(csv_dir: Path, host: str, start_unix: float, end_unix: float,
                     continue
                 stamp = header.index("epoch_ms")
                 width = len(header)
-                while True:
-                    # Check before requesting the next row, including one that
-                    # will turn out to be outside the window. A previous read
-                    # can spend the entire remaining budget.
-                    if expired():
-                        return series, errors
-                    line = handle.readline()
-                    if not line:
-                        break
-                    cells = line.rstrip("\n").split(",")
+                for line in _reverse_csv_rows(handle, handle.tell(), expired):
+                    cells = line.decode('utf-8', errors='replace').rstrip("\r\n").split(",")
                     if len(cells) != width:
                         continue  # a torn final row, not a schema change
                     when = _number(cells[stamp])
@@ -229,7 +268,12 @@ def _pqteld_series(csv_dir: Path, host: str, start_unix: float, end_unix: float,
                     for name, column in index.items():
                         value = _number(cells[column])
                         if value is not None:
+                            last = series[name].last
                             series[name].add(value)
+                            if last is not None:
+                                # First encountered is last in append/file
+                                # order, even after a wall-clock correction.
+                                series[name].last = last
         except OSError as exc:
             errors.append(f"{path.name}: {type(exc).__name__}")
     return series, errors
