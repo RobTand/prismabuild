@@ -61,14 +61,39 @@ def test_unresolved_issue_is_not_reported_closed_or_repeated_immediately(runner,
     assert len(runner.calls) == 1
 
 
-def test_changed_and_new_issues_remain_eligible_after_a_run(runner, monkeypatch):
-    snapshots = iter([{"196": "first"}, {"196": "updated", "200": "new"},
-                      {"196": "updated", "200": "new"}, {}])
+def test_new_issue_is_eligible_alongside_one_already_attempted(runner, monkeypatch):
+    snapshots = iter([{"196": "first"}, {"196": "first"},
+                      {"196": "first", "200": "new"}, {"196": "first", "200": "new"}])
     monkeypatch.setattr(MODULE, "issues", lambda: next(snapshots))
     runner.run()
     runner.run()
     assert len(runner.calls) == 2
-    assert "#196, #200" in runner.calls[1][1]["input"]
+    assert "#200" in runner.calls[1][1]["input"]
+    assert "#196" not in runner.calls[1][1]["input"]
+
+
+def test_a_visit_does_not_re_arm_itself(runner, monkeypatch):
+    # The agent comments on the issue it visits, which bumps updated_at. Its own
+    # comment must not make the issue eligible again on the next poll: that is a
+    # loop whose only output is a readback saying nothing changed.
+    snapshots = iter([{"196": "first"}, {"196": "commented-by-the-run"},
+                      {"196": "commented-by-the-run"}])
+    monkeypatch.setattr(MODULE, "issues", lambda: next(snapshots))
+    runner.run()
+    assert len(runner.calls) == 1
+    assert runner.run() == 0
+    assert len(runner.calls) == 1
+
+
+def test_update_after_a_run_is_still_eligible(runner, monkeypatch):
+    # Absorbing the run's own comment must not absorb what lands after it.
+    snapshots = iter([{"196": "first"}, {"196": "commented-by-the-run"},
+                      {"196": "rob-replied"}, {"196": "rob-replied"}])
+    monkeypatch.setattr(MODULE, "issues", lambda: next(snapshots))
+    runner.run()
+    runner.run()
+    assert len(runner.calls) == 2
+    assert "#196" in runner.calls[1][1]["input"]
 
 
 def test_unchanged_blocker_is_revisited_after_six_hours(runner, monkeypatch):
