@@ -94,6 +94,11 @@ optional summary extraction or supplemental blob ingestion. A deadline during
 that optional work retains the primary report on the ending, marked `partial`.
 Normal completion returns the richer profile. This checkpoint publishes no
 action success and cannot preserve a trace that has not reached ingestion.
+Optional `nsys stats` extraction has a five-second subprocess timeout and
+0.5-second TERM/KILL waits for its own process group. A timeout retains the
+primary report, records `kernel_summary_absent`, and leaves the action verdict
+unchanged. Filesystem reads, CAS ingestion and uninterruptible kernel cleanup
+can still outlast these waits; the broker scope remains responsible for containment.
 
 Torch traces must fit the 2 GiB profile budget both on disk and after gzip
 decoding. Oversized decoded data is refused before JSON parsing; use a shorter
