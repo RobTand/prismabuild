@@ -71,9 +71,11 @@ def run_once(checkout, state_dir, prompt_file, retry_seconds=21600):
         attempted = {number: record for number, record in previous.items() if number in remaining}
         for number in eligible:
             if number in remaining and result.returncode == 0:
-                # Preserve updates made during the run for the next poll. A
-                # failed agent invocation also remains eligible for retry.
-                attempted[number] = {"updated_at": current[number], "finished_at": finished}
+                # A successful visit includes its own GitHub updates. Absorb
+                # all updates through this readback; external changes during
+                # the run may wait for the retry interval. Failed invocations
+                # remain eligible, and newly arrived issues stay unattempted.
+                attempted[number] = {"updated_at": remaining[number], "finished_at": finished}
         state.update(attempted=attempted, finished_at=finished,
                      exit_code=result.returncode, open_issues=sorted(remaining, key=int))
         save(path, state)
