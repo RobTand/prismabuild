@@ -185,18 +185,20 @@ def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
     ``/proc/<pid>/io`` needs ptrace-read access and a process this uid may not
     inspect refuses it while ``stat`` still answers. ``None`` for the counters
     means "here, but not readable"; ``None`` for the whole result means gone.
+    An unreadable initial identity raises OSError or ValueError: the sampler
+    must retain its prior reading rather than infer departure from an outage.
     """
     try:
         stat = Path(f'/proc/{pid}/stat').read_text()
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return None
     try:
         # The command field is parenthesised and may itself contain spaces, so
         # the fields after it are found from the last ')' rather than by split.
         fields = stat[stat.rindex(')') + 1:].split()
         parent, starttime = int(fields[1]), fields[19]
-    except (ValueError, IndexError):
-        return None
+    except (ValueError, IndexError) as exc:
+        raise ValueError(f'cannot parse process {pid} identity') from exc
     identity = f'{pid}:{starttime}'
     try:
         counters = dict(line.split(':', 1) for line in
@@ -401,7 +403,18 @@ class ResourceScope:
         live: dict[str, dict[str, Any]] = {}
         unreadable = 0
         for pid in pids:
-            entry = read_process_io(pid)
+            try:
+                entry = read_process_io(pid)
+            except (OSError, ValueError):
+                # Membership was observed, but incarnation is unknown. Keep
+                # this PID's prior reading without accepting any new bytes or
+                # inventing an identity. A later readable sample distinguishes
+                # the surviving process from PID reuse.
+                unreadable += 1
+                live.update((identity, counters) for identity, counters
+                            in live_before.items()
+                            if identity.startswith(f'{pid}:'))
+                continue
             if entry is None:
                 continue  # exited between the scan and the read
             identity, parent, counters = entry
@@ -420,7 +433,7 @@ class ResourceScope:
             live[identity] = {'ppid': parent, **counters}
         if unreadable:
             errors.append(f'{unreadable} live process(es) in the scope '
-                          f'could not be inspected by this uid')
+                          f'could not be inspected')
         for identity, counters in live_before.items():
             if identity in live:
                 continue
