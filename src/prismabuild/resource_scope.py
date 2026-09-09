@@ -497,11 +497,18 @@ class ResourceScope:
         if unreadable:
             errors.append(f'{unreadable} live process(es) in the scope '
                           f'could not be inspected')
+        # A departed child is only still being counted if the parent that
+        # absorbed it is *itself* readable in this sample.  `members` is the
+        # historical membership, so asking it whether the parent was ever in
+        # the scope discards the child on the strength of a parent that may
+        # have departed in the same window -- and that parent's final reading,
+        # the one that holds the absorbed bytes, was never taken.
+        live_pids = {int(identity.split(':', 1)[0]) for identity in live}
         for identity, counters in live_before.items():
             if identity in live:
                 continue
-            if int(counters.get('ppid', 0)) in members:
-                continue  # its parent's own counters absorbed it on reap
+            if int(counters.get('ppid', 0)) in live_pids:
+                continue  # its parent's own counters absorb it on reap
             for name in IO_COUNTERS:
                 retired[name] += int(counters.get(name, 0))
         record: dict[str, Any] = {'source': 'proc_io'}

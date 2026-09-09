@@ -129,3 +129,81 @@ def test_live_parent_still_absorbs_its_reaped_child_exactly_once(scope, monkeypa
         'a child whose parent is still counting it was retired as well')
     assert during['wchar'] < 2 * PAYLOAD, (
         f'the absorbed child was counted twice: {during["wchar"]}')
+
+
+@pytest.fixture
+def synthetic(monkeypatch, tmp_path):
+    """Drive the accounting directly, for shapes a real tree cannot stage."""
+    instance = resource_scope.ResourceScope('e' * 64, 'f' * 32, 1 << 40,
+                                            tmp_path / 'telemetry.json')
+    instance.cgroup_path = tmp_path / 'job.slice'
+    monkeypatch.setattr(resource_scope, 'CGROUP_ROOT', tmp_path)
+    monkeypatch.setattr(resource_scope, '_process_in_scope', lambda *a, **k: True)
+    world = {}
+
+    def counters(pid):
+        entry = world.get(pid)
+        if entry is None:
+            return None
+        start, ppid, value = entry
+        return f'{pid}:{start}', ppid, {name: value for name in resource_scope.IO_COUNTERS}
+
+    monkeypatch.setattr(resource_scope, 'read_process_io', counters)
+    monkeypatch.setattr(resource_scope, 'scope_pids', lambda *a, **k: sorted(world))
+    return instance, world
+
+
+def test_two_independent_roots_each_keep_their_own_departed_children(synthetic):
+    """Multiple roots: one tree departing must not retire the other's work."""
+    scope, world = synthetic
+    world.update({10: (1, 1, 100), 11: (1, 10, 700),        # root 10, child 11
+                  20: (1, 1, 200), 21: (1, 20, 900)})       # root 20, child 21
+    assert scope.sample_process_io()['wchar'] == 1900
+
+    del world[11], world[10]                     # the first tree departs whole
+    during = scope.sample_process_io()
+    assert during['retired']['wchar'] == 800, 'a whole departed tree was lost'
+    assert during['wchar'] == 1900, 'the surviving tree was recounted or dropped'
+
+    del world[21], world[20]
+    assert scope.sample_process_io()['wchar'] == 1900
+
+
+def test_a_departed_child_is_kept_when_only_its_sibling_survives(synthetic):
+    """The parent is gone; a live sibling must not stand in for it."""
+    scope, world = synthetic
+    world.update({30: (1, 1, 50), 31: (1, 30, 400), 32: (1, 30, 600)})
+    assert scope.sample_process_io()['wchar'] == 1050
+
+    del world[30], world[31]              # parent and one child depart together
+    during = scope.sample_process_io()
+    assert during['retired']['wchar'] == 450, (
+        'the departed child was discarded although no live process absorbs it')
+    assert during['wchar'] == 1050
+
+
+def test_recycled_parent_pid_can_still_hide_a_departed_child(synthetic):
+    """A known bound of a pid-keyed ppid, unchanged here and stated as one.
+
+    ``live_before`` records a departed process's parent as a bare pid, so a
+    recycled pid belonging to an unrelated live process is indistinguishable
+    from the real parent and the child is skipped.  The old ``members`` test
+    had the same bound.  Closing it means recording the parent's *identity*,
+    pid and starttime together, which changes the persisted record shape; it
+    is out of scope for a lost-counter fix and is stated rather than hidden.
+    """
+    scope, world = synthetic
+    world.update({40: (1, 1, 100), 41: (1, 40, 800)})
+    assert scope.sample_process_io()['wchar'] == 900
+
+    del world[41]
+    world[40] = (999, 1, 100)            # same pid, a new and unrelated process
+    during = scope.sample_process_io()
+    # The original pid 40 is retired correctly: identity separates it from its
+    # recycled successor, and its own parent is outside the scope.  What is
+    # lost is its child, whose recorded ppid of 40 now matches a live stranger.
+    assert during['retired']['wchar'] == 100, 'the departed original was not retired'
+    assert during['wchar'] == 200, (
+        'behaviour changed: a recycled parent pid no longer hides the 800 the '
+        'child earned, which is an improvement that needs its own reasoning '
+        'recorded rather than arriving as a surprise')
