@@ -787,14 +787,16 @@ def test_the_sampler_finds_a_child_through_this_processes_own_scope(tmp_path):
     assert io["wchar"] >= 12 * MIB
 
 
-def test_a_reaped_child_is_counted_once_not_twice(tmp_path):
+@pytest.mark.parametrize("parent_exits_before_sample", [False, True])
+def test_a_reaped_child_is_counted_once_not_twice(tmp_path, parent_exits_before_sample):
     """``/proc/<pid>/io`` folds a reaped child into its parent, like rusage.
 
     Measured on the fleet: an action that wrote 64 MiB was reported as
     129 MiB, because the exited writer's last reading was retired *and* the
     same bytes had already migrated into the parent that reaped it. A process
-    whose parent is in the scope keeps being counted through that parent; only
-    the scope's roots are retired.
+    with a surviving sampled ancestor keeps contributing through it. If the
+    parent also exits before the next sample, its old counters have not yet
+    absorbed the writer: both last readings must survive retirement (#451).
 
     The writer says when it has written and then holds itself open, because a
     process that has exited but not been reaped is a zombie, and a zombie's
@@ -824,7 +826,7 @@ def test_a_reaped_child_is_counted_once_not_twice(tmp_path):
         "child.wait()\n"
         "sys.stderr.write('reaped\\n')\n"
         "sys.stderr.flush()\n"
-        "time.sleep(30)\n")
+        + ("" if parent_exits_before_sample else "time.sleep(30)\n"))
     parent = subprocess.Popen(
         [sys.executable, str(helper_script), str(writer_script), str(target)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
@@ -857,7 +859,10 @@ def test_a_reaped_child_is_counted_once_not_twice(tmp_path):
         parent.stdin.write("go\n")
         parent.stdin.flush()
         assert parent.stderr.readline().strip() == "reaped"
-        (group / "cgroup.procs").write_text(f"{parent.pid}\n")
+        if parent_exits_before_sample:
+            parent.wait(timeout=30)
+        (group / "cgroup.procs").write_text(
+            "" if parent_exits_before_sample else f"{parent.pid}\n")
         after = scope.sample()["process_io"]
     finally:
         parent.terminate()
@@ -865,8 +870,8 @@ def test_a_reaped_child_is_counted_once_not_twice(tmp_path):
         parent.stderr.close()
         parent.stdin.close()
 
-    assert after["processes_live"] == 1
-    assert after["wchar"] >= 16 * MIB
+    assert after["processes_live"] == (0 if parent_exits_before_sample else 1)
+    assert after["wchar"] >= 16 * MIB, after
     assert after["wchar"] < 32 * MIB, (
         "the reaped writer was counted twice: once retired, once inside the "
         "parent that absorbed it")
