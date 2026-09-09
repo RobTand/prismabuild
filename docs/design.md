@@ -79,6 +79,17 @@ consumption and CPU borrow consumption remain one admission critical section.
 Shared holder scans, token moves and preemption I/O remain inside exclusion;
 this narrower refusal path does not make admission NFS-free.
 
+CPU action identity and GPU exclusivity/memory-contract reads from sealed CAS
+requests run before candidate admission, retaining the per-key transition lock.
+The controllers receive those candidate-specific facts, including unknown
+results, without re-reading requests inside host exclusion. No capacity or
+sample credit is prefetched: current host samples, holder accounting, token
+acquisition and probe/borrow consumption still run under admission. A gate
+that becomes busy during request reading leaves the candidate queued without
+a reservation. Standalone controller calls may still resolve their own action
+facts. Request I/O remains synchronous; a stalled read no longer holds the
+host gate but can still delay its own key.
+
 The pull queue orders ready items by descending priority, then descending
 admission-denial count, then oldest publication time. Aging changes order only
 within a priority band. A denied item past `STARVATION_FLOOR` may withhold its

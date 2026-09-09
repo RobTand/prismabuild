@@ -3741,6 +3741,15 @@ class PoolQueue:
                     if ledger is not None and demand:
                         if any(total.get(kind, 0) < need for kind, need in reservation_demand.items()):
                             continue      # never fits this box; not this box's to hold
+                        # These facts belong to the sealed action, not changing
+                        # host capacity. A slow CAS request read must not hold
+                        # admission. Retain this candidate's transition lock and
+                        # pass even unknown facts explicitly: no locked reread.
+                        identity = (cpu_admission.action_identity(item)
+                                    if controller is not None else None)
+                        contract = (gpu_admission.action_contract(item, demand)
+                                    if gpu_controller is not None and demand.get("gpu")
+                                    else None)
                         # Host admission's exclusive half, and only that half: read
                         # the headroom, decide against it, and take the tokens out
                         # of ``free/`` before letting go.  ``begin_acquire`` moves
@@ -3755,10 +3764,10 @@ class PoolQueue:
                         refused = False
                         with self._admission_lock(controller):
                             if controller is not None:
-                                adaptive = controller.decision(item, demand)
+                                adaptive = controller.decision(item, demand, identity=identity)
                                 refused = adaptive is None
                             if not refused and gpu_controller is not None and demand.get("gpu"):
-                                adaptive_gpu = gpu_controller.decision(item, demand)
+                                adaptive_gpu = gpu_controller.decision(item, demand, contract=contract)
                                 refused = adaptive_gpu is None
                             if not refused:
                                 if adaptive_gpu is not None:

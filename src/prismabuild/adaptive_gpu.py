@@ -197,15 +197,16 @@ class Controller:
     def sample(self):
         return trusted_sample()
 
-    def decision(self, item, demand):
-        """Return durable reservation evidence, or None to leave work queued."""
+    def decision(self, item, demand, *, contract=None):
+        """Decide under admission; callers may pre-read the sealed contract."""
         if not demand.get('gpu'):
             return {}
         now = time.time()
         if self._sample is None:
             self._sample = self.sample()
         sample = self._sample
-        shape, measurement, exclusive, budget = action_contract(item, demand)
+        shape, measurement, exclusive, budget = (
+            action_contract(item, demand) if contract is None else contract)
         holders = []
         for holder in self.ledger.held_dir.iterdir():
             if not holder.is_dir():

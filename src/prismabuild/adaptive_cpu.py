@@ -468,8 +468,8 @@ class Controller:
         self.write_state('cpu-sample.json', current)
         return observation
 
-    def decision(self, item, demand):
-        """Return reservation metadata, or None when admission must wait."""
+    def decision(self, item, demand, *, identity=None):
+        """Decide under admission; callers may pre-read sealed action identity."""
         if self._host_sample is None:
             self._host_sample = self.sample()
         sample = self._host_sample
@@ -480,7 +480,7 @@ class Controller:
                          for key in ('busy_cpus', 'psi_some', 'interval_s')))
         if fresh and (sample['psi_some'] >= .10 or sample['busy_cpus'] >= .95 * len(self.cpus)):
             return None
-        shape, measurement = action_identity(item)
+        shape, measurement = action_identity(item) if identity is None else identity
         unbounded_cpu = not int(demand.get('cpu', 0))
         if measurement and (not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
             return None
