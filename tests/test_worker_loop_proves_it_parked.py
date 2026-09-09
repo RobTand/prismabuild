@@ -130,8 +130,8 @@ def test_one_marker_per_drain_however_many_polls(tmp_path):
 def test_a_second_drain_gets_its_own_marker(tmp_path):
     """``maintenance_begin`` restamps ``changed_unix``, and the marker follows.
 
-    The broker rewrites the whole gate value on every begin
-    (``tools/resource_broker.py:351-354``), so a marker for the previous drain
+    The broker stamps a fresh value when beginning a new drain, preserving
+    the current value on repeated begin calls, so a marker for the previous drain
     is not evidence about this one.  A reader matching on ``changed_unix``
     sees the stale marker as a different drain, which is what makes it safe to
     leave lying there.

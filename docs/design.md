@@ -1677,19 +1677,19 @@ adoption of the newer broker and updater.
 A loop that parks on a drain records that it parked, one file per process per
 drain under `/run/prismabuild/rollout/parked/`, named for the gate's
 `changed_unix` so a marker left by an earlier drain reads as the earlier drain.
-A drain is then evidence rather than elapsed time: a reader that finds a marker
-for every serving process on the box knows admission has stopped there. The
-write is best effort and the directory belongs to the root updater, so a loop
-that cannot record its park still parks and the host reads as not drained.
-The updater creates that directory and gives it to the unprivileged worker uid,
-and it is the reader: on a tick where a drain is in force it takes one process
-census, names everything that could still claim work, and records in its status
-whether the box has stopped and which processes have not. A process counts by
-the basename in its argv rather than by a generation-store prefix, because a
-hand-run one-shot reaches the same queue while carrying no such prefix. The
-drain's identity comes from the gate file, since the status reply states that a
-drain is open and not when it opened. This is observation: it opens and closes
-no drain and decides nothing.
+The marker also carries the PID and procfs start time. The write is best effort,
+so a loop that cannot record its park still parks and missing evidence cannot
+certify a drained host. The updater creates the directory for the unprivileged
+worker uid and reports whether every serving process has a marker for the
+current drain and the broker reports no active scopes. Processes count by argv
+basename, including a one-shot invoked through the symlink or a local checkout.
+Unreadable or malformed process evidence prevents a positive result and is
+reported explicitly; only a process directory proved gone may be omitted after
+a read failure. Process start identity is checked around the argv read. Missing
+gate identity or a gate change during the census also prevents certification.
+The drain identity comes from the gate file. This is an observation of the
+current processes, not an admission barrier or a guarantee against future
+process launches; it neither opens nor closes a drain.
 The updater also states, fleet-wide, which version of itself is running. It is
 installed by a copy step rather than by the runtime symlink, so no shared
 record answers for it: the loops' `runtime_commit` answers for the loops, a
