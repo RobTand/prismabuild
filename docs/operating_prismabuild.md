@@ -1589,6 +1589,13 @@ idle" call for different responses.
     while unknown membership retains prior counters with an unreadable
     diagnostic. This prevents retiring and recounting a surviving root after
     a partial scan; it cannot recover processes never observed.
+    Procfs enumeration failures and unreadable or malformed membership records
+    appear in `errors`, even if known-member recovery succeeds. Valid
+    observations remain available as partial evidence. ENOENT/ESRCH departures
+    are ordinary; a successful procfs fallback after a protected directory read
+    is also ordinary. Unknown membership can belong to another scope, so the
+    diagnostic does not establish that this action lost I/O. No error-free
+    sample guarantees atomic membership or discovery of short-lived children.
     A process that has exited but has
     not yet been reaped is a zombie, and a zombie's `/proc/<pid>/io` is
     `EACCES`: it counts in `processes_unreadable`, keeps whatever it was last

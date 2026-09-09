@@ -95,7 +95,7 @@ def cgroup_membership(path: Path) -> str:
         return ''
 
 
-def procs_in_cgroup(membership: str) -> list[int]:
+def procs_in_cgroup(membership: str, *, errors: list[str] | None = None) -> list[int]:
     """Every process whose own ``/proc`` entry names this scope or a leaf of it.
 
     The broker keeps the payload leaf ``drwx------ root root``, so the leaf the
@@ -104,33 +104,51 @@ def procs_in_cgroup(membership: str) -> list[int]:
     ``/proc/<pid>/cgroup`` is world-readable and says the same thing from the
     other side, so membership is read from the processes rather than from a
     directory this uid may not open.
+
+    Optional diagnostics distinguish incomplete discovery from an empty
+    scope. An unreadable record may belong to any scope; it does not prove
+    that this action lost a member. Confirmed process departure is ordinary.
     """
+    if errors is None:
+        errors = []
     if not membership:
+        errors.append('process discovery: resource scope has no cgroup membership path')
         return []
     found: list[int] = []
     try:
         entries = os.listdir('/proc')
-    except OSError:
+    except OSError as exc:
+        errors.append(f'process discovery: cannot enumerate /proc ({type(exc).__name__})')
         return []
+    unreadable = 0
     for entry in entries:
         if not entry.isdigit():
             continue
         try:
             text = Path('/proc', entry, 'cgroup').read_text()
-        except OSError:
+        except (FileNotFoundError, ProcessLookupError):
             continue  # the process exited between listdir and read
+        except OSError:
+            unreadable += 1
+            continue
         for line in text.splitlines():
             parts = line.split(':', 2)
-            if len(parts) != 3 or parts[0] != '0':
+            if (len(parts) != 3 or parts[:2] != ['0', '']
+                    or not parts[2].startswith('/')):
                 continue
             where = parts[2]
             if where == membership or where.startswith(membership + '/'):
                 found.append(int(entry))
             break
+        else:
+            unreadable += 1
+    if unreadable:
+        errors.append(f'process discovery: {unreadable} procfs membership record(s) '
+                      'unreadable or malformed; scope membership unknown')
     return found
 
 
-def scope_pids(path: Path) -> list[int]:
+def scope_pids(path: Path, *, errors: list[str] | None = None) -> list[int]:
     """Every process in the scope, including the broker's payload leaf.
 
     The payload is a child of the root broker rather than of the pool worker,
@@ -163,7 +181,8 @@ def scope_pids(path: Path) -> list[int]:
             except ValueError:
                 continue
     if blocked:
-        return sorted(set(found) | set(procs_in_cgroup(cgroup_membership(path))))
+        fallback = procs_in_cgroup(cgroup_membership(path), errors=errors)
+        return sorted(set(found) | set(fallback))
     return found
 
 
@@ -414,7 +433,7 @@ class ResourceScope:
             errors.append('resource scope is not created')
             pids: list[int] = []
         else:
-            pids = scope_pids(self.cgroup_path)
+            pids = scope_pids(self.cgroup_path, errors=errors)
         members |= set(pids)
         live: dict[str, dict[str, Any]] = {}
         unreadable = 0

@@ -15,7 +15,7 @@ def sampling(monkeypatch, tmp_path):
     monkeypatch.setattr(resource_scope, 'CGROUP_ROOT', tmp_path)
     state = {'pids': [42424242, 43434343], 'membership': '0::/job.slice/payload\n',
              'bytes': 100, 'identity': '42424242:100'}
-    monkeypatch.setattr(resource_scope, 'scope_pids', lambda _: state['pids'])
+    monkeypatch.setattr(resource_scope, 'scope_pids', lambda _, **kw: state['pids'])
 
     def counters(pid):
         value = state['bytes'] if pid == 42424242 else 20
@@ -100,10 +100,10 @@ def test_real_contained_process_survives_a_census_omission(monkeypatch, tmp_path
                           Path(f'/proc/{child.pid}/cgroup').read_text().splitlines()
                           if line.startswith('0::'))
         scope.cgroup_path = resource_scope.CGROUP_ROOT / membership.lstrip('/')
-        monkeypatch.setattr(resource_scope, 'scope_pids', lambda _: [child.pid])
+        monkeypatch.setattr(resource_scope, 'scope_pids', lambda _, **kw: [child.pid])
         before = scope.sample_process_io()
         assert before['wchar'] >= 6
-        monkeypatch.setattr(resource_scope, 'scope_pids', lambda _: [])
+        monkeypatch.setattr(resource_scope, 'scope_pids', lambda _, **kw: [])
         after = scope.sample_process_io()
         assert after['retired']['wchar'] == 0 and after['processes_live'] == 1
         assert after['wchar'] == before['wchar']

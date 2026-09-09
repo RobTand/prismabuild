@@ -277,7 +277,7 @@ def test_rebuilt_sampler_keeps_local_io_after_shared_copy_failure(tmp_path, monk
     local = tmp_path / "local.json"
     group = _fake_cgroup(tmp_path / "cgroup", usage_usec=1, user_usec=1,
                          system_usec=0, pids=[4242])
-    monkeypatch.setattr(resource_scope, "scope_pids", lambda _: [4242])
+    monkeypatch.setattr(resource_scope, "scope_pids", lambda _, **kw: [4242])
     monkeypatch.setattr(resource_scope, "read_process_io", lambda _: (
         "4242:1", 1, {name: 9 * MIB for name in resource_scope.IO_COUNTERS}))
     first = resource_scope.ResourceScope(
@@ -300,7 +300,7 @@ def test_rebuilt_sampler_keeps_local_io_after_shared_copy_failure(tmp_path, monk
 
     # The process has gone by the final sample. Its bytes survive in local
     # authority, while the shared copy never learned about them.
-    monkeypatch.setattr(resource_scope, "scope_pids", lambda _: [])
+    monkeypatch.setattr(resource_scope, "scope_pids", lambda _, **kw: [])
     second = resource_scope.ResourceScope(
         "a" * 64, "b" * 32, 1 << 30, shared, authority_path=local)
     second.cgroup_path = group
@@ -733,7 +733,7 @@ def test_a_leaf_this_uid_cannot_open_is_not_an_empty_one(tmp_path, monkeypatch):
     leaf.chmod(0o000)
     try:
         monkeypatch.setattr(resource_scope, "procs_in_cgroup",
-                            lambda membership: [909090])
+                            lambda membership, **kw: [909090])
         assert 909090 in resource_scope.scope_pids(group)
     finally:
         leaf.chmod(0o700)
@@ -746,7 +746,7 @@ def test_a_tree_that_reads_completely_does_not_scan_proc(tmp_path, monkeypatch):
     group.mkdir()
     (group / "cgroup.procs").write_text("17\n18\n")
 
-    def refuse(membership):
+    def refuse(membership, **kw):
         raise AssertionError("a readable tree must not scan /proc")
 
     monkeypatch.setattr(resource_scope, "procs_in_cgroup", refuse)
