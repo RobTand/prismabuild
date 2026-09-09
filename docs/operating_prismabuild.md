@@ -1560,7 +1560,11 @@ idle" call for different responses.
     reached storage and are zero on a tmpfs for the same write. The sampler runs
     at most every two seconds, so I/O in the final interval and any process that
     both starts and ends between two samples is not counted;
-    `processes_observed` says how many were. A process that has exited but has
+    `processes_observed` says how many were. A PID that changes identity
+    during counter collection contributes no new reading:
+    the sampler rechecks starttime and discards counters when the original
+    process cannot be revalidated. This is not an atomic scope-membership
+    snapshot. A process that has exited but has
     not yet been reaped is a zombie, and a zombie's `/proc/<pid>/io` is
     `EACCES`: it counts in `processes_unreadable`, keeps whatever it was last
     seen using, and its remaining bytes arrive when its parent reaps it,
