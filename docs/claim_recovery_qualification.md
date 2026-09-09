@@ -181,8 +181,8 @@ All container and direct payload lifetimes remain bounded to 600 seconds.
 
 The mode still depends on both hosts being available and injects no delayed
 Docker daemon RPC, host loss or kernel stall. Cross-host retries do not qualify
-same-host overlapping attempts. Sparklina's Docker path needs its own recorded
-qualification; the first Docker campaign below landed only on DL380 and Sparky.
+same-host overlapping attempts. The first Docker campaign below landed only on
+DL380 and Sparky; the later Sparklina campaign records that client's path separately.
 
 ## Recorded run — 2026-09-09 UTC
 
@@ -610,3 +610,55 @@ Evidence: `/home/rob/tmp/pb-due-234-266-413/` (`campaign.json`,
 The four completed queues under
 `/mnt/shared/pb-qualification/docker-recovery-975ea7aa9092` are retained as
 bounded evidence; their ledgers are empty and every created scope is retired.
+
+## Sparklina Docker recovery — 2026-09-09 UTC
+
+The unchanged merged harness at source parent `9bccad522ac44e5c02a191f7ad43fcc317b53a1d`
+passed all eight CPU-only actors between DL380 and Sparklina: late success and
+late failure in both directions, with `--real-scope --docker-image ubuntu:24.04`
+and `--stale-claim-read`. The Sparklina tag selected the previously unqualified
+Docker/host path; the server actors used `x86`. PB admitted all placements.
+Runtime `9bccad522ac4-1788920576-399e6fcd5272` had all 419 manifest hashes verified
+and 24 directly observed worker loops across the three fleet hosts.
+
+Foreign-host and injected local cleanup refusals retained the original claim
+and reservation. The original container stayed alive through refusal, then
+production cleanup removed it before retry. Each successor container survived
+late original-owner calls and was removed by normal finish. All four original
+waiters returned the successor result; the four inner queues retained two
+immutable attempts and ended with empty ledgers. Owner-host readback found all
+eight exact scopes and containers absent. All eight termination audits retained
+production's `lease_lost`/`executed` reason and matching broker stop reason.
+
+Verification covered terminal exits, immutable stdout/stderr sizes and SHA-256,
+canonical CAS receipts and result payloads, source snapshot bytes, outer scope
+release, image IDs, memory caps, native threads and inherited preferred CPU
+affinity. No actor failed or skipped; pytest collection does not apply. The
+campaign reserved CPU8/mem16 GiB aggregate, CPU1/mem2 GiB per actor, priority -10
+and native threads 1. Each inner scope shared its 128 MiB cap with its container.
+
+| Actor key | Role / host | CAS receipt |
+| --- | --- | --- |
+| `29bb2f486c36` | original / dl380g10 | `838e02b1e9bae0c845dd7975f2dc97d39932ee87c0ef0b5075d57433ba53d92a` |
+| `55556765a060` | peer / sparklina | `296137ab1bf8231956342feb2101dd50b49243d6a18be6e8c7072bc67b0df415` |
+| `74b5fa5c1f19` | original / dl380g10 | `10eb6494fbeeb3e7eded890cd3033c406325cdc80f396de63825fd95005a37b0` |
+| `c6d9b73befeb` | peer / sparklina | `b4a2b61f248820cbf001de09459d2400e8bc7727500b683a6cd0c59435741d09` |
+| `a7a4c15b477e` | original / sparklina | `6cfb95b4b6b0c1b6ad3b065efd4709cefbc239a9c7252e109f0c600b3553092f` |
+| `7c4b9f8b7924` | peer / dl380g10 | `44a9fb7e225699962063c6f7e49937d09739bb02e72d5d23ad6bdbc7dcd67c7e` |
+| `052d76539ccf` | original / sparklina | `d698ccfb88d0bb082482df84db7b95afd7be5d8054bdcf95faa12325238381b3` |
+| `9221496a906f` | peer / dl380g10 | `956edd5bb7d342bec14468872c7dff0d169355f6feeda4a60680b56ba2d4cb36` |
+
+Evidence is retained under `/home/rob/tmp/pb-due-maintenance-20260909/`
+(`campaign.json`, `campaign-verified.json`, `actor-payloads-verified.json`,
+`source-verified.json`, `inner-state-verified.json`, `scope-absence.json`).
+The four completed isolated namespaces under
+`/mnt/shared/pb-qualification/sparklina-docker-8e30726fa6b9/` are retained as
+bounded evidence with empty ledgers. This closes the recorded Sparklina Docker
+qualification gap; it found no production defect. No runtime publication is
+needed for these evidence-only documentation changes.
+
+The owning host remained available and the harness supplied the successor's
+queue result. Same-host overlap, delayed Docker RPCs, permanent host loss/reboot,
+induced kernel NFS stalls, stall-budget accounting and normal production
+startup/result collection remain unqualified. This is not a GPU performance
+measurement or a resolution of the remaining #234 requirements.
