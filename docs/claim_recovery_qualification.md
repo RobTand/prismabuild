@@ -402,10 +402,10 @@ are retained, not replaced by the final results:
   The failed inner queue records remain isolated diagnostic evidence; they
   are not live fleet reservations.
 
-This qualifies real direct-scope cleanup only on DL380 and Sparky, with the
-owning host available. Sparklina's real-scope path, Docker cleanup, permanent
-host loss/reboot, induced NFS kernel stalls and execution budgets during
-stalls remain unqualified. Production recovery behavior is unchanged; no
+That campaign qualified real direct-scope cleanup on DL380 and Sparky, with
+the owning host available. The follow-up below qualifies Sparklina after its
+external load cleared. Docker cleanup, permanent host loss/reboot, induced
+NFS kernel stalls and execution budgets during stalls remain unqualified. Production recovery behavior is unchanged; no
 fleet publication is needed for this opt-in source-snapshot harness. Runtime
 `650893b19fd0-1788912745-bc21f351ad74` remained deployed with all 417 manifest
 hashes verified.
@@ -416,3 +416,47 @@ and inner-state readback: `/home/rob/tmp/pb-234-real-scope/`
 `resources-verified.json`, `first-campaign-verified.json`,
 `cleanup-verified.json`, `default-results-verified.json`). Final and failed
 namespaces are retained as bounded evidence; all created real scopes retired.
+
+### Sparklina real-scope follow-up
+
+The complete 01:11:52 UTC census showed that Sparklina's external load had
+cleared: no foreign GPU process, 116 GiB host memory available and its full
+104 GiB PB memory budget. This changed the preceding admission blocker.
+An additional eight actors then passed the same real-scope/refusal cases in
+both directions against DL380, using the unchanged harness from PR head
+`d3ffd3d8d0cb6b1e661cacef628b3cf8bfe3a20e`. No external process was interrupted.
+
+All four original waiters returned zero with two immutable attempts. Every
+foreign cleanup refusal and caller-local broker failure retained the claim
+and reservation; real cleanup released the old scope before retry; each
+successor survived late calls and subsequently released its own scope. READY
+late calls archived, CLAIMED late calls produced the forced ownership refusal,
+and all inner ledgers ended empty. Each terminal, immutable log, CAS payload,
+source snapshot, cleanup nonce, demand, native-thread bound and payload CPU
+affinity was independently verified. All actors used one preferred CPU,
+CPU1/mem2 GiB per actor, aggregate CPU8/mem16 GiB, priority -10. No actor failed
+in this follow-up and no pytest collection or skips apply.
+
+| Actor key | Role / host | CAS receipt |
+| --- | --- | --- |
+| `4367b14404ca` | original / dl380g10 | `1d9f049e581fb2db6c1f2d8a7d1c1242375042f663f7f93708092a0c8495ff7d` |
+| `1d58ca3792b4` | peer / sparklina | `bf7d64c00d37ac91e4026e5ab116df4f5c5e75a6d434987ac33732ab73f5e4c2` |
+| `cfc9c7dcfc49` | original / dl380g10 | `a245a7855ae01a5c2341de4a18966b8fdcb73b53a5b1b843edf6dc0c7bec9057` |
+| `128fe454fb71` | peer / sparklina | `412243878ff958c949abba2517f80285b764e0d5775c9309eef7f1a7d34ae6e6` |
+| `48278bc45ccd` | original / sparklina | `5c2c40c5d76e9a5e867fc0f9ffb6de81f76eb3777b7ae5d41773d114c5d3120c` |
+| `3a9c646f6fba` | peer / dl380g10 | `4e31f5b4dfa16c151c948d63f4218435cd83bba3544ddf81b5cffdcb7d65a38b` |
+| `26cd3f5b991e` | original / sparklina | `eab0840606b32919add40423322c8db94b198b74efb53f440054d508ec19a06f` |
+| `8403fac08c2d` | peer / dl380g10 | `6341d8d3b8497a31cf4ae40b64cdce128817adffd70475f3455b408bff0e482a` |
+
+This brings the final qualification to **16 real-scope actors and two default
+actors passed**, plus two verified cleanup actions for the failed first run.
+Sparklina's temporary admission blocker is cleared; the first run's failures
+and four withdrawals remain retained. Docker cleanup, host loss/reboot,
+induced kernel NFS stalls and execution-budget behavior during stalls remain
+outside the qualified scope, so #234 stays open. No production runtime change
+or publication is required.
+
+Additional evidence: `sparklina-campaign-verified.json`,
+`sparklina-results-verified.json`, `sparklina-resources-verified.json`,
+`sparklina-campaign.json` and `sparklina-submission.json` in the same evidence
+directory. The additional completed namespace is retained with empty ledgers.
