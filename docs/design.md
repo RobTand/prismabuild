@@ -241,6 +241,14 @@ already succeeded; refusal neither creates another scope nor releases tokens.
 When a fresh read identifies a different successor, the predecessor's recovered
 authority remains confined to its own cleanup record and diagnostic archive.
 
+The stale-claim reaper checks claim/lease identity before payload cleanup and
+ownership mutations, even when the lease has expired. A conflicting key retains
+its claim, lease and reservation while independent keys continue recovering.
+The pending-finish branch likewise retains identity contradictions reported by
+ordinary finish and continues the sweep. Consistent observations on a later
+sweep may resume recovery; missing legacy lease fields add no proof. These
+checks do not qualify jointly stale reads or bound shared-filesystem latency.
+
 A released unstarted claim has no numbered execution outcome. If its original
 caller reports a result while the same publication is ready or claimed with
 that attempt number still uncharged, the late report is retained under

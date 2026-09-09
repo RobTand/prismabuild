@@ -1372,7 +1372,7 @@ def test_admission_is_skipped_when_no_capacity_is_declared(
 
 
 def test_reaping_a_foreign_claimant_returns_capacity_to_that_host(
-    queue: pool.PoolQueue,
+    queue: pool.PoolQueue, monkeypatch,
 ) -> None:
     """The reaper is usually not the box that died.
 
@@ -1383,17 +1383,10 @@ def test_reaping_a_foreign_claimant_returns_capacity_to_that_host(
     """
 
     _publish(queue, KEY_A, resources={"gpu": 2})
-    assert queue.claim(capacity={"gpu": 2}) is not None
-
-    # Re-file the claim as though a *different* box had taken it, and move the
-    # tokens to that box's ledger -- the real cross-box shape.
-    record = json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text())
-    mine = record["claimed_host"]
-    record["claimed_host"] = "other-box"
-    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
-    queue.ledger(mine).release(KEY_A)
-    queue.ledger("other-box").ensure_capacity({"gpu": 2})
-    assert queue.ledger("other-box").acquire(KEY_A, {"gpu": 2}) is True
+    # Claim on the foreign box so its claim, lease and ledger all agree.
+    with monkeypatch.context() as patch:
+        patch.setattr(pool.socket, "gethostname", lambda: "other-box")
+        assert queue.claim(capacity={"gpu": 2}) is not None
 
     queue.reap_stale(timeout_s=-1.0)
 

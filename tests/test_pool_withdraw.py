@@ -377,15 +377,8 @@ def test_a_withdrawn_claim_is_not_requeued_by_the_reaper(
     # Withdraw without the cleanup: marker written, claimed record still there
     # and its lease stale.  That is what a box dying inside ``withdraw`` leaves.
     queue.withdraw(KEY_A, signal_child=False)
-    # A record ``claim()`` finished writing always carries ``claimed_unix``;
-    # without it (and with a fresh intent marker) the reaper would read the
-    # record as still inside ``claim()``'s rename-to-rewrite window and leave
-    # it for the claimant to conclude (#36).
-    record = {"action_key": KEY_A, "worker_script": "/w.py", "cas_root": "/cas",
-              "checkout_root": "/co", "claimed_host": ELSEWHERE, "attempts": 0,
-              "claimed_unix": 0.0}
-    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
-    assert queue.reap_stale(timeout_s=0.0) == []
+    # Expire the actual claim's lease, preserving its ownership generation.
+    assert queue.reap_stale(timeout_s=-1.0) == []
     assert not queue.item_path(pool.READY, KEY_A).exists()
     assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
 
