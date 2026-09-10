@@ -100,7 +100,12 @@ holder's shared transition lock still spans withdrawal and retry publication,
 and withdrawal revalidates the selected claim. Tokens remain held until normal
 cleanup. A crash releases the local lock through descriptor lifetime, never
 through a timeout or deletion of its inode; the next selection re-reads current
-capacity and pending withdrawals. Shared selection reads remain under admission.
+capacity and pending withdrawals. Restartability's sealed-action and immutable
+withdrawal-prefix proof is prepared before admission while the handoff lock is
+held. The live selection still reads capacity, tokens, claims and current
+pending withdrawals under admission, and uses a proof only when its
+presence- and JSON-type-preserving proof inputs match the live claim. Shared
+selection accounting reads remain under admission.
 Deploy this lock change with drained work and complete worker adoption before
 resuming submissions; older claimants do not participate in handoff exclusion.
 
