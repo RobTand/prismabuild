@@ -55,6 +55,10 @@ def test_barrier_refuses_mutation_even_with_matching_history(
 def test_barrier_dry_run_reports_history_without_proving_participation(
     fleet, monkeypatch, capsys, operation,
 ):
+    # A normal publisher need not inherit the worker's bytecode-disable flag.
+    monkeypatch.setattr(publish_runtime.sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(publish_runtime.sys, "pycache_prefix", None)
+    source_files = set(publish_runtime.CHECKOUT.rglob("*"))
     sha = "a" * 64
     target = _generation(fleet, sha)
     for host in ("sparky", "sparklina"):
@@ -78,3 +82,4 @@ def test_barrier_dry_run_reports_history_without_proving_participation(
     assert "current participation" in output
     assert publish_runtime.MIRROR.is_dir() and not publish_runtime.MIRROR.is_symlink()
     assert set(target.parent.iterdir()) == before
+    assert set(publish_runtime.CHECKOUT.rglob("*")) == source_files
