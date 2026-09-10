@@ -696,6 +696,64 @@ def _stop_idle_loops(pids: list[int] | None = None,
     return stopped
 
 
+REAP_BUDGET = 4096
+
+
+def _reap() -> int:
+    """Collect every child that has exited, and answer how many that was.
+
+    Nothing else in this file waits on a child.  ``_spawn`` drops the
+    ``Popen`` it builds, so what reaped a finished loop until now was
+    incidental: CPython files a dropped handle into the module-global
+    ``subprocess._active`` and polls that list at the top of the *next*
+    ``Popen.__init__``, and ``_live_loops`` builds one every tick for
+    ``pgrep``.  Inside one process image that bounds the delay to a tick and
+    hides the fact that the supervisor never owned the lifecycle at all.
+
+    ``_reexec_if_published`` is where the omission becomes permanent.
+    ``os.execve`` replaces the image to adopt a published generation: the
+    kernel keeps the child list, ``_active`` goes with the old image, and
+    every loop that was alive at that moment can no longer be reaped by the
+    subprocess module.  It becomes a zombie when it exits and stays one for
+    the life of the supervisor, so the count grows with publish cadence
+    rather than with load and falls only when the supervisor itself dies.
+    Measured on 2026-09-10: 1106 on dl380g10 across 69 re-execs of one
+    supervisor process, 100% of them spawned before the last re-exec and
+    none after it.
+
+    ``waitpid`` asks the kernel rather than this process's memory, which is
+    the property that matters: it is indifferent to the exec, so it collects
+    what earlier generations stranded as well as what this one leaves.
+
+    Taking every status here is safe because no caller in this file reads
+    one.  The single place that does -- ``subprocess.run`` in ``_live_loops``
+    -- waits on its own pid, and this process is single-threaded with no
+    signal handler, so this loop never runs between that spawn and that wait.
+
+    ``signal.signal(SIGCHLD, SIG_IGN)`` is the shorter spelling and is
+    rejected.  A ``SIG_IGN`` disposition survives ``execve`` *and* is
+    inherited by children, so it would not stop at this process: ``_spawn``
+    execs a worker loop, the loop execs an action, and an ignored ``SIGCHLD``
+    makes every ``waitpid`` in that chain answer ``ECHILD``, which
+    ``subprocess`` turns into returncode 0.  Measured on sparky, python
+    3.12.3: with the disposition set here, a grandchild running ``false``
+    reports 0 rather than 1.  Every failing action in the pool would report
+    success.  ``waitpid`` in this one process buys the same reap with none of
+    that reach.
+    """
+
+    collected = 0
+    while collected < REAP_BUDGET:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            break                          # no children at all
+        if pid == 0:
+            break                          # children, but none have exited
+        collected += 1
+    return collected
+
+
 def _spawn(args: list[str], index: int) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     handle = (LOG_DIR / f"pb-worker-{index}.log").open("a", buffering=1)
@@ -773,6 +831,13 @@ def main() -> int:
         print(f"[{host}] cycled {len(stopped)} idle loop(s) onto "
               f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
     while True:
+        # Before anything else, and before the exec below can strand them:
+        # the supervisor owns its children's exit statuses, and this is the
+        # one place it collects them.
+        reaped = _reap()
+        if reaped:
+            print(f"[{host}] reaped {reaped} exited child process(es)",
+                  flush=True)
         if not args.once and _reexec_if_published(loaded_generation, handle):
             return 0                       # reached only under an exec test double
         target, loop_args = declared_shape(
