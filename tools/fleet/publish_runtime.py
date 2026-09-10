@@ -568,7 +568,14 @@ def _agent_definitions():
     if spec is None or spec.loader is None:
         raise SystemExit(f"cannot read the client agent at {source}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # A preflight must not create __pycache__ in the checkout. Compile the
+    # source bytes directly so the check neither writes nor trusts a cached
+    # version of the definitions it is supposed to read from this source.
+    try:
+        code = compile(source.read_bytes(), str(source), "exec")
+    except (OSError, SyntaxError) as exc:
+        raise SystemExit(f"cannot read the client agent at {source}: {exc}") from exc
+    exec(code, module.__dict__)
     return module
 
 
