@@ -475,9 +475,14 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("role", choices=["original", "peer"])
-    parser.add_argument("--root", required=True, type=Path)
-    parser.add_argument("--late-status", required=True, choices=["executed", "failed"])
+    parser.add_argument("role", choices=["original", "peer"],
+                        help="actor to run: the original claimant or its recovery peer")
+    parser.add_argument("--root", required=True, type=Path,
+                        help="fresh shared directory beneath /mnt/shared/pb-qualification; "
+                             "use the same directory for both actors")
+    parser.add_argument("--late-status", required=True, choices=["executed", "failed"],
+                        help="result the original claimant reports after recovery; "
+                             "use the same value for both actors")
     parser.add_argument("--stale-claim-read", action="store_true",
                         help="inject the old claim into only the late caller's read; "
                              "require ownership refusal and waiter completion")
