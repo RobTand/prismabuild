@@ -41,6 +41,49 @@ grant, and the receipt records what actually governed
 longer than the ceiling needs a loop started with a larger `--timeout-s`, not
 a larger `--timeout-s` on the submission (RobTand/prismabuild#293).
 
+An action that can say when it commits work need not be bounded by elapsed
+time at all. Declare the phases it walks and the quiet each one is allowed --
+`pbrun --progress-phase startup=1800 --progress-phase encode=900`, or a
+`progress_phases` list in a `pbcampaign` manifest -- and the action reports
+each commitment by writing `prismabuild.action_progress.v1` to the file named
+by `PRISMABUILD_ACTION_PROGRESS_PATH`, echoing `PRISMABUILD_ACTION_PROGRESS_TOKEN`
+(`prismabuild.report_action_progress(phase, units_completed)` does this).
+What then bounds it:
+
+* **no total-duration limit while the count advances.** The worker's ceiling
+  clamps each phase's allowance instead of the whole run.
+* **the sum of the declared allowances** if it never advances. Each phase
+  re-arms once, in the order declared, so that sum is a number the receipt
+  reports (`progress_no_progress_bound_s`) rather than a constant somebody
+  chose.
+* **`--timeout-s` still ends it**, progress or no progress. Precedence is
+  containment, withdrawal, the requested deadline, then the stall allowance.
+
+Advancement is a strictly increasing `units_completed` within a phase, or
+entering a later declared phase. A replayed or regressing counter, an
+undeclared phase, a token from another attempt, printed output and a live
+process are **not** advancement; the receipt says which
+(`progress_observation.last_rejection`). Report after the work is durable --
+a checkpoint written, a unit published -- never on entering a loop, or the
+counter keeps a broken action alive. A stall ends the action with
+`status: timeout` and `termination_reason: no_progress`; a requested deadline
+with `termination_reason: execution_deadline`.
+
+Choose the allowances from what the workload measurably does. PrismaQuant's
+pricing rows declare `startup=3600 pricing=900 finalize=1800` because a fit of
+elapsed time against committed batches over 23 completed 864-unit rows gives
+18.4 s per commit and 943 s for everything outside the pricing loop; the
+6,300 s that follows is less than half the 14,400 s that killed two of them
+mid-round (RobTand/prismabuild#480). Reading a `.progress` file costs one
+small open per running action per heartbeat, in the `claimed/` directory the
+lease already writes to on that same cadence.
+
+`pbrun` **refuses** a progress-declaring submission when no eligible worker
+announces the contract (`pbstatus` shows what each box announces). That is
+deliberate, and stricter than the ceiling notice above: a box that does not
+know the policy would apply its whole-run ceiling to an action submitted
+without one, which is the failure the contract exists to remove.
+
 Use `pbtest.py` to split suites into independent file shards and
 `pbcampaign.py` for explicit action manifests. Cap pytest fanout at `-n 4` with
 one native thread per worker (`OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`,

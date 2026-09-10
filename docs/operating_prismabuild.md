@@ -758,6 +758,18 @@ withdrawal reads. Only time inside those calls is excluded; previously spent
 execution time is never reset, and waits for the payload still consume the
 remaining budget. This does not detect or discount kernel stalls inside a
 payload or a blocked subprocess wait, and does not bound checkpoint I/O itself.
+
+A submission that declares `--progress-phase NAME=SECONDS` (repeatable, in the
+order the work does them) is bounded instead by how long it goes without
+committing work. The worker's ceiling clamps each phase's allowance rather
+than the whole run, and the receipt reports both -- `worker_timeout_ceiling_s`
+is what the box would cut at, `progress_stall_ceiling_s` and the per-phase
+`grace_requested_s`/`grace_ceiling_s`/`grace_s`/`grace_clamped` say what it
+governed, `execution_governed_by` says which policy was in force, and
+`progress_observation` says when the action last actually advanced and what
+was rejected in between. A stall reads `status: timeout` with
+`termination_reason: no_progress`. Combine it with `--timeout-s` when the run
+also needs a cost cap: the deadline still ends a progressing action.
 Withdrawal and resource failures still take precedence when checks return.
 Queue waiting does not consume that budget; `--wait-s` controls the submitter's wait separately. A short budget
 does not wait for the next lease heartbeat before being enforced.

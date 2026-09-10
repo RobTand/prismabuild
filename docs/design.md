@@ -1639,6 +1639,60 @@ waits are capped by the remaining budget independently of lease-heartbeat cadenc
 existing bounded process-group termination and timeout receipt path. SLURM
 continues enforcing the submitter budget through its scheduler time limit.
 
+### Progress-bounded execution
+
+An action may declare, in `params.progress`
+(`prismabuild.action_progress_policy.v1`), an ordered closed list of phases
+with a positive `grace_s` each. The value participates in the action key, as
+`execution_timeout_s` does, so an action admitted under the contract is a
+distinct action from its unbounded twin. Declaring it changes what bounds the
+action: the worker's ceiling is applied to each phase's `grace_s` rather than
+to total duration, and total duration is bounded only by an explicitly sealed
+`execution_timeout_s`.
+
+The channel is `claimed/<key>.progress`, named to the action through
+`PRISMABUILD_ACTION_PROGRESS_PATH` with a per-launch token in
+`PRISMABUILD_ACTION_PROGRESS_TOKEN`. Both are forwarded into the action's own
+environment by `run_local_action` -- the only variables that are, and only
+when the sealed params declare the contract; an action that seals either name
+itself is refused rather than overwritten. The token is minted per launch, not
+per key, so an action that outlived SIGKILL on a previous attempt and still
+holds the path cannot report for its successor.
+
+The worker accepts a record as advancement only when its schema is
+`prismabuild.action_progress.v1`, its token is this launch's, its phase is one
+the policy declared, `units_completed` is finite and non-negative, and either
+that count exceeds the highest accepted so far or the phase index exceeds the
+highest entered so far. Each phase re-arms its allowance at most once, so
+`sum(grace_s)` bounds an action that never advances at all, and that sum is
+reported (`progress_no_progress_bound_s`). Everything else -- replay,
+regression, an undeclared phase, a foreign token, unparsable bytes, an absent
+file -- is counted, not accepted, and appears on the receipt as
+`progress_observation.rejected_count` / `last_rejection`. `_observe_execution`
+is untouched and remains a separate, differently-sourced sample: launcher
+liveness and pipe bytes are still not evidence of application progress.
+
+Timing uses `time.monotonic()`, so a wall-clock jump in either direction
+decides nothing; the record's own `reported_unix` is carried but never
+consumed. Time spent in the loop's own synchronous checkpoints is refunded to
+the stall clock exactly as it is to the deadline. The file is read on the
+lease-heartbeat cadence, in the directory the lease already writes to, and
+once more immediately before a stall would end the action so a record
+published between polls still counts.
+
+Termination precedence is unchanged with one rung added at the bottom:
+resource containment, withdrawal, the sealed deadline, then the stall
+allowance. A stall files `status: timeout` with `termination_reason:
+no_progress`; the sealed deadline files the same status with
+`execution_deadline`. Every ending, including the action's own exit, carries
+`progress_observation` and clears the file through one funnel.
+
+Workers announce `progress_contracts` on their offer, and `pbrun` refuses a
+progress-declaring submission when no eligible box announces support -- a box
+that does not understand the policy would apply its whole-run ceiling to an
+action submitted without one, which is the defect (#480) rather than a
+degraded form of the fix.
+
 The versioned fleet configuration sets both GB10 worker ceilings to 86400
 seconds for dependent full-model calibration capture (issue #385). The CPU
 host retains its 3600-second ceiling. A GB10 action without an explicit budget
