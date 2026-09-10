@@ -3527,14 +3527,80 @@ class PoolQueue:
         with self._preemption_locked(ledger) as acquired:
             if not acquired:
                 return None
+            # Verifying restartability follows immutable withdrawal links and
+            # reads the sealed request.  Neither read changes capacity, and a
+            # slow one must not occupy host admission.  The snapshot is only
+            # advice: selection below still reads the live holder set, tokens,
+            # claim and current withdrawal state under admission, and uses a
+            # proof only for the exact claim it described.
+            proofs = self._preemption_eligibility_proofs(
+                ledger, action_key=action_key)
             with self._admission_lock(controller):
                 selected = self._select_background_holder(
-                    ledger, action_key=action_key, wanted=wanted)
+                    ledger, action_key=action_key, wanted=wanted, proofs=proofs)
             if selected is None:
                 return None
             holder, record = selected
             return self._preempt_selected_holder(
                 holder, record, action_key=action_key)
+
+    def _preemption_eligibility_proofs(
+        self, ledger: ResourceLedger, *, action_key: str,
+    ) -> dict[str, tuple[dict[str, object], dict[str, object], bool]]:
+        """Read immutable restartability proofs before host admission.
+
+        This discovery is deliberately advisory.  A holder can finish, be
+        withdrawn, or be replaced while it runs, so the caller must re-read
+        live capacity, tokens, claim and pending-release state under admission.
+        A proof only applies when that live claim has the same exact identity;
+        missing or changed evidence refuses preemption for this pass.
+        """
+
+        proofs: dict[str, tuple[dict[str, object], dict[str, object], bool]] = {}
+        for holder in ledger.held_keys():
+            if holder == action_key:
+                continue
+            try:
+                record = _read_json(self.item_path(CLAIMED, holder))
+            except PoolContractError:
+                continue
+            if record is None:
+                continue
+            # Protected holders cannot become preemptable from a sealed action
+            # read. Skip the expensive immutable proof; live selection still
+            # accounts for their tokens as a pending release when applicable.
+            try:
+                protected = (int(record.get("priority", 0)) >= 0
+                             or record.get("finish_pending") is not None
+                             or record.get("container_cleanup_pending") is not None)
+            except (TypeError, ValueError):
+                protected = True
+            if not protected:
+                proofs[holder] = (
+                    record, self._preemption_proof_binding(record),
+                    self._preemption_eligible(record))
+        return proofs
+
+    @staticmethod
+    def _preemption_proof_binding(record: Mapping[str, object]) -> dict[str, object]:
+        """The live fields whose values make an eligibility proof applicable.
+
+        Keep this extraction beside ``_preemption_eligible`` rather than
+        reimplementing its decision.  The sealed action proof reads ``cas_root``
+        and ``action_key`` and incorporates ``resources``; the prefix proof and
+        retry gate consume every other field named here.  Fields such as a
+        resource-scope checkpoint can change on a live claim without changing
+        restartability, so comparing the whole record would needlessly defer.
+        """
+
+        return {
+            field: record.get(field)
+            for field in (
+                "action_key", "cas_root", "resources", "retry_safe",
+                "attempts", "attempt_history_missing_before", "max_attempts",
+                "attempt_history", "supersedes_withdrawal",
+            )
+        }
 
     @staticmethod
     @contextmanager
@@ -3567,8 +3633,15 @@ class PoolQueue:
     def _select_background_holder(
         self, ledger: ResourceLedger, *, action_key: str,
         wanted: Mapping[str, int],
+        proofs: Mapping[str, tuple[Mapping[str, object], Mapping[str, object], bool]] | None = None,
     ) -> tuple[str, dict[str, object]] | None:
-        """Read the current gap and pending releases under host admission."""
+        """Read the current gap and pending releases under host admission.
+
+        ``proofs`` was prepared before host admission.  Its CAS and immutable
+        withdrawal-prefix reads may be slow, so it is usable only for a live
+        claim with the same identity.  Capacity, holder tokens, the live claim
+        set and current withdrawal coverage remain this method's authority.
+        """
         try:
             self._refuse_if_fenced()
         except PoolContractError:
@@ -3608,7 +3681,11 @@ class PoolQueue:
                 claimed_unix = float(record.get("claimed_unix") or 0.0)
             except (TypeError, ValueError):
                 continue
-            if holder_priority >= 0 or not self._preemption_eligible(record):
+            proof = None if proofs is None else proofs.get(holder)
+            if (holder_priority >= 0 or proof is None
+                    or not _same_claim(record, proof[0])
+                    or self._preemption_proof_binding(record) != proof[1]
+                    or not proof[2]):
                 continue
             candidates.append(
                 (holder_priority, claimed_unix, holder, record, tokens))

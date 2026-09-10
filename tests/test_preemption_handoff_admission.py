@@ -145,6 +145,83 @@ def test_handoff_exclusion_survives_contention_and_releases_after_owner_crash(ri
         process.join(20)
 
 
+def test_stalled_preemption_eligibility_proof_does_not_hold_host_admission(rig, monkeypatch):
+    """CAS/withdrawal proof is advisory preparation, not capacity authority."""
+    entered, release = threading.Event(), threading.Event()
+    original = rig._preemption_eligible
+    outcome = {}
+
+    def paused(record):
+        entered.set()
+        assert release.wait(20), "test did not release preemption eligibility proof"
+        return original(record)
+
+    monkeypatch.setattr(rig, "_preemption_eligible", paused)
+
+    def run():
+        try:
+            outcome["item"] = claim(rig)
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    stalled = threading.Thread(target=run, daemon=True)
+    stalled.start()
+    try:
+        assert entered.wait(20), "foreground did not prepare preemption eligibility"
+        sibling = pool.PoolQueue(rig.root)
+        publish(sibling, SMALL, 1, -10)
+        winner = claim(sibling)
+        assert winner is not None and winner["action_key"] == SMALL, (
+            "a stalled preemption eligibility proof held host admission")
+    finally:
+        release.set()
+        stalled.join(20)
+    assert not stalled.is_alive() and "error" not in outcome, outcome
+    assert outcome["item"] is None
+    decisions = [d for key in (BACKGROUND, OTHER_BACKGROUND)
+                 for _, d in rig.withdrawal_decisions(key)]
+    assert len(decisions) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("attempts", 1),
+        ("max_attempts", 1),
+        ("retry_safe", False),
+        ("attempt_history", [{"status": "failed"}]),
+        ("attempt_history_missing_before", 0),
+    ],
+)
+def test_changed_claim_cannot_use_a_stale_preemption_eligibility_proof(
+    rig, monkeypatch, field, value,
+):
+    """A stale proof cannot turn a second holder into a preemption victim."""
+    foreground = rig.item_path(pool.READY, FOREGROUND)
+    item = json.loads(foreground.read_text())
+    item["resources"]["mem_gb"] = 7
+    foreground.write_text(json.dumps(item))
+    original = rig._preemption_eligibility_proofs
+
+    def stale(ledger, *, action_key):
+        proofs = original(ledger, action_key=action_key)
+        background = rig.item_path(pool.CLAIMED, BACKGROUND)
+        changed = json.loads(background.read_text())
+        changed[field] = value
+        background.write_text(json.dumps(changed))
+        other = rig.item_path(pool.CLAIMED, OTHER_BACKGROUND)
+        pending = json.loads(other.read_text())
+        pending["finish_pending"] = {"reason": "simulated concurrent finish"}
+        other.write_text(json.dumps(pending))
+        return proofs
+
+    monkeypatch.setattr(rig, "_preemption_eligibility_proofs", stale)
+    assert claim(rig) is None
+    assert not rig.withdrawal_decisions(BACKGROUND)
+    assert not rig.withdrawal_decisions(OTHER_BACKGROUND)
+    assert rig.ledger().held() == {"cpu": 2, "mem_gb": 4}
+
+
 @pytest.mark.parametrize("stage", ["_select_background_holder", "_preempt_selected_holder"])
 def test_handoff_error_releases_exclusion_without_returning_live_tokens(rig, monkeypatch, stage):
     original = getattr(rig, stage)
