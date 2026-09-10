@@ -109,8 +109,9 @@ identity and the live fields it consumed (`retry_safe`, attempt/history/budget
 and lineage, plus the sealed action address/resources), and missing or changed
 evidence defers preemption. This comparison preserves JSON types and field
 presence, so `true` is not `1`, `3` is not `3.0`, and absent is not null.
-Protected foreground, finishing and cleanup-pending
-holders do not incur that sealed proof read. The final
+Nonfinite proof inputs defer that holder without aborting the candidate pass.
+Protected foreground, finishing and cleanup-pending holders do not incur that
+sealed proof read. The final
 per-key withdrawal repeats that exact-claim check, so a concurrent finish,
 withdrawal or successor cannot turn a stale proof into a second victim.
 Shared capacity/holder scans and token moves remain under host admission;

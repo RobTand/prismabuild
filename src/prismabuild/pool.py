@@ -3576,13 +3576,14 @@ class PoolQueue:
             except (TypeError, ValueError):
                 protected = True
             if not protected:
-                proofs[holder] = (
-                    record, self._preemption_proof_binding(record),
-                    self._preemption_eligible(record))
+                binding = self._preemption_proof_binding(record)
+                if binding is not None:
+                    proofs[holder] = (
+                        record, binding, self._preemption_eligible(record))
         return proofs
 
     @staticmethod
-    def _preemption_proof_binding(record: Mapping[str, object]) -> bytes:
+    def _preemption_proof_binding(record: Mapping[str, object]) -> bytes | None:
         """The live fields whose values make an eligibility proof applicable.
 
         Keep this extraction beside ``_preemption_eligible`` rather than
@@ -3596,15 +3597,20 @@ class PoolQueue:
         # Preserve both JSON type and field presence. Python equality would
         # otherwise collapse true with 1, 3 with 3.0, and an absent field with
         # explicit null, while the eligibility gate intentionally does not.
-        return pb._canonical_bytes({
-            field: record[field]
-            for field in (
-                "action_key", "cas_root", "resources", "retry_safe",
-                "attempts", "attempt_history_missing_before", "max_attempts",
-                "attempt_history", "supersedes_withdrawal",
-            )
-            if field in record
-        })
+        try:
+            return pb._canonical_bytes({
+                field: record[field]
+                for field in (
+                    "action_key", "cas_root", "resources", "retry_safe",
+                    "attempts", "attempt_history_missing_before", "max_attempts",
+                    "attempt_history", "supersedes_withdrawal",
+                )
+                if field in record
+            })
+        except pb.ActionContractError:
+            # JSON readers can accept nonfinite values. A corrupt holder is
+            # ineligible; it must not abort the whole host's candidate pass.
+            return None
 
     @staticmethod
     @contextmanager

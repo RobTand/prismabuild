@@ -189,6 +189,7 @@ def test_stalled_preemption_eligibility_proof_does_not_hold_host_admission(rig, 
         ("attempts", 1),
         ("max_attempts", 1),
         ("max_attempts", 3.0),
+        ("max_attempts", float("nan")),
         ("retry_safe", False),
         ("retry_safe", 1),
         ("attempt_history", [{"status": "failed"}]),
@@ -219,6 +220,18 @@ def test_changed_claim_cannot_use_a_stale_preemption_eligibility_proof(
         return proofs
 
     monkeypatch.setattr(rig, "_preemption_eligibility_proofs", stale)
+    assert claim(rig) is None
+    assert not rig.withdrawal_decisions(BACKGROUND)
+    assert not rig.withdrawal_decisions(OTHER_BACKGROUND)
+    assert rig.ledger().held() == {"cpu": 2, "mem_gb": 4}
+
+
+def test_nonfinite_retry_budget_is_ineligible_before_proof_preparation(rig):
+    for key in (BACKGROUND, OTHER_BACKGROUND):
+        path = rig.item_path(pool.CLAIMED, key)
+        record = json.loads(path.read_text())
+        record["max_attempts"] = float("nan")
+        path.write_text(json.dumps(record))
     assert claim(rig) is None
     assert not rig.withdrawal_decisions(BACKGROUND)
     assert not rig.withdrawal_decisions(OTHER_BACKGROUND)
