@@ -228,3 +228,7 @@ The suite never touches the fleet's live store. `tests/conftest.py` repoints
 every default that names the shared mount at the test's own temporary
 directory, and fails the session if anything it wrote still reached the mount.
 Pass a root under `tmp_path` to anything that takes one.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
