@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -480,7 +481,7 @@ def _activate(generation: Path, *, migrate_directory: bool) -> Path | None:
     return legacy
 
 
-def _activate_existing(name: str, *, dry_run: bool) -> int:
+def _activate_existing(name: str, *, dry_run: bool, rollout: str = "rolling") -> int:
     """Point the live runtime at a generation that already exists.
 
     Rollback's whole job.  A generation is immutable and already carries a
@@ -527,6 +528,18 @@ def _activate_existing(name: str, *, dry_run: bool) -> int:
             f"{generation}: receipt is not readable (not a JSON object); this "
             "is not a generation to point the live runtime at."
         )
+    if rollout == "barrier":
+        # A rollback publishes no manifest, so the value to prove the fleet
+        # against is the one already recorded in the generation being restored.
+        files = receipt.get("files")
+        member = _agent_definitions().MEMBERS["upgrade_client.py"]
+        agent_sha = files.get(member) if isinstance(files, dict) else None
+        if not isinstance(agent_sha, str) or not agent_sha:
+            raise SystemExit(
+                f"{generation}: receipt records no sha256 for {member}, so a "
+                "barrier activation cannot be proved against it."
+            )
+        _barrier_preflight(agent_sha, dry_run=dry_run)
     print(
         f"activating {name}: commit {str(receipt.get('commit', ''))[:12]}, "
         f"default transport {receipt.get('default_transport') or 'pool'}"
@@ -536,6 +549,165 @@ def _activate_existing(name: str, *, dry_run: bool) -> int:
     _activate(generation, migrate_directory=False)
     print(f"activated {MIRROR} -> {generation}")
     return 0
+
+
+def _agent_definitions():
+    """The agent's own module, loaded from the checkout being published.
+
+    The coordinator has to spell a marker name exactly the way the agent
+    spelled it, and read the member key exactly as the agent reads it.  Two
+    copies of either spelling agree right up until somebody edits one, so
+    there is one copy and this reads it.  Loading under a private name keeps
+    the checkout's module out of anybody else's import table.
+    """
+
+    source = CHECKOUT / "tools" / "fleet" / "upgrade_client.py"
+    spec = importlib.util.spec_from_file_location(
+        "_publish_runtime_upgrade_client", source
+    )
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot read the client agent at {source}")
+    module = importlib.util.module_from_spec(spec)
+    # A preflight must not create __pycache__ in the checkout. Compile the
+    # source bytes directly so the check neither writes nor trusts a cached
+    # version of the definitions it is supposed to read from this source.
+    try:
+        code = compile(source.read_bytes(), str(source), "exec")
+    except (OSError, SyntaxError) as exc:
+        raise SystemExit(f"cannot read the client agent at {source}: {exc}") from exc
+    exec(code, module.__dict__)
+    return module
+
+
+def _roster_boxes() -> list[tuple[str, frozenset[str]]]:
+    """Every box the fleet declares, with the names it may report itself as.
+
+    A box is keyed here by the name its submissions use as a placement tag,
+    and that is not always what ``gethostname`` returns on it: ``gx10-6b77``
+    answers ``sparklina``.  The file records the second name as ``_alias``
+    precisely because the two are the same box, so both are accepted.
+    """
+
+    try:
+        roster = json.loads((CHECKOUT / "tools" / "fleet" / "fleet_boxes.json").read_text())
+        boxes = roster["boxes"]
+        if not isinstance(boxes, dict) or not boxes:
+            raise ValueError("no boxes declared")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(f"cannot read the fleet roster: {exc}") from exc
+    declared = []
+    for key in sorted(boxes):
+        names = {key}
+        alias = boxes[key].get("_alias") if isinstance(boxes[key], dict) else None
+        if isinstance(alias, str) and alias:
+            names.add(alias)
+        declared.append((key, frozenset(names)))
+    return declared
+
+
+def _attested_agents(agent) -> dict[str, set[str]]:
+    """Which agent versions each host has recorded in the rollout tree.
+
+    A marker is counted only when it proves itself: its body has to parse,
+    carry the agent's schema, and reproduce its own file name through the
+    agent's own name function.  A name alone is a claim about a file; a name
+    that matches the body it sits on is a claim the writer had to mean.
+    Write-once records survive upgrades and downgrades; they do not establish
+    the currently installed version or participation in a particular rollout.
+    """
+
+    directory = MIRROR.parent / agent.ROLLOUT_DIRNAME / agent.AGENTS_DIRNAME
+    try:
+        entries = sorted(entry.name for entry in directory.iterdir())
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise SystemExit(f"cannot read {directory}: {exc}") from exc
+    attested: dict[str, set[str]] = {}
+    for name in entries:
+        parts = name.rsplit(".", 2)
+        if len(parts) != 3 or parts[2] != "json":
+            continue
+        try:
+            with (directory / name).open("rb") as stream:
+                raw = stream.read(agent.MAX_MARKER + 1)
+        except OSError:
+            continue
+        if len(raw) > agent.MAX_MARKER:
+            continue
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(body, dict) or body.get("schema") != agent.ATTESTATION_SCHEMA:
+            continue
+        host = body.get("host")
+        client = body.get("client_sha256")
+        if not isinstance(host, str) or not isinstance(client, str):
+            continue
+        if agent.attestation_name(host, client) != name:
+            continue
+        attested.setdefault(host, set()).add(client)
+    return attested
+
+
+def _require_attested_fleet(agent_sha: str) -> None:
+    """Require historical attestations for the target agent on every box.
+
+    This is only a bootstrap prerequisite. Matching records can remain after
+    every host has moved to another version. A barrier must additionally prove
+    current participation in its own epoch, then its drain and rotation quorums.
+    """
+
+    agent = _agent_definitions()
+    attested = _attested_agents(agent)
+    missing = []
+    for key, names in _roster_boxes():
+        held = set().union(*(attested.get(name, set()) for name in names))
+        if agent_sha in held:
+            continue
+        spelling = key if len(names) == 1 else f"{key} ({'/'.join(sorted(names))})"
+        if not held:
+            # A box that has posted nothing at all is more often a box with no
+            # agent installed than a box one tick behind, and rolling does not
+            # install one.  Say so here rather than let the advice below be
+            # read as covering a case it does not.
+            missing.append(
+                f"  {spelling}: has posted no attestation. A box with no "
+                "client upgrade agent installed cannot hold a barrier at all; "
+                "see docs/client_upgrade.md."
+            )
+        else:
+            posted = ", ".join(sorted(short[:12] for short in held))
+            missing.append(f"  {spelling}: posted versions {posted}")
+    if not missing:
+        return
+    raise SystemExit(
+        "refusing barrier attestation preflight: not every box has posted "
+        f"the agent version this generation requires ({agent_sha[:12]}).\n"
+        + "\n".join(missing)
+        + "\nPublish this generation with --rollout rolling, let each box "
+        "converge and post its attestation, then repeat --rollout barrier "
+        "--dry-run. Historical attestations do not prove current participation."
+    )
+
+
+def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
+    """Expose the history check without granting it activation authority."""
+
+    _require_attested_fleet(agent_sha)
+    if not dry_run:
+        raise SystemExit(
+            "barrier activation is not implemented: historical attestations "
+            "cannot prove current participation, a fleet drain or rotation. "
+            "Use --rollout barrier --dry-run for the attestation preflight; "
+            "issue #458 tracks the required epoch protocol. Nothing was staged "
+            "or activated."
+        )
+    print(
+        "barrier preflight: historical attestations match; current participation, "
+        "drain and rotation have not been proved. Barrier activation is unavailable."
+    )
 
 
 def main() -> int:
@@ -563,6 +735,14 @@ def main() -> int:
              "checkout would not be the same thing.",
     )
     ap.add_argument(
+        "--rollout", choices=("rolling", "barrier"), default="rolling",
+        help="rolling uses independent host convergence (the default). "
+             "barrier requires --dry-run and checks historical agent "
+             "attestations only; it does not prove current participation. "
+             "Actual barrier publication and activation are refused until "
+             "the fleet epoch protocol is implemented.",
+    )
+    ap.add_argument(
         "--dry-run", action="store_true",
         help="report what would happen and write nothing.  A publish still "
              "resolves the commit and still refuses a dirty tree, then lists "
@@ -574,7 +754,9 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.activate_generation is not None:
-        return _activate_existing(args.activate_generation, dry_run=args.dry_run)
+        return _activate_existing(
+            args.activate_generation, dry_run=args.dry_run, rollout=args.rollout
+        )
 
     # Identity is established before MIRROR is even enumerated, much less
     # touched.  Failure here is a refusal, never an empty field in a receipt.
@@ -592,6 +774,15 @@ def main() -> int:
     # which of its members are programs refuses here, not halfway
     # through a tree it then has to clean up.
     index_modes = _git_index_modes()
+    if args.rollout == "barrier":
+        member = _agent_definitions().MEMBERS["upgrade_client.py"]
+        agent_sha = published.get(member)
+        if not isinstance(agent_sha, str) or not agent_sha:
+            raise SystemExit(
+                f"this publication carries no {member}, so a barrier rollout "
+                "has nothing to prove the fleet against."
+            )
+        _barrier_preflight(agent_sha, dry_run=args.dry_run)
 
     print(f"publishing {len(published)} files from {commit[:12]}"
           f"{' (dirty)' if dirty else ''} to {MIRROR}")

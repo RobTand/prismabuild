@@ -2016,6 +2016,17 @@ half-copied mixture.
 `--dry-run` prints the commit and every file that would be published, and
 writes nothing.
 
+`--rollout rolling` is the default: hosts converge independently.
+`--rollout barrier --dry-run` additionally checks whether every roster host
+has posted a historical attestation for the target updater version. With
+`--activate-generation`, it checks the version in that generation's receipt.
+The preflight reports missing hosts and previously posted versions. A match
+does not establish current participation, a fleet drain or completed rotation;
+write-once markers survive later version changes. Actual barrier publication
+and activation are refused before staging or moving `repo` until the epoch
+protocol tracked in #458 is implemented. A successful preflight is not a
+barrier rollout or permission to bypass the publication window.
+
 The generation includes the execution skill, `docs/**/*.md`, `README.md` and
 `AGENTS.md`. The skill's required policy and operating guide, and their linked
 reference guides, therefore travel with the code they describe. Follow the
