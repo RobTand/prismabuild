@@ -107,7 +107,9 @@ selection then re-reads the holder set, capacity, tokens, claim and current
 withdrawal coverage under admission; a proof names only its exact claim
 identity and the live fields it consumed (`retry_safe`, attempt/history/budget
 and lineage, plus the sealed action address/resources), and missing or changed
-evidence defers preemption. Protected foreground, finishing and cleanup-pending
+evidence defers preemption. This comparison preserves JSON types and field
+presence, so `true` is not `1`, `3` is not `3.0`, and absent is not null.
+Protected foreground, finishing and cleanup-pending
 holders do not incur that sealed proof read. The final
 per-key withdrawal repeats that exact-claim check, so a concurrent finish,
 withdrawal or successor cannot turn a stale proof into a second victim.

@@ -3546,7 +3546,7 @@ class PoolQueue:
 
     def _preemption_eligibility_proofs(
         self, ledger: ResourceLedger, *, action_key: str,
-    ) -> dict[str, tuple[dict[str, object], dict[str, object], bool]]:
+    ) -> dict[str, tuple[dict[str, object], bytes, bool]]:
         """Read immutable restartability proofs before host admission.
 
         This discovery is deliberately advisory.  A holder can finish, be
@@ -3556,7 +3556,7 @@ class PoolQueue:
         missing or changed evidence refuses preemption for this pass.
         """
 
-        proofs: dict[str, tuple[dict[str, object], dict[str, object], bool]] = {}
+        proofs: dict[str, tuple[dict[str, object], bytes, bool]] = {}
         for holder in ledger.held_keys():
             if holder == action_key:
                 continue
@@ -3582,7 +3582,7 @@ class PoolQueue:
         return proofs
 
     @staticmethod
-    def _preemption_proof_binding(record: Mapping[str, object]) -> dict[str, object]:
+    def _preemption_proof_binding(record: Mapping[str, object]) -> bytes:
         """The live fields whose values make an eligibility proof applicable.
 
         Keep this extraction beside ``_preemption_eligible`` rather than
@@ -3593,14 +3593,18 @@ class PoolQueue:
         restartability, so comparing the whole record would needlessly defer.
         """
 
-        return {
-            field: record.get(field)
+        # Preserve both JSON type and field presence. Python equality would
+        # otherwise collapse true with 1, 3 with 3.0, and an absent field with
+        # explicit null, while the eligibility gate intentionally does not.
+        return pb._canonical_bytes({
+            field: record[field]
             for field in (
                 "action_key", "cas_root", "resources", "retry_safe",
                 "attempts", "attempt_history_missing_before", "max_attempts",
                 "attempt_history", "supersedes_withdrawal",
             )
-        }
+            if field in record
+        })
 
     @staticmethod
     @contextmanager
@@ -3633,7 +3637,7 @@ class PoolQueue:
     def _select_background_holder(
         self, ledger: ResourceLedger, *, action_key: str,
         wanted: Mapping[str, int],
-        proofs: Mapping[str, tuple[Mapping[str, object], Mapping[str, object], bool]] | None = None,
+        proofs: Mapping[str, tuple[Mapping[str, object], bytes, bool]] | None = None,
     ) -> tuple[str, dict[str, object]] | None:
         """Read the current gap and pending releases under host admission.
 

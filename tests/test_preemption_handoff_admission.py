@@ -188,9 +188,12 @@ def test_stalled_preemption_eligibility_proof_does_not_hold_host_admission(rig, 
     [
         ("attempts", 1),
         ("max_attempts", 1),
+        ("max_attempts", 3.0),
         ("retry_safe", False),
+        ("retry_safe", 1),
         ("attempt_history", [{"status": "failed"}]),
         ("attempt_history_missing_before", 0),
+        ("attempt_history_missing_before", None),
     ],
 )
 def test_changed_claim_cannot_use_a_stale_preemption_eligibility_proof(
