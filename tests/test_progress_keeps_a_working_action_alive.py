@@ -19,6 +19,7 @@ from prismabuild import core as pb, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+import pbstatus  # noqa: E402
 
 
 #: The action side of the contract, written without importing PrismaBuild on
@@ -551,3 +552,103 @@ def test_a_progress_submission_seals_the_capability_it_needs(
         {"name": "startup", "grace_s": 1800.0},
         {"name": "run", "grace_s": 900.0},
     ]
+
+
+# --------------------------------------------------------------------------
+# What an operator sees while it runs
+# --------------------------------------------------------------------------
+
+def _watched(tmp_path) -> tuple[pool.ProgressWatch, pool.ProgressPolicy]:
+    """A real watch that has accepted twelve real records, in the second phase.
+
+    Built through ``sample`` rather than by assigning its fields, so what
+    ``pbstatus`` reads is what the worker actually writes.  The two halves of
+    this contract were added in one change and could drift in one change.
+    """
+
+    policy = pool.ProgressPolicy(
+        (pool.ProgressPhase("startup", 3600.0, None),
+         pool.ProgressPhase("pricing", 900.0, None)),
+        None,
+    )
+    record = tmp_path / "progress.json"
+    watch = pool.ProgressWatch(record, "tok", policy, started=0.0)
+    for unit in range(1, 13):
+        record.write_text(json.dumps({
+            "schema": pb.PROGRESS_RECORD_SCHEMA_V1, "token": "tok",
+            "phase": "pricing", "units_completed": unit,
+            "unit": "anchor", "reported_unix": 1.0 * unit,
+        }), encoding="utf-8")
+        assert watch.sample(now=float(unit)) is True
+    assert watch.accepted == 12 and watch.grace_s == 900.0
+    return watch, policy
+
+
+def _claim_with(queue, key, observation, *, tmp_path, overrides=()):
+    """Publish, claim, and put ``observation`` on the lease of that attempt."""
+
+    queue.publish(action_key=key, cas_root=tmp_path / "cas",
+                  checkout_root=tmp_path, worker_script="/worker.py")
+    item = queue.claim(owner="worker")
+    assert item is not None
+    lease = json.loads(queue.lease_path(key).read_text(encoding="utf-8"))
+    lease["published_unix"] = item["published_unix"]
+    lease["progress_observation"] = observation
+    lease.update(overrides)
+    queue.lease_path(key).write_text(json.dumps(lease), encoding="utf-8")
+    return next(row for row in pbstatus.read_pool(queue.root)["jobs"]
+                if row["action_key"] == key)
+
+
+def test_status_says_how_quiet_a_progress_action_is_against_its_allowance(
+    tmp_path
+):
+    """``OUTPUT`` is the age #480 says proves nothing.  ``PROGRESS`` is the
+    reading the watchdog acts on, and an operator can now see both."""
+
+    watch, _ = _watched(tmp_path)
+    queue = pool.PoolQueue(tmp_path / "queue")
+    # 41 s of monotonic time after the twelfth record, inside a 900 s phase.
+    row = _claim_with(queue, "d" * 64, watch.as_record(now=53.0),
+                      tmp_path=tmp_path)
+
+    assert row["progress_observation"] == "pricing quiet 41/900s (12 accepted)"
+    rendered = "\n".join(pbstatus.pool_job_lines([row], {"empty": False}))
+    assert "PROGRESS" in rendered
+    assert "pricing quiet 41/900s (12 accepted)" in rendered
+
+
+@pytest.mark.parametrize("field", ["owner", "host", "claimed_unix",
+                                   "published_unix", "action_key"])
+def test_a_lease_naming_another_attempt_reports_no_progress(tmp_path, field):
+    """The same gate the execution observation is held to.  A record left by
+    the attempt before this one describes work this claim is not doing, and a
+    column that showed it would say a stuck action was advancing."""
+
+    watch, _ = _watched(tmp_path)
+    queue = pool.PoolQueue(tmp_path / "queue")
+    row = _claim_with(queue, "e" * 64, watch.as_record(now=53.0),
+                      tmp_path=tmp_path, overrides={field: "elsewhere"})
+
+    assert row["progress_observation"] is None
+    assert "quiet" not in "\n".join(
+        pbstatus.pool_job_lines([row], {"empty": False}))
+
+
+@pytest.mark.parametrize("observation", [
+    {"quiet_s": -1.0, "grace_s": 900.0},            # before the first record
+    {"quiet_s": float("inf"), "grace_s": 900.0},    # a clock that jumped
+    {"quiet_s": 41.0, "grace_s": None},             # a policy with no number
+    {"quiet_s": "41", "grace_s": 900.0},            # a string from somewhere
+    "pricing quiet 41s",                            # not a record at all
+])
+def test_an_unreadable_progress_record_reports_nothing_rather_than_a_number(
+    tmp_path, observation
+):
+    """A malformed observation has one bounded outcome, and it is silence:
+    ``KILL AT`` remains the number to read, which is true of an action that
+    declared no policy either."""
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    row = _claim_with(queue, "f" * 64, observation, tmp_path=tmp_path)
+    assert row["progress_observation"] is None

@@ -412,12 +412,13 @@ def _run_loop(stop_requested):
         change while this loop runs; see the re-read at the top of the poll.
         """
 
-        tags = [args.klass, name, *args.tag, pb.PROGRESS_TAG]
+        tags = [args.klass, name, *args.tag]
         if not gpu_capable:
             # A box with no GPU must say so, or an action demanding gpu=1
             # matches it on tags and then fails at run time instead of waiting
             # for a box that can serve it.
             tags.append("cpu")
+        tags.append(pb.PROGRESS_TAG)
         return tags
 
     host = socket.gethostname()
