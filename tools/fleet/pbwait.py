@@ -571,11 +571,33 @@ def main(argv=None) -> int:
                     help="how long to wait for ALL of them, not for each")
     ap.add_argument("keys", nargs="+", metavar="KEY",
                     help="action key, or a prefix of one already recorded")
+    ap.add_argument("--reconcile-pool", action="store_true",
+                    help="verify a failed broker-EOF action's receipt and append immutable recovery evidence")
+    ap.add_argument("--generation",
+                    help="exact pool attempt-generation digest; required with --reconcile-pool")
+    ap.add_argument("--attempt", type=int,
+                    help="final attempt number; required with --reconcile-pool")
     args = ap.parse_args(argv)
+
+    if args.reconcile_pool:
+        if len(args.keys) != 1 or args.generation is None or args.attempt is None:
+            ap.error("--reconcile-pool requires one KEY, --generation and --attempt")
+    elif args.generation is not None or args.attempt is not None:
+        ap.error("--generation and --attempt require --reconcile-pool")
 
     queue = pool.PoolQueue(pbrun.SH / "pb-queue")
     cas = pb.PrismaBuildCAS(pbrun.SH / "cas")
     keys = [resolve_key(queue, name) for name in args.keys]
+    if args.reconcile_pool:
+        from prismabuild.pool_reconcile import reconcile
+        try:
+            result = reconcile(queue, keys[0], cas=cas, generation=args.generation,
+                               attempt=args.attempt)
+        except (OSError, ValueError, pb.CASTamperError) as exc:
+            print(f"pbwait: pool reconciliation refused: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, sort_keys=True))
+        return 0
     rows = wait_for_keys(queue, keys, cas=cas, wait_s=args.wait_s)
     print(render(rows))
     return verdict(rows)

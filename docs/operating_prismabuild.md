@@ -607,6 +607,42 @@ After a 75 that says the fate of a submission is unknown, run the `squeue` in
 the message instead. There is nothing to wait on: no submission was recorded,
 because none is known.
 
+### Recover a receipt after a pool broker reply is lost
+
+A broker connection can close while its payload completes and publishes a
+valid CAS receipt. The pool retains `failed`, wrapper return code 125, and the
+broker EOF diagnostic. To verify that action's reusable output without
+submitting another run, explicitly reconcile its current failed generation:
+
+```sh
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbwait.py \
+  --reconcile-pool --generation GENERATION_SHA256 --attempt 1 ACTION_KEY
+```
+
+Use the generation digest and final attempt number from the failed ending's
+`attempt_history` path (`attempts/<key>/<generation>/<number>.json`). This mode
+accepts one key. It verifies the canonical immutable action, receipt, producer
+attestation and payload, the archived attempt and log hashes, and complete
+cleanup of that exact scope. It refuses active work, leases, reservations,
+conflicting terminals or claim intents, missing evidence, timeout, withdrawal,
+OOM, other resource termination and any launcher failure other than the exact
+broker completion EOF. The retained claim intent of the completed attempt is
+normal. No scope is stopped and no reservation is released by reconciliation.
+
+On success it prints JSON with `status: payload_verified`, `result_scope:
+action`, `transport_status: failed`, the original return code 125, the verified
+result digest and an immutable `reconciliation_path` beside the attempt. Exit 0
+means that explicit verification succeeded. It does not assert this attempt
+exited zero: a CAS receipt binds an action, not its pool generation or nonce.
+Repeated reconciliation revalidates the evidence and reuses the same supplement.
+Refusal exits 1 and argument errors exit 2.
+
+The original ending and logs remain intact. Ordinary `pbwait`, `pbrun` and
+campaign waits continue to report the transport failure; they do not silently
+adopt the supplement. A consumer choosing explicit recovery must use the
+verified action result it names. Reconciliation repairs the recovery and
+provenance gap; it does not repair the cause of a broker disconnect.
+
 ### When the pull queue is fenced
 
 `fleet/slurm/cutover.sh` closes the pull queue to new submissions before it
@@ -2354,6 +2390,14 @@ shared broker snapshot and does not launch per-worker GPU probes.
 No loop-count tuning is required for ordinary operation. `--loops N` is the
 operator opt-out that fixes the count at `N`; `--once` retains deterministic
 one-shot behavior and tops up only to the configured floor.
+
+The supervisor reaps exited direct children before each cycle's generation
+check and census, including children inherited across a previous re-exec.
+It logs the number collected when nonzero and limits collection to 256
+nonblocking waits per cycle. Larger zombie backlogs drain over later cycles;
+live workers continue running. Publishing the fix lets the existing supervisor
+collect its backlog without a restart. Normal publication constraints still
+apply; a merge alone does not change the running supervisor.
 
 ### Keeping a supervisor alive across a reboot
 

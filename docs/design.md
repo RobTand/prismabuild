@@ -101,6 +101,19 @@ returned before the holder's normal cleanup. The preemption lock is a permanent
 as admission; it is never removed or released on a timeout. Changing the root
 or mixing generations that do and do not use this lock requires drained work
 and completed worker rotation before submissions resume.
+Restartability proof (the sealed action class and immutable prior-withdrawal
+chain) is read before admission while that handoff lock is held. The live
+selection then re-reads the holder set, capacity, tokens, claim and current
+withdrawal coverage under admission; a proof names only its exact claim
+identity and the live fields it consumed (`retry_safe`, attempt/history/budget
+and lineage, plus the sealed action address/resources), and missing or changed
+evidence defers preemption. This comparison preserves JSON types and field
+presence, so `true` is not `1`, `3` is not `3.0`, and absent is not null.
+Nonfinite proof inputs defer that holder without aborting the candidate pass.
+Protected foreground, finishing and cleanup-pending holders do not incur that
+sealed proof read. The final
+per-key withdrawal repeats that exact-claim check, so a concurrent finish,
+withdrawal or successor cannot turn a stale proof into a second victim.
 Shared capacity/holder scans and token moves remain under host admission;
 this separation does not make admission NFS-free or bound a shared syscall.
 
@@ -1967,6 +1980,30 @@ and grants no CPU lending credit. Creates carry a recovery protocol marker;
 older brokers refuse it before mutation, and workers defer without consuming an
 attempt until the installed authority has upgraded.
 
+Pool receipt reconciliation is an explicit evidence operation, exposed by
+`pbwait --reconcile-pool --generation <digest> --attempt <number> <key>`.
+It requires the current failed submission generation and its final immutable
+attempt, the exact broker-completion EOF diagnostic with launcher code 125,
+verified immutable logs, and complete cleanup for the same action, nonce,
+scope and host. Timeout, withdrawal, OOM, other resource termination,
+outstanding work or capacity, and conflicting records refuse reconciliation.
+The completed claimant's retained intent is accepted only when its identity
+and timestamp match that attempt. The operation shares the queue's per-key
+transition lock; CAS verification holds no host admission lock.
+
+The canonical action, receipt, producer attestation and result blob are
+verified before publishing a first-writer-wins immutable supplement at
+`attempts/<key>/<generation>/<number>.receipt-reconciliation.json`. It binds
+the original terminal and attempt hashes, log addresses, cleanup evidence and
+verified action result. It records `payload_verified` for the action alongside
+the unchanged failed transport and return code 125. Receipt identity does not
+bind a pool attempt, so this never claims that attempt exited zero. A repeated
+explicit call revalidates all inputs and refuses conflicting supplement bytes.
+Normal wait, retry, admission and terminal readers retain their existing
+semantics; they do not interpret the supplement as another terminal or as
+permission to restart work. Shared filesystem reads are synchronous and can
+delay this explicit operation; it grants no deadline or missing-data bypass.
+
 Worker-loop count supplies enough claimants to exercise this admission policy
 without becoming a second scheduler. `fleet_boxes.json` declares an automatic
 floor. Above that floor the supervisor sizes on the claims the box is holding:
@@ -1988,6 +2025,16 @@ proven idle by one batched claim census plus local process state receive
 bounded tick, spawning is amortized, and monotonically allocated log slots
 preserve append evidence across shrink and growth. `--loops` explicitly selects
 fixed mode, while `--once` tops up only to the configured floor.
+
+The supervisor owns reaping its exited direct children across runtime re-exec.
+Before each cycle's re-exec check and census, it makes at most 256 nonblocking
+`waitpid(-1, WNOHANG)` calls, stopping when no exited child is available. The
+kernel retains child ownership across exec even though Python's subprocess
+registry is lost. An inherited backlog larger than the per-cycle budget drains
+over subsequent cycles without restarting the supervisor or signalling live
+workers. The supervisor is single-threaded; synchronous subprocess status reads
+finish between these boundaries, and worker-loop exit statuses have no other
+consumer. `SIGCHLD` remains unchanged so descendants retain real failure statuses.
 
 Every claim, offer, receipt and CAS read crosses one shared filesystem, and
 the fleet measures it per box. `tools/fleet/mount_latency.py` samples three
