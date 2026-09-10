@@ -82,7 +82,22 @@ lease already writes to on that same cadence.
 announces the contract (`pbstatus` shows what each box announces). That is
 deliberate, and stricter than the ceiling notice above: a box that does not
 know the policy would apply its whole-run ceiling to an action submitted
-without one, which is the failure the contract exists to remove.
+without one, which is the failure the contract exists to remove. On a mixed
+fleet the submission is narrowed instead: it requires the `progress-v1` tag
+that only an upgraded worker offers, so an old box cannot claim it, and the
+notice names the boxes being waited past.
+
+Two more refusals, both fail-closed. `--progress-phase` requires the pool
+transport -- the watchdog is the pull-queue worker's, and SLURM can enforce
+only a total duration -- and an action that declares a policy refuses to
+launch if the launcher gave it no channel, rather than running with nothing
+bounding it.
+
+`pbstatus`'s job table has a `PROGRESS` column beside `OUTPUT`: the quiet time
+against the current phase's allowance, and how many reports have been accepted.
+`OUTPUT` age is log traffic and proves nothing; `PROGRESS` is what the watchdog
+acts on. A blank column means the action declared no policy, so `KILL AT` is
+the number that governs it.
 
 Use `pbtest.py` to split suites into independent file shards and
 `pbcampaign.py` for explicit action manifests. Cap pytest fanout at `-n 4` with

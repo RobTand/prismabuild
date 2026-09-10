@@ -567,6 +567,44 @@ def _age(timestamp: object, now: float) -> float | None:
     return now - timestamp
 
 
+def _progress_observation(claim: dict, lease: dict | None, *, now: float) -> str | None:
+    """How long this action has been quiet, against what it is allowed.
+
+    The column beside it -- OUTPUT age -- is the number #480 says proves
+    nothing: a launcher writing log lines is not an application committing
+    work.  This is the other reading, and it is the one the watchdog acts on.
+    ``None`` when the action declared no policy, so a whole-run ceiling still
+    governs it and ``KILL AT`` is the number to read.
+
+    Held to the same attempt identity as the execution observation: a lease
+    naming another claim describes another run.
+    """
+
+    value = (lease or {}).get("progress_observation")
+    if not isinstance(value, dict) or lease is None:
+        return None
+    if any(lease.get(left) is None or lease.get(left) != claim.get(right)
+           for left, right in _OBSERVATION_IDENTITY):
+        return None
+    quiet, grace = value.get("quiet_s"), value.get("grace_s")
+    if not all(type(v) in (int, float) and math.isfinite(v) and v >= 0
+               for v in (quiet, grace)):
+        return None
+    phase = value.get("phase")
+    accepted = value.get("accepted_count")
+    said = f"{phase if isinstance(phase, str) and phase else '?'} "
+    said += f"quiet {float(quiet):.0f}/{float(grace):g}s"
+    if type(accepted) is int:
+        said += f" ({accepted} accepted)"
+    return said
+
+
+#: What a lease must say about itself before either observation on it is read.
+_OBSERVATION_IDENTITY = (("action_key", "action_key"), ("owner", "claimed_by"),
+                         ("host", "claimed_host"), ("claimed_unix", "claimed_unix"),
+                         ("published_unix", "published_unix"))
+
+
 def _execution_observation(claim: dict, lease: dict | None, *, now: float) -> dict:
     """Interpret optional execution evidence without granting recovery rights."""
     unknown = {"state": "unavailable", "launcher_alive": None,
@@ -575,12 +613,9 @@ def _execution_observation(claim: dict, lease: dict | None, *, now: float) -> di
     value = (lease or {}).get("execution_observation")
     if value is None:
         return unknown
-    identity = (("action_key", "action_key"), ("owner", "claimed_by"),
-                ("host", "claimed_host"), ("claimed_unix", "claimed_unix"),
-                ("published_unix", "published_unix"))
     if (not isinstance(value, dict)
             or any(lease.get(left) is None or lease.get(left) != claim.get(right)
-                   for left, right in identity)):
+                   for left, right in _OBSERVATION_IDENTITY)):
         return {**unknown, "state": "invalid", "note": "execution observation identity invalid"}
     sampled = value.get("sampled_unix")
     output = value.get("last_output_unix")
@@ -796,6 +831,8 @@ def read_pool(queue_root: str | Path) -> dict:
                                     f" over {row['cleanup_pending_s']:.0f}s")
                     observation = _execution_observation(record, sidecar, now=now)
                     row['execution_observation'] = observation
+                    row['progress_observation'] = _progress_observation(
+                        record, sidecar, now=now)
                     row['reason'] = '; '.join(filter(None, (row.get('reason'), observation['note'])))
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 row.update(state='UNREADABLE', reason=str(exc))
@@ -822,6 +859,9 @@ def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
              ABSENT if n.get('loops') is None else n['loops'],
              # What this box will kill an action at, whatever --timeout-s asked
              # for.  ABSENT is "the offer predates the field", not "no limit".
+             # An action admitted under the progress contract is the exception:
+             # this ceiling re-aims at each phase's quiet instead of the whole
+             # run, and the job table's PROGRESS column is what governs it.
              ABSENT if n.get('timeout_ceiling_s') is None
              else f"{float(n['timeout_ceiling_s']):g}s",
              n.get('capacity'), n.get('observed_capacity'),
@@ -833,10 +873,11 @@ def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
 def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, object]) -> list[str]:
     if not jobs:
         return ["no jobs ready or claimed" if summary.get('empty') is True else "pool job state unavailable"]
-    return render_table(("KEY", "STATE", "NODE", "RESOURCES", "AGE", "LEASE", "OUTPUT", "PASSES", "RELEASES",
-                         "MATCHING", "NOTE"), (
+    return render_table(("KEY", "STATE", "NODE", "RESOURCES", "AGE", "LEASE", "OUTPUT", "PROGRESS",
+                         "PASSES", "RELEASES", "MATCHING", "NOTE"), (
         (j['action_key_prefix'], j['state'], j.get('node'), j.get('resources'), j.get('age_s'),
          j.get('lease_age_s'), (j.get('execution_observation') or {}).get('last_output_age_s'),
+         j.get('progress_observation'),
          j.get('admission_passes'), j.get('unstarted_releases'), j.get('placeable_hosts'),
          j.get('reason')) for j in jobs))
 

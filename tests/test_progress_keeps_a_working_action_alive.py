@@ -259,9 +259,33 @@ def test_the_action_is_told_where_to_report_only_when_it_declared(tmp_path):
         with pytest.raises(pb.ActionContractError, match="seals"):
             pb._progress_environment(
                 declaring, {pb.ACTION_PROGRESS_PATH_ENV: "/elsewhere"})
-    finally:
-        del os.environ[pb.ACTION_PROGRESS_PATH_ENV]
         del os.environ[pb.ACTION_PROGRESS_TOKEN_ENV]
+        with pytest.raises(pb.ActionContractError, match="must set both"):
+            pb._progress_environment(declaring, {})
+    finally:
+        os.environ.pop(pb.ACTION_PROGRESS_PATH_ENV, None)
+        os.environ.pop(pb.ACTION_PROGRESS_TOKEN_ENV, None)
+
+
+def test_a_launcher_with_no_channel_refuses_rather_than_running_unbounded(tmp_path):
+    """The dangerous half of a missing channel is the quiet one.
+
+    Half a channel was already refused.  *No* channel used to return ``{}``,
+    which launched an action admitted under the contract with nothing watching
+    it -- and on a transport that sends no deadline of its own, nothing bounding
+    it at all.  Point 5 says a missing progress channel has a documented bounded
+    outcome; refusing the launch is that outcome.
+    """
+
+    for name in (pb.ACTION_PROGRESS_PATH_ENV, pb.ACTION_PROGRESS_TOKEN_ENV):
+        assert name not in os.environ
+    declaring = {"params": {pb.PROGRESS_PARAM: _policy(1)}}
+    with pytest.raises(pb.ActionContractError) as raised:
+        pb._progress_environment(declaring, {})
+    said = str(raised.value)
+    assert pb.ACTION_PROGRESS_PATH_ENV in said
+    assert pb.ACTION_PROGRESS_TOKEN_ENV in said
+    assert "Nothing would bound this run" in said
 
 
 def test_the_reporter_writes_what_the_worker_accepts(tmp_path):
@@ -388,13 +412,16 @@ def test_a_fleet_that_cannot_honour_the_contract_refuses_the_submission(tmp_path
             queue, _intent([]), policy=_policy(1800, 900))
 
 
-def test_a_mixed_fleet_is_warned_about_rather_than_refused(tmp_path):
+def test_a_mixed_fleet_is_narrowed_rather_than_refused(tmp_path):
+    """A rolling upgrade is admitted, and named -- the old boxes are passed by."""
+
     queue = _fleet(tmp_path, {"dl380g10": [pb.PROGRESS_RECORD_SCHEMA_V1],
                               "sparky": None})
     said = pbrun.progress_contract_notice(
         queue, _intent([]), policy=_policy(1800, 900))
     assert "sparky do not announce" in said
-    assert "its own execution ceiling still bounds the whole run" in said
+    assert f"requires the {pb.PROGRESS_TAG} tag" in said
+    assert "waits for a box that does" in said
 
 
 def test_the_submitter_is_told_the_total_quiet_it_just_asked_for(tmp_path):
@@ -409,3 +436,118 @@ def test_the_submitter_is_told_the_total_quiet_it_just_asked_for(tmp_path):
 def test_no_policy_says_nothing(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": None})
     assert pbrun.progress_contract_notice(queue, _intent([]), policy=None) == ""
+
+
+def test_a_box_that_cannot_keep_the_policy_cannot_claim_the_work(tmp_path):
+    """The closure the notice above can only report.
+
+    During a rolling upgrade both generations poll the same queue, and a
+    printed warning cannot decline a claim.  An old loop offers no
+    ``PROGRESS_TAG``, and item tags must be a subset of the worker's, so the
+    matcher that already exists is what keeps a progress-admitted action away
+    from a box whose whole-run ceiling would end it.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "task.py").write_text("print('ok')\n")
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": "tests/progress-tag", "definition_version": "v1",
+                 "task_class": "generation", "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": [sys.executable, "task.py"],
+                 "working_directory": ".", "result_path": "result"},
+        "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
+        "params": {pb.PROGRESS_PARAM: _policy(1800)},
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    cas.publish_action_request(action)
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.publish(action_key=action["action_key"], cas_root=cas.root,
+                  checkout_root=checkout,
+                  tags=["x86", pb.PROGRESS_TAG],
+                  worker_script=Path(__file__).resolve().parents[1]
+                  / "tools" / "prismabuild_worker.py")
+
+    previous_generation = ["x86", "dl380g10", "cpu"]
+    assert queue.claim(tags=previous_generation) is None
+    claimed = queue.claim(tags=[*previous_generation, pb.PROGRESS_TAG])
+    assert claimed is not None
+    assert claimed["action_key"] == action["action_key"]
+
+
+# -- transports that cannot enforce it are not offered it ------------------
+
+def test_the_slurm_lane_refuses_a_contract_it_cannot_enforce():
+    """The watchdog is the pull-queue worker's; SLURM has only ``--time``.
+
+    Sealing the policy there admitted the action on the promise that its own
+    advancement bounds it, and then ran it with no watchdog -- and, absent
+    ``--timeout-s``, no deadline either.
+    """
+
+    policy = pbrun.parse_progress_phases(["startup=1800", "run=900"])
+    pbrun.require_progress_scope(progress=policy, transport="pool")
+    pbrun.require_progress_scope(progress=None, transport="slurm")
+    with pytest.raises(ValueError, match="requires pool transport"):
+        pbrun.require_progress_scope(progress=policy, transport="slurm")
+
+
+def test_a_campaign_row_cannot_carry_phases_to_slurm():
+    """Asked of pbrun in pbrun's own words, like every other row refusal."""
+
+    import pbcampaign  # noqa: PLC0415  -- tools/fleet is on sys.path above
+
+    row = {"argv": ["/bin/true"], "progress_phases": ["startup=1800"]}
+    pbcampaign._require_submittable_row(row, index=3, transport="pool")
+    with pytest.raises(pbcampaign.ManifestError, match="requires pool transport"):
+        pbcampaign._require_submittable_row(row, index=3, transport="slurm")
+    # And a phase the flag would refuse is refused with the rest of the
+    # manifest, rather than at the submission of row 41.
+    with pytest.raises(pbcampaign.ManifestError, match="NAME=SECONDS"):
+        pbcampaign._require_submittable_row(
+            {"argv": ["/bin/true"], "progress_phases": ["startup"]},
+            index=3, transport="pool")
+
+
+def test_a_progress_submission_seals_the_capability_it_needs(
+    tmp_path, monkeypatch, capsys
+):
+    """End to end: the flag reaches the queue item as a placement requirement."""
+
+    from test_pbrun_detach import _checkout, _one_json_line, _run_pbrun  # noqa: PLC0415
+
+    work = _checkout(tmp_path)
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.announce(
+        host="sparky", tags=["sparky", "gb10", pb.PROGRESS_TAG], has_gpu=True,
+        capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
+        timeout_ceiling_s=7200.0,
+        progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
+    )
+    assert _run_pbrun(
+        tmp_path, monkeypatch, work,
+        "--detach", "--progress-phase", "startup=1800",
+        "--progress-phase", "run=900",
+    ) == 0
+
+    captured = capsys.readouterr()
+    line = _one_json_line(captured)
+    item = json.loads(Path(line["submission"]).read_text(encoding="utf-8"))
+    assert pb.PROGRESS_TAG in item["tags"]
+    assert "at most 2700s of quiet in total" in captured.err
+
+    # And the sealed request carries the policy the receipt will name -- read
+    # off disk by the same path ``pool._sealed_progress_policy`` reads.
+    key = line["action_key"]
+    request = json.loads(
+        (Path(item["cas_root"]) / "requests" / key[:2] / f"{key}.json")
+        .read_text(encoding="utf-8"))
+    assert request["params"][pb.PROGRESS_PARAM]["phases"] == [
+        {"name": "startup", "grace_s": 1800.0},
+        {"name": "run", "grace_s": 900.0},
+    ]

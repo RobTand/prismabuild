@@ -771,6 +771,12 @@ was rejected in between. A stall reads `status: timeout` with
 `termination_reason: no_progress`. Combine it with `--timeout-s` when the run
 also needs a cost cap: the deadline still ends a progressing action.
 Withdrawal and resource failures still take precedence when checks return.
+The contract is pool-only: `--progress-phase` with `--transport slurm` is
+refused, because the SLURM lane can enforce only a total duration. It also
+requires the `progress-v1` tag, which only a worker that can run the watchdog
+offers, so an old loop mid-upgrade cannot claim the action; `pbstatus`'s node
+table shows what each box announces, and its job table's `PROGRESS` column
+shows a running action's quiet time against the allowance in force.
 Queue waiting does not consume that budget; `--wait-s` controls the submitter's wait separately. A short budget
 does not wait for the next lease heartbeat before being enforced.
 

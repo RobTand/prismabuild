@@ -1756,6 +1756,13 @@ def progress_contract_notice(
     action submitted *without* a total-duration limit, which is the exact
     silent kill of a progressing run that #480 is about.  Submitting into that
     would hand back the defect wearing the fix's name.
+
+    On a mixed fleet this only *reports*.  What stops an old box claiming the
+    work is ``PROGRESS_TAG``, which the submission requires and only an
+    upgraded loop offers -- a message cannot decline a claim, and during a
+    rolling upgrade both generations are polling the same queue.  Read this as
+    the census behind that requirement: which boxes it admits, and which it is
+    now waiting past.
     """
 
     if policy is None:
@@ -1789,8 +1796,10 @@ def progress_contract_notice(
     if unsupported:
         lines.append(
             "pbrun: " + ", ".join(unsupported) + " do not announce "
-            f"{pb.PROGRESS_RECORD_SCHEMA_V1}; if one of them claims this "
-            "action its own execution ceiling still bounds the whole run.")
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1}, so this action is not offered "
+            f"to them: it requires the {pb.PROGRESS_TAG} tag they do not "
+            "publish.  It waits for a box that does rather than being killed "
+            "by a ceiling it never asked for.")
     return "\n".join(lines)
 
 
@@ -2707,6 +2716,34 @@ def require_gpu_memory_scope(*, gpu_memory_gb, gpu: bool, transport: str) -> Non
     if gpu_memory_gb is not None and transport == "slurm":
         raise ValueError(
             "--gpu-memory-gb requires pool transport; SLURM VRAM budgets are not supported"
+        )
+
+
+def require_progress_scope(*, progress: Mapping[str, object] | None,
+                          transport: str) -> None:
+    """Refuse a progress contract on a transport with nothing to enforce it.
+
+    The stall watchdog is ``pool.execute``'s: it holds the progress file, mints
+    the launch token, and samples on the heartbeat cadence.  The SLURM lane
+    runs the same sealed action through the same launcher, but the enforcement
+    it has is ``--time``, sent only when ``--timeout-s`` was given -- a total
+    duration, which is the policy #480 exists to stop standing in for progress.
+
+    Sealing the contract there would be worse than not offering it.  The action
+    would be admitted on the promise that its own advancement bounds it, and
+    then run under no watchdog at all and, absent ``--timeout-s``, under no
+    deadline either: unbounded, which is the outcome the contract's fifth point
+    forbids.  ``core._progress_environment`` refuses the same launch from the
+    other end; this is the refusal at the moment the submitter is still
+    watching.
+    """
+
+    if progress is not None and transport != "pool":
+        raise ValueError(
+            "--progress-phase requires pool transport: the stall watchdog is "
+            "the pull-queue worker's, and the SLURM lane can only enforce a "
+            "total duration (--timeout-s becomes --time).  Submit this action "
+            "to the pool, or bound it there with --timeout-s and no phases"
         )
 
 
@@ -4024,6 +4061,15 @@ def main() -> int:
         # --constraint.  A union rather than a replacement: a hostname pin a
         # box-local executable earned stays, and the class narrows it further.
         tags = pool.normalize_placement_tags([*tags, args.host_class])
+    if progress_policy is not None:
+        # A capability, not a place: the boxes that cannot enforce this
+        # action's stall policy must not be able to claim it.  A worker offer
+        # says who understands the contract, but nothing consults an offer at
+        # claim time; item tags are what the matcher already checks, so the
+        # requirement rides them.  Sealed with the rest of the placement, so
+        # the receipt says the action was admitted under the contract *and*
+        # ran on a box that could keep it.
+        tags = pool.normalize_placement_tags([*tags, pb.PROGRESS_TAG])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     placement = {"required_tags": tags}
@@ -4072,6 +4118,11 @@ def main() -> int:
             gpu_memory_gb=args.gpu_memory_gb, gpu=bool(demand.get("gpu")),
             transport=args.transport,
         )
+    except ValueError as exc:
+        ap.error(str(exc))
+    try:
+        require_progress_scope(
+            progress=progress_policy, transport=args.transport)
     except ValueError as exc:
         ap.error(str(exc))
     if not demand.get("gpu"):
@@ -4338,6 +4389,21 @@ def main() -> int:
     )
     if notice:
         print(notice, file=sys.stderr, flush=True)
+
+    # Before the placement verdicts, not after.  ``intent`` now requires
+    # ``PROGRESS_TAG``, so on a fleet that offers none the generic "no recorded
+    # worker can run this action" would fire first and name a tag the operator
+    # never typed.  Asked of the boxes eligible on every OTHER tag, which is
+    # also the honest question: of the boxes that could run this work, which
+    # can keep its stall policy?
+    progress_notice = progress_contract_notice(
+        q,
+        {**intent, "tags": [t for t in tags if t != pb.PROGRESS_TAG]},
+        policy=progress_policy,
+    )
+    if progress_notice:
+        print(progress_notice, file=sys.stderr, flush=True)
+
     live_verdict = q.placeable(intent)
     capability_verdict = q.placeable(
         intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
@@ -4364,10 +4430,6 @@ def main() -> int:
     ceiling_notice = timeout_ceiling_notice(q, intent, requested=args.timeout_s)
     if ceiling_notice:
         print(ceiling_notice, file=sys.stderr, flush=True)
-
-    progress_notice = progress_contract_notice(q, intent, policy=progress_policy)
-    if progress_notice:
-        print(progress_notice, file=sys.stderr, flush=True)
 
     # Read the decision this submission is about to supersede, so the caller is
     # told rather than surprised.  ``publish`` retires the marker -- a key is a

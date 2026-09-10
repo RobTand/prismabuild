@@ -83,6 +83,22 @@ ACTION_PROGRESS_TOKEN_ENV = "PRISMABUILD_ACTION_PROGRESS_TOKEN"
 PROGRESS_PARAM = "progress"
 PROGRESS_POLICY_SCHEMA_V1 = "prismabuild.action_progress_policy.v1"
 PROGRESS_RECORD_SCHEMA_V1 = "prismabuild.action_progress.v1"
+
+#: The placement tag a worker offers when it can enforce the progress contract,
+#: and which the submitter requires of any action that declares one.
+#:
+#: The announcement in a worker's offer says who *understands* the contract; it
+#: is a diagnostic, and a diagnostic cannot stop a claim.  During a rolling
+#: upgrade the boxes on the previous generation are still polling, and a
+#: progress-admitted action they claim runs under their whole-run ceiling --
+#: killed by the very default the contract removes.  Requiring a tag they do
+#: not offer is what makes that unreachable, and it needs no matcher of its
+#: own: item tags must already be a subset of the worker's.
+#:
+#: Versioned with the record schema on purpose.  A future record format is a
+#: new tag, so an old worker cannot claim work whose reports it would reject as
+#: foreign and then kill for the silence.
+PROGRESS_TAG = "progress-v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
@@ -7037,12 +7053,30 @@ def _progress_environment(
         value = os.environ.get(name)
         if value:
             forwarded[name] = value
-    if len(forwarded) == 1:
-        # Half a channel writes records nothing will accept.  Say so here
-        # rather than let the watchdog report a stall the action never had.
+    if len(forwarded) != 2:
+        # Two ways to have less than a channel, and both end the same way.
+        #
+        # Half of one writes records nothing will accept, and saying so here
+        # beats letting the watchdog report a stall the action never had.
+        #
+        # None of one is the dangerous case, because it is the quiet one.  A
+        # launcher that provides no channel is a launcher with no watchdog:
+        # this action was admitted on the promise that its own advancement
+        # bounds it, and running it anyway would leave nothing bounding it at
+        # all -- exactly the unbounded outcome #480's fifth point forbids.
+        # The pull queue always sets both, so this is what refuses a transport
+        # that seals the contract and cannot honour it (the SLURM lane, whose
+        # ``--time`` is the submitter's explicit deadline and not a stall
+        # policy) rather than trusting every future launcher to remember.
+        missing = [
+            name for name in (ACTION_PROGRESS_PATH_ENV, ACTION_PROGRESS_TOKEN_ENV)
+            if name not in forwarded
+        ]
         raise ActionContractError(
-            "the progress contract requires both "
-            f"{ACTION_PROGRESS_PATH_ENV} and {ACTION_PROGRESS_TOKEN_ENV}"
+            "this action declares the progress contract, so the launcher must "
+            f"set both {ACTION_PROGRESS_PATH_ENV} and "
+            f"{ACTION_PROGRESS_TOKEN_ENV}; missing {', '.join(missing)}.  "
+            "Nothing would bound this run"
         )
     return forwarded
 
@@ -7240,6 +7274,7 @@ __all__ = [
     "PROGRESS_PARAM",
     "PROGRESS_POLICY_SCHEMA_V1",
     "PROGRESS_RECORD_SCHEMA_V1",
+    "PROGRESS_TAG",
     "action_progress_policy",
     "report_action_progress",
     "validate_progress_policy",

@@ -1693,6 +1693,27 @@ that does not understand the policy would apply its whole-run ceiling to an
 action submitted without one, which is the defect (#480) rather than a
 degraded form of the fix.
 
+The announcement reports; the placement tag enforces. A worker that can run
+the watchdog offers `progress-v1` (`core.PROGRESS_TAG`) alongside its class
+and hostname, and `pbrun` adds it to the required tags of any submission that
+declares a policy. Item tags must already be a subset of the worker's, so no
+matcher change is needed and, during a rolling upgrade, a loop on the previous
+generation cannot claim work whose stall policy it would ignore. The tag is
+versioned with the record schema: a future record format is a new tag, so an
+old worker cannot claim work whose reports it would reject as foreign and then
+kill for the silence. On a mixed fleet the submission is narrowed rather than
+refused, and the notice names the boxes it is now waiting past.
+
+The contract is offered only on the pull queue. `pbrun --transport slurm` and a
+`progress_phases` row submitted to SLURM are refused
+(`pbrun.require_progress_scope`): the watchdog is the pull-queue worker's, and
+the SLURM lane can enforce only a total duration (`--time`, sent only when
+`--timeout-s` was given). Sealing the policy there would admit the action on
+the promise that its advancement bounds it and then run it under no watchdog
+and, absent `--timeout-s`, no deadline at all. `run_local_action` refuses the
+same launch from the other end: a declared policy with neither environment
+variable set is an `ActionContractError`, not a silent unbounded run.
+
 The versioned fleet configuration sets both GB10 worker ceilings to 86400
 seconds for dependent full-model calibration capture (issue #385). The CPU
 host retains its 3600-second ceiling. A GB10 action without an explicit budget

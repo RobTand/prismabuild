@@ -68,7 +68,9 @@ all.  The action reports advancement with
 ``prismabuild.report_action_progress``; a row that declares phases and reports
 nothing simply ends at that sum.  ``timeout_s`` and ``progress_phases``
 compose rather than conflict: a row with both keeps the hard deadline AND
-ends early on a stall.
+ends early on a stall.  Pool transport only, refused at load time on SLURM:
+the watchdog is the pull-queue worker's, and a scheduler time limit is the
+total duration this field exists to stop standing in for.
 
 An unknown field is refused rather than ignored: a typo that is silently
 dropped seals an action nobody asked for.
@@ -350,6 +352,18 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
             transport=transport,
         )
     except ValueError as exc:
+        raise ManifestError(f"row {index}: {exc}") from None
+    try:
+        # Parsed here rather than trusted, so a row whose phases pbrun would
+        # refuse is refused at load time with the rest of the manifest -- and
+        # so the transport rule is asked of pbrun in pbrun's own words.
+        pbrun.require_progress_scope(
+            progress=pbrun.parse_progress_phases(row.get("progress_phases")),
+            transport=transport,
+        )
+    except ValueError as exc:
+        raise ManifestError(f"row {index}: {exc}") from None
+    except SystemExit as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     attempts = row.get("max_attempts")
     if attempts is None:

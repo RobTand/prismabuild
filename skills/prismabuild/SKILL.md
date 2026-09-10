@@ -73,7 +73,8 @@ the declared allowances if it stops. `--timeout-s` still ends it whatever it
 is doing, so use that when you want a cost cap and the phases when you want a
 liveness check; both together is fine. Choose the allowances from what the
 work measurably does, and expect `pbrun` to refuse the submission outright if
-no eligible box announces the contract. Replayed counters, printed output and
+no eligible box announces the contract, or if you asked for `--transport
+slurm` (the watchdog is the pull queue's). Replayed counters, printed output and
 a live process do not count as advancement -- the receipt's
 `progress_observation` says what was rejected and when the action last
 actually advanced (RobTand/prismabuild#480).

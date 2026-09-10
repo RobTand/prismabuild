@@ -403,11 +403,16 @@ def _run_loop(stop_requested):
         one box -- which is every action whose checkout is a box-local worktree
         rather than shared storage -- matches no worker and never runs.
 
+        ``PROGRESS_TAG`` rides the same subset rule as a capability rather than
+        a place, exactly as ``cpu`` does below.  A loop on the previous
+        generation does not offer it, so it cannot claim an action whose stall
+        policy it would ignore and whose run its own ceiling would then end.
+
         Built from a name passed in rather than read here, because the name can
         change while this loop runs; see the re-read at the top of the poll.
         """
 
-        tags = [args.klass, name, *args.tag]
+        tags = [args.klass, name, *args.tag, pb.PROGRESS_TAG]
         if not gpu_capable:
             # A box with no GPU must say so, or an action demanding gpu=1
             # matches it on tags and then fails at run time instead of waiting
