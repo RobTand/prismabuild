@@ -1949,6 +1949,30 @@ and grants no CPU lending credit. Creates carry a recovery protocol marker;
 older brokers refuse it before mutation, and workers defer without consuming an
 attempt until the installed authority has upgraded.
 
+Pool receipt reconciliation is an explicit evidence operation, exposed by
+`pbwait --reconcile-pool --generation <digest> --attempt <number> <key>`.
+It requires the current failed submission generation and its final immutable
+attempt, the exact broker-completion EOF diagnostic with launcher code 125,
+verified immutable logs, and complete cleanup for the same action, nonce,
+scope and host. Timeout, withdrawal, OOM, other resource termination,
+outstanding work or capacity, and conflicting records refuse reconciliation.
+The completed claimant's retained intent is accepted only when its identity
+and timestamp match that attempt. The operation shares the queue's per-key
+transition lock; CAS verification holds no host admission lock.
+
+The canonical action, receipt, producer attestation and result blob are
+verified before publishing a first-writer-wins immutable supplement at
+`attempts/<key>/<generation>/<number>.receipt-reconciliation.json`. It binds
+the original terminal and attempt hashes, log addresses, cleanup evidence and
+verified action result. It records `payload_verified` for the action alongside
+the unchanged failed transport and return code 125. Receipt identity does not
+bind a pool attempt, so this never claims that attempt exited zero. A repeated
+explicit call revalidates all inputs and refuses conflicting supplement bytes.
+Normal wait, retry, admission and terminal readers retain their existing
+semantics; they do not interpret the supplement as another terminal or as
+permission to restart work. Shared filesystem reads are synchronous and can
+delay this explicit operation; it grants no deadline or missing-data bypass.
+
 Worker-loop count supplies enough claimants to exercise this admission policy
 without becoming a second scheduler. `fleet_boxes.json` declares an automatic
 floor. Above that floor the supervisor sizes on the claims the box is holding:
