@@ -344,3 +344,68 @@ def test_phase_order_is_the_order_it_was_declared():
     policy = pbrun.parse_progress_phases(["startup=1800", "encode=900"])
     assert [phase["name"] for phase in policy["phases"]] == ["startup", "encode"]
     assert policy["schema"] == pb.PROGRESS_POLICY_SCHEMA_V1
+
+
+# -- admission: a box that does not know the policy must not be given one ---
+
+FITS = {"cpu": 1, "mem_gb": 1}
+
+
+def _intent(tags):
+    return {"tags": list(tags), "needs_gpu": False, "resources": dict(FITS)}
+
+
+def _fleet(tmp_path, boxes):
+    """A queue whose boxes announce ``{host: contracts or None}``."""
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    for host, contracts in boxes.items():
+        queue.announce(host=host, tags=["cpu", host, "x86"], has_gpu=False,
+                       capacity={"gpu": 0, "mem_gb": 60, "cpu": 80},
+                       timeout_ceiling_s=7200.0, progress_contracts=contracts)
+    return queue
+
+
+def test_a_box_announces_the_contracts_it_can_honour(tmp_path):
+    queue = _fleet(tmp_path, {"dl380g10": [pb.PROGRESS_RECORD_SCHEMA_V1]})
+    assert queue.offers()[0]["progress_contracts"] == [pb.PROGRESS_RECORD_SCHEMA_V1]
+
+
+def test_an_offer_predating_the_field_carries_none(tmp_path):
+    """Silence is "did not say", never "supports it"."""
+
+    queue = _fleet(tmp_path, {"dl380g10": None})
+    assert "progress_contracts" not in queue.offers()[0]
+    assert queue.placement_progress_contracts(_intent([])) == {"dl380g10": None}
+
+
+def test_a_fleet_that_cannot_honour_the_contract_refuses_the_submission(tmp_path):
+    """Point 6: no hidden whole-run ceiling under a contract that promised none."""
+
+    queue = _fleet(tmp_path, {"dl380g10": None, "sparky": []})
+    with pytest.raises(SystemExit, match="no eligible worker announces"):
+        pbrun.progress_contract_notice(
+            queue, _intent([]), policy=_policy(1800, 900))
+
+
+def test_a_mixed_fleet_is_warned_about_rather_than_refused(tmp_path):
+    queue = _fleet(tmp_path, {"dl380g10": [pb.PROGRESS_RECORD_SCHEMA_V1],
+                              "sparky": None})
+    said = pbrun.progress_contract_notice(
+        queue, _intent([]), policy=_policy(1800, 900))
+    assert "sparky do not announce" in said
+    assert "its own execution ceiling still bounds the whole run" in said
+
+
+def test_the_submitter_is_told_the_total_quiet_it_just_asked_for(tmp_path):
+    queue = _fleet(tmp_path, {"dl380g10": [pb.PROGRESS_RECORD_SCHEMA_V1]})
+    said = pbrun.progress_contract_notice(
+        queue, _intent([]), policy=_policy(3600, 900, 1800))
+    assert "startup 3600s, run 900s, publish 1800s" in said
+    assert "at most 6300s of quiet in total" in said
+    assert "no total-duration limit while it does" in said
+
+
+def test_no_policy_says_nothing(tmp_path):
+    queue = _fleet(tmp_path, {"dl380g10": None})
+    assert pbrun.progress_contract_notice(queue, _intent([]), policy=None) == ""
