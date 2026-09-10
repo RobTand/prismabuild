@@ -1690,7 +1690,7 @@ gate identity or a gate change during the census also prevents certification.
 The drain identity comes from the gate file. This is an observation of the
 current processes, not an admission barrier or a guarantee against future
 process launches; it neither opens nor closes a drain.
-The updater also states, fleet-wide, which version of itself is running. It is
+The updater also records, fleet-wide, which version of itself has run. It is
 installed by a copy step rather than by the runtime symlink, so no shared
 record answers for it: the loops' `runtime_commit` answers for the loops, a
 generation receipt says what a host is supposed to install, and what it
@@ -1705,23 +1705,24 @@ name, so a name that exists refuses the write instead of replacing what
 somebody else recorded. Posting is best effort and failure is recorded rather
 than raised; whether a rollout may proceed is a separate question, asked by
 whoever reads these files.
-Publication reads that tree. `publish_runtime.py` takes `--rollout`, whose
-default `rolling` is what every publication has always done: each box swaps
-when its own updater next looks. Under `barrier` it refuses to publish unless
-every box the fleet roster declares has already posted an attestation naming
-the sha256 this publication records for the updater, and the refusal names the
-boxes that are silent or stale. A box answers under its roster key or under its
-declared alias, since the second GB10 is keyed `gx10-6b77` and reports itself
-as `sparklina`. The check runs before any generation bytes are staged, and an
-activation of an existing generation is proved the same way against the receipt
-it restores. A marker counts only when its body reproduces its own file name
-through the updater's own name function, and the publisher reads that function
-and the member key from the updater module in the checkout it is publishing
-rather than holding a second copy of either spelling. One consequence is
-arithmetic rather than policy: a generation that changes the updater cannot be
-its own first barrier publication, because no box can have attested bytes that
-did not exist when it started, so the operator publishes rolling, lets the
-fleet converge, and then publishes under a barrier.
+`publish_runtime.py --rollout barrier --dry-run` reads that historical tree as
+a bootstrap preflight. Every roster box must have posted an attestation naming
+the sha256 recorded for the target updater; refusals name missing boxes and
+their previously posted versions. A box answers under its roster key or its
+declared alias (`gx10-6b77` / `sparklina`). New-publication preflight uses the
+source manifest, and `--activate-generation` preflight uses the existing
+generation's receipt. The publisher loads the updater's marker-name function
+and member key from its checkout. A marker counts only when its schema and
+body reproduce its filename through that function.
+These write-once markers establish history, not the currently installed
+version or current participation: they survive upgrades, downgrades and host
+loss. A successful preflight grants no activation authority. Without
+`--dry-run`, both barrier paths refuse before staging or changing the runtime
+symlink, even when all historical attestations match. Issue #458 must supply
+fresh participation tied to the rollout epoch, the drain and rotation quorums,
+and coordinated rollback before barrier activation can be enabled. Until
+then, `rolling` remains the default and uses independent host convergence;
+there is no supported synchronized activation.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not

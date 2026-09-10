@@ -539,7 +539,7 @@ def _activate_existing(name: str, *, dry_run: bool, rollout: str = "rolling") ->
                 f"{generation}: receipt records no sha256 for {member}, so a "
                 "barrier activation cannot be proved against it."
             )
-        _require_attested_fleet(agent_sha)
+        _barrier_preflight(agent_sha, dry_run=dry_run)
     print(
         f"activating {name}: commit {str(receipt.get('commit', ''))[:12]}, "
         f"default transport {receipt.get('default_transport') or 'pool'}"
@@ -599,12 +599,14 @@ def _roster_boxes() -> list[tuple[str, frozenset[str]]]:
 
 
 def _attested_agents(agent) -> dict[str, set[str]]:
-    """Which agent bytes each host says it is running, from the rollout tree.
+    """Which agent versions each host has recorded in the rollout tree.
 
     A marker is counted only when it proves itself: its body has to parse,
     carry the agent's schema, and reproduce its own file name through the
     agent's own name function.  A name alone is a claim about a file; a name
     that matches the body it sits on is a claim the writer had to mean.
+    Write-once records survive upgrades and downgrades; they do not establish
+    the currently installed version or participation in a particular rollout.
     """
 
     directory = MIRROR.parent / agent.ROLLOUT_DIRNAME / agent.AGENTS_DIRNAME
@@ -643,18 +645,11 @@ def _attested_agents(agent) -> dict[str, set[str]]:
 
 
 def _require_attested_fleet(agent_sha: str) -> None:
-    """Refuse a barrier the fleet has not shown it can hold.
+    """Require historical attestations for the target agent on every box.
 
-    A barrier publication asks every box to stop admitting, swap, and resume
-    together.  Only an agent carrying the barrier code can do any of that, so
-    the coordinator proves every box is already running the agent it is about
-    to publish, and refuses otherwise.  The proof is #467's attestation: each
-    host writes the sha256 of its own bytes beside the generation store.
-
-    A generation that changes the agent therefore cannot be its own first
-    barrier publication -- no host can have attested bytes that did not exist
-    when it started -- which is the rolling-then-barrier bootstrap enforced by
-    arithmetic rather than by a paragraph somebody has to remember.
+    This is only a bootstrap prerequisite. Matching records can remain after
+    every host has moved to another version. A barrier must additionally prove
+    current participation in its own epoch, then its drain and rotation quorums.
     """
 
     agent = _agent_definitions()
@@ -676,17 +671,35 @@ def _require_attested_fleet(agent_sha: str) -> None:
                 "see docs/client_upgrade.md."
             )
         else:
-            running = ", ".join(sorted(short[:12] for short in held))
-            missing.append(f"  {spelling}: running {running}")
+            posted = ", ".join(sorted(short[:12] for short in held))
+            missing.append(f"  {spelling}: posted versions {posted}")
     if not missing:
         return
     raise SystemExit(
-        "refusing a barrier publication: not every box is running the agent "
-        f"this generation publishes ({agent_sha[:12]}).\n"
+        "refusing barrier attestation preflight: not every box has posted "
+        f"the agent version this generation requires ({agent_sha[:12]}).\n"
         + "\n".join(missing)
         + "\nPublish this generation with --rollout rolling, let each box "
-        "converge and post its attestation, then publish under --rollout "
-        "barrier."
+        "converge and post its attestation, then repeat --rollout barrier "
+        "--dry-run. Historical attestations do not prove current participation."
+    )
+
+
+def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
+    """Expose the history check without granting it activation authority."""
+
+    _require_attested_fleet(agent_sha)
+    if not dry_run:
+        raise SystemExit(
+            "barrier activation is not implemented: historical attestations "
+            "cannot prove current participation, a fleet drain or rotation. "
+            "Use --rollout barrier --dry-run for the attestation preflight; "
+            "issue #458 tracks the required epoch protocol. Nothing was staged "
+            "or activated."
+        )
+    print(
+        "barrier preflight: historical attestations match; current participation, "
+        "drain and rotation have not been proved. Barrier activation is unavailable."
     )
 
 
@@ -716,12 +729,11 @@ def main() -> int:
     )
     ap.add_argument(
         "--rollout", choices=("rolling", "barrier"), default="rolling",
-        help="how the fleet is expected to take this generation up.  "
-             "rolling is what every publication has always done: each box "
-             "swaps when its own agent next looks.  barrier refuses to "
-             "publish unless every box in the roster has already attested "
-             "that it runs the agent this generation carries, which is the "
-             "precondition a synchronized swap cannot be armed without.",
+        help="rolling uses independent host convergence (the default). "
+             "barrier requires --dry-run and checks historical agent "
+             "attestations only; it does not prove current participation. "
+             "Actual barrier publication and activation are refused until "
+             "the fleet epoch protocol is implemented.",
     )
     ap.add_argument(
         "--dry-run", action="store_true",
@@ -763,7 +775,7 @@ def main() -> int:
                 f"this publication carries no {member}, so a barrier rollout "
                 "has nothing to prove the fleet against."
             )
-        _require_attested_fleet(agent_sha)
+        _barrier_preflight(agent_sha, dry_run=args.dry_run)
 
     print(f"publishing {len(published)} files from {commit[:12]}"
           f"{' (dirty)' if dirty else ''} to {MIRROR}")

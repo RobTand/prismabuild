@@ -1,4 +1,4 @@
-"""A barrier is refused until every box has said it can hold one.
+"""A read-only barrier preflight requires each box's agent history.
 
 #458 wants a fleet-wide swap: every box stops admitting, changes generation,
 and resumes together.  Only an agent carrying that code can do any part of it,
@@ -7,8 +7,10 @@ property it never looked at.
 
 #467 supplied the fact.  Each host writes `rollout/agents/<host>.<sha>.json`
 beside the generation store, naming the sha256 of the agent bytes it runs.
-This is the coordinator's half: under `--rollout barrier`, compare that against
-the agent the publication carries, and refuse by name on any miss.
+This is the history check: under `--rollout barrier --dry-run`, compare that
+against the agent the publication carries, and refuse by name on any miss.
+Records survive later version changes. Actual barrier activation is refused
+until an epoch protocol proves current participation, drain and rotation.
 
 Three things are load bearing.
 
@@ -180,7 +182,7 @@ def test_the_real_roster_still_keys_the_second_gb10_under_its_alias():
     assert "sparklina" in boxes["gx10-6b77"]
 
 
-def test_a_barrier_passes_when_every_box_attests_the_published_agent(fleet):
+def test_history_check_passes_when_every_box_attested_the_published_agent(fleet):
     post(fleet, "sparky", SHA)
     post(fleet, "sparklina", SHA)
     publish_runtime._require_attested_fleet(SHA)
@@ -205,12 +207,12 @@ def test_a_silent_box_is_named_in_the_refusal(fleet):
     assert "--rollout rolling" in message
 
 
-def test_a_stale_box_is_named_with_what_it_is_running(fleet):
+def test_a_box_missing_the_version_is_named_with_its_recorded_history(fleet):
     post(fleet, "sparky", SHA)
     post(fleet, "sparklina", OTHER)
     with pytest.raises(SystemExit) as raised:
         publish_runtime._require_attested_fleet(SHA)
-    assert f"running {OTHER[:12]}" in str(raised.value)
+    assert f"posted versions {OTHER[:12]}" in str(raised.value)
 
 
 def test_a_generation_that_changes_the_agent_cannot_be_its_own_first_barrier(fleet):
