@@ -1971,6 +1971,16 @@ bounded tick, spawning is amortized, and monotonically allocated log slots
 preserve append evidence across shrink and growth. `--loops` explicitly selects
 fixed mode, while `--once` tops up only to the configured floor.
 
+The supervisor owns reaping its exited direct children across runtime re-exec.
+Before each cycle's re-exec check and census, it makes at most 256 nonblocking
+`waitpid(-1, WNOHANG)` calls, stopping when no exited child is available. The
+kernel retains child ownership across exec even though Python's subprocess
+registry is lost. An inherited backlog larger than the per-cycle budget drains
+over subsequent cycles without restarting the supervisor or signalling live
+workers. The supervisor is single-threaded; synchronous subprocess status reads
+finish between these boundaries, and worker-loop exit statuses have no other
+consumer. `SIGCHLD` remains unchanged so descendants retain real failure statuses.
+
 Every claim, offer, receipt and CAS read crosses one shared filesystem, and
 the fleet measures it per box. `tools/fleet/mount_latency.py` samples three
 things that answer different questions: NFS per-operation queue time and

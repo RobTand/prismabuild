@@ -106,6 +106,8 @@ LOOPS_PER_VISIBLE_CPU = 4
 BYTES_PER_HOUSEKEEPING_LOOP = 256 * 1024 * 1024
 INHERITED_CLAIM_FD_ENV = "PRISMABUILD_SUPERVISOR_CLAIM_FD"
 RUNTIME_VERSION_SCHEMA = "prismaquant.prismabuild.runtime_version.v1"
+# A large inherited zombie backlog must not starve the census or re-exec.
+MAX_REAPS_PER_TICK = 256
 
 
 @dataclass(frozen=True)
@@ -696,6 +698,29 @@ def _stop_idle_loops(pids: list[int] | None = None,
     return stopped
 
 
+def _reap_children() -> int:
+    """Collect exited direct children, including those inherited across exec.
+
+    Popen's private registry disappears at exec; the kernel's child ownership
+    does not. No asynchronous status consumer runs in this single-threaded
+    supervisor: synchronous subprocess calls finish between tick boundaries,
+    and spawned worker handles are discarded. Never ignore SIGCHLD, whose
+    inherited disposition would hide worker/action failure statuses.
+    """
+    reaped = 0
+    for _ in range(MAX_REAPS_PER_TICK):
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            break
+        except InterruptedError:
+            continue
+        if pid == 0:
+            break
+        reaped += 1
+    return reaped
+
+
 def _spawn(args: list[str], index: int) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     handle = (LOG_DIR / f"pb-worker-{index}.log").open("a", buffering=1)
@@ -773,6 +798,9 @@ def main() -> int:
         print(f"[{host}] cycled {len(stopped)} idle loop(s) onto "
               f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
     while True:
+        reaped = _reap_children()
+        if reaped:
+            print(f"[{host}] reaped {reaped} exited child process(es)", flush=True)
         if not args.once and _reexec_if_published(loaded_generation, handle):
             return 0                       # reached only under an exec test double
         target, loop_args = declared_shape(

@@ -2344,6 +2344,14 @@ No loop-count tuning is required for ordinary operation. `--loops N` is the
 operator opt-out that fixes the count at `N`; `--once` retains deterministic
 one-shot behavior and tops up only to the configured floor.
 
+The supervisor reaps exited direct children before each cycle's generation
+check and census, including children inherited across a previous re-exec.
+It logs the number collected when nonzero and limits collection to 256
+nonblocking waits per cycle. Larger zombie backlogs drain over later cycles;
+live workers continue running. Publishing the fix lets the existing supervisor
+collect its backlog without a restart. Normal publication constraints still
+apply; a merge alone does not change the running supervisor.
+
 ### Keeping a supervisor alive across a reboot
 
 Each box runs its supervisor as a systemd **user** unit,
