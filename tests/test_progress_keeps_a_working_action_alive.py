@@ -13,7 +13,12 @@ import sys
 from pathlib import Path
 
 import pytest
-from prismabuild import core as pb, pool
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import core as pb, pool  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+import pbrun  # noqa: E402
 
 
 #: The action side of the contract, written without importing PrismaBuild on
@@ -33,6 +38,12 @@ while time.monotonic() < deadline:
         continue
     if mode == "chatty":
         print("still working", flush=True)
+        continue
+    if not path or not token:
+        # The control run: the same argv doing the same work, told nothing
+        # because it did not declare the contract.  Reporting into a void is
+        # what the fixture must not silently do -- that is the difference the
+        # test is measuring.
         continue
     units += 1
     record = {"schema": "prismabuild.action_progress.v1",
@@ -135,16 +146,18 @@ def test_the_same_action_without_the_contract_is_killed_by_the_ceiling(tmp_path)
 
 # -- what must still end ---------------------------------------------------
 
-@pytest.mark.parametrize("mode,rejection", [
-    ("silent", None),
-    ("chatty", None),
-    ("replay", "replayed"),
-    ("regressing", "replayed"),
-    ("foreign", "foreign token"),
-    ("undeclared", "undeclared phase"),
-    ("torn", "unparsable"),
+@pytest.mark.parametrize("mode,rejection,accepted", [
+    ("silent", None, 0),
+    ("chatty", None, 0),
+    # A first reading of a counter is always advancement -- there is nothing
+    # yet to have beaten.  What must not keep the action alive is the second.
+    ("replay", "replayed", 1),
+    ("regressing", "replayed", 1),
+    ("foreign", "foreign token", 0),
+    ("undeclared", "undeclared phase", 0),
+    ("torn", "unparsable", 0),
 ])
-def test_looking_busy_is_not_progress(tmp_path, mode, rejection):
+def test_looking_busy_is_not_progress(tmp_path, mode, rejection, accepted):
     """Bytes, heartbeats, replayed counters and foreign records are not work."""
 
     outcome = _run(tmp_path, mode=mode, seconds=30, ceiling=5.0,
@@ -155,8 +168,8 @@ def test_looking_busy_is_not_progress(tmp_path, mode, rejection):
     # Bounded by the declared allowance, not by the 30 s the action wanted.
     assert outcome["elapsed_s"] < 5.0
     progress = outcome["progress_observation"]
-    assert progress["last_accepted"] is None
-    assert progress["accepted_count"] == 0
+    assert progress["accepted_count"] == accepted
+    assert (progress["last_accepted"] is None) is (accepted == 0)
     if rejection is None:
         assert progress["rejected_count"] == 0
     else:
@@ -323,13 +336,11 @@ def test_entering_a_later_phase_rearms_the_allowance_once(tmp_path):
     (["run=1", "run=2"], "repeats"),
 ])
 def test_an_unusable_phase_declaration_is_refused_at_submit(bad, message):
-    import pbrun
     with pytest.raises(SystemExit, match=message):
         pbrun.parse_progress_phases(bad)
 
 
 def test_phase_order_is_the_order_it_was_declared():
-    import pbrun
     policy = pbrun.parse_progress_phases(["startup=1800", "encode=900"])
     assert [phase["name"] for phase in policy["phases"]] == ["startup", "encode"]
     assert policy["schema"] == pb.PROGRESS_POLICY_SCHEMA_V1
