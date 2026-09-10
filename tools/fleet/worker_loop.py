@@ -65,7 +65,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import box_capacity, cpu_topology, pool  # noqa: E402
+from prismabuild import box_capacity, core as pb, cpu_topology, pool  # noqa: E402
 
 #: Consecutive ``serve_once`` failures before the loop gives up and lets the
 #: supervisor replace it.  Survive the items; do not survive a broken box.
@@ -559,6 +559,11 @@ def _run_loop(stop_requested):
             # and the #275 campaign died at 7200 s believing it had 13000
             # (#293).  Announcing it is what lets pbrun say so at submit.
             timeout_ceiling_s=args.timeout_s,
+            # And what this loop's code can do with a progress-declaring
+            # action.  Announced beside the ceiling because they are two halves
+            # of one answer: the ceiling is what this box would cut a run at,
+            # and this is whether it would count committed work first (#480).
+            progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
         )
         # One bad item must not take the worker with it.  ``serve_once``
         # re-raises whatever ``execute`` raised, and this loop had no handler,

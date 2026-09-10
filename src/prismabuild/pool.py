@@ -370,6 +370,273 @@ def execution_budget(
     return ExecutionBudget(effective, requested, ceiling)
 
 
+class ProgressPhase(NamedTuple):
+    """One declared phase of an action, and the quiet it is allowed in it."""
+
+    name: str
+    requested_grace_s: float
+    ceiling_s: float | None
+
+    @property
+    def effective_grace_s(self) -> float:
+        if self.ceiling_s is None:
+            return self.requested_grace_s
+        return min(self.requested_grace_s, self.ceiling_s)
+
+    @property
+    def clamped(self) -> bool:
+        return (self.ceiling_s is not None
+                and self.ceiling_s < self.requested_grace_s)
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "grace_requested_s": self.requested_grace_s,
+            "grace_ceiling_s": self.ceiling_s,
+            "grace_s": self.effective_grace_s,
+            "grace_clamped": self.clamped,
+        }
+
+
+class ProgressPolicy(NamedTuple):
+    """What quiet this action is allowed, and why that is the number.
+
+    ``ExecutionBudget`` says what governs a *deadline*; this says what governs
+    a *stall*, and reports itself the same way and for the same reason.  #293
+    was undiagnosable because a clamp left no trace, and a stall allowance
+    silently cut by a worker ceiling would be the same defect wearing the new
+    contract's clothes.
+
+    ``no_progress_bound_s`` is the honest total: every declared phase is
+    entered at most once and re-arms its allowance once, so an action that
+    never commits anything at all ends within the sum, and that sum is a
+    number a submitter chose from the phases the work actually has.
+    """
+
+    phases: tuple[ProgressPhase, ...]
+    ceiling_s: float | None
+
+    @property
+    def no_progress_bound_s(self) -> float:
+        return sum(phase.effective_grace_s for phase in self.phases)
+
+    @property
+    def clamped(self) -> bool:
+        return any(phase.clamped for phase in self.phases)
+
+    def index_of(self, name: str) -> int | None:
+        for index, phase in enumerate(self.phases):
+            if phase.name == name:
+                return index
+        return None
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "progress_contract": pb.PROGRESS_RECORD_SCHEMA_V1,
+            "progress_phases": [phase.as_record() for phase in self.phases],
+            "progress_stall_ceiling_s": self.ceiling_s,
+            "progress_stall_clamped": self.clamped,
+            "progress_no_progress_bound_s": self.no_progress_bound_s,
+        }
+
+
+def progress_policy(
+    item: Mapping[str, object], ceiling: float | None
+) -> ProgressPolicy | None:
+    """The sealed stall policy of this action, with the worker's ceiling on it.
+
+    Read from the same sealed request the deadline is, and for the same
+    reason: a policy the receipt reports and a policy the worker enforces that
+    disagreed would be worse than either alone.
+    """
+
+    declared = _sealed_progress_policy(item)
+    if declared is None:
+        return None
+    phases = declared["phases"]
+    assert isinstance(phases, Sequence)
+    return ProgressPolicy(
+        tuple(
+            ProgressPhase(str(phase["name"]), float(phase["grace_s"]), ceiling)
+            for phase in phases
+        ),
+        ceiling,
+    )
+
+
+def _sealed_progress_policy(
+    item: Mapping[str, object],
+) -> Mapping[str, object] | None:
+    """Read the declared policy from the sealed request, or None."""
+
+    key = str(item["action_key"])
+    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
+    try:
+        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+    except FileNotFoundError:
+        # Same rule as the deadline: a legacy launcher with no request declares
+        # nothing, and the canonical worker refuses a missing request itself.
+        return None
+    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    if action["action_key"] != key:
+        raise PoolContractError("pool action request does not match the claimed key")
+    try:
+        return pb.action_progress_policy(action)
+    except pb.ActionContractError as exc:
+        raise PoolContractError(str(exc)) from exc
+
+
+class ProgressWatch:
+    """Accept semantic advancement from one launch, and refuse everything else.
+
+    The rule, in one place because every way of getting it slightly wrong ends
+    with a stuck action kept alive:
+
+    * the record's schema is exactly the versioned one;
+    * its token is the one this launch minted, so a previous attempt that
+      outlived SIGKILL and still holds the path cannot report for this one;
+    * its phase is one the sealed policy declared;
+    * ``units_completed`` is finite and not negative;
+    * and it either passes the highest counter accepted so far, or enters a
+      phase later than the highest entered so far.
+
+    A repeated counter, a regression, an undeclared phase, a foreign token,
+    unparsable bytes and an absent file are all *not* advancement, and are
+    counted rather than discarded so a terminal record can say what the
+    reporter was actually doing.  Launcher liveness and pipe bytes are not
+    considered here at all: :func:`_observe_execution` samples those, on
+    purpose, as a different source that proves a different thing.
+    """
+
+    def __init__(
+        self, path: Path, token: str, policy: ProgressPolicy, *, started: float
+    ) -> None:
+        self.path = path
+        self.token = token
+        self.policy = policy
+        self.units_high_water: float | None = None
+        self.phase_high_water = 0
+        self.phases_entered = 1
+        self.last_advance_monotonic = started
+        self.last_advance_unix: float | None = None
+        self.last_accepted: dict[str, object] | None = None
+        self.accepted = 0
+        self.rejected = 0
+        self.last_rejection: str | None = None
+        self.sampled_unix: float | None = None
+
+    @property
+    def grace_s(self) -> float:
+        """The allowance in force: the highest phase entered, not the last named.
+
+        Naming an earlier phase again must not be able to buy a longer quiet
+        than the phase the action has actually reached.
+        """
+
+        return self.policy.phases[self.phase_high_water].effective_grace_s
+
+    def stall_deadline(self) -> float:
+        return self.last_advance_monotonic + self.grace_s
+
+    def _reject(self, reason: str) -> None:
+        self.rejected += 1
+        self.last_rejection = reason
+
+    def sample(self, *, now: float) -> bool:
+        """Read the reporter's file once; return whether it advanced.
+
+        ``now`` is a ``time.monotonic()`` reading, deliberately: a wall clock
+        that jumps -- forwards over a stalled action or backwards over a
+        working one -- must not decide either.
+        """
+
+        self.sampled_unix = _now()
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # Before the first report, and after a reporter that never came.
+            # Neither is advancement and neither is an error; the phase's own
+            # allowance is what bounds it.
+            return False
+        except OSError as exc:
+            self._reject(f"unreadable: {type(exc).__name__}")
+            return False
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            # A torn read is possible in principle even behind os.replace on a
+            # shared filesystem; the next poll reads the whole file.
+            self._reject("unparsable")
+            return False
+        if not isinstance(record, dict):
+            self._reject("not an object")
+            return False
+        if record.get("schema") != pb.PROGRESS_RECORD_SCHEMA_V1:
+            self._reject("wrong schema")
+            return False
+        if record.get("token") != self.token:
+            self._reject("foreign token")
+            return False
+        index = self.policy.index_of(str(record.get("phase")))
+        if index is None:
+            self._reject("undeclared phase")
+            return False
+        units = record.get("units_completed")
+        if (type(units) not in (int, float) or isinstance(units, bool)
+                or not math.isfinite(units) or units < 0):
+            self._reject("units_completed is not a finite count")
+            return False
+        units = float(units)
+        advanced_units = (self.units_high_water is None
+                          or units > self.units_high_water)
+        advanced_phase = index > self.phase_high_water
+        if not advanced_units and not advanced_phase:
+            self._reject("replayed")
+            return False
+        if advanced_units:
+            self.units_high_water = units
+        if advanced_phase:
+            self.phases_entered += index - self.phase_high_water
+            self.phase_high_water = index
+        self.accepted += 1
+        self.last_advance_monotonic = now
+        reported = record.get("reported_unix")
+        self.last_advance_unix = (
+            float(reported) if type(reported) in (int, float)
+            and not isinstance(reported, bool) and math.isfinite(reported)
+            else _now()
+        )
+        self.last_accepted = {
+            "phase": self.policy.phases[self.phase_high_water].name,
+            "units_completed": self.units_high_water,
+            "unit": (str(record["unit"]) if isinstance(record.get("unit"), str)
+                     else None),
+            "reported_unix": self.last_advance_unix,
+        }
+        return True
+
+    def shift(self, seconds: float) -> None:
+        """Retain quiet spent on shared I/O this loop, not the action, did."""
+
+        self.last_advance_monotonic += seconds
+
+    def as_record(self, *, now: float) -> dict[str, object]:
+        """What a receipt carries so a reader can see what the action reported."""
+
+        return {
+            "source": "action-progress",
+            "sampled_unix": self.sampled_unix,
+            "accepted_count": self.accepted,
+            "rejected_count": self.rejected,
+            "last_rejection": self.last_rejection,
+            "last_accepted": self.last_accepted,
+            "quiet_s": max(0.0, now - self.last_advance_monotonic),
+            "grace_s": self.grace_s,
+            "phase": self.policy.phases[self.phase_high_water].name,
+            "phases_entered": self.phases_entered,
+        }
+
+
 def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
     """Read the deadline from the sealed request, never mutable queue metadata."""
     key = str(item["action_key"])
@@ -1765,6 +2032,22 @@ class PoolQueue:
 
         return self.dir(CLAIMED) / f"{action_key}.status"
 
+    def action_progress_path(self, action_key: str) -> Path:
+        """Where an action reports advancement while it is still running.
+
+        A file of its own, beside the lease and the status sidecar and equally
+        invisible to every reader of ``claimed/``, because it is the one thing
+        here written repeatedly *during* execution by a process this loop does
+        not own.  Merging it into the status sidecar would put a ticking writer
+        into an unlocked read-merge-write shared with the launcher's own ending
+        facts, and would ask a heartbeat to read a file whose reader unlinks it.
+
+        The read costs one open of a small file in a directory this loop
+        already writes to every heartbeat, at the heartbeat's own cadence.
+        """
+
+        return self.dir(CLAIMED) / f"{action_key}.progress"
+
     @staticmethod
     def _merge_action_status(
         outcome: dict[str, object], path: Path
@@ -1930,6 +2213,7 @@ class PoolQueue:
         observed_detail: Mapping[str, object] | None = None,
         loops: int | None = None,
         timeout_ceiling_s: float | None = None,
+        progress_contracts: Sequence[str] | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -2022,6 +2306,12 @@ class PoolQueue:
             record["loops"] = int(loops)
         if timeout_ceiling_s is not None:
             record["timeout_ceiling_s"] = float(timeout_ceiling_s)
+        if progress_contracts is not None:
+            # Which progress record schemas this loop's code can accept.  A
+            # loop published before the contract existed announces nothing,
+            # and a submitter must read that silence as "this box will apply
+            # its ceiling to your total duration", not as support (#480).
+            record["progress_contracts"] = sorted({str(c) for c in progress_contracts})
         directory = self.root / WORKERS
         directory.mkdir(parents=True, exist_ok=True)
         _write_json_atomic(directory / f"{host}.json", record)
@@ -2184,6 +2474,31 @@ class PoolQueue:
                 else None
             )
         return ceilings
+
+    def placement_progress_contracts(
+        self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
+    ) -> dict[str, list[str] | None]:
+        """Which progress contracts each box that could run this item accepts.
+
+        ``None`` for a box whose offer predates the field, read as "did not
+        say" and never as support, for the reason
+        ``placement_timeout_ceilings`` gives about ceilings: a box that does
+        not understand the policy applies its ceiling to the whole run, which
+        is the exact silent kill this contract exists to end.
+        """
+
+        live = self.offers(max_age_s=max_age_s)
+        if not live:
+            return {}
+        contracts: dict[str, list[str] | None] = {}
+        for offer in self._matching_offers(item, live=live):
+            host = str(offer.get("host") or "?")
+            announced = offer.get("progress_contracts")
+            contracts[host] = (
+                sorted(str(entry) for entry in announced)
+                if isinstance(announced, list) else None
+            )
+        return contracts
 
     def placement_census(
         self, *, max_age_s: float = OFFER_TIMEOUT_S
@@ -2658,6 +2973,7 @@ class PoolQueue:
         container_owner: str | None = None,
         claim_snapshot: Mapping[str, object] | None = None,
         execution_observation: Mapping[str, object] | None = None,
+        progress_observation: Mapping[str, object] | None = None,
     ) -> None:
         """Refresh the claim's heartbeat, and say what is running under it.
 
@@ -2683,6 +2999,12 @@ class PoolQueue:
             lease["container_owner"] = str(container_owner)
         if execution_observation is not None:
             lease["execution_observation"] = dict(execution_observation)
+        if progress_observation is not None:
+            # So ``pbstatus`` can say "last advanced 40 s ago, 768 anchors" while
+            # the action is still running.  Nobody has to *authorize* anything
+            # -- continuation is the loop's decision and stays the loop's -- but
+            # an operator who cannot see what governs cannot review it either.
+            lease["progress_observation"] = dict(progress_observation)
         claim = _read_json(self.item_path(CLAIMED, action_key))
         if (claim is None or claim.get("claimed_by") != owner
                 or (claim_snapshot is not None and not _same_claim(claim, claim_snapshot))):
@@ -6915,14 +7237,34 @@ class PoolQueue:
         # the same number from the same sealed request, which is idempotent
         # under the clamp; passing the effective value keeps the two in step
         # without giving either one a second source of truth.
-        budget = execution_budget(item, timeout_s)
+        # An action admitted under the progress contract is not bounded in
+        # total duration by this box's ceiling -- that ceiling is what killed
+        # two demonstrably advancing GLM rows (#480), and a limit nobody
+        # submitted and no receipt explained is exactly what the contract
+        # replaces.  The ceiling is not waived, it is *re-aimed*: it clamps
+        # every declared phase's quiet instead, so a stuck action still ends on
+        # this box's terms.  A deadline the submitter asked for explicitly
+        # still governs, progress or no progress.
+        policy = progress_policy(item, timeout_s)
+        budget = execution_budget(item, None if policy is not None else timeout_s)
         with _execution_checkout(item) as checkout_root:
             outcome = self._execute_in_checkout(
                 item, checkout_root=checkout_root, python=python,
                 timeout_s=budget.effective, heartbeat_s=heartbeat_s,
                 timeout_grace_s=timeout_grace_s, containment=containment,
+                progress=policy,
             )
         outcome.update(budget.as_record())
+        # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
+        # under the progress contract nothing did.  This says what the box's
+        # ceiling actually is regardless of what it governs, so a reader is
+        # never left inferring "unbounded" from a null (#293's lesson, one
+        # field over): with a policy in force it is the stall ceiling, and
+        # ``progress_no_progress_bound_s`` is the total quiet it permits.
+        outcome["worker_timeout_ceiling_s"] = timeout_s
+        outcome["execution_governed_by"] = "progress" if policy is not None else "deadline"
+        if policy is not None:
+            outcome.update(policy.as_record())
         if item.get("resource_scope") is not None:
             telemetry = self._sample_resource_scope(self._scope_from_record(item))
             outcome["resource_telemetry"] = telemetry
@@ -7041,6 +7383,7 @@ class PoolQueue:
         heartbeat_s: float = HEARTBEAT_S,
         timeout_grace_s: float = TIMEOUT_GRACE_S,
         containment: bool = False,
+        progress: ProgressPolicy | None = None,
     ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
 
@@ -7111,6 +7454,20 @@ class PoolQueue:
         status_path = self.action_status_path(key)
         with suppress(OSError):
             status_path.unlink()
+        # Same rule for the progress file, and one more on top of it: the token
+        # is minted here, per launch.  Clearing the path bounds a *tidy*
+        # previous attempt; a token this launch invented is what bounds an
+        # untidy one that outlived SIGKILL and still holds the path open.
+        progress_path = self.action_progress_path(key)
+        progress_token = uuid.uuid4().hex
+        with suppress(OSError):
+            progress_path.unlink()
+        progress_environment = (
+            {} if progress is None else {
+                pb.ACTION_PROGRESS_PATH_ENV: str(progress_path),
+                pb.ACTION_PROGRESS_TOKEN_ENV: progress_token,
+            }
+        )
         # No payload exists during withdrawal, scope preparation or status-file
         # cleanup. Shared I/O there must not spend its execution budget.
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
@@ -7122,7 +7479,8 @@ class PoolQueue:
             # The action's own ending, and a killed run's partial profile,
             # travel in a file because this process's exit status cannot
             # carry them.
-            env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path)},
+            env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
+                 **progress_environment},
             # The launcher leads its own group so the timeout can signal the
             # group rather than the single pid.  ``kill()`` on the pid reaches
             # the launcher only, and leaves the action holding the GPU.
@@ -7140,6 +7498,25 @@ class PoolQueue:
         try:
             checkpoint_started = time.monotonic()
             observation = _observe_execution(process)
+            watch = (None if progress is None else ProgressWatch(
+                progress_path, progress_token, progress,
+                started=checkpoint_started))
+
+            def ending(outcome: dict[str, object]) -> dict[str, object]:
+                """Every way out files the same evidence and clears the same files.
+
+                Five endings now leave this loop -- containment, withdrawal,
+                the requested deadline, the stall allowance and the action's
+                own exit -- and the one thing worse than any of them is four of
+                them agreeing about what a record carries and one not.
+                """
+
+                if watch is not None:
+                    outcome["progress_observation"] = watch.as_record(
+                        now=time.monotonic())
+                with suppress(OSError):
+                    progress_path.unlink()
+                return self._merge_action_status(outcome, status_path)
             self.write_lease(
                 key,
                 owner=owner, claim_snapshot=item,
@@ -7156,11 +7533,16 @@ class PoolQueue:
             # Refresh the lease while the child runs; a long action must not be
             # reaped out from under itself.
             next_heartbeat = time.monotonic() + heartbeat_s
+            next_progress_poll = time.monotonic() + heartbeat_s
             while True:
                 try:
                     interval = min(heartbeat_s, 2.0) if scope is not None else heartbeat_s
                     if deadline is not None:
                         interval = min(interval, max(0.0, deadline - time.monotonic()))
+                    if watch is not None:
+                        interval = min(
+                            interval,
+                            max(0.0, watch.stall_deadline() - time.monotonic()))
                     out, err = process.communicate(timeout=interval)
                     break
                 except subprocess.TimeoutExpired as exc:
@@ -7174,7 +7556,7 @@ class PoolQueue:
                             scope.terminate_owned(resource_failure)
                             pb._terminate_process_group(process, grace_s=timeout_grace_s)
                             out, err, survived = _drain(process, timeout_s=timeout_grace_s)
-                            return self._merge_action_status({
+                            return ending({
                                 "status": "failed", "returncode": 137,
                                 "execution_observation": observation,
                                 "termination_reason": resource_failure,
@@ -7187,7 +7569,7 @@ class PoolQueue:
                                     rusage_before,
                                     resource.getrusage(resource.RUSAGE_CHILDREN)),
                                 "argv": argv, "cpu_allocation": allocation,
-                            }, status_path)
+                            })
                     # Checkpoint two: the cross-box path.  A withdrawal from another
                     # box cannot signal anything on this one, so this poll is what
                     # makes the verb correct from anywhere -- at a cost of at most
@@ -7196,7 +7578,7 @@ class PoolQueue:
                         if scope is not None:
                             scope.terminate_owned("withdrawn")
                         out, err = self._stop_action(process)
-                        return self._merge_action_status({
+                        return ending({
                             "status": "withdrawn",
                             "execution_observation": observation,
                             "returncode": process.returncode,
@@ -7208,17 +7590,29 @@ class PoolQueue:
                                 resource.getrusage(resource.RUSAGE_CHILDREN)),
                             "argv": argv,
                             "cpu_allocation": allocation,
-                        }, status_path)
+                        })
+                    if watch is not None and time.monotonic() >= next_progress_poll:
+                        # On the heartbeat's cadence, in the directory the
+                        # heartbeat already writes to: one small read per
+                        # running action per ``heartbeat_s``, which is the
+                        # whole of what this contract costs a box.
+                        watch.sample(now=time.monotonic())
+                        next_progress_poll = time.monotonic() + heartbeat_s
                     if time.monotonic() >= next_heartbeat:
                         self.write_lease(
                             key, owner=owner, child_pid=process.pid, claim_snapshot=item,
                             execution_observation=observation,
+                            progress_observation=(
+                                None if watch is None
+                                else watch.as_record(now=time.monotonic())),
                             container_owner=(str(item["container_owner"])
                                              if item.get("container_owner") else None),
                         )
                         next_heartbeat = time.monotonic() + heartbeat_s
                     if deadline is not None:
                         deadline += time.monotonic() - checkpoint_started
+                    if watch is not None:
+                        watch.shift(time.monotonic() - checkpoint_started)
                     if deadline is not None and time.monotonic() >= deadline:
                         # Worst case this branch spends three grace budgets
                         # -- TERM wait, KILL wait, drain (~45 s) -- without
@@ -7231,8 +7625,9 @@ class PoolQueue:
                         out, err, survived = _drain(
                             process, timeout_s=timeout_grace_s
                         )
-                        return self._merge_action_status({
+                        return ending({
                             "status": "timeout",
+                            "termination_reason": "execution_deadline",
                             "execution_observation": observation,
                             # Stays None: ``pbrun`` returns any integer
                             # ``returncode`` as its own exit status, and an
@@ -7261,7 +7656,55 @@ class PoolQueue:
                                 resource.getrusage(resource.RUSAGE_CHILDREN)),
                             "argv": argv,
                             "cpu_allocation": allocation,
-                        }, status_path)
+                        })
+                    if (watch is not None
+                            and time.monotonic() >= watch.stall_deadline()):
+                        # One more read before ending it.  The boundary is
+                        # exactly where a reporter that publishes every few
+                        # seconds lands, and a record already on disk is
+                        # advancement whether or not a poll had reached it.
+                        stall_checkpoint = time.monotonic()
+                        advanced = watch.sample(now=stall_checkpoint)
+                        spent = time.monotonic() - stall_checkpoint
+                        watch.shift(spent)
+                        next_progress_poll = time.monotonic() + heartbeat_s
+                        if deadline is not None:
+                            deadline += spent
+                        if (not advanced
+                                and time.monotonic() >= watch.stall_deadline()):
+                            # Same three grace budgets, same precedence: this
+                            # rung is reached only when containment,
+                            # withdrawal and the requested deadline all had
+                            # nothing to say.
+                            if scope is not None:
+                                scope.terminate_owned("timeout")
+                            pb._terminate_process_group(
+                                process, grace_s=timeout_grace_s
+                            )
+                            out, err, survived = _drain(
+                                process, timeout_s=timeout_grace_s
+                            )
+                            return ending({
+                                # A stall IS an execution timeout: every reader
+                                # of this lane already knows the word, and
+                                # inventing a sixth status would make a policy
+                                # change look like a schema change.  Which
+                                # policy ended it is in the reason.
+                                "status": "timeout",
+                                "termination_reason": "no_progress",
+                                "execution_observation": observation,
+                                "returncode": None,
+                                "launcher_returncode": process.returncode,
+                                "stdout": out,
+                                "stderr": err,
+                                "action_survived_kill": survived,
+                                "elapsed_s": _now() - started,
+                                "child_rusage": _reaped_children(
+                                    rusage_before,
+                                    resource.getrusage(resource.RUSAGE_CHILDREN)),
+                                "argv": argv,
+                                "cpu_allocation": allocation,
+                            })
         except BaseException:
             # The launcher leads its own session now, so a Ctrl-C or any other
             # signal reaching this loop no longer reaches it -- before the new
@@ -7272,6 +7715,8 @@ class PoolQueue:
             _drain(process, timeout_s=timeout_grace_s)
             with suppress(OSError):
                 status_path.unlink()
+            with suppress(OSError):
+                progress_path.unlink()
             raise
         status = "executed" if process.returncode == 0 else "failed"
         # Checkpoint three: on the way out.  When the operator's own signal
@@ -7298,7 +7743,7 @@ class PoolQueue:
         profile = profile_from_launcher_stdout(out)
         if profile is not None:
             outcome["profile"] = profile
-        return self._merge_action_status(outcome, status_path)
+        return ending(outcome)
 
     def _stop_action(self, process: subprocess.Popen) -> tuple[str, str]:
         """Stop a withdrawn action and collect whatever it managed to say.

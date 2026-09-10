@@ -1709,6 +1709,91 @@ def _width_of_the_pin(queue, intent, tags: list[str], hostname: str,
             f"{', '.join(others)}.")
 
 
+def parse_progress_phases(declared: Sequence[str] | None) -> dict[str, object] | None:
+    """Turn repeated ``--progress-phase NAME=SECONDS`` into a sealed policy.
+
+    Order is the order they were given, and it is load-bearing: entering a
+    later phase re-arms the allowance once, so the declaration reads as the
+    shape of the work -- load, then compile, then the loop, then publish --
+    and the total quiet the action can ever accumulate is the sum of what was
+    declared.
+    """
+
+    if not declared:
+        return None
+    phases = []
+    for entry in declared:
+        name, sep, seconds = str(entry).partition("=")
+        if not sep:
+            raise SystemExit(
+                f"pbrun: --progress-phase {entry!r} must be NAME=SECONDS")
+        try:
+            grace = float(seconds)
+        except ValueError:
+            raise SystemExit(
+                f"pbrun: --progress-phase {entry!r} has a non-numeric allowance"
+            ) from None
+        phases.append({"name": name, "grace_s": grace})
+    policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1, "phases": phases}
+    try:
+        return pb.validate_progress_policy(policy)
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: {exc}") from None
+
+
+def progress_contract_notice(
+    queue,
+    intent: Mapping[str, object],
+    *,
+    policy: Mapping[str, object] | None,
+) -> str:
+    """Say what this action's stall allowance is, and who cannot honour it.
+
+    Refused rather than warned when no eligible box announces the contract,
+    and that asymmetry with ``timeout_ceiling_notice`` is the point.  A
+    ceiling that cuts a request short is a smaller budget than asked for; a
+    box that does not know the contract applies its whole-run ceiling to an
+    action submitted *without* a total-duration limit, which is the exact
+    silent kill of a progressing run that #480 is about.  Submitting into that
+    would hand back the defect wearing the fix's name.
+    """
+
+    if policy is None:
+        return ""
+    phases = policy["phases"]
+    assert isinstance(phases, Sequence)
+    total = sum(float(phase["grace_s"]) for phase in phases)
+    lines = [
+        "pbrun: progress contract: "
+        + ", ".join(f"{phase['name']} {float(phase['grace_s']):g}s"
+                    for phase in phases)
+        + f"; at most {total:g}s of quiet in total if it never commits work, "
+        "and no total-duration limit while it does."
+    ]
+    announced = queue.placement_progress_contracts(intent)
+    if not announced:
+        lines.append(
+            "pbrun: no worker offers on record; whether any box honours the "
+            "contract is unknown.")
+        return "\n".join(lines)
+    unsupported = sorted(
+        host for host, contracts in announced.items()
+        if contracts is None or pb.PROGRESS_RECORD_SCHEMA_V1 not in contracts)
+    if len(unsupported) == len(announced):
+        raise SystemExit(
+            "pbrun: no eligible worker announces "
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1} ({', '.join(unsupported)}), so "
+            "this action would be admitted under the progress contract and "
+            "then killed by a whole-run ceiling it never asked for.  Update "
+            "the fleet's published generation, or submit with --timeout-s.")
+    if unsupported:
+        lines.append(
+            "pbrun: " + ", ".join(unsupported) + " do not announce "
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1}; if one of them claims this "
+            "action its own execution ceiling still bounds the whole run.")
+    return "\n".join(lines)
+
+
 def timeout_ceiling_notice(
     queue,
     intent: Mapping[str, object],
@@ -3693,6 +3778,17 @@ def main() -> int:
                          "(7200 s by default, announced per box and reported "
                          "here when it would cut this request short) also "
                          "applies. Queue waiting is bounded by --wait-s")
+    ap.add_argument("--progress-phase", action="append", default=None,
+                    metavar="NAME=SECONDS",
+                    help="declare one phase of this action and the quiet it is "
+                         "allowed in it, in order, once per phase. Declaring "
+                         "any of them admits the action under the progress "
+                         "contract: it is then bounded by how long it goes "
+                         "without committing work rather than by how long it "
+                         "runs, the worker's ceiling clamps each phase's "
+                         "allowance instead of the whole run, and --timeout-s "
+                         "if given still ends it whatever it is doing. The "
+                         "action reports with prismabuild.report_action_progress")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument(
@@ -3757,6 +3853,7 @@ def main() -> int:
         not math.isfinite(args.timeout_s) or args.timeout_s <= 0
     ):
         raise SystemExit("pbrun: --timeout-s must be a positive finite number")
+    progress_policy = parse_progress_phases(args.progress_phase)
 
     if args.withdraw:
         # Withdrawing is not a submission and must not need one: the operator
@@ -4094,6 +4191,13 @@ def main() -> int:
             body["params"]["gpu_memory_gb"] = args.gpu_memory_gb
     if args.timeout_s is not None:
         body["params"]["execution_timeout_s"] = args.timeout_s
+    if progress_policy is not None:
+        # Sealed, like the profiler mode and for the same reason: an action
+        # admitted under the progress contract is a different action from its
+        # unbounded twin, so the store never answers one with the other's
+        # receipt.  Absent, the key is byte-identical to what it was before
+        # this flag existed.
+        body["params"][pb.PROGRESS_PARAM] = progress_policy
     if args.profile is not None:
         # Sealed, and only when asked for.  Present, it makes a profiled run a
         # different action from its unprofiled twin, which is what stops the
@@ -4260,6 +4364,10 @@ def main() -> int:
     ceiling_notice = timeout_ceiling_notice(q, intent, requested=args.timeout_s)
     if ceiling_notice:
         print(ceiling_notice, file=sys.stderr, flush=True)
+
+    progress_notice = progress_contract_notice(q, intent, policy=progress_policy)
+    if progress_notice:
+        print(progress_notice, file=sys.stderr, flush=True)
 
     # Read the decision this submission is about to supersede, so the caller is
     # told rather than surprised.  ``publish`` retires the marker -- a key is a
