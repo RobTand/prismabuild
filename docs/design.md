@@ -2442,10 +2442,13 @@ validation, not a claim of hostile-writer immutability or cross-action residency
 ### Status census completeness
 
 `pbstatus` exits 3 when required queue reads time out or fail, active pool
-records are unreadable, or selected terminal records cannot be parsed. Its
+records are unreadable, or selected terminal records cannot be parsed within
+the 8 MiB per-record bound. Its
 top-level `complete` flag covers all these cases. Terminal directory read
 failures are unavailable sections; an unreadable terminal record retains its
-diagnostic row and names its path in `unavailable_sections`. Missing terminal
+diagnostic row and names its path in `unavailable_sections`. An oversized
+record is reported as unreadable rather than decoded, so status memory
+cannot scale with an action's copied output. Missing terminal
 directories remain valid for transports that have not filed outcomes.
 
 A bounded status reader belongs to its calling process. SIGINT/SIGTERM unwind

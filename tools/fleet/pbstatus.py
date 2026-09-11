@@ -72,6 +72,12 @@ DEFAULT_QUEUE_ROOT = SHARED_ROOT / "pb-queue"
 #: a busy controller, and a person looking at a status screen is not.
 COMMAND_TIMEOUT_S = 20.0
 
+# Terminal rows are summaries, but pull-queue writers can copy complete action
+# logs into them. One audit result made a single row 213.2 MiB, so merely asking
+# for recent status expanded the collector past its service memory limit. The
+# immutable attempt log remains the interface for fetching full output.
+MAX_ENDING_RECORD_BYTES = 8 * 1024 * 1024
+
 #: How long the whole run has to read the shared queue root.  A diagnostic
 #: that can wait forever is worse than one that says it could not read the
 #: mount: on 2026-09-07 fifteen ``pbstatus`` processes sat 33-49 minutes each
@@ -1071,8 +1077,30 @@ def _unreadable_row(entry: os.DirEntry, reason: str) -> dict:
         # modification time is what places the row. It is the same clock
         # ``_ending_paths`` selected the record by.
         "finished_unix": mtime,
+        "timing_finished_unix": None,
+        "published_unix": None,
+        "claimed_unix": None,
         "path": entry.path,
     }
+
+
+class _EndingRecordTooLarge(ValueError):
+    pass
+
+
+def _read_ending(entry: os.DirEntry, queue_root: str | Path) -> dict:
+    """Read one selected terminal record without an unbounded allocation."""
+
+    if entry.stat().st_size > MAX_ENDING_RECORD_BYTES:
+        raise _EndingRecordTooLarge
+    path = Path(entry.path)
+    if path.parent.parent.name == "decisions":
+        return pool.PoolQueue(Path(queue_root))._read_withdrawal_decision(path)
+    with path.open("rb") as handle:
+        raw = handle.read(MAX_ENDING_RECORD_BYTES + 1)
+    if len(raw) > MAX_ENDING_RECORD_BYTES:
+        raise _EndingRecordTooLarge
+    return json.loads(raw)
 
 
 def _unreadable_reason(exc: Exception) -> str:
@@ -1084,6 +1112,8 @@ def _unreadable_reason(exc: Exception) -> str:
     is a fault rather than a write still in flight.
     """
 
+    if isinstance(exc, _EndingRecordTooLarge):
+        return f"record exceeds {MAX_ENDING_RECORD_BYTES}-byte reader limit"
     if isinstance(exc, PermissionError):
         return "permission denied"
     if isinstance(exc, OSError):
@@ -1109,11 +1139,7 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
     rows: list[dict] = []
     for entry in _ending_paths(queue_root, limit):
         try:
-            path = Path(entry.path)
-            if path.parent.parent.name == "decisions":
-                record = pool.PoolQueue(Path(queue_root))._read_withdrawal_decision(path)
-            else:
-                record = json.loads(path.read_text(encoding="utf-8"))
+            record = _read_ending(entry, queue_root)
         except (OSError, ValueError, pool.PoolContractError) as exc:
             # Not dropped. ``limit`` sliced the newest records before any of
             # them was read, so dropping one printed the same empty table a
@@ -1180,6 +1206,12 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
                 float(finished)
                 if isinstance(finished, (int, float)) else mtime
             ),
+            # Keep the record's own value separate from the filesystem-mtime
+            # fallback above. The fallback orders and selects status rows; it
+            # is not evidence of when execution finished.
+            "timing_finished_unix": finished,
+            "published_unix": record.get("published_unix"),
+            "claimed_unix": record.get("claimed_unix"),
             "path": entry.path,
         })
     rows.sort(key=lambda row: row["finished_unix"], reverse=True)

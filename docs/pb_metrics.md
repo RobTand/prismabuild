@@ -167,7 +167,7 @@ Terminal history is a bounded, restart-safe window rather than a counter:
 | `prismabuild_terminal_outcomes` | `host,outcome` | Counts in the selected window. Known outcomes are `executed`, `cache_hit`, `failed`, `timeout`, `withdrawn`, `reset`, `finish_lost_race`, `unreadable`, and `unknown`; unrecognized statuses map to `unknown`. A terminal record with no trusted host uses the single `unknown` host value. |
 | `prismabuild_terminal_outcomes_window_seconds` | none | Configured lookback, 3600 seconds by default. |
 | `prismabuild_terminal_outcomes_window_jobs` | none | Records actually included. This is a gauge and may fall as records age out. |
-| `prismabuild_terminal_outcomes_window_complete` | none | `1` when all terminal directories were accessible and the record cap was not reached; `0` means the window may be truncated or partly inaccessible. |
+| `prismabuild_terminal_outcomes_window_complete` | none | `1` when all terminal directories and selected records were readable and the record cap was not reached; `0` means the window may be truncated, partly inaccessible, or includes a record outside the per-record bound. |
 | `prismabuild_terminal_box_window` | `host,metric` | The heaviest per-action reading among the host's terminal records in the window, from `detail.resource_profile`: `gpu_power_peak_watts`, `gpu_power_reference_watts` and `gpu_power_peak_fraction` from the box window, and `memory_peak_bytes`, `io_read_bytes` and `io_write_bytes` from the attempt's own accounting. On GB10 the power reference is the SoC TDP and covers the CPU too, so the fraction is a fraction of a published reference and not of a measured saturation point. A metric no record in the window carried is absent, which is how a box with no flight recorder differs from a box that idled. |
 | `prismabuild_unstarted_release_events` | `host` | Claims released without an attempt in the selected window, by the box that HELD the claim. The box is read from the filing under `withdrawn/superseded/`, not from the requeued item: the requeue pops every claim-scoped field, `claimed_host` included. A filing naming no credible host uses the single `unknown` host value. A rising rate on one box is that box's shared-mount latency. |
 | `prismabuild_unstarted_release_events_complete` | none | `1` when the release scan was accessible, the record cap was not reached, and every selected filing was readable; `0` means the window may be truncated or partly unreadable. An absent `withdrawn/superseded/` directory is a fleet that has released nothing and reads `1`. |
@@ -179,9 +179,24 @@ Terminal history is a bounded, restart-safe window rather than a counter:
 `--terminal-window-seconds` changes the lookback and `--terminal-limit` changes
 the maximum records read. The default limit is 500. Each refresh stats retained
 terminal directory entries to select the newest bounded set, then reads only
-that set; it does not parse the full terminal history. If the cap is reached,
+that set once; timing fields reuse the same projected row. Each selected record
+is limited to 8 MiB. A larger record is included as an explicit
+`unreadable` outcome, makes terminal collection unsuccessful, and contributes
+no host, resource, or timing values; it is never decoded. If the record cap is
+reached,
 the completeness gauge is conservatively zero even when some capped records
 later fall outside the time window.
+
+This bound was measured against the live 2026-09-11 queue containing 7,289 done
+and 2,162 failed records, including one 223,593,325-byte ending whose
+copied stdout held a 206,122,102-byte audit result. On dl380g10, the same
+profiled one-shot scrape fell from 713.23 MiB RSS and 3.752 seconds (PB action
+`b04950e83eaa`, profile `edbaaedde668`) to 92.77 MiB and 1.567 seconds (PB
+action `5af5e9afab0b`, profile `ee23daa19387`). Twelve uncached collections in
+one process also completed under a 256 MiB address-space limit with 54.3125 MiB
+process max RSS (PB action `b0d0ee88e051`). The after snapshots reported the
+oversized row as unreadable, set both collection-success gauges to zero, and
+omitted only that row's unknown timing; no service-cap increase was used.
 
 The queue census is non-atomic: a worker may rename a record while a snapshot
 is being read. A later cached refresh settles transient races. Terminal

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -228,6 +229,81 @@ class MetricsFixture(unittest.TestCase):
         self.assertIn('prismabuild_terminal_outcomes_window_jobs 1', text)
         self.assertIn('prismabuild_terminal_outcomes_window_complete 0', text)
         self.assertIn('prismabuild_terminal_collection_success 1', text)
+
+    def test_terminal_timing_reuses_the_bounded_summary_read(self) -> None:
+        """One selected ending is opened once, including its timing fields."""
+
+        metrics = pbmetrics.Metrics()
+        with mock.patch.object(
+            pbmetrics.pool, "_read_json",
+            side_effect=AssertionError("terminal payload was opened twice"),
+        ):
+            readable = pbmetrics._terminal_metrics(
+                metrics,
+                self.queue,
+                now=NOW,
+                window_seconds=60,
+                limit=20,
+            )
+        self.assertTrue(readable)
+        text = metrics.render()
+        self.assertIn(
+            'prismabuild_queue_wait_seconds{host="sparky",stat="mean"} 10',
+            text,
+        )
+        self.assertIn(
+            'prismabuild_execution_seconds{host="sparky",stat="max"} 30',
+            text,
+        )
+
+    def test_oversized_terminal_is_explicitly_incomplete_and_has_no_timing(self) -> None:
+        path = self.queue / "done" / f"{'d4' * 32}.json"
+        record = json.loads(path.read_text())
+        record["detail"]["stdout"] = "x" * 1024
+        _write(path, record)
+        os.utime(path, (NOW - 10, NOW - 10))
+
+        with mock.patch.object(pbmetrics.pbstatus, "MAX_ENDING_RECORD_BYTES", 512):
+            text = self.collect(terminal_window_seconds=60, terminal_limit=20)
+
+        self.assertIn(
+            'prismabuild_terminal_outcomes{host="unknown",outcome="unreadable"} 1',
+            text,
+        )
+        self.assertIn('prismabuild_terminal_outcomes_window_complete 0', text)
+        self.assertIn('prismabuild_terminal_collection_success 0', text)
+        self.assertFalse(any(
+            'host="sparky"' in line
+            for line in _samples(text, "prismabuild_terminal_timing_window_jobs")
+        ))
+
+    def test_missing_or_invalid_finish_does_not_become_execution_timing(self) -> None:
+        path = self.queue / "done" / f"{'d4' * 32}.json"
+        base_record = json.loads(path.read_text())
+        for bad_finish in (None, "not-a-timestamp"):
+            with self.subTest(finished_unix=bad_finish):
+                record = dict(base_record)
+                if bad_finish is None:
+                    record.pop("finished_unix")
+                else:
+                    record["finished_unix"] = bad_finish
+                _write(path, record)
+                os.utime(path, (NOW - 10, NOW - 10))
+
+                text = self.collect(terminal_window_seconds=60, terminal_limit=20)
+
+                self.assertIn(
+                    'prismabuild_terminal_outcomes{host="sparky",outcome="executed"} 1',
+                    text,
+                )
+                self.assertFalse(any(
+                    'host="sparky"' in line
+                    for line in _samples(text, "prismabuild_execution_seconds")
+                ))
+                self.assertFalse(any(
+                    'host="sparky"' in line and 'phase="execution"' in line
+                    for line in _samples(text, "prismabuild_terminal_timing_window_jobs")
+                ))
 
     def test_corrupt_active_record_is_unknown_and_collection_fails(self) -> None:
         (self.queue / "ready" / f"{READY_KEY}.json").write_text("{", encoding="utf-8")
