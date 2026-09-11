@@ -5,16 +5,14 @@
 # five-minute poll, so a reboot leaves the box out of the pool for up to five
 # minutes and nothing reports it. On 2026-09-06 all three boxes booted at
 # 10:59 and rejoined at 11:05. A unit under linger starts the supervisor at
-# boot and restarts it within RestartSec if it exits, which turns that window
-# into seconds. The crontab line stays as a backstop: `--ensure` exits 0
-# quietly whenever a supervisor already owns the box, so the two cannot
-# double up -- the supervisor's box-local flock is what enforces that.
+# boot and restarts it within RestartSec if it exits. Once this unit is
+# installed, cron's --ensure defers even while the unit is stopped. The
+# --systemd invocation below makes startup ownership explicit.
 #
 # KillMode=process is load-bearing. Worker loops are spawned by the supervisor
-# and land in its cgroup, but they are not children to recycle: a loop
-# finishes its action under the generation that claimed it, and a replacement
-# supervisor adopts the census instead of respawning. The default
-# KillMode=control-group would SIGTERM every loop mid-action on any restart.
+# and land in its cgroup. The supervisor forwards TERM to their exact PIDs,
+# then waits for each current action and cleanup. Never signal payload groups
+# or impose a shutdown deadline that can strand a claim.
 set -euo pipefail
 if [ "$(id -u)" -eq 0 ]; then
     echo 'install_supervisor_unit.sh runs as rob, not root' >&2
@@ -40,16 +38,15 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-# --ensure is the idempotent form: it becomes this box's supervisor, or exits
-# 0 when one already owns the box-local claim. Restart=always then makes it a
-# thirty-second watchdog rather than the crontab's five-minute one. Never run
-# the bare form here: without --ensure a losing invocation exits non-zero and
-# the unit flaps.
-ExecStart=/usr/bin/python3 /mnt/shared/prismabuild-fleet/repo/tools/supervise.py --ensure
+# --systemd distinguishes the service owner from cron's compatibility entry.
+# --ensure still serializes a handover from an existing supervisor.
+ExecStart=/usr/bin/python3 /mnt/shared/prismabuild-fleet/repo/tools/supervise.py --ensure --systemd
 Restart=always
 RestartSec=30
-# Signal only the supervisor. Worker loops in the cgroup keep their claims.
+# The supervisor drains workers without signalling their action children.
 KillMode=process
+TimeoutStopSec=infinity
+SendSIGKILL=no
 # One log file, the path the runbook already names.
 StandardOutput=append:/home/rob/tmp/pb-supervisor.log
 StandardError=append:/home/rob/tmp/pb-supervisor.log
@@ -58,5 +55,5 @@ StandardError=append:/home/rob/tmp/pb-supervisor.log
 WantedBy=default.target
 UNIT
 systemctl --user daemon-reload
-systemctl --user enable prismabuild-supervisor.service
+systemctl --user enable --now prismabuild-supervisor.service
 echo "installed $unit"

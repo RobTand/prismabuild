@@ -47,6 +47,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import socket
 import stat
@@ -66,6 +67,9 @@ CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
 CLAIM = Path("/home/rob/tmp/prismabuild-supervisor.claim")
 LOG_DIR = Path("/home/rob/tmp")
 PROC = Path("/proc")
+SYSTEMD_UNIT = Path.home() / ".config/systemd/user/prismabuild-supervisor.service"
+SYSTEMD_EXEC = ("ExecStart=/usr/bin/python3 "
+                "/mnt/shared/prismabuild-fleet/repo/tools/supervise.py --ensure --systemd")
 
 #: The mark this supervisor sets on every loop it launches, carrying the box
 #: it launched the loop for.
@@ -809,7 +813,7 @@ def _spawn_role(role: str, args: list[str]) -> int:
     return proc.pid
 
 
-def ensure_roles(host: str) -> list[tuple[str, int]]:
+def ensure_roles(host: str, stop_requested=lambda: False) -> list[tuple[str, int]]:
     """Keep exactly one live child per declared role.
 
     One, not a target: a role loop is a single reader of one queue, and a
@@ -820,8 +824,12 @@ def ensure_roles(host: str) -> list[tuple[str, int]]:
 
     started: list[tuple[str, int]] = []
     for role, role_args in declared_roles(host):
+        if stop_requested():
+            break
         if _live_role_loops(ROLE_SCRIPTS[role]):
             continue
+        if stop_requested():
+            break
         try:
             started.append((role, _spawn_role(role, role_args)))
         except (OSError, FileNotFoundError) as exc:
@@ -832,10 +840,105 @@ def ensure_roles(host: str) -> list[tuple[str, int]]:
     return started
 
 
+def _systemd_managed() -> bool:
+    """The installed unit owns startup, including while deliberately stopped.
+
+    Do not ask whether the unit is active: that would let the next cron tick
+    undo an operator's stop. Older installed units retain their old contract
+    until the installer replaces them with the explicit --systemd invocation.
+    """
+    try:
+        return SYSTEMD_EXEC in SYSTEMD_UNIT.read_text().splitlines()
+    except FileNotFoundError:
+        return False
+
+
+def _shutdown_workers() -> None:
+    """Request cooperative exit and retain the supervisor claim until exit.
+
+    Signal worker PIDs only, never their sessions or payloads. Worker loops
+    finish their current action and its cleanup before honoring SIGTERM.
+    pidfds bind the ownership check, signal and wait to the same process even
+    when a PID is reused. Auxiliary roles hold no action and receive TERM too.
+    A blocked or externally stopped process keeps shutdown pending; there is
+    no timeout that turns missing evidence into a stopped worker.
+    """
+    roots = _proven_roots()
+    targets = [(pid, LOOP_SCRIPT) for pid in _live_loops()]
+    targets.extend((pid, script) for script in ROLE_SCRIPTS.values()
+                   for pid in _live_role_loops(script))
+    pending: dict[int, int] = {}
+    poller = select.poll()
+    try:
+        for pid, script in targets:
+            try:
+                fd = os.pidfd_open(pid)
+            except ProcessLookupError:
+                continue
+            try:
+                if not _is_fleet_loop(pid, roots, script_name=script):
+                    continue
+                signal.pidfd_send_signal(fd, signal.SIGTERM)
+                pending[fd] = pid
+                poller.register(fd, select.POLLIN)
+                fd = -1
+            except ProcessLookupError:
+                pass
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+        print(f"[{socket.gethostname()}] shutdown requested; waiting for "
+              f"owned workers/roles {list(pending.values())}", flush=True)
+        while pending:
+            for fd, _events in poller.poll(1000):
+                poller.unregister(fd)
+                os.close(fd)
+                del pending[fd]
+            _reap_children()
+        _reap_children()
+        print(f"[{socket.gethostname()}] shutdown complete; owned workers and "
+              "roles exited", flush=True)
+    finally:
+        for fd in pending:
+            os.close(fd)
+
+
+def _wait_for_shutdown() -> None:
+    last_error = None
+    while True:
+        try:
+            _shutdown_workers()
+            return
+        except OSError as exc:
+            # A failed ownership handle or signal is not worker exit. Keep
+            # the claim and the service deactivating, then retry the census.
+            error = f"{type(exc).__name__}: {exc}"
+            if error != last_error:
+                print(f"shutdown pending: {error}", flush=True)
+                last_error = error
+            time.sleep(1)
+
+
 def main() -> int:
+    stopping = False
+
+    def request_stop(_signum, _frame):
+        nonlocal stopping
+        stopping = True
+
+    previous = signal.signal(signal.SIGTERM, request_stop)
+    try:
+        return _run_supervisor(lambda: stopping)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _run_supervisor(stop_requested) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ensure", action="store_true",
                     help="exit 0 if a supervisor already owns this box")
+    ap.add_argument("--systemd", action="store_true",
+                    help="installed systemd unit owns this invocation")
     ap.add_argument("--loops", type=int, default=0,
                     help="fixed loop count (disables elastic scaling)")
     ap.add_argument("--interval-s", type=float, default=30.0,
@@ -847,6 +950,12 @@ def main() -> int:
                     help="SIGTERM idle loops so they respawn on the published "
                          "runtime; a loop mid-action is left alone")
     args = ap.parse_args()
+
+    if (not args.systemd and _systemd_managed()
+            and not (args.cycle_stale and args.once)):
+        print("supervisor is managed by systemd; use systemctl --user "
+              "start/stop prismabuild-supervisor.service", flush=True)
+        return 0 if args.ensure else 1
 
     host = socket.gethostname()
     target, loop_args = declared_shape(host, args.loops)
@@ -889,6 +998,13 @@ def main() -> int:
         print(f"[{host}] cycled {len(stopped)} idle loop(s) onto "
               f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
     while True:
+        if stop_requested():
+            _wait_for_shutdown()
+            return 0
+        if not args.systemd and _systemd_managed():
+            print("installed systemd unit now owns startup; handing over "
+                  "supervision without stopping workers", flush=True)
+            return 0
         reaped = _reap_children()
         if reaped:
             print(f"[{host}] reaped {reaped} exited child process(es)", flush=True)
@@ -896,9 +1012,11 @@ def main() -> int:
             return 0                       # reached only under an exec test double
         target, loop_args = declared_shape(
             host, args.loops, (target, loop_args))
+        if stop_requested():
+            continue
 
         live = _live_loops()
-        for role, pid in ensure_roles(host):
+        for role, pid in ensure_roles(host, stop_requested):
             print(f"[{host}] spawned role {role} pid {pid}", flush=True)
         # One authoritative claim census per cycle.  Reusing it for stale
         # cycling, load feedback and scale-down avoids an NFS rescan per pid.
@@ -976,11 +1094,15 @@ def main() -> int:
 
         missing = max(0, desired - len(live))
         for offset in range(missing):
+            if stop_requested():
+                break
             index = next_log_index
             next_log_index += 1
             pid = _spawn(loop_args, index)
             print(f"[{host}] spawned loop {index} pid {pid} "
                   f"({len(live) + offset + 1} of {desired})", flush=True)
+        if stop_requested():
+            continue
         if missing:
             # One bounded delay lets a large batch spread its first polls
             # without charging half a second for every housekeeping process.

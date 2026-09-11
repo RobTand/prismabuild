@@ -2228,6 +2228,27 @@ workers. The supervisor is single-threaded; synchronous subprocess status reads
 finish between these boundaries, and worker-loop exit statuses have no other
 consumer. `SIGCHLD` remains unchanged so descendants retain real failure statuses.
 
+On SIGTERM the supervisor stops replenishment and retains its box-local claim
+while cooperatively draining its attributed workers and stopping auxiliary
+roles. It uses pidfds for ownership-rechecked signals and exit waits; it never
+signals payload process groups or adds an action deadline. Worker loops honor
+their existing SIGTERM flag after completing the current claim and cleanup.
+A blocked or externally stopped process keeps shutdown pending, as does an
+unavailable pidfd acquisition or signal; the supervisor retains its claim
+and retries after reporting the error. The systemd
+unit therefore uses `KillMode=process`, `TimeoutStopSec=infinity` and
+`SendSIGKILL=no`. Runtime re-exec remains independent of this shutdown path.
+
+An installed unit's explicit `--ensure --systemd` ExecStart gives systemd
+startup ownership even while inactive. A cron/manual `--ensure` then returns
+without acquiring the claim or spawning work; an already running cron owner
+rechecks each cycle and hands over without stopping workers. The installer
+enables and starts the service. Legacy units retain legacy
+behavior until reinstalled; the installer travels in the runtime inventory.
+The stop covers supervised processes only and is not a filesystem-quiescence
+or fleet-barrier certificate. Manually launched processes and stale published
+offers require separate operator readback.
+
 Every claim, offer, receipt and CAS read crosses one shared filesystem, and
 the fleet measures it per box. `tools/fleet/mount_latency.py` samples three
 things that answer different questions: NFS per-operation queue time and
