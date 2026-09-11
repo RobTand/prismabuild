@@ -60,7 +60,22 @@
         "10",
         "--python",
         "/home/rob/venvs/pb-cpu/bin/python"
-      ]
+      ],
+      "_roles_why": "dl380g10 is the file server: /mnt/shared is a local ZFS dataset here, also mounted at /storage_pool/shared. The storage role runs one prewarm_loop.py, which reads ready/ in claim order and pulls the bytes a data-manifest-carrying action declares into the ARC before anybody claims it (#487). It claims nothing and holds no lease, so it sits outside the worker sizing law; with no manifest-carrying action in the queue it does nothing at all.",
+      "roles": {
+        "storage": [
+          "--mount-map",
+          "/mnt/shared=/storage_pool/shared",
+          "--readers",
+          "8",
+          "--lookahead",
+          "2",
+          "--poll-s",
+          "20",
+          "--claim-grace-min",
+          "20"
+        ]
+      }
     }
   },
   "_measured_2026_09_04": "Both GB10 boxes are 121 GB unified. The historical gpu-slots values of two and three were concurrency guesses rather than hardware: each box has one physical GPU. They are retained here only as the measurement that exposed why fixed slots strand light jobs and stack heavy jobs; adaptive admission now consumes attributed broker telemetry instead. The RAM bounds remain 72 GiB on sparky and 80 GiB on sparklina because host-memory containment is a separate hard limit.",

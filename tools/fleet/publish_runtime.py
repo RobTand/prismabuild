@@ -53,6 +53,10 @@ FLEET_SCRIPTS = (
     "render_identity.py", "seal_and_publish.py", "tessera_status.py",
     "dispatch_tessera_shards.py", "dispatch_tessera_ladder.py",
     "publish_runtime.py", "pool_reset.py", "runtime_paths.py", "supervise.py",
+    # The supervisor spawns prewarm_loop.py on a box declaring the storage
+    # role, by published path like every other child. A generation without it
+    # makes that role a log line saying the script is not there (#487).
+    "prewarm_loop.py",
     # The SLURM lane's two halves: the shared submit every producer routes
     # through, and the job entry it names.  A runtime published without them
     # has producers importing a module that is not there and a batch script
