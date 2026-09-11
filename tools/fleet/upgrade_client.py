@@ -70,6 +70,8 @@ MAX_MEMBER = 4 * 1024 * 1024
 MAX_EXPORT = 32 * 1024 * 1024
 MAX_MARKER = 64 * 1024
 CLIENT_UPGRADE_PROTOCOL = 2
+MAINTENANCE_DURABLE_PROTOCOL = 1
+CLIENT_UPGRADE_DURABLE_PROTOCOL = 1
 #: Where the fleet records a rollout, beside the generation store rather than
 #: inside it: a sealed generation is immutable, and these files are written
 #: while one is being replaced.
@@ -536,6 +538,11 @@ class Upgrader:
         print(json.dumps(value, sort_keys=True), flush=True)
         return value
 
+    @staticmethod
+    def durable_evidence(status):
+        return {key: status[key] for key in ('maintenance_durable_protocol',
+                'maintenance_state_path') if key in status}
+
     def ctl(self, verb, *, check=True):
         return self.command(['/usr/bin/systemctl', verb, SERVICE], check=check,
                             capture_output=True, text=True, timeout=45)
@@ -826,7 +833,21 @@ class Upgrader:
             gate = json.loads(bounded_read(self.gate, MAX_MARKER))
             if not isinstance(gate, dict) or gate.get('draining') is not False:
                 raise RuntimeError('maintenance gate is not explicitly open')
-            return self.report('current', desired=version, installed=installed)
+            return self.report('current', desired=version, installed=installed,
+                               **self.durable_evidence(status))
+        # A broker that has made a hold survive reboot cannot safely be replaced
+        # by an older reader of only /run.  Check before staging or closing
+        # admission; the installed updater is the downgrade fence after its
+        # bridge generation has converged.
+        durable_marker = rb'(?m)^MAINTENANCE_DURABLE_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
+        updater_marker = rb'(?m)^CLIENT_UPGRADE_DURABLE_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
+        if re.search(durable_marker, (self.install / 'resource_broker.py').read_bytes()) is not None:
+            running = self.call('status')
+            if running.get('maintenance_durable_protocol') != MAINTENANCE_DURABLE_PROTOCOL:
+                raise ValueError('durable maintenance broker capability is missing or stale')
+            if (re.search(durable_marker, blobs['resource_broker.py']) is None
+                    or re.search(updater_marker, blobs['upgrade_client.py']) is None):
+                raise ValueError('durable maintenance broker refuses non-durable candidate')
         # Keep an explicit union so additions and removals both carry their
         # previous existence through failures and process restarts.
         names = sorted(set(installed) | set(version['files']))
@@ -881,14 +902,15 @@ class Upgrader:
             if self.installed() != version['files']:
                 raise RuntimeError('installed client hash mismatch')
             self.ctl('start')
-            self.close_drain(self.healthy())
+            reopened = self.close_drain(self.healthy())
             self.journal.unlink()
             sync_dir(self.state)
         except Exception as exc:
             transaction['error'] = str(exc)
             atomic(self.journal, transaction)
             return self.recover(transaction)
-        return self.report('updated', desired=version, installed=self.installed())
+        return self.report('updated', desired=version, installed=self.installed(),
+                           **self.durable_evidence(reopened))
 
 
 def main():

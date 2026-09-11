@@ -50,7 +50,20 @@ same lock used by scope creation. Existing actions retain their scopes and finis
 normally. Timer ticks report `draining` until the broker proves zero active
 scopes. Only then does the updater stop the service, replace the verified local
 files, start it, check health while admission remains closed, and reopen admission.
-The `/run` drain gate survives a broker service restart, but not a host reboot.
+The `/run` drain gate is a worker-facing v1 mirror. Its canonical authority is
+the root-only host-local `/var/lib/prismabuild-resource-broker/maintenance.json`,
+so a named drain survives a host reboot and the broker restores the mirror before
+it admits work. Begin commits the durable closed state before the mirror closes;
+release commits the durable open state before the mirror opens. If the final
+mirror publication fails after a release, the running broker retains admission
+closed and reports an error; restart recovers the committed state. If the
+volatile gate is absent, even a durable open record first becomes a persisted
+`client-upgrade` boot hold. Only the updater's current-client, loaded-hash and
+health checks can release it. Restoring an old open record cannot bypass boot
+initialization. A missing, corrupt, untrusted, or previously initialized-but-now-missing
+canonical record fails closed. Only the first adoption may migrate a valid old
+`/run` gate, and it writes an adjacent initialized marker before the canonical
+record so erased evidence is never mistaken for a new installation.
 Scope creation racing with
 the gate receives a retryable maintenance refusal. Unreleased scopes and unknown
 or populated groups prevent upgrading; an idle-looking process list is not proof.
@@ -70,11 +83,21 @@ verify both loop generations and installed updater hashes on every host.
 Workers awaiting initialization depend on the enrolled updater being healthy;
 an old already-current updater does not create a missing gate. This requires
 no installer or wire-protocol change, and normal journal-bound rollback remains
-available. Rolling back the runtime to older workers also rolls back the
-missing-gate protection. This is a boot-admission prerequisite for #458, not
-durable maintenance: a named hold still disappears on reboot. Barrier
-activation remains refused until persistent holds, epoch participation,
-quorums and coordinated rollback are implemented and qualified.
+available. The resource-broker installer explicitly initializes the canonical
+open record on a proven fresh installation; a rolling adoption instead migrates
+the existing valid gate, preserving any named hold. Initialization refuses any
+existing canonical record, marker or legacy gate, including dangling symlinks.
+The upgraded updater requires both candidate broker and updater to support
+durable maintenance once its installed broker has that capability. Missing or
+stale running capability also refuses the transition before drain or service
+mutation. First converge that updater/broker generation everywhere;
+an older updater can still perform a pre-convergence rollback and consequently
+does not preserve the reboot guarantee. This is a durable-host-hold prerequisite
+for #458, not fresh epoch participation, quorums, or coordinated rollback.
+Rolling the runtime back to workers older than #505 also loses their missing-gate
+protection; the client downgrade guard does not prevent a runtime symlink move.
+Barrier activation remains refused until epoch participation, quorums and
+coordinated rollback are implemented and qualified.
 
 A drain records the holder that opened it, and only that holder reopens
 admission. The updater states `client-upgrade` and releases nothing else: a tick
