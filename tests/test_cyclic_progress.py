@@ -183,9 +183,11 @@ def test_campaign_cycle_field_roundtrips_and_refuses_missing_phases_or_slurm():
     with pytest.raises(pbcampaign.ManifestError, match="requires --progress-phase"):
         pbcampaign._require_submittable_row(
             {"argv": ["/bin/true"], "progress_cycle": True}, index=0, transport="pool")
-    for bad in (1, "true", None):
+    for bad in (1, "true"):
         with pytest.raises(pbcampaign.ManifestError, match="progress_cycle"):
             pbcampaign._require_row_shape({**row, "progress_cycle": bad}, index=0)
+    # Campaign switch fields consistently treat null like omission.
+    pbcampaign._require_row_shape({**row, "progress_cycle": None}, index=0)
 
 
 CYCLIC_REPORTER = '''
@@ -202,14 +204,21 @@ for cycle in range(4):
     units += 1
     commit(units, "publish")
     time.sleep(0.1)
-open("result", "w").write(str(units))
+with open("result", "w") as f:
+    f.write(str(units))
+    f.flush()
+    os.fsync(f.fileno())
+commit(units, "finalize")
 '''
 
 
 @pytest.mark.parametrize("cycle,deadline", [(True, None), (False, None), (True, 2.5)])
 def test_claimed_cyclic_action_completes_and_still_honours_deadline(tmp_path, cycle, deadline):
     policy = pbrun.parse_progress_phases(
-        ["startup=3", "encode=3", "publish=0.3"], cycle=cycle)
+        # Final result ingestion/receipt publication follows the last commit.
+        # Under the full suite it exceeded the deliberately short publish
+        # grace (all four durable units were present when the control died).
+        ["startup=3", "encode=3", "publish=0.3", "finalize=3"], cycle=cycle)
     queue, item = _claimed(tmp_path, mode="report", seconds=4, policy=policy,
                            timeout_s=deadline, source=CYCLIC_REPORTER)
     outcome = queue.execute(item, timeout_s=3, heartbeat_s=0.05, timeout_grace_s=0.2)
