@@ -83,6 +83,7 @@ LIVE_DEFAULTS = (
     # cost was a test that depended on the fleet's state and a suite that hung
     # for as long as the mount was unreachable.
     ("supervise", "MIRROR", "fleet"),
+    ("supervise", "SYSTEMD_UNIT", "systemd/prismabuild-supervisor.service"),
     # The mount probe times real syscalls against whatever this names, and
     # creates a directory under it.  Left pointed at the live store, the suite
     # would write to the fleet's mount on every run and block on it whenever

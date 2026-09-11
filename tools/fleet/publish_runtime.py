@@ -98,7 +98,7 @@ FLEET_SCRIPTS = (
     # storage rather than executing it from this shared runtime.
     "resource_exec.py", "resource_broker.py", "resource_payload.py",
     "qualify_resource_scope.py", "install_resource_broker.sh",
-    "upgrade_client.py", "install_client_upgrader.sh",
+    "upgrade_client.py", "install_client_upgrader.sh", "install_supervisor_unit.sh",
 )
 #: Fleet tools deliberately left out of the generation, each with the reason.
 #: Runtime tools travel; qualification harnesses use submitted checkouts.

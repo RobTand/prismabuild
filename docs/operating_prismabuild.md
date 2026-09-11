@@ -2509,17 +2509,33 @@ Each box runs its supervisor as a systemd **user** unit,
 `tools/fleet/install_supervisor_unit.sh` and enabled under the linger every box
 already has. Install it as `rob`; it takes no `sudo`.
 
-The unit runs the same `supervise.py --ensure` the crontab runs, and the
-crontab line stays in place behind it. Neither can double up: one supervisor
-per box is enforced by an exclusive `flock` on
-`/home/rob/tmp/prismabuild-supervisor.claim`, and `--ensure` exits 0 quietly
-when it loses that lock. What the unit adds is an owner. `cron` starts nothing
-at boot and its finest useful granularity is minutes, so before the unit a
-reboot left a box out of the pool until the next five-minute tick -- on
-2026-09-06 all three boxes booted at 10:59 and rejoined at 11:05, with every
-offer reading `stale` in between and nothing reporting it. `Restart=always`
-with `RestartSec=30` makes that a thirty-second gap, and boot start makes it
-seconds.
+The installed unit invokes `supervise.py --ensure --systemd`. Its exact
+`ExecStart` declaration makes systemd the startup owner: ordinary `--ensure`
+from the retained cron compatibility entry exits without starting workers,
+even while the service is deliberately stopped. The box-local supervisor
+flock still serializes handover and adoption. A legacy unit without `--systemd`
+retains the old cron behavior until reinstalled. Runtime publication alone
+does not update the installed unit.
+
+To stop this host's supervised work, run:
+
+    systemctl --user stop prismabuild-supervisor.service
+
+The supervisor stops replenishing workers, sends SIGTERM to exact owned worker
+PIDs, and waits for their current actions and cleanup to finish. It also stops
+owned auxiliary roles. It retains its flock until those processes exit, so the
+unit remains `deactivating` while work drains. `systemctl --user start
+prismabuild-supervisor.service` resumes supervision. A restart uses the same
+graceful drain; publication's in-process re-exec still preserves running work.
+
+No shutdown timeout cancels an action. A worker blocked in filesystem I/O or
+an externally stopped role can keep the stop pending; inspect exact process
+identity, state and logs rather than treating elapsed time as completion. The
+stop covers this supervisor's attributed workers and roles, not manually
+started readers or unrelated users of `/mnt/shared`. Old shared offers may
+remain visible until their ordinary freshness interval expires. For mount
+maintenance, separately verify broker scopes, remaining processes and open
+files; a stopped supervisor alone does not certify an unused filesystem.
 
 Worker startup is separate from admission readiness. A missing
 `/run/prismabuild/maintenance.json` parks both loop and one-shot workers. The
@@ -2531,26 +2547,23 @@ Deploy the paired worker/updater change and verify both versions fleet-wide.
 The gate remains volatile, so this does not preserve a named drain across a
 host reboot or qualify a synchronized rollout; #458 still owns those requirements.
 
-Two directives are load-bearing and neither is a default:
+The service uses `KillMode=process` so systemd signals the supervisor rather
+than an action's process group. `TimeoutStopSec=infinity` and `SendSIGKILL=no`
+retain current work while the supervisor waits. `StartLimitIntervalSec=0` in
+`[Unit]` permits repeated `--ensure` handover attempts without retiring the
+service. These settings and the new supervisor must be deployed together.
 
-- `KillMode=process`. Worker loops are spawned by the supervisor and land in
-  its cgroup, but they are not children to recycle -- a loop finishes its
-  action under the generation that claimed it, and a replacement supervisor
-  adopts the census instead of respawning. The default `control-group` would
-  `SIGTERM` every loop mid-action on any restart of the unit.
-- `StartLimitIntervalSec=0`, in `[Unit]`. The supervisor exits 0 by design in
-  the `--ensure` no-op case and again when it re-execs onto a newly published
-  generation, so no restart budget may retire the unit. The directive is
-  honoured only in `[Unit]`; in `[Service]` systemd ignores it silently and the
-  10s/5 default stays in force.
+Install from the published generation as `rob`:
 
-Installing the unit on a box whose supervisor is already running under `cron`
-means handing the claim over. Stop the running supervisor by pid, using the
-argv-shape search the runbook describes rather than `pkill -f`, then
-`systemctl --user start prismabuild-supervisor.service`. The handover is
-correct when the log's next line is `supervising N loops` with no `spawned
-loop` lines after it: the new supervisor adopted every existing loop, and no
-running action was disturbed.
+    bash /mnt/shared/prismabuild-fleet/repo/tools/install_supervisor_unit.sh
+
+The installer backs up the previous unit, reloads systemd and enables startup;
+it does not restart an active service. Verify the loaded supervisor is running
+the new generation before stopping it. A previous cron supervisor releases its
+claim when it re-execs and observes the installed systemd declaration; the unit
+then adopts its workers. Verify `systemctl --user show` reports the actual
+`MainPID`, and inspect that PID's argv for `--systemd`. Test a stop/start during
+an idle maintenance window and verify workers exited and fresh offers returned.
 
 ## Export a complete Tessera model
 
