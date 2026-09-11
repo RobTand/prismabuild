@@ -83,6 +83,9 @@ ACTION_PROGRESS_TOKEN_ENV = "PRISMABUILD_ACTION_PROGRESS_TOKEN"
 PROGRESS_PARAM = "progress"
 PROGRESS_POLICY_SCHEMA_V1 = "prismabuild.action_progress_policy.v1"
 PROGRESS_RECORD_SCHEMA_V1 = "prismabuild.action_progress.v1"
+# A report is metadata, never a checkpoint payload. Bound both accepted bytes
+# and parser work; use the existing stable regular-file reader in the watcher.
+MAX_ACTION_PROGRESS_BYTES = 64 * 1024
 
 #: The placement tag a worker offers when it can enforce the progress contract,
 #: and which the submitter requires of any action that declares one.
@@ -7008,10 +7011,15 @@ def validate_progress_policy(value: object, *, where: str = "action.params.progr
             _fail(f"{at}.name repeats an earlier phase: {name!r}")
         seen.add(name)
         grace = phase["grace_s"]
-        if (type(grace) not in (int, float) or isinstance(grace, bool)
-                or not math.isfinite(grace) or grace <= 0):
+        try:
+            finite = math.isfinite(grace)
+        except (TypeError, OverflowError):
+            finite = False
+        if type(grace) not in (int, float) or not finite or grace <= 0:
             _fail(f"{at}.grace_s must be a positive finite number")
         normalized.append({"name": name, "grace_s": grace})
+    if not math.isfinite(sum(float(phase["grace_s"]) for phase in normalized)):
+        _fail(f"{where}.phases must have a finite total grace")
     return {"schema": PROGRESS_POLICY_SCHEMA_V1, "phases": normalized}
 
 
@@ -7113,8 +7121,9 @@ def report_action_progress(
     token = os.environ.get(ACTION_PROGRESS_TOKEN_ENV) or ""
     if not destination or not token:
         return False
-    if (type(units_completed) not in (int, float) or isinstance(units_completed, bool)
-            or not math.isfinite(units_completed) or units_completed < 0):
+    if (type(units_completed) not in (int, float)
+            or (type(units_completed) is float and not math.isfinite(units_completed))
+            or units_completed < 0):
         raise ValueError("units_completed must be a finite, non-negative number")
     record: dict[str, object] = {
         "schema": PROGRESS_RECORD_SCHEMA_V1,

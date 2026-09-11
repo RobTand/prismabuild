@@ -514,7 +514,9 @@ class ProgressWatch:
         self.path = path
         self.token = token
         self.policy = policy
-        self.units_high_water: float | None = None
+        # Launch already grants the first phase's allowance. Reporting zero
+        # completed units in that phase cannot grant it again.
+        self.units_high_water: int | float = 0
         self.phase_high_water = 0
         self.phases_entered = 1
         self.last_advance_monotonic = started
@@ -552,7 +554,10 @@ class ProgressWatch:
 
         self.sampled_unix = _now()
         try:
-            raw = self.path.read_text(encoding="utf-8")
+            raw = pb._read_regular_file_nofollow(
+                self.path, where="action progress report",
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
+            )
         except FileNotFoundError:
             # Before the first report, and after a reporter that never came.
             # Neither is advancement and neither is an error; the phase's own
@@ -561,9 +566,12 @@ class ProgressWatch:
         except OSError as exc:
             self._reject(f"unreadable: {type(exc).__name__}")
             return False
+        except (pb.ActionContractError, pb.CASTamperError, pb.CASUnavailableError) as exc:
+            self._reject(f"unreadable: {type(exc).__name__}")
+            return False
         try:
-            record = json.loads(raw)
-        except ValueError:
+            record = pb._decode_strict_json(raw, where="action progress report")
+        except (pb.ActionContractError, RecursionError):
             # A torn read is possible in principle even behind os.replace on a
             # shared filesystem; the next poll reads the whole file.
             self._reject("unparsable")
@@ -582,13 +590,11 @@ class ProgressWatch:
             self._reject("undeclared phase")
             return False
         units = record.get("units_completed")
-        if (type(units) not in (int, float) or isinstance(units, bool)
-                or not math.isfinite(units) or units < 0):
+        if (type(units) not in (int, float)
+                or (type(units) is float and not math.isfinite(units)) or units < 0):
             self._reject("units_completed is not a finite count")
             return False
-        units = float(units)
-        advanced_units = (self.units_high_water is None
-                          or units > self.units_high_water)
+        advanced_units = units > self.units_high_water
         advanced_phase = index > self.phase_high_water
         if not advanced_units and not advanced_phase:
             self._reject("replayed")
@@ -601,9 +607,13 @@ class ProgressWatch:
         self.accepted += 1
         self.last_advance_monotonic = now
         reported = record.get("reported_unix")
+        try:
+            reported = (float(reported) if type(reported) in (int, float)
+                        else None)
+        except OverflowError:
+            reported = None
         self.last_advance_unix = (
-            float(reported) if type(reported) in (int, float)
-            and not isinstance(reported, bool) and math.isfinite(reported)
+            reported if reported is not None and math.isfinite(reported)
             else _now()
         )
         self.last_accepted = {
@@ -7530,6 +7540,8 @@ class PoolQueue:
             # spent in spawn/communicate. This is not a fresh timeout grant.
             if deadline is not None:
                 deadline += time.monotonic() - checkpoint_started
+            if watch is not None:
+                watch.shift(time.monotonic() - checkpoint_started)
             # Refresh the lease while the child runs; a long action must not be
             # reaped out from under itself.
             next_heartbeat = time.monotonic() + heartbeat_s
@@ -7596,7 +7608,10 @@ class PoolQueue:
                         # heartbeat already writes to: one small read per
                         # running action per ``heartbeat_s``, which is the
                         # whole of what this contract costs a box.
-                        watch.sample(now=time.monotonic())
+                        # Credit this whole checkpoint once below. Anchoring
+                        # an accepted sample after earlier checkpoint I/O and
+                        # then refunding it again would grant extra quiet.
+                        watch.sample(now=checkpoint_started)
                         next_progress_poll = time.monotonic() + heartbeat_s
                     if time.monotonic() >= next_heartbeat:
                         self.write_lease(
@@ -7719,6 +7734,12 @@ class PoolQueue:
                 progress_path.unlink()
             raise
         status = "executed" if process.returncode == 0 else "failed"
+        if watch is not None:
+            # A short action may finish before the first heartbeat, or publish
+            # its last committed counter after the most recent poll. Retain
+            # that evidence before ending() removes the channel. This read is
+            # observational: it cannot change the completed action's verdict.
+            watch.sample(now=time.monotonic())
         # Checkpoint three: on the way out.  When the operator's own signal
         # reached the action group first, the launcher reports the SIGTERM that
         # stopped it and this worker would otherwise log a defect for a

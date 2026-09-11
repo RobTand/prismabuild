@@ -59,8 +59,10 @@ What then bounds it:
 * **`--timeout-s` still ends it**, progress or no progress. Precedence is
   containment, withdrawal, the requested deadline, then the stall allowance.
 
-Advancement is a strictly increasing `units_completed` within a phase, or
-entering a later declared phase. A replayed or regressing counter, an
+Advancement is a strictly increasing cumulative `units_completed` across the
+whole action, or entering a later declared phase. The count starts at zero;
+reporting zero in the initial phase does not renew startup grace.
+A replayed or regressing counter, an
 undeclared phase, a token from another attempt, printed output and a live
 process are **not** advancement; the receipt says which
 (`progress_observation.last_rejection`). Report after the work is durable --
@@ -74,9 +76,11 @@ pricing rows declare `startup=3600 pricing=900 finalize=1800` because a fit of
 elapsed time against committed batches over 23 completed 864-unit rows gives
 18.4 s per commit and 943 s for everything outside the pricing loop; the
 6,300 s that follows is less than half the 14,400 s that killed two of them
-mid-round (RobTand/prismabuild#480). Reading a `.progress` file costs one
-small open per running action per heartbeat, in the `claimed/` directory the
-lease already writes to on that same cadence.
+mid-round (RobTand/prismabuild#480). The watcher uses the existing stable
+regular-file reader at heartbeat cadence, with a 64 KiB accepted-byte cap and
+strict UTF-8 JSON. Invalid, duplicate-key, oversized, symlink and FIFO reports
+do not renew grace. The reader bounds bytes and retries; a kernel-blocked NFS
+operation has the same recovery limitation as lease/withdrawal I/O (#16).
 
 `pbrun` **refuses** a progress-declaring submission when no eligible worker
 announces the contract (`pbstatus` shows what each box announces). That is
@@ -96,8 +100,10 @@ bounding it.
 `pbstatus`'s job table has a `PROGRESS` column beside `OUTPUT`: the quiet time
 against the current phase's allowance, and how many reports have been accepted.
 `OUTPUT` age is log traffic and proves nothing; `PROGRESS` is what the watchdog
-acts on. A blank column means the action declared no policy, so `KILL AT` is
-the number that governs it.
+acts on. A blank column means no valid progress observation is available; it
+alone does not identify the action's execution policy. Read the sealed request
+and terminal policy fields to distinguish a missing observation from an action
+with no declared progress policy.
 
 Use `pbtest.py` to split suites into independent file shards and
 `pbcampaign.py` for explicit action manifests. Cap pytest fanout at `-n 4` with

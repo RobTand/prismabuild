@@ -777,6 +777,13 @@ requires the `progress-v1` tag, which only a worker that can run the watchdog
 offers, so an old loop mid-upgrade cannot claim the action; `pbstatus`'s node
 table shows what each box announces, and its job table's `PROGRESS` column
 shows a running action's quiet time against the allowance in force.
+The cumulative count starts at zero and never resets between phases. The
+watcher rejects malformed, duplicate-key, nonregular and oversized reports
+without refreshing grace; accepted reports are limited to 64 KiB. It samples
+once more at normal completion so the terminal observation retains the final
+commit. A blank `PROGRESS` column means no valid observation is available,
+not proof that the request has no progress policy. Submission notices name
+phase-grace clamps separately from the unchanged explicit hard deadline.
 Queue waiting does not consume that budget; `--wait-s` controls the submitter's wait separately. A short budget
 does not wait for the next lease heartbeat before being enforced.
 

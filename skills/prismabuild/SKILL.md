@@ -79,6 +79,15 @@ a live process do not count as advancement -- the receipt's
 `progress_observation` says what was rejected and when the action last
 actually advanced (RobTand/prismabuild#480).
 
+Declare phases only for an action that implements the reporting channel.
+Keep `units_completed` cumulative across phases; zero in the initial phase
+does not renew startup grace. Invalid, duplicate-key, oversized or nonregular
+reports grant no continuation. Reports are capped at 64 KiB and the watcher
+uses the existing stable regular-file reader; blocked NFS syscalls retain the
+same recovery limitation as lease I/O. Submission names phase-grace clamps
+separately from an explicit hard deadline. Existing sealed actions retain
+their original policies; adopt checkpoints through a newly sealed request.
+
 `--profile sample` runs py-spy around the action's child at 100 Hz and files
 the speedscope profile as a CAS blob whose digest and path appear on the
 ending, for `pbrun`, `pbstatus` and a human with speedscope. Reach for it when

@@ -1632,9 +1632,9 @@ queue record, and applies the shorter of it and the worker's timeout ceiling.
 Without the field, existing actions retain the worker ceiling. The pool starts
 its monotonic budget immediately before launcher spawn, after checkout
 materialization, withdrawal checks, scope preparation and status-file cleanup.
-Those prelaunch operations and queue waiting do not consume it. Once launch
-begins, blocked heartbeat or telemetry operations still consume the budget;
-stalled-execution accounting remains unqualified under issue #234. Communication
+Those prelaunch operations and queue waiting do not consume it. After launch,
+time spent in synchronous observation, lease, withdrawal and scope-telemetry
+checkpoints is excluded without resetting previously spent execution time. Communication
 waits are capped by the remaining budget independently of lease-heartbeat cadence. Expiry uses the
 existing bounded process-group termination and timeout receipt path. SLURM
 continues enforcing the submitter budget through its scheduler time limit.
@@ -1665,9 +1665,11 @@ the policy declared, `units_completed` is finite and non-negative, and either
 that count exceeds the highest accepted so far or the phase index exceeds the
 highest entered so far. Each phase re-arms its allowance at most once, so
 `sum(grace_s)` bounds an action that never advances at all, and that sum is
-reported (`progress_no_progress_bound_s`). Everything else -- replay,
+reported (`progress_no_progress_bound_s`). The count is cumulative across all
+phases, starts at zero, and preserves integer precision. A first zero report
+in the initial phase does not re-arm startup. Everything else -- replay,
 regression, an undeclared phase, a foreign token, unparsable bytes, an absent
-file -- is counted, not accepted, and appears on the receipt as
+file -- is not accepted; rejected records appear on the receipt as
 `progress_observation.rejected_count` / `last_rejection`. `_observe_execution`
 is untouched and remains a separate, differently-sourced sample: launcher
 liveness and pipe bytes are still not evidence of application progress.
@@ -1675,10 +1677,21 @@ liveness and pipe bytes are still not evidence of application progress.
 Timing uses `time.monotonic()`, so a wall-clock jump in either direction
 decides nothing; the record's own `reported_unix` is carried but never
 consumed. Time spent in the loop's own synchronous checkpoints is refunded to
-the stall clock exactly as it is to the deadline. The file is read on the
+the stall clock exactly once, including the initial lease write. The file is read on the
 lease-heartbeat cadence, in the directory the lease already writes to, and
 once more immediately before a stall would end the action so a record
-published between polls still counts.
+published between polls still counts. Normal completion also samples the final
+report before removing it, without changing the completed action's verdict.
+
+Reports use the existing stable no-follow regular-file reader with a 64 KiB
+accepted-byte limit. Symlinks, FIFOs, oversized or changing files are rejected;
+strict UTF-8 JSON rejects duplicate keys, malformed data and non-finite values.
+Parser depth errors and unrepresentable timestamps cannot escape into action
+termination. Missing reports retain the current grace; invalid reports count
+as rejections and do not extend it. These are byte and type bounds, not a hard
+deadline on NFS syscalls: like the existing lease and withdrawal checkpoints,
+a regular-file operation can block in the kernel. Shared-filesystem recovery
+remains tracked by #16; this contract introduces no new queue or recovery owner.
 
 Termination precedence is unchanged with one rung added at the bottom:
 resource containment, withdrawal, the sealed deadline, then the stall

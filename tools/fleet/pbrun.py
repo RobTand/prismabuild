@@ -1746,6 +1746,7 @@ def progress_contract_notice(
     intent: Mapping[str, object],
     *,
     policy: Mapping[str, object] | None,
+    requested_timeout_s: float | None = None,
 ) -> str:
     """Say what this action's stall allowance is, and who cannot honour it.
 
@@ -1775,7 +1776,9 @@ def progress_contract_notice(
         + ", ".join(f"{phase['name']} {float(phase['grace_s']):g}s"
                     for phase in phases)
         + f"; at most {total:g}s of quiet in total if it never commits work, "
-        "and no total-duration limit while it does."
+        + ("and no total-duration limit while it does."
+           if requested_timeout_s is None else
+           f"with an explicit hard execution deadline of {requested_timeout_s:g}s.")
     ]
     announced = queue.placement_progress_contracts(intent)
     if not announced:
@@ -1800,6 +1803,20 @@ def progress_contract_notice(
             f"to them: it requires the {pb.PROGRESS_TAG} tag they do not "
             "publish.  It waits for a box that does rather than being killed "
             "by a ceiling it never asked for.")
+    ceilings = queue.placement_timeout_ceilings(intent)
+    for host in sorted(set(announced) - set(unsupported)):
+        ceiling = ceilings.get(host)
+        if ceiling is None:
+            lines.append(f"pbrun: {host} announces no phase-grace ceiling; "
+                         "its effective allowances are unknown until execution.")
+            continue
+        for phase in phases:
+            requested_grace = float(phase["grace_s"])
+            if ceiling < requested_grace:
+                lines.append(
+                    f"pbrun: {host} limits {phase['name']} grace to {ceiling:g}s "
+                    f"(requested {requested_grace:g}s); an explicit hard "
+                    "execution deadline is unchanged.")
     return "\n".join(lines)
 
 
@@ -4400,6 +4417,7 @@ def main() -> int:
         q,
         {**intent, "tags": [t for t in tags if t != pb.PROGRESS_TAG]},
         policy=progress_policy,
+        requested_timeout_s=args.timeout_s,
     )
     if progress_notice:
         print(progress_notice, file=sys.stderr, flush=True)
@@ -4427,7 +4445,8 @@ def main() -> int:
             file=sys.stderr, flush=True,
         )
 
-    ceiling_notice = timeout_ceiling_notice(q, intent, requested=args.timeout_s)
+    ceiling_notice = timeout_ceiling_notice(
+        q, intent, requested=args.timeout_s if progress_policy is None else None)
     if ceiling_notice:
         print(ceiling_notice, file=sys.stderr, flush=True)
 
