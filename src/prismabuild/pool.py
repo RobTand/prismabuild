@@ -247,7 +247,7 @@ PASSES = "passes"
 CLAIM_DENIALS = "claim-denials.json"
 CLAIM_DENIALS_SCHEMA_V1 = "prismabuild.claim_denials.v1"
 MAX_CLAIM_DENIALS = 256
-MAX_DENIAL_VALUE_DEPTH = 4
+MAX_DENIAL_VALUE_DEPTH = 6
 MAX_DENIAL_VALUE_ITEMS = 32
 MAX_DENIAL_VALUE_TEXT = 256
 WORKERS = "workers"
@@ -3682,7 +3682,7 @@ class PoolQueue:
             raise PoolContractError("pool item resources must be an object")
         return {str(k): int(v) for k, v in raw.items() if int(v) > 0}
 
-    def _defer_fallback(self, item: Mapping, demand: Mapping) -> bool:
+    def _defer_fallback(self, item: Mapping, demand: Mapping) -> dict[str, object] | None:
         """Give a compatible host with free preferred CPUs up to 20s to claim.
 
         Offers and remote ledger scans are advisory snapshots, not an atomic
@@ -3709,8 +3709,9 @@ class PoolQueue:
             if (remote.free_preferred(tiers) >= demand.get("cpu", 0)
                     and all(free.get(k, 0) >= n and observed.get(k, free[k]) >= n
                             for k, n in demand.items())):
-                return True
-        return False
+                return {"host": host, "free_preferred": remote.free_preferred(tiers),
+                        "observed_capacity": observed, "demand": dict(demand)}
+        return None
 
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
@@ -4541,16 +4542,18 @@ class PoolQueue:
                                 return None
                             # Past the ceiling, retain aging but let smaller work run.
                             continue
-                    if (ledger is not None and handle is not None and cpu_tiers is not None
-                            and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
-                            and self._defer_fallback(item, demand)):
-                        allocation = ledger.cpu_allocation(handle, cpu_tiers)
+                    allocation = (ledger.cpu_allocation(handle, cpu_tiers)
+                                  if ledger is not None and handle is not None and cpu_tiers is not None else None)
+                    fallback_deferral = (self._defer_fallback(item, demand)
+                                          if allocation is not None and allocation["fallback"] else None)
+                    if fallback_deferral is not None:
                         ledger.abandon_acquire(handle)
                         self._return_borrow(controller, borrow)
                         self._return_gpu_probe(controller, gpu_controller, gpu_probe)
                         self.record_denial(item, "deferred_for_preferred_cpu", {
                             "demand": demand,
                             "cpu_allocation": allocation,
+                            "remote_offer": fallback_deferral,
                         })
                         continue
                     # Intent precedes the claim, so a crash in between leaves evidence.
