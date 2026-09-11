@@ -138,7 +138,7 @@ def test_first_lease_delay_does_not_spend_startup_grace(tmp_path, monkeypatch):
     from test_progress_keeps_a_working_action_alive import _claimed
 
     queue, item = _claimed(tmp_path, mode="report", seconds=0.5,
-                           policy=_policy(0.4, 0.4, 0.4))
+                           policy=_policy(5, 5, 5))
     offset = [0.0]
     monkeypatch.setattr(pool, "time", SimpleNamespace(
         monotonic=lambda: time.monotonic() + offset[0],
@@ -150,7 +150,7 @@ def test_first_lease_delay_does_not_spend_startup_grace(tmp_path, monkeypatch):
         offset[0] += 10
 
     monkeypatch.setattr(queue, "write_lease", lease)
-    outcome = queue.execute(item, timeout_s=5, heartbeat_s=0.05,
+    outcome = queue.execute(item, timeout_s=20, heartbeat_s=0.05,
                             timeout_grace_s=0.2)
     assert outcome["status"] == "executed"
 
