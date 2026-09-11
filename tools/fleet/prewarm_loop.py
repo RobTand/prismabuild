@@ -504,7 +504,13 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event) 
         }
         if not args.dry_run:
             queue.record_prewarm(key, record)
-        budget = max(0, budget - result["bytes_warmed"])
+        # A dry run reads nothing, so ``bytes_warmed`` is 0 and the budget
+        # would survive the row untouched: every later row in the same
+        # lookahead is then priced against a budget the plan has already spent,
+        # and the plan claims to warm more than the ARC can hold.  Charge what
+        # the read would have cost.
+        budget = max(0, budget - (total if args.dry_run
+                                  else result["bytes_warmed"]))
         event["warmed"].append({k: record[k] for k in
                                 ("action_key", "status", "manifest_bytes",
                                  "bytes_warmed", "seconds", "mb_per_s")})
