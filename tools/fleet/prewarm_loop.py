@@ -58,7 +58,15 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# The publisher writes this program twice, ``tools/fleet/prewarm_loop.py`` and
+# a flattened ``tools/prewarm_loop.py``, and ``supervise._spawn_role`` runs the
+# flat one.  ``parents[2]`` is the repository root under the first spelling and
+# the parent of the generation store under the second, so the generation must
+# be resolved by the rule that knows both layouts (the rule ``pbtest.py`` uses).
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root  # noqa: E402
+
+sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
