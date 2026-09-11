@@ -55,5 +55,5 @@ StandardError=append:/home/rob/tmp/pb-supervisor.log
 WantedBy=default.target
 UNIT
 systemctl --user daemon-reload
-systemctl --user enable prismabuild-supervisor.service
+systemctl --user enable --now prismabuild-supervisor.service
 echo "installed $unit"

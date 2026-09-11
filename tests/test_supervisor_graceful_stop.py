@@ -146,4 +146,54 @@ def test_installer_declares_cooperative_stop_and_explicit_start_owner(tmp_path):
     assert 'TimeoutStopSec=infinity' in unit
     assert 'SendSIGKILL=no' in unit
     assert (tmp_path / 'systemctl.calls').read_text().splitlines() == [
-        '--user daemon-reload', '--user enable prismabuild-supervisor.service']
+        '--user daemon-reload', '--user enable --now prismabuild-supervisor.service']
+
+
+def isolated_supervisor(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, 'argv', ['supervise', '--ensure'])
+    monkeypatch.setattr(supervise, 'CLAIM', tmp_path / 'claim')
+    monkeypatch.setattr(supervise, 'LOG_DIR', tmp_path)
+    monkeypatch.setattr(supervise, '_systemd_managed', lambda: False)
+    monkeypatch.setattr(supervise, '_loaded_published_generation', lambda: None)
+    monkeypatch.setattr(supervise, '_reexec_if_published', lambda *a: False)
+    monkeypatch.setattr(supervise, '_reap_children', lambda: 0)
+    monkeypatch.setattr(supervise, 'declared_shape', lambda *a: (1, []))
+    monkeypatch.setattr(supervise, '_next_log_index', lambda: 0)
+    monkeypatch.setattr(supervise.time, 'sleep', lambda _: None)
+
+
+def test_stop_received_during_cycle_prevents_role_or_worker_spawns(monkeypatch, tmp_path):
+    isolated_supervisor(monkeypatch, tmp_path)
+    stopping = []
+    def shape(*a):
+        if len(a) == 3:
+            stopping.append(True)  # A signal during a potentially slow shape read.
+        return 1, []
+    monkeypatch.setattr(supervise, 'declared_shape', shape)
+    monkeypatch.setattr(supervise, '_live_loops', lambda: [])
+    monkeypatch.setattr(supervise, 'ensure_roles', lambda *a, **k: pytest.fail('spawn after stop'))
+    drained = []
+    monkeypatch.setattr(supervise, '_shutdown_workers', lambda: drained.append(True))
+    assert supervise._run_supervisor(lambda: bool(stopping)) == 0
+    assert drained == [True]
+
+
+def test_running_cron_owner_hands_over_after_unit_install(monkeypatch, tmp_path):
+    isolated_supervisor(monkeypatch, tmp_path)
+    installed = iter([False, True])
+    monkeypatch.setattr(supervise, '_systemd_managed', lambda: next(installed))
+    monkeypatch.setattr(supervise, '_live_loops', lambda: pytest.fail('cron still supervising'))
+    monkeypatch.setattr(supervise, '_shutdown_workers', lambda: pytest.fail('handover drained workers'))
+    assert supervise._run_supervisor(lambda: False) == 0
+
+
+def test_shutdown_signal_failure_retains_supervision_until_retry(monkeypatch, tmp_path):
+    isolated_supervisor(monkeypatch, tmp_path)
+    attempts = []
+    def shutdown():
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise PermissionError('pidfd signal unavailable')
+    monkeypatch.setattr(supervise, '_shutdown_workers', shutdown)
+    assert supervise._run_supervisor(lambda: True) == 0
+    assert len(attempts) == 2

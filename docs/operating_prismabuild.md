@@ -2557,11 +2557,12 @@ Install from the published generation as `rob`:
 
     bash /mnt/shared/prismabuild-fleet/repo/tools/install_supervisor_unit.sh
 
-The installer backs up the previous unit, reloads systemd and enables startup;
-it does not restart an active service. Verify the loaded supervisor is running
-the new generation before stopping it. A previous cron supervisor releases its
-claim when it re-execs and observes the installed systemd declaration; the unit
-then adopts its workers. Verify `systemctl --user show` reports the actual
+The installer backs up the previous unit, reloads systemd and enables/starts
+the service; it does not restart an already active service. Verify the loaded supervisor is running
+the new generation before stopping it. A previous cron supervisor checks the installed ownership declaration on each
+cycle and releases its claim without stopping workers; the unit then adopts
+them. First publish the new supervisor so an old cron process re-execs onto
+that per-cycle handover behavior. Verify `systemctl --user show` reports the actual
 `MainPID`, and inspect that PID's argv for `--systemd`. Test a stop/start during
 an idle maintenance window and verify workers exited and fresh offers returned.
 

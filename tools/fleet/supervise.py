@@ -813,7 +813,7 @@ def _spawn_role(role: str, args: list[str]) -> int:
     return proc.pid
 
 
-def ensure_roles(host: str) -> list[tuple[str, int]]:
+def ensure_roles(host: str, stop_requested=lambda: False) -> list[tuple[str, int]]:
     """Keep exactly one live child per declared role.
 
     One, not a target: a role loop is a single reader of one queue, and a
@@ -824,8 +824,12 @@ def ensure_roles(host: str) -> list[tuple[str, int]]:
 
     started: list[tuple[str, int]] = []
     for role, role_args in declared_roles(host):
+        if stop_requested():
+            break
         if _live_role_loops(ROLE_SCRIPTS[role]):
             continue
+        if stop_requested():
+            break
         try:
             started.append((role, _spawn_role(role, role_args)))
         except (OSError, FileNotFoundError) as exc:
@@ -897,6 +901,22 @@ def _shutdown_workers() -> None:
     finally:
         for fd in pending:
             os.close(fd)
+
+
+def _wait_for_shutdown() -> None:
+    last_error = None
+    while True:
+        try:
+            _shutdown_workers()
+            return
+        except OSError as exc:
+            # A failed ownership handle or signal is not worker exit. Keep
+            # the claim and the service deactivating, then retry the census.
+            error = f"{type(exc).__name__}: {exc}"
+            if error != last_error:
+                print(f"shutdown pending: {error}", flush=True)
+                last_error = error
+            time.sleep(1)
 
 
 def main() -> int:
@@ -979,7 +999,11 @@ def _run_supervisor(stop_requested) -> int:
               f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
     while True:
         if stop_requested():
-            _shutdown_workers()
+            _wait_for_shutdown()
+            return 0
+        if not args.systemd and _systemd_managed():
+            print("installed systemd unit now owns startup; handing over "
+                  "supervision without stopping workers", flush=True)
             return 0
         reaped = _reap_children()
         if reaped:
@@ -988,9 +1012,11 @@ def _run_supervisor(stop_requested) -> int:
             return 0                       # reached only under an exec test double
         target, loop_args = declared_shape(
             host, args.loops, (target, loop_args))
+        if stop_requested():
+            continue
 
         live = _live_loops()
-        for role, pid in ensure_roles(host):
+        for role, pid in ensure_roles(host, stop_requested):
             print(f"[{host}] spawned role {role} pid {pid}", flush=True)
         # One authoritative claim census per cycle.  Reusing it for stale
         # cycling, load feedback and scale-down avoids an NFS rescan per pid.
@@ -1068,11 +1094,15 @@ def _run_supervisor(stop_requested) -> int:
 
         missing = max(0, desired - len(live))
         for offset in range(missing):
+            if stop_requested():
+                break
             index = next_log_index
             next_log_index += 1
             pid = _spawn(loop_args, index)
             print(f"[{host}] spawned loop {index} pid {pid} "
                   f"({len(live) + offset + 1} of {desired})", flush=True)
+        if stop_requested():
+            continue
         if missing:
             # One bounded delay lets a large batch spread its first polls
             # without charging half a second for every housekeeping process.
