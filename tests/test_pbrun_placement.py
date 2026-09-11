@@ -1749,8 +1749,9 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
     assert "1 other live box fits this demand: dl380g10" in err
 
 
-def test_a_matching_stale_offer_outvotes_a_fresh_nonmatch_at_submit(
-    tmp_path, capsys, monkeypatch,
+@pytest.mark.parametrize("offset_s", [-121.0, 7.0], ids=["old-offer", "clock-skew"])
+def test_a_matching_recorded_offer_outvotes_a_fresh_nonmatch_at_submit(
+    tmp_path, capsys, monkeypatch, offset_s,
 ) -> None:
     """Capability is not whichever boxes happened to announce this instant.
 
@@ -1766,12 +1767,12 @@ def test_a_matching_stale_offer_outvotes_a_fresh_nonmatch_at_submit(
     from unittest import mock
 
     work = _git_checkout(tmp_path)
-    now = [1_000.0]
+    now = [1_000.0 + offset_s]
     monkeypatch.setattr(pool_module, "_now", lambda: now[0])
     queue = pool_module.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
                    capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
-    now[0] += pool_module.OFFER_TIMEOUT_S + 1
+    now[0] = 1_000.0
     queue.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
                    capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
 
@@ -1785,7 +1786,10 @@ def test_a_matching_stale_offer_outvotes_a_fresh_nonmatch_at_submit(
         assert pbrun.main() == 75          # accepted; no worker is polling here
 
     err = capsys.readouterr().err
-    assert "recorded capable worker is between announcements" in err
+    if offset_s < 0:
+        assert "recorded capable worker is between announcements" in err
+    else:
+        assert "clock skew" in err and "dl380g10" in err
     assert "pbrun: queued" in err
 
 
