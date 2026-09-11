@@ -74,9 +74,12 @@ with `termination_reason: execution_deadline`.
 Choose the allowances from what the workload measurably does. PrismaQuant's
 pricing rows declare `startup=3600 pricing=900 finalize=1800` because a fit of
 elapsed time against committed batches over 23 completed 864-unit rows gives
-18.4 s per commit and 943 s for everything outside the pricing loop; the
-6,300 s that follows is less than half the 14,400 s that killed two of them
-mid-round (RobTand/prismabuild#480). The watcher uses the existing stable
+18.6728 s per batch, an 836.1 s intercept and a 160.5 s maximum absolute
+residual. The [retained records and extraction](https://github.com/RobTand/prismaquant/blob/83fa2a2dfee478a68a4e582764932c21b38e7747/docs/measurements/pq480_progress_grace_fit_2026-09-10.md)
+make that workload-specific fit reproducible. The intercept estimates time
+outside pricing; it does not directly measure each phase's longest quiet gap.
+The allowances add margin to that evidence. Their 6,300 s sum is less than
+half the 14,400 s that killed two rows mid-round (RobTand/prismabuild#480). The watcher uses the existing stable
 regular-file reader at heartbeat cadence, with a 64 KiB accepted-byte cap and
 strict UTF-8 JSON. Invalid, duplicate-key, oversized, symlink and FIFO reports
 do not renew grace. The reader bounds bytes and retries; a kernel-blocked NFS
