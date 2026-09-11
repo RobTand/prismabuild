@@ -100,11 +100,18 @@ class Fleet:
             poll_s=0.0, arc_reserve_fraction=1.0,
             arcstats=self.arcstats(size=0, c=1 << 40, c_max=1 << 40),
             claim_grace_min=20.0, once=True, dry_run=False, log=None,
-            min_manifest_bytes=0)
+            min_manifest_bytes=0,
+            # No pool, no disks: the pacer these tests build is inactive and
+            # reads at full speed.  A test about pacing builds its own pacer
+            # on a fake stat source and hands it to ``cycle``.
+            pace_pool="", disks="", max_util_pct=40.0,
+            max_read_await_ms=15.0, max_backlog_ms=4000.0,
+            pace_sample_s=0.5, pace_hold_s=0.25)
         base.update(overrides)
         return argparse.Namespace(**base)
 
-    def cycle(self, args) -> dict:
+    def cycle(self, args, pacer=None) -> dict:
         import threading
         mounts = prewarm_loop.MountMap(list(args.mount_map))
-        return prewarm_loop.cycle(args, self.queue, mounts, threading.Event())
+        return prewarm_loop.cycle(
+            args, self.queue, mounts, threading.Event(), pacer=pacer)

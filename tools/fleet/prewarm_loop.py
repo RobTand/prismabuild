@@ -27,6 +27,23 @@ What it does, every poll
 4. Writes one record per action under ``pb-queue/prewarm/<action_key>.json``.
    That is the only thing it writes, anywhere.
 
+Pacing
+------
+Reading fast is not the objective; reading without displacing the fleet is.
+On 2026-09-11 eight concurrent readers took the raidz1 to 73-83% utilization,
+38-54 ms read await and 11-14 s of backlog, the clients' sync writes queued
+behind that, their RPCs passed the RDMA timeout, and both Sparks' GPUs idled
+100-130 s per row while the transport reconnected (#499).  The same bytes read
+at 8-12% utilization and ~0 ms await cost nobody anything.
+
+So the reader is paced by the disks rather than by a thread count: it samples
+``/sys/block/<dev>/stat`` for the pool's own members and holds before a block
+whenever the worst disk is above a threshold.  A thread count cannot do this --
+it fixes concurrency, not load, and the load a given concurrency produces
+depends on what every other tenant is doing at that moment.  The numbers it
+sampled go into the prewarm record beside ``mb_per_s``, because a warm that was
+fast and a warm that was harmless are different claims.
+
 What it does not do
 -------------------
 It is not a second dispatcher.  It never decides what runs, where, or next; it
@@ -52,6 +69,7 @@ import os
 import queue as queuelib
 import socket
 import stat as statmod
+import subprocess
 import sys
 import threading
 import time
@@ -75,6 +93,20 @@ from prismabuild import pool  # noqa: E402
 #: 1 MiB records; a smaller block only costs syscalls.
 BLOCK = 1 << 20
 ARCSTATS = "/proc/spl/kstat/zfs/arcstats"
+#: ``/sys/block/<dev>/stat`` field offsets, from
+#: ``Documentation/block/stat.rst``.  Named because the file is a bare row of
+#: integers and an off-by-one here reads writes as reads.
+STAT_READS_COMPLETED = 0
+STAT_READ_MS = 3
+STAT_IN_FLIGHT = 8
+STAT_IO_TICKS = 9
+STAT_WEIGHTED_IO_MS = 10
+SYSFS_BLOCK = "/sys/class/block"
+#: Top-level ``zpool status`` groups whose members are not the pool's data
+#: spindles.  Pacing on the L2ARC device would hold the reader off an SSD that
+#: was never the constraint.
+ZPOOL_AUX_GROUPS = frozenset(
+    {"cache", "log", "logs", "spares", "spare", "special", "dedup"})
 #: The fleet's own store, spelled the way ``worker_loop`` spells it.  Not
 #: ``pool.DEFAULT_POOL_ROOT``: that default is ``/mnt/shared/pb-queue``, one
 #: directory above the queue this fleet actually keeps, and a loop pointed
@@ -169,6 +201,347 @@ class MountMap:
         return path
 
 
+# ----------------------------------------------------------------- pacing
+
+
+def pool_member_devices(
+    pool: str,
+    *,
+    runner: Callable[[list[str]], str] | None = None,
+    sysfs: str = SYSFS_BLOCK,
+) -> list[str]:
+    """The block devices behind ``pool``'s data vdevs, as ``sdb``-style names.
+
+    ``zpool status -P`` prints every leaf as an absolute path, so the members
+    are read from the pool's own topology rather than guessed from a device
+    glob -- a box whose root disks are also ``sd*`` would otherwise be paced by
+    a disk the pool never touches.  The auxiliary groups are dropped: an L2ARC
+    or SLOG device is not the raidz queue this loop must stay off.
+
+    Returns ``[]`` on any failure, including no ``zpool`` at all.  That is not
+    a silent degradation: the caller records the empty list and reports pacing
+    inactive, which is the honest answer on a host that has no pool.
+    """
+
+    def _run(argv: list[str]) -> str:
+        return subprocess.run(
+            argv, check=True, text=True, timeout=30,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+
+    try:
+        text = (runner or _run)(["zpool", "status", "-P", pool])
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    devices: list[str] = []
+    in_config = False
+    section = "data"
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not in_config:
+            in_config = stripped.startswith("config:")
+            continue
+        if not stripped:
+            continue
+        if stripped.startswith("NAME "):
+            continue
+        if stripped.startswith("errors:"):
+            break
+        indent = len(line) - len(line.lstrip())
+        name = stripped.split()[0]
+        # The pool itself and the auxiliary group headers sit at the same
+        # depth; anything deeper belongs to whichever of them came last.
+        if indent <= 2:
+            section = "aux" if name.lower() in ZPOOL_AUX_GROUPS else "data"
+            continue
+        if section != "data" or not name.startswith("/"):
+            continue
+        device = whole_disk_of(name, sysfs=sysfs)
+        if device and device not in devices:
+            devices.append(device)
+    return devices
+
+
+def whole_disk_of(path: str, *, sysfs: str = SYSFS_BLOCK) -> str | None:
+    """``/dev/sdb1`` -> ``sdb``: the disk whose queue the partition shares.
+
+    Resolved through sysfs rather than by stripping trailing digits, which
+    gets ``nvme0n1`` wrong in both directions.  A partition's sysfs node is a
+    child of its disk's node; a whole disk's parent is the ``block`` class
+    directory and has no ``dev`` file.
+    """
+
+    base = os.path.basename(path)
+    try:
+        node = Path(sysfs, base).resolve(strict=True)
+    except OSError:
+        return None
+    parent = node.parent
+    if parent.name != "block" and (parent / "dev").exists():
+        return parent.name
+    return node.name
+
+
+def read_disk_stat(device: str, *, root: str = "/sys/block") -> list[int] | None:
+    try:
+        with open(f"{root}/{device}/stat") as handle:
+            return [int(field) for field in handle.read().split()]
+    except (OSError, ValueError):
+        return None
+
+
+class DiskPacer:
+    """Hold the reader while the pool's worst disk is above what is harmless.
+
+    The three numbers are the ones Netdata charts, computed the same way, so a
+    record written here and the ``disk_util``/``disk_await``/``disk_backlog``
+    series an operator reads afterwards are the same quantities:
+
+    * ``util_pct``   = d(io_ticks) / d(wall_ms) * 100
+    * ``read_await`` = d(read_ms) / d(reads_completed), and 0 when no read
+      completed in the interval -- an interval with no completions has no
+      average to report, and inventing one either divides by zero or fabricates
+      a stall out of an idle disk.
+    * ``backlog_ms`` = d(weighted_io_ms) / d(wall_s)
+
+    Thresholds are arguments, not constants, because they are a property of the
+    pool: what is harmless on four spindles is not what is harmless on an SSD.
+    The defaults come from the two states measured in #499 and are documented
+    at the argument.
+
+    The first sample has no interval and therefore no verdict, so it never
+    holds.  This matters: a pacer that treated "unknown" as "over" would stall
+    forever on a host whose stat file it cannot read, which is exactly the host
+    where pacing is inactive and reading is fine.
+    """
+
+    def __init__(
+        self,
+        devices: list[str],
+        *,
+        max_util_pct: float,
+        max_read_await_ms: float,
+        max_backlog_ms: float,
+        sample_s: float = 0.5,
+        hold_s: float = 0.25,
+        stat_source: Callable[[str], list[int] | None] = read_disk_stat,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        reason: str = "",
+        notify: Callable[[dict[str, object]], None] | None = None,
+    ) -> None:
+        self.devices = list(devices)
+        self.max_util_pct = float(max_util_pct)
+        self.max_read_await_ms = float(max_read_await_ms)
+        self.max_backlog_ms = float(max_backlog_ms)
+        self.sample_s = max(0.0, float(sample_s))
+        self.hold_s = max(0.001, float(hold_s))
+        self.stat_source = stat_source
+        self.clock = clock
+        self.sleep = sleep
+        self.reason = reason or ("" if self.devices else "no pool devices")
+        #: Called when a hold starts and when it ends.  A loop that goes quiet
+        #: for minutes because the campaign itself is saturating the spindles
+        #: is behaving correctly, and an operator must be able to see that
+        #: rather than infer it from a warm that never finished.
+        self.notify = notify
+        self._lock = threading.Lock()
+        self._previous: dict[str, list[int]] = {}
+        self._previous_at = 0.0
+        self._sampled_at = 0.0
+        self._over = False
+        self._samples = 0
+        self._holds = 0
+        self._held_s = 0.0
+        self._holding = 0
+        self._hold_started = 0.0
+        self._totals = {"util_pct": 0.0, "read_await_ms": 0.0, "backlog_ms": 0.0}
+        self._maxima = {"util_pct": 0.0, "read_await_ms": 0.0, "backlog_ms": 0.0}
+        self._last: dict[str, float] = {}
+
+    @property
+    def active(self) -> bool:
+        return bool(self.devices)
+
+    # -- sampling ---------------------------------------------------------
+
+    def _measure(self, now: float) -> dict[str, float] | None:
+        """One interval's worst-disk numbers, or ``None`` if there is no interval."""
+
+        current: dict[str, list[int]] = {}
+        for device in self.devices:
+            row = self.stat_source(device)
+            if row is not None and len(row) > STAT_WEIGHTED_IO_MS:
+                current[device] = row
+        previous, previous_at = self._previous, self._previous_at
+        self._previous, self._previous_at = current, now
+        elapsed = now - previous_at
+        if not previous or elapsed <= 0:
+            return None
+        worst = {"util_pct": 0.0, "read_await_ms": 0.0, "backlog_ms": 0.0,
+                 "in_flight": 0.0}
+        seen = False
+        for device, row in current.items():
+            before = previous.get(device)
+            if before is None:
+                continue
+            seen = True
+            reads = row[STAT_READS_COMPLETED] - before[STAT_READS_COMPLETED]
+            read_ms = row[STAT_READ_MS] - before[STAT_READ_MS]
+            ticks = row[STAT_IO_TICKS] - before[STAT_IO_TICKS]
+            weighted = row[STAT_WEIGHTED_IO_MS] - before[STAT_WEIGHTED_IO_MS]
+            worst["util_pct"] = max(
+                worst["util_pct"], min(100.0, 100.0 * ticks / (elapsed * 1000.0)))
+            worst["read_await_ms"] = max(
+                worst["read_await_ms"], (read_ms / reads) if reads > 0 else 0.0)
+            worst["backlog_ms"] = max(worst["backlog_ms"], weighted / elapsed)
+            worst["in_flight"] = max(worst["in_flight"], float(row[STAT_IN_FLIGHT]))
+        return worst if seen else None
+
+    def _refresh_locked(self, now: float) -> None:
+        measured = self._measure(now)
+        self._sampled_at = now
+        if measured is None:
+            return
+        self._samples += 1
+        for key in self._totals:
+            self._totals[key] += measured[key]
+            self._maxima[key] = max(self._maxima[key], measured[key])
+        self._last = measured
+        self._over = (
+            (self.max_util_pct > 0 and measured["util_pct"] > self.max_util_pct)
+            or (self.max_read_await_ms > 0
+                and measured["read_await_ms"] > self.max_read_await_ms)
+            or (self.max_backlog_ms > 0
+                and measured["backlog_ms"] > self.max_backlog_ms))
+
+    def _verdict(self) -> bool:
+        """Is the pool over threshold?  Resamples at most every ``sample_s``."""
+
+        now = self.clock()
+        with self._lock:
+            if now - self._sampled_at >= self.sample_s:
+                self._refresh_locked(now)
+            return self._over
+
+    # -- the call the reader makes ----------------------------------------
+
+    def wait(self, stop: threading.Event | None = None) -> None:
+        """Block until the pool is under threshold, or ``stop`` is set."""
+
+        if not self.active:
+            return
+        if not self._verdict():
+            return
+        self._enter_hold()
+        try:
+            while self._verdict():
+                if stop is not None and stop.is_set():
+                    return
+                self.sleep(self.hold_s)
+        finally:
+            self._leave_hold()
+
+    def _enter_hold(self) -> None:
+        with self._lock:
+            self._holds += 1
+            first = self._holding == 0
+            if first:
+                self._hold_started = self.clock()
+            self._holding += 1
+            last = dict(self._last)
+        if first and self.notify is not None:
+            self.notify({"event": "prewarm-hold", "state": "start", **last})
+
+    def _leave_hold(self) -> None:
+        with self._lock:
+            self._holding -= 1
+            done = self._holding == 0
+            if done:
+                self._held_s += self.clock() - self._hold_started
+            held = self._held_s
+            last = dict(self._last)
+        if done and self.notify is not None:
+            self.notify({"event": "prewarm-hold", "state": "end",
+                         "held_seconds_total": round(held, 3), **last})
+
+    # -- what it saw ------------------------------------------------------
+
+    def report(self) -> dict[str, object]:
+        """The sampled numbers, for the prewarm record.
+
+        Wall seconds *any* reader was held, not the sum over readers: eight
+        threads holding one second together cost the pool one second, and a
+        sum would report eight.
+        """
+
+        with self._lock:
+            samples = self._samples
+            mean = {key: (self._totals[key] / samples if samples else 0.0)
+                    for key in self._totals}
+            held = self._held_s
+            if self._holding:
+                held += self.clock() - self._hold_started
+            return {
+                "active": self.active,
+                "devices": list(self.devices),
+                "reason": self.reason,
+                "samples": samples,
+                "holds": self._holds,
+                "held_seconds": round(held, 3),
+                "max_util_pct": round(self._maxima["util_pct"], 1),
+                "mean_util_pct": round(mean["util_pct"], 1),
+                "max_read_await_ms": round(self._maxima["read_await_ms"], 2),
+                "mean_read_await_ms": round(mean["read_await_ms"], 2),
+                "max_backlog_ms": round(self._maxima["backlog_ms"], 1),
+                "mean_backlog_ms": round(mean["backlog_ms"], 1),
+                "thresholds": {
+                    "max_util_pct": self.max_util_pct,
+                    "max_read_await_ms": self.max_read_await_ms,
+                    "max_backlog_ms": self.max_backlog_ms,
+                },
+            }
+
+
+def pacer_from_args(args) -> DiskPacer:
+    """Build the pacer a cycle will use, from arguments and the pool topology.
+
+    A host with no pool, no ``zpool`` or an unreadable ``stat`` file gets an
+    inactive pacer that reads at full speed and says so in the record, rather
+    than a refusal: the storage role is the only place this loop belongs, and
+    the tests run where none of those files exist.
+    """
+
+    devices = [name for name in
+               (part.strip() for part in (getattr(args, "disks", "") or "").split(","))
+               if name]
+    reason = "from --disks" if devices else ""
+    if not devices and getattr(args, "pace_pool", None):
+        devices = pool_member_devices(str(args.pace_pool))
+        reason = (f"from zpool status -P {args.pace_pool}" if devices
+                  else f"pool {args.pace_pool} has no readable data vdev members")
+    return DiskPacer(
+        devices,
+        max_util_pct=args.max_util_pct,
+        max_read_await_ms=args.max_read_await_ms,
+        max_backlog_ms=args.max_backlog_ms,
+        sample_s=args.pace_sample_s,
+        hold_s=args.pace_hold_s,
+        reason=reason,
+    )
+
+
+def inactive_pacing(reason: str = "no pacer") -> dict[str, object]:
+    """A pacing report of the same shape from a reader that had no pacer.
+
+    Same keys, so a reader of the records never has to branch on whether the
+    field is present -- "pacing was off" is a value, not a missing key.
+    """
+
+    return DiskPacer([], max_util_pct=0.0, max_read_await_ms=0.0,
+                     max_backlog_ms=0.0, reason=reason).report()
+
+
 # ---------------------------------------------------------------- reading
 
 
@@ -181,10 +554,14 @@ class Reader:
     close to a sequential sweep.
     """
 
-    def __init__(self, readers: int, mounts: MountMap, block: int = BLOCK) -> None:
+    def __init__(self, readers: int, mounts: MountMap, block: int = BLOCK,
+                 pacer: DiskPacer | None = None) -> None:
         self.readers = max(1, readers)
         self.mounts = mounts
         self.block = block
+        #: Consulted before every block.  Concurrency bounds how many reads are
+        #: outstanding; only the pacer bounds what they cost the pool.
+        self.pacer = pacer
 
     def read(
         self,
@@ -235,6 +612,10 @@ class Reader:
                         os.lseek(fd, offset, os.SEEK_SET)
                     remaining = want_total
                     while remaining > 0 and not stop.is_set():
+                        if self.pacer is not None:
+                            self.pacer.wait(stop)
+                            if stop.is_set():
+                                break
                         chunk = os.readv(fd, [view[: min(self.block, remaining)]])
                         if not chunk:
                             break
@@ -271,6 +652,11 @@ class Reader:
             "seconds": round(elapsed, 3),
             "mb_per_s": round(state["bytes"] / 1e6 / elapsed, 1),
             "readers": self.readers,
+            # Beside ``mb_per_s`` on purpose: a rate alone hid the cost that
+            # made #499, and a receipt that reports only how fast the warm was
+            # cannot answer whether it was worth what the fleet paid for it.
+            "disk_pacing": (self.pacer.report() if self.pacer is not None
+                            else inactive_pacing()),
             "errors": errors,
         }
 
@@ -392,8 +778,13 @@ def warmed_reserve(queue: pool.PoolQueue, ready: list[dict]) -> dict:
 # ------------------------------------------------------------------ loop
 
 
-def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event) -> dict:
+def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
+          pacer: DiskPacer | None = None) -> dict:
     ready = queue.ready_items()
+    # One pacer per cycle, shared by every reader thread of every row warmed in
+    # it: the disks are one queue, and a per-thread pacer would let N threads
+    # each drive the pool to the threshold.
+    pacer = pacer if pacer is not None else pacer_from_args(args)
     room = arc_headroom(args.arc_reserve_fraction, args.arcstats)
     cas_root = Path(args.cas_root) if args.cas_root else None
     reserve = claimed_reserve(
@@ -410,6 +801,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event) 
         "unix": round(time.time(), 3),
         "host": socket.gethostname(),
         "ready": len(ready),
+        "pacing_active": pacer.active,
+        "pacing_devices": list(pacer.devices),
         **room,
         **reserve,
         "protected_bytes": protected,
@@ -465,9 +858,10 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event) 
         started = time.time()
         if args.dry_run:
             result = {"bytes_warmed": 0, "entries_warmed": 0, "seconds": 0.0,
-                      "mb_per_s": 0.0, "readers": args.readers, "errors": []}
+                      "mb_per_s": 0.0, "readers": args.readers,
+                      "disk_pacing": pacer.report(), "errors": []}
         else:
-            reader = Reader(args.readers, mounts)
+            reader = Reader(args.readers, mounts, pacer=pacer)
             result = reader.read(
                 list(manifest["entries"]),
                 budget_bytes=budget,
@@ -513,7 +907,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event) 
                                   else result["bytes_warmed"]))
         event["warmed"].append({k: record[k] for k in
                                 ("action_key", "status", "manifest_bytes",
-                                 "bytes_warmed", "seconds", "mb_per_s")})
+                                 "bytes_warmed", "seconds", "mb_per_s",
+                                 "disk_pacing")})
     return event
 
 
@@ -532,11 +927,53 @@ def main(argv: list[str] | None = None) -> int:
                              "Required and never defaulted -- which mount a "
                              "box serves is host configuration, and a wrong "
                              "guess reads the network instead of the disks")
-    parser.add_argument("--readers", type=int, default=8,
-                        help="parallel readers; 8 measured 391.9 MB/s on the "
-                             "GLM census pool, 1 measured 298.9")
-    parser.add_argument("--lookahead", type=int, default=2,
-                        help="how many ready actions ahead to warm")
+    parser.add_argument("--readers", type=int, default=2,
+                        help="parallel readers.  8 measured 391.9 MB/s against "
+                             "1's 298.9 on the GLM census pool, and cost the "
+                             "fleet 100-130 s of both Sparks' GPU time per row "
+                             "(#499): 30%% more read rate for a transport "
+                             "reset on every client.  2 with the pacer below "
+                             "is the concurrency that keeps a spindle busy "
+                             "without owning its queue")
+    parser.add_argument("--lookahead", type=int, default=1,
+                        help="how many ready actions ahead to warm.  The ARC "
+                             "must hold the running rows as well: on dl380g10 "
+                             "c_max is 257.7 GB, two live 64 GB rows and one "
+                             "64 GB lookahead row come to 191 GB against a "
+                             "206 GB budget at the default reserve fraction, "
+                             "and a second lookahead row does not fit -- it is "
+                             "bought by evicting what the running rows read")
+    parser.add_argument("--pace-pool", default="storage_pool",
+                        help="the ZFS pool whose data vdev members pace the "
+                             "reader; its spindles are discovered with "
+                             "'zpool status -P'.  A host where that fails "
+                             "reads unpaced and records that it did")
+    parser.add_argument("--disks", default="",
+                        help="comma-separated block devices (sdb,sdc) to pace "
+                             "on, overriding --pace-pool discovery")
+    parser.add_argument("--max-util-pct", type=float, default=40.0,
+                        help="hold while any pool disk is busier than this.  "
+                             "Measured on dl380g10 (#499): 8-12%% while the "
+                             "campaign alone read, 73-83%% under the 8-reader "
+                             "warm that reset every client's RDMA transport.  "
+                             "40 sits between them, near the top of what the "
+                             "fleet was measured to tolerate.  0 disables")
+    parser.add_argument("--max-read-await-ms", type=float, default=15.0,
+                        help="hold while any pool disk's mean read service "
+                             "time over the last sample exceeds this.  "
+                             "Measured: ~0-2 ms harmless, 38-54 ms stalling.  "
+                             "0 disables")
+    parser.add_argument("--max-backlog-ms", type=float, default=4000.0,
+                        help="hold while any pool disk's queue backlog "
+                             "exceeds this.  Measured: 300-450 ms harmless, "
+                             "11 000-14 400 ms stalling -- the client sync "
+                             "writes queued behind that backlog are what "
+                             "passed the RDMA timeout.  0 disables")
+    parser.add_argument("--pace-sample-s", type=float, default=0.5,
+                        help="minimum seconds between /sys/block reads; every "
+                             "block's check reads the cached verdict")
+    parser.add_argument("--pace-hold-s", type=float, default=0.25,
+                        help="seconds to wait between rechecks while held")
     parser.add_argument("--min-manifest-bytes", type=int, default=1 << 30,
                         help="a manifest smaller than this is passed over "
                              "without consuming the lookahead: a row that "
@@ -571,8 +1008,15 @@ def main(argv: list[str] | None = None) -> int:
             "this loop belongs on the storage host only")
     queue = pool.PoolQueue(Path(args.pool_root))
     stop = threading.Event()
+
+    def announce(payload: dict[str, object]) -> None:
+        print(json.dumps({**payload, "unix": round(time.time(), 3)}),
+              file=sys.stderr, flush=True)
+
     while True:
-        event = cycle(args, queue, mounts, stop)
+        pacer = pacer_from_args(args)
+        pacer.notify = announce
+        event = cycle(args, queue, mounts, stop, pacer=pacer)
         line = json.dumps(event)
         print(line, flush=True)
         if args.log:
