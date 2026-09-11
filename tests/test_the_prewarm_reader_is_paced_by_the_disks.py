@@ -17,6 +17,8 @@ import sys
 import threading
 import time
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prewarm_loop  # noqa: E402
 
@@ -119,22 +121,20 @@ class FakeDisk:
             sleep=self.sleep, **settings)
 
 
-def test_the_first_sample_has_no_interval_so_it_does_not_hold() -> None:
-    """No previous sample means no rate -- not a stall, and not a division.
-
-    A pacer that answered "over" when it did not yet know would hold forever
-    on the one host where it has nothing to measure, which is exactly the host
-    where reading is free.
-    """
+def test_the_first_sample_waits_for_a_complete_interval_and_obeys_stop() -> None:
+    """Configured disks do not authorize a read until their baseline is fresh."""
 
     disk = FakeDisk(accumulate([LOADED]))
     pacer = disk.pacer()
+    stop = threading.Event()
+    stop.set()
 
-    pacer.wait(threading.Event())
+    pacer.wait(stop)
 
     assert disk.slept == 0.0
-    assert pacer.report()["holds"] == 0
+    assert pacer.report()["holds"] == 1
     assert pacer.report()["samples"] == 0
+    assert pacer.report()["telemetry_state"] == "awaiting_interval"
 
 
 def test_an_interval_with_no_completed_read_reports_no_await() -> None:
@@ -152,7 +152,7 @@ def test_an_interval_with_no_completed_read_reports_no_await() -> None:
                                      weighted=2000)]))
     pacer = disk.pacer()
 
-    pacer.wait(threading.Event())      # first sample: no interval, no verdict
+    pacer._verdict()                   # first sample establishes the baseline
     disk.tick()
     over = pacer._verdict()
 
@@ -169,7 +169,7 @@ def test_the_reader_holds_while_the_pool_is_loaded_and_resumes_when_it_is_not(
     disk = FakeDisk(accumulate([QUIET, LOADED, LOADED, QUIET, QUIET]))
     pacer = disk.pacer()
 
-    pacer.wait(threading.Event())      # sample 1: no interval, no hold
+    assert pacer._verdict() is True    # sample 1 is only a baseline
     disk.tick()
     pacer.wait(threading.Event())      # sample 2: quiet, no hold
     assert disk.slept == 0.0, "a quiet pool must not be paced"
@@ -197,7 +197,7 @@ def test_a_hold_ends_when_the_reader_is_stopped() -> None:
 
     disk = FakeDisk(accumulate([LOADED] * 50))
     pacer = disk.pacer()
-    pacer.wait(threading.Event())      # first sample: no interval, no verdict
+    assert pacer._verdict() is True    # first sample establishes the baseline
     disk.tick()
     stop = threading.Event()
     stop.set()
@@ -219,7 +219,7 @@ def test_the_seconds_held_are_wall_clock_not_a_sum_over_readers() -> None:
 
     disk = FakeDisk(accumulate([LOADED, LOADED]))
     pacer = disk.pacer()
-    pacer.wait(threading.Event())      # sample 1: no interval
+    assert pacer._verdict() is True    # first sample establishes the baseline
     disk.tick()
     stop = threading.Event()
 
@@ -284,7 +284,7 @@ def test_a_zero_cap_is_off_rather_than_a_cap_of_zero() -> None:
     pacer = disk.pacer(max_util_pct=0.0, max_read_await_ms=0.0,
                        max_backlog_ms=0.0)
 
-    pacer.wait(threading.Event())
+    assert pacer._verdict() is True    # establish the required baseline
     disk.tick()
     pacer.wait(threading.Event())
 
@@ -355,6 +355,25 @@ def test_only_the_pools_own_data_disks_pace_the_reader(tmp_path: Path) -> None:
         "the cache and log devices are not the queue the loop must stay off")
 
 
+def test_an_unresolvable_data_member_refuses_the_whole_pool(tmp_path: Path) -> None:
+    """A quiet resolved vdev cannot stand in for its missing sibling."""
+
+    status = (
+        "  pool: storage_pool\n"
+        "config:\n\n"
+        "\tNAME STATE READ WRITE CKSUM\n"
+        "\tstorage_pool ONLINE 0 0 0\n"
+        "\t  raidz1-0 ONLINE 0 0 0\n"
+        "\t    /dev/sdb1 ONLINE 0 0 0\n"
+        "\t    /dev/sdc1 ONLINE 0 0 0\n"
+        "\nerrors: No known data errors\n"
+    ).expandtabs(2)
+    sysfs = fake_sysfs(tmp_path, {"sdb1": "sdb"})
+
+    assert prewarm_loop.pool_member_devices(
+        "storage_pool", runner=lambda argv: status, sysfs=sysfs) == []
+
+
 def test_a_whole_disk_vdev_is_its_own_pacing_device(tmp_path: Path) -> None:
     """A pool given a bare disk has no partition to climb out of."""
 
@@ -373,30 +392,145 @@ def test_a_host_with_no_pool_paces_nothing_and_says_why() -> None:
                                             runner=missing) == []
 
 
-def test_a_disk_that_stops_answering_releases_the_hold() -> None:
-    """Unknown is not over.
+@pytest.mark.parametrize("readable_disk", [False, True],
+                         ids=["all-missing", "one-member-missing"])
+def test_missing_required_disk_feedback_prevents_payload_reads(
+        tmp_path: Path, readable_disk: bool) -> None:
+    """A quiet peer cannot make an unreadable vdev safe to prewarm against."""
 
-    The loop holds on what it measured; when the measurement disappears --
-    a device renamed under it, a ``stat`` file that stops being readable --
-    the last verdict must not latch.  A latched hold is a prewarm loop that
-    never reads again and never says why.
-    """
+    stop = threading.Event()
+    clock = [10.0]
 
-    disk = FakeDisk(accumulate([LOADED, LOADED]))
+    def now() -> float:
+        clock[0] += 1.0
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+        stop.set()
+
+    def stats(device: str) -> list[int] | None:
+        return [0] * 11 if readable_disk and device == "sdc" else None
+
+    pacer = prewarm_loop.DiskPacer(
+        ["sdb", "sdc"], max_util_pct=40, max_read_await_ms=15,
+        max_backlog_ms=4000, sample_s=0, stat_source=stats,
+        clock=now, sleep=sleep,
+    )
+    payload = tmp_path / "input"
+    payload.write_bytes(b"x" * 4096)
+    result = prewarm_loop.Reader(
+        1, prewarm_loop.MountMap([f"{tmp_path}={tmp_path}"]), pacer=pacer,
+    ).read(
+        [{"path": str(payload), "offset": 0, "bytes": 4096}],
+        budget_bytes=4096, stop=stop,
+    )
+
+    assert result["bytes_warmed"] == 0, result
+    pacing = result["disk_pacing"]
+    assert pacing["telemetry_state"] == "missing"
+    assert pacing["missing_devices"] == (["sdb", "sdc"]
+                                          if not readable_disk else ["sdb"])
+    assert pacing["telemetry_gaps"] == 1
+
+
+def test_disk_telemetry_recovers_only_after_a_fresh_complete_interval() -> None:
+    """Restoration cannot reuse the last pre-gap row as a healthy interval."""
+
+    disk = FakeDisk(accumulate([QUIET, QUIET, QUIET]))
+    available = [False]
+
+    def stats(device: str) -> list[int] | None:
+        return disk.stat(device) if available[0] else None
+
+    def sleep(seconds: float) -> None:
+        disk.sleep(seconds)
+        available[0] = True
+
+    pacer = prewarm_loop.DiskPacer(
+        ["sdb"], max_util_pct=40, max_read_await_ms=15,
+        max_backlog_ms=4000, sample_s=0, stat_source=stats,
+        clock=disk.clock, sleep=sleep,
+    )
+
+    pacer.wait(threading.Event())
+
+    report = pacer.report()
+    assert disk.slept >= 0.5, "one sleep restores a baseline; another proves it"
+    assert report["telemetry_state"] == "complete"
+    assert report["telemetry_gaps"] == 1
+    assert report["samples"] == 1
+
+
+def test_losing_a_member_after_a_healthy_interval_stops_the_next_payload_read(
+        tmp_path: Path) -> None:
+    """A prior quiet verdict expires when one configured member disappears."""
+
+    disk = FakeDisk(accumulate([QUIET, QUIET, QUIET]))
     pacer = disk.pacer()
-    pacer.wait(threading.Event())      # first sample: no interval, no hold
+    assert pacer._verdict() is True
     disk.tick()
-    assert pacer._verdict() is True, "the loaded interval must be over"
+    assert pacer._verdict() is False
+
+    stop = threading.Event()
 
     def gone(device: str) -> None:
         return None
 
-    pacer.stat_source = gone
-    disk.tick()
+    def stop_after_hold(seconds: float) -> None:
+        disk.sleep(seconds)
+        stop.set()
 
-    assert pacer._verdict() is False
+    pacer.stat_source = gone
+    pacer.sleep = stop_after_hold
+    payload = tmp_path / "input"
+    payload.write_bytes(b"x" * 4096)
+    result = prewarm_loop.Reader(
+        1, prewarm_loop.MountMap([f"{tmp_path}={tmp_path}"]), pacer=pacer,
+    ).read(
+        [{"path": str(payload), "offset": 0, "bytes": 4096}],
+        budget_bytes=4096, stop=stop,
+    )
+
+    assert result["bytes_warmed"] == 0, result
+    assert result["disk_pacing"]["telemetry_state"] == "missing"
+    assert result["disk_pacing"]["telemetry_gaps"] == 1
+
+
+def test_a_duplicate_configured_member_needs_one_complete_stat_row() -> None:
+    """A repeated ``--disks`` name is one vdev, not missing telemetry."""
+
+    disk = FakeDisk(accumulate([QUIET, QUIET]))
+    pacer = prewarm_loop.DiskPacer(
+        ["sdb", "sdb"], max_util_pct=40, max_read_await_ms=15,
+        max_backlog_ms=4000, sample_s=0, stat_source=disk.stat,
+        clock=disk.clock, sleep=disk.sleep,
+    )
+
+    assert pacer.devices == ["sdb"]
+    assert pacer._verdict() is True
+    disk.tick()
     pacer.wait(threading.Event())
+
+    assert pacer.report()["telemetry_state"] == "complete"
     assert pacer.report()["holds"] == 0
+
+
+def test_a_row_boundary_keeps_an_existing_pacing_hold() -> None:
+    """Accounting reset must never turn an already-over pool into a read."""
+
+    disk = FakeDisk(accumulate([LOADED, LOADED]))
+    pacer = disk.pacer()
+    assert pacer._verdict() is True
+    disk.tick()
+    assert pacer._verdict() is True
+    pacer._enter_hold()
+
+    pacer.begin_row()
+
+    assert pacer._verdict() is True
+    assert pacer.report()["holds"] == 1
+    pacer._leave_hold()
 
 
 def test_zpool_is_resolved_off_path_as_well() -> None:

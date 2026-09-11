@@ -141,12 +141,25 @@ The three numbers are computed the way Netdata computes `disk_util`,
 afterwards are the same quantities.  `--pace-sample-s` bounds how often sysfs
 is read (0.25 s); every block's check reads the cached verdict.  Because the
 burst height belongs to the prefetcher, the sample interval is what bounds a
-burst's *length*.  A host with no
-pool, no `zpool`, or no readable `stat` file reads unpaced and the record says
-`disk_pacing.active: false` -- "pacing was off" is a value, not a missing key.
-A hold that starts or ends prints one `prewarm-hold` line on stderr, so a loop
-that is correctly yielding to a busy pool is visible rather than inferred from
-a warm that has not finished.
+burst's *length*.
+
+On the storage role, those samples are required evidence, not a best-effort
+optimization.  Every data-vdev member discovered from the pool must provide a
+readable stat row.  A per-block loss of one member or all rows holds before the
+next read; a topology-discovery failure before a later cycle exits the role for
+its supervisor to retry instead of creating an unpaced cycle.  The hold-start
+event reports `telemetry_state` and `missing_devices`; the pacing report also
+records `telemetry_gaps` beside the ordinary disk numbers.  After recovery the
+first complete sample is only a new baseline: a second complete sample is
+required before a read resumes.  The hold is interruptible through the
+reader's stop event.  A direct fixture or non-storage caller that configures
+no disks remains explicitly inactive (`disk_pacing.active: false`); that mode
+is not a storage-role fallback.
+
+The disk verdict and its prior stat baseline remain shared across sequential
+rows in a poll, but receipt accounting is row-scoped: samples, means, maxima,
+holds, held seconds, and telemetry gaps are reset at each row boundary.  An
+existing hold is never reset by that accounting boundary.
 
 Setting any cap to 0 disables that cap.  Setting all three off is how you
 reproduce the pre-#499 behaviour, and it is not a supported production shape.

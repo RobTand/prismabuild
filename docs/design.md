@@ -2361,6 +2361,18 @@ submission. Manifest preflight validates the bounded numeric conversion and
 refuses a budget without GPU demand (explicit or implied by `exclusive`) or
 under SLURM before any row is submitted.
 
+## Storage prewarm pacing
+
+The data-manifest prewarmer is described in
+[`data_manifest_prewarm.md`](data_manifest_prewarm.md).  A storage-role warm
+requires complete fresh disk telemetry for every discovered data-vdev member:
+missing or partial rows hold reads, recovery establishes a new baseline before
+it can resume, and a later topology-discovery failure exits the role for
+supervisor retry.  No-disk pacing remains an explicit direct-fixture or
+non-storage mode, never a storage fallback.  Sequential rows retain the
+shared pacing verdict and stat baseline, while their receipts reset only the
+row's accounting counters.
+
 ## Model-level Tessera dispatch
 
 The [full-model dispatcher](tessera_model_dispatch.md) owns decomposition into
