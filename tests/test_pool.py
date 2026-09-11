@@ -411,7 +411,43 @@ def test_serve_once_records_a_failing_worker_as_failed(
     _publish(queue, KEY_A, worker_script=str(stub), max_attempts=1)
     outcome = queue.serve_once()
     assert outcome["status"] == "failed" and outcome["returncode"] == 3
-    assert queue.item_path(pool.FAILED, KEY_A).exists()
+    # A sub-second, silent failure used to leave only a bare return code in
+    # the terminal row.  Empty pipes are evidence too: distinguish them from
+    # a capture failure and retain the same verdict in immutable attempt one.
+    assert outcome["output_capture"] == {
+        "state": "child_produced_no_output",
+        "stdout_bytes": 0,
+        "stderr_bytes": 0,
+    }
+    terminal = json.loads(queue.item_path(pool.FAILED, KEY_A).read_text())
+    assert terminal["detail"]["output_capture"] == outcome["output_capture"]
+    attempts = queue.attempt_outcomes(terminal)
+    assert len(attempts) == 1
+    assert attempts[0]["detail"]["output_capture"] == outcome["output_capture"]
+    assert attempts[0]["stdout"] == attempts[0]["stderr"] == ""
+
+
+def test_fast_failing_worker_archives_its_pipe_output(
+    queue: pool.PoolQueue, tmp_path: Path
+) -> None:
+    """A final communicate, rather than a heartbeat, owns fast-failure logs."""
+
+    stub = tmp_path / "fast_bad_worker.py"
+    stub.write_text(
+        "import sys; print('payload precondition failed', file=sys.stderr); sys.exit(3)\n"
+    )
+    _publish(queue, KEY_A, worker_script=str(stub), max_attempts=1)
+    outcome = queue.serve_once()
+    assert outcome["status"] == "failed"
+    assert outcome["output_capture"] == {
+        "state": "captured",
+        "stdout_bytes": 0,
+        "stderr_bytes": len(outcome["stderr"].encode("utf-8")),
+    }
+    terminal = json.loads(queue.item_path(pool.FAILED, KEY_A).read_text())
+    attempt = queue.attempt_outcomes(terminal)[0]
+    assert "payload precondition failed" in attempt["stderr"]
+    assert attempt["detail"]["output_capture"] == outcome["output_capture"]
 
 
 def _test_checkout_snapshot(
