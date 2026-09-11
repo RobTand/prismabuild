@@ -119,16 +119,19 @@ def _run(tmp_path, **kwargs):
 def test_a_progressing_action_outlives_the_ceiling_that_killed_the_glm_rows(tmp_path):
     """The whole issue in one assertion: advancing beats elapsed time."""
 
-    outcome = _run(tmp_path, mode="report", seconds=1.5, ceiling=0.4,
+    # A fresh Python interpreter can spend longer than 0.4 s importing the
+    # worker on a loaded fleet box.  Give startup a realistic allowance while
+    # keeping the action duration materially beyond the deadline it defeats.
+    outcome = _run(tmp_path, mode="report", seconds=3.5, ceiling=2.0,
                    policy=_policy(2.0, 2.0, 2.0))
-    assert outcome["status"] == "executed", outcome.get("stderr")
-    # It ran nearly four times the limit a box without the contract enforces.
-    assert outcome["elapsed_s"] > 1.0
+    assert outcome["status"] == "executed", repr(outcome)
+    # It ran materially beyond the limit a box without the contract enforces.
+    assert outcome["elapsed_s"] > 3.0
     assert outcome["execution_governed_by"] == "progress"
     # And the ceiling is still on the record, aimed at the quiet instead.
-    assert outcome["worker_timeout_ceiling_s"] == 0.4
+    assert outcome["worker_timeout_ceiling_s"] == 2.0
     assert outcome["execution_timeout_ceiling_s"] is None
-    assert outcome["progress_stall_ceiling_s"] == 0.4
+    assert outcome["progress_stall_ceiling_s"] == 2.0
     progress = outcome["progress_observation"]
     assert progress["accepted_count"] > 1
     assert progress["last_accepted"]["units_completed"] > 1
