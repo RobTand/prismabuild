@@ -4966,7 +4966,7 @@ class ProfileUnusable(Exception):
 #: the staging file a reader that arrived mid-write would see half a JSON
 #: document and call it malformed.
 PROFILE_RELAY_SOURCE = """\
-import json, os, subprocess, sys
+import json, os, subprocess, sys, time
 status_path, argv = sys.argv[1], sys.argv[2:]
 def start_ticks():
     raw = open("/proc/%d/stat" % os.getpid(), "rb").read()
@@ -4987,7 +4987,7 @@ except OSError as exc:
 record({"phase": "launched", "child_pid": child.pid,
         "relay_pid": os.getpid(), "relay_start_ticks": start_ticks()})
 code = child.wait()
-record({"phase": "ended", "returncode": code,
+record({"phase": "ended", "ended_monotonic": time.monotonic(), "returncode": code,
         "signal": -code if code < 0 else None})
 sys.exit(0)
 """
@@ -5847,6 +5847,19 @@ class _ProfileSession:
             raise ProfileUnusable(
                 f"the profiled action's exit status is malformed: {record!r}"
             )
+        if deadline is not None:
+            ended_monotonic = record.get("ended_monotonic")
+            if (not isinstance(ended_monotonic, (int, float))
+                    or isinstance(ended_monotonic, bool)
+                    or not math.isfinite(ended_monotonic)):
+                raise ProfileUnusable(
+                    "the profiled action's ended record has no valid "
+                    f"monotonic end timestamp: {record!r}"
+                )
+            if ended_monotonic > deadline:
+                raise subprocess.TimeoutExpired(
+                    "profiled action", max(0.0, deadline - time.monotonic())
+                )
         code = record.get("returncode")
         if not isinstance(code, int) or isinstance(code, bool):
             raise ProfileUnusable(

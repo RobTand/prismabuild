@@ -603,6 +603,22 @@ def test_an_exit_status_from_another_era_is_refused(tmp_path: Path):
         session.action_returncode()
 
 
+@pytest.mark.parametrize("ended_monotonic", [None, True, float("nan")])
+def test_a_deadline_requires_a_recorded_finite_action_end_time(
+    tmp_path: Path, ended_monotonic: object,
+):
+    """An old or malformed terminal relay record cannot bypass a deadline."""
+
+    session = _session(tmp_path)
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "ended", "returncode": 0, "signal": None,
+        "ended_monotonic": ended_monotonic,
+    })
+    with pytest.raises(pb.ProfileUnusable, match="monotonic end timestamp"):
+        session.action_returncode(deadline=time.monotonic() + 1)
+
+
 def test_a_profiler_that_exits_first_waits_for_the_action(tmp_path: Path):
     """``nsys --duration`` stops tracing and exits while the action runs on.
 

@@ -190,3 +190,73 @@ def test_direct_execution_deadline_still_governs_after_a_profile_window(
     assert raised.value.returncode is None
     assert raised.value.profile is not None
     assert raised.value.profile['partial'] is True
+
+
+@pytest.mark.parametrize(
+    ('action_sleep', 'times_out'),
+    [(0.30, True), (0.02, False)],
+    ids=('action-ended-after-deadline', 'action-ended-before-deadline'),
+)
+def test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline(
+    tmp_path, monkeypatch, action_sleep, times_out,
+):
+    """Ingest latency cannot turn a late windowed action into a success (#514)."""
+    from test_sample_profile import _FakeBackend, _action, _speedscope
+    from prismabuild import core as pb
+
+    class Early(_FakeBackend):
+        exits_before_action = True
+
+        def launch_argv(self, argv, *, profile_path):
+            code = (
+                'import subprocess, sys, time\n'
+                'from pathlib import Path\n'
+                'subprocess.Popen(sys.argv[3:])\n'
+                'deadline = time.monotonic() + 10\n'
+                'while not Path(sys.argv[8]).exists():\n'
+                '    assert time.monotonic() < deadline\n'
+                '    time.sleep(.01)\n'
+                'Path(sys.argv[1]).write_text(sys.argv[2])\n'
+            )
+            return [
+                sys.executable, '-c', code, str(profile_path),
+                _speedscope('window'), *argv,
+            ]
+
+    monkeypatch.setitem(pb.PROFILE_BACKENDS, 'fake', Early())
+    original_ingest = pb._ProfileSession.ingest
+
+    def delayed_ingest(self, cas):
+        # This models a slow CAS checkpoint after the profiler has already
+        # exited. The action keeps running underneath its relay meanwhile.
+        time.sleep(0.35)
+        return original_ingest(self, cas)
+
+    monkeypatch.setattr(pb._ProfileSession, 'ingest', delayed_ingest)
+    checkout = tmp_path / 'checkout'
+    checkout.mkdir()
+    action = _action(checkout, profile='fake')
+    body = {key: value for key, value in action.items() if key != 'action_key'}
+    body['task'] = {
+        **body['task'],
+        'argv': [
+            sys.executable, '-c',
+            ('import time; from pathlib import Path; '
+             f'time.sleep({action_sleep}); Path("result.txt").write_text("done")'),
+        ],
+    }
+    sealed = pb.seal_action(body)
+    if times_out:
+        with pytest.raises(pb.LocalActionError, match='timed out') as raised:
+            pb.run_local_action(
+                sealed, cas_root=tmp_path / 'cas', checkout_root=checkout,
+                timeout_seconds=0.15,
+            )
+        assert raised.value.returncode is None
+        assert raised.value.profile is not None
+        return
+    outcome = pb.run_local_action(
+        sealed, cas_root=tmp_path / 'cas', checkout_root=checkout,
+        timeout_seconds=0.15,
+    )
+    assert outcome['status'] == 'published'
