@@ -26,3 +26,15 @@ match effort to difficulty and verify returned artifacts independently.
 Changes to `main` require a GitHub issue and pull request (Rob, 2026-09-06).
 Use an isolated branch/worktree, link the issue in the PR, validate and review
 before merging. Never push directly to `main`. See [contributing](docs/contributing.md).
+
+## Progress and termination — Rob, 2026-09-10 (#480)
+
+For long campaign work with supported semantic reporting, declare ordered
+progress phases and workload-based stall allowances instead of an unexplained
+whole-run timeout. Report cumulative committed units only after durable work;
+logs, heartbeats and CPU/GPU activity do not establish advancement. Preserve
+explicitly requested hard deadlines, withdrawal, containment and cleanup.
+Use the published execution policy and skill: progress submission requires a
+runtime advertising `progress-v1` and the pool transport. A source merge alone
+does not establish deployed support. Never change an existing sealed request
+to extend it; use supported recovery and its identity-bound checkpoints.
