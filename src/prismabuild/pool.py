@@ -155,6 +155,7 @@ POOL_OUTCOME_SCHEMA_V1 = "prismaquant.prismabuild.pool_outcome.v1"
 RESOURCE_PROFILE_SCHEMA_V1 = "prismabuild.resource_profile.v1"
 POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
+POOL_PREWARM_SCHEMA_V1 = "prismaquant.prismabuild.pool_prewarm.v1"
 
 # The `prismaquant.` prefix is kept on purpose.  It is the namespace grammar of
 # every receipt already published to this CAS; mixing prefixes inside one store
@@ -243,6 +244,12 @@ UNREADABLE_HEAD_BYTES = 2048
 RESERVATIONS = "reservations"
 PASSES = "passes"
 WORKERS = "workers"
+#: Where a storage-role loop files what it made resident for one action.
+#: A sidecar for the same reason ``passes`` is one: the only safe moment to
+#: write a ready item is never.  The prewarm runs while the item is still in
+#: ``ready``, so writing its result into the item would race the claim that
+#: may already have moved it and resurrect a claimed action.
+PREWARM = "prewarm"
 
 #: How long each rung of a withdrawal's signal ladder waits before escalating.
 #: Matched to ``core._PROCESS_GROUP_GRACE_SECONDS``, which is the grace the
@@ -2206,6 +2213,7 @@ class PoolQueue:
             self.dir(state).mkdir(parents=True, exist_ok=True)
         (self.root / WORKERS).mkdir(parents=True, exist_ok=True)
         (self.root / ATTEMPTS).mkdir(parents=True, exist_ok=True)
+        (self.root / PREWARM).mkdir(parents=True, exist_ok=True)
 
     # -- what the fleet can actually run ---------------------------------
 
@@ -2916,6 +2924,45 @@ class PoolQueue:
             return 0
         value = record.get("passes", 0)
         return int(value) if isinstance(value, (int, float)) else 0
+
+    # -- prewarm receipts -----------------------------------------------
+
+    def prewarm_path(self, action_key: str) -> Path:
+        return self.root / PREWARM / f"{action_key}.json"
+
+    def prewarm(self, action_key: str) -> dict[str, object] | None:
+        """What a storage-role loop made resident for this action, if any.
+
+        Absent is the normal answer and never an error: no host declares the
+        storage role on most fleets, the loop only reaches the head of the
+        queue, and an action can be claimed before the loop has looked at it.
+        Every caller treats ``None`` as "nothing was warmed".
+        """
+
+        record = _read_json(self.prewarm_path(action_key))
+        if not isinstance(record, dict):
+            return None
+        if record.get("schema") != POOL_PREWARM_SCHEMA_V1:
+            return None
+        return record
+
+    def record_prewarm(self, action_key: str, record: Mapping[str, object]) -> Path:
+        """File one prewarm result.
+
+        This is the *only* thing the prewarm loop writes into the queue, and
+        it writes nothing at all anywhere else under the shared mount.  It
+        never touches the item, so a claim racing this write is unaffected:
+        the worst case is a receipt nobody reads because the claim beat it.
+        """
+
+        path = self.prewarm_path(action_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(
+            path,
+            {**dict(record), "schema": POOL_PREWARM_SCHEMA_V1,
+             "action_key": action_key},
+        )
+        return path
 
     def record_pass(self, action_key: str) -> int:
         """Count one admission denial.
@@ -4534,6 +4581,13 @@ class PoolQueue:
                 if adaptive_gpu is not None:
                     claimed["gpu_admission"] = _read_json(ledger.held_dir / key / gpu_admission.METADATA)
                 claimed["reserved_on"] = socket.gethostname() if demand else None
+                # Read here, where the claim record is being written anyway,
+                # so the receipt costs no extra write and cannot race: after
+                # this point the prewarm loop has already skipped this key,
+                # because it only ever looks at ``ready``.  Absent is normal.
+                warmed = self.prewarm(key)
+                if warmed is not None:
+                    claimed["prewarm"] = warmed
                 _write_json_atomic(dst, claimed)
                 self.write_lease(
                     key,
@@ -6548,6 +6602,15 @@ class PoolQueue:
             and "attempt_history_missing_before" not in record
         ):
             record["attempt_history_missing_before"] = prior_attempts
+        # The prewarm receipt was copied onto the claim; carry it into the
+        # terminal record's ``detail`` so the done row answers "was this row's
+        # data resident when it ran" without a reader having to join against a
+        # sidecar the next campaign may have pruned.  ``setdefault``: a worker
+        # that measured its own residency outranks the loop's prediction.
+        finished_detail = dict(detail or {})
+        warmed = record.get("prewarm")
+        if isinstance(warmed, Mapping):
+            finished_detail.setdefault("prewarm", dict(warmed))
         record.update(
             {
                 "schema": POOL_OUTCOME_SCHEMA_V1,
@@ -6555,7 +6618,7 @@ class PoolQueue:
                 "attempts": attempts,
                 "finished_unix": _now(),
                 "finished_host": socket.gethostname(),
-                "detail": dict(detail or {}),
+                "detail": finished_detail,
             }
         )
         terminal = succeeded or attempts >= limit

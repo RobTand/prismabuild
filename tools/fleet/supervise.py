@@ -89,6 +89,14 @@ OWNERSHIP_ENV = "PRISMABUILD_SUPERVISED_WORKER"
 #: than as a suffix of whatever ``pgrep`` matched.
 LOOP_SCRIPT = "worker_loop.py"
 
+#: Role name to the helper script that serves it.  A role is an auxiliary
+#: single-instance loop a box declares in ``fleet_boxes.json``, deliberately
+#: outside the worker sizing law: it claims nothing, holds no lease and earns
+#: no capacity, so counting it as a poller would make a box look busier than
+#: it is.  ``storage`` is the file server, which makes the next actions'
+#: declared bytes resident before anybody claims them (issue #487).
+ROLE_SCRIPTS = {"storage": "prewarm_loop.py"}
+
 # Worker loops are queue pollers, not CPU reservations.  Keep a couple ready
 # to claim without a process-start round trip, while the queue's admission
 # controller remains the sole authority over whether an action may run.
@@ -377,6 +385,33 @@ def declared_shape(host: str, override_loops: int,
             [str(a) for a in config.get("args", [])])
 
 
+def declared_roles(host: str) -> list[tuple[str, list[str]]]:
+    """The auxiliary roles this box declares, with each one's arguments.
+
+    ``roles`` is a mapping beside ``loops``/``args`` in ``fleet_boxes.json``,
+    so a role is versioned and published exactly like the loop shape.  An
+    unreadable config is not a reason to tear a role down -- the caller simply
+    spawns nothing new this tick -- and a role name with no script is refused
+    rather than guessed at, for the same reason an unknown hostname is.
+    """
+
+    try:
+        config = _config(host)
+    except (SystemExit, OSError, ValueError):
+        return []
+    declared = config.get("roles") or {}
+    if not isinstance(declared, dict):
+        raise SystemExit(f"fleet_boxes.json roles for {host} must be an object")
+    out: list[tuple[str, list[str]]] = []
+    for name in sorted(declared):
+        if name not in ROLE_SCRIPTS:
+            raise SystemExit(
+                f"{host} declares role {name!r}, which names no script; "
+                f"known roles: {sorted(ROLE_SCRIPTS)}")
+        out.append((name, [str(a) for a in (declared[name] or [])]))
+    return out
+
+
 def _proven_roots() -> list[Path]:
     """Every runtime tree a fleet worker loop may legitimately have started in.
 
@@ -447,7 +482,8 @@ def _script_of(pid: int, argv: list[str], proc_root: Path) -> Path | None:
 
 
 def _is_fleet_loop(pid: int, roots: list[Path],
-                   proc_root: Path | None = None) -> bool:
+                   proc_root: Path | None = None,
+                   script_name: str = LOOP_SCRIPT) -> bool:
     """True when this pid is a worker loop this box's supervisor launched.
 
     Three facts, none of them a name: an interpreter is running the script as
@@ -465,7 +501,7 @@ def _is_fleet_loop(pid: int, roots: list[Path],
     if len(argv) < 2 or "python" not in argv[0].rsplit("/", 1)[-1]:
         return False
     script = _script_of(pid, argv, proc_root)
-    if script is None or script.name != LOOP_SCRIPT:
+    if script is None or script.name != script_name:
         return False
     if not any(script.is_relative_to(root) for root in roots):
         return False
@@ -479,7 +515,8 @@ def _is_fleet_loop(pid: int, roots: list[Path],
     return False
 
 
-def _live_loops(proc_root: Path | None = None) -> list[int]:
+def _live_loops(proc_root: Path | None = None,
+                script_name: str = LOOP_SCRIPT) -> list[int]:
     """The worker loops this supervisor owns, not the processes that mention one.
 
     ``pgrep`` is a candidate generator and nothing more.  Over-counting is the
@@ -489,7 +526,7 @@ def _live_loops(proc_root: Path | None = None) -> list[int]:
     ``pgrep`` matched on.
     """
 
-    proc = subprocess.run(["pgrep", "-f", LOOP_SCRIPT],
+    proc = subprocess.run(["pgrep", "-f", script_name],
                           capture_output=True, text=True, check=False)
     mine = os.getpid()
     roots = _proven_roots()
@@ -498,7 +535,7 @@ def _live_loops(proc_root: Path | None = None) -> list[int]:
         pid = int(token)
         if pid == mine:
             continue
-        if _is_fleet_loop(pid, roots, proc_root):
+        if _is_fleet_loop(pid, roots, proc_root, script_name):
             confirmed.append(pid)
     return confirmed
 
@@ -741,6 +778,43 @@ def _spawn(args: list[str], index: int) -> int:
     return proc.pid
 
 
+def _spawn_role(role: str, args: list[str]) -> int:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    handle = (LOG_DIR / f"pb-role-{role}.log").open("a", buffering=1)
+    handle.write(f"\n=== spawned {time.strftime('%F %T')} ===\n")
+    script = (_current_root() / "tools" / ROLE_SCRIPTS[role]).resolve(strict=True)
+    proc = subprocess.Popen(
+        [sys.executable, str(script), *args],
+        cwd=str(MIRROR), stdout=handle, stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env={**os.environ, OWNERSHIP_ENV: socket.gethostname()},
+    )
+    return proc.pid
+
+
+def ensure_roles(host: str) -> list[tuple[str, int]]:
+    """Keep exactly one live child per declared role.
+
+    One, not a target: a role loop is a single reader of one queue, and a
+    second copy of it would read the same ready list and warm the same bytes
+    twice.  A box that declares no role does nothing here, which is every box
+    but the file server.
+    """
+
+    started: list[tuple[str, int]] = []
+    for role, role_args in declared_roles(host):
+        if _live_loops(script_name=ROLE_SCRIPTS[role]):
+            continue
+        try:
+            started.append((role, _spawn_role(role, role_args)))
+        except (OSError, FileNotFoundError) as exc:
+            # A generation published before this role existed has no script.
+            # That is a missing capability, not a reason to stop supervising
+            # the loops that do exist.
+            print(f"[{host}] role {role} not startable: {exc}", flush=True)
+    return started
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ensure", action="store_true",
@@ -807,6 +881,8 @@ def main() -> int:
             host, args.loops, (target, loop_args))
 
         live = _live_loops()
+        for role, pid in ensure_roles(host):
+            print(f"[{host}] spawned role {role} pid {pid}", flush=True)
         # One authoritative claim census per cycle.  Reusing it for stale
         # cycling, load feedback and scale-down avoids an NFS rescan per pid.
         holders = _claim_holders()

@@ -3791,6 +3791,15 @@ def main() -> int:
     ap.add_argument("--here", action="store_true",
                     help="pin the materialized checkout to this box")
     ap.add_argument(
+        "--data-manifest",
+        help="path to a data manifest naming the shared-mount bytes this "
+             "action will read; attached as a second content-addressed input "
+             "so a storage-role loop can make them resident before the action "
+             "is claimed. It is part of the action key: the same command with "
+             "a manifest is a different action from the same command without "
+             "one, and from the same command with a different manifest",
+    )
+    ap.add_argument(
         "--checkout-snapshot-max-bytes",
         type=int,
         default=CHECKOUT_SNAPSHOT_MAX_BYTES,
@@ -4214,6 +4223,27 @@ def main() -> int:
         expected_identity=identity,
         snapshot_refs=list(args.snapshot_ref),
     )
+    inputs = [checkout_snapshot["input"]]
+    if args.data_manifest is not None:
+        # Validated before ingestion, not after: a malformed manifest must
+        # fail at the submitter, where the operator can read the reason,
+        # rather than becoming an immutable CAS blob that every later reader
+        # has to refuse. The bytes are ingested unchanged so the input's
+        # digest is the digest of the file the operator named.
+        manifest = pb.load_data_manifest(args.data_manifest)
+        manifest_input, _ = cas.ingest_input(
+            args.data_manifest,
+            input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        )
+        inputs.append(manifest_input)
+        data_manifest_summary = {
+            "input": manifest_input,
+            "mount_prefix": manifest["mount_prefix"],
+            "entry_count": manifest["entry_count"],
+            "total_bytes": manifest["total_bytes"],
+        }
+    else:
+        data_manifest_summary = None
     execution_scope, toolchain = host_class_scope(
         args.host_class, measurement=args.measurement, transport=args.transport)
     if pool_measurement_class and demand.get("gpu", 0) and (
@@ -4240,7 +4270,7 @@ def main() -> int:
             "working_directory": ".",
             "result_path": log_name,
         },
-        "inputs": [checkout_snapshot["input"]],
+        "inputs": inputs,
         "code_closure": build_stamp_closure(stamp_name, payload),
         "params": {
             "command": command,
@@ -4253,6 +4283,12 @@ def main() -> int:
         "environment": {"variables": variables, "toolchain": toolchain},
         "execution_scope": execution_scope,
     }
+    if data_manifest_summary is not None:
+        # A summary, not the list: the prewarm budget and the ARC check read
+        # these two numbers every poll, and making them fetch and parse a
+        # 200 KB blob to learn a byte count would put the manifest on the
+        # scheduler's hot path. The list itself stays in the CAS.
+        body["params"]["data_manifest"] = data_manifest_summary
     if demand.get("gpu"):
         body["params"]["gpu_exclusive"] = bool(args.exclusive)
         if args.gpu_memory_gb is not None:
