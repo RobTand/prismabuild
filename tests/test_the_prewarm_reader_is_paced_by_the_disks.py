@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import threading
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prewarm_loop  # noqa: E402
@@ -195,26 +196,34 @@ def test_the_seconds_held_are_wall_clock_not_a_sum_over_readers() -> None:
     """Two readers held through the same second cost the pool one second.
 
     A per-thread sum would report eight seconds for an eight-reader hold of
-    one, and the number exists to be compared against the warm's duration.
+    one, and the number exists to be compared against the warm's own duration:
+    "held 40 s of a 300 s warm" is a sentence, and "held 320 s" is not.
     """
 
-    disk = FakeDisk(accumulate([QUIET, LOADED, LOADED, QUIET, QUIET]))
+    disk = FakeDisk(accumulate([LOADED] * 500))
     pacer = disk.pacer()
     pacer.wait(threading.Event())      # sample 1: no interval
     disk.tick()
-    pacer.wait(threading.Event())      # sample 2: quiet
-    disk.tick()
+    stop = threading.Event()
 
-    threads = [threading.Thread(target=pacer.wait, args=(threading.Event(),))
+    threads = [threading.Thread(target=pacer.wait, args=(stop,))
                for _ in range(2)]
     for thread in threads:
         thread.start()
+    # The pool never recovers, so both readers stay held until they are told
+    # to stop -- which is what lets the test observe two concurrent holds
+    # rather than racing the first one's recovery.
+    deadline = time.time() + 10.0
+    while pacer.report()["holds"] < 2 and time.time() < deadline:
+        time.sleep(0.005)
+    stop.set()
     for thread in threads:
-        thread.join()
+        thread.join(timeout=10.0)
 
     report = pacer.report()
     assert report["holds"] == 2, "both readers were held"
-    assert report["held_seconds"] <= disk.now - 100.0, (
+    assert not any(thread.is_alive() for thread in threads)
+    assert 0.0 < report["held_seconds"] <= disk.now - 100.0, (
         "held seconds cannot exceed the wall clock the run occupied")
 
 
