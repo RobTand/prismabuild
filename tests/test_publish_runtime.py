@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -96,7 +97,8 @@ def test_publish_refuses_an_unproved_commit_before_touching_the_mirror(
             returncode=128, stdout="", stderr="fatal: not a git repository\n"
         ),
     )
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--rollout-reason", "fixture publication"])
 
     with pytest.raises(SystemExit, match="cannot prove.*40-hex Git commit"):
         publish_runtime.main()
@@ -129,7 +131,8 @@ def test_published_skill_companion_documents_resolve_inside_the_generation(
     monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--rollout-reason", "fixture publication"])
     assert publish_runtime.main() == 0
     generation = mirror.resolve()
     receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
@@ -172,7 +175,8 @@ def test_published_torch_helper_can_be_copied_without_a_source_checkout(
     monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--rollout-reason", "fixture publication"])
     assert publish_runtime.main() == 0
     generation = mirror.resolve()
     helper = generation / "tools/profile_torch.py"
@@ -210,7 +214,8 @@ def test_publish_never_exposes_a_mixed_generation(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
     monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
     monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe(commit))
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--rollout-reason", "fixture publication"])
     real_copy = shutil.copy2
     real_replace = publish_runtime.os.replace
     copies = []
@@ -265,7 +270,9 @@ def test_a_failure_after_sealing_still_removes_the_staging_tree(
     monkeypatch.setattr(
         publish_runtime.subprocess, "run", _fake_git_and_probe(commit)
     )
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--migrate-directory"])
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--migrate-directory",
+                                        "--rollout", "rolling", "--rollout-reason",
+                                        "fixture publication"])
     real_replace = publish_runtime.os.replace
     sealed_before_failure: list[bool] = []
 
@@ -403,7 +410,8 @@ def test_a_generation_store_that_cannot_be_written_is_a_refusal(
     monkeypatch.setattr(
         publish_runtime.subprocess, "run", _fake_git_and_probe(commit)
     )
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--rollout-reason", "fixture publication"])
     fleet.chmod(0o555)
     try:
         with pytest.raises(SystemExit, match="cannot write the generation store"):
@@ -429,9 +437,18 @@ def _publish_one_generation(
     monkeypatch.setattr(
         publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40, index)
     )
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py"])
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
+                                        "--rollout-reason", "  fixture publication  "])
     assert publish_runtime.main() == 0
     return mirror
+
+
+def test_rolling_receipt_records_the_normalized_safety_reason(tmp_path, monkeypatch):
+    checkout = _checkout(tmp_path / "checkout", "new")
+    mirror = _publish_one_generation(tmp_path, monkeypatch, checkout, {})
+    receipt = json.loads((mirror.resolve() / "RUNTIME_VERSION.json").read_text())
+    assert receipt["rollout"] == "rolling"
+    assert receipt["rollout_reason"] == "fixture publication"
 
 
 def test_a_published_program_is_executable_by_a_uid_that_is_not_the_owner(

@@ -367,6 +367,7 @@ def _cutover_environment(tmp_path: Path) -> dict[str, str]:
         PB_QUEUE_ROOT=str(queue),
         PB_RUNTIME_DIR=str(runtime),
         PB_STATE_DIR=str(state),
+        PB_ROLLOUT_REASON="Only the fixture transport changes; all fixture workers are stopped.",
         PB_BOXES=FAKE_BOX,
         PB_SPARKS="",
         PB_SSH=str(_fake_ssh(tmp_path)),
@@ -505,12 +506,36 @@ def test_cutover_publishes_through_the_interpreter(
     ])
     environment = {k: v for k, v in os.environ.items() if not k.startswith("PB_")}
     environment["TEST_REPO"] = str(tmp_path)
+    reason = "Reviewed fixture transition; 'quoted' text and $(literal) stay data."
+    environment["PB_ROLLOUT_REASON"] = reason
     result = subprocess.run(
         ["/bin/bash", "-c", program], env=environment,
         capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == expected
+    assert json.loads(result.stdout) == [
+        *expected, "--rollout", "rolling", "--rollout-reason", reason,
+    ]
+
+
+@pytest.mark.parametrize("name", ["cutover.sh", "rollback.sh"])
+@pytest.mark.parametrize("reason", [None, "", " \t\n"])
+def test_transition_scripts_require_a_reason_before_any_step(tmp_path, name, reason):
+    environment = _cutover_environment(tmp_path)
+    if reason is None:
+        environment.pop("PB_ROLLOUT_REASON")
+    else:
+        environment["PB_ROLLOUT_REASON"] = reason
+    result = subprocess.run(
+        ["bash", str(FLEET / name), "--dry-run"], env=environment,
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 1
+    assert "PB_ROLLOUT_REASON" in result.stderr
+    assert "# step" not in result.stdout
+    assert not (tmp_path / "calls").exists()
+    assert not list(Path(environment["PB_STATE_DIR"]).iterdir())
+    assert os.readlink(Path(environment["PB_RUNTIME_DIR"]) / "repo") == "runtime-generations/gen-old"
 
 
 def test_cutover_refuses_when_verification_did_not_pass_here(tmp_path: Path) -> None:

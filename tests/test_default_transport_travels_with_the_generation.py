@@ -256,7 +256,11 @@ def _publish(
         return SimpleNamespace(returncode=0, stdout="import ok\n", stderr="")
 
     monkeypatch.setattr(publish_runtime.subprocess, "run", run)
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", *argv])
+    monkeypatch.setattr(
+        sys, "argv",
+        ["publish_runtime.py", "--rollout", "rolling", "--rollout-reason",
+         "transport fixture has reviewed mixed-generation compatibility", *argv],
+    )
     assert publish_runtime.main() == 0
     return mirror
 
@@ -302,8 +306,12 @@ def test_rollback_re_points_the_live_name_at_an_existing_generation(
     )
 
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
-    assert publish_runtime._activate_existing(before, dry_run=True) == 0
-    assert publish_runtime._activate_existing(before, dry_run=False) == 0
+    rolling = {
+        "rollout": "rolling",
+        "rollout_reason": "transport fixture restores a prior compatible generation",
+    }
+    assert publish_runtime._activate_existing(before, dry_run=True, **rolling) == 0
+    assert publish_runtime._activate_existing(before, dry_run=False, **rolling) == 0
     assert mirror.resolve().name == before
     receipt = json.loads((mirror / "RUNTIME_VERSION.json").read_text())
     assert receipt["default_transport"] == "slurm"
@@ -316,5 +324,8 @@ def test_activation_refuses_a_name_that_is_not_a_published_generation(
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     for name in ("../elsewhere", "nope", ""):
         with pytest.raises(SystemExit):
-            publish_runtime._activate_existing(name, dry_run=False)
+            publish_runtime._activate_existing(
+                name, dry_run=False, rollout="rolling",
+                rollout_reason="transport fixture validates the target name",
+            )
     assert mirror.is_symlink()

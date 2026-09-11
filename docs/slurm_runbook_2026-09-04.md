@@ -617,6 +617,7 @@ Rob's call and Rob's to run.
 
 ```bash
 cd /home/rob/prismabuild
+export PB_ROLLOUT_REASON='<reviewed explanation of compatibility for this cutover>'
 fleet/slurm/cutover.sh --dry-run --yes     # read the plan
 fleet/slurm/cutover.sh --yes               # do it
 ```
@@ -659,7 +660,7 @@ It refuses unless all six of these hold:
    `pbrun --withdraw <key prefix>`. Ready is listed first because an item a
    worker claims between the two listings has to be seen by one of them, and
    only that order guarantees it.
-3. `publish_runtime.py --dry-run --default-transport slurm` succeeds from this
+3. `publish_runtime.py --dry-run --default-transport slurm --rollout rolling --rollout-reason "$PB_ROLLOUT_REASON"` succeeds from this
    checkout. Step 5 below is the only step with no cheap retry -- by the time
    it runs, cron is edited and every loop on all three boxes is dead -- and
    `publish_runtime.py` refuses a dirty tree. Commit or stash first;
@@ -681,7 +682,8 @@ It refuses unless all six of these hold:
    `PATH`, or a `slurmctld` that will not answer, is refused the same way.
 6. `--yes`.
 
-`--dry-run` refuses nothing, and it *answers* the fifth question rather than
+After requiring the rollout reason, `--dry-run` applies no further refusals,
+and it *answers* the fifth question rather than
 naming it: `sinfo` only reads, so the plan tells you whether the fleet is up
 while you are still choosing the window.
 
@@ -749,7 +751,14 @@ Then, in this order, and the order is not arrangeable:
    still up, so step 5 cannot publish the SLURM generation behind a legacy
    executor that is still draining the pull queue.
 5. **The runtime generation**, published with
-   `publish_runtime.py --default-transport slurm`.
+   `publish_runtime.py --default-transport slurm --rollout rolling --rollout-reason "$PB_ROLLOUT_REASON"`.
+
+Both the rehearsal and the live script require a nonblank `PB_ROLLOUT_REASON`
+before any step. Supply the reviewed explanation for this specific transition;
+the script passes it as one argument to the publisher, which records it in
+`RUNTIME_VERSION.json`. The publisher otherwise defaults to the currently
+unavailable barrier path. A stated reason does not replace the cutover's queue,
+worker-stop, or verification requirements.
 
 `cutover.sh` finds processes by reading each candidate's own argv -- argv[0] is
 an interpreter and argv[1] is the script -- and kills them by pid. A `pkill -f
@@ -812,7 +821,7 @@ crontab, from user units and from each other on three boxes, and there is no
 single environment to export into.
 
 So the default rides in the runtime generation instead.
-`publish_runtime.py --default-transport slurm` records `default_transport` in
+The cutover's explicit rolling publication with `--default-transport slurm` records `default_transport` in
 `RUNTIME_VERSION.json`, and `fleet_submit.default_transport()` reads the
 environment first, then that field, then falls back to `pool`. The field is
 optional and absent means the pull queue, so every generation published before
@@ -823,6 +832,7 @@ it for one process, which is what you want when you are testing.
 
 ```bash
 cd /home/rob/prismabuild
+export PB_ROLLOUT_REASON='<reviewed explanation of compatibility for this reverse transition>'
 fleet/slurm/rollback.sh --dry-run
 fleet/slurm/rollback.sh
 ```
@@ -835,11 +845,15 @@ It reads the state file `cutover.sh` wrote -- the newest
 it in reverse order, runtime first:
 
 1. point the live runtime back at the generation the cutover replaced, with
-   `publish_runtime.py --activate-generation <name>`. This is not a
+   `publish_runtime.py --activate-generation <name> --rollout rolling --rollout-reason "$PB_ROLLOUT_REASON"`. This is not a
    re-publication: that generation's bytes and receipt were proved when it was
    published, and publication never deletes a generation. Restoring it restores
    the previous default transport in the same atomic namespace operation that
    changed it.
+   Both rollback invocations require their own nonblank reason before any
+   step. The activation prints it without modifying the old sealed receipt;
+   retain the output with the rollback record. Forward-transition compatibility
+   recorded at the original publication does not establish reverse compatibility.
 1b. lift the cutover's admission fence: put `pb-queue/ready` back to the mode
    the fence marker recorded and remove the marker, so the pull queue accepts
    submissions again. It goes here, right after the runtime, because a producer

@@ -232,19 +232,47 @@ def test_the_member_key_the_coordinator_reads_is_a_key_the_manifest_writes():
     assert member in publish_runtime._publication_manifest()
 
 
-def test_a_rolling_publication_never_looks_at_the_rollout_tree(monkeypatch):
-    """The default is what every publication has always done."""
+def test_default_mutating_publication_is_a_barrier_and_never_looks_at_history(monkeypatch):
+    """Safe is the default; rolling must be an explicit reviewed choice."""
 
     def refuse(*args, **kwargs):
-        raise AssertionError("a rolling publication proved the fleet")
+        raise AssertionError("barrier preflight reached history unexpectedly")
 
     monkeypatch.setattr(publish_runtime, "_require_attested_fleet", refuse)
     monkeypatch.setattr(publish_runtime, "_commit_identity", lambda: "c" * 40)
     monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: False)
     monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {"tools/x.py": SHA})
     monkeypatch.setattr(publish_runtime, "_git_index_modes", lambda: {})
+    monkeypatch.setattr(publish_runtime.sys, "argv", ["publish_runtime.py"])
+    with pytest.raises(SystemExit, match="barrier activation is not implemented"):
+        publish_runtime.main()
+
+
+def test_default_barrier_dry_run_keeps_the_historical_preflight(fleet, monkeypatch):
+    member = upgrade.MEMBERS["upgrade_client.py"]
+    post(fleet, "sparky", SHA)
+    post(fleet, "sparklina", SHA)
+    monkeypatch.setattr(publish_runtime, "_commit_identity", lambda: "c" * 40)
+    monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: False)
+    monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {member: SHA})
+    monkeypatch.setattr(publish_runtime, "_git_index_modes", lambda: {})
     monkeypatch.setattr(publish_runtime.sys, "argv", ["publish_runtime.py", "--dry-run"])
     assert publish_runtime.main() == 0
+
+
+def test_rolling_publication_requires_a_stated_mixed_generation_reason(monkeypatch):
+    """A caller cannot silently opt out of the safe default."""
+
+    monkeypatch.setattr(publish_runtime, "_commit_identity", lambda: "c" * 40)
+    monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: False)
+    monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {"tools/x.py": SHA})
+    monkeypatch.setattr(publish_runtime, "_git_index_modes", lambda: {})
+    monkeypatch.setattr(
+        publish_runtime.sys, "argv",
+        ["publish_runtime.py", "--dry-run", "--rollout", "rolling"],
+    )
+    with pytest.raises(SystemExit, match="--rollout-reason"):
+        publish_runtime.main()
 
 
 def test_a_barrier_publication_refuses_before_anything_is_staged(fleet, monkeypatch):
@@ -315,6 +343,54 @@ def test_a_receipt_without_the_agent_cannot_prove_a_barrier_rollback(fleet):
     assert "records no sha256" in str(raised.value)
 
 
-def test_a_rolling_rollback_reads_no_receipt_files_at_all(fleet):
+def test_default_barrier_rollback_requires_the_receipt_agent_hash(fleet):
     _generation(fleet, None)
-    assert publish_runtime._activate_existing("abc123-1-def", dry_run=True) == 0
+    with pytest.raises(SystemExit, match="records no sha256"):
+        publish_runtime._activate_existing("abc123-1-def", dry_run=True)
+
+
+def test_explicit_rolling_rollback_requires_a_reason(fleet):
+    _generation(fleet, None)
+    with pytest.raises(SystemExit, match="--rollout-reason"):
+        publish_runtime._activate_existing(
+            "abc123-1-def", dry_run=True, rollout="rolling"
+        )
+
+
+def test_explicit_rolling_activation_prints_its_reason_and_does_not_infer_one(
+    fleet, capsys,
+):
+    generation = _generation(fleet, None)
+    previous = fleet / "previous"
+    previous.mkdir()
+    (fleet / "repo").rmdir()
+    (fleet / "repo").symlink_to(previous, target_is_directory=True)
+
+    assert publish_runtime._activate_existing(
+        generation.name, dry_run=False, rollout="rolling",
+        rollout_reason="  schema unchanged across generations  ",
+    ) == 0
+    assert (fleet / "repo").resolve() == generation
+    assert "rollout rolling: schema unchanged across generations" in capsys.readouterr().out
+
+
+def test_barrier_rejects_a_rolling_reason(fleet):
+    _generation(fleet, SHA)
+    with pytest.raises(SystemExit, match="only valid with --rollout rolling"):
+        publish_runtime._activate_existing(
+            "abc123-1-def", dry_run=True, rollout_reason="unneeded"
+        )
+
+
+def test_unknown_rollout_mode_cannot_bypass_the_activation_boundary(fleet):
+    generation = _generation(fleet, None)
+    previous = fleet / "previous"
+    previous.mkdir()
+    (fleet / "repo").rmdir()
+    (fleet / "repo").symlink_to(previous, target_is_directory=True)
+
+    with pytest.raises(SystemExit, match="unknown rollout mode"):
+        publish_runtime._activate_existing(
+            generation.name, dry_run=False, rollout="typo"
+        )
+    assert (fleet / "repo").resolve() == previous

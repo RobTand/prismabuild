@@ -52,6 +52,10 @@ pqwork.service on the Sparks, and one supervisor per box.
   --state FILE  a cutover state file; default is the newest in the state dir
   --dry-run     print every command and run none of them
 
+Set PB_ROLLOUT_REASON to the reviewed compatibility reason for this reverse
+transition. Existing-generation activation does not infer it from the original
+publication. Dry-run requires the reason too.
+
 Environment, for the tests and for nothing else:
   PB_RUNTIME_DIR  the fleet runtime directory (default /mnt/shared/prismabuild-fleet)
   PB_BOXES        ssh names, in order (default: from the state file)
@@ -76,6 +80,7 @@ done
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Mode 644 in the checkout, so it runs through the interpreter.
 PUBLISH="${PB_PUBLISH:-python3 $REPO/tools/fleet/publish_runtime.py}"
+ROLLOUT_REASON="${PB_ROLLOUT_REASON:-}"
 RUNTIME_DIR="${PB_RUNTIME_DIR:-/mnt/shared/prismabuild-fleet}"
 SSH="${PB_SSH:-ssh -o BatchMode=yes}"
 STATE_DIR="${PB_STATE_DIR:-$HOME/.prismabuild}"
@@ -88,6 +93,9 @@ SUPERVISOR_LOG="${PB_SUPERVISOR_LOG:-/home/rob/tmp/pb-supervisor.log}"
 exec 3>&1
 say() { printf '%s\n' "$*" >&3; }
 die() { printf 'rollback.sh: %s\n' "$*" >&2; exit 1; }
+
+[[ "$ROLLOUT_REASON" =~ [^[:space:]] ]] \
+    || die "set PB_ROLLOUT_REASON to the reviewed rolling-transition compatibility reason"
 
 if [ -z "$STATE_FILE" ]; then
     STATE_FILE="$(find "$STATE_DIR" -maxdepth 1 -name 'cutover-*.json' 2>/dev/null \
@@ -151,9 +159,9 @@ say "mode     : $([ "$DRY_RUN" = 1 ] && echo 'dry run, nothing is executed' || e
 say ""
 say "# step 1: point the live runtime back at $PREVIOUS"
 if [ "$DRY_RUN" = 1 ]; then
-    say "$PUBLISH --activate-generation $PREVIOUS"
+    say "$PUBLISH --activate-generation $PREVIOUS --rollout rolling --rollout-reason $(printf '%q' "$ROLLOUT_REASON")"
 else
-    $PUBLISH --activate-generation "$PREVIOUS" \
+    $PUBLISH --activate-generation "$PREVIOUS" --rollout rolling --rollout-reason "$ROLLOUT_REASON" \
         || die "could not activate $PREVIOUS. Check that it is still under $RUNTIME_DIR/runtime-generations; publication never deletes a generation, so it should be."
 fi
 

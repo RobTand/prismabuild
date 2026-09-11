@@ -86,7 +86,11 @@ runtime generation whose default transport is slurm.
 
   --yes        required; this changes what the whole fleet executes
   --verified   accept that fleet/slurm/verify.sh passed on another box
-  --dry-run    print every command, run none of them, refuse nothing
+  --dry-run    validate the rollout reason, print every command, run none
+
+Publication requires PB_ROLLOUT_REASON: a reviewed explanation of why this
+transition is safe with independent host convergence. It is recorded in the
+new runtime generation. The cutover's drain and stop checks still apply.
 
 Environment, for the tests and for nothing else:
   PB_QUEUE_ROOT   the pull queue (default /mnt/shared/prismabuild-fleet/pb-queue)
@@ -118,6 +122,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # mode 644, so running it as a command is a "Permission denied" at the
 # one step that happens after every loop is already stopped.
 PUBLISH="${PB_PUBLISH:-python3 $REPO/tools/fleet/publish_runtime.py}"
+ROLLOUT_REASON="${PB_ROLLOUT_REASON:-}"
 # The configuration this checkout would have the fleet run.  Same spelling as
 # verify.sh's CONF, because the marker below records a hash of this file and
 # the two have to be talking about the same one.
@@ -153,6 +158,9 @@ STATE="$STATE_DIR/cutover-$STAMP.json"
 exec 3>&1
 say() { printf '%s\n' "$*" >&3; }
 die() { printf 'cutover.sh: REFUSED: %s\n' "$*" >&2; exit 1; }
+
+[[ "$ROLLOUT_REASON" =~ [^[:space:]] ]] \
+    || die "set PB_ROLLOUT_REASON to the reviewed rolling-transition compatibility reason"
 
 #: Which box this is, under its ssh name.
 this_box="$(hostname -s)"
@@ -475,19 +483,19 @@ say "prismabuild SLURM cutover"
 say "from     : $this_box (ssh name $LOCAL)"
 say "checkout : $REPO"
 say "boxes    : $BOXES"
-say "mode     : $([ "$DRY_RUN" = 1 ] && echo 'dry run, nothing is executed and nothing is refused' || echo 'live')"
+say "mode     : $([ "$DRY_RUN" = 1 ] && echo 'dry run, rollout reason checked; no commands executed' || echo 'live')"
 say ""
 
 # -- refusals ----------------------------------------------------------------
 
 if [ "$DRY_RUN" = 1 ]; then
-    # A dry run refuses nothing, so say what it would have checked.  These are
+    # After checking the rollout reason, describe the remaining checks. These are
     # read-only questions and they are the six ways this can lose work.
     say "# a live run refuses unless all six of these hold:"
     say "#   --yes was given"
     say "#   $MARKER records this checkout's slurm.conf and $FAILURE_MARKER is absent, or --verified"
     say "#   $QUEUE_ROOT/ready and .../claimed are empty"
-    say "#   $PUBLISH --dry-run --default-transport slurm succeeds"
+    say "#   $PUBLISH --dry-run --default-transport slurm --rollout rolling --rollout-reason $(printf '%q' "$ROLLOUT_REASON") succeeds"
     say "#   no confirmed pbrun.py process on any of: $BOXES"
     say "#   sinfo reports every one of $BOXES idle, mixed or allocated, with no state flag"
     say "# and a live run then fences the queue rather than trusting that scan:"
@@ -620,7 +628,8 @@ finish, then re-run."
     # worktree that collects untracked files -- is refused here instead of
     # there.  (--activate-generation returns before those checks, which is why
     # rollback.sh needs no clean tree to undo this.)
-    if ! preflight="$($PUBLISH --dry-run --default-transport slurm 2>&1)"; then
+    if ! preflight="$($PUBLISH --dry-run --default-transport slurm \
+            --rollout rolling --rollout-reason "$ROLLOUT_REASON" 2>&1)"; then
         die "publish_runtime.py refuses this checkout, and step 5 would hit the
 same refusal with the crontab already edited and every loop already dead:
 $(printf '%s\n' "$preflight" | sed 's/^/  /')
@@ -850,9 +859,9 @@ fi
 say ""
 say "# step 5: publish a runtime generation whose default transport is slurm"
 if [ "$DRY_RUN" = 1 ]; then
-    say "$PUBLISH --default-transport slurm"
+    say "$PUBLISH --default-transport slurm --rollout rolling --rollout-reason $(printf '%q' "$ROLLOUT_REASON")"
 else
-    $PUBLISH --default-transport slurm \
+    $PUBLISH --default-transport slurm --rollout rolling --rollout-reason "$ROLLOUT_REASON" \
         || die "publication failed; the loops are stopped and the fleet is still on the previous generation. Fix the publication and re-run, or run fleet/slurm/rollback.sh"
 fi
 
