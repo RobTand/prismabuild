@@ -147,16 +147,20 @@ def test_the_shipped_defaults_are_the_paced_ones() -> None:
     """The command line the storage role gets with no arguments at all.
 
     8 readers and 2 lookahead are what #499 measured; they must not be what a
-    fresh invocation picks up again.
+    fresh invocation picks up again.  The caps are the ones the paced run
+    passed on (2026-09-11 09:13:21-09:20:36 UTC, 63.8 GB at 146.5 MB/s, disks
+    at 41.7 %% peak, both Sparks encoding throughout); the looser 40/15/4000
+    shape stalled the clients and is not a default anywhere.
     """
 
     parsed = _parse(["--mount-map", "/mnt/shared=/storage_pool/shared",
                      "--once", "--dry-run"])
-    assert parsed.readers == 2
+    assert parsed.readers == 1
     assert parsed.lookahead == 1
-    assert parsed.max_util_pct == 40.0
-    assert parsed.max_read_await_ms == 15.0
-    assert parsed.max_backlog_ms == 4000.0
+    assert parsed.max_util_pct == 25.0
+    assert parsed.max_read_await_ms == 10.0
+    assert parsed.max_backlog_ms == 2000.0
+    assert parsed.pace_sample_s == 0.25
     assert parsed.pace_pool == "storage_pool"
 
 
@@ -170,7 +174,7 @@ def test_the_storage_role_declares_the_paced_shape() -> None:
     boxes = json.loads((REPO / "tools/fleet/fleet_boxes.json").read_text())
     role = boxes["boxes"]["dl380g10"]["roles"]["storage"]
 
-    assert role[role.index("--readers") + 1] == "2"
+    assert role[role.index("--readers") + 1] == "1"
     assert role[role.index("--lookahead") + 1] == "1"
     assert role[role.index("--pace-pool") + 1] == "storage_pool"
     why = boxes["boxes"]["dl380g10"]["_roles_why"]

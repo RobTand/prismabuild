@@ -44,6 +44,12 @@ depends on what every other tenant is doing at that moment.  The numbers it
 sampled go into the prewarm record beside ``mb_per_s``, because a warm that was
 fast and a warm that was harmless are different claims.
 
+The shipped caps are the ones a live run passed on, not the midpoint between
+the two measured states: one reader at 40% / 15 ms / 4 000 ms kept the disks at
+31% peak and still dropped both Sparks' NFS clients to ~50 RPC/s, while one
+reader at 25% / 10 ms / 2 000 ms warmed a 63.8 GB row at 146.5 MB/s with the
+clients untouched (2026-09-11 09:13:21-09:20:36 UTC).
+
 What it does not do
 -------------------
 It is not a second dispatcher.  It never decides what runs, where, or next; it
@@ -989,14 +995,19 @@ def main(argv: list[str] | None = None) -> int:
                              "Required and never defaulted -- which mount a "
                              "box serves is host configuration, and a wrong "
                              "guess reads the network instead of the disks")
-    parser.add_argument("--readers", type=int, default=2,
+    parser.add_argument("--readers", type=int, default=1,
                         help="parallel readers.  8 measured 391.9 MB/s against "
                              "1's 298.9 on the GLM census pool, and cost the "
                              "fleet 100-130 s of both Sparks' GPU time per row "
                              "(#499): 30%% more read rate for a transport "
-                             "reset on every client.  2 with the pacer below "
-                             "is the concurrency that keeps a spindle busy "
-                             "without owning its queue")
+                             "reset on every client.  1 is what was measured "
+                             "to pass on the live fleet -- 63.8 GB at "
+                             "146.5 MB/s while both Sparks kept encoding, "
+                             "disks at 23%% mean and 41.7%% peak.  One reader "
+                             "is already enough to saturate the pool: ZFS "
+                             "prefetch issued 98%% of the run's disk reads, "
+                             "so a second reader adds queue depth the pacer "
+                             "then has to take back")
     parser.add_argument("--lookahead", type=int, default=1,
                         help="how many ready actions ahead to warm.  The ARC "
                              "must hold the running rows as well: on dl380g10 "
@@ -1014,27 +1025,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--disks", default="",
                         help="comma-separated block devices (sdb,sdc) to pace "
                              "on, overriding --pace-pool discovery")
-    parser.add_argument("--max-util-pct", type=float, default=40.0,
+    parser.add_argument("--max-util-pct", type=float, default=25.0,
                         help="hold while any pool disk is busier than this.  "
                              "Measured on dl380g10 (#499): 8-12%% while the "
                              "campaign alone read, 73-83%% under the 8-reader "
                              "warm that reset every client's RDMA transport.  "
-                             "40 sits between them, near the top of what the "
-                             "fleet was measured to tolerate.  0 disables")
-    parser.add_argument("--max-read-await-ms", type=float, default=15.0,
+                             "40 was tried first and left the disks at 31%% "
+                             "peak but stalled both Sparks' NFS clients "
+                             "(their RPC rate fell to ~50/s and their own "
+                             "metrics collectors missed samples); 25 held the "
+                             "whole fleet inside every criterion.  0 disables")
+    parser.add_argument("--max-read-await-ms", type=float, default=10.0,
                         help="hold while any pool disk's mean read service "
                              "time over the last sample exceeds this.  "
-                             "Measured: ~0-2 ms harmless, 38-54 ms stalling.  "
-                             "0 disables")
-    parser.add_argument("--max-backlog-ms", type=float, default=4000.0,
+                             "Measured: ~0-2 ms harmless, 38-54 ms stalling; "
+                             "10 is what the passing run used.  0 disables")
+    parser.add_argument("--max-backlog-ms", type=float, default=2000.0,
                         help="hold while any pool disk's queue backlog "
                              "exceeds this.  Measured: 300-450 ms harmless, "
                              "11 000-14 400 ms stalling -- the client sync "
                              "writes queued behind that backlog are what "
-                             "passed the RDMA timeout.  0 disables")
-    parser.add_argument("--pace-sample-s", type=float, default=0.5,
+                             "passed the RDMA timeout.  2 000 is what the "
+                             "passing run used; it kept the 15 s backlog "
+                             "mean at 1.4 s.  0 disables")
+    parser.add_argument("--pace-sample-s", type=float, default=0.25,
                         help="minimum seconds between /sys/block reads; every "
-                             "block's check reads the cached verdict")
+                             "block's check reads the cached verdict.  The "
+                             "burst a wake issues is set by ZFS prefetch, not "
+                             "by the reader, so a shorter sample is what "
+                             "shortens the burst")
     parser.add_argument("--pace-hold-s", type=float, default=0.25,
                         help="seconds to wait between rechecks while held")
     parser.add_argument("--min-manifest-bytes", type=int, default=1 << 30,

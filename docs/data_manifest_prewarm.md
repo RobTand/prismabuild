@@ -100,7 +100,7 @@ the `storage` role in `fleet_boxes.json`.  Every poll:
    files only, paced by the pool's disks (below).
 5. Writes `pb-queue/prewarm/<action_key>.json`.
 
-### Pacing, and why the reader count is 2
+### Pacing, and why the reader count is 1
 
 The first deployment read with `--readers 8`, and the read rate was the only
 thing it measured.  Measured against the rest of the fleet on 2026-09-11
@@ -122,14 +122,26 @@ disk is over any of three caps:
 
 | argument | default | harmless (measured) | stalling (measured) |
 |---|---|---|---|
-| `--max-util-pct` | 40 | 8-12 % | 73-83 % |
-| `--max-read-await-ms` | 15 | 0-2 ms | 38-54 ms |
-| `--max-backlog-ms` | 4000 | 300-450 ms | 11 000-14 400 ms |
+| `--max-util-pct` | 25 | 8-12 % | 73-83 % |
+| `--max-read-await-ms` | 10 | 0-2 ms | 38-54 ms |
+| `--max-backlog-ms` | 2000 | 300-450 ms | 11 000-14 400 ms |
+
+The defaults are the shape that passed on the live fleet, not the midpoint
+between the two measured states.  One reader at 40 % / 15 ms / 4 000 ms held
+the disks to 31 % peak yet still dropped both Sparks' NFS clients to ~50
+RPC/s for a minute (their own metrics collectors missed samples while it ran);
+one reader at 25 % / 10 ms / 2 000 ms warmed a 63.8 GB row at 146.5 MB/s with
+the clients untouched.  One reader is already enough to keep the pool busy:
+98 % of that run's ARC misses were *prefetch* misses, so the size of each read
+burst is set by ZFS's prefetcher (`zfetch_max_distance`), not by the reader,
+and a second reader only adds queue depth the pacer then has to take back.
 
 The three numbers are computed the way Netdata computes `disk_util`,
 `disk_await` and `disk_backlog`, so the record and the chart an operator reads
 afterwards are the same quantities.  `--pace-sample-s` bounds how often sysfs
-is read (0.5 s); every block's check reads the cached verdict.  A host with no
+is read (0.25 s); every block's check reads the cached verdict.  Because the
+burst height belongs to the prefetcher, the sample interval is what bounds a
+burst's *length*.  A host with no
 pool, no `zpool`, or no readable `stat` file reads unpaced and the record says
 `disk_pacing.active: false` -- "pacing was off" is a value, not a missing key.
 A hold that starts or ends prints one `prewarm-hold` line on stderr, so a loop
