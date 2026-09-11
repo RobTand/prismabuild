@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from prismabuild import core as pb, pool  # noqa: E402
+from prismabuild import core as pb, pool, progress  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
@@ -25,7 +25,7 @@ import pbstatus  # noqa: E402
 #: The action side of the contract, written without importing PrismaBuild on
 #: purpose: what the worker enforces is the record on disk, so the fixture
 #: writes that record rather than calling the helper that produces it.
-#: ``report_action_progress`` is tested separately, against the same bytes.
+#: ``prismabuild.progress`` is tested separately, against the same bytes.
 REPORTER = '''
 import json, os, sys, time
 path = os.environ.get("PRISMABUILD_ACTION_PROGRESS_PATH")
@@ -306,11 +306,11 @@ def test_the_reporter_writes_what_the_worker_accepts(tmp_path):
     os.environ[pb.ACTION_PROGRESS_PATH_ENV] = str(path)
     os.environ[pb.ACTION_PROGRESS_TOKEN_ENV] = "tok"
     try:
-        assert pb.report_action_progress("run", 7, unit="anchors") is True
+        assert progress.report_action_progress("run", 7, unit="anchors") is True
     finally:
         del os.environ[pb.ACTION_PROGRESS_PATH_ENV]
         del os.environ[pb.ACTION_PROGRESS_TOKEN_ENV]
-    assert pb.report_action_progress("run", 8) is False  # no channel, no-op
+    assert progress.report_action_progress("run", 8) is False  # no channel, no-op
     declared = pb.validate_progress_policy(_policy(60, 60, 60))
     watch = pool.ProgressWatch(path, "tok", pool.ProgressPolicy(
         tuple(pool.ProgressPhase(p["name"], p["grace_s"], None)
