@@ -675,6 +675,73 @@ def _valid_pool_item(key: str, record: dict | None) -> bool:
             and record.get('action_key') == key and record.get('schema') == pool.POOL_ITEM_SCHEMA_V1)
 
 
+def _pool_claim_denials(queue: pool.PoolQueue) -> tuple[list[dict], list[str]]:
+    """Read optional host snapshots without turning a bad diagnostic into a bad job."""
+    denials, notes = [], []
+    try:
+        with os.scandir(queue.root / pool.RESERVATIONS) as entries:
+            hosts = []
+            for entry in entries:
+                try:
+                    if entry.is_dir():
+                        hosts.append(Path(entry.path))
+                except OSError as exc:
+                    notes.append(f"pool claim denials {entry.name}: {exc}")
+    except FileNotFoundError:
+        return denials, notes
+    except OSError as exc:
+        return denials, [f"pool claim denials: {exc}"]
+    for directory in sorted(hosts):
+        snapshot = _pool_sidecar(directory / 'adaptive' / pool.CLAIM_DENIALS)
+        if snapshot is None:
+            continue  # Older workers and hosts that have skipped nothing.
+        if isinstance(snapshot, Exception):
+            notes.append(f"pool claim denials {directory.name}: {snapshot}")
+            continue
+        records = snapshot.get('records')
+        if (snapshot.get('schema') != pool.CLAIM_DENIALS_SCHEMA_V1
+                or not isinstance(records, dict) or len(records) > pool.MAX_CLAIM_DENIALS):
+            notes.append(f"pool claim denials {directory.name}: invalid snapshot")
+            continue
+        for denial in records.values():
+            try:
+                valid = (isinstance(denial, dict)
+                         and re.fullmatch('[a-f0-9]{64}', str(denial.get('action_key'))) is not None
+                         and denial.get('host') == directory.name
+                         and isinstance(denial.get('reason'), str) and bool(denial['reason'])
+                         and isinstance(denial.get('evidence'), dict)
+                         and all(type(denial.get(field)) in (int, float)
+                                 and math.isfinite(denial[field]) and denial[field] >= 0
+                                 for field in ('published_unix', 'denied_unix')))
+            except OverflowError:
+                valid = False
+            if valid:
+                denials.append(denial)
+            else:
+                notes.append(f"pool claim denial {directory.name}: invalid record")
+    return denials, notes
+
+
+def _claim_denials_for(record: dict, denials: Sequence[dict], *, now: float) -> list[dict]:
+    """Keep each host's latest observation for this exact submission generation."""
+    by_host = {}
+    published = record.get('published_unix')
+    if type(published) not in (int, float):
+        return []
+    for denial in denials:
+        if (denial['action_key'] != record['action_key']
+                or denial['published_unix'] != published or denial['denied_unix'] > now):
+            continue
+        host = denial['host']
+        if host in by_host and by_host[host]['denied_unix'] >= denial['denied_unix']:
+            continue
+        decision = denial['evidence'].get('decision')
+        subreason = decision.get('reason') if isinstance(decision, dict) else None
+        by_host[host] = {**denial, 'age_s': now - denial['denied_unix'],
+                         'decision_reason': subreason if isinstance(subreason, str) else None}
+    return [by_host[host] for host in sorted(by_host)]
+
+
 def read_pool(queue_root: str | Path) -> dict:
     """Read worker offers, active records and existing admission evidence.
 
@@ -701,15 +768,9 @@ def read_pool(queue_root: str | Path) -> dict:
             if _valid_pool_item(key, record):
                 path = queue.passes_path(key) if state == pool.READY else queue.lease_path(key)
                 sidecars[state, key] = _pool_sidecar(path)
-    denial_records = {}
-    reservations = queue.root / pool.RESERVATIONS
-    if reservations.is_dir():
-        for host_dir in reservations.iterdir():
-            if host_dir.is_dir():
-                denial_records[host_dir.name] = _pool_sidecar(
-                    host_dir / 'adaptive' / pool.CLAIM_DENIALS)
+    denial_records, denial_notes = _pool_claim_denials(queue)
     now = time.time()
-    notes = [*worker_notes, *ready_notes, *claim_notes]
+    notes = [*worker_notes, *ready_notes, *claim_notes, *denial_notes]
     # The half of ``notes`` that means "this census is missing something",
     # kept apart from the half that means "the fleet is in this state".  A
     # directory that would not list and a record that would not parse make the
@@ -717,7 +778,7 @@ def read_pool(queue_root: str | Path) -> dict:
     # read.  ``complete`` below is the first, and only the first, because it is
     # what the run's exit status is derived from and a stale offer must not
     # spend the signal that says the mount did not answer.
-    unreadable = [*worker_notes, *ready_notes, *claim_notes]
+    unreadable = [*worker_notes, *ready_notes, *claim_notes, *denial_notes]
     nodes: list[dict] = []
     live: list[dict] = []
     for host, offer in workers.items():
@@ -771,6 +832,7 @@ def read_pool(queue_root: str | Path) -> dict:
                            unstarted_releases=_releases(record),
                            age_s=_age(record.get('claimed_unix') if state == pool.CLAIMED
                                       else record.get('published_unix'), now))
+                row['admission_denials'] = _claim_denials_for(record, denial_records, now=now)
                 if state == pool.READY:
                     denial = sidecar or {}
                     count, first = denial.get('passes', 0), denial.get('first_unix')
@@ -781,32 +843,6 @@ def read_pool(queue_root: str | Path) -> dict:
                                admission_passes=int(count) if isinstance(count, (int, float)) else 0,
                                admission_wait_s=max(0.0, now - float(first))
                                if isinstance(first, (int, float)) else 0.0)
-                    matching_denials = []
-                    for host, snapshot in denial_records.items():
-                        if (not isinstance(snapshot, dict)
-                                or snapshot.get('schema') != pool.CLAIM_DENIALS_SCHEMA_V1):
-                            continue
-                        records = snapshot.get('records', {})
-                        if not isinstance(records, dict):
-                            continue
-                        for denial in records.values():
-                            stamp = denial.get('denied_unix') if isinstance(denial, dict) else None
-                            published = denial.get('published_unix') if isinstance(denial, dict) else None
-                            if (isinstance(denial, dict) and denial.get('action_key') == key
-                                    and type(published) in (int, float)
-                                    and type(record.get('published_unix')) in (int, float)
-                                    and published == record.get('published_unix')
-                                    and denial.get('host') == host and isinstance(denial.get('reason'), str)
-                                    and type(stamp) in (int, float) and math.isfinite(stamp)
-                                    and 0 <= now - stamp):
-                                decision = denial.get('evidence', {}).get('decision', {})
-                                matching_denials.append({name: denial.get(name) for name in
-                                                         ('host', 'reason', 'evidence', 'denied_unix')}
-                                                        | {'decision_reason': decision.get('reason')
-                                                           if isinstance(decision, dict) else None,
-                                                           'age_s': now - stamp})
-                    matching_denials.sort(key=lambda denial: (denial['host'], -denial['denied_unix']))
-                    row['admission_denials'] = matching_denials
                     row['reason'] = ('no fresh worker offers; placement unknown' if not live
                                      else 'no matching live worker' if not hosts
                                      else 'awaiting admission; matching worker capacity is not a grant')
@@ -914,6 +950,7 @@ def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, o
          j.get('admission_passes'), None if not j.get('admission_denials') else '; '.join(
              f"{denial['host']}: {denial['reason']}"
              + (f"/{denial['decision_reason']}" if denial.get('decision_reason') else '')
+             + f" ({denial['age_s']:.0f}s ago)"
              for denial in j['admission_denials']),
          j.get('unstarted_releases'), j.get('placeable_hosts'),
          j.get('reason')) for j in jobs))

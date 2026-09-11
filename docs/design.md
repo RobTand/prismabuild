@@ -93,7 +93,11 @@ This is observability, not an audit log or admission authority: a contended
 local diagnostic lock or delayed/failed copy may leave status without a current
 reason, and readers reject a record whose `published_unix` does not match the
 ready generation. Claim aging remains in `passes/` and is unchanged by these
-records.
+records. The snapshot retains at most 256 latest action generations per host;
+claiming an item does not erase its diagnostic history. Status exposes each
+host's record on ready and claimed rows only when it matches that submission,
+with the original observation age. A malformed diagnostic makes the census
+partial without making its valid job unreadable or erasing queue counts.
 Withholding-age reads also run outside admission. A denied reservation owns
 no tokens or probe/borrow credit. Background preemption selection still requires
 host exclusion to serialize pending releases; it reacquires admission

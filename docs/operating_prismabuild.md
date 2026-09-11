@@ -410,14 +410,6 @@ the box". Agent self-validation -- test shards, the receipt for a PR, a re-run
 to confirm a fix -- submits there (`pbtest.py --priority -10`, `pbrun.py
 --priority -10`) and cannot displace campaign work in the queue.
 
-For a ready item, `pbstatus` prints every current-generation host verdict in
-`DENIAL` beside `PASSES`; `--json` includes the exact branch, captured
-decision/sample values, and age. The bounded records are host-local first and
-the asynchronous admission snapshot publisher may coalesce, delay, or drop a
-copy. Missing evidence is unknown, not proof that a host did not skip work.
-Records never alter aging or admission, and a `published_unix` mismatch is
-ignored after re-publication.
-
 Restartable background work can also yield the box. When a foreground item
 (priority >= 0) is denied admission and one background holder on that box is running whose tokens,
 released, would let the denied item in, the worker withdraws that holder through
@@ -1245,6 +1237,22 @@ It prints three tables:
 *   **endings** — how the last actions ended, newest first, each labelled with
     the transport that produced it. `--recent N` changes how many are read; the
     default is 20.
+
+For ready and claimed items, `pbstatus` prints each host's latest recorded
+skip in `DENIAL` beside `PASSES`, with its age; `--json` includes
+`admission_denials` with the branch, captured decision/sample values and
+submission timestamp. A displayed skip describes that earlier observation,
+not a current refusal or a prediction of the next claim. Successful claims
+retain this evidence until it is evicted from the bounded host snapshot.
+
+`claim-denials.json` holds the latest 256 action generations per host in local
+admission state. The existing asynchronous publisher copies it to
+`reservations/<host>/adaptive/` at most once per second. It may coalesce or
+delay observations; a busy local diagnostics lock or failed write may drop one.
+Missing evidence is unknown, not proof that a host did not skip work. Records
+never alter aging or admission, and a `published_unix` mismatch or future
+observation is ignored. Invalid/unreadable diagnostic records are reported as
+partial census evidence while valid jobs and counts remain visible.
 
 Pool jobs display `LEASE` and `OUTPUT` ages separately. A recent lease says
 the worker reported; its `execution_observation` says when the worker last
