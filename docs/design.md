@@ -2369,7 +2369,9 @@ requires complete fresh disk telemetry for every discovered data-vdev member:
 missing or partial rows hold reads, recovery establishes a new baseline before
 it can resume, and a later topology-discovery failure exits the role for
 supervisor retry.  No-disk pacing remains an explicit direct-fixture or
-non-storage mode, never a storage fallback.
+non-storage mode, never a storage fallback.  Sequential rows retain the
+shared pacing verdict and stat baseline, while their receipts reset only the
+row's accounting counters.
 
 ## Model-level Tessera dispatch
 

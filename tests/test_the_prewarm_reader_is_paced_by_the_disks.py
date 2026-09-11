@@ -516,6 +516,23 @@ def test_a_duplicate_configured_member_needs_one_complete_stat_row() -> None:
     assert pacer.report()["holds"] == 0
 
 
+def test_a_row_boundary_keeps_an_existing_pacing_hold() -> None:
+    """Accounting reset must never turn an already-over pool into a read."""
+
+    disk = FakeDisk(accumulate([LOADED, LOADED]))
+    pacer = disk.pacer()
+    assert pacer._verdict() is True
+    disk.tick()
+    assert pacer._verdict() is True
+    pacer._enter_hold()
+
+    pacer.begin_row()
+
+    assert pacer._verdict() is True
+    assert pacer.report()["holds"] == 1
+    pacer._leave_hold()
+
+
 def test_zpool_is_resolved_off_path_as_well() -> None:
     """A supervisor unit's ``PATH`` need not carry ``/usr/sbin``.
 

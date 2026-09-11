@@ -156,6 +156,11 @@ reader's stop event.  A direct fixture or non-storage caller that configures
 no disks remains explicitly inactive (`disk_pacing.active: false`); that mode
 is not a storage-role fallback.
 
+The disk verdict and its prior stat baseline remain shared across sequential
+rows in a poll, but receipt accounting is row-scoped: samples, means, maxima,
+holds, held seconds, and telemetry gaps are reset at each row boundary.  An
+existing hold is never reset by that accounting boundary.
+
 Setting any cap to 0 disables that cap.  Setting all three off is how you
 reproduce the pre-#499 behaviour, and it is not a supported production shape.
 

@@ -422,6 +422,29 @@ class DiskPacer:
             return "awaiting_interval"
         return "complete"
 
+    def begin_row(self) -> None:
+        """Start bounded per-row accounting without resetting the verdict.
+
+        Rows are warmed sequentially, but share the same disk decision state:
+        the previous stat row, cached verdict, completeness state, and an
+        existing hold all survive the receipt boundary.  Only the counters
+        shown on a row's receipt reset.  If a caller ever begins a row while a
+        hold is active, that hold remains active and its future time belongs to
+        the new row instead of being cleared.
+        """
+
+        with self._lock:
+            carrying_hold = self._holding > 0
+            self._samples = 0
+            self._holds = 1 if carrying_hold else 0
+            self._held_s = 0.0
+            if carrying_hold:
+                self._hold_started = self.clock()
+            self._telemetry_gaps = 0
+            for key in self._totals:
+                self._totals[key] = 0.0
+                self._maxima[key] = 0.0
+
     # -- sampling ---------------------------------------------------------
 
     def _measure(self, now: float) -> dict[str, float] | None:
@@ -678,6 +701,8 @@ class Reader:
         stop: threading.Event,
         recheck: Callable[[], int] | None = None,
     ) -> dict[str, object]:
+        if self.pacer is not None:
+            self.pacer.begin_row()
         work: "queuelib.Queue[dict[str, object] | None]" = queuelib.Queue()
         for entry in entries:
             work.put(entry)

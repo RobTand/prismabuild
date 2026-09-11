@@ -58,6 +58,28 @@ def test_the_record_carries_the_disk_numbers_beside_the_rate(
     assert record["bytes_warmed"] == record["manifest_bytes"] == 8 << 20
 
 
+def test_second_row_does_not_inherit_first_rows_disk_cost(tmp_path: Path) -> None:
+    """One pacer keeps its verdict, while each receipt prices one row."""
+
+    fleet = Fleet(tmp_path)
+    first = fleet.action("first", [fleet.file("first.pt", 8 << 20)], priority=1)
+    second = fleet.action("second", [fleet.file("second.pt", 8 << 20)])
+    disk = FakeDisk(accumulate([QUIET, LOADED] + [QUIET] * 40),
+                    advance_on_read=True)
+
+    event = fleet.cycle(fleet.args(readers=1, lookahead=2), pacer=disk.pacer())
+
+    assert [row["action_key"] for row in event["warmed"]] == [first, second]
+    first_record, second_record = [fleet.queue.prewarm(key) for key in (first, second)]
+    assert first_record["status"] == second_record["status"] == "complete"
+    first_cost, second_cost = (first_record["disk_pacing"],
+                               second_record["disk_pacing"])
+    assert first_cost["holds"] > 0
+    assert second_cost["holds"] == 0, second_cost
+    assert second_cost["held_seconds"] == 0, second_cost
+    assert second_cost["max_util_pct"] < first_cost["max_util_pct"]
+
+
 def test_the_record_names_the_row_and_the_instants_it_covers(
         tmp_path: Path) -> None:
     """A receipt nobody can place against a row is a receipt nobody reads.
