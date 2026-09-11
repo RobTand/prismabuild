@@ -375,6 +375,7 @@ class DiskPacer:
         self._previous_at = 0.0
         self._sampled_at = 0.0
         self._over = False
+        self._readable = True
         self._samples = 0
         self._holds = 0
         self._held_s = 0.0
@@ -398,6 +399,11 @@ class DiskPacer:
             row = self.stat_source(device)
             if row is not None and len(row) > STAT_WEIGHTED_IO_MS:
                 current[device] = row
+        #: "Nothing answered" and "too soon to have an interval" are both
+        #: *unknown*, but only the first one may clear a hold: an interval of
+        #: zero says nothing about the pool, while a silent disk means the
+        #: pacer has lost its evidence and must not keep holding on it.
+        self._readable = bool(current)
         previous, previous_at = self._previous, self._previous_at
         self._previous, self._previous_at = current, now
         elapsed = now - previous_at
@@ -427,9 +433,9 @@ class DiskPacer:
         measured = self._measure(now)
         self._sampled_at = now
         if measured is None:
-            # No readable sample is *unknown*, not *over*: a disk that stops
-            # answering must not leave a hold latched forever.
-            self._over = False
+            if not self._readable:
+                # A disk that stops answering must not leave a hold latched.
+                self._over = False
             return
         self._samples += 1
         for key in self._totals:

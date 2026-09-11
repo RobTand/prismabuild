@@ -382,7 +382,7 @@ def test_a_disk_that_stops_answering_releases_the_hold() -> None:
     never reads again and never says why.
     """
 
-    disk = FakeDisk(accumulate([QUIET, LOADED]))
+    disk = FakeDisk(accumulate([LOADED, LOADED]))
     pacer = disk.pacer()
     pacer.wait(threading.Event())      # first sample: no interval, no hold
     disk.tick()
