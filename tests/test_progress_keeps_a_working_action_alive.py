@@ -75,10 +75,17 @@ def _policy(*graces):
                        for name, grace in zip(PHASES, graces)]}
 
 
-def _claimed(tmp_path, *, mode, seconds, policy, timeout_s=None):
+def _claimed(tmp_path, *, mode, seconds, policy, timeout_s=None, source=REPORTER):
+    """Claim one action whose ``task.py`` is ``source``, run as ``mode``.
+
+    ``source`` is a parameter so a fixture that reaches the contract another
+    way -- through the helper the worker points it at, rather than by writing
+    the record itself -- runs on this same harness (#488).
+    """
+
     checkout = tmp_path / "checkout"
     checkout.mkdir()
-    (checkout / "task.py").write_text(REPORTER)
+    (checkout / "task.py").write_text(source)
     params = {}
     if policy is not None:
         params[pb.PROGRESS_PARAM] = policy

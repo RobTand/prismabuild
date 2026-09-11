@@ -1778,7 +1778,15 @@ def progress_contract_notice(
         + f"; at most {total:g}s of quiet in total if it never commits work, "
         + ("and no total-duration limit while it does."
            if requested_timeout_s is None else
-           f"with an explicit hard execution deadline of {requested_timeout_s:g}s.")
+           f"with an explicit hard execution deadline of {requested_timeout_s:g}s."),
+        # The half of the contract the submitter still owes, said at the moment
+        # they are declaring it.  An action that declares phases and reports
+        # nothing is not bounded by its work; it just ends at the sum above.
+        "pbrun: the action must report committed units, or this is only a "
+        f"{total:g}s stall budget: prismabuild.progress.commit(units, "
+        f'"{phases[0]["name"]}") after each unit is durable, or '
+        'python3 "$PRISMABUILD_ACTION_PROGRESS_HELPER" --phase '
+        f'{phases[0]["name"]} --units N from a shell.',
     ]
     announced = queue.placement_progress_contracts(intent)
     if not announced:
@@ -3842,7 +3850,9 @@ def main() -> int:
                          "runs, the worker's ceiling clamps each phase's "
                          "allowance instead of the whole run, and --timeout-s "
                          "if given still ends it whatever it is doing. The "
-                         "action reports with prismabuild.report_action_progress")
+                         "action reports with prismabuild.progress.commit, or "
+                         "by running $PRISMABUILD_ACTION_PROGRESS_HELPER when "
+                         "it cannot import PrismaBuild")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument(

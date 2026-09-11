@@ -11,7 +11,9 @@ identity of those receipts is the value they carry.  The namespace is history,
 not a dependency -- this package imports nothing from prismaquant.
 """
 from . import core  # noqa: F401
+from . import progress  # noqa: F401
 from .core import report_action_progress
+from .progress import commit
 
-__all__ = ["core", "report_action_progress"]
+__all__ = ["core", "progress", "commit", "report_action_progress"]
 __version__ = "0.1.0"
