@@ -1959,6 +1959,22 @@ build log on this fleet reaches hundreds of megabytes. The full files stay in
 the action's lane directory, named by `detail.slurm.stdout_path` and
 `stderr_path`.
 
+For the pull queue, `attempt_history[].outcome` is relative to the **queue
+root**, normally `/mnt/shared/prismabuild-fleet/pb-queue`, not the CAS root.
+Read that immutable attempt JSON and resolve each `logs.stdout.path` and
+`logs.stderr.path` against the same queue root. The log metadata includes byte
+counts and SHA-256 digests. Failure attempts and their logs do not require a
+successful CAS result receipt; they remain after the temporary checkout is
+removed. A later submission with the same action key can replace a mutable
+`done/` or `failed/` row; the original generation's immutable attempt directory
+still identifies the earlier invocation.
+
+`detail.execution_observation` describes the last heartbeat sample. A quick
+exit can occur before that sample sees output, leaving zero byte counts or
+`launcher_alive: true` beside a completed failure. Use the attempt's final log
+metadata and files to determine what was captured. Zero bytes in that earlier
+observation do not establish either payload silence or lost logs.
+
 ### Common refusals
 
 These are refusals at submission, before anything reaches the fleet.
