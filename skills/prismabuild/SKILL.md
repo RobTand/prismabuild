@@ -188,6 +188,16 @@ Measured cost on a fixed-work GPU action, five interleaved paired repeats, is
 in `docs/operating_prismabuild.md`; both are dearer than `sample`, and most of
 it is fixed startup rather than a tax on the work.
 
+Native `nsys` cannot trace CUDA processes launched by the Docker daemon.
+Both `nsys` and `nsys:<seconds>` refuse container run/create/exec through PB's
+Docker shim before contacting the daemon, including nested launchers. Use a
+native CUDA child, or explicitly instrument inside the admitted container
+without the native Nsys mode. For `--profile torch`, forward and mount
+`PRISMABUILD_PROFILE_TORCH_OUT` so the container can export its trace. Keep
+using PB's shim and preserve its `PRISMABUILD_PROFILE_NSYS` guard; metadata
+reads are allowed. A retained `kernel_summary_absent` remains negative CUDA
+profile evidence, even when the report file itself is nonempty.
+
 After validation and CAS ingestion, the primary profile is checkpointed before
 optional summary extraction or supplemental blob ingestion. A deadline during
 that optional work retains the primary report on the ending, marked `partial`.

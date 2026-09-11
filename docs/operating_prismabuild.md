@@ -281,6 +281,20 @@ a `.nsys-rep` needs Nsight Systems to open and the CSV is the part an agent can
 read. Tracing is `--trace cuda,nvtx --sample none`: CPU sampling is `sample`'s
 job, and every sample nsys takes is trace bytes it also has to write.
 
+Native Nsys cannot inject into a CUDA process started by the Docker daemon.
+With `--profile nsys` or `nsys:<seconds>`, PB's Docker shim therefore refuses
+container run/create/exec (and start/compose-start forms) before contacting the
+daemon, even when a shell or Python launcher calls Docker. Metadata reads such
+as image inspection still work. Run the CUDA workload as a native child under
+Nsys, or omit that mode and explicitly instrument inside the admitted container.
+For PyTorch, `--profile torch` can collect the container's own export when the
+launcher forwards `PRISMABUILD_PROFILE_TORCH_OUT` and mounts that output path.
+Keep PB's Docker shim so scope ownership and CPU affinity remain enforced;
+clearing `PRISMABUILD_PROFILE_NSYS` or bypassing the shim is unsupported.
+This refusal does not add container-aware Nsys capture. Existing negative
+reports still retain `kernel_summary_absent`; a nonempty report with that
+diagnostic is not proof of a successful CUDA profile.
+
 *   **A window is optional and sealed.** `--profile nsys:600` traces the first
     600 seconds and then stops tracing, with `--kill none` pinned so the action
     is *not* ended by the diagnostic watching it (nsys's own default there is
