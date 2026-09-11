@@ -470,30 +470,36 @@ class Controller:
 
     def decision(self, item, demand, *, identity=None):
         """Decide under admission; callers may pre-read sealed action identity."""
+        self.last_decision = {"reason": "not_evaluated"}
         if self._host_sample is None:
             self._host_sample = self.sample()
         sample = self._host_sample
         now = time.time()
+        def refuse(reason, **values):
+            # The claimant publishes this exact decision after it releases
+            # admission.  Do not sample or reread state for diagnostics.
+            self.last_decision = {"reason": reason, "sample": sample, **values}
+            return None
         fresh = (0 <= now - sample.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
                  and sample.get('cpu_count') == len(self.cpus)
                  and all(isinstance(sample.get(key), (float, int)) and math.isfinite(sample[key])
                          for key in ('busy_cpus', 'psi_some', 'interval_s')))
         if fresh and (sample['psi_some'] >= .10 or sample['busy_cpus'] >= .95 * len(self.cpus)):
-            return None
+            return refuse("host_pressure", fresh=fresh)
         shape, measurement = action_identity(item) if identity is None else identity
         unbounded_cpu = not int(demand.get('cpu', 0))
         if measurement and (not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
-            return None
+            return refuse("measurement_host_not_idle", fresh=fresh)
         holders = [p for p in self.ledger.held_dir.iterdir() if p.is_dir()]
         if len(holders) >= MAX_ACTIONS:
-            return None
+            return refuse("max_actions", holders=len(holders))
         # Legacy producers sometimes reserved only GPU/memory. Their children
         # inherit the whole worker affinity, so zero tokens are unknown CPU
         # use, never evidence of zero use. Keep that historical demand intact
         # but serialize it on a freshly idle host until the producer declares
         # an enforceable CPU allocation.
         if unbounded_cpu and (holders or not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
-            return None
+            return refuse("unbounded_cpu_not_exclusive", holders=len(holders), fresh=fresh)
         profiles = read_json(self.base / 'profiles.json')
         recent = read_json(self.base / 'jobs.json')
         next_recent = {}
@@ -508,10 +514,10 @@ class Controller:
             reserved = meta.get('declared_cpu', physical)
             if not reserved:
                 if meta or any(holder.iterdir()):
-                    return None
+                    return refuse("holder_reservation_unknown", holder=holder.name)
                 continue
             if measurement or meta.get('measurement'):
-                return None
+                return refuse("measurement_holder", holder=holder.name)
             # ``self.base`` rather than ``local_telemetry_path``: that helper
             # resolves the ledger path, which is three stats on the mount per
             # call, and this loop runs once per holder under the lock.
@@ -584,7 +590,8 @@ class Controller:
         # Unbounded legacy work already proved the same exclusive idle host.
         if (fresh and not unbounded_cpu and not full_width_idle
                 and max(sample['busy_cpus'] + pending, active_cost) + cost > len(self.cpus) + .01):
-            return None
+            return refuse("projected_cpu_cost", pending_cpu_cost=pending,
+                          active_cpu_cost=active_cost, requested_cpu_cost=cost)
         available = self.ledger.available().get('cpu', 0)
         borrowable = lending_cpus - protected_cpus
         can_borrow = fresh and shape and not measurement and lendable
@@ -597,7 +604,11 @@ class Controller:
             if (not fresh or not shape or measurement or not lendable
                     or len(borrowable) < declared - available
                     or sample['sampled_unix'] <= last):
-                return None
+                return refuse("borrow_evidence_unavailable", fresh=fresh, shape=shape,
+                              lendable=lendable, available_cpu=available,
+                              declared_cpu=declared, borrowable_cpus=len(borrowable),
+                              last_borrow_sampled_unix=last)
+        self.last_decision = {"reason": "admitted", "sample": sample}
         return {'declared_cpu': declared, 'cost': cost, 'shape': shape,
                 'unbounded_cpu': unbounded_cpu,
                 'measurement': measurement, 'admitted_unix': now,

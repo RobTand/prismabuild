@@ -1238,6 +1238,22 @@ It prints three tables:
     the transport that produced it. `--recent N` changes how many are read; the
     default is 20.
 
+For ready and claimed items, `pbstatus` prints each host's latest recorded
+skip in `DENIAL` beside `PASSES`, with its age; `--json` includes
+`admission_denials` with the branch, captured decision/sample values and
+submission timestamp. A displayed skip describes that earlier observation,
+not a current refusal or a prediction of the next claim. Successful claims
+retain this evidence until it is evicted from the bounded host snapshot.
+
+`claim-denials.json` holds the latest 256 action generations per host in local
+admission state. The existing asynchronous publisher copies it to
+`reservations/<host>/adaptive/` at most once per second. It may coalesce or
+delay observations; a busy local diagnostics lock or failed write may drop one.
+Missing evidence is unknown, not proof that a host did not skip work. Records
+never alter aging or admission, and a `published_unix` mismatch or future
+observation is ignored. Invalid/unreadable diagnostic records are reported as
+partial census evidence while valid jobs and counts remain visible.
+
 Pool jobs display `LEASE` and `OUTPUT` ages separately. A recent lease says
 the worker reported; its `execution_observation` says when the worker last
 polled its direct launcher and saw captured stdout/stderr grow. The note
