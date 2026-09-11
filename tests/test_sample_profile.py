@@ -539,7 +539,11 @@ def _session(tmp_path: Path, backend=None) -> "pb._ProfileSession":
 
 def _write_status(session, body: dict) -> None:
     session.directory.mkdir(parents=True, exist_ok=True)
-    session.exit_status_path.write_text(json.dumps(body), encoding="utf-8")
+    temporary = session.exit_status_path.with_name(
+        f".{session.exit_status_path.name}.tmp"
+    )
+    temporary.write_text(json.dumps(body), encoding="utf-8")
+    os.replace(temporary, session.exit_status_path)
 
 
 def test_a_relay_that_never_recorded_an_ending_is_not_a_pass(tmp_path: Path):
