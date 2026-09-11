@@ -3693,7 +3693,7 @@ class PoolQueue:
         identity = (str(item["action_key"]), repr(item.get("published_unix")))
         started = self._cpu_deferrals.setdefault(identity, time.monotonic())
         if time.monotonic() - started >= 20.0:
-            return False
+            return None
         for offer in self._matching_offers(item, live=self.offers()):
             host = str(offer.get("host") or "")
             if not host or host == socket.gethostname():
@@ -3706,10 +3706,12 @@ class PoolQueue:
                 continue
             free = remote.available()
             observed = offer.get("observed_capacity") or {}
-            if (remote.free_preferred(tiers) >= demand.get("cpu", 0)
+            free_preferred = remote.free_preferred(tiers)
+            if (free_preferred >= demand.get("cpu", 0)
                     and all(free.get(k, 0) >= n and observed.get(k, free[k]) >= n
                             for k, n in demand.items())):
-                return {"host": host, "free_preferred": remote.free_preferred(tiers),
+                return {"host": host, "free_preferred": free_preferred,
+                        "available": free,
                         "observed_capacity": observed, "demand": dict(demand)}
         return None
 
