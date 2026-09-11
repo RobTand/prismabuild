@@ -117,6 +117,12 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 # ------------------------------------------------------------------ ARC
 
 
+def utc(unix: float) -> str:
+    """An instant as ISO 8601 in UTC, to the second."""
+
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(unix))
+
+
 def arcstats(path: str = ARCSTATS) -> dict[str, int]:
     out: dict[str, int] = {}
     try:
@@ -700,6 +706,25 @@ def declared_manifest_bytes(request: dict | None) -> int:
     return 0
 
 
+def manifest_row_id(manifest: dict) -> str:
+    """The submitter's own name for this row, for a human reading the record.
+
+    Everything else about the manifest is one lookup from ``manifest_sha256``,
+    which is why the record does not copy the rest of the annotations.  The
+    label is the exception because the question asked of a prewarm record --
+    "which row was this, and was it still resident when a worker claimed it?"
+    -- is asked by people and by campaign tooling that do not have the blob.
+    """
+
+    annotations = manifest.get("annotations")
+    if not isinstance(annotations, dict):
+        return ""
+    value = annotations.get("row_id")
+    if isinstance(value, (str, int)):
+        return str(value)[:200]
+    return ""
+
+
 def load_manifest(cas_root: Path, entry: dict) -> dict | None:
     """Fetch and validate the manifest blob the input row addresses.
 
@@ -874,15 +899,24 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                     args.arcstats)["capacity_budget"] - protected,
             )
         after = arc_headroom(args.arc_reserve_fraction, args.arcstats)
+        finished = time.time()
         record = {
             "action_key": key,
+            # The row the campaign calls this, beside the key PrismaBuild
+            # calls it: a receipt nobody can place is a receipt nobody reads.
+            "row_id": manifest_row_id(manifest),
             "host": socket.gethostname(),
             "manifest_sha256": digest,
             "manifest_bytes": total,
             "entry_count": int(manifest["entry_count"]),
             "mount_prefix": manifest["mount_prefix"],
             "started_unix": round(started, 3),
-            "finished_unix": round(time.time(), 3),
+            "finished_unix": round(finished, 3),
+            # The same two instants in a form a person can line up against a
+            # journal, a Netdata window or a claim record without converting
+            # anything.  The unix fields stay authoritative.
+            "started_utc": utc(started),
+            "finished_utc": utc(finished),
             "status": (
                 "dry-run" if args.dry_run
                 else "complete" if result["bytes_warmed"] >= total

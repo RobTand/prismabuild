@@ -56,6 +56,44 @@ def test_the_record_carries_the_disk_numbers_beside_the_rate(
     assert record["bytes_warmed"] == record["manifest_bytes"] == 8 << 20
 
 
+def test_the_record_names_the_row_and_the_instants_it_covers(
+        tmp_path: Path) -> None:
+    """A receipt nobody can place against a row is a receipt nobody reads.
+
+    The claim that answers "was this still resident when the worker started?"
+    needs the campaign's own row name and both instants, and the person asking
+    it is reading the record, not the content-addressed manifest behind it.
+    """
+
+    fleet = Fleet(tmp_path)
+    key = fleet.action("row", [fleet.file("a.pt", 4096)],
+                       annotations={"row_id": "row-0079", "group": "experts"})
+
+    fleet.cycle(fleet.args())
+    record = fleet.queue.prewarm(key)
+
+    assert record["row_id"] == "row-0079"
+    assert record["started_utc"].endswith("Z")
+    assert record["finished_utc"] >= record["started_utc"]
+    assert record["started_utc"][:11] == record["finished_utc"][:11]
+    # The rest of the annotations stay behind the digest they are addressed
+    # by: the record carries a label, not a copy of the submitter's metadata.
+    assert "group" not in json.dumps(record)
+
+
+def test_a_manifest_with_no_row_id_records_an_empty_label(
+        tmp_path: Path) -> None:
+    """An absent label is empty, not missing: a reader never branches on the
+    key's existence, and a submitter is never required to name a row."""
+
+    fleet = Fleet(tmp_path)
+    key = fleet.action("row", [fleet.file("a.pt", 4096)])
+
+    fleet.cycle(fleet.args())
+
+    assert fleet.queue.prewarm(key)["row_id"] == ""
+
+
 def test_an_unpaced_host_records_that_pacing_was_off(tmp_path: Path) -> None:
     """"Nobody paced this" and "pacing found nothing to hold for" are
     different facts, and the record must not spell them the same way."""

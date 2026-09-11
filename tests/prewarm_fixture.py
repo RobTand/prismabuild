@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prewarm_loop  # noqa: E402
 
 
-def data_manifest(paths_and_sizes, *, prefix: str) -> dict:
+def data_manifest(paths_and_sizes, *, prefix: str,
+                  annotations: dict | None = None) -> dict:
     entries = [
         {"path": path, "offset": 0, "bytes": size, "sha256": None}
         for path, size in paths_and_sizes
@@ -28,7 +29,7 @@ def data_manifest(paths_and_sizes, *, prefix: str) -> dict:
     return {
         "schema": pb.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "tests"},
-        "annotations": {},
+        "annotations": dict(annotations or {}),
         "mount_prefix": prefix,
         "entries": entries,
         "entry_count": len(entries),
@@ -55,14 +56,16 @@ class Fleet:
         return str(path), size
 
     def action(self, key_seed: str, files, *, priority: int = 0,
-               with_manifest: bool = True) -> str:
+               with_manifest: bool = True,
+               annotations: dict | None = None) -> str:
         """Seal a request carrying a manifest input and publish it ready."""
 
         action_key = hashlib.sha256(key_seed.encode()).hexdigest()
         inputs: list[dict] = []
         params: dict = {"command": ["true"]}
         if with_manifest:
-            manifest = data_manifest(files, prefix=str(self.mount))
+            manifest = data_manifest(files, prefix=str(self.mount),
+                                     annotations=annotations)
             blob = self.root / f"{key_seed}.manifest.json"
             blob.write_text(json.dumps(manifest))
             entry, _ = self.cas.ingest_input(
