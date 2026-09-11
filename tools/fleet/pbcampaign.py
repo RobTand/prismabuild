@@ -65,8 +65,10 @@ order the work does them -- is bounded by how long it goes without committing
 work rather than by how long it runs: no total-duration limit while it keeps
 advancing, and at most the sum of those allowances if it never advances at
 all.  The action reports advancement with
-``prismabuild.report_action_progress``; a row that declares phases and reports
-nothing simply ends at that sum.  ``timeout_s`` and ``progress_phases``
+``prismabuild.progress.commit(units, phase)``, or -- inside a pinned image or
+any interpreter without PrismaBuild on its path -- by running the module the
+worker names in ``PRISMABUILD_ACTION_PROGRESS_HELPER``; a row that declares
+phases and reports nothing simply ends at that sum.  ``timeout_s`` and ``progress_phases``
 compose rather than conflict: a row with both keeps the hard deadline AND
 ends early on a stall.  Pool transport only, refused at load time on SLURM:
 the watchdog is the pull-queue worker's, and a scheduler time limit is the

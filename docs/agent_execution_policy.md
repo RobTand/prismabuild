@@ -46,8 +46,32 @@ time at all. Declare the phases it walks and the quiet each one is allowed --
 `pbrun --progress-phase startup=1800 --progress-phase encode=900`, or a
 `progress_phases` list in a `pbcampaign` manifest -- and the action reports
 each commitment by writing `prismabuild.action_progress.v1` to the file named
-by `PRISMABUILD_ACTION_PROGRESS_PATH`, echoing `PRISMABUILD_ACTION_PROGRESS_TOKEN`
-(`prismabuild.report_action_progress(phase, units_completed)` does this).
+by `PRISMABUILD_ACTION_PROGRESS_PATH`, echoing `PRISMABUILD_ACTION_PROGRESS_TOKEN`.
+
+An action does not have to be a PrismaBuild process to do that, and most are
+not: the interpreter a shard runs under has no PrismaBuild on its path, and a
+row inside a pinned image cannot see the fleet's mount. Four spellings, one
+writer (#488):
+
+* `prismabuild.progress.commit(units, phase)` where the package is importable.
+  `prismabuild.report_action_progress(phase, units)` is the same call with the
+  arguments the other way round.
+* `runpy.run_path(os.environ["PRISMABUILD_ACTION_PROGRESS_HELPER"])["commit"]`
+  from any interpreter, with nothing installed. The variable names that module
+  inside the runtime generation that launched the action, so the record is
+  written by the code the watching worker reads it with.
+* `python3 "$PRISMABUILD_ACTION_PROGRESS_HELPER" --phase P --units N` from a
+  shell, or anything else that can run a process.
+* the record itself, for a container that cannot reach the mount. The skill
+  carries the ten lines and a test holds them to what the worker accepts.
+
+`PRISMABUILD_ACTION_PROGRESS_PHASES` carries the phases the submission sealed,
+so `commit` defaults the phase to the first of them and refuses a name the
+submission never declared -- a `ValueError` on the first commit rather than a
+run that reports nothing acceptable and is then terminated for the silence.
+All four variables reach only an action that declared the contract, and an
+action that seals any of their names is refused rather than overwritten.
+
 What then bounds it:
 
 * **no total-duration limit while the count advances.** The worker's ceiling

@@ -79,6 +79,61 @@ a live process do not count as advancement -- the receipt's
 `progress_observation` says what was rejected and when the action last
 actually advanced (RobTand/prismabuild#480).
 
+### Emit committed units from any loop longer than a few minutes
+
+Declaring phases is half the contract; the action still has to say it is
+working. Report after each unit is **durable** -- a shard written, a row
+journalled, a checkpoint published -- and keep the count cumulative across the
+whole run, resuming from what a checkpoint already holds rather than
+restarting at zero. A loop that already prints a per-item line already has the
+number; it only has to commit it.
+
+The worker puts the channel in the action's environment, so pick whichever of
+these the action can reach:
+
+```bash
+# any shell, any language that can run a process
+python3 "$PRISMABUILD_ACTION_PROGRESS_HELPER" --phase encode --units 37
+```
+
+```python
+# any interpreter, no install, nothing to import
+import os, runpy
+commit = runpy.run_path(os.environ["PRISMABUILD_ACTION_PROGRESS_HELPER"])["commit"]
+commit(37, "encode")            # or commit(37) for the first declared phase
+
+# or, where PrismaBuild is importable
+from prismabuild.progress import commit
+```
+
+Every one of them is a no-op when the action was not admitted under the
+contract, so call them unconditionally rather than testing how the action was
+launched. `PRISMABUILD_ACTION_PROGRESS_PHASES` carries the phases the
+submission declared: a name that is not among them raises where the typo is,
+instead of being refused quietly by the worker until the allowance runs out.
+
+Inside a container that cannot see the fleet's mount, write the record
+directly -- it is one atomic file, and these ten lines are held byte for byte
+against what the worker accepts by
+`tests/test_progress_reporting_is_reachable_from_any_action.py`:
+
+```python
+import json, os, time                                  # pb-progress-snippet
+def pb_commit(units, phase, unit=None):
+    path = os.environ.get("PRISMABUILD_ACTION_PROGRESS_PATH")
+    token = os.environ.get("PRISMABUILD_ACTION_PROGRESS_TOKEN")
+    if not path or not token:
+        return False
+    record = {"schema": "prismabuild.action_progress.v1", "token": token,
+              "phase": phase, "units_completed": units, "unit": unit,
+              "reported_unix": time.time()}
+    temporary = f"{path}.{os.getpid()}.tmp"
+    with open(temporary, "w") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+    return True
+```
+
 Declare phases only for an action that implements the reporting channel.
 Keep `units_completed` cumulative across phases; zero in the initial phase
 does not renew startup grace. Invalid, duplicate-key, oversized or nonregular

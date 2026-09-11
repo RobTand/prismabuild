@@ -181,8 +181,12 @@ def test_checkpoint_before_an_accepted_report_is_refunded_only_once(tmp_path, mo
 
 def test_documented_package_reporter_is_available():
     import prismabuild
+    from prismabuild import progress
 
-    assert prismabuild.report_action_progress is pb.report_action_progress
+    # It lives in the leaf module an action can reach without the package
+    # (#488); the package name it is documented under is unchanged.
+    assert prismabuild.report_action_progress is progress.report_action_progress
+    assert prismabuild.commit is progress.commit
 
 
 def test_progress_submit_notice_distinguishes_deadline_from_phase_clamp(

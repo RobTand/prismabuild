@@ -132,6 +132,7 @@ import time
 import uuid
 
 from . import core as pb
+from . import progress as pb_progress
 from .materialize import (  # relocated verbatim; see materialize.py
     _cleanup_execution_checkout,
     _now,
@@ -7476,6 +7477,16 @@ class PoolQueue:
             {} if progress is None else {
                 pb.ACTION_PROGRESS_PATH_ENV: str(progress_path),
                 pb.ACTION_PROGRESS_TOKEN_ENV: progress_token,
+                # The two conveniences (#488).  Both come from this box rather
+                # than from the request: the phase list is the policy this
+                # watchdog will actually enforce, and the helper is the file
+                # this generation will read the record with, so an action that
+                # cannot import PrismaBuild still writes the bytes its own
+                # worker accepts instead of a second copy of the schema.
+                pb.ACTION_PROGRESS_PHASES_ENV: json.dumps(
+                    [phase.name for phase in progress.phases]),
+                pb.ACTION_PROGRESS_HELPER_ENV: str(
+                    Path(pb_progress.__file__).resolve()),
             }
         )
         # No payload exists during withdrawal, scope preparation or status-file
