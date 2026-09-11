@@ -4968,6 +4968,10 @@ class ProfileUnusable(Exception):
 PROFILE_RELAY_SOURCE = """\
 import json, os, subprocess, sys
 status_path, argv = sys.argv[1], sys.argv[2:]
+def start_ticks():
+    raw = open("/proc/%d/stat" % os.getpid(), "rb").read()
+    _, _, tail = raw.rpartition(b")")
+    return int(tail.split()[19])
 def record(body):
     body["schema"] = "prismabuild.profile_exit_status.v1"
     staged = status_path + ".partial"
@@ -4980,7 +4984,8 @@ except OSError as exc:
     record({"phase": "launch_failed",
             "launch_error": "%s: %s" % (type(exc).__name__, exc)})
     sys.exit(1)
-record({"phase": "launched", "child_pid": child.pid})
+record({"phase": "launched", "child_pid": child.pid,
+        "relay_pid": os.getpid(), "relay_start_ticks": start_ticks()})
 code = child.wait()
 record({"phase": "ended", "returncode": code,
         "signal": -code if code < 0 else None})
@@ -5002,6 +5007,30 @@ def profile_exit_status_relay(argv, status_path) -> list[str]:
         sys.executable, "-I", "-S", "-c", PROFILE_RELAY_SOURCE,
         str(status_path), *[str(word) for word in argv],
     ]
+
+
+def _profile_relay_is_live(pid: int, start_ticks: int) -> bool:
+    """Whether the exact Linux relay incarnation is still runnable.
+
+    ``kill(pid, 0)`` includes zombies and cannot distinguish a reused PID.
+    This worker's profile relay and its payload run on Linux, so field 22 of
+    ``/proc/<pid>/stat`` supplies the same exact incarnation proof used by
+    process accounting.  An unreadable or malformed record is not proof that
+    a relay remains able to write an ending.
+    """
+
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_bytes()
+    except OSError:
+        return False
+    _, _, tail = raw.rpartition(b")")
+    fields = tail.split()
+    if len(fields) <= 19 or fields[0] in {b"Z", b"X", b"x"}:
+        return False
+    try:
+        return int(fields[19]) == start_ticks
+    except ValueError:
+        return False
 
 
 def read_speedscope(path: Path) -> dict[str, object]:
@@ -5224,11 +5253,6 @@ class NsysProfileBackend:
     #: report mid-write.  It has no flush signal of its own: SIGTERM is what
     #: it wants, and SIGTERM is what the reap sends.
     terminate_grace_seconds = 6.0
-    #: With a window, nsys stops tracing on its own clock and exits while the
-    #: action runs on (measured: a 2 s cap ended nsys at 3.3 s with the
-    #: workload still going at 8.4 s), so the worker waits for the action.
-    settle_seconds = 900.0
-
     def __init__(self, *, duration_s: int | None = None):
         self.duration_s = duration_s
         self._path: str | None = None
@@ -5791,7 +5815,7 @@ class _ProfileSession:
             )
         return record
 
-    def action_returncode(self, process=None) -> int:
+    def action_returncode(self, process=None, *, deadline: float | None = None) -> int:
         """How the action ended, out of the relay the launch installed.
 
         In ``subprocess``'s own convention, so an unprofiled and a profiled run
@@ -5803,7 +5827,7 @@ class _ProfileSession:
         means nothing here knows what the action did.
         """
 
-        record = self._settled_exit_status(process)
+        record = self._settled_exit_status(process, deadline=deadline)
         phase = record["phase"]
         if phase == "launch_failed":
             # The unprofiled path calls this a worker verdict rather than an
@@ -5834,7 +5858,9 @@ class _ProfileSession:
             )
         return code
 
-    def _settled_exit_status(self, process=None) -> dict[str, object]:
+    def _settled_exit_status(
+        self, process=None, *, deadline: float | None = None
+    ) -> dict[str, object]:
         """The relay's record, waiting out a profiler that exits first.
 
         Most profilers outlive what they profile, and for those this reads the
@@ -5843,18 +5869,17 @@ class _ProfileSession:
         ``83d2530f3eda``), where a 2 s cap ended nsys at 3.3 s and the workload
         at 8.4 s.  A backend that can do that declares
         ``exits_before_action``, and the worker waits for the action itself
-        rather than reporting an ending the action had not reached.  The wait
-        is bounded: past ``settle_seconds`` the action is the one thing still
-        running and calling that a profiler failure is more honest than
-        blocking a worker on it forever.
+        rather than reporting an ending the action had not reached.  A profile
+        window is diagnostic evidence, not an execution deadline: the caller's
+        explicit deadline, or the pool's progress/deadline supervisor, remains
+        the authority for a live relay.  A missing or dead relay is different:
+        it cannot record the action's ending, so the owned group is stopped and
+        the profiled run fails closed rather than waiting forever.
         """
 
         record = self.exit_status()
         if not getattr(self.backend, "exits_before_action", False):
             return record
-        deadline = time.monotonic() + float(
-            getattr(self.backend, "settle_seconds", 0.0)
-        )
         # The action outlives its profiler on this path, which makes every way
         # out of this wait a way to orphan it.  A pool deadline arriving here
         # signals *this* process, not the action's session, so without the
@@ -5863,9 +5888,46 @@ class _ProfileSession:
         # do the same, quietly, on the way to raising.
         with _sigterm_unwinds_this_process():
             try:
-                while (record["phase"] == "launched"
-                       and time.monotonic() < deadline):
-                    time.sleep(_PROFILE_SETTLE_POLL_SECONDS)
+                while record["phase"] == "launched":
+                    if deadline is not None and time.monotonic() >= deadline:
+                        if process is not None:
+                            _terminate_process_group(process)
+                        raise subprocess.TimeoutExpired(
+                            "profiled action", max(0.0, deadline - time.monotonic())
+                        )
+                    relay_pid = record.get("relay_pid")
+                    relay_start_ticks = record.get("relay_start_ticks")
+                    if (not isinstance(relay_pid, int)
+                            or isinstance(relay_pid, bool)
+                            or relay_pid <= 0
+                            or not isinstance(relay_start_ticks, int)
+                            or isinstance(relay_start_ticks, bool)
+                            or relay_start_ticks <= 0):
+                        raced = self.exit_status()
+                        if raced["phase"] != "launched":
+                            return raced
+                        if process is not None:
+                            _terminate_process_group(process)
+                        raise ProfileUnusable(
+                            "the profiled action left no live relay identity "
+                            "while its ending was still pending"
+                        )
+                    if not _profile_relay_is_live(relay_pid, relay_start_ticks):
+                        raced = self.exit_status()
+                        if raced["phase"] != "launched":
+                            return raced
+                        if process is not None:
+                            _terminate_process_group(process)
+                        raise ProfileUnusable(
+                            f"the profiled action relay (pid {relay_pid}) is "
+                            "no longer running, so its ending cannot be recorded"
+                        )
+                    sleep_seconds = _PROFILE_SETTLE_POLL_SECONDS
+                    if deadline is not None:
+                        sleep_seconds = min(
+                            sleep_seconds, max(0.0, deadline - time.monotonic())
+                        )
+                    time.sleep(sleep_seconds)
                     record = self.exit_status()
             except BaseException:
                 if process is not None:
@@ -6820,6 +6882,7 @@ def run_local_action(
             )
         _refuse_existing_result_symlink_prefix(output, cwd)
         process: subprocess.Popen[bytes] | None = None
+        execution_deadline: float | None = None
         launch_argv = list(task["argv"])
         launch_environment = {
             str(key): str(value) for key, value in variables.items()
@@ -6846,6 +6909,8 @@ def run_local_action(
                     # parent's descriptor remains CLOEXEC for unrelated execs.
                     pass_fds=(output_lock_descriptor,),
                 )
+                if timeout_seconds is not None:
+                    execution_deadline = time.monotonic() + timeout_seconds
                 returncode = process.wait(timeout=timeout_seconds)
             except subprocess.TimeoutExpired as exc:
                 partial = _reap_and_settle(process, profile, cas)
@@ -6898,9 +6963,18 @@ def run_local_action(
                     with suppress(ProfileUnusable):
                         checkpoint["action_phase"] = profile.exit_status()["phase"]
                     _write_action_status({"profile": checkpoint})
-                action_status = profile.action_returncode(process)
+                action_status = profile.action_returncode(
+                    process, deadline=execution_deadline
+                )
                 if profile_record is None:
                     profile_record = profile.ingest(cas)
+            except subprocess.TimeoutExpired as exc:
+                partial = _reap_and_settle(process, profile, cas)
+                raise LocalActionError(
+                    f"action execution timed out: {exc}"
+                    + _partial_profile_note(partial),
+                    profile=partial,
+                ) from exc
             except ProfileUnusable as exc:
                 # An early profiler's unusable report can now refuse before
                 # the relay wait. Its action still belongs to this attempt.

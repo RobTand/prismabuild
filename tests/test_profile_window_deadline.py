@@ -39,7 +39,6 @@ from prismabuild import core as pb
 base = Path(sys.argv[2])
 class Early(_FakeBackend):
     exits_before_action = True
-    settle_seconds = 60
     def launch_argv(self, argv, *, profile_path):
         code = "import sys,subprocess; from pathlib import Path; subprocess.Popen(sys.argv[3:]); Path(sys.argv[1]).write_text(sys.argv[2])"
         # The child is relayed, and the outer process exits immediately, as
@@ -58,17 +57,17 @@ def signals_ready():
             marker.replace(base/'settling.json')
         yield
 pb._sigterm_unwinds_this_process = signals_ready
-def settling(self, process=None):
+def settling(self, process=None, *, deadline=None):
     global pending
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
+    settle_deadline = time.monotonic() + 10
+    while time.monotonic() < settle_deadline:
         try:
             record = self.exit_status()
             if record.get('phase') == 'launched': break
         except pb.ProfileUnusable: pass
         time.sleep(.01)
     pending = {'group': process.pid, 'child': record['child_pid']}
-    return original(self, process)
+    return original(self, process, deadline=deadline)
 pb._ProfileSession._settled_exit_status = settling
 checkout = base/'checkout'; checkout.mkdir()
 action = _action(checkout, profile='fake')
@@ -146,3 +145,48 @@ def test_unusable_early_report_does_not_leave_action_running(tmp_path, monkeypat
     with pytest.raises(pb.LocalActionError, match='no usable profile'):
         pb.run_local_action(pb.seal_action(body), cas_root=tmp_path/'cas', checkout_root=checkout)
     _assert_stopped(int(child_pid.read_text()))
+
+
+def test_direct_execution_deadline_still_governs_after_a_profile_window(
+    tmp_path, monkeypatch,
+):
+    """The direct runner keeps its explicit deadline after nsys exits (#514)."""
+    from test_sample_profile import _FakeBackend, _action, _speedscope
+    from prismabuild import core as pb
+
+    class Early(_FakeBackend):
+        exits_before_action = True
+
+        def launch_argv(self, argv, *, profile_path):
+            code = (
+                'import sys, subprocess, time\n'
+                'from pathlib import Path\n'
+                'subprocess.Popen(sys.argv[3:])\n'
+                'deadline = time.monotonic() + 10\n'
+                'while not Path(sys.argv[8]).exists():\n'
+                '    assert time.monotonic() < deadline\n'
+                '    time.sleep(.01)\n'
+                'Path(sys.argv[1]).write_text(sys.argv[2])\n'
+            )
+            return [
+                sys.executable, '-c', code, str(profile_path),
+                _speedscope('window'), *argv,
+            ]
+
+    monkeypatch.setitem(pb.PROFILE_BACKENDS, 'fake', Early())
+    checkout = tmp_path / 'checkout'
+    checkout.mkdir()
+    action = _action(checkout, profile='fake')
+    body = {key: value for key, value in action.items() if key != 'action_key'}
+    body['task'] = {
+        **body['task'],
+        'argv': [sys.executable, '-c', 'import time; time.sleep(120)'],
+    }
+    with pytest.raises(pb.LocalActionError, match='timed out') as raised:
+        pb.run_local_action(
+            pb.seal_action(body), cas_root=tmp_path / 'cas',
+            checkout_root=checkout, timeout_seconds=0.2,
+        )
+    assert raised.value.returncode is None
+    assert raised.value.profile is not None
+    assert raised.value.profile['partial'] is True

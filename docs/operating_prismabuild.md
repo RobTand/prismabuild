@@ -300,11 +300,13 @@ diagnostic is not proof of a successful CUDA profile.
     is *not* ended by the diagnostic watching it (nsys's own default there is
     to SIGTERM the application). nsys then exits while the action runs on —
     measured: a 2 s window ended nsys at 3.3 s with the workload still going at
-    8.4 s — so the worker waits for the action's real ending through the relay,
-    bounded at 900 s. The action is the only thing still running during that
-    wait, so every way out of it reaps the action group first: a deadline
-    landing there, and the bound expiring, both tear the action down before
-    the run fails. The record carries `window_s` and `partial_window: true`.
+    8.4 s — so the worker waits for the action's real ending through the relay.
+    That wait does not add a diagnostic lifetime cap: the sealed execution
+    deadline or progress supervisor remains the authority. The relay records
+    its pid and Linux start ticks with the launched child; a missing, dead, or
+    PID-reused relay cannot establish the action ending, so the worker reaps
+    its owned group and refuses instead of waiting without an authority. The
+    record carries `window_s` and `partial_window: true`.
 *   **There is a size budget**, and it is 2 GiB. Measured growth on sparky
     (`f09402fe3ce8`): 666 kB, 2.28 MB and 8.80 MB of `.nsys-rep` over 1.94 s,
     6.71 s and 25.69 s of saturated matmul — about **0.34 MB per second of

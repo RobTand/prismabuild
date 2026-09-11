@@ -113,7 +113,6 @@ def test_normal_completion_keeps_richer_profile(tmp_path, monkeypatch):
 def test_successful_profile_survives_unparseable_stdout_as_complete(tmp_path, monkeypatch, early):
     class Supplement(_FakeBackend):
         exits_before_action = early
-        settle_seconds = 10
 
         def launch_argv(self, argv, *, profile_path):
             if not early:
