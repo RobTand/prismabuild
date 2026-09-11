@@ -701,6 +701,13 @@ def read_pool(queue_root: str | Path) -> dict:
             if _valid_pool_item(key, record):
                 path = queue.passes_path(key) if state == pool.READY else queue.lease_path(key)
                 sidecars[state, key] = _pool_sidecar(path)
+    denial_records = {}
+    reservations = queue.root / pool.RESERVATIONS
+    if reservations.is_dir():
+        for host_dir in reservations.iterdir():
+            if host_dir.is_dir():
+                denial_records[host_dir.name] = _pool_sidecar(
+                    host_dir / 'adaptive' / pool.CLAIM_DENIALS)
     now = time.time()
     notes = [*worker_notes, *ready_notes, *claim_notes]
     # The half of ``notes`` that means "this census is missing something",
@@ -774,6 +781,32 @@ def read_pool(queue_root: str | Path) -> dict:
                                admission_passes=int(count) if isinstance(count, (int, float)) else 0,
                                admission_wait_s=max(0.0, now - float(first))
                                if isinstance(first, (int, float)) else 0.0)
+                    matching_denials = []
+                    for host, snapshot in denial_records.items():
+                        if (not isinstance(snapshot, dict)
+                                or snapshot.get('schema') != pool.CLAIM_DENIALS_SCHEMA_V1):
+                            continue
+                        records = snapshot.get('records', {})
+                        if not isinstance(records, dict):
+                            continue
+                        for denial in records.values():
+                            stamp = denial.get('denied_unix') if isinstance(denial, dict) else None
+                            published = denial.get('published_unix') if isinstance(denial, dict) else None
+                            if (isinstance(denial, dict) and denial.get('action_key') == key
+                                    and type(published) in (int, float)
+                                    and type(record.get('published_unix')) in (int, float)
+                                    and published == record.get('published_unix')
+                                    and denial.get('host') == host and isinstance(denial.get('reason'), str)
+                                    and type(stamp) in (int, float) and math.isfinite(stamp)
+                                    and 0 <= now - stamp):
+                                decision = denial.get('evidence', {}).get('decision', {})
+                                matching_denials.append({name: denial.get(name) for name in
+                                                         ('host', 'reason', 'evidence', 'denied_unix')}
+                                                        | {'decision_reason': decision.get('reason')
+                                                           if isinstance(decision, dict) else None,
+                                                           'age_s': now - stamp})
+                    matching_denials.sort(key=lambda denial: (denial['host'], -denial['denied_unix']))
+                    row['admission_denials'] = matching_denials
                     row['reason'] = ('no fresh worker offers; placement unknown' if not live
                                      else 'no matching live worker' if not hosts
                                      else 'awaiting admission; matching worker capacity is not a grant')
@@ -874,11 +907,15 @@ def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, o
     if not jobs:
         return ["no jobs ready or claimed" if summary.get('empty') is True else "pool job state unavailable"]
     return render_table(("KEY", "STATE", "NODE", "RESOURCES", "AGE", "LEASE", "OUTPUT", "PROGRESS",
-                         "PASSES", "RELEASES", "MATCHING", "NOTE"), (
+                         "PASSES", "DENIAL", "RELEASES", "MATCHING", "NOTE"), (
         (j['action_key_prefix'], j['state'], j.get('node'), j.get('resources'), j.get('age_s'),
          j.get('lease_age_s'), (j.get('execution_observation') or {}).get('last_output_age_s'),
          j.get('progress_observation'),
-         j.get('admission_passes'), j.get('unstarted_releases'), j.get('placeable_hosts'),
+         j.get('admission_passes'), None if not j.get('admission_denials') else '; '.join(
+             f"{denial['host']}: {denial['reason']}"
+             + (f"/{denial['decision_reason']}" if denial.get('decision_reason') else '')
+             for denial in j['admission_denials']),
+         j.get('unstarted_releases'), j.get('placeable_hosts'),
          j.get('reason')) for j in jobs))
 
 

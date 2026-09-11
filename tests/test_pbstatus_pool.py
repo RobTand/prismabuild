@@ -58,6 +58,28 @@ def test_ready_pool_jobs_report_placement_and_admission_passes(live_pool, tmp_pa
     assert 'awaiting admission' in row['reason']
 
 
+def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, monkeypatch):
+    key = "d" * 64
+    live_pool.publish(action_key=key, cas_root=tmp_path / "cas", checkout_root="/mnt/shared/status-fixture",
+                      worker_script=ROOT / "tools/prismabuild_worker.py",
+                      resources={"cpu": 2, "mem_gb": 4}, tags=["cpu-box"])
+    denial_path = live_pool.ledger("cpu-box").base / "adaptive" / pool.CLAIM_DENIALS
+    denial_path.parent.mkdir(parents=True, exist_ok=True)
+    denial_path.write_text(json.dumps({"schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {"fixture": {
+        "action_key": key, "published_unix": json.loads(
+            live_pool.item_path(pool.READY, key).read_text())["published_unix"],
+        "host": "cpu-box", "reason": "adaptive_cpu_refused",
+        "evidence": {"cpu_sample": {"busy_cpus": 3.9, "psi_some": 0.2}},
+        "denied_unix": time.time(),
+    }}}))
+    row = next(job for job in pbstatus.read_pool(live_pool.root)["jobs"]
+               if job["action_key"] == key)
+    assert row["admission_denials"][0]["host"] == "cpu-box"
+    assert row["admission_denials"][0]["reason"] == "adaptive_cpu_refused"
+    assert "cpu-box: adaptive_cpu_refused" in "\n".join(
+        pbstatus.pool_job_lines([row], {"empty": False}))
+
+
 def test_stale_offer_and_lease_are_retained_as_uncertain(live_pool):
     offer = live_pool.root / pool.WORKERS / 'gpu-box.json'
     record = json.loads(offer.read_text())

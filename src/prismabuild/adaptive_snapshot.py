@@ -18,7 +18,8 @@ import sys
 import time
 import uuid
 
-FILES = ('cpu-sample.json', 'jobs.json', 'profiles.json', 'last-borrow.json', 'gpu-state.json')
+FILES = ('cpu-sample.json', 'jobs.json', 'profiles.json', 'last-borrow.json', 'gpu-state.json',
+         'claim-denials.json')
 #: Records whose copy is stamped as a copy; their readers show the stamp.
 STAMPED = ('cpu-sample.json', 'gpu-state.json')
 MIN_PUBLISH_INTERVAL_S = 1.0

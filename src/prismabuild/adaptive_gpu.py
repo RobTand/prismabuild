@@ -199,12 +199,19 @@ class Controller:
 
     def decision(self, item, demand, *, contract=None):
         """Decide under admission; callers may pre-read the sealed contract."""
+        self.last_decision = {"reason": "not_evaluated"}
         if not demand.get('gpu'):
+            self.last_decision = {"reason": "no_gpu_demand"}
             return {}
         now = time.time()
         if self._sample is None:
             self._sample = self.sample()
         sample = self._sample
+        def refuse(reason, **values):
+            # Saved by the claimant after admission unlocks; this is the exact
+            # broker sample already used here, never a diagnostic resample.
+            self.last_decision = {"reason": reason, "sample": sample, **values}
+            return None
         shape, measurement, exclusive, budget = (
             action_contract(item, demand) if contract is None else contract)
         holders = []
@@ -215,11 +222,12 @@ class Controller:
             if meta or any(holder.glob('gpu-*')):
                 holders.append((holder, meta))
         if len(holders) >= MAX_ACTIONS:
-            return None
+            return refuse("max_actions", holders=len(holders))
         # Unknown/private/legacy reservations remain exclusive until released.
         if holders and (exclusive or measurement or any(not m or m.get('exclusive')
                                                          or m.get('measurement') for _, m in holders)):
-            return None
+            return refuse("exclusive_holder", holders=len(holders), exclusive=exclusive,
+                          measurement=measurement)
         fresh = (_number(sample.get('sampled_unix'))
                  and 0 <= now - sample['sampled_unix'] <= MAX_SAMPLE_AGE_S)
         devices = sample.get('devices', [])
@@ -270,26 +278,35 @@ class Controller:
                              low_samples=min(3, state.get('low_samples', 0) + 1) if low and continuous else int(low))
             self._write_state(state)
             if congested:
-                return None
+                return refuse("host_or_device_congested", pressure=pressure,
+                              foreign_processes=sample['foreign_processes'],
+                              power_w=device.get('power_w'), power_reference_w=reference,
+                              limited=limited)
             if device.get('memory_domain') == 'discrete':
                 fields = ('memory_total_bytes', 'memory_free_bytes', 'memory_used_bytes')
                 if not all(_number(device.get(k)) for k in fields):
-                    return None
+                    return refuse("gpu_memory_sample_invalid", device=device)
                 total = device['memory_total_bytes']
                 used = sum(m.get('gpu_memory_budget_bytes', 0) for _, m in holders)
                 if (not total or budget <= 0 or used + budget > total
                         or device['memory_free_bytes'] < budget
                         or device['memory_free_bytes'] + device['memory_used_bytes'] > total):
-                    return None
+                    return refuse("gpu_memory_budget", memory_total_bytes=total,
+                                  memory_free_bytes=device['memory_free_bytes'],
+                                  requested_budget_bytes=budget, held_budget_bytes=used)
         if not valid:
-            return None
+            return refuse("sample_invalid_or_stale")
         if measurement and (not valid or not low or sample['foreign_processes']):
-            return None
+            return refuse("measurement_device_not_idle", low=low,
+                          foreign_processes=sample['foreign_processes'])
         if holders:
             if (not valid or not low or not shape or not feedback_allowed or state.get('low_samples', 0) < 2
                     or state.get('consumed_sample_id') == sample['sample_id']
                     or sample['sampled_unix'] <= state.get('consumed_sampled_unix', 0)):
-                return None
+                return refuse("sharing_probe_not_authorized", low=low, shape=shape,
+                              feedback_allowed=feedback_allowed,
+                              low_samples=state.get('low_samples', 0),
+                              consumed_sample_id=state.get('consumed_sample_id'))
             jobs = {job.get('action_key'): job for job in sample['jobs'] if isinstance(job, dict)}
             for holder, meta in holders:
                 record = adaptive_cpu.read_json(self.base / 'telemetry' / f'{holder.name}.json')
@@ -303,7 +320,8 @@ class Controller:
                         or not 0 <= now - record['sampled_unix'] <= MAX_SAMPLE_AGE_S
                         or record['sampled_unix'] < meta['admitted_unix']
                         or sample['sampled_unix'] < meta['admitted_unix'] + SETTLE_S):
-                    return None
+                    return refuse("holder_telemetry_unavailable", holder=holder.name)
+        self.last_decision = {"reason": "admitted", "sample": sample}
         return {'declared_gpu': int(demand['gpu']), 'exclusive': exclusive,
                 'action_key': str(item['action_key']), 'members_before': members,
                 'measurement': measurement, 'shape': shape, 'admitted_unix': now,

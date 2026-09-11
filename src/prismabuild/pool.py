@@ -244,6 +244,12 @@ UNREADABLE_HEAD_BYTES = 2048
 
 RESERVATIONS = "reservations"
 PASSES = "passes"
+CLAIM_DENIALS = "claim-denials.json"
+CLAIM_DENIALS_SCHEMA_V1 = "prismabuild.claim_denials.v1"
+MAX_CLAIM_DENIALS = 256
+MAX_DENIAL_VALUE_DEPTH = 4
+MAX_DENIAL_VALUE_ITEMS = 32
+MAX_DENIAL_VALUE_TEXT = 256
 WORKERS = "workers"
 #: Where a storage-role loop files what it made resident for one action.
 #: A sidecar for the same reason ``passes`` is one: the only safe moment to
@@ -2037,6 +2043,7 @@ class PoolQueue:
         # after import gets the root it named rather than the live store.
         self.root = Path(DEFAULT_POOL_ROOT if root is None else root)
         self._cpu_deferrals: dict[tuple[str, str], float] = {}
+        self._claim_denial_bases: dict[str, Path] = {}
         self._admission_busy_logged_at: float | None = None
         if not self.root.is_absolute():
             raise PoolContractError("pool root must be absolute")
@@ -3011,6 +3018,82 @@ class PoolQueue:
              "first_unix": float(first), "updated_unix": now},
         )
         return count
+
+    @staticmethod
+    def _bounded_denial_value(value: object, depth: int = 0) -> object:
+        """Keep host-local denial evidence useful without making it a log."""
+        if depth >= MAX_DENIAL_VALUE_DEPTH:
+            return "<truncated>"
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            return value[:MAX_DENIAL_VALUE_TEXT]
+        if isinstance(value, Mapping):
+            return {str(key)[:MAX_DENIAL_VALUE_TEXT]: PoolQueue._bounded_denial_value(value[key], depth + 1)
+                    for key in list(sorted(value, key=str))[:MAX_DENIAL_VALUE_ITEMS]}
+        if isinstance(value, (list, tuple, set)):
+            return [PoolQueue._bounded_denial_value(item, depth + 1)
+                    for item in list(value)[:MAX_DENIAL_VALUE_ITEMS]]
+        return repr(value)[:MAX_DENIAL_VALUE_TEXT]
+
+    def record_denial(
+        self, item: Mapping[str, object], reason: str, evidence: Mapping[str, object] | None = None,
+    ) -> None:
+        """Best-effort, coalesced claim evidence; never admission authority.
+
+        This deliberately has no shared queue write.  A host records its latest
+        verdict for an action generation locally; the existing independent
+        snapshot publisher copies this bounded file no more than once a second.
+        A contended local diagnostics lock drops an observation rather than
+        delaying or changing a claim.
+        """
+        if not isinstance(item.get("published_unix"), (int, float)):
+            return
+        host = socket.gethostname()
+        ledger = self.ledger()
+        ledger_name = str(ledger.base)
+        base = self._claim_denial_bases.get(ledger_name)
+        if base is None:
+            try:
+                base = cpu_admission.local_state_base(ledger.base)
+            except (OSError, ValueError, TypeError):
+                return
+            self._claim_denial_bases[ledger_name] = base
+        lock = base / "claim-denials.lock"
+        descriptor = None
+        try:
+            descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            path = base / CLAIM_DENIALS
+            records = cpu_admission.read_json(path).get("records", {})
+            if not isinstance(records, Mapping):
+                records = {}
+            key = str(item.get("action_key", ""))
+            generation = repr(float(item["published_unix"]))
+            identity = f"{key}:{generation}"
+            now = _now()
+            records = dict(records)
+            records[identity] = {
+                "action_key": key, "published_unix": float(item["published_unix"]),
+                "host": host, "reason": reason, "evidence": self._bounded_denial_value(evidence or {}),
+                "denied_unix": now,
+            }
+            newest = sorted(records.items(), key=lambda entry: (
+                float(entry[1].get("denied_unix", 0))
+                if isinstance(entry[1], Mapping) and isinstance(entry[1].get("denied_unix", 0), (int, float))
+                else 0.0), reverse=True)
+            cpu_admission.write_json(path, {"schema": CLAIM_DENIALS_SCHEMA_V1,
+                                            "records": dict(newest[:MAX_CLAIM_DENIALS])})
+            # This starts only a local child and coalesces shared copies at 1 Hz.
+            cpu_admission.adaptive_snapshot.publish(base, ledger.base / "adaptive")
+        except (OSError, ValueError, TypeError):
+            return
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     def withhold_age(self, action_key: str) -> float:
         """Seconds since this item was first denied admission; 0.0 if never."""
@@ -4292,6 +4375,8 @@ class PoolQueue:
             key = str(item.get("action_key", ""))
             with self._transition_locked(key, blocking=False) as acquired:
                 if not acquired:
+                    if key:
+                        self.record_denial(item, "transition_busy")
                     continue
                 # Refresh the directory under exclusion before consulting names:
                 # a cached negative lookup can outlive another NFS client's claim.
@@ -4300,8 +4385,14 @@ class PoolQueue:
                         or any(name.startswith(f"{key}.")
                                and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))
                                for name in claimed_names)):
+                    self.record_denial(item, "already_claimed")
                     continue
                 if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
+                    if key:
+                        self.record_denial(item, "placement_mismatch", {
+                            "worker_tags": sorted(tagset), "worker_has_gpu": has_gpu,
+                            "required_tags": item.get("tags"), "needs_gpu": item.get("needs_gpu"),
+                        })
                     continue
                 if self.withdrawal_covers(
                         item, action_key=key, withdrawn=withdrawn) is not None:
@@ -4342,6 +4433,7 @@ class PoolQueue:
                     # unknown CPU consumer visible to subsequent measurements.
                     # Empty legacy demand has no holder; keep it queued instead.
                     self.record_pass(key)
+                    self.record_denial(item, "empty_demand")
                     continue
                 # From the reservation to ``commit_acquire`` the tokens exist
                 # only under a handle this frame holds: nothing else can name
@@ -4353,6 +4445,10 @@ class PoolQueue:
                 try:
                     if ledger is not None and demand:
                         if any(total.get(kind, 0) < need for kind, need in reservation_demand.items()):
+                            self.record_denial(item, "never_fits_capacity", {
+                                "capacity_total": total, "demand": demand,
+                                "reservation_demand": reservation_demand,
+                            })
                             continue      # never fits this box; not this box's to hold
                         # These facts belong to the sealed action, not changing
                         # host capacity. A slow CAS request read must not hold
@@ -4375,13 +4471,18 @@ class PoolQueue:
                         # across it is what took whole boxes out of the claiming
                         # population when the mount was slow (#351).
                         refused = False
+                        refusal_source = None
                         with self._admission_lock(controller):
                             if controller is not None:
                                 adaptive = controller.decision(item, demand, identity=identity)
                                 refused = adaptive is None
+                                if refused:
+                                    refusal_source = "adaptive_cpu_refused"
                             if not refused and gpu_controller is not None and demand.get("gpu"):
                                 adaptive_gpu = gpu_controller.decision(item, demand, contract=contract)
                                 refused = adaptive_gpu is None
+                                if refused:
+                                    refusal_source = "adaptive_gpu_refused"
                             if not refused:
                                 if adaptive_gpu is not None:
                                     handle = ledger.begin_acquire(
@@ -4407,6 +4508,11 @@ class PoolQueue:
                             # capacity authority. Keep its I/O outside host admission.
                             # The per-key transition lock still protects this item.
                             self.record_pass(key)
+                            decision = (getattr(gpu_controller, "last_decision", None)
+                                        if refusal_source == "adaptive_gpu_refused"
+                                        else getattr(controller, "last_decision", None))
+                            self.record_denial(item, refusal_source or "adaptive_refused",
+                                               {"decision": decision or {}})
                             continue
                         if handle is None:
                             denials = self.record_pass(key)
@@ -4418,17 +4524,34 @@ class PoolQueue:
                                     ledger, action_key=key, demand=asked,
                                     priority=int(item.get("priority", 0)),
                                     controller=controller) is not None
-                            if (denials >= STARVATION_FLOOR
-                                    and self.withhold_age(key) <= WITHHOLD_CEILING_S):
+                            withholding = denials >= STARVATION_FLOOR
+                            age = self.withhold_age(key) if withholding else None
+                            self.record_denial(item,
+                                               "reservation_unavailable_withholding" if withholding
+                                               and age <= WITHHOLD_CEILING_S else
+                                               "reservation_unavailable_past_ceiling" if withholding else
+                                               "reservation_unavailable", {
+                                "demand": demand, "reservation_demand": reservation_demand,
+                                "capacity_total": total, "denials": denials,
+                                "withhold_age_s": age, "withhold_ceiling_s": WITHHOLD_CEILING_S,
+                                "cpu_decision": getattr(controller, "last_decision", None),
+                                "gpu_decision": getattr(gpu_controller, "last_decision", None),
+                            })
+                            if withholding and age <= WITHHOLD_CEILING_S:
                                 return None
                             # Past the ceiling, retain aging but let smaller work run.
                             continue
                     if (ledger is not None and handle is not None and cpu_tiers is not None
                             and ledger.cpu_allocation(handle, cpu_tiers)["fallback"]
                             and self._defer_fallback(item, demand)):
+                        allocation = ledger.cpu_allocation(handle, cpu_tiers)
                         ledger.abandon_acquire(handle)
                         self._return_borrow(controller, borrow)
                         self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                        self.record_denial(item, "deferred_for_preferred_cpu", {
+                            "demand": demand,
+                            "cpu_allocation": allocation,
+                        })
                         continue
                     # Intent precedes the claim, so a crash in between leaves evidence.
                     self._write_claim_intent(key, owner=owner)

@@ -84,6 +84,16 @@ synchronous and can delay their own caller.
 
 CPU/GPU policy refusals and unfunded reservations record denial aging outside
 host admission, while retaining the candidate's per-key transition lock.
+Each host also keeps a bounded, best-effort latest claim-denial record per
+action generation in its local admission state. It names the exact branch and
+the controller decision/sample already consumed, never a diagnostic resample.
+The independent snapshot publisher coalesces copies to the shared adaptive
+directory at its existing one-second cadence, after admission is released.
+This is observability, not an audit log or admission authority: a contended
+local diagnostic lock or delayed/failed copy may leave status without a current
+reason, and readers reject a record whose `published_unix` does not match the
+ready generation. Claim aging remains in `passes/` and is unchanged by these
+records.
 Withholding-age reads also run outside admission. A denied reservation owns
 no tokens or probe/borrow credit. Background preemption selection still requires
 host exclusion to serialize pending releases; it reacquires admission

@@ -410,6 +410,14 @@ the box". Agent self-validation -- test shards, the receipt for a PR, a re-run
 to confirm a fix -- submits there (`pbtest.py --priority -10`, `pbrun.py
 --priority -10`) and cannot displace campaign work in the queue.
 
+For a ready item, `pbstatus` prints every current-generation host verdict in
+`DENIAL` beside `PASSES`; `--json` includes the exact branch, captured
+decision/sample values, and age. The bounded records are host-local first and
+the asynchronous admission snapshot publisher may coalesce, delay, or drop a
+copy. Missing evidence is unknown, not proof that a host did not skip work.
+Records never alter aging or admission, and a `published_unix` mismatch is
+ignored after re-publication.
+
 Restartable background work can also yield the box. When a foreground item
 (priority >= 0) is denied admission and one background holder on that box is running whose tokens,
 released, would let the denied item in, the worker withdraws that holder through

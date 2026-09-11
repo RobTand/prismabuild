@@ -1353,6 +1353,13 @@ def test_work_that_can_never_fit_here_does_not_deadlock_the_box(
         queue.record_pass(KEY_A)
     taken = queue.claim(capacity={"gpu": 2})
     assert taken is not None and taken["action_key"] == KEY_B
+    local = pool.cpu_admission.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
+    denial = next(iter(pool.cpu_admission.read_json(local)["records"].values()))
+    assert denial["reason"] == "never_fits_capacity"
+    assert denial["evidence"] == {
+        "capacity_total": {"gpu": 2}, "demand": {"gpu": 99},
+        "reservation_demand": {"gpu": 99},
+    }
 
 
 def test_a_claim_clears_its_own_denial_history(queue: pool.PoolQueue) -> None:
