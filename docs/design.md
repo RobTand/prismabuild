@@ -1655,6 +1655,26 @@ to total duration, and total duration is bounded only by an explicitly sealed
 require the caller to choose the allowance; neither adds an implicit phase
 or total-duration deadline.
 
+`--progress-cycle` (campaign row `progress_cycle: true`) adds optional
+`cycle: true` to the v1 policy. Omitted or false retains the existing canonical
+linear policy and its action key. Cyclic policy bytes produce a distinct key;
+older readers reject the extra field. The progress record format is unchanged.
+
+In cyclic mode the current phase may return to an earlier declaration. Every
+phase may grant its allowance once between strictly increasing cumulative
+committed counts. Launch consumes the initial phase's grant at count zero.
+An accepted larger count resets the available grants and consumes the named
+phase's grant; at the same count only a phase whose grant is still available
+can advance the watch. Regressing counts are rejected even on a phase change.
+For example, after publishing unit 2 under a 5-second allowance, reporting
+`encode, 2` can grant encode's 200 seconds. Repeating publish/encode at count 2
+cannot re-arm either phase again. Observations may skip intermediate phases;
+each accepted phase still consumes its grant. The sum of effective allowances
+bounds quiet after the last count increase as well as an action that never
+commits. The worker's per-phase clamp, hard deadlines, withdrawal and
+containment retain their precedence. Endings record `progress_cycle` and the
+current accepted phase and grace in `progress_observation`.
+
 The channel is `claimed/<key>.progress`, named to the action through
 `PRISMABUILD_ACTION_PROGRESS_PATH` with a per-launch token in
 `PRISMABUILD_ACTION_PROGRESS_TOKEN`. Both are forwarded into the action's own
@@ -1687,7 +1707,7 @@ submission did not declare, which is the difference between a typo that reports
 nothing acceptable and dies at its stall allowance and one that fails on its
 first commit.
 
-The worker accepts a record as advancement only when its schema is
+For the default linear policy, the worker accepts a record as advancement only when its schema is
 `prismabuild.action_progress.v1`, its token is this launch's, its phase is one
 the policy declared, `units_completed` is finite and non-negative, and either
 that count exceeds the highest accepted so far or the phase index exceeds the
@@ -1740,6 +1760,14 @@ and hostname. A worker that also exports the helper path and phase list offers
 `progress-helper-v1` (`core.PROGRESS_HELPER_TAG`). New `pbrun` submissions that
 declare a policy require both tags. Previously sealed `progress-v1` actions
 remain eligible on either generation; their requests are unchanged.
+
+Cyclic policies additionally require `progress-cycle-v1`
+(`core.PROGRESS_CYCLE_TAG`). Updated worker loops offer all three tags.
+Submission refuses cyclic mode if no eligible offer proves that capability,
+including an empty offer census. In a mixed fleet only cyclic-capable hosts
+contribute phase ceilings or receive the action. Existing linear requests keep
+their previous placement. Publication and worker adoption must precede cyclic
+submission; no existing sealed policy is rewritten.
 
 Item tags must already be a subset of the worker's, so no matcher change is
 needed. During rolling adoption, an old watchdog cannot claim a new action
