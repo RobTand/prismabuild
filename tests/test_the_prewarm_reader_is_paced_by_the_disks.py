@@ -128,11 +128,10 @@ def test_an_interval_with_no_completed_read_reports_no_await() -> None:
     produced.
     """
 
-    disk = FakeDisk(accumulate([
-        dict(reads=0, read_ms=0, io_ticks=0, weighted=0),
-        # Busy with writes: the disk ticks, no read completes.
-        dict(reads=0, read_ms=0, io_ticks=900, weighted=2000),
-    ]))
+    # Busy with writes for the whole interval: the disk ticks, no read
+    # completes.
+    disk = FakeDisk(accumulate([dict(reads=0, read_ms=0, io_ticks=900,
+                                     weighted=2000)]))
     pacer = disk.pacer()
 
     pacer.wait(threading.Event())      # first sample: no interval, no verdict
@@ -178,17 +177,18 @@ def test_a_hold_ends_when_the_reader_is_stopped() -> None:
     budget the next cycle has already re-spent.
     """
 
-    disk = FakeDisk(accumulate([QUIET] + [LOADED] * 50))
+    disk = FakeDisk(accumulate([LOADED] * 50))
     pacer = disk.pacer()
-    pacer.wait(threading.Event())
+    pacer.wait(threading.Event())      # first sample: no interval, no verdict
     disk.tick()
     stop = threading.Event()
     stop.set()
 
     pacer.wait(stop)
 
-    assert disk.slept <= pacer.hold_s, "a set stop must end the hold at once"
-    assert pacer.report()["held_seconds"] > 0.0, "the hold still cost time"
+    assert pacer.report()["holds"] == 1, "the pool was over, so it did hold"
+    assert disk.slept == 0.0, (
+        "a set stop must end the hold before it waits out an interval")
 
 
 def test_the_seconds_held_are_wall_clock_not_a_sum_over_readers() -> None:
@@ -200,7 +200,9 @@ def test_the_seconds_held_are_wall_clock_not_a_sum_over_readers() -> None:
 
     disk = FakeDisk(accumulate([QUIET, LOADED, LOADED, QUIET, QUIET]))
     pacer = disk.pacer()
-    pacer.wait(threading.Event())
+    pacer.wait(threading.Event())      # sample 1: no interval
+    disk.tick()
+    pacer.wait(threading.Event())      # sample 2: quiet
     disk.tick()
 
     threads = [threading.Thread(target=pacer.wait, args=(threading.Event(),))

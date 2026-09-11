@@ -29,8 +29,10 @@ REPO = Path(__file__).resolve().parents[1]
 def test_the_record_carries_the_disk_numbers_beside_the_rate(
         tmp_path: Path) -> None:
     fleet = Fleet(tmp_path)
-    key = fleet.action("row", [fleet.file("a.pt", 1 << 20),
-                               fleet.file("b.pt", 1 << 20)])
+    # Four blocks a file: the reader consults the pacer once per block, and
+    # the loaded interval is the third sample.
+    key = fleet.action("row", [fleet.file("a.pt", 4 << 20),
+                               fleet.file("b.pt", 4 << 20)])
     disk = FakeDisk(accumulate([QUIET, LOADED] + [QUIET] * 40),
                     advance_on_read=True)
     pacer = disk.pacer()
@@ -51,7 +53,7 @@ def test_the_record_carries_the_disk_numbers_beside_the_rate(
     assert pacing["thresholds"]["max_util_pct"] == 40.0
     # Still a receipt for the bytes: pacing adds a price, it does not replace
     # the claim that the bytes are resident.
-    assert record["bytes_warmed"] == record["manifest_bytes"] == 2 << 20
+    assert record["bytes_warmed"] == record["manifest_bytes"] == 8 << 20
 
 
 def test_an_unpaced_host_records_that_pacing_was_off(tmp_path: Path) -> None:
