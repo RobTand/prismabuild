@@ -17,7 +17,6 @@ from prewarm_fixture import Fleet  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool  # noqa: E402
 
-GiB = 1 << 30
 
 
 def test_a_complete_warm_records_the_bytes_and_the_arc_either_side(
@@ -44,26 +43,26 @@ def test_a_complete_warm_records_the_bytes_and_the_arc_either_side(
             "headroom_nominal", "headroom_effective"}
 
 
-def test_a_warm_cut_short_by_the_budget_says_partial(tmp_path: Path) -> None:
+def test_a_warm_that_could_not_read_everything_says_partial(
+        tmp_path: Path) -> None:
     """A prefix is a useful outcome and a dishonest "complete" is not.
 
-    The budget is rechecked while reading because ``c`` moves under the loop's
-    feet -- it fell 99 GB inside one five-minute window on dl380g10 on
-    2026-09-11 -- so a warm that started inside its budget can finish outside
-    it, and the record has to survive that without lying.
+    Bytes can go missing between the submission that priced them and the poll
+    that warms them -- a file truncated, a shard replaced, a budget that ran
+    out mid-read because ``c`` moved.  The record reports what was read, and
+    ``status`` is derived from that rather than asserted, so the done row can
+    never claim residency the loop did not achieve.
     """
 
     fleet = Fleet(tmp_path)
-    key = fleet.action("row", [fleet.file(f"{i}.pt", 1 << 20) for i in range(8)])
-    # Budget covers part of the manifest; the manifest total still fits, so
-    # the row is attempted and then stopped by the reader's own accounting.
-    stats = fleet.arcstats(size=GiB - (9 << 20), c=GiB, c_max=GiB)
-    args = fleet.args(arcstats=stats, readers=1)
+    path, _ = fleet.file("short.pt", 1 << 20)
+    key = fleet.action("row", [fleet.file("whole.pt", 1 << 20), (path, 1 << 20)])
+    Path(path).write_bytes(b"\0" * 4096)
 
-    fleet.cycle(args)
+    fleet.cycle(fleet.args(readers=1))
     record = fleet.queue.prewarm(key)
-    assert record["manifest_bytes"] == 8 << 20
-    assert record["bytes_warmed"] < record["manifest_bytes"]
+    assert record["manifest_bytes"] == 2 << 20
+    assert record["bytes_warmed"] == (1 << 20) + 4096
     assert record["status"] == "partial"
 
 

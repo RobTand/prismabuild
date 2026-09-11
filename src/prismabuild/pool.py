@@ -6633,7 +6633,11 @@ class PoolQueue:
             attempt=attempts,
             status=status,
             disposition=disposition,
-            detail=detail,
+            # The merged detail, not the caller's: the attempt archive is the
+            # immutable evidence and ``adopted_attempt_summary`` reads the
+            # terminal's ``detail`` back out of it, so a receipt added only to
+            # the record is overwritten two statements below.
+            detail=finished_detail,
         )
         adopted = self.adopted_attempt_summary(record)
         record.update(

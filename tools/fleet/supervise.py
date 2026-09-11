@@ -515,8 +515,7 @@ def _is_fleet_loop(pid: int, roots: list[Path],
     return False
 
 
-def _live_loops(proc_root: Path | None = None,
-                script_name: str = LOOP_SCRIPT) -> list[int]:
+def _live_loops(proc_root: Path | None = None) -> list[int]:
     """The worker loops this supervisor owns, not the processes that mention one.
 
     ``pgrep`` is a candidate generator and nothing more.  Over-counting is the
@@ -526,7 +525,7 @@ def _live_loops(proc_root: Path | None = None,
     ``pgrep`` matched on.
     """
 
-    proc = subprocess.run(["pgrep", "-f", script_name],
+    proc = subprocess.run(["pgrep", "-f", LOOP_SCRIPT],
                           capture_output=True, text=True, check=False)
     mine = os.getpid()
     roots = _proven_roots()
@@ -535,7 +534,7 @@ def _live_loops(proc_root: Path | None = None,
         pid = int(token)
         if pid == mine:
             continue
-        if _is_fleet_loop(pid, roots, proc_root, script_name):
+        if _is_fleet_loop(pid, roots, proc_root):
             confirmed.append(pid)
     return confirmed
 
@@ -778,6 +777,24 @@ def _spawn(args: list[str], index: int) -> int:
     return proc.pid
 
 
+def _live_role_loops(script_name: str) -> list[int]:
+    """This box's live children for one role script.
+
+    Its own census rather than ``_live_loops`` with an argument, because a
+    role loop is not a worker loop in any sense the sizing law cares about:
+    it claims nothing, and counting one as a poller would make the box look
+    busier than it is.  The three facts proved are the same three
+    ``_is_fleet_loop`` proves.
+    """
+
+    proc = subprocess.run(["pgrep", "-f", script_name],
+                          capture_output=True, text=True, check=False)
+    mine = os.getpid()
+    roots = _proven_roots()
+    return [pid for pid in (int(t) for t in proc.stdout.split())
+            if pid != mine and _is_fleet_loop(pid, roots, None, script_name)]
+
+
 def _spawn_role(role: str, args: list[str]) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     handle = (LOG_DIR / f"pb-role-{role}.log").open("a", buffering=1)
@@ -803,7 +820,7 @@ def ensure_roles(host: str) -> list[tuple[str, int]]:
 
     started: list[tuple[str, int]] = []
     for role, role_args in declared_roles(host):
-        if _live_loops(script_name=ROLE_SCRIPTS[role]):
+        if _live_role_loops(ROLE_SCRIPTS[role]):
             continue
         try:
             started.append((role, _spawn_role(role, role_args)))

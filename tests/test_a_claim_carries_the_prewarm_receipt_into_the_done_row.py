@@ -56,12 +56,12 @@ def test_the_receipt_reaches_the_claim_and_then_the_done_row(
     assert claimed["prewarm"]["bytes_warmed"] == 63786036448
     assert claimed["prewarm"]["schema"] == pool.POOL_PREWARM_SCHEMA_V1
 
-    queue.finish(KEY, status="succeeded", detail={"status": "succeeded"},
+    queue.finish(KEY, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
     done = pool._read_json(queue.item_path(pool.DONE, KEY))
     assert done["detail"]["prewarm"]["bytes_warmed"] == 63786036448
     assert done["detail"]["prewarm"]["status"] == "complete"
-    assert done["detail"]["status"] == "succeeded"
+    assert done["detail"]["status"] == "executed"
 
 
 def test_an_action_nobody_warmed_carries_no_prewarm_key(
@@ -78,7 +78,7 @@ def test_an_action_nobody_warmed_carries_no_prewarm_key(
     assert claimed is not None
     assert "prewarm" not in claimed
 
-    queue.finish(OTHER, status="succeeded", detail={"status": "succeeded"},
+    queue.finish(OTHER, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
     done = pool._read_json(queue.item_path(pool.DONE, OTHER))
     assert "prewarm" not in done["detail"]
@@ -89,8 +89,8 @@ def test_a_workers_own_measurement_outranks_the_loops_prediction(
     _publish(queue, KEY)
     _warm(queue, KEY)
     claimed = queue.claim()
-    queue.finish(KEY, status="succeeded",
-                 detail={"status": "succeeded",
+    queue.finish(KEY, status="executed",
+                 detail={"status": "executed",
                          "prewarm": {"measured_by": "the worker"}},
                  claim_snapshot=claimed)
     done = pool._read_json(queue.item_path(pool.DONE, KEY))

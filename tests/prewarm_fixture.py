@@ -84,7 +84,10 @@ class Fleet:
         return action_key
 
     def arcstats(self, *, size: int, c: int, c_max: int) -> str:
-        path = self.root / "arcstats"
+        # One file per set of counters, never one file rewritten: a fixture
+        # that clobbers the counters a test already installed reads as the
+        # loop ignoring them.
+        path = self.root / f"arcstats-{size}-{c}-{c_max}"
         path.write_text(
             "name type data\n"
             f"size 4 {size}\nc 4 {c}\nc_max 4 {c_max}\n")
@@ -96,7 +99,8 @@ class Fleet:
             mount_map=[f"{self.mount}={self.mount}"], readers=2, lookahead=2,
             poll_s=0.0, arc_reserve_fraction=1.0,
             arcstats=self.arcstats(size=0, c=1 << 40, c_max=1 << 40),
-            claim_grace_min=20.0, once=True, dry_run=False, log=None)
+            claim_grace_min=20.0, once=True, dry_run=False, log=None,
+            min_manifest_bytes=0)
         base.update(overrides)
         return argparse.Namespace(**base)
 

@@ -64,6 +64,8 @@
       "_roles_why": "dl380g10 is the file server: /mnt/shared is a local ZFS dataset here, also mounted at /storage_pool/shared. The storage role runs one prewarm_loop.py, which reads ready/ in claim order and pulls the bytes a data-manifest-carrying action declares into the ARC before anybody claims it (#487). It claims nothing and holds no lease, so it sits outside the worker sizing law; with no manifest-carrying action in the queue it does nothing at all.",
       "roles": {
         "storage": [
+          "--mount-map",
+          "/mnt/shared=/storage_pool/shared",
           "--readers",
           "8",
           "--lookahead",

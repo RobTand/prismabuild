@@ -67,7 +67,6 @@ from prismabuild import pool  # noqa: E402
 #: 1 MiB records; a smaller block only costs syscalls.
 BLOCK = 1 << 20
 ARCSTATS = "/proc/spl/kstat/zfs/arcstats"
-DEFAULT_MOUNT_MAP = ("/mnt/shared=/storage_pool/shared",)
 
 
 # ------------------------------------------------------------------ ARC
@@ -387,12 +386,25 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event) 
         if manifest is None:
             event["skipped"].append({"action_key": key, "reason": "unreadable manifest"})
             continue
+        total = int(manifest["total_bytes"])
+        if total < args.min_manifest_bytes:
+            # A trivial action is not worth a warm window. On the GLM census
+            # only 42 of 132 rows are 864-unit expert rows; the other 90 carry
+            # one or two units and load in about 0.3 s, so warming one spends
+            # the lookahead on a row that was never going to wait for a disk.
+            # Skipping without consuming ``taken`` keeps a run of trivial rows
+            # from disabling prewarm for the real row behind them.
+            event["skipped"].append({
+                "action_key": key, "reason": "below the warm threshold",
+                "manifest_bytes": total,
+                "min_manifest_bytes": args.min_manifest_bytes,
+            })
+            continue
         taken += 1
         digest = str(entry["sha256"])
         if already_warm(queue, key, digest):
             event["skipped"].append({"action_key": key, "reason": "already warm"})
             continue
-        total = int(manifest["total_bytes"])
         if total > budget:
             # Refusing is the correct outcome, not a failure: warming a row
             # that does not fit would evict the row that is running to make
@@ -452,19 +464,32 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--pool-root", default=str(pool.DEFAULT_POOL_ROOT))
+    parser.add_argument("--pool-root", default=str(pool.DEFAULT_POOL_ROOT),
+                        help="the queue whose ready list to read")
     parser.add_argument("--cas-root", default=None,
                         help="fallback CAS root; each ready item names its own")
-    parser.add_argument("--mount-map", action="append", default=None,
-                        help="SHARED=LOCAL, repeatable; default "
-                             f"{DEFAULT_MOUNT_MAP[0]}")
+    parser.add_argument("--mount-map", action="append", required=True,
+                        help="SHARED=LOCAL, repeatable: rewrite a manifest's "
+                             "shared-mount path onto this host's local mount "
+                             "(e.g. /mnt/shared=/storage_pool/shared). "
+                             "Required and never defaulted -- which mount a "
+                             "box serves is host configuration, and a wrong "
+                             "guess reads the network instead of the disks")
     parser.add_argument("--readers", type=int, default=8,
                         help="parallel readers; 8 measured 391.9 MB/s on the "
                              "GLM census pool, 1 measured 298.9")
     parser.add_argument("--lookahead", type=int, default=2,
                         help="how many ready actions ahead to warm")
-    parser.add_argument("--poll-s", type=float, default=10.0)
-    parser.add_argument("--arc-reserve-fraction", type=float, default=0.8)
+    parser.add_argument("--min-manifest-bytes", type=int, default=1 << 30,
+                        help="a manifest smaller than this is passed over "
+                             "without consuming the lookahead: a row that "
+                             "loads in well under a second cannot be made "
+                             "faster by warming it, and spending the window "
+                             "on one costs the row behind it")
+    parser.add_argument("--poll-s", type=float, default=10.0,
+                        help="seconds between polls of the ready list")
+    parser.add_argument("--arc-reserve-fraction", type=float, default=0.8,
+                        help="fraction of (c_max - size) this loop may spend, leaving the rest as slack for the rest of the box")
     parser.add_argument("--arcstats", default=ARCSTATS,
                         help="where the ARC counters live; a host without "
                              "this file reports zero headroom and warms "
@@ -472,14 +497,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--claim-grace-min", type=float, default=20.0,
                         help="a claim younger than this still counts its "
                              "manifest bytes against the prewarm budget")
-    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--once", action="store_true",
+                        help="run one cycle and exit")
     parser.add_argument("--dry-run", action="store_true",
                         help="decide and report; read nothing, write nothing")
     parser.add_argument("--log", default=None,
                         help="append one JSON object per cycle here")
     args = parser.parse_args(argv)
 
-    mounts = MountMap(list(args.mount_map or DEFAULT_MOUNT_MAP))
+    mounts = MountMap(list(args.mount_map))
     if not args.dry_run and not mounts.usable():
         raise SystemExit(
             "prewarm: no local mount from --mount-map exists on this host; "
