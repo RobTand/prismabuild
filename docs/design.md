@@ -1650,6 +1650,11 @@ action: the worker's ceiling is applied to each phase's `grace_s` rather than
 to total duration, and total duration is bounded only by an explicitly sealed
 `execution_timeout_s`.
 
+`pbrun --progress-phase NAME=SECONDS` and its explicit alias
+`--progress NAME=SECONDS` append the same ordered phase declarations. Both
+require the caller to choose the allowance; neither adds an implicit phase
+or total-duration deadline.
+
 The channel is `claimed/<key>.progress`, named to the action through
 `PRISMABUILD_ACTION_PROGRESS_PATH` with a per-launch token in
 `PRISMABUILD_ACTION_PROGRESS_TOKEN`. Both are forwarded into the action's own

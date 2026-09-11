@@ -80,6 +80,10 @@ a live process do not count as advancement -- the receipt's
 `progress_observation` says what was rejected and when the action last
 actually advanced (RobTand/prismabuild#480).
 
+`--progress NAME=SECONDS` is an explicit alias for `--progress-phase`;
+repeat it for each phase. Both spellings require a caller-selected stall
+allowance and seal the same policy.
+
 ### Emit committed units from any loop longer than a few minutes
 
 Declaring phases is half the contract; the action still has to say it is

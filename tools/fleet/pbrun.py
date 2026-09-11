@@ -3866,7 +3866,7 @@ def main() -> int:
                          "(7200 s by default, announced per box and reported "
                          "here when it would cut this request short) also "
                          "applies. Queue waiting is bounded by --wait-s")
-    ap.add_argument("--progress-phase", action="append", default=None,
+    ap.add_argument("--progress-phase", "--progress", action="append", default=None,
                     metavar="NAME=SECONDS",
                     help="declare one phase of this action and the quiet it is "
                          "allowed in it, in order, once per phase. Declaring "

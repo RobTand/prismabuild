@@ -77,3 +77,10 @@ def test_priority_says_what_it_is_and_what_each_transport_does_with_it(
     assert "before age" in priority
     assert "--nice" in priority
     assert "outranks submission order" in priority
+
+
+def test_progress_names_both_supported_spellings_and_the_required_allowance(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    text = _help(monkeypatch, capsys)
+    assert "--progress-phase NAME=SECONDS, --progress NAME=SECONDS" in text

@@ -759,8 +759,9 @@ execution time is never reset, and waits for the payload still consume the
 remaining budget. This does not detect or discount kernel stalls inside a
 payload or a blocked subprocess wait, and does not bound checkpoint I/O itself.
 
-A submission that declares `--progress-phase NAME=SECONDS` (repeatable, in the
-order the work does them) is bounded instead by how long it goes without
+A submission that declares `--progress-phase NAME=SECONDS` (also spelled
+`--progress NAME=SECONDS`, repeatable in the order the work does them) is
+bounded instead by how long it goes without
 committing work. The worker's ceiling clamps each phase's allowance rather
 than the whole run, and the receipt reports both -- `worker_timeout_ceiling_s`
 is what the box would cut at, `progress_stall_ceiling_s` and the per-phase

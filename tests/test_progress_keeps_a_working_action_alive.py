@@ -568,8 +568,9 @@ def test_a_campaign_row_cannot_carry_phases_to_slurm():
             index=3, transport="pool")
 
 
+@pytest.mark.parametrize("progress_option", ["--progress-phase", "--progress"])
 def test_a_progress_submission_seals_the_capability_it_needs(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, progress_option
 ):
     """End to end: the flag reaches the queue item as a placement requirement."""
 
@@ -587,8 +588,8 @@ def test_a_progress_submission_seals_the_capability_it_needs(
     )
     assert _run_pbrun(
         tmp_path, monkeypatch, work,
-        "--detach", "--progress-phase", "startup=1800",
-        "--progress-phase", "run=900",
+        "--detach", progress_option, "startup=1800",
+        progress_option, "run=900",
     ) == 0
 
     captured = capsys.readouterr()
