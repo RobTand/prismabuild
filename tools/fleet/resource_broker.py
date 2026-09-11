@@ -213,6 +213,9 @@ class Authority:
     def _private_maintenance_parent(self):
         parent=self.maintenance_state_path.parent
         parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        upper=os.open(parent.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(upper)
+        finally:os.close(upper)
         info=parent.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid()
                 or info.st_mode&0o077):
@@ -282,7 +285,12 @@ class Authority:
             try:self.maintenance=self._maintenance_value(self.maintenance_path)
             except FileNotFoundError:pass
             return
-        self._private_maintenance_parent()
+        try:self._private_maintenance_parent()
+        except (OSError,ValueError) as exc:
+            self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True}
+            self.maintenance_error='durable maintenance parent is unavailable: '+str(exc)[:1200]
+            self._force_volatile_gate_closed()
+            return
         try:
             evidence=self._maintenance_evidence()
         except FileNotFoundError:
@@ -309,15 +317,21 @@ class Authority:
                     self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True}
                     self.maintenance_error='volatile maintenance gate is unreadable: '+str(exc)[:1200]
                 else:
-                    self._write_maintenance_evidence()
-                    _atomic(self.maintenance_state_path,legacy,mode=0o600)
-                    self.maintenance=legacy
+                    try:
+                        self._write_maintenance_evidence()
+                        _atomic(self.maintenance_state_path,legacy,mode=0o600)
+                    except OSError as exc:
+                        self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True}
+                        self.maintenance_error='durable maintenance migration failed: '+str(exc)[:1200]
+                        self._force_volatile_gate_closed()
+                    else:self.maintenance=legacy
         except (OSError,ValueError,json.JSONDecodeError) as exc:
             self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True}
             self.maintenance_error='durable maintenance state is unreadable: '+str(exc)[:1200]
         try:self._sync_maintenance_gate()
         except OSError as exc:
             closed=self._force_volatile_gate_closed()
+            self.maintenance['draining']=True
             self.maintenance_error=(self.maintenance_error or closed or
                 'volatile maintenance gate could not be restored: '+str(exc)[:1200])
     @staticmethod
@@ -374,7 +388,7 @@ class Authority:
                 budget=request.get('memory_max_bytes')
                 if type(budget) is not int or not 0<budget<=self.max_memory_bytes:raise ValueError('memory budget outside host bounds')
                 existing=self.records.get(scope)
-                if self.maintenance['draining'] and (existing is None or existing.get('pending')):
+                if (self.maintenance['draining'] or self.maintenance_error) and (existing is None or existing.get('pending')):
                     return {'ok':False,'maintenance':True,'retryable':True,
                             'error':'resource broker is draining for maintenance'}
                 if existing:
@@ -533,6 +547,7 @@ class Authority:
                 try:self._sync_maintenance_gate(value)
                 except OSError:
                     self.maintenance_error='durable maintenance release committed but volatile gate remains closed'
+                    self._force_volatile_gate_closed()
                     raise
                 self.maintenance=value;self.maintenance_error=None
                 status['draining']=False;status.pop('maintenance_owner',None)
@@ -870,8 +885,15 @@ def main():
         info=state.parent.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077):
             raise SystemExit('maintenance state directory must be private and root-owned')
-        if state.exists() or evidence.exists():
-            raise SystemExit('persistent maintenance authority is already initialized')
+        for path in (state,evidence):
+            try:path.lstat()
+            except FileNotFoundError:continue
+            else:raise SystemExit('persistent maintenance authority is already initialized')
+        legacy=Path(args.state_dir).parent/'maintenance.json'
+        try:legacy.lstat()
+        except FileNotFoundError:pass
+        else:
+            raise SystemExit('legacy maintenance gate exists; start broker to migrate or reject it')
         _atomic(evidence,{'schema':MAINTENANCE_EVIDENCE_SCHEMA,'initialized_unix':time.time()},mode=0o600)
         _atomic(state,{'schema':MAINTENANCE_SCHEMA,'draining':False,'changed_unix':time.time(),
                        'reason':'explicit initial installation'},mode=0o600)

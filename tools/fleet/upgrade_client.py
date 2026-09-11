@@ -71,6 +71,7 @@ MAX_EXPORT = 32 * 1024 * 1024
 MAX_MARKER = 64 * 1024
 CLIENT_UPGRADE_PROTOCOL = 2
 MAINTENANCE_DURABLE_PROTOCOL = 1
+CLIENT_UPGRADE_DURABLE_PROTOCOL = 1
 #: Where the fleet records a rollout, beside the generation store rather than
 #: inside it: a sealed generation is immutable, and these files are written
 #: while one is being replaced.
@@ -839,11 +840,14 @@ class Upgrader:
         # admission; the installed updater is the downgrade fence after its
         # bridge generation has converged.
         durable_marker = rb'(?m)^MAINTENANCE_DURABLE_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
+        updater_marker = rb'(?m)^CLIENT_UPGRADE_DURABLE_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
         if re.search(durable_marker, (self.install / 'resource_broker.py').read_bytes()) is not None:
             running = self.call('status')
-            if running.get('maintenance_durable_protocol', 0) >= MAINTENANCE_DURABLE_PROTOCOL:
-                if re.search(durable_marker, blobs['resource_broker.py']) is None:
-                    raise ValueError('durable maintenance broker refuses downgrade to a non-durable candidate')
+            if running.get('maintenance_durable_protocol') != MAINTENANCE_DURABLE_PROTOCOL:
+                raise ValueError('durable maintenance broker capability is missing or stale')
+            if (re.search(durable_marker, blobs['resource_broker.py']) is None
+                    or re.search(updater_marker, blobs['upgrade_client.py']) is None):
+                raise ValueError('durable maintenance broker refuses non-durable candidate')
         # Keep an explicit union so additions and removals both carry their
         # previous existence through failures and process restarts.
         names = sorted(set(installed) | set(version['files']))
