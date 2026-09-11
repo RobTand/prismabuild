@@ -2521,6 +2521,16 @@ offer reading `stale` in between and nothing reporting it. `Restart=always`
 with `RestartSec=30` makes that a thirty-second gap, and boot start makes it
 seconds.
 
+Worker startup is separate from admission readiness. A missing
+`/run/prismabuild/maintenance.json` parks both loop and one-shot workers. The
+root client updater initializes an explicit open gate after verifying current
+installed clients, matching healthy broker bytes and zero active scopes. Check
+`/var/lib/prismabuild-client-upgrade/status.json` when a booted supervisor is
+running but its workers remain parked; do not remove a gate to resume work.
+Deploy the paired worker/updater change and verify both versions fleet-wide.
+The gate remains volatile, so this does not preserve a named drain across a
+host reboot or qualify a synchronized rollout; #458 still owns those requirements.
+
 Two directives are load-bearing and neither is a default:
 
 - `KillMode=process`. Worker loops are spawned by the supervisor and land in

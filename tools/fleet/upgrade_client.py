@@ -792,6 +792,19 @@ class Upgrader:
             status = self.call('status')
             if status.get('health') is not True or not self.loaded_matches(status):
                 raise RuntimeError('installed files match publication but running broker is unhealthy or stale')
+            if status.get('draining') is not True:
+                try:
+                    self.gate.lstat()
+                except FileNotFoundError:
+                    # /run disappears at boot. A broker with no gate starts
+                    # in-memory open, while workers now wait for an explicit
+                    # open gate. Reuse the owned drain/health handshake; never
+                    # turn an unavailable read into permission to initialize.
+                    status = self.open_drain()
+                    if status.get('draining') is not True:
+                        raise RuntimeError('broker failed to close admission for gate initialization')
+                    if status.get('health') is not True or not self.loaded_matches(status):
+                        raise RuntimeError('broker became unhealthy or stale during gate initialization')
             if status.get('draining') is True:
                 # Nothing here needs this host stopped, so release only a drain
                 # this agent is named on. An operator's stop, and any drain this
@@ -799,14 +812,20 @@ class Upgrader:
                 # host already current: that release is the defect this path had.
                 # A broker without holders cannot say whose drain this is, and
                 # released it here before holders existed.
-                if status.get('maintenance_protocol', 1) < 2:
-                    self.call('end')
-                elif status.get('maintenance_owner') == MAINTENANCE_OWNER:
-                    self.close_drain(status)
-                else:
+                if (status.get('maintenance_protocol', 1) >= 2
+                        and status.get('maintenance_owner') != MAINTENANCE_OWNER):
                     return self.report('held', desired=version, installed=installed,
                                        drain_owner=status.get('maintenance_owner'),
                                        **self.drain_evidence(status))
+                if type(status.get('active_scopes')) is not int or status['active_scopes'] != 0:
+                    return self.report('draining', desired=version, installed=installed,
+                                       **self.drain_evidence(status))
+                reopened = self.close_drain(status)
+                if reopened.get('draining') is not False:
+                    raise RuntimeError('broker did not reopen admission')
+            gate = json.loads(bounded_read(self.gate, MAX_MARKER))
+            if not isinstance(gate, dict) or gate.get('draining') is not False:
+                raise RuntimeError('maintenance gate is not explicitly open')
             return self.report('current', desired=version, installed=installed)
         # Keep an explicit union so additions and removals both carry their
         # previous existence through failures and process restarts.

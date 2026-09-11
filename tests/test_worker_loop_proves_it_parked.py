@@ -55,10 +55,9 @@ def _worker_loop(gate: Path):
     return module
 
 
-#: Every gate shape the loop can meet, with the verdict it has had since the
-#: gate was introduced.  These are the cases whose answers may not move.
+#: A boot has not initialized admission until an explicit open gate exists.
 GATES = [
-    ("absent", None, True, False),
+    ("absent", None, True, True),
     ("draining", {"draining": True, "changed_unix": 1788947072.5}, False, True),
     ("open", {"draining": False, "changed_unix": 1788947072.5}, False, False),
     ("draining is a string", {"draining": "yes"}, False, True),
@@ -70,8 +69,8 @@ GATES = [
 
 @pytest.mark.parametrize("name,value,absent,draining",
                          GATES, ids=[case[0] for case in GATES])
-def test_the_gate_verdict_did_not_move(tmp_path, name, value, absent, draining):
-    """Splitting the read out of the verdict left every answer where it was."""
+def test_gate_shapes_require_explicit_admission(tmp_path, name, value, absent, draining):
+    """Missing and unreadable evidence cannot open admission."""
 
     gate = tmp_path / "maintenance.json"
     if not absent:
@@ -80,6 +79,14 @@ def test_the_gate_verdict_did_not_move(tmp_path, name, value, absent, draining):
 
     assert loop.maintenance_requested() is draining, name
     assert (loop.read_maintenance_gate() is not None) is draining, name
+
+
+def test_a_lost_gate_does_not_reopen_a_restarted_worker(tmp_path):
+    gate = tmp_path / 'maintenance.json'
+    gate.write_text(json.dumps({'draining': True, 'changed_unix': 458.0}))
+    assert _worker_loop(gate).maintenance_requested()
+    gate.unlink()
+    assert _worker_loop(gate).maintenance_requested()
 
 
 def test_an_open_gate_reads_as_no_gate_at_all(tmp_path):

@@ -14,12 +14,15 @@ import pytest
     ('{}', "unknown", True),
     ('{broken', "unknown", True),
     (None, "unknown", True),  # read_text on a directory raises OSError
+    ('absent', "unknown", True),
     ('{"draining": true, "changed_unix": 100.5}', "100.5", False),
 ])
 def test_park_precedes_sleep_and_queue_access(tmp_path, monkeypatch,
                                              contents, stamp, make_root):
     gate = tmp_path / "maintenance.json"
-    if contents is None:
+    if contents == 'absent':
+        pass
+    elif contents is None:
         gate.mkdir()
     else:
         gate.write_text(contents)

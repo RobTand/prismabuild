@@ -65,8 +65,12 @@ def setup(tmp_path):
     (generation / 'RUNTIME_VERSION.json').write_text(json.dumps({
         'schema': 'prismaquant.prismabuild.runtime_version.v1',
         'generation': generation.name, 'commit': 'a' * 40, 'files': files}))
+    gate = tmp_path / 'run' / 'maintenance.json'
+    gate.parent.mkdir()
+    gate.write_text(json.dumps({'draining': False}))
     config = dict(runtime=str(generation), generation_store=str(store),
-                  install_dir=str(install), state_dir=str(state))
+                  install_dir=str(install), state_dir=str(state),
+                  maintenance_gate=str(gate))
     backend = FakeBroker()
 
     def rpc(endpoint, op, **fields):
@@ -86,6 +90,9 @@ def setup(tmp_path):
                 # Beginning a drain that is already open changes nothing, so
                 # the holder recorded first is the holder this keeps.
                 backend.holder = owner
+            gate.write_text(json.dumps({'draining': backend.draining,
+                                        'changed_unix': 458.0,
+                                        'owner': backend.holder}))
         held = ({'maintenance_owner': backend.holder}
                 if backend.protocol >= 2 and backend.holder is not None else {})
         version = {'maintenance_protocol': backend.protocol} if backend.protocol >= 2 else {}

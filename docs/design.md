@@ -1914,9 +1914,18 @@ activation requires its own explicit choice and reason, including for a legacy
 receipt without a rollout declaration. A reason is a reviewable compatibility
 claim, not proof or an override of the publication window. Historical attestations
 still grant no current participation, and there is no supported synchronized
-activation. In particular, reboot removes the local `/run` gate before the
-updater's first tick; future epoch readiness must cover admission in that interval
-before durable host markers can be used as a quorum.
+activation. Workers, including the one-shot entrypoint, refuse admission when
+the local `/run` gate is missing. After boot the updater initializes that gate
+through the broker's owned drain/release operations only after desired and
+installed clients match, the running broker's hashes and health agree, and no
+active scopes remain. An existing owned drain also waits for zero scopes on
+later current-client ticks; another holder's drain stays held. Unavailable gate
+reads are not absence, and `current` requires an explicit open gate readback.
+This fences the interval before the updater initializes admission. It does
+not persist a named hold or epoch across reboot: `/run` still loses that state,
+and an upgraded host can reopen after its own checks while peers remain old.
+Durable hold recovery, fresh epoch participation, and both fleet quorums remain
+required before durable host markers can authorize a coordinated rollout.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not
