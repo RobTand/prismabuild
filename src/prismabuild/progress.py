@@ -232,6 +232,19 @@ def _write(path: Path, record: dict[str, object]) -> bool:
     return True
 
 
+def _count(text: str) -> int | float:
+    """``--units 37`` is thirty-seven things, not 37.0 of them.
+
+    Integers first, because the worker keeps an integer count exact past
+    2**53 and parsing through a float would quietly stop being able to.
+    """
+
+    try:
+        return int(text)
+    except ValueError:
+        return float(text)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Commit from a shell, or from any language that can run a process.
 
@@ -244,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
     """
 
     parser = argparse.ArgumentParser(description="Report committed units to PrismaBuild.")
-    parser.add_argument("--units", type=float, required=True,
+    parser.add_argument("--units", type=_count, required=True,
                         help="cumulative units durably committed so far")
     parser.add_argument("--phase", default=None,
                         help="which declared phase they belong to "
@@ -254,13 +267,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-channel", action="store_true",
                         help="exit 1 when this action has no progress channel")
     args = parser.parse_args(argv)
-    units: float = args.units
-    if units.is_integer():
-        # ``--units 37`` is thirty-seven things, not 37.0 of them, and the
-        # worker keeps integer counts exact past 2**53.
-        units = int(units)
     try:
-        written = commit(units, args.phase, unit=args.unit)
+        written = commit(args.units, args.phase, unit=args.unit)
     except ValueError as exc:
         print(f"prismabuild.progress: {exc}", file=sys.stderr)
         return 2

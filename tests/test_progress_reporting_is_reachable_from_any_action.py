@@ -219,6 +219,19 @@ def test_running_the_helper_as_a_program_reports(channel):
     assert watch.last_accepted["unit"] == "widgets"
 
 
+def test_the_program_keeps_a_whole_count_exact(channel):
+    """A shell loop past 2**53 units is the same count the package writes."""
+
+    big = 2 ** 53 + 1
+    assert subprocess.run(
+        [sys.executable, os.environ[pb.ACTION_PROGRESS_HELPER_ENV],
+         "--phase", "run", "--units", str(big)],
+        capture_output=True, text=True, check=False).returncode == 0
+    watch = _watch(channel, "tok")
+    assert watch.sample(now=1.0) is True
+    assert watch.last_accepted["units_completed"] == big
+
+
 def test_the_program_says_nothing_and_succeeds_without_a_channel(monkeypatch):
     for name in pb.ACTION_PROGRESS_ENV:
         monkeypatch.delenv(name, raising=False)
