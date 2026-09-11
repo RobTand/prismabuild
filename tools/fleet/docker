@@ -534,6 +534,17 @@ def main() -> int:
                               what="global")
         sub = [] if command is None else argv[command:]
         unowned = _starts_unowned_container(sub)
+        if os.environ.get("PRISMABUILD_PROFILE_NSYS") == "1" and (
+                _creation_index(sub) is not None or unowned
+                or sub[:1] == ["exec"] or sub[:2] == ["container", "exec"]):
+            raise Refused(
+                "--profile nsys cannot trace CUDA work launched by the Docker "
+                "daemon; container execution is refused before contacting it. "
+                "Run the CUDA workload as a native child under --profile nsys, "
+                "or omit that mode and explicitly instrument inside the "
+                "admitted container (for PyTorch, use --profile torch and "
+                "forward/mount PRISMABUILD_PROFILE_TORCH_OUT). Keep using "
+                "PB's Docker shim for resource scope and CPU affinity.")
     except Refused as refusal:
         sys.stderr.write(f"docker shim: {refusal}\n")
         return 125

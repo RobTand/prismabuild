@@ -5320,6 +5320,12 @@ class NsysProfileBackend:
                 "seal one with --env TMPDIR=/home/rob/tmp."
             )
 
+    def environment(self, *, profile_path: Path) -> dict[str, str]:
+        # The daemon's container process is not a descendant of this Nsys
+        # launcher. Carry the guard through arbitrary shell/Python launchers
+        # to the Docker shim, which can refuse before starting untraced work.
+        return {"PRISMABUILD_PROFILE_NSYS": "1"}
+
     def _report_base(self, profile_path: Path) -> Path:
         # ``-o`` names the report without its suffix, and nsys appends
         # ``.nsys-rep`` itself.
@@ -5706,9 +5712,9 @@ class _ProfileSession:
     def environment(self, sealed: Mapping[str, str]) -> dict[str, str]:
         """Variables this mode adds to the action's own environment.
 
-        Only the torch contract needs one, and it needs one by construction:
-        an in-process profiler cannot be told where to write by an argv it is
-        not in.  A variable the action already seals is a refusal rather than
+        The torch contract names its output; Nsys marks the launch so the
+        Docker shim can refuse an unsupported profiling route. A variable
+        the action already seals is a refusal rather than
         an overwrite -- silently replacing it would change what the action
         does under a diagnostic flag, which is the one thing this tier must
         not do.

@@ -700,6 +700,19 @@ matters). Rules:
   before the flag existed. The blob itself is content-addressed like any
   payload and referenced from the pool's ending, never from the CAS receipt,
   whose v3 key set is an immutable interpretation domain.
+- **Native Nsys does not trace Docker daemon children** — `nsys` and its
+  windowed form add `PRISMABUILD_PROFILE_NSYS=1` to the launched environment.
+  A sealed value for that variable refuses rather than being overwritten.
+  The action's Docker shim refuses run/create/exec and start/compose-start
+  forms before contacting the daemon, including calls nested in launch scripts
+  and calls using Docker global options. Metadata reads remain available.
+  This is an early refusal of an unsupported profiling route, not transparent
+  container instrumentation. A native CUDA child or explicit instrumentation
+  inside the admitted container is required. Callers retain the shim and its
+  resource scope/CPU affinity contract; clearing the guard or bypassing the
+  shim is unsupported. Existing reports retain `kernel_summary_absent` when
+  no completed kernel evidence was collected. Existing sealed requests and
+  running old generations are not rewritten by publication.
 - **An in-process profiler is a contract, not a monkeypatch** — `torch.profiler`
   cannot be started from outside the process it profiles, so `--profile torch`
   names a path in an environment variable and validates what the action wrote
