@@ -301,14 +301,20 @@ def test_an_action_that_cannot_import_prismabuild_outlives_the_ceiling(tmp_path)
     The fixture has no access to the package: it reads the helper's location
     out of its own environment, runs it, and is kept alive by what it commits
     -- past a ceiling that would have killed it four times over.
+
+    The clamp is seconds rather than the fractions the #481 tests use, and
+    deliberately: this action pays for a real interpreter start and a
+    ``runpy`` of the helper before its first commit, and it runs on a test box
+    that is busy with eleven other shards.  A clamp tight enough to be
+    startup-sensitive would fail for a reason that is not the contract.
     """
 
-    queue, item = _claimed(tmp_path, mode="helper", seconds=1.2,
+    queue, item = _claimed(tmp_path, mode="helper", seconds=8.0,
                            policy=_policy(60, 60, 60), source=HELPER_REPORTER)
-    outcome = queue.execute(item, timeout_s=0.3, heartbeat_s=0.05,
+    outcome = queue.execute(item, timeout_s=2.0, heartbeat_s=0.05,
                             timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome.get("stderr")
-    assert outcome["elapsed_s"] > 1.0
+    assert outcome["elapsed_s"] > 6.0
     assert outcome["execution_governed_by"] == "progress"
     observed = outcome["progress_observation"]
     assert observed["accepted_count"] >= 5
@@ -323,16 +329,19 @@ def test_an_action_that_cannot_import_prismabuild_outlives_the_ceiling(tmp_path)
 def test_an_action_that_reports_the_easy_way_still_dies_when_it_stops(tmp_path):
     """The other half: the helper buys time for work, not for being alive."""
 
-    queue, item = _claimed(tmp_path, mode="helper-stall", seconds=30,
-                           policy=_policy(0.6, 60, 60), source=HELPER_REPORTER)
-    outcome = queue.execute(item, timeout_s=60, heartbeat_s=0.05,
+    queue, item = _claimed(tmp_path, mode="helper-stall", seconds=120,
+                           policy=_policy(3.0, 60, 60), source=HELPER_REPORTER)
+    outcome = queue.execute(item, timeout_s=600, heartbeat_s=0.05,
                             timeout_grace_s=0.2)
     assert outcome["status"] == "timeout"
     assert outcome["termination_reason"] == "no_progress"
-    assert outcome["elapsed_s"] < 10
+    # Two minutes of declared work, no total-duration limit worth the name,
+    # and it is gone in single-digit seconds: the allowance it stopped
+    # advancing in is the whole bound.
+    assert outcome["elapsed_s"] < 30
     observed = outcome["progress_observation"]
     assert observed["last_accepted"]["units_completed"] == 3
-    assert observed["quiet_s"] >= 0.6
+    assert observed["quiet_s"] >= 3.0
 
 
 def test_the_worker_tells_a_declaring_action_where_the_helper_is(tmp_path):
