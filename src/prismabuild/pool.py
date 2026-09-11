@@ -102,8 +102,9 @@ answer is empty before releasing capacity.  A remote host, a busy creation
 transaction or a Docker error keeps the claim and tokens: uncertainty is not
 permission to schedule a second action onto the same GPU.
 
-Clock skew between claimant and reaper is real but immaterial here: both Sparks
-are NTP-synchronised and measured 1.2-2.5 ms apart against a 300 s lease.
+Offer readers tolerate bounded cross-host clock skew. Lease recovery still
+uses cross-host wall time; future heartbeats delay recovery rather than expire
+immediately. Execution deadlines and progress watches use local monotonic time.
 """
 
 from __future__ import annotations
@@ -269,6 +270,36 @@ WITHDRAW_GRACE_S = 5.0
 #: look dead, short enough that a box taken down does not keep vouching for
 #: work nobody can run.
 OFFER_TIMEOUT_S = 120.0
+
+#: Offer discovery tolerates up to one minute of future skew. This bound stays
+#: finite even when a submitter reads retained capability with an infinite TTL.
+#: It grants no freshness credit to CPU/GPU admission samples or claim leases.
+OFFER_FUTURE_TOLERANCE_S = 60.0
+
+
+class OfferTiming(NamedTuple):
+    age_s: float | None
+    clock_skew_s: float | None
+
+
+def offer_timing(announced: object, *, now: float) -> OfferTiming:
+    """Usable age and observed future skew, relative to the reader's clock.
+
+    A bounded future announcement counts as age zero. Excessive future skew
+    has no usable age but keeps its discrepancy for diagnostics. These are
+    reader/record differences, not a measurement against a trusted time source.
+    """
+    if type(announced) not in (int, float):
+        return OfferTiming(None, None)
+    try:
+        stamp = float(announced)
+    except OverflowError:
+        return OfferTiming(None, None)
+    if not math.isfinite(stamp):
+        return OfferTiming(None, None)
+    age = now - stamp
+    skew = max(0.0, -age)
+    return OfferTiming(max(0.0, age) if skew <= OFFER_FUTURE_TOLERANCE_S else None, skew)
 
 DEFAULT_POOL_ROOT = Path(
     os.environ.get("PRISMABUILD_POOL_ROOT", "/mnt/shared/pb-queue")
@@ -2363,9 +2394,7 @@ class PoolQueue:
         directory.mkdir(parents=True, exist_ok=True)
         _write_json_atomic(directory / f"{host}.json", record)
 
-    def offers(self, *, max_age_s: float = OFFER_TIMEOUT_S) -> list[dict[str, object]]:
-        """Every worker offer still fresh enough to believe."""
-
+    def _offer_records(self) -> list[dict[str, object]]:
         directory = self.root / WORKERS
         if not directory.is_dir():
             return []
@@ -2380,19 +2409,33 @@ class PoolQueue:
             record = _read_json(path, tolerate_stale=True)
             if record is not None:
                 records.append(record)
+        return records
 
+    def offers(self, *, max_age_s: float = OFFER_TIMEOUT_S) -> list[dict[str, object]]:
+        """Every worker offer still fresh enough to believe, allowing bounded skew."""
+
+        records = self._offer_records()
         # Directory enumeration or any later read can stall on the shared
         # filesystem. All offers must still be fresh after the complete scan;
         # checking against its start would extend their lifetimes by the stall.
         now = _now()
         live: list[dict[str, object]] = []
         for record in records:
-            announced = record.get("announced_unix")
-            if type(announced) not in (int, float) or not math.isfinite(announced):
-                continue
-            if 0 <= now - float(announced) <= max_age_s:
+            age = offer_timing(record.get("announced_unix"), now=now).age_s
+            if age is not None and age <= max_age_s:
                 live.append(record)
         return live
+
+    def offer_clock_skews(self) -> dict[str, float]:
+        """Future-dated offers, including those beyond the discovery tolerance."""
+        records = self._offer_records()
+        now = _now()
+        skews = {}
+        for record in records:
+            skew = offer_timing(record.get("announced_unix"), now=now).clock_skew_s
+            if skew is not None and skew > 0:
+                skews[str(record.get("host") or "?")] = skew
+        return skews
 
     def _matching_offers(
         self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]]

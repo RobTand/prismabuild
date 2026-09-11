@@ -788,8 +788,15 @@ def read_pool(queue_root: str | Path) -> dict:
             notes.append(f"pool worker {host}: invalid worker offer")
             unreadable.append(f"pool worker {host}: invalid worker offer")
             continue
-        age = _age(offer.get("announced_unix"), now)
-        fresh = age is not None and 0 <= age <= pool.OFFER_TIMEOUT_S
+        timing = pool.offer_timing(offer.get("announced_unix"), now=now)
+        age = timing.age_s
+        fresh = age is not None and age <= pool.OFFER_TIMEOUT_S
+        if timing.clock_skew_s:
+            disposition = "tolerated" if age is not None else "ignored"
+            notes.append(
+                f"pool worker {host}: offer announced {timing.clock_skew_s:.3f}s "
+                f"in the future (clock skew; {disposition}, "
+                f"limit {pool.OFFER_FUTURE_TOLERANCE_S:g}s)")
         if fresh:
             live.append(offer)
         else:
@@ -797,6 +804,7 @@ def read_pool(queue_root: str | Path) -> dict:
         nodes.append({
             "node": host, "transport": "pool", "state": "live" if fresh else "stale",
             "healthy": fresh, "age_s": age, "capacity": offer.get("capacity"),
+            "offer_clock_skew_s": timing.clock_skew_s,
             "observed_capacity": offer.get("observed_capacity"),
             "foreign": offer.get("foreign"), "observed_detail": offer.get("observed_detail"),
             "features": offer.get("tags"), "has_gpu": offer.get("has_gpu"),

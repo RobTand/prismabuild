@@ -1216,6 +1216,14 @@ deployed runtime's default, just like submission. With pool transport it reads
 the shared queue and needs no SLURM binaries. `--transport slurm` explicitly
 selects the controller view.
 
+A worker offer stamped up to 60 seconds ahead of the reader counts as age
+zero. Status and `pbrun` name that clock discrepancy, its size and whether it
+was tolerated. A greater future offset is ignored even for `pbrun`'s retained
+capability check; status keeps the node visible as stale and exposes
+`offer_clock_skew_s`. This compares the two clocks as observed, without
+identifying which clock is wrong. The tolerance applies only to offers;
+CPU/GPU admission telemetry and resource limits retain their existing checks.
+
 It prints three tables:
 
 *   **nodes** — for pool, each worker's declared and observed capacity, offer

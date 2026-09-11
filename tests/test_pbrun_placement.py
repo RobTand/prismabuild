@@ -1749,7 +1749,8 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
     assert "1 other live box fits this demand: dl380g10" in err
 
 
-@pytest.mark.parametrize("offset_s", [-121.0, 7.0], ids=["old-offer", "clock-skew"])
+@pytest.mark.parametrize("offset_s", [-121.0, 7.0, 61.0],
+                         ids=["old-offer", "clock-skew", "excessive-skew"])
 def test_a_matching_recorded_offer_outvotes_a_fresh_nonmatch_at_submit(
     tmp_path, capsys, monkeypatch, offset_s,
 ) -> None:
@@ -1783,9 +1784,18 @@ def test_a_matching_recorded_offer_outvotes_a_fresh_nonmatch_at_submit(
          mock.patch.object(sys, "argv",
                            ["pbrun.py", "--cwd", str(work), "--tag", "x86",
                             "--wait-s", "0.01", "--", "echo", "hi"]):
-        assert pbrun.main() == 75          # accepted; no worker is polling here
+        if offset_s > 60:
+            with pytest.raises(SystemExit, match="no recorded worker"):
+                pbrun.main()
+        else:
+            assert pbrun.main() == 75      # accepted; no worker is polling here
 
     err = capsys.readouterr().err
+    if offset_s > 60:
+        assert "clock skew; ignored, limit 60s" in err
+        assert "dl380g10" in err and "61.000s" in err
+        assert "pbrun: queued" not in err
+        return
     if offset_s < 0:
         assert "recorded capable worker is between announcements" in err
     else:

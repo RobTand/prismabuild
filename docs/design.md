@@ -50,8 +50,16 @@ proposed observability stack remain uninstalled.
 Worker-offer freshness is evaluated after the complete directory and record
 scan. An offer that expires during any read is excluded, including an offer
 read before a later file stalls. Offers require a finite numeric announcement
-timestamp no later than the scan's completion time, matching the pool status
-reader's refusal of invalid or future evidence. Shared filesystem I/O itself
+timestamp at most 60 seconds ahead of the scan's completion time. Bounded
+future skew counts as age zero, including for a caller's shorter offer TTL;
+greater future skew is excluded even when retained capability uses an infinite
+TTL. The pool status reader shares this rule and reports `offer_clock_skew_s`;
+both status and submission diagnostics name future discrepancies and whether
+they were tolerated or ignored. The discrepancy compares the record's writer
+clock with the reader, not with an independently trusted time source. Offers
+retain their existing wire format. CPU/GPU telemetry freshness, capacity
+reservation, containment and lease recovery receive no additional tolerance.
+Shared filesystem I/O itself
 remains synchronous and has no caller deadline; this expiry rule does not bound a
 queue read or repair an NFS client stall (issue #16).
 The pool status census likewise collects active records and admission, lease,

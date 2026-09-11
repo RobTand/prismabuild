@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool
 
 
-@pytest.mark.parametrize("announced", [1001.0, float("inf")], ids=["future", "positive-infinity"])
+@pytest.mark.parametrize("announced", [1060.001, float("inf"), float("nan"), True, None],
+                         ids=["excessive-future", "positive-infinity", "nan", "bool", "missing"])
 def test_invalid_offer_time_cannot_vouch_for_a_worker(tmp_path, monkeypatch, announced):
     queue = pool.PoolQueue(tmp_path / "queue")
     monkeypatch.setattr(pool, "_now", lambda: 1000.0)

@@ -36,6 +36,7 @@ def test_bounded_future_offer_keeps_x86_placeable(tmp_path, monkeypatch, max_age
     assert queue.placeable(intent, max_age_s=max_age_s) is True
     assert queue.placeable_hosts(intent, max_age_s=max_age_s) == ["dl380g10"]
     assert "x86" in queue.offered_tags(max_age_s=max_age_s)
+    assert queue.placement_timeout_ceilings(intent, max_age_s=max_age_s) == {"dl380g10": 3600}
 
 
 @pytest.mark.parametrize("ahead_s", [60.001, 3600.0])
