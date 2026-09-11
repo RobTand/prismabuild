@@ -777,6 +777,15 @@ requires the `progress-v1` tag, which only a worker that can run the watchdog
 offers, so an old loop mid-upgrade cannot claim the action; `pbstatus`'s node
 table shows what each box announces, and its job table's `PROGRESS` column
 shows a running action's quiet time against the allowance in force.
+The action reports through `prismabuild.progress.commit(units, phase)`, or
+without importing anything by running the module the worker names in
+`PRISMABUILD_ACTION_PROGRESS_HELPER` -- `runpy.run_path(...)["commit"]` from
+another interpreter, `python3 "$PRISMABUILD_ACTION_PROGRESS_HELPER" --phase P
+--units N` from a shell. A container with no view of the fleet's mount writes
+the record itself; the submission skill carries those lines and a test holds
+them to what the watcher accepts. `PRISMABUILD_ACTION_PROGRESS_PHASES` names
+the sealed phases, so an undeclared phase fails at the first commit instead of
+reading as silence.
 The cumulative count starts at zero and never resets between phases. The
 watcher rejects malformed, duplicate-key, nonregular and oversized reports
 without refreshing grace; accepted reports are limited to 64 KiB. It samples

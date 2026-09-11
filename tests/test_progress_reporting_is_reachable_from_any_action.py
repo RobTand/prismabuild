@@ -49,6 +49,11 @@ units = 0
 deadline = time.monotonic() + float(sys.argv[2])
 while time.monotonic() < deadline:
     time.sleep(0.05)
+    if sys.argv[1] == "helper-stall" and units >= 3:
+        # Alive, printing, committing nothing.  The control: reaching the
+        # contract the easy way must not make stopping cost less.
+        print("still here", flush=True)
+        continue
     units += 1
     open("units", "w").write(str(units))     # durable first
     commit(units, unit="widgets")            # then reported
@@ -280,9 +285,27 @@ def test_an_action_that_cannot_import_prismabuild_outlives_the_ceiling(tmp_path)
     assert outcome["execution_governed_by"] == "progress"
     observed = outcome["progress_observation"]
     assert observed["accepted_count"] >= 5
-    assert observed["rejected_count"] == 0
+    # A watcher polling faster than the action commits re-reads the record it
+    # already accepted, and that is a replay like any other.  What must not
+    # appear is a rejection that says the helper wrote something else.
+    assert observed["last_rejection"] in (None, "replayed")
     assert observed["phase"] == PHASES[0]
     assert observed["last_accepted"]["unit"] == "widgets"
+
+
+def test_an_action_that_reports_the_easy_way_still_dies_when_it_stops(tmp_path):
+    """The other half: the helper buys time for work, not for being alive."""
+
+    queue, item = _claimed(tmp_path, mode="helper-stall", seconds=30,
+                           policy=_policy(0.6, 60, 60), source=HELPER_REPORTER)
+    outcome = queue.execute(item, timeout_s=60, heartbeat_s=0.05,
+                            timeout_grace_s=0.2)
+    assert outcome["status"] == "timeout"
+    assert outcome["termination_reason"] == "no_progress"
+    assert outcome["elapsed_s"] < 10
+    observed = outcome["progress_observation"]
+    assert observed["last_accepted"]["units_completed"] == 3
+    assert observed["quiet_s"] >= 0.6
 
 
 def test_the_worker_tells_a_declaring_action_where_the_helper_is(tmp_path):
@@ -332,3 +355,27 @@ def test_an_action_that_seals_any_of_them_is_refused(name, monkeypatch):
     monkeypatch.setenv(pb.ACTION_PROGRESS_TOKEN_ENV, "deadbeef")
     with pytest.raises(pb.ActionContractError, match="seals"):
         pb._progress_environment(declaring, {name: "mine"})
+
+
+# -- the campaign row's opt-in ---------------------------------------------
+
+def test_a_manifest_row_declares_the_contract_the_same_way_pbrun_does():
+    """A GPU row opts in through the manifest, not through a second mechanism."""
+
+    sys.path.insert(0, str(REPO / "tools" / "fleet"))
+    import pbcampaign
+
+    row = {"argv": ["/bin/true"], "demand": {"gpu": 1, "mem_gb": 102},
+           "progress_phases": ["startup=1800", "pricing=900", "finalize=1800"]}
+    argv = pbcampaign.pbrun_argv(row)
+    assert argv.count("--progress-phase") == 3
+    assert argv[argv.index("--progress-phase") + 1] == "startup=1800"
+    # No --timeout-s unless the row asked for one: a progressing row is bounded
+    # by its own advancement, and the box ceiling then clamps the allowances
+    # rather than the run.
+    assert "--timeout-s" not in argv
+    assert pbcampaign.pbrun.parse_progress_phases(row["progress_phases"]) == {
+        "schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+        "phases": [{"name": "startup", "grace_s": 1800.0},
+                   {"name": "pricing", "grace_s": 900.0},
+                   {"name": "finalize", "grace_s": 1800.0}]}

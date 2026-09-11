@@ -1653,11 +1653,28 @@ to total duration, and total duration is bounded only by an explicitly sealed
 The channel is `claimed/<key>.progress`, named to the action through
 `PRISMABUILD_ACTION_PROGRESS_PATH` with a per-launch token in
 `PRISMABUILD_ACTION_PROGRESS_TOKEN`. Both are forwarded into the action's own
-environment by `run_local_action` -- the only variables that are, and only
-when the sealed params declare the contract; an action that seals either name
-itself is refused rather than overwritten. The token is minted per launch, not
-per key, so an action that outlived SIGKILL on a previous attempt and still
+environment by `run_local_action` -- almost the only variables that are, and
+only when the sealed params declare the contract; an action that seals either
+name itself is refused rather than overwritten. The token is minted per launch,
+not per key, so an action that outlived SIGKILL on a previous attempt and still
 holds the path cannot report for its successor.
+
+Two more variables travel with them, and they are conveniences rather than
+channel (#488): `PRISMABUILD_ACTION_PROGRESS_PHASES` is the sealed phase list
+as a JSON array, and `PRISMABUILD_ACTION_PROGRESS_HELPER` is the absolute path
+of `prismabuild/progress.py` inside the runtime generation that launched the
+action. `progress.py` is a leaf module -- standard library only, no
+intra-package imports -- and `core` imports the schema, the variable names and
+the writer from it rather than restating them, so `prismabuild.progress.commit`,
+`prismabuild.report_action_progress`, the module run by path or as a program,
+and the ten documented lines in the skill are one record format with one
+definition. A missing path or token is still refused as no channel at all; a
+missing phase list or helper path is an older worker generation and bounds the
+run exactly as before. An action that seals any of the four names is refused.
+`commit` defaults the phase to the first declared one and raises on a name the
+submission did not declare, which is the difference between a typo that reports
+nothing acceptable and dies at its stall allowance and one that fails on its
+first commit.
 
 The worker accepts a record as advancement only when its schema is
 `prismabuild.action_progress.v1`, its token is this launch's, its phase is one
