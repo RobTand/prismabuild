@@ -121,7 +121,7 @@ def test_remote_preferred_deferral_is_compatible_whole_demand_and_bounded(tmp_pa
     assert denial['reason'] == 'deferred_for_preferred_cpu'
     assert denial['evidence']['remote_offer'] == {
         'host': 'another-host', 'free_preferred': 2, 'available': {'cpu': 2},
-        'observed_capacity': {'cpu': 2}, 'demand': {'cpu': 2},
+        'observed_capacity': {}, 'demand': {'cpu': 2},
     }
     assert len(reads) == 1, 'diagnostic evidence must reuse the admission read'
     monkeypatch.setattr(pool.time, 'monotonic', lambda: 31.)
