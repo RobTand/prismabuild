@@ -28,6 +28,8 @@ import time
 
 HEX64=re.compile(r'[0-9a-f]{64}\Z');HEX32=re.compile(r'[0-9a-f]{32}\Z')
 MAINTENANCE_SCHEMA='prismabuild.resource-maintenance.v1'
+MAINTENANCE_EVIDENCE_SCHEMA='prismabuild.resource-maintenance-evidence.v1'
+MAINTENANCE_DURABLE_PROTOCOL=1
 # A drain opened without a stated holder. Callers that predate drain ownership
 # cannot name themselves, so their gates carry this identity and stay releasable
 # by any root caller, exactly as every gate was before ownership existed.
@@ -177,11 +179,19 @@ class SystemdBackend:
         self.command('stop',scope)
 
 class Authority:
-    def __init__(self,state_dir,uid,backend,*,max_memory_bytes):
+    def __init__(self,state_dir,uid,backend,*,max_memory_bytes,maintenance_state=None):
         self.state_dir=Path(state_dir);self.uid=int(uid);self.backend=backend
         self.max_memory_bytes=int(max_memory_bytes);self.lock=threading.RLock();self.records={}
+        # The worker reads this volatile v1 mirror.  The canonical authority is
+        # separate so clearing /run at boot cannot turn a named hold into an
+        # admission grant.
         self.maintenance_path=self.state_dir.parent/'maintenance.json'
+        self.maintenance_state_path=Path(maintenance_state or self.maintenance_path)
+        self.durable_maintenance=maintenance_state is not None
+        self.maintenance_evidence_path=self.maintenance_state_path.with_name(
+            self.maintenance_state_path.name+'.initialized')
         self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':False}
+        self.maintenance_error=None
         self.installed_sha256={};self.installation_paths={};self.health_check=lambda:True
         self.state_dir.mkdir(parents=True,exist_ok=True,mode=0o700)
         info=self.state_dir.lstat()
@@ -198,16 +208,118 @@ class Authority:
             if record.get('uid')!=self.uid or not HEX64.fullmatch(str(record.get('token',''))):
                 raise ValueError('invalid stored resource owner')
             self.records[path.stem]=record
-        try:info=self.maintenance_path.lstat()
-        except FileNotFoundError:pass
-        else:
-            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o022:
-                raise ValueError('unsafe maintenance gate')
-            value=json.loads(self.maintenance_path.read_text())
-            if (not isinstance(value,dict) or value.get('schema')!=MAINTENANCE_SCHEMA
-                    or type(value.get('draining')) is not bool
-                    or not isinstance(value.get('owner',MAINTENANCE_UNOWNED),str)):raise ValueError('invalid maintenance gate')
-            self.maintenance=value
+        self._restore_maintenance()
+
+    def _private_maintenance_parent(self):
+        parent=self.maintenance_state_path.parent
+        parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        info=parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid()
+                or info.st_mode&0o077):
+            raise ValueError('maintenance state directory must be private and owned by broker')
+
+    @staticmethod
+    def _maintenance_value(path):
+        info=path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid()
+                or info.st_mode&0o022):
+            raise ValueError('unsafe maintenance gate')
+        value=json.loads(path.read_text())
+        if (not isinstance(value,dict) or value.get('schema')!=MAINTENANCE_SCHEMA
+                or type(value.get('draining')) is not bool
+                or not isinstance(value.get('owner',MAINTENANCE_UNOWNED),str)):
+            raise ValueError('invalid maintenance gate')
+        return value
+
+    def _write_maintenance_evidence(self):
+        _atomic(self.maintenance_evidence_path,{
+            'schema':MAINTENANCE_EVIDENCE_SCHEMA,'initialized_unix':time.time()},mode=0o600)
+
+    def _maintenance_evidence(self):
+        info=self.maintenance_evidence_path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid()
+                or info.st_mode&0o077):
+            raise ValueError('unsafe durable maintenance evidence')
+        value=json.loads(self.maintenance_evidence_path.read_text())
+        if (not isinstance(value,dict) or value.get('schema')!=MAINTENANCE_EVIDENCE_SCHEMA
+                or not isinstance(value.get('initialized_unix'),(int,float))):
+            raise ValueError('invalid durable maintenance evidence')
+        return value
+
+    def _sync_maintenance_gate(self,value=None):
+        _atomic(self.maintenance_path,value or self.maintenance,mode=0o644)
+
+    def _force_volatile_gate_closed(self):
+        """Best-effort last fence when a normal gate publication failed."""
+        closed={'schema':MAINTENANCE_SCHEMA,'draining':True}
+        try:
+            self._sync_maintenance_gate(closed)
+            return None
+        except OSError as write_error:
+            try:
+                info=self.maintenance_path.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid()
+                        or info.st_mode&0o022):
+                    raise ValueError('unsafe maintenance gate')
+                self.maintenance_path.unlink()
+                directory=os.open(self.maintenance_path.parent,os.O_RDONLY|os.O_DIRECTORY)
+                try:os.fsync(directory)
+                finally:os.close(directory)
+                return 'volatile maintenance gate was removed after write failure: '+str(write_error)[:900]
+            except (OSError,ValueError) as unlink_error:
+                return ('volatile maintenance gate could not be closed after write failure: '
+                        +str(write_error)[:450]+'; '+str(unlink_error)[:450])
+
+    def _restore_maintenance(self):
+        """Restore durable authority, using /run only for a one-time migration.
+
+        The marker is deliberately written before the first canonical state. A
+        crash there blocks the host; it must never make a later missing durable
+        file look like an uninitialized installation that can copy an old open
+        /run mirror.
+        """
+        if not self.durable_maintenance:
+            try:self.maintenance=self._maintenance_value(self.maintenance_path)
+            except FileNotFoundError:pass
+            return
+        self._private_maintenance_parent()
+        try:
+            evidence=self._maintenance_evidence()
+        except FileNotFoundError:
+            evidence=None
+        except (OSError,ValueError,json.JSONDecodeError) as exc:
+            self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True}
+            self.maintenance_error='durable maintenance evidence is unreadable: '+str(exc)[:1200]
+            evidence=False
+        try:
+            if evidence is False: raise ValueError('durable maintenance evidence is unreadable')
+            self.maintenance=self._maintenance_value(self.maintenance_state_path)
+            if evidence is None:
+                raise ValueError('durable maintenance state lacks initialized evidence')
+        except FileNotFoundError:
+            if evidence is not None:
+                self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True}
+                self.maintenance_error='durable maintenance evidence is missing'
+            else:
+                try:legacy=self._maintenance_value(self.maintenance_path)
+                except FileNotFoundError:
+                    self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True}
+                    self.maintenance_error='durable maintenance state has not been initialized'
+                except (OSError,ValueError,json.JSONDecodeError) as exc:
+                    self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True}
+                    self.maintenance_error='volatile maintenance gate is unreadable: '+str(exc)[:1200]
+                else:
+                    self._write_maintenance_evidence()
+                    _atomic(self.maintenance_state_path,legacy,mode=0o600)
+                    self.maintenance=legacy
+        except (OSError,ValueError,json.JSONDecodeError) as exc:
+            self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True}
+            self.maintenance_error='durable maintenance state is unreadable: '+str(exc)[:1200]
+        try:self._sync_maintenance_gate()
+        except OSError as exc:
+            closed=self._force_volatile_gate_closed()
+            self.maintenance_error=(self.maintenance_error or closed or
+                'volatile maintenance gate could not be restored: '+str(exc)[:1200])
     @staticmethod
     def identity(request):
         key=request.get('action_key');nonce=request.get('nonce')
@@ -390,7 +502,21 @@ class Authority:
                 if held is None:
                     value={'schema':MAINTENANCE_SCHEMA,'draining':True,'changed_unix':time.time(),
                            'reason':request.get('reason','automatic upgrade')[:1000],'owner':owner}
-                    _atomic(self.maintenance_path,value,mode=0o644);self.maintenance=value
+                    # Durable closure precedes every worker-visible close.  If
+                    # the latter fails, remove the old open mirror if possible;
+                    # #505 treats absence as closed and this authority is closed.
+                    try:_atomic(self.maintenance_state_path,value,mode=0o600)
+                    except OSError:
+                        if self.durable_maintenance:
+                            self.maintenance=value
+                            self.maintenance_error='durable maintenance closure could not be committed'
+                            self._force_volatile_gate_closed()
+                        raise
+                    self.maintenance=value
+                    try:self._sync_maintenance_gate(value)
+                    except OSError:
+                        self.maintenance_error=self._force_volatile_gate_closed()
+                        raise
             status=self._maintenance_status()
             if op in {'maintenance_end','maintenance_force_end'}:
                 if foreign and op=='maintenance_end':
@@ -400,12 +526,21 @@ class Authority:
                 # A forced release is evidence, not a state: it stays in the gate
                 # until the next drain overwrites it, naming both parties.
                 if foreign:value.update({'forced_end_of':held,'forced_end_by':owner})
-                _atomic(self.maintenance_path,value,mode=0o644);self.maintenance=value
+                # The volatile open mirror never precedes durable release.  If
+                # the mirror fails, retain this process's in-memory closure;
+                # a restart reads the committed release and retries the mirror.
+                _atomic(self.maintenance_state_path,value,mode=0o600)
+                try:self._sync_maintenance_gate(value)
+                except OSError:
+                    self.maintenance_error='durable maintenance release committed but volatile gate remains closed'
+                    raise
+                self.maintenance=value;self.maintenance_error=None
                 status['draining']=False;status.pop('maintenance_owner',None)
             return status
 
     def _maintenance_status(self):
         errors=[];active=set();inventory={}
+        if self.maintenance_error:errors.append(self.maintenance_error)
         try:
             if not self.backend.healthy():errors.append('kernel resource controllers unavailable')
             inventory=self.backend.inventory()
@@ -456,6 +591,9 @@ class Authority:
                 'active_scope_ids':sorted(active)[:128],'active_scopes_truncated':len(active)>128,
                 'health':not errors,'errors':[error[:500] for error in errors[:32]],
                 'errors_truncated':len(errors)>32,'maintenance_protocol':MAINTENANCE_PROTOCOL,
+                **({'maintenance_durable_protocol':MAINTENANCE_DURABLE_PROTOCOL,
+                    'maintenance_state_path':str(self.maintenance_state_path)}
+                   if self.durable_maintenance else {}),
                 **({'maintenance_owner':self.maintenance.get('owner',MAINTENANCE_UNOWNED)}
                    if self.maintenance['draining'] else {}),
                 'installed_sha256':dict(self.installed_sha256)}
@@ -717,12 +855,30 @@ def main():
                         help='local Unix socket for authenticated resource requests')
     parser.add_argument('--state-dir',default='/run/prismabuild/jobs',
                         help='private root-owned directory for attempt authority and recovery')
+    parser.add_argument('--maintenance-state',default='/var/lib/prismabuild-resource-broker/maintenance.json',
+                        help='root-owned persistent maintenance authority')
+    parser.add_argument('--initialize-maintenance-state',action='store_true',
+                        help='explicitly initialize an unconfigured persistent maintenance authority open')
     parser.add_argument('--uid',type=int,default=1000,
                         help='local execution user allowed to create and control job scopes')
     args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit('resource broker must run as root')
+    if args.initialize_maintenance_state:
+        state=Path(args.maintenance_state)
+        evidence=state.with_name(state.name+'.initialized')
+        state.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        info=state.parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077):
+            raise SystemExit('maintenance state directory must be private and root-owned')
+        if state.exists() or evidence.exists():
+            raise SystemExit('persistent maintenance authority is already initialized')
+        _atomic(evidence,{'schema':MAINTENANCE_EVIDENCE_SCHEMA,'initialized_unix':time.time()},mode=0o600)
+        _atomic(state,{'schema':MAINTENANCE_SCHEMA,'draining':False,'changed_unix':time.time(),
+                       'reason':'explicit initial installation'},mode=0o600)
+        return
     total=next(int(x.split()[1])*1024 for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemTotal:'))
-    authority=Authority(args.state_dir,args.uid,SystemdBackend(),max_memory_bytes=total)
+    authority=Authority(args.state_dir,args.uid,SystemdBackend(),max_memory_bytes=total,
+                        maintenance_state=args.maintenance_state)
     endpoint=Path(args.socket);endpoint.parent.mkdir(mode=0o755,parents=True,exist_ok=True)
     if endpoint.exists():
         # systemd owns one broker; refuse an active endpoint rather than take it.

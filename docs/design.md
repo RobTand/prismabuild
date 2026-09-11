@@ -1854,9 +1854,19 @@ begin requests preserve the original reason and timestamp. The updater names
 itself `client-upgrade` and leaves another named holder's drain in place, including
 when its installed files are already current. For rolling client compatibility,
 unnamed legacy drains remain releasable by any root caller, and the updater sends
-ownership fields only after a broker status reply advertises support. The gate
-retains its v1 schema so older brokers can read it; ownership protection requires
-adoption of the newer broker and updater.
+ownership fields only after a broker status reply advertises support. The
+worker-facing `/run` gate retains its v1 schema so older brokers can read it;
+the broker keeps its canonical maintenance record in root-only host-local
+`/var/lib/prismabuild-resource-broker/maintenance.json`. An adjacent initialized
+marker distinguishes first migration of a valid volatile gate from erased durable
+evidence, which fails closed. A durable close is written before its volatile
+mirror; durable release is written before the open mirror, and a post-commit
+mirror failure keeps the running broker closed until restart retries the committed
+state. New updater/broker adoption therefore needs a converged bridge before a
+downgrade can be blocked; the upgraded updater rejects a non-durable candidate
+while the running broker advertises durable maintenance. This is host-local hold
+recovery only: it neither enables a fleet barrier nor supplies epoch participation,
+quorum, or coordinated rollback.
 A loop that parks on a drain records that it parked, one file per process per
 drain under `/run/prismabuild/rollout/parked/`, named for the gate's
 `changed_unix` so a marker left by an earlier drain reads as the earlier drain.
@@ -1921,11 +1931,11 @@ installed clients match, the running broker's hashes and health agree, and no
 active scopes remain. An existing owned drain also waits for zero scopes on
 later current-client ticks; another holder's drain stays held. Unavailable gate
 reads are not absence, and `current` requires an explicit open gate readback.
-This fences the interval before the updater initializes admission. It does
-not persist a named hold or epoch across reboot: `/run` still loses that state,
-and an upgraded host can reopen after its own checks while peers remain old.
-Durable hold recovery, fresh epoch participation, and both fleet quorums remain
-required before durable host markers can authorize a coordinated rollout.
+This fences the interval before the updater initializes admission. The broker's
+separate host-local authority now persists a named hold across reboot, while the
+volatile `/run` mirror remains the worker-facing v1 gate. Fresh epoch participation,
+both fleet quorums, and coordinated rollback remain required before durable host
+markers can authorize a coordinated rollout.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not

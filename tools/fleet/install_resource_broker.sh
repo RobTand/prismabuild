@@ -31,11 +31,20 @@ if [ ! -f "$gpu_capacity_source" ]; then
     exit 1
 fi
 install -d -o root -g root -m 0755 /opt/prismabuild-resource-broker
+install -d -o root -g root -m 0700 /var/lib/prismabuild-resource-broker
 for source_file in resource_broker.py resource_payload.py; do
     install -o root -g root -m 0644 "$source_dir/$source_file" "/opt/prismabuild-resource-broker/$source_file"
 done
 install -o root -g root -m 0644 "$gpu_source" /opt/prismabuild-resource-broker/gpu_memory.py
 install -o root -g root -m 0644 "$gpu_capacity_source" /opt/prismabuild-resource-broker/gpu_capacity.py
+maintenance_state=/var/lib/prismabuild-resource-broker/maintenance.json
+# A fresh installation has no old /run gate to migrate.  This is an explicit
+# administrator initialization, never an inference from a missing state file.
+if [ ! -e "$maintenance_state" ] && [ ! -e "$maintenance_state.initialized" ] \
+        && [ ! -e /run/prismabuild/maintenance.json ]; then
+    /usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py \
+        --maintenance-state "$maintenance_state" --initialize-maintenance-state
+fi
 unit=/etc/systemd/system/prismabuild-resource-broker.service
 if [ -e "$unit" ]; then
     cp -a "$unit" "$unit.backup-$(date +%s)"
@@ -47,12 +56,14 @@ After=local-fs.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py --uid 1000
+ExecStart=/usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py --uid 1000 --maintenance-state /var/lib/prismabuild-resource-broker/maintenance.json
 Restart=on-failure
 RestartSec=1
 RuntimeDirectory=prismabuild
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
+StateDirectory=prismabuild-resource-broker
+StateDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=yes
 MemoryMax=256M
