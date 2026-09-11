@@ -14,6 +14,31 @@ from test_the_coordinator_proves_the_fleet_before_a_barrier import (
 
 
 @pytest.mark.parametrize("operation", ["publish", "activate"])
+def test_default_barrier_refuses_mutation_before_history_io(fleet, monkeypatch, operation):
+    """The safe default cannot stage, swap, or enumerate attestations."""
+
+    target = _generation(fleet, "a" * 64)
+    previous = target.parent / "previous"
+    previous.mkdir()
+    publish_runtime.MIRROR.rmdir()
+    publish_runtime.MIRROR.symlink_to(previous, target_is_directory=True)
+    before = set(target.parent.iterdir())
+    argv = ["publish_runtime.py"]
+    if operation == "activate":
+        argv += ["--activate-generation", target.name]
+    monkeypatch.setattr(publish_runtime.sys, "argv", argv)
+    monkeypatch.setattr(
+        publish_runtime, "_require_attested_fleet",
+        lambda *_args: pytest.fail("mutating default read historical attestations"),
+    )
+
+    with pytest.raises(SystemExit, match="barrier activation is not implemented"):
+        publish_runtime.main()
+    assert publish_runtime.MIRROR.resolve() == previous
+    assert set(target.parent.iterdir()) == before
+
+
+@pytest.mark.parametrize("operation", ["publish", "activate"])
 @pytest.mark.parametrize("later_version", [False, True])
 def test_barrier_refuses_mutation_even_with_matching_history(
     fleet, monkeypatch, operation, later_version,

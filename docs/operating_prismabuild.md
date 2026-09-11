@@ -2102,14 +2102,12 @@ time and a nonce, then moves `repo` onto it in one namespace operation. A
 reader therefore sees one whole generation or the previous one, never a
 half-copied mixture.
 
-    tools/fleet/publish_runtime.py --dry-run
-    tools/fleet/publish_runtime.py
+    tools/fleet/publish_runtime.py --rollout barrier --dry-run
 
-`--dry-run` prints the commit and every file that would be published, and
-writes nothing.
+`--dry-run` checks the selected rollout policy, prints the commit and every
+file that would be published, and writes nothing when its preflight succeeds.
 
-`--rollout rolling` is the default: hosts converge independently.
-`--rollout barrier --dry-run` additionally checks whether every roster host
+`barrier` is the default. `--rollout barrier --dry-run` checks whether every roster host
 has posted a historical attestation for the target updater version. With
 `--activate-generation`, it checks the version in that generation's receipt.
 The preflight reports missing hosts and previously posted versions. A match
@@ -2118,6 +2116,14 @@ write-once markers survive later version changes. Actual barrier publication
 and activation are refused before staging or moving `repo` until the epoch
 protocol tracked in #458 is implemented. A successful preflight is not a
 barrier rollout or permission to bypass the publication window.
+
+For a reviewed transition that tolerates independent host convergence, explicitly
+select `--rollout rolling --rollout-reason TEXT` for both the dry-run and the
+publication. The reason must be nonblank and explain why old and new processes
+may coexist for this transition. New rolling generations seal `rollout: rolling`
+and `rollout_reason` in `RUNTIME_VERSION.json`; the publisher also prints the
+reason. A reason on a barrier request is refused. Omitting `--rollout` never
+silently chooses rolling, and the reason does not waive the idle-queue requirement.
 
 The generation includes the execution skill, `docs/**/*.md`, `README.md` and
 `AGENTS.md`. The skill's required policy and operating guide, and their linked
@@ -2157,7 +2163,7 @@ does not add unlisted cache files before the generation is sealed.
 A published generation is sealed read-only and is never deleted. That is what
 makes rollback a namespace operation:
 
-    tools/fleet/publish_runtime.py --activate-generation <name>
+    tools/fleet/publish_runtime.py --activate-generation <name> --rollout rolling --rollout-reason '<reviewed explanation for this reverse transition>'
 
 Rollback is deliberately not a re-publication. The old generation's bytes and
 receipt were proved when it was published, and rebuilding them from a checkout
@@ -2165,6 +2171,11 @@ that has moved would not be the same thing. A name that is not a direct child
 of the generation store, a dot-name, or a directory with no receipt is refused
 before `repo` is touched. A dot-name matters: a staging tree left by an
 interrupted publish carries a receipt but was never sealed or probed.
+Existing-generation activation also defaults to the unavailable barrier path.
+Rolling activation needs its own explicit choice and reason; it does not infer
+reverse-transition compatibility from an old receipt, including one that records
+a forward rolling reason. The activation prints this reason without changing
+the sealed generation's receipt. Retain that output with the deployment record.
 
 ### The default transport rides in the generation
 

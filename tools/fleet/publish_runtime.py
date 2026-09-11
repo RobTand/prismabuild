@@ -485,7 +485,27 @@ def _activate(generation: Path, *, migrate_directory: bool) -> Path | None:
     return legacy
 
 
-def _activate_existing(name: str, *, dry_run: bool, rollout: str = "rolling") -> int:
+def _rollout_reason(rollout: str, reason: str | None) -> str | None:
+    """Validate the declaration that decides whether generations may mix."""
+
+    if rollout not in {"barrier", "rolling"}:
+        raise SystemExit(f"unknown rollout mode: {rollout!r}")
+    if rollout == "rolling":
+        if not isinstance(reason, str) or not reason.strip():
+            raise SystemExit(
+                "--rollout rolling requires a nonblank --rollout-reason stating "
+                "why this generation is safe to run beside the previous one"
+            )
+        return reason.strip()
+    if reason is not None:
+        raise SystemExit("--rollout-reason is only valid with --rollout rolling")
+    return None
+
+
+def _activate_existing(
+    name: str, *, dry_run: bool, rollout: str = "barrier",
+    rollout_reason: str | None = None,
+) -> int:
     """Point the live runtime at a generation that already exists.
 
     Rollback's whole job.  A generation is immutable and already carries a
@@ -500,6 +520,7 @@ def _activate_existing(name: str, *, dry_run: bool, rollout: str = "rolling") ->
     that is not a published generation is refused before ``repo`` is touched.
     """
 
+    rollout_reason = _rollout_reason(rollout, rollout_reason)
     store = MIRROR.parent / "runtime-generations"
     # A dot-name is never a generation, and one shape of it is dangerous.  A
     # publish stages at ``.<generation>.staging`` in this same store, writes
@@ -548,6 +569,8 @@ def _activate_existing(name: str, *, dry_run: bool, rollout: str = "rolling") ->
         f"activating {name}: commit {str(receipt.get('commit', ''))[:12]}, "
         f"default transport {receipt.get('default_transport') or 'pool'}"
     )
+    if rollout == "rolling":
+        print(f"rollout rolling: {rollout_reason}")
     if dry_run:
         return 0
     _activate(generation, migrate_directory=False)
@@ -690,16 +713,17 @@ def _require_attested_fleet(agent_sha: str) -> None:
         "refusing barrier attestation preflight: not every box has posted "
         f"the agent version this generation requires ({agent_sha[:12]}).\n"
         + "\n".join(missing)
-        + "\nPublish this generation with --rollout rolling, let each box "
-        "converge and post its attestation, then repeat --rollout barrier "
-        "--dry-run. Historical attestations do not prove current participation."
+        + "\nIf a reviewed compatibility assessment permits a normal rolling "
+        "publication, pass --rollout rolling with its nonblank "
+        "--rollout-reason, let each box converge and post its attestation, then "
+        "repeat --rollout barrier --dry-run. Historical attestations do not prove "
+        "current participation."
     )
 
 
 def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
     """Expose the history check without granting it activation authority."""
 
-    _require_attested_fleet(agent_sha)
     if not dry_run:
         raise SystemExit(
             "barrier activation is not implemented: historical attestations "
@@ -708,6 +732,7 @@ def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
             "issue #458 tracks the required epoch protocol. Nothing was staged "
             "or activated."
         )
+    _require_attested_fleet(agent_sha)
     print(
         "barrier preflight: historical attestations match; current participation, "
         "drain and rotation have not been proved. Barrier activation is unavailable."
@@ -739,12 +764,19 @@ def main() -> int:
              "checkout would not be the same thing.",
     )
     ap.add_argument(
-        "--rollout", choices=("rolling", "barrier"), default="rolling",
-        help="rolling uses independent host convergence (the default). "
-             "barrier requires --dry-run and checks historical agent "
+        "--rollout", choices=("rolling", "barrier"), default="barrier",
+        help="barrier is the safe default and requires --dry-run until the "
+             "epoch protocol is implemented. rolling uses independent host "
+             "convergence only with a stated mixed-generation-safety reason; "
+             "barrier --dry-run checks historical agent "
              "attestations only; it does not prove current participation. "
              "Actual barrier publication and activation are refused until "
              "the fleet epoch protocol is implemented.",
+    )
+    ap.add_argument(
+        "--rollout-reason", default=None,
+        help="required nonblank mixed-generation-safety reason for --rollout rolling; "
+             "recorded in a newly published generation receipt",
     )
     ap.add_argument(
         "--dry-run", action="store_true",
@@ -756,11 +788,19 @@ def main() -> int:
              "runtime is not repointed.",
     )
     args = ap.parse_args()
+    rollout_reason = _rollout_reason(args.rollout, args.rollout_reason)
 
     if args.activate_generation is not None:
         return _activate_existing(
-            args.activate_generation, dry_run=args.dry_run, rollout=args.rollout
+            args.activate_generation, dry_run=args.dry_run, rollout=args.rollout,
+            rollout_reason=rollout_reason,
         )
+
+    # The implemented barrier is a read-only historical preflight. Refuse a
+    # mutating request before resolving publication identity or looking at the
+    # shared marker tree, so the safe default cannot stage anything by mistake.
+    if args.rollout == "barrier" and not args.dry_run:
+        _barrier_preflight("", dry_run=False)
 
     # Identity is established before MIRROR is even enumerated, much less
     # touched.  Failure here is a refusal, never an empty field in a receipt.
@@ -788,6 +828,8 @@ def main() -> int:
             )
         _barrier_preflight(agent_sha, dry_run=args.dry_run)
 
+    if args.rollout == "rolling":
+        print(f"rollout rolling: {rollout_reason}")
     print(f"publishing {len(published)} files from {commit[:12]}"
           f"{' (dirty)' if dirty else ''} to {MIRROR}")
     if args.dry_run:
@@ -847,6 +889,9 @@ def main() -> int:
         receipt: dict[str, object] = {
             "schema": "prismaquant.prismabuild.runtime_version.v1",
             "commit": commit,
+            "rollout": args.rollout,
+            **({"rollout_reason": rollout_reason}
+               if args.rollout == "rolling" else {}),
             # Optional, and absent means the pull queue: every generation
             # published before the SLURM cutover has no such field and must
             # keep behaving as it did.

@@ -1903,9 +1903,20 @@ loss. A successful preflight grants no activation authority. Without
 `--dry-run`, both barrier paths refuse before staging or changing the runtime
 symlink, even when all historical attestations match. Issue #458 must supply
 fresh participation tied to the rollout epoch, the drain and rotation quorums,
-and coordinated rollback before barrier activation can be enabled. Until
-then, `rolling` remains the default and uses independent host convergence;
-there is no supported synchronized activation.
+and coordinated rollback before barrier activation can be enabled. The
+publisher defaults to `barrier`, so an ordinary publication or existing-generation
+activation refuses while that protocol is unavailable. Independent host
+convergence requires explicit `--rollout rolling --rollout-reason TEXT`, with a
+nonblank explanation of why the proposed transition tolerates mixed generations.
+New rolling generations record `rollout` and `rollout_reason` in their immutable
+receipt; dry-run and activation output also state the reason. Existing-generation
+activation requires its own explicit choice and reason, including for a legacy
+receipt without a rollout declaration. A reason is a reviewable compatibility
+claim, not proof or an override of the publication window. Historical attestations
+still grant no current participation, and there is no supported synchronized
+activation. In particular, reboot removes the local `/run` gate before the
+updater's first tick; future epoch readiness must cover admission in that interval
+before durable host markers can be used as a quorum.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not
