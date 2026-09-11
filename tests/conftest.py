@@ -73,6 +73,7 @@ LIVE_DEFAULTS = (
     ("pool_reset", "SH", "fleet"),
     ("fleet_submit", "SH", "fleet"),
     ("worker_loop", "SH", "fleet"),
+    ("prewarm_loop", "SH", "fleet"),
     ("worker_loop", "RUNTIME_VERSION", "fleet/repo/RUNTIME_VERSION.json"),
     ("worker", "SH", "fleet"),
     # ``supervise.MIRROR`` was the gap this list was completed to close.

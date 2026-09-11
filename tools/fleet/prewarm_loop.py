@@ -67,6 +67,11 @@ from prismabuild import pool  # noqa: E402
 #: 1 MiB records; a smaller block only costs syscalls.
 BLOCK = 1 << 20
 ARCSTATS = "/proc/spl/kstat/zfs/arcstats"
+#: The fleet's own store, spelled the way ``worker_loop`` spells it.  Not
+#: ``pool.DEFAULT_POOL_ROOT``: that default is ``/mnt/shared/pb-queue``, one
+#: directory above the queue this fleet actually keeps, and a loop pointed
+#: there reports an empty ready list forever rather than an error.
+SH = Path("/mnt/shared/prismabuild-fleet")
 
 
 # ------------------------------------------------------------------ ARC
@@ -89,13 +94,24 @@ def arcstats(path: str = ARCSTATS) -> dict[str, int]:
 
 
 def arc_headroom(reserve_fraction: float, path: str = ARCSTATS) -> dict[str, int]:
-    """The prewarm budget and the two headroom numbers it sits between.
+    """The ARC this loop may spend, and the counters that explain the number.
 
-    ``c_max - size`` is what ARC is *allowed* to grow into; ``c - size`` is what
-    it currently *intends* to hold, and that is the number that decides whether
-    a warm evicts something.  ZFS raises ``c`` toward ``c_max`` under read
-    demand, so budgeting on the optimistic bound is right -- but ``c`` moves
-    under this loop's feet, so both are reported and the caller logs both.
+    The budget is a share of ``c_max`` -- the cache's *capacity* -- and not of
+    the free space inside it.  That is not an optimism: a cache in steady
+    state is full, and this one is.  Measured on dl380g10 at 2026-09-11
+    01:59 UTC, after the campaign had been reading for hours: ``size``
+    254.05 GB against ``c_max`` 257.70 GB, leaving 3.65 GB free.  A loop that
+    budgeted on free space would have refused every 64 GB row forever while
+    the ARC sat full of bytes nobody would ask for again -- which is the whole
+    failure prewarm exists to fix.  Warming evicts, and it is supposed to: the
+    question is never "is there room" but "is what I would displace worth less
+    than what I would make resident".  That question is answered by
+    subtracting the bytes that are still wanted, in ``cycle``.
+
+    ``size``, ``c`` and the two free-space numbers are reported anyway,
+    because they are what a reader needs to tell a refusal caused by the
+    protected set from one caused by a shrunken cache: ``c`` is volatile here,
+    and fell 99 GB inside one five-minute window on 2026-09-11.
     """
 
     stats = arcstats(path)
@@ -108,7 +124,7 @@ def arc_headroom(reserve_fraction: float, path: str = ARCSTATS) -> dict[str, int
         "arc_c_max": ceiling,
         "headroom_nominal": max(0, ceiling - size),
         "headroom_effective": max(0, current - size),
-        "budget": max(0, int((ceiling - size) * reserve_fraction)),
+        "capacity_budget": max(0, int(ceiling * reserve_fraction)),
     }
 
 
@@ -345,6 +361,26 @@ def already_warm(queue: pool.PoolQueue, action_key: str, sha256: str) -> bool:
     )
 
 
+def warmed_reserve(queue: pool.PoolQueue, ready: list[dict]) -> dict:
+    """Bytes this loop already made resident for rows nobody has claimed yet.
+
+    Without this the loop would spend its whole budget on the head of the
+    queue, then spend it again on the next row by displacing the first --
+    warming two rows and arriving with neither.  A row stays protected until
+    it is claimed, at which point ``claimed_reserve`` takes over and the
+    grace window retires it.
+    """
+
+    reserved = 0
+    keys: list[str] = []
+    for item in ready:
+        record = queue.prewarm(str(item.get("action_key", "")))
+        if record and record.get("status") == "complete":
+            reserved += int(record.get("bytes_warmed", 0))
+            keys.append(str(record.get("action_key")))
+    return {"warmed_reserved_bytes": reserved, "warmed_reserved_keys": keys}
+
+
 # ------------------------------------------------------------------ loop
 
 
@@ -357,7 +393,10 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event) 
         cas_root or Path(pool.DEFAULT_POOL_ROOT).parent / "cas",
         args.claim_grace_min * 60.0,
     )
-    budget = max(0, room["budget"] - reserve["claimed_reserved_bytes"])
+    reserve.update(warmed_reserve(queue, ready))
+    protected = (reserve["claimed_reserved_bytes"]
+                 + reserve["warmed_reserved_bytes"])
+    budget = max(0, room["capacity_budget"] - protected)
     event = {
         "event": "cycle",
         "unix": round(time.time(), 3),
@@ -365,6 +404,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event) 
         "ready": len(ready),
         **room,
         **reserve,
+        "protected_bytes": protected,
         "budget_after_reserve": budget,
         "warmed": [],
         "skipped": [],
@@ -424,9 +464,12 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event) 
                 list(manifest["entries"]),
                 budget_bytes=budget,
                 stop=stop,
+                # Re-read rather than trust the cycle's opening number: the
+                # ceiling can be lowered under a running warm, and a row that
+                # started inside its budget must stop when it leaves it.
                 recheck=lambda: arc_headroom(
-                    args.arc_reserve_fraction, args.arcstats)["budget"]
-                - reserve["claimed_reserved_bytes"],
+                    args.arc_reserve_fraction,
+                    args.arcstats)["capacity_budget"] - protected,
             )
         after = arc_headroom(args.arc_reserve_fraction, args.arcstats)
         record = {
@@ -464,9 +507,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--pool-root", default=str(pool.DEFAULT_POOL_ROOT),
+    parser.add_argument("--pool-root", default=str(SH / "pb-queue"),
                         help="the queue whose ready list to read")
-    parser.add_argument("--cas-root", default=None,
+    parser.add_argument("--cas-root", default=str(SH / "cas"),
                         help="fallback CAS root; each ready item names its own")
     parser.add_argument("--mount-map", action="append", required=True,
                         help="SHARED=LOCAL, repeatable: rewrite a manifest's "
@@ -489,7 +532,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--poll-s", type=float, default=10.0,
                         help="seconds between polls of the ready list")
     parser.add_argument("--arc-reserve-fraction", type=float, default=0.8,
-                        help="fraction of (c_max - size) this loop may spend, leaving the rest as slack for the rest of the box")
+                        help="fraction of the ARC ceiling c_max this loop may "
+                             "hold at once, the rest left as slack for every "
+                             "other reader of the box")
     parser.add_argument("--arcstats", default=ARCSTATS,
                         help="where the ARC counters live; a host without "
                              "this file reports zero headroom and warms "
