@@ -50,9 +50,31 @@ same lock used by scope creation. Existing actions retain their scopes and finis
 normally. Timer ticks report `draining` until the broker proves zero active
 scopes. Only then does the updater stop the service, replace the verified local
 files, start it, check health while admission remains closed, and reopen admission.
-The persistent drain gate survives a broker restart. Scope creation racing with
+The `/run` drain gate survives a broker service restart, but not a host reboot.
+Scope creation racing with
 the gate receives a retryable maintenance refusal. Unreleased scopes and unknown
 or populated groups prevent upgrading; an idle-looking process list is not proof.
+
+Workers treat a missing gate as closed, including during boot before this
+independent root timer runs. If the installed files already match the desired
+generation and the broker proves its loaded hashes and health, the updater
+initializes a missing gate through an owned begin/end pair. It waits for zero
+active scopes before release, including on later ticks that find its own drain
+already held. A present open gate needs no extra begin/end; an unreadable gate
+is not treated as missing. `current` requires an explicit open gate readback.
+Broker errors, missing desired bytes or another drain holder keep admission
+closed without restarting or terminating work.
+
+Deploy this worker/updater pair together through normal publication, then
+verify both loop generations and installed updater hashes on every host.
+Workers awaiting initialization depend on the enrolled updater being healthy;
+an old already-current updater does not create a missing gate. This requires
+no installer or wire-protocol change, and normal journal-bound rollback remains
+available. Rolling back the runtime to older workers also rolls back the
+missing-gate protection. This is a boot-admission prerequisite for #458, not
+durable maintenance: a named hold still disappears on reboot. Barrier
+activation remains refused until persistent holds, epoch participation,
+quorums and coordinated rollback are implemented and qualified.
 
 A drain records the holder that opened it, and only that holder reopens
 admission. The updater states `client-upgrade` and releases nothing else: a tick

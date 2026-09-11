@@ -112,11 +112,9 @@ def read_maintenance_gate() -> dict | None:
     """The drain in force on this box, or ``None`` when there is none.
 
     Split out of :func:`maintenance_requested` so a caller can read the
-    drain's ``changed_unix`` without restating the rules below, which is the
-    only way to get them wrong in two places.  Every answer here is the answer
-    the boolean has always given:
+    drain's ``changed_unix`` without restating the rules below:
 
-    * no gate file at all means no drain;
+    * a missing gate means admission has not been initialized after boot;
     * a gate that cannot be read or parsed means draining, because the other
       reading admits work on a parse error;
     * a value that is not an object means draining, for the same reason;
@@ -129,7 +127,7 @@ def read_maintenance_gate() -> dict | None:
     try:
         value = json.loads(MAINTENANCE_GATE.read_text())
     except FileNotFoundError:
-        return None
+        return {"draining": True, "reason": "maintenance gate not initialized"}
     except (OSError, ValueError):
         return {"draining": True}
     if not isinstance(value, dict):

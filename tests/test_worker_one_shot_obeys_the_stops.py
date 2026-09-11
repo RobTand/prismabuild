@@ -70,7 +70,8 @@ raise SystemExit(code)
 @pytest.mark.parametrize("draining,loaded,live,why", [
     (True, "gen-a", "gen-a", "resource broker draining"),
     (False, "gen-a", "gen-b", "runtime moved"),
-    (None, "gen-a", "gen-b", "runtime moved"),
+    (None, "gen-a", "gen-b", "resource broker draining"),
+    (None, "gen-a", "gen-a", "resource broker draining"),
 ])
 def test_a_stopped_host_is_stopped_for_the_one_shot_too(tmp_path, draining, loaded,
                                                         live, why):
