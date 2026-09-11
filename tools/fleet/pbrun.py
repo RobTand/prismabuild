@@ -1759,11 +1759,10 @@ def progress_contract_notice(
     would hand back the defect wearing the fix's name.
 
     On a mixed fleet this only *reports*.  What stops an old box claiming the
-    work is ``PROGRESS_TAG``, which the submission requires and only an
-    upgraded loop offers -- a message cannot decline a claim, and during a
-    rolling upgrade both generations are polling the same queue.  Read this as
-    the census behind that requirement: which boxes it admits, and which it is
-    now waiting past.
+    work is the required watchdog and helper tags -- a message cannot decline
+    a claim, and during a rolling upgrade both generations are polling the
+    same queue.  Read this as the census behind those requirements: which boxes
+    it admits, and which it is now waiting past.
     """
 
     if policy is None:
@@ -1811,8 +1810,35 @@ def progress_contract_notice(
             f"to them: it requires the {pb.PROGRESS_TAG} tag they do not "
             "publish.  It waits for a box that does rather than being killed "
             "by a ceiling it never asked for.")
-    ceilings = queue.placement_timeout_ceilings(intent)
-    for host in sorted(set(announced) - set(unsupported)):
+    watchdog_hosts = set(announced) - set(unsupported)
+    helper_intent = {
+        **intent,
+        "tags": [*list(intent.get("tags") or []), pb.PROGRESS_TAG,
+                 pb.PROGRESS_HELPER_TAG],
+    }
+    helper_hosts = set(queue.placeable_hosts(helper_intent) or [])
+    eligible = watchdog_hosts & helper_hosts
+    helper_missing = sorted(watchdog_hosts - helper_hosts)
+    if not eligible:
+        raise SystemExit(
+            "pbrun: no eligible worker both announces "
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1} and offers "
+            f"{pb.PROGRESS_HELPER_TAG}"
+            + (f" ({', '.join(helper_missing)} announce the watchdog but do not "
+               "offer the helper)" if helper_missing else "")
+            + "; this action uses the helper environment. Update the fleet's "
+            "published generation, or submit an action that does not declare "
+            "progress phases.")
+    if helper_missing:
+        lines.append(
+            "pbrun: " + ", ".join(helper_missing) + " announce "
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1} but do not offer "
+            f"{pb.PROGRESS_HELPER_TAG}, so this action is not offered to them: "
+            f"it requires {pb.PROGRESS_TAG} and {pb.PROGRESS_HELPER_TAG}. "
+            "It waits for a helper-capable box rather than starting without "
+            "the documented reporting path.")
+    ceilings = queue.placement_timeout_ceilings(helper_intent)
+    for host in sorted(eligible):
         ceiling = ceilings.get(host)
         if ceiling is None:
             lines.append(f"pbrun: {host} announces no phase-grace ceiling; "
@@ -4096,7 +4122,8 @@ def main() -> int:
         # requirement rides them.  Sealed with the rest of the placement, so
         # the receipt says the action was admitted under the contract *and*
         # ran on a box that could keep it.
-        tags = pool.normalize_placement_tags([*tags, pb.PROGRESS_TAG])
+        tags = pool.normalize_placement_tags(
+            [*tags, pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     placement = {"required_tags": tags}
@@ -4425,7 +4452,10 @@ def main() -> int:
     # can keep its stall policy?
     progress_notice = progress_contract_notice(
         q,
-        {**intent, "tags": [t for t in tags if t != pb.PROGRESS_TAG]},
+        {**intent, "tags": [
+            t for t in tags
+            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG)
+        ]},
         policy=progress_policy,
         requested_timeout_s=args.timeout_s,
     )

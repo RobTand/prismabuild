@@ -773,10 +773,12 @@ also needs a cost cap: the deadline still ends a progressing action.
 Withdrawal and resource failures still take precedence when checks return.
 The contract is pool-only: `--progress-phase` with `--transport slurm` is
 refused, because the SLURM lane can enforce only a total duration. It also
-requires the `progress-v1` tag, which only a worker that can run the watchdog
-offers, so an old loop mid-upgrade cannot claim the action; `pbstatus`'s node
-table shows what each box announces, and its job table's `PROGRESS` column
-shows a running action's quiet time against the allowance in force.
+requires the `progress-v1` watchdog tag and the `progress-helper-v1` action
+environment tag, so an old loop mid-upgrade cannot claim an action using the
+helper. Upgraded loops continue to offer `progress-v1`, so they can claim
+already-sealed watchdog actions. `pbstatus`'s node table shows what each box
+announces, and its job table's `PROGRESS` column shows a running action's quiet
+time against the allowance in force.
 The action reports through `prismabuild.progress.commit(units, phase)`, or
 without importing anything by running the module the worker names in
 `PRISMABUILD_ACTION_PROGRESS_HELPER` -- `runpy.run_path(...)["commit"]` from

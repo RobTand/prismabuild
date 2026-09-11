@@ -403,10 +403,11 @@ def _run_loop(stop_requested):
         one box -- which is every action whose checkout is a box-local worktree
         rather than shared storage -- matches no worker and never runs.
 
-        ``PROGRESS_TAG`` rides the same subset rule as a capability rather than
-        a place, exactly as ``cpu`` does below.  A loop on the previous
-        generation does not offer it, so it cannot claim an action whose stall
-        policy it would ignore and whose run its own ceiling would then end.
+        The progress tags ride the same subset rule as capabilities rather than
+        a place, exactly as ``cpu`` does below.  The watchdog and helper have
+        separate tags: a previous v1 loop can still run an already-sealed
+        watchdog action, but cannot claim a new action that depends on its
+        helper environment.
 
         Built from a name passed in rather than read here, because the name can
         change while this loop runs; see the re-read at the top of the poll.
@@ -418,7 +419,7 @@ def _run_loop(stop_requested):
             # matches it on tags and then fails at run time instead of waiting
             # for a box that can serve it.
             tags.append("cpu")
-        tags.append(pb.PROGRESS_TAG)
+        tags.extend((pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG))
         return tags
 
     host = socket.gethostname()

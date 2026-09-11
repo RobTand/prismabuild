@@ -1664,13 +1664,19 @@ channel (#488): `PRISMABUILD_ACTION_PROGRESS_PHASES` is the sealed phase list
 as a JSON array, and `PRISMABUILD_ACTION_PROGRESS_HELPER` is the absolute path
 of `prismabuild/progress.py` inside the runtime generation that launched the
 action. `progress.py` is a leaf module -- standard library only, no
-intra-package imports -- and `core` imports the schema, the variable names and
-the writer from it rather than restating them, so `prismabuild.progress.commit`,
-`prismabuild.report_action_progress`, the module run by path or as a program,
-and the ten documented lines in the skill are one record format with one
-definition. A missing path or token is still refused as no channel at all; a
-missing phase list or helper path is an older worker generation and bounds the
-run exactly as before. An action that seals any of the four names is refused.
+intra-package imports. `core` mirrors the contract constants and retains the
+exported `prismabuild.core.report_action_progress(phase, units_completed)`
+compatibility writer without a repository import, preserving its standalone
+attestation boundary. That entry point keeps its original explicit-phase,
+path-and-token-only contract. Tests compare its wire records, including exact
+integer counts, with `prismabuild.progress.commit`. The package-level
+`prismabuild.report_action_progress` and module run by path or as a program use
+the new helper; the skill's container snippet emits the same record format.
+A missing path or token is still refused as no channel at all; a
+missing phase list or helper path identifies an older worker generation, which
+can still run previously sealed watchdog actions. New progress submissions
+require the helper capability described below. An action that seals any of the
+four names is refused.
 `commit` defaults the phase to the first declared one and raises on a name the
 submission did not declare, which is the difference between a typo that reports
 nothing acceptable and dies at its stall allowance and one that fails on its
@@ -1725,14 +1731,18 @@ degraded form of the fix.
 
 The announcement reports; the placement tag enforces. A worker that can run
 the watchdog offers `progress-v1` (`core.PROGRESS_TAG`) alongside its class
-and hostname, and `pbrun` adds it to the required tags of any submission that
-declares a policy. Item tags must already be a subset of the worker's, so no
-matcher change is needed and, during a rolling upgrade, a loop on the previous
-generation cannot claim work whose stall policy it would ignore. The tag is
-versioned with the record schema: a future record format is a new tag, so an
-old worker cannot claim work whose reports it would reject as foreign and then
-kill for the silence. On a mixed fleet the submission is narrowed rather than
-refused, and the notice names the boxes it is now waiting past.
+and hostname. A worker that also exports the helper path and phase list offers
+`progress-helper-v1` (`core.PROGRESS_HELPER_TAG`). New `pbrun` submissions that
+declare a policy require both tags. Previously sealed `progress-v1` actions
+remain eligible on either generation; their requests are unchanged.
+
+Item tags must already be a subset of the worker's, so no matcher change is
+needed. During rolling adoption, an old watchdog cannot claim a new action
+that depends on a helper it does not export. The record tag remains versioned
+with its schema; helper capability versions the additional action environment.
+On a mixed fleet the submission is narrowed to helper-capable workers. The
+notice names withheld boxes and excludes their phase ceilings; it refuses a
+known fleet that only supports the older watchdog.
 
 The contract is offered only on the pull queue. `pbrun --transport slurm` and a
 `progress_phases` row submitted to SLURM are refused

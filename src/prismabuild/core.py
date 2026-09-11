@@ -120,6 +120,10 @@ MAX_ACTION_PROGRESS_BYTES = 64 * 1024
 #: new tag, so an old worker cannot claim work whose reports it would reject as
 #: foreign and then kill for the silence.
 PROGRESS_TAG = "progress-v1"
+#: The action-side helper and phase-list environment added by #488.  It is a
+#: separate capability from :data:`PROGRESS_TAG`: an older v1 watcher accepts
+#: the record but cannot launch code that reads these names.
+PROGRESS_HELPER_TAG = "progress-helper-v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
@@ -7112,6 +7116,69 @@ def _progress_environment(
     return forwarded
 
 
+def report_action_progress(
+    phase: str, units_completed: float, *, unit: str | None = None
+) -> bool:
+    """Report semantic advancement through the original public core API.
+
+    Keep this compatibility writer self-contained: attested core cannot import
+    the repository helper. Tests compare its wire record with progress.commit
+    and retain the original explicit-phase, path-and-token-only contract.
+
+    Call it after work is *committed* -- a durable checkpoint shard written, an
+    anchor journalled, a unit published -- never on entering a loop iteration.
+    The watchdog exists to tell a long run from a stuck one, and a counter that
+    ticks on intent rather than on commitment cannot.
+
+    ``units_completed`` must be monotone across the whole run, resuming from
+    what a checkpoint already holds rather than restarting at zero, and a phase
+    is entered at most once.  Neither is enforced here -- this side cannot see
+    the sealed policy -- but a record that violates either is simply not
+    accepted as advancement.
+
+    Returns whether a record was written.  A no-op when the action was not
+    admitted under the progress contract, so an application may call it
+    unconditionally: the alternative is application code that has to know how
+    it was launched.
+
+    Writes the whole record rather than merging into one, and to a file of its
+    own rather than the launcher's status sidecar.  The sidecar is an unlocked
+    read-merge-write shared with ``_write_action_status``, and it is unlinked
+    as it is read; both are fine for two facts written once at an ending, and
+    neither survives a second writer ticking every few seconds.
+    """
+
+    destination = os.environ.get(ACTION_PROGRESS_PATH_ENV) or ""
+    token = os.environ.get(ACTION_PROGRESS_TOKEN_ENV) or ""
+    if not destination or not token:
+        return False
+    if (type(units_completed) not in (int, float)
+            or (type(units_completed) is float and not math.isfinite(units_completed))
+            or units_completed < 0):
+        raise ValueError("units_completed must be a finite, non-negative number")
+    record: dict[str, object] = {
+        "schema": PROGRESS_RECORD_SCHEMA_V1,
+        "token": token,
+        "phase": str(phase),
+        "units_completed": units_completed,
+        "reported_unix": time.time(),
+    }
+    if unit is not None:
+        record["unit"] = str(unit)
+    path = Path(destination)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        # Reporting is never worth failing an action for.  A report that does
+        # not land is a stall to the watchdog, which is the honest reading of a
+        # box that cannot write to its own queue directory.
+        return False
+    return True
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -7248,7 +7315,9 @@ __all__ = [
     "PROGRESS_POLICY_SCHEMA_V1",
     "PROGRESS_RECORD_SCHEMA_V1",
     "PROGRESS_TAG",
+    "PROGRESS_HELPER_TAG",
     "action_progress_policy",
+    "report_action_progress",
     "validate_progress_policy",
     "CAS_RECEIPT_SCHEMA_V3",
     "CODE_CLOSURE_SCHEMA_V1",
