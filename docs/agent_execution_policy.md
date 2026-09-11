@@ -114,9 +114,11 @@ announces the contract (`pbstatus` shows what each box announces). That is
 deliberate, and stricter than the ceiling notice above: a box that does not
 know the policy would apply its whole-run ceiling to an action submitted
 without one, which is the failure the contract exists to remove. On a mixed
-fleet the submission is narrowed instead: it requires the `progress-v1` tag
-that only an upgraded worker offers, so an old box cannot claim it, and the
-notice names the boxes being waited past.
+fleet the submission is narrowed instead: it requires both the `progress-v1`
+watchdog tag and the `progress-helper-v1` action-environment tag. An old v1
+box cannot claim a new helper-using action, while an upgraded box still offers
+`progress-v1` for already-sealed actions. The notice names boxes being waited
+past.
 
 Two more refusals, both fail-closed. `--progress-phase` requires the pool
 transport -- the watchdog is the pull-queue worker's, and SLURM can enforce

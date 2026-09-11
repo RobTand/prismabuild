@@ -196,7 +196,8 @@ def test_progress_submit_notice_distinguishes_deadline_from_phase_clamp(
 
     work = _checkout(tmp_path)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.announce(host="sparky", tags=["sparky", "gb10", pb.PROGRESS_TAG],
+    queue.announce(host="sparky", tags=["sparky", "gb10", pb.PROGRESS_TAG,
+                                         pb.PROGRESS_HELPER_TAG],
                    has_gpu=True, capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
                    timeout_ceiling_s=600,
                    progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1])
@@ -206,3 +207,38 @@ def test_progress_submit_notice_distinguishes_deadline_from_phase_clamp(
     assert "may be killed at 600s" not in notice
     assert "will be killed at 600s" not in notice
     assert "startup" in notice and "600s" in notice and "900s" in notice
+
+
+def test_helper_progress_submission_cannot_match_a_watchdog_only_worker(
+    tmp_path, monkeypatch,
+):
+    """The helper environment is a newer action-side capability than v1."""
+
+    from test_pbrun_detach import _checkout, _run_pbrun
+
+    work = _checkout(tmp_path)
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    # This is an existing v1 loop: it watches the v1 record but never exports
+    # PRISMABUILD_ACTION_PROGRESS_HELPER or the declared phase list.
+    queue.announce(host="sparky", tags=["sparky", "gb10", pb.PROGRESS_TAG],
+                   has_gpu=False, capacity={"cpu": 4, "mem_gb": 16},
+                   progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1])
+
+    with pytest.raises(SystemExit, match="sparky announce the watchdog"):
+        _run_pbrun(tmp_path, monkeypatch, work, "--detach",
+                    "--progress-phase", "startup=900")
+
+
+def test_helper_capability_keeps_existing_progress_v1_actions_placeable(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.announce(host="watchdog-only", tags=[pb.PROGRESS_TAG],
+                   has_gpu=False, capacity={"cpu": 1, "mem_gb": 1})
+    queue.announce(host="helper-aware",
+                   tags=[pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG],
+                   has_gpu=False, capacity={"cpu": 1, "mem_gb": 1})
+
+    old = {"tags": [pb.PROGRESS_TAG], "resources": {"cpu": 1, "mem_gb": 1}}
+    new = {"tags": [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG],
+           "resources": {"cpu": 1, "mem_gb": 1}}
+    assert queue.placeable_hosts(old) == ["helper-aware", "watchdog-only"]
+    assert queue.placeable_hosts(new) == ["helper-aware"]

@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import box_capacity  # noqa: E402
+from prismabuild import box_capacity, core  # noqa: E402
 
 
 WORKER = Path(__file__).resolve().parents[1] / "tools/fleet/worker_loop.py"
@@ -194,6 +194,8 @@ def test_worker_default_has_no_implicit_four_gpu_capacity():
 
     assert queue.announcements[-1]["has_gpu"] is False
     assert queue.announcements[-1]["capacity"]["gpu"] == 0
+    assert core.PROGRESS_TAG in queue.announcements[-1]["tags"]
+    assert core.PROGRESS_HELPER_TAG in queue.announcements[-1]["tags"]
 
 
 def test_worker_autodetects_one_physical_gpu_from_the_trusted_snapshot():

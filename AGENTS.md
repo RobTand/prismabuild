@@ -38,7 +38,7 @@ Emit committed units from any loop that runs longer than a few minutes: the
 channel is in the action's environment, so a shell loop, a foreign interpreter
 and a container all report through the same helper rather than a copy of the
 record (#488). Use the published execution policy and skill: progress
-submission requires a runtime advertising `progress-v1` and the pool
-transport. A source merge alone
+submission requires a runtime advertising both `progress-v1` and
+`progress-helper-v1` on the pool transport. A source merge alone
 does not establish deployed support. Never change an existing sealed request
 to extend it; use supported recovery and its identity-bound checkpoints.

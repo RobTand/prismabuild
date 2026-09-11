@@ -120,6 +120,10 @@ MAX_ACTION_PROGRESS_BYTES = 64 * 1024
 #: new tag, so an old worker cannot claim work whose reports it would reject as
 #: foreign and then kill for the silence.
 PROGRESS_TAG = "progress-v1"
+#: The action-side helper and phase-list environment added by #488.  It is a
+#: separate capability from :data:`PROGRESS_TAG`: an older v1 watcher accepts
+#: the record but cannot launch code that reads these names.
+PROGRESS_HELPER_TAG = "progress-helper-v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
@@ -7311,6 +7315,7 @@ __all__ = [
     "PROGRESS_POLICY_SCHEMA_V1",
     "PROGRESS_RECORD_SCHEMA_V1",
     "PROGRESS_TAG",
+    "PROGRESS_HELPER_TAG",
     "action_progress_policy",
     "report_action_progress",
     "validate_progress_policy",
