@@ -51,6 +51,9 @@ and each one is exactly one ``pbrun`` flag:
 ``retry_safe``       ``--retry-safe``
 ``progress_phases``  ``--progress-phase``, once per entry, ``"name=seconds"``
 ``max_attempts``     ``--max-attempts``
+``data_manifest``    ``--data-manifest``: file naming the shared-mount bytes
+                     this row reads, so a storage-role loop can make them
+                     resident first.  It is hashed into the action key
 ===================  ====================================================
 
 Every field except ``argv`` is optional, and an omitted one is not passed to
@@ -173,6 +176,7 @@ _VALUE_FIELDS = (
     ("profile", "--profile"),
     ("host_class", "--host-class"),
     ("max_attempts", "--max-attempts"),
+    ("data_manifest", "--data-manifest"),
 )
 _SWITCH_FIELDS = (
     ("deterministic", "--deterministic"),
@@ -209,7 +213,7 @@ _INTEGER_FIELDS = (
 )
 
 #: Fields whose value reaches ``pbrun`` as text.
-_TEXT_FIELDS = ("cwd", "host_class", "profile")
+_TEXT_FIELDS = ("cwd", "host_class", "profile", "data_manifest")
 
 
 def _refuse(index: int, field: str, wanted: str, value) -> ManifestError:

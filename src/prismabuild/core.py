@@ -28,6 +28,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import posixpath
 import re
 import shutil
 import signal
@@ -135,6 +136,19 @@ PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2 = (
 )
 PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID = "pbrun.checkout-snapshot"
 PBRUN_CHECKOUT_SNAPSHOT_REF_NAME = "prismabuild-snapshot"
+#: A second content-addressed input: the exact bytes an action will read off
+#: the shared mount, so a storage-role loop can make them resident before the
+#: action is claimed.  It is an ordinary ``action.inputs`` row, which means the
+#: action key covers it -- attaching a manifest to an otherwise identical
+#: submission produces a different action.
+PBCAMPAIGN_DATA_MANIFEST_INPUT_ID = "pbcampaign.data-manifest"
+DATA_MANIFEST_SCHEMA_V1 = "prismaquant.prismabuild.data_manifest.v1"
+#: A manifest is a residency hint read by a helper loop, not a payload.  The
+#: ceiling is four orders of magnitude above the 212 KB the GLM census emits
+#: and still small enough that a malformed submission cannot make a reader
+#: allocate its way out of memory.
+DATA_MANIFEST_MAX_BYTES = 64 * 1024 * 1024
+DATA_MANIFEST_MAX_ENTRIES = 1_000_000
 LOCAL_RESULT_CLAIM_SCHEMA_V1 = "prismaquant.prismabuild.local_result_claim.v1"
 INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1 = (
     "prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1"
@@ -322,6 +336,11 @@ _INITIAL_MISS_RENDEZVOUS_RECEIPT_KEYS = (
 )
 
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,255}\Z")
+_DATA_MANIFEST_KEYS = frozenset(
+    {"schema", "produced_by", "mount_prefix", "entries", "entry_count",
+     "total_bytes", "annotations"}
+)
+_DATA_MANIFEST_ENTRY_KEYS = frozenset({"path", "offset", "bytes", "sha256"})
 _GIT_OBJECT_ID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 #: A snapshot ref name is an allow-list, not Git's full branch grammar: it is
 #: spelled into a worker's ``git fetch`` refspec, so everything the revision
@@ -2173,6 +2192,131 @@ def validate_input_contract(value: object) -> dict[str, object]:
     """
 
     return _normalize_inputs([value])[0]
+
+
+def _manifest_path(value: object, *, prefix: str, where: str) -> str:
+    """One absolute path inside the declared mount, named exactly.
+
+    A manifest is submitter-supplied and the loop that reads it runs on the
+    storage host, so this is the boundary that decides what that loop may
+    open.  Exact identity means what it says: one literal path per entry, no
+    glob, no ``..``, no symlink-resolved detour, nothing outside the prefix the
+    manifest itself declares.  ``realpath`` is deliberately not consulted --
+    the check must be a property of the manifest bytes, identical on every
+    host and stable across a remount; the reader opens ``O_NOFOLLOW`` instead,
+    which refuses the link rather than following it somewhere this check
+    already approved.
+    """
+
+    text = _text(value, where=where)
+    if not text.startswith(prefix + "/"):
+        _fail(f"{where} must be inside {prefix}")
+    if posixpath.normpath(text) != text:
+        _fail(f"{where} must already be normalized")
+    return text
+
+
+def validate_data_manifest(value: object) -> dict[str, object]:
+    """Normalize the file list an action declares it will read.
+
+    The manifest answers one question -- which bytes, in which order -- and
+    deliberately answers no others.  ``sha256`` may be null on every entry:
+    hashing a terabyte of calibration captures costs more than the residency
+    it buys, and integrity is not what this contract carries.  What binds the
+    list to the action is that the *manifest file* is content-addressed in the
+    CAS like any other input, so the action key covers these bytes exactly.
+    """
+
+    manifest = _exact_mapping(
+        value, keys=_DATA_MANIFEST_KEYS, where="data manifest"
+    )
+    schema = _text(manifest["schema"], where="data manifest schema")
+    if schema != DATA_MANIFEST_SCHEMA_V1:
+        _fail(f"data manifest schema must be {DATA_MANIFEST_SCHEMA_V1}")
+    if not isinstance(manifest["produced_by"], Mapping):
+        _fail("data manifest produced_by must be an object")
+    if not isinstance(manifest["annotations"], Mapping):
+        _fail("data manifest annotations must be an object")
+    prefix = _text(manifest["mount_prefix"], where="data manifest mount_prefix")
+    if not prefix.startswith("/") or prefix != posixpath.normpath(prefix):
+        _fail("data manifest mount_prefix must be a normalized absolute path")
+    if prefix == "/":
+        _fail("data manifest mount_prefix must name a mount, not the root")
+    raw_entries = manifest["entries"]
+    if type(raw_entries) is not list or not raw_entries:
+        _fail("data manifest entries must be a non-empty array")
+    if len(raw_entries) > DATA_MANIFEST_MAX_ENTRIES:
+        _fail(
+            "data manifest entries exceed "
+            f"{DATA_MANIFEST_MAX_ENTRIES}"
+        )
+    entries: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()
+    total = 0
+    for index, raw in enumerate(raw_entries):
+        where = f"data manifest entries[{index}]"
+        entry = _exact_mapping(
+            raw, keys=_DATA_MANIFEST_ENTRY_KEYS, where=where
+        )
+        path = _manifest_path(
+            entry["path"], prefix=prefix, where=f"{where}.path"
+        )
+        offset = _nonnegative_integer(entry["offset"], where=f"{where}.offset")
+        size = _nonnegative_integer(entry["bytes"], where=f"{where}.bytes")
+        if size == 0:
+            _fail(f"{where}.bytes must be positive")
+        digest = (
+            None
+            if entry["sha256"] is None
+            else _sha256(entry["sha256"], where=f"{where}.sha256")
+        )
+        if (path, offset) in seen:
+            _fail("data manifest entries must not repeat a (path, offset)")
+        seen.add((path, offset))
+        total += size
+        entries.append(
+            {"path": path, "offset": offset, "bytes": size, "sha256": digest}
+        )
+    # Both totals are stated by the producer and recomputed here, because the
+    # loop budgets ARC against ``total_bytes`` before it opens anything: a
+    # total that disagreed with the list would let a manifest reserve one
+    # amount of memory and read another.
+    if _nonnegative_integer(
+        manifest["entry_count"], where="data manifest entry_count"
+    ) != len(entries):
+        _fail("data manifest entry_count disagrees with entries")
+    if _nonnegative_integer(
+        manifest["total_bytes"], where="data manifest total_bytes"
+    ) != total:
+        _fail("data manifest total_bytes disagrees with entries")
+    return {
+        "schema": schema,
+        "produced_by": dict(manifest["produced_by"]),
+        "annotations": dict(manifest["annotations"]),
+        "mount_prefix": prefix,
+        "entries": entries,
+        "entry_count": len(entries),
+        "total_bytes": total,
+    }
+
+
+def load_data_manifest(path: str | Path) -> dict[str, object]:
+    """Read and validate a data manifest file, refusing an oversized one."""
+
+    source = Path(path)
+    try:
+        size = source.stat().st_size
+    except OSError as exc:
+        raise ActionContractError(f"unreadable data manifest: {exc}") from exc
+    if size > DATA_MANIFEST_MAX_BYTES:
+        raise ActionContractError(
+            f"data manifest exceeds {DATA_MANIFEST_MAX_BYTES} bytes: {size}"
+        )
+    try:
+        loaded = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ActionContractError(f"unreadable data manifest: {exc}") from exc
+    return validate_data_manifest(loaded)
 
 
 def _normalize_task(value: object) -> dict[str, object]:
@@ -7326,8 +7470,12 @@ __all__ = [
     "INITIAL_MISS_RENDEZVOUS_PROCESS_SCHEMA_V1",
     "INITIAL_MISS_RENDEZVOUS_READY_SCHEMA_V1",
     "INITIAL_MISS_RENDEZVOUS_RECEIPT_SCHEMA_V1",
+    "DATA_MANIFEST_MAX_BYTES",
+    "DATA_MANIFEST_MAX_ENTRIES",
+    "DATA_MANIFEST_SCHEMA_V1",
     "LOCAL_RESULT_CLAIM_SCHEMA_V1",
     "PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH",
+    "PBCAMPAIGN_DATA_MANIFEST_INPUT_ID",
     "PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID",
     "PBRUN_CHECKOUT_SNAPSHOT_REF_NAME",
     "PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1",
@@ -7368,6 +7516,7 @@ __all__ = [
     "git_checkout_identity",
     "identify_executable",
     "is_pbrun_generated_path",
+    "load_data_manifest",
     "main",
     "preflight_action",
     "profile_backend_for",
@@ -7379,6 +7528,7 @@ __all__ = [
     "seal_action",
     "validate_action",
     "validate_code_closure",
+    "validate_data_manifest",
     "validate_input_contract",
     "validate_pbrun_checkout_snapshot",
     "validate_pbrun_snapshot_ref_name",
