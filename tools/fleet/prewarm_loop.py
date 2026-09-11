@@ -972,7 +972,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lookahead", type=int, default=1,
                         help="how many ready actions ahead to warm.  The ARC "
                              "must hold the running rows as well: on dl380g10 "
-                             "c_max is 257.7 GB, two live 64 GB rows and one "
+                             "c_max is 245 760 MiB (257.7 GB), two live 64 GB "
+                             "rows and one "
                              "64 GB lookahead row come to 191 GB against a "
                              "206 GB budget at the default reserve fraction, "
                              "and a second lookahead row does not fit -- it is "

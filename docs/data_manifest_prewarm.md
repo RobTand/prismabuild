@@ -143,7 +143,8 @@ reproduce the pre-#499 behaviour, and it is not a supported production shape.
 
 The lookahead is bounded by what the ARC can hold *besides* the rows that are
 running, not by how far ahead the loop can see.  On dl380g10: `c_max` is
-257.7 GB, `--arc-reserve-fraction 0.8` leaves the loop 206.2 GB, and a GLM
+245 760 MiB (257.7 GB, and both spellings appear in the record: `arcstats`
+counts bytes, Netdata's `zfs.arc_size` charts MiB), `--arc-reserve-fraction 0.8` leaves the loop 206.2 GB, and a GLM
 census row is ~64 GB.  Two rows being read plus one warmed ahead is 191.4 GB,
 14.8 GB under the budget.  A second lookahead row is 255.2 GB and does not
 fit: the only way to warm it is to displace what a running row is still
