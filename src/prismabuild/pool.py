@@ -4586,6 +4586,10 @@ class PoolQueue:
                         # The ledger is the exact answer either way; this only keeps
                         # the fallback from being confidently wrong.
                         self._discard_claim_intent(key, owner=owner)
+                        self.record_denial(item, "claim_rename_lost_race", {
+                            "demand": demand, "reservation_demand": reservation_demand,
+                            "had_reservation": handle is not None,
+                        })
                         continue
                     moved = _read_json(dst) or item
                     if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
@@ -4606,6 +4610,10 @@ class PoolQueue:
                         else:
                             dst.unlink(missing_ok=True)
                             self.item_path(INTENT, key).unlink(missing_ok=True)
+                        self.record_denial(item, "claimed_record_changed", {
+                            "scanned_demand": demand, "moved_demand": self.demand_of(moved),
+                            "moved_tags": moved.get("tags"), "moved_needs_gpu": moved.get("needs_gpu"),
+                        })
                         continue
                     if ledger is not None and handle is not None:
                         # Won the rename, so the reservation stops belonging to this
@@ -4647,6 +4655,12 @@ class PoolQueue:
                             else:
                                 dst.unlink(missing_ok=True)
                                 self.item_path(INTENT, key).unlink(missing_ok=True)
+                            self.record_denial(item, "committed_reservation_incomplete", {
+                                "filed_tokens": filed,
+                                "expected_tokens": sum(reservation_demand.values()),
+                                "adaptive_cpu": adaptive is not None,
+                                "adaptive_gpu": adaptive_gpu is not None,
+                            })
                             continue
                 except BaseException:
                     # The handle is the only name these tokens have, and it
