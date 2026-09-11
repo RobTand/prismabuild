@@ -1861,10 +1861,14 @@ the broker keeps its canonical maintenance record in root-only host-local
 marker distinguishes first migration of a valid volatile gate from erased durable
 evidence, which fails closed. A durable close is written before its volatile
 mirror; durable release is written before the open mirror, and a post-commit
-mirror failure keeps the running broker closed until restart retries the committed
-state. New updater/broker adoption therefore needs a converged bridge before a
-downgrade can be blocked; the upgraded updater rejects a non-durable candidate
-while the running broker advertises durable maintenance. This is host-local hold
+mirror failure keeps the running broker closed. At startup an absent volatile
+gate turns even a durable open record into a persisted `client-upgrade` boot
+hold, released only after the updater's current-client and health checks.
+The upgraded updater refuses candidates lacking either durable broker or
+durable updater support, and refuses missing running capability. That guard
+takes effect after the coupled updater/broker generation converges; the older
+updater executing the first transition may still restore its previous files.
+This is host-local hold
 recovery only: it neither enables a fleet barrier nor supplies epoch participation,
 quorum, or coordinated rollback.
 A loop that parks on a drain records that it parked, one file per process per

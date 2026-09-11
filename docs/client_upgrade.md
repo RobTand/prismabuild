@@ -56,8 +56,11 @@ so a named drain survives a host reboot and the broker restores the mirror befor
 it admits work. Begin commits the durable closed state before the mirror closes;
 release commits the durable open state before the mirror opens. If the final
 mirror publication fails after a release, the running broker retains admission
-closed and reports an error; a restart retries the mirror from the committed
-release. A missing, corrupt, untrusted, or previously initialized-but-now-missing
+closed and reports an error; restart recovers the committed state. If the
+volatile gate is absent, even a durable open record first becomes a persisted
+`client-upgrade` boot hold. Only the updater's current-client, loaded-hash and
+health checks can release it. Restoring an old open record cannot bypass boot
+initialization. A missing, corrupt, untrusted, or previously initialized-but-now-missing
 canonical record fails closed. Only the first adoption may migrate a valid old
 `/run` gate, and it writes an adjacent initialized marker before the canonical
 record so erased evidence is never mistaken for a new installation.
@@ -81,15 +84,20 @@ Workers awaiting initialization depend on the enrolled updater being healthy;
 an old already-current updater does not create a missing gate. This requires
 no installer or wire-protocol change, and normal journal-bound rollback remains
 available. The resource-broker installer explicitly initializes the canonical
-open record on a fresh installation; a rolling adoption instead migrates the
-already verified open gate. The upgraded updater refuses to replace a running
-durable broker with a candidate that lacks the durable protocol before it drains
-or stops the service. First converge that updater/broker generation everywhere;
+open record on a proven fresh installation; a rolling adoption instead migrates
+the existing valid gate, preserving any named hold. Initialization refuses any
+existing canonical record, marker or legacy gate, including dangling symlinks.
+The upgraded updater requires both candidate broker and updater to support
+durable maintenance once its installed broker has that capability. Missing or
+stale running capability also refuses the transition before drain or service
+mutation. First converge that updater/broker generation everywhere;
 an older updater can still perform a pre-convergence rollback and consequently
 does not preserve the reboot guarantee. This is a durable-host-hold prerequisite
-for #458, not fresh epoch participation, quorums, or coordinated rollback. Barrier
-activation remains refused until persistent holds, epoch participation,
-quorums and coordinated rollback are implemented and qualified.
+for #458, not fresh epoch participation, quorums, or coordinated rollback.
+Rolling the runtime back to workers older than #505 also loses their missing-gate
+protection; the client downgrade guard does not prevent a runtime symlink move.
+Barrier activation remains refused until epoch participation, quorums and
+coordinated rollback are implemented and qualified.
 
 A drain records the holder that opened it, and only that holder reopens
 admission. The updater states `client-upgrade` and releases nothing else: a tick

@@ -30,6 +30,9 @@ HEX64=re.compile(r'[0-9a-f]{64}\Z');HEX32=re.compile(r'[0-9a-f]{32}\Z')
 MAINTENANCE_SCHEMA='prismabuild.resource-maintenance.v1'
 MAINTENANCE_EVIDENCE_SCHEMA='prismabuild.resource-maintenance-evidence.v1'
 MAINTENANCE_DURABLE_PROTOCOL=1
+# The updater owns initialization of admission after /run is cleared. It must
+# verify desired/installed/loaded clients and health before releasing this hold.
+MAINTENANCE_BOOT_OWNER='client-upgrade'
 # A drain opened without a stated holder. Callers that predate drain ownership
 # cannot name themselves, so their gates carry this identity and stay releasable
 # by any root caller, exactly as every gate was before ownership existed.
@@ -328,6 +331,22 @@ class Authority:
         except (OSError,ValueError,json.JSONDecodeError) as exc:
             self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True}
             self.maintenance_error='durable maintenance state is unreadable: '+str(exc)[:1200]
+        if not self.maintenance_error and not self.maintenance['draining']:
+            try:
+                self.maintenance_path.lstat()
+            except FileNotFoundError:
+                # A persisted release is not proof that this boot loaded the
+                # desired clients. Retain #505's updater handshake before the
+                # worker mirror or broker grants any fresh admission.
+                self.maintenance={'schema':MAINTENANCE_SCHEMA,'draining':True,
+                    'changed_unix':time.time(),'owner':MAINTENANCE_BOOT_OWNER,
+                    'reason':'boot admission awaits current-client verification'}
+                try:_atomic(self.maintenance_state_path,self.maintenance,mode=0o600)
+                except OSError as exc:
+                    self.maintenance_error='boot maintenance hold could not be committed: '+str(exc)[:1200]
+            except OSError as exc:
+                self.maintenance['draining']=True
+                self.maintenance_error='boot maintenance gate is unavailable: '+str(exc)[:1200]
         try:self._sync_maintenance_gate()
         except OSError as exc:
             closed=self._force_volatile_gate_closed()
@@ -519,7 +538,8 @@ class Authority:
                     # Durable closure precedes every worker-visible close.  If
                     # the latter fails, remove the old open mirror if possible;
                     # #505 treats absence as closed and this authority is closed.
-                    try:_atomic(self.maintenance_state_path,value,mode=0o600)
+                    try:_atomic(self.maintenance_state_path,value,
+                                mode=0o600 if self.durable_maintenance else 0o644)
                     except OSError:
                         if self.durable_maintenance:
                             self.maintenance=value
@@ -527,10 +547,11 @@ class Authority:
                             self._force_volatile_gate_closed()
                         raise
                     self.maintenance=value
-                    try:self._sync_maintenance_gate(value)
-                    except OSError:
-                        self.maintenance_error=self._force_volatile_gate_closed()
-                        raise
+                    if self.durable_maintenance:
+                        try:self._sync_maintenance_gate(value)
+                        except OSError:
+                            self.maintenance_error=self._force_volatile_gate_closed()
+                            raise
             status=self._maintenance_status()
             if op in {'maintenance_end','maintenance_force_end'}:
                 if foreign and op=='maintenance_end':
@@ -543,12 +564,14 @@ class Authority:
                 # The volatile open mirror never precedes durable release.  If
                 # the mirror fails, retain this process's in-memory closure;
                 # a restart reads the committed release and retries the mirror.
-                _atomic(self.maintenance_state_path,value,mode=0o600)
-                try:self._sync_maintenance_gate(value)
-                except OSError:
-                    self.maintenance_error='durable maintenance release committed but volatile gate remains closed'
-                    self._force_volatile_gate_closed()
-                    raise
+                _atomic(self.maintenance_state_path,value,
+                        mode=0o600 if self.durable_maintenance else 0o644)
+                if self.durable_maintenance:
+                    try:self._sync_maintenance_gate(value)
+                    except OSError:
+                        self.maintenance_error='durable maintenance release committed; volatile admission fenced'
+                        self._force_volatile_gate_closed()
+                        raise
                 self.maintenance=value;self.maintenance_error=None
                 status['draining']=False;status.pop('maintenance_owner',None)
             return status
@@ -882,6 +905,9 @@ def main():
         state=Path(args.maintenance_state)
         evidence=state.with_name(state.name+'.initialized')
         state.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        upper=os.open(state.parent.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(upper)
+        finally:os.close(upper)
         info=state.parent.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077):
             raise SystemExit('maintenance state directory must be private and root-owned')
