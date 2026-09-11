@@ -75,10 +75,27 @@ class FakeDisk:
         self.slept = 0.0
 
     def stat(self, device: str) -> list[int]:
-        row = self.rows[min(self.index, len(self.rows) - 1)]
+        row = self.row_at(self.index)
         if self.advance_on_read:
             self.tick()
         return row
+
+    def row_at(self, index: int) -> list[int]:
+        """The counters at ``index``, past the end of the script as well.
+
+        Off the end the last state *continues* rather than freezing: a frozen
+        row is a disk doing no work at all, so a test that asked for a pool
+        that stays busy would get one that goes idle the moment the reader
+        polls faster than the script is long.
+        """
+
+        if index < len(self.rows):
+            return self.rows[index]
+        last = self.rows[-1]
+        previous = self.rows[-2] if len(self.rows) > 1 else [0] * len(last)
+        steps = index - (len(self.rows) - 1)
+        return [value + (value - before) * steps
+                for value, before in zip(last, previous)]
 
     def clock(self) -> float:
         return self.now
@@ -200,7 +217,7 @@ def test_the_seconds_held_are_wall_clock_not_a_sum_over_readers() -> None:
     "held 40 s of a 300 s warm" is a sentence, and "held 320 s" is not.
     """
 
-    disk = FakeDisk(accumulate([LOADED] * 500))
+    disk = FakeDisk(accumulate([LOADED, LOADED]))
     pacer = disk.pacer()
     pacer.wait(threading.Event())      # sample 1: no interval
     disk.tick()
