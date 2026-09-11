@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from prismabuild import core as pb  # noqa: E402
+from prismabuild import progress as pb_progress  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
                                    "unix": time.time()}, sort_keys=True) + "\n",
                        encoding="utf-8")
         os.replace(tmp, result)
-        reported = pb.report_action_progress(
+        reported = pb_progress.report_action_progress(
             args.phase, committed, unit="demo-units") or reported
         print(f"[demo] committed {committed}", flush=True)
     print(f"[demo] done: {committed} units, reported={reported}", flush=True)

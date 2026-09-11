@@ -176,6 +176,19 @@ def commit(
     return _write(Path(destination), record)
 
 
+def report_action_progress(
+    phase: str, units_completed: float, *, unit: str | None = None
+) -> bool:
+    """:func:`commit` with the arguments the other way round.
+
+    The original spelling, kept because the submission skill, the execution
+    policy and the first consumers name it.  One writer, two orders: this one
+    reads well when the phase is the subject, ``commit`` when the count is.
+    """
+
+    return commit(units_completed, phase, unit=unit)
+
+
 def _resolve_phase(phase: str | None) -> str:
     declared = declared_phases()
     if phase is None:

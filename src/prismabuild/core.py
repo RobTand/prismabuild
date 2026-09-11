@@ -39,17 +39,6 @@ import tempfile
 import time
 import zlib
 
-from .progress import (  # noqa: F401  (re-exported: one definition, one writer)
-    ACTION_PROGRESS_ENV,
-    ACTION_PROGRESS_HELPER_ENV,
-    ACTION_PROGRESS_PATH_ENV,
-    ACTION_PROGRESS_PHASES_ENV,
-    ACTION_PROGRESS_TOKEN_ENV,
-    MAX_ACTION_PROGRESS_BYTES,
-    PROGRESS_RECORD_SCHEMA_V1,
-    commit as _commit_progress,
-)
-
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
 ACTION_SCHEMA_V2 = "prismaquant.prismabuild.action.v2"
 CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
@@ -68,17 +57,40 @@ WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
 #: deliberate exception, and say so.)
 ACTION_STATUS_PATH_ENV = "PRISMABUILD_ACTION_STATUS_PATH"
 
-#: The action-side half of the progress contract, defined in
-#: :mod:`prismabuild.progress` and re-exported here.  It lives in a leaf module
-#: of its own because the applications that report are usually not PrismaBuild
-#: processes -- a pytest shard under another venv, a row inside a pinned
-#: container, a shell loop -- and none of them can import this file.  One
-#: definition of the schema and one writer, whichever way it is reached.
+#: The action-side half of the progress contract, whose definitions live in
+#: :mod:`prismabuild.progress` and are **mirrored** here.
+#:
+#: Mirrored rather than imported, and the reason is
+#: ``test_worker_core_has_no_unattested_repository_imports``: the worker
+#: attestation hashes this file and the launcher, so anything this file
+#: imported from the repository would be code the worker runs and the
+#: attestation does not cover.  ``progress`` is a leaf the *action* loads --
+#: by name, by path, or as a program -- precisely because it cannot import
+#: this one either.  The mirror is held to its source by
+#: ``test_one_definition_of_the_schema_and_the_channel``; change it there
+#: first.
 #:
 #: Unlike ``ACTION_STATUS_PATH_ENV`` these DO reach the action's own
 #: environment: ``run_local_action`` forwards them, and only when the sealed
 #: params declare :data:`PROGRESS_PARAM`.  They have to -- the whole point is a
-#: fact the *application* knows and the launcher does not.
+#: fact the *application* knows and the launcher does not.  An action that
+#: seals any of the names is refused rather than overwritten, exactly as the
+#: profile contract already refuses one.
+#:
+#: The token is minted per LAUNCH rather than per action key.  Unlinking the
+#: file before the launch is not enough on its own: an action that outlived
+#: SIGKILL on a previous attempt (a D-state GPU wedge does) keeps the same
+#: path open and would replay its counter into the next attempt's watchdog.
+ACTION_PROGRESS_PATH_ENV = "PRISMABUILD_ACTION_PROGRESS_PATH"
+ACTION_PROGRESS_TOKEN_ENV = "PRISMABUILD_ACTION_PROGRESS_TOKEN"
+ACTION_PROGRESS_PHASES_ENV = "PRISMABUILD_ACTION_PROGRESS_PHASES"
+ACTION_PROGRESS_HELPER_ENV = "PRISMABUILD_ACTION_PROGRESS_HELPER"
+ACTION_PROGRESS_ENV = (
+    ACTION_PROGRESS_PATH_ENV,
+    ACTION_PROGRESS_TOKEN_ENV,
+    ACTION_PROGRESS_PHASES_ENV,
+    ACTION_PROGRESS_HELPER_ENV,
+)
 
 #: The sealed request key that declares the progress contract, and the two
 #: schema names that version it.  ``PROGRESS_PARAM`` is sealed into the action
@@ -87,6 +99,11 @@ ACTION_STATUS_PATH_ENV = "PRISMABUILD_ACTION_STATUS_PATH"
 #: store is answered by a receipt filed under the other policy.
 PROGRESS_PARAM = "progress"
 PROGRESS_POLICY_SCHEMA_V1 = "prismabuild.action_progress_policy.v1"
+#: Mirrored from :mod:`prismabuild.progress`; see the note above.
+PROGRESS_RECORD_SCHEMA_V1 = "prismabuild.action_progress.v1"
+# A report is metadata, never a checkpoint payload. Bound both accepted bytes
+# and parser work; use the existing stable regular-file reader in the watcher.
+MAX_ACTION_PROGRESS_BYTES = 64 * 1024
 
 #: The placement tag a worker offers when it can enforce the progress contract,
 #: and which the submitter requires of any action that declares one.
@@ -7095,29 +7112,6 @@ def _progress_environment(
     return forwarded
 
 
-def report_action_progress(
-    phase: str, units_completed: float, *, unit: str | None = None
-) -> bool:
-    """Report semantic advancement to whatever is watching this action.
-
-    The original spelling of :func:`prismabuild.progress.commit`, kept because
-    published receipts, the submission skill and the first consumers name it.
-    Both are one writer: ``commit`` takes the count first and defaults the
-    phase, which is what a loop wants to type; this one takes the phase first.
-
-    Call either after work is *committed* -- a durable checkpoint shard
-    written, an anchor journalled, a unit published -- never on entering a loop
-    iteration.  The watchdog exists to tell a long run from a stuck one, and a
-    counter that ticks on intent rather than on commitment cannot.
-
-    A no-op when the action was not admitted under the progress contract, so an
-    application may call it unconditionally: the alternative is application
-    code that has to know how it was launched.
-    """
-
-    return _commit_progress(units_completed, phase, unit=unit)
-
-
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -7255,7 +7249,6 @@ __all__ = [
     "PROGRESS_RECORD_SCHEMA_V1",
     "PROGRESS_TAG",
     "action_progress_policy",
-    "report_action_progress",
     "validate_progress_policy",
     "CAS_RECEIPT_SCHEMA_V3",
     "CODE_CLOSURE_SCHEMA_V1",

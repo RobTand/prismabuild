@@ -11,6 +11,7 @@ copy of a versioned schema is how the two drift.
 These tests hold every documented way of reporting to one standard: the bytes
 the worker's own ``ProgressWatch`` accepts (#488).
 """
+import ast
 import json
 import os
 import subprocess
@@ -95,13 +96,14 @@ def test_the_package_helper_writes_what_the_worker_accepts(channel):
 
 
 def test_the_original_spelling_is_the_same_writer(channel):
-    assert pb.report_action_progress("run", 3, unit="anchors") is True
+    assert progress.report_action_progress("run", 3, unit="anchors") is True
     first = json.loads(Path(channel).read_text())
     assert progress.commit(4, "run", unit="anchors") is True
     second = json.loads(Path(channel).read_text())
     assert first.keys() == second.keys()
     assert first["schema"] == second["schema"] == pb.PROGRESS_RECORD_SCHEMA_V1
-    assert prismabuild_exports() == (progress.commit, pb.report_action_progress)
+    assert prismabuild_exports() == (
+        progress.commit, progress.report_action_progress)
 
 
 def prismabuild_exports():
@@ -111,13 +113,25 @@ def prismabuild_exports():
 
 
 def test_one_definition_of_the_schema_and_the_channel():
-    """``core`` re-exports rather than restating; two copies is how they drift."""
+    """``core`` mirrors these rather than importing them, so check the mirror.
 
-    assert pb.PROGRESS_RECORD_SCHEMA_V1 is progress.PROGRESS_RECORD_SCHEMA_V1
-    assert pb.MAX_ACTION_PROGRESS_BYTES is progress.MAX_ACTION_PROGRESS_BYTES
+    It cannot import: the worker attestation hashes the launcher and
+    ``core.py``, so a repository import there would be code the worker runs
+    and the attestation does not cover
+    (``test_worker_core_has_no_unattested_repository_imports``).  The action
+    cannot import ``core`` either, which is why the writer lives in the leaf.
+    Two files state these strings; this is what stops them disagreeing.
+    """
+
+    assert pb.PROGRESS_RECORD_SCHEMA_V1 == progress.PROGRESS_RECORD_SCHEMA_V1
+    assert pb.MAX_ACTION_PROGRESS_BYTES == progress.MAX_ACTION_PROGRESS_BYTES
+    assert pb.ACTION_PROGRESS_ENV == progress.ACTION_PROGRESS_ENV
     assert pb.ACTION_PROGRESS_ENV == (
         pb.ACTION_PROGRESS_PATH_ENV, pb.ACTION_PROGRESS_TOKEN_ENV,
         pb.ACTION_PROGRESS_PHASES_ENV, pb.ACTION_PROGRESS_HELPER_ENV)
+    relative = [node for node in ast.walk(ast.parse(Path(pb.__file__).read_text()))
+                if isinstance(node, ast.ImportFrom) and node.level > 0]
+    assert relative == []
 
 
 def test_no_channel_is_a_no_op_rather_than_an_error(monkeypatch):
