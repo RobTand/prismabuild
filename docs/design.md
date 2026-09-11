@@ -2037,9 +2037,11 @@ percentage is not accepted as saturation evidence; device power, CPU activity,
 residency and useful work per unit time are the relevant host view.
 
 Configured host memory is an aggregate fleet budget, not physical RAM or an
-individual action's limit. The dl380g10 budget is 192 GiB against 294.5 GiB of
-physical RAM, with measured allowance for unrelated services and host margin;
-see [the capacity evidence](dl380_memory_capacity_2026-09-05.md). Live host
+individual action's limit. The dl380g10 budget is 96 GiB against 294.523 GiB of
+physical RAM, preserving the storage host's 176 GiB ZFS ARC minimum and
+16 GiB system-free target with another 6.523 GiB outside the PB ceiling
+(issue #488). The prior 192 GiB budget remains historical
+[capacity evidence](dl380_memory_capacity_2026-09-05.md). Live host
 observation may lower advertised capacity. Increasing the configured ceiling
 does not resize existing reservations or their cgroup limits.
 
