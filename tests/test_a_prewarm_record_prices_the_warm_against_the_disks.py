@@ -218,3 +218,26 @@ def test_the_pacer_the_loop_builds_matches_its_arguments() -> None:
     assert pacer.devices == ["sdb", "sdc"]
     assert pacer.max_util_pct == 25.0
     assert pacer.report()["reason"] == "from --disks"
+
+
+def test_the_storage_host_refuses_to_read_unpaced(tmp_path: Path) -> None:
+    """Discovery failing on the storage host is #499, not a degraded mode.
+
+    Everywhere else an inactive pacer is the honest answer -- there is no pool
+    to pace.  On the host that holds the pool, a loop that could not find its
+    disks would read exactly the way the eight-reader loop read, so it refuses
+    and names the argument that fixes it.
+    """
+
+    local = tmp_path / "storage_pool" / "shared"
+    local.mkdir(parents=True)
+
+    try:
+        prewarm_loop.main(["--mount-map", f"/mnt/shared={local}",
+                           "--pool-root", str(tmp_path / "pb-queue"),
+                           "--pace-pool", "a_pool_that_does_not_exist",
+                           "--once"])
+    except SystemExit as refusal:
+        assert "--disks" in str(refusal) and "#499" in str(refusal)
+    else:                                    # pragma: no cover - the defect
+        raise AssertionError("an unpaced storage host must refuse")

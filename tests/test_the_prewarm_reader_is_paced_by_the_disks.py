@@ -371,3 +371,42 @@ def test_a_host_with_no_pool_paces_nothing_and_says_why() -> None:
 
     assert prewarm_loop.pool_member_devices("storage_pool",
                                             runner=missing) == []
+
+
+def test_a_disk_that_stops_answering_releases_the_hold() -> None:
+    """Unknown is not over.
+
+    The loop holds on what it measured; when the measurement disappears --
+    a device renamed under it, a ``stat`` file that stops being readable --
+    the last verdict must not latch.  A latched hold is a prewarm loop that
+    never reads again and never says why.
+    """
+
+    disk = FakeDisk(accumulate([QUIET, LOADED]))
+    pacer = disk.pacer()
+    pacer.wait(threading.Event())      # first sample: no interval, no hold
+    disk.tick()
+    assert pacer._verdict() is True, "the loaded interval must be over"
+
+    def gone(device: str) -> None:
+        return None
+
+    pacer.stat_source = gone
+    disk.tick()
+
+    assert pacer._verdict() is False
+    pacer.wait(threading.Event())
+    assert pacer.report()["holds"] == 0
+
+
+def test_zpool_is_resolved_off_path_as_well() -> None:
+    """A supervisor unit's ``PATH`` need not carry ``/usr/sbin``.
+
+    Losing discovery to that would put the loop back on #499's unpaced reads,
+    so the binary is looked up by name and then by the two places it lives.
+    """
+
+    resolved = prewarm_loop.zpool_binary()
+
+    assert resolved.endswith("zpool")
+    assert resolved == "zpool" or Path(resolved).is_absolute()

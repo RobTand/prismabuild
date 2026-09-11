@@ -67,6 +67,7 @@ import argparse
 import json
 import os
 import queue as queuelib
+import shutil
 import socket
 import stat as statmod
 import subprocess
@@ -210,6 +211,24 @@ class MountMap:
 # ----------------------------------------------------------------- pacing
 
 
+def zpool_binary() -> str:
+    """``zpool``'s path, resolved rather than left to ``PATH``.
+
+    The loop runs under a supervisor-spawned unit, and a unit's ``PATH`` need
+    not carry ``/usr/sbin``.  Losing discovery to a missing ``PATH`` entry
+    would silently reinstate #499's unpaced reads, so the sbin paths are tried
+    by name when the lookup fails.
+    """
+
+    found = shutil.which("zpool")
+    if found:
+        return found
+    for candidate in ("/usr/sbin/zpool", "/sbin/zpool"):
+        if os.path.exists(candidate):
+            return candidate
+    return "zpool"
+
+
 def pool_member_devices(
     pool: str,
     *,
@@ -235,7 +254,7 @@ def pool_member_devices(
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
 
     try:
-        text = (runner or _run)(["zpool", "status", "-P", pool])
+        text = (runner or _run)([zpool_binary(), "status", "-P", pool])
     except (OSError, subprocess.SubprocessError):
         return []
 
@@ -408,6 +427,9 @@ class DiskPacer:
         measured = self._measure(now)
         self._sampled_at = now
         if measured is None:
+            # No readable sample is *unknown*, not *over*: a disk that stops
+            # answering must not leave a hold latched forever.
+            self._over = False
             return
         self._samples += 1
         for key in self._totals:
@@ -1047,6 +1069,14 @@ def main(argv: list[str] | None = None) -> int:
     def announce(payload: dict[str, object]) -> None:
         print(json.dumps({**payload, "unix": round(time.time(), 3)}),
               file=sys.stderr, flush=True)
+
+    probe = pacer_from_args(args)
+    if not args.dry_run and not probe.active:
+        raise SystemExit(
+            "prewarm: this is the storage host and no disks could be paced "
+            f"({probe.report()['reason']}); reading the pool unpaced is the "
+            "defect #499 records, so refuse rather than degrade.  Name the "
+            "members with --disks if discovery cannot see them.")
 
     while True:
         pacer = pacer_from_args(args)
