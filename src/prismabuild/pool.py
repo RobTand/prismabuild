@@ -7808,22 +7808,6 @@ class PoolQueue:
                 if watch is not None:
                     outcome["progress_observation"] = watch.as_record(
                         now=time.monotonic())
-                if outcome.get("status") == "failed":
-                    # A quick child can exit before the first heartbeat has
-                    # sampled either pipe. Its final communicate still gives
-                    # us the authoritative bytes, including the meaningful
-                    # empty case. Make that case explicit so a failed action
-                    # never presents empty logs as though capture simply did
-                    # not happen (#506). ``finish`` archives this complete
-                    # detail before it moves the terminal pointer.
-                    stdout = str(outcome.get("stdout") or "")
-                    stderr = str(outcome.get("stderr") or "")
-                    outcome["output_capture"] = {
-                        "state": ("captured" if stdout or stderr
-                                  else "child_produced_no_output"),
-                        "stdout_bytes": len(stdout.encode("utf-8")),
-                        "stderr_bytes": len(stderr.encode("utf-8")),
-                    }
                 with suppress(OSError):
                     progress_path.unlink()
                 return self._merge_action_status(outcome, status_path)

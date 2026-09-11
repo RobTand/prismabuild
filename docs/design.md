@@ -350,13 +350,6 @@ invalid or expired observations report unknown liveness, even with a recent
 heartbeat. The existing lease-expiry interval bounds observation freshness;
 the observation age remains independently visible.
 
-Every failed pull-queue execution carries `detail.output_capture` before its
-immutable attempt is archived. It gives the final stdout/stderr byte counts and
-is `captured` when either pipe had bytes, or
-`child_produced_no_output` when both reached EOF empty. The latter is evidence
-of a silent child, not an omitted capture or an inference from the last
-heartbeat; a fast exit can precede that heartbeat.
-
 The pool's local execution deadline excludes synchronous checkpoint intervals:
 initial observation/lease publication and the observation, scope sample,
 withdrawal read and heartbeat work between subprocess waits. Each completed
