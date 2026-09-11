@@ -49,6 +49,7 @@ and each one is exactly one ``pbrun`` flag:
 ``measurement``      ``--measurement``
 ``host_class``       ``--host-class``: worker class (pool measurement) or SLURM Feature
 ``retry_safe``       ``--retry-safe``
+``progress_phases``  ``--progress-phase``, once per entry, ``"name=seconds"``
 ``max_attempts``     ``--max-attempts``
 ===================  ====================================================
 
@@ -57,6 +58,19 @@ Every field except ``argv`` is optional, and an omitted one is not passed to
 is the one to be deliberate about: omitting it means no deadline, which is
 what a long stage that is making progress wants, and setting it means the
 scheduler kills the row at that many seconds whatever it was doing.
+
+``progress_phases`` is the other half of being deliberate about time.  A row
+that declares it -- ``["startup=1800", "encode=900", "publish=600"]``, in the
+order the work does them -- is bounded by how long it goes without committing
+work rather than by how long it runs: no total-duration limit while it keeps
+advancing, and at most the sum of those allowances if it never advances at
+all.  The action reports advancement with
+``prismabuild.report_action_progress``; a row that declares phases and reports
+nothing simply ends at that sum.  ``timeout_s`` and ``progress_phases``
+compose rather than conflict: a row with both keeps the hard deadline AND
+ends early on a stall.  Pool transport only, refused at load time on SLURM:
+the watchdog is the pull-queue worker's, and a scheduler time limit is the
+total duration this field exists to stop standing in for.
 
 An unknown field is refused rather than ignored: a typo that is silently
 dropped seals an action nobody asked for.
@@ -170,6 +184,7 @@ _SWITCH_FIELDS = (
 _REPEATED_FIELDS = (
     ("tags", "--tag"),
     ("snapshot_ref", "--snapshot-ref"),
+    ("progress_phases", "--progress-phase"),
 )
 KNOWN_FIELDS = frozenset(
     {"argv", "demand", "env"}
@@ -337,6 +352,18 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
             transport=transport,
         )
     except ValueError as exc:
+        raise ManifestError(f"row {index}: {exc}") from None
+    try:
+        # Parsed here rather than trusted, so a row whose phases pbrun would
+        # refuse is refused at load time with the rest of the manifest -- and
+        # so the transport rule is asked of pbrun in pbrun's own words.
+        pbrun.require_progress_scope(
+            progress=pbrun.parse_progress_phases(row.get("progress_phases")),
+            transport=transport,
+        )
+    except ValueError as exc:
+        raise ManifestError(f"row {index}: {exc}") from None
+    except SystemExit as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     attempts = row.get("max_attempts")
     if attempts is None:

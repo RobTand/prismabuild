@@ -61,6 +61,33 @@ universal setting. Use `pbtest.py` for suite fanout and `pbcampaign.py` for a
 manifest of independent actions. Prefer portable placement; add a host tag only
 for a real dependency or a controlled measurement.
 
+A long action that can say when it commits work should be bounded by whether
+it is working rather than by how long it has run. Declare the phases it walks
+and the quiet each is allowed -- `--progress-phase startup=1800
+--progress-phase encode=900 --progress-phase publish=600`, or a
+`progress_phases` list of `"name=seconds"` in a manifest row -- and have the
+action call `prismabuild.report_action_progress(phase, units_completed)` after
+each unit is **durable**, never on entering a loop. The action is then given
+no total-duration limit while that count advances, and ends within the sum of
+the declared allowances if it stops. `--timeout-s` still ends it whatever it
+is doing, so use that when you want a cost cap and the phases when you want a
+liveness check; both together is fine. Choose the allowances from what the
+work measurably does, and expect `pbrun` to refuse the submission outright if
+no eligible box announces the contract, or if you asked for `--transport
+slurm` (the watchdog is the pull queue's). Replayed counters, printed output and
+a live process do not count as advancement -- the receipt's
+`progress_observation` says what was rejected and when the action last
+actually advanced (RobTand/prismabuild#480).
+
+Declare phases only for an action that implements the reporting channel.
+Keep `units_completed` cumulative across phases; zero in the initial phase
+does not renew startup grace. Invalid, duplicate-key, oversized or nonregular
+reports grant no continuation. Reports are capped at 64 KiB and the watcher
+uses the existing stable regular-file reader; blocked NFS syscalls retain the
+same recovery limitation as lease I/O. Submission names phase-grace clamps
+separately from an explicit hard deadline. Existing sealed actions retain
+their original policies; adopt checkpoints through a newly sealed request.
+
 `--profile sample` runs py-spy around the action's child at 100 Hz and files
 the speedscope profile as a CAS blob whose digest and path appear on the
 ending, for `pbrun`, `pbstatus` and a human with speedscope. Reach for it when

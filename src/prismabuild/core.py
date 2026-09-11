@@ -53,8 +53,55 @@ WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
 #: SLURM and the same action executed by the pull queue must be the same
 #: execution -- and a flag on one of them would end that. The action's own argv
 #: never sees this: ``run_local_action`` builds the sealed environment it runs
-#: in, and this variable is not in it.
+#: in, and this variable is not in it.  (The progress variables below are the
+#: deliberate exception, and say so.)
 ACTION_STATUS_PATH_ENV = "PRISMABUILD_ACTION_STATUS_PATH"
+
+#: Where an action that declares the progress contract reports semantic
+#: advancement, and the per-launch token it must echo back.
+#:
+#: Unlike ``ACTION_STATUS_PATH_ENV`` these two DO reach the action's own
+#: environment -- ``run_local_action`` forwards them, and only when the sealed
+#: params declare :data:`PROGRESS_PARAM`.  They have to: the whole point is a
+#: fact the *application* knows and the launcher does not.  An action that
+#: seals either name itself is a refusal rather than an overwrite, exactly as
+#: the profile contract already refuses one.
+#:
+#: The token is minted per LAUNCH rather than per action key.  Unlinking the
+#: file before the launch is not enough on its own: an action that outlived
+#: SIGKILL on a previous attempt (a D-state GPU wedge does) keeps the same path
+#: open and would replay its counter into the next attempt's watchdog.  A token
+#: it cannot know is what makes accepted advancement this attempt's.
+ACTION_PROGRESS_PATH_ENV = "PRISMABUILD_ACTION_PROGRESS_PATH"
+ACTION_PROGRESS_TOKEN_ENV = "PRISMABUILD_ACTION_PROGRESS_TOKEN"
+
+#: The sealed request key that declares the progress contract, and the two
+#: schema names that version it.  ``PROGRESS_PARAM`` is sealed into the action
+#: key like ``PROFILE_PARAM``: an action admitted under the progress contract
+#: is a different action from its unbounded twin, so nothing already in the
+#: store is answered by a receipt filed under the other policy.
+PROGRESS_PARAM = "progress"
+PROGRESS_POLICY_SCHEMA_V1 = "prismabuild.action_progress_policy.v1"
+PROGRESS_RECORD_SCHEMA_V1 = "prismabuild.action_progress.v1"
+# A report is metadata, never a checkpoint payload. Bound both accepted bytes
+# and parser work; use the existing stable regular-file reader in the watcher.
+MAX_ACTION_PROGRESS_BYTES = 64 * 1024
+
+#: The placement tag a worker offers when it can enforce the progress contract,
+#: and which the submitter requires of any action that declares one.
+#:
+#: The announcement in a worker's offer says who *understands* the contract; it
+#: is a diagnostic, and a diagnostic cannot stop a claim.  During a rolling
+#: upgrade the boxes on the previous generation are still polling, and a
+#: progress-admitted action they claim runs under their whole-run ceiling --
+#: killed by the very default the contract removes.  Requiring a tag they do
+#: not offer is what makes that unreachable, and it needs no matcher of its
+#: own: item tags must already be a subset of the worker's.
+#:
+#: Versioned with the record schema on purpose.  A future record format is a
+#: new tag, so an old worker cannot claim work whose reports it would reject as
+#: foreign and then kill for the silence.
+PROGRESS_TAG = "progress-v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
@@ -2233,6 +2280,13 @@ def _normalize_action_body(value: object) -> dict[str, object]:
     normalized_params = _decode_strict_json(
         _canonical_bytes(normalized_params), where="action.params"
     )
+    if PROGRESS_PARAM in normalized_params:
+        # Refused here rather than at the worker: a policy the worker cannot
+        # read would be sealed into an action key that then answers every later
+        # submission of the same command with the same unreadable policy.
+        declared = validate_progress_policy(normalized_params[PROGRESS_PARAM])
+        if declared != normalized_params[PROGRESS_PARAM]:
+            _fail("action.params.progress is valid but not in normalized form")
     environment = _normalize_environment(body["environment"])
     toolchain = environment["toolchain"]
     assert isinstance(toolchain, Mapping)
@@ -6596,6 +6650,7 @@ def run_local_action(
         launch_environment = {
             str(key): str(value) for key, value in variables.items()
         }
+        launch_environment.update(_progress_environment(normalized, launch_environment))
         if profile is not None:
             launch_environment.update(profile.environment(launch_environment))
             # The sealed argv is exec'd verbatim underneath what this returns.
@@ -6918,6 +6973,181 @@ def _write_action_status(body: Mapping[str, object]) -> None:
         pass
 
 
+def validate_progress_policy(value: object, *, where: str = "action.params.progress") -> dict[str, object]:
+    """Normalize the sealed no-progress policy, or refuse it.
+
+    The phase list is *closed* on purpose.  A runtime record naming a phase
+    the submitter did not declare is not advancement, which is what makes the
+    total time an action may run without ever committing a unit a number a
+    reader can compute -- ``sum(grace_s)``, each phase re-arming once -- rather
+    than a fresh unexplained constant standing in for the one this contract
+    exists to remove.  The phases are the workload's own: startup, capture,
+    compile, the loop, finalization.  Declare what the work does and the bound
+    follows from it.
+    """
+
+    if not isinstance(value, Mapping) or set(value) != {"schema", "phases"}:
+        _fail(f"{where} must declare exactly schema and phases")
+    if value["schema"] != PROGRESS_POLICY_SCHEMA_V1:
+        _fail(f"{where}.schema must be {PROGRESS_POLICY_SCHEMA_V1!r}")
+    phases = value["phases"]
+    if not isinstance(phases, Sequence) or isinstance(phases, (str, bytes)):
+        _fail(f"{where}.phases must be a list of phases")
+    if not phases:
+        _fail(f"{where}.phases must name at least one phase")
+    normalized: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for index, phase in enumerate(phases):
+        at = f"{where}.phases[{index}]"
+        if not isinstance(phase, Mapping) or set(phase) != {"name", "grace_s"}:
+            _fail(f"{at} must declare exactly name and grace_s")
+        name = phase["name"]
+        if (not isinstance(name, str) or not name or name.strip() != name
+                or "\x00" in name):
+            _fail(f"{at}.name must be a nonempty trimmed string")
+        if name in seen:
+            # Phase entry re-arms the allowance once.  A repeated name would
+            # make ``sum(grace_s)`` stop being the bound it is reported as.
+            _fail(f"{at}.name repeats an earlier phase: {name!r}")
+        seen.add(name)
+        grace = phase["grace_s"]
+        try:
+            finite = math.isfinite(grace)
+        except (TypeError, OverflowError):
+            finite = False
+        if type(grace) not in (int, float) or not finite or grace <= 0:
+            _fail(f"{at}.grace_s must be a positive finite number")
+        normalized.append({"name": name, "grace_s": grace})
+    if not math.isfinite(sum(float(phase["grace_s"]) for phase in normalized)):
+        _fail(f"{where}.phases must have a finite total grace")
+    return {"schema": PROGRESS_POLICY_SCHEMA_V1, "phases": normalized}
+
+
+def action_progress_policy(action: Mapping[str, object]) -> dict[str, object] | None:
+    """The sealed progress policy of a validated action, if it declared one."""
+
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    declared = params.get(PROGRESS_PARAM)
+    if declared is None:
+        return None
+    return validate_progress_policy(declared)
+
+
+def _progress_environment(
+    action: Mapping[str, object], sealed: Mapping[str, str]
+) -> dict[str, str]:
+    """The progress channel this action's own environment gains, if any.
+
+    Nothing unless the sealed params declare the contract, so an action that
+    does not is launched in byte-identical surroundings to before this existed.
+    The values come from the worker that launched this launcher: the path is
+    its queue's, the token is this launch's, and neither is a fact the sealed
+    request could carry -- the request is the same bytes on every attempt.
+
+    A sealed variable of the same name is a refusal rather than an overwrite,
+    for the reason the profile contract gives: a diagnostic must not silently
+    change what the action does.
+    """
+
+    if action["params"].get(PROGRESS_PARAM) is None:  # type: ignore[union-attr]
+        return {}
+    forwarded: dict[str, str] = {}
+    for name in (ACTION_PROGRESS_PATH_ENV, ACTION_PROGRESS_TOKEN_ENV):
+        if name in sealed:
+            raise ActionContractError(
+                f"action seals {name}, which the progress contract must set"
+            )
+        value = os.environ.get(name)
+        if value:
+            forwarded[name] = value
+    if len(forwarded) != 2:
+        # Two ways to have less than a channel, and both end the same way.
+        #
+        # Half of one writes records nothing will accept, and saying so here
+        # beats letting the watchdog report a stall the action never had.
+        #
+        # None of one is the dangerous case, because it is the quiet one.  A
+        # launcher that provides no channel is a launcher with no watchdog:
+        # this action was admitted on the promise that its own advancement
+        # bounds it, and running it anyway would leave nothing bounding it at
+        # all -- exactly the unbounded outcome #480's fifth point forbids.
+        # The pull queue always sets both, so this is what refuses a transport
+        # that seals the contract and cannot honour it (the SLURM lane, whose
+        # ``--time`` is the submitter's explicit deadline and not a stall
+        # policy) rather than trusting every future launcher to remember.
+        missing = [
+            name for name in (ACTION_PROGRESS_PATH_ENV, ACTION_PROGRESS_TOKEN_ENV)
+            if name not in forwarded
+        ]
+        raise ActionContractError(
+            "this action declares the progress contract, so the launcher must "
+            f"set both {ACTION_PROGRESS_PATH_ENV} and "
+            f"{ACTION_PROGRESS_TOKEN_ENV}; missing {', '.join(missing)}.  "
+            "Nothing would bound this run"
+        )
+    return forwarded
+
+
+def report_action_progress(
+    phase: str, units_completed: float, *, unit: str | None = None
+) -> bool:
+    """Report semantic advancement to whatever is watching this action.
+
+    Call it after work is *committed* -- a durable checkpoint shard written, an
+    anchor journalled, a unit published -- never on entering a loop iteration.
+    The watchdog exists to tell a long run from a stuck one, and a counter that
+    ticks on intent rather than on commitment cannot.
+
+    ``units_completed`` must be monotone across the whole run, resuming from
+    what a checkpoint already holds rather than restarting at zero, and a phase
+    is entered at most once.  Neither is enforced here -- this side cannot see
+    the sealed policy -- but a record that violates either is simply not
+    accepted as advancement.
+
+    Returns whether a record was written.  A no-op when the action was not
+    admitted under the progress contract, so an application may call it
+    unconditionally: the alternative is application code that has to know how
+    it was launched.
+
+    Writes the whole record rather than merging into one, and to a file of its
+    own rather than the launcher's status sidecar.  The sidecar is an unlocked
+    read-merge-write shared with ``_write_action_status``, and it is unlinked
+    as it is read; both are fine for two facts written once at an ending, and
+    neither survives a second writer ticking every few seconds.
+    """
+
+    destination = os.environ.get(ACTION_PROGRESS_PATH_ENV) or ""
+    token = os.environ.get(ACTION_PROGRESS_TOKEN_ENV) or ""
+    if not destination or not token:
+        return False
+    if (type(units_completed) not in (int, float)
+            or (type(units_completed) is float and not math.isfinite(units_completed))
+            or units_completed < 0):
+        raise ValueError("units_completed must be a finite, non-negative number")
+    record: dict[str, object] = {
+        "schema": PROGRESS_RECORD_SCHEMA_V1,
+        "token": token,
+        "phase": str(phase),
+        "units_completed": units_completed,
+        "reported_unix": time.time(),
+    }
+    if unit is not None:
+        record["unit"] = str(unit)
+    path = Path(destination)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        # Reporting is never worth failing an action for.  A report that does
+        # not land is a stall to the watchdog, which is the honest reading of a
+        # box that cannot write to its own queue directory.
+        return False
+    return True
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -7047,7 +7277,16 @@ def main(
 __all__ = [
     "ACTION_SCHEMA_V1",
     "ACTION_SCHEMA_V2",
+    "ACTION_PROGRESS_PATH_ENV",
+    "ACTION_PROGRESS_TOKEN_ENV",
     "ACTION_STATUS_PATH_ENV",
+    "PROGRESS_PARAM",
+    "PROGRESS_POLICY_SCHEMA_V1",
+    "PROGRESS_RECORD_SCHEMA_V1",
+    "PROGRESS_TAG",
+    "action_progress_policy",
+    "report_action_progress",
+    "validate_progress_policy",
     "CAS_RECEIPT_SCHEMA_V3",
     "CODE_CLOSURE_SCHEMA_V1",
     "INITIAL_MISS_RENDEZVOUS_ARRIVAL_SCHEMA_V1",

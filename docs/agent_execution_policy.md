@@ -41,6 +41,73 @@ grant, and the receipt records what actually governed
 longer than the ceiling needs a loop started with a larger `--timeout-s`, not
 a larger `--timeout-s` on the submission (RobTand/prismabuild#293).
 
+An action that can say when it commits work need not be bounded by elapsed
+time at all. Declare the phases it walks and the quiet each one is allowed --
+`pbrun --progress-phase startup=1800 --progress-phase encode=900`, or a
+`progress_phases` list in a `pbcampaign` manifest -- and the action reports
+each commitment by writing `prismabuild.action_progress.v1` to the file named
+by `PRISMABUILD_ACTION_PROGRESS_PATH`, echoing `PRISMABUILD_ACTION_PROGRESS_TOKEN`
+(`prismabuild.report_action_progress(phase, units_completed)` does this).
+What then bounds it:
+
+* **no total-duration limit while the count advances.** The worker's ceiling
+  clamps each phase's allowance instead of the whole run.
+* **the sum of the declared allowances** if it never advances. Each phase
+  re-arms once, in the order declared, so that sum is a number the receipt
+  reports (`progress_no_progress_bound_s`) rather than a constant somebody
+  chose.
+* **`--timeout-s` still ends it**, progress or no progress. Precedence is
+  containment, withdrawal, the requested deadline, then the stall allowance.
+
+Advancement is a strictly increasing cumulative `units_completed` across the
+whole action, or entering a later declared phase. The count starts at zero;
+reporting zero in the initial phase does not renew startup grace.
+A replayed or regressing counter, an
+undeclared phase, a token from another attempt, printed output and a live
+process are **not** advancement; the receipt says which
+(`progress_observation.last_rejection`). Report after the work is durable --
+a checkpoint written, a unit published -- never on entering a loop, or the
+counter keeps a broken action alive. A stall ends the action with
+`status: timeout` and `termination_reason: no_progress`; a requested deadline
+with `termination_reason: execution_deadline`.
+
+Choose the allowances from what the workload measurably does. PrismaQuant's
+pricing rows declare `startup=3600 pricing=900 finalize=1800` because a fit of
+elapsed time against committed batches over 23 completed 864-unit rows gives
+18.6728 s per batch, an 836.1 s intercept and a 160.5 s maximum absolute
+residual. The [retained records and extraction](https://github.com/RobTand/prismaquant/blob/83fa2a2dfee478a68a4e582764932c21b38e7747/docs/measurements/pq480_progress_grace_fit_2026-09-10.md)
+make that workload-specific fit reproducible. The intercept estimates time
+outside pricing; it does not directly measure each phase's longest quiet gap.
+The allowances add margin to that evidence. Their 6,300 s sum is less than
+half the 14,400 s that killed two rows mid-round (RobTand/prismabuild#480). The watcher uses the existing stable
+regular-file reader at heartbeat cadence, with a 64 KiB accepted-byte cap and
+strict UTF-8 JSON. Invalid, duplicate-key, oversized, symlink and FIFO reports
+do not renew grace. The reader bounds bytes and retries; a kernel-blocked NFS
+operation has the same recovery limitation as lease/withdrawal I/O (#16).
+
+`pbrun` **refuses** a progress-declaring submission when no eligible worker
+announces the contract (`pbstatus` shows what each box announces). That is
+deliberate, and stricter than the ceiling notice above: a box that does not
+know the policy would apply its whole-run ceiling to an action submitted
+without one, which is the failure the contract exists to remove. On a mixed
+fleet the submission is narrowed instead: it requires the `progress-v1` tag
+that only an upgraded worker offers, so an old box cannot claim it, and the
+notice names the boxes being waited past.
+
+Two more refusals, both fail-closed. `--progress-phase` requires the pool
+transport -- the watchdog is the pull-queue worker's, and SLURM can enforce
+only a total duration -- and an action that declares a policy refuses to
+launch if the launcher gave it no channel, rather than running with nothing
+bounding it.
+
+`pbstatus`'s job table has a `PROGRESS` column beside `OUTPUT`: the quiet time
+against the current phase's allowance, and how many reports have been accepted.
+`OUTPUT` age is log traffic and proves nothing; `PROGRESS` is what the watchdog
+acts on. A blank column means no valid progress observation is available; it
+alone does not identify the action's execution policy. Read the sealed request
+and terminal policy fields to distinguish a missing observation from an action
+with no declared progress policy.
+
 Use `pbtest.py` to split suites into independent file shards and
 `pbcampaign.py` for explicit action manifests. Cap pytest fanout at `-n 4` with
 one native thread per worker (`OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`,

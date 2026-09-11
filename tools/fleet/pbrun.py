@@ -1709,6 +1709,117 @@ def _width_of_the_pin(queue, intent, tags: list[str], hostname: str,
             f"{', '.join(others)}.")
 
 
+def parse_progress_phases(declared: Sequence[str] | None) -> dict[str, object] | None:
+    """Turn repeated ``--progress-phase NAME=SECONDS`` into a sealed policy.
+
+    Order is the order they were given, and it is load-bearing: entering a
+    later phase re-arms the allowance once, so the declaration reads as the
+    shape of the work -- load, then compile, then the loop, then publish --
+    and the total quiet the action can ever accumulate is the sum of what was
+    declared.
+    """
+
+    if not declared:
+        return None
+    phases = []
+    for entry in declared:
+        name, sep, seconds = str(entry).partition("=")
+        if not sep:
+            raise SystemExit(
+                f"pbrun: --progress-phase {entry!r} must be NAME=SECONDS")
+        try:
+            grace = float(seconds)
+        except ValueError:
+            raise SystemExit(
+                f"pbrun: --progress-phase {entry!r} has a non-numeric allowance"
+            ) from None
+        phases.append({"name": name, "grace_s": grace})
+    policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1, "phases": phases}
+    try:
+        return pb.validate_progress_policy(policy)
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: {exc}") from None
+
+
+def progress_contract_notice(
+    queue,
+    intent: Mapping[str, object],
+    *,
+    policy: Mapping[str, object] | None,
+    requested_timeout_s: float | None = None,
+) -> str:
+    """Say what this action's stall allowance is, and who cannot honour it.
+
+    Refused rather than warned when no eligible box announces the contract,
+    and that asymmetry with ``timeout_ceiling_notice`` is the point.  A
+    ceiling that cuts a request short is a smaller budget than asked for; a
+    box that does not know the contract applies its whole-run ceiling to an
+    action submitted *without* a total-duration limit, which is the exact
+    silent kill of a progressing run that #480 is about.  Submitting into that
+    would hand back the defect wearing the fix's name.
+
+    On a mixed fleet this only *reports*.  What stops an old box claiming the
+    work is ``PROGRESS_TAG``, which the submission requires and only an
+    upgraded loop offers -- a message cannot decline a claim, and during a
+    rolling upgrade both generations are polling the same queue.  Read this as
+    the census behind that requirement: which boxes it admits, and which it is
+    now waiting past.
+    """
+
+    if policy is None:
+        return ""
+    phases = policy["phases"]
+    assert isinstance(phases, Sequence)
+    total = sum(float(phase["grace_s"]) for phase in phases)
+    lines = [
+        "pbrun: progress contract: "
+        + ", ".join(f"{phase['name']} {float(phase['grace_s']):g}s"
+                    for phase in phases)
+        + f"; at most {total:g}s of quiet in total if it never commits work, "
+        + ("and no total-duration limit while it does."
+           if requested_timeout_s is None else
+           f"with an explicit hard execution deadline of {requested_timeout_s:g}s.")
+    ]
+    announced = queue.placement_progress_contracts(intent)
+    if not announced:
+        lines.append(
+            "pbrun: no worker offers on record; whether any box honours the "
+            "contract is unknown.")
+        return "\n".join(lines)
+    unsupported = sorted(
+        host for host, contracts in announced.items()
+        if contracts is None or pb.PROGRESS_RECORD_SCHEMA_V1 not in contracts)
+    if len(unsupported) == len(announced):
+        raise SystemExit(
+            "pbrun: no eligible worker announces "
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1} ({', '.join(unsupported)}), so "
+            "this action would be admitted under the progress contract and "
+            "then killed by a whole-run ceiling it never asked for.  Update "
+            "the fleet's published generation, or submit with --timeout-s.")
+    if unsupported:
+        lines.append(
+            "pbrun: " + ", ".join(unsupported) + " do not announce "
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1}, so this action is not offered "
+            f"to them: it requires the {pb.PROGRESS_TAG} tag they do not "
+            "publish.  It waits for a box that does rather than being killed "
+            "by a ceiling it never asked for.")
+    ceilings = queue.placement_timeout_ceilings(intent)
+    for host in sorted(set(announced) - set(unsupported)):
+        ceiling = ceilings.get(host)
+        if ceiling is None:
+            lines.append(f"pbrun: {host} announces no phase-grace ceiling; "
+                         "its effective allowances are unknown until execution.")
+            continue
+        for phase in phases:
+            requested_grace = float(phase["grace_s"])
+            if ceiling < requested_grace:
+                lines.append(
+                    f"pbrun: {host} limits {phase['name']} grace to {ceiling:g}s "
+                    f"(requested {requested_grace:g}s); an explicit hard "
+                    "execution deadline is unchanged.")
+    return "\n".join(lines)
+
+
 def timeout_ceiling_notice(
     queue,
     intent: Mapping[str, object],
@@ -2622,6 +2733,34 @@ def require_gpu_memory_scope(*, gpu_memory_gb, gpu: bool, transport: str) -> Non
     if gpu_memory_gb is not None and transport == "slurm":
         raise ValueError(
             "--gpu-memory-gb requires pool transport; SLURM VRAM budgets are not supported"
+        )
+
+
+def require_progress_scope(*, progress: Mapping[str, object] | None,
+                          transport: str) -> None:
+    """Refuse a progress contract on a transport with nothing to enforce it.
+
+    The stall watchdog is ``pool.execute``'s: it holds the progress file, mints
+    the launch token, and samples on the heartbeat cadence.  The SLURM lane
+    runs the same sealed action through the same launcher, but the enforcement
+    it has is ``--time``, sent only when ``--timeout-s`` was given -- a total
+    duration, which is the policy #480 exists to stop standing in for progress.
+
+    Sealing the contract there would be worse than not offering it.  The action
+    would be admitted on the promise that its own advancement bounds it, and
+    then run under no watchdog at all and, absent ``--timeout-s``, under no
+    deadline either: unbounded, which is the outcome the contract's fifth point
+    forbids.  ``core._progress_environment`` refuses the same launch from the
+    other end; this is the refusal at the moment the submitter is still
+    watching.
+    """
+
+    if progress is not None and transport != "pool":
+        raise ValueError(
+            "--progress-phase requires pool transport: the stall watchdog is "
+            "the pull-queue worker's, and the SLURM lane can only enforce a "
+            "total duration (--timeout-s becomes --time).  Submit this action "
+            "to the pool, or bound it there with --timeout-s and no phases"
         )
 
 
@@ -3693,6 +3832,17 @@ def main() -> int:
                          "(7200 s by default, announced per box and reported "
                          "here when it would cut this request short) also "
                          "applies. Queue waiting is bounded by --wait-s")
+    ap.add_argument("--progress-phase", action="append", default=None,
+                    metavar="NAME=SECONDS",
+                    help="declare one phase of this action and the quiet it is "
+                         "allowed in it, in order, once per phase. Declaring "
+                         "any of them admits the action under the progress "
+                         "contract: it is then bounded by how long it goes "
+                         "without committing work rather than by how long it "
+                         "runs, the worker's ceiling clamps each phase's "
+                         "allowance instead of the whole run, and --timeout-s "
+                         "if given still ends it whatever it is doing. The "
+                         "action reports with prismabuild.report_action_progress")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument(
@@ -3757,6 +3907,7 @@ def main() -> int:
         not math.isfinite(args.timeout_s) or args.timeout_s <= 0
     ):
         raise SystemExit("pbrun: --timeout-s must be a positive finite number")
+    progress_policy = parse_progress_phases(args.progress_phase)
 
     if args.withdraw:
         # Withdrawing is not a submission and must not need one: the operator
@@ -3927,6 +4078,15 @@ def main() -> int:
         # --constraint.  A union rather than a replacement: a hostname pin a
         # box-local executable earned stays, and the class narrows it further.
         tags = pool.normalize_placement_tags([*tags, args.host_class])
+    if progress_policy is not None:
+        # A capability, not a place: the boxes that cannot enforce this
+        # action's stall policy must not be able to claim it.  A worker offer
+        # says who understands the contract, but nothing consults an offer at
+        # claim time; item tags are what the matcher already checks, so the
+        # requirement rides them.  Sealed with the rest of the placement, so
+        # the receipt says the action was admitted under the contract *and*
+        # ran on a box that could keep it.
+        tags = pool.normalize_placement_tags([*tags, pb.PROGRESS_TAG])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     placement = {"required_tags": tags}
@@ -3975,6 +4135,11 @@ def main() -> int:
             gpu_memory_gb=args.gpu_memory_gb, gpu=bool(demand.get("gpu")),
             transport=args.transport,
         )
+    except ValueError as exc:
+        ap.error(str(exc))
+    try:
+        require_progress_scope(
+            progress=progress_policy, transport=args.transport)
     except ValueError as exc:
         ap.error(str(exc))
     if not demand.get("gpu"):
@@ -4094,6 +4259,13 @@ def main() -> int:
             body["params"]["gpu_memory_gb"] = args.gpu_memory_gb
     if args.timeout_s is not None:
         body["params"]["execution_timeout_s"] = args.timeout_s
+    if progress_policy is not None:
+        # Sealed, like the profiler mode and for the same reason: an action
+        # admitted under the progress contract is a different action from its
+        # unbounded twin, so the store never answers one with the other's
+        # receipt.  Absent, the key is byte-identical to what it was before
+        # this flag existed.
+        body["params"][pb.PROGRESS_PARAM] = progress_policy
     if args.profile is not None:
         # Sealed, and only when asked for.  Present, it makes a profiled run a
         # different action from its unprofiled twin, which is what stops the
@@ -4234,6 +4406,22 @@ def main() -> int:
     )
     if notice:
         print(notice, file=sys.stderr, flush=True)
+
+    # Before the placement verdicts, not after.  ``intent`` now requires
+    # ``PROGRESS_TAG``, so on a fleet that offers none the generic "no recorded
+    # worker can run this action" would fire first and name a tag the operator
+    # never typed.  Asked of the boxes eligible on every OTHER tag, which is
+    # also the honest question: of the boxes that could run this work, which
+    # can keep its stall policy?
+    progress_notice = progress_contract_notice(
+        q,
+        {**intent, "tags": [t for t in tags if t != pb.PROGRESS_TAG]},
+        policy=progress_policy,
+        requested_timeout_s=args.timeout_s,
+    )
+    if progress_notice:
+        print(progress_notice, file=sys.stderr, flush=True)
+
     live_verdict = q.placeable(intent)
     capability_verdict = q.placeable(
         intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
@@ -4257,7 +4445,8 @@ def main() -> int:
             file=sys.stderr, flush=True,
         )
 
-    ceiling_notice = timeout_ceiling_notice(q, intent, requested=args.timeout_s)
+    ceiling_notice = timeout_ceiling_notice(
+        q, intent, requested=args.timeout_s if progress_policy is None else None)
     if ceiling_notice:
         print(ceiling_notice, file=sys.stderr, flush=True)
 

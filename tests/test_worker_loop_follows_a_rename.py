@@ -126,4 +126,4 @@ def test_a_box_that_was_not_renamed_announces_exactly_what_it_did() -> None:
 
     offer = calls[-1]
     assert offer["host"] == "sparky"
-    assert offer["tags"] == ["gb10", "sparky", "cpu"], offer["tags"]
+    assert offer["tags"] == ["gb10", "sparky", "cpu", "progress-v1"], offer["tags"]

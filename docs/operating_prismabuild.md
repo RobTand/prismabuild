@@ -758,7 +758,32 @@ withdrawal reads. Only time inside those calls is excluded; previously spent
 execution time is never reset, and waits for the payload still consume the
 remaining budget. This does not detect or discount kernel stalls inside a
 payload or a blocked subprocess wait, and does not bound checkpoint I/O itself.
+
+A submission that declares `--progress-phase NAME=SECONDS` (repeatable, in the
+order the work does them) is bounded instead by how long it goes without
+committing work. The worker's ceiling clamps each phase's allowance rather
+than the whole run, and the receipt reports both -- `worker_timeout_ceiling_s`
+is what the box would cut at, `progress_stall_ceiling_s` and the per-phase
+`grace_requested_s`/`grace_ceiling_s`/`grace_s`/`grace_clamped` say what it
+governed, `execution_governed_by` says which policy was in force, and
+`progress_observation` says when the action last actually advanced and what
+was rejected in between. A stall reads `status: timeout` with
+`termination_reason: no_progress`. Combine it with `--timeout-s` when the run
+also needs a cost cap: the deadline still ends a progressing action.
 Withdrawal and resource failures still take precedence when checks return.
+The contract is pool-only: `--progress-phase` with `--transport slurm` is
+refused, because the SLURM lane can enforce only a total duration. It also
+requires the `progress-v1` tag, which only a worker that can run the watchdog
+offers, so an old loop mid-upgrade cannot claim the action; `pbstatus`'s node
+table shows what each box announces, and its job table's `PROGRESS` column
+shows a running action's quiet time against the allowance in force.
+The cumulative count starts at zero and never resets between phases. The
+watcher rejects malformed, duplicate-key, nonregular and oversized reports
+without refreshing grace; accepted reports are limited to 64 KiB. It samples
+once more at normal completion so the terminal observation retains the final
+commit. A blank `PROGRESS` column means no valid observation is available,
+not proof that the request has no progress policy. Submission notices name
+phase-grace clamps separately from the unchanged explicit hard deadline.
 Queue waiting does not consume that budget; `--wait-s` controls the submitter's wait separately. A short budget
 does not wait for the next lease heartbeat before being enforced.
 
