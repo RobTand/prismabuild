@@ -4520,6 +4520,16 @@ def main() -> int:
     if notice:
         print(notice, file=sys.stderr, flush=True)
 
+    # An offer can be fresh but stamped ahead of this submitter. Keep that
+    # discrepancy visible, including an offer too far ahead to use at all.
+    for host, skew in q.offer_clock_skews().items():
+        disposition = "tolerated" if skew <= pool.OFFER_FUTURE_TOLERANCE_S else "ignored"
+        print(
+            f"pbrun: {host} offer announced {skew:.3f}s in the future "
+            f"(clock skew; {disposition}, limit {pool.OFFER_FUTURE_TOLERANCE_S:g}s)",
+            file=sys.stderr, flush=True,
+        )
+
     # Before the placement verdicts, not after.  ``intent`` now requires
     # ``PROGRESS_TAG``, so on a fleet that offers none the generic "no recorded
     # worker can run this action" would fire first and name a tag the operator
