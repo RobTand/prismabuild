@@ -24,8 +24,9 @@ the same code the worker will read:
   lines in `skills/prismabuild/SKILL.md`, which a test holds to this file's
   record byte for byte.
 
-`core` imports the names below rather than defining its own, so there is one
-definition of the schema and one writer behind every spelling.
+`core` mirrors the contract constants and retains its original compatibility
+writer because its attested standalone module cannot import repository code.
+Tests keep that writer's record format equal to this helper's.
 """
 from __future__ import annotations
 

@@ -112,6 +112,46 @@ def prismabuild_exports():
     return prismabuild.commit, prismabuild.report_action_progress
 
 
+@pytest.mark.parametrize("count", [0, 7, 2**53 + 1, 0.5])
+def test_core_reporter_preserves_the_wire_contract(channel, monkeypatch, count):
+    """Existing core callers keep exact counts and the helper's record format."""
+
+    monkeypatch.setattr(pb.time, "time", lambda: 123.0)
+    assert "report_action_progress" in pb.__all__
+    assert pb.report_action_progress("run", count, unit="anchors") is True
+    original = Path(channel).read_bytes()
+    assert progress.commit(count, "run", unit="anchors") is True
+    assert Path(channel).read_bytes() == original
+    assert json.loads(original)["units_completed"] == count
+
+
+def test_core_reporter_remains_reachable_without_package_import(channel):
+    """Core is also a standalone attested module, not only a package export."""
+
+    ran = subprocess.run(
+        [sys.executable, "-I", "-c",
+         "import runpy, sys; core = runpy.run_path(sys.argv[1]); "
+         "assert core['report_action_progress']('run', 7)", str(pb.__file__)],
+        capture_output=True, text=True, check=False)
+    assert ran.returncode == 0, ran.stderr
+    watch = _watch(channel, "tok")
+    assert watch.sample(now=1.0) is True
+    assert watch.last_accepted["units_completed"] == 7
+
+
+def test_core_reporter_keeps_legacy_path_and_token_channel(channel, monkeypatch):
+    monkeypatch.delenv(pb.ACTION_PROGRESS_PHASES_ENV)
+    monkeypatch.delenv(pb.ACTION_PROGRESS_HELPER_ENV)
+    assert pb.report_action_progress("run", 7) is True
+    assert _watch(channel, "tok").sample(now=1.0) is True
+
+
+def test_core_reporter_remains_a_no_op_without_channel(monkeypatch):
+    for name in pb.ACTION_PROGRESS_ENV:
+        monkeypatch.delenv(name, raising=False)
+    assert pb.report_action_progress("run", 7) is False
+
+
 def test_one_definition_of_the_schema_and_the_channel():
     """``core`` mirrors these rather than importing them, so check the mirror.
 
