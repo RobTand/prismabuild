@@ -546,6 +546,25 @@ def _write_status(session, body: dict) -> None:
     os.replace(temporary, session.exit_status_path)
 
 
+def _proc_start_ticks(pid: int) -> int:
+    """Read field 22 from Linux ``/proc/<pid>/stat`` independently."""
+
+    raw = Path(f"/proc/{pid}/stat").read_bytes()
+    _, _, tail = raw.rpartition(b")")
+    return int(tail.split()[19])
+
+
+def _await_zombie(pid: int) -> None:
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        raw = Path(f"/proc/{pid}/stat").read_bytes()
+        _, _, tail = raw.rpartition(b")")
+        if tail.split()[0] == b"Z":
+            return
+        time.sleep(.01)
+    pytest.fail(f"relay fixture {pid} never became an unreaped zombie")
+
+
 def test_a_relay_that_never_recorded_an_ending_is_not_a_pass(tmp_path: Path):
     """``launched`` with no ``ended`` means nobody knows how the action ended.
 
@@ -584,6 +603,22 @@ def test_an_exit_status_from_another_era_is_refused(tmp_path: Path):
         session.action_returncode()
 
 
+@pytest.mark.parametrize("ended_monotonic", [None, True, float("nan")])
+def test_a_deadline_requires_a_recorded_finite_action_end_time(
+    tmp_path: Path, ended_monotonic: object,
+):
+    """An old or malformed terminal relay record cannot bypass a deadline."""
+
+    session = _session(tmp_path)
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "ended", "returncode": 0, "signal": None,
+        "ended_monotonic": ended_monotonic,
+    })
+    with pytest.raises(pb.ProfileUnusable, match="monotonic end timestamp"):
+        session.action_returncode(deadline=time.monotonic() + 1)
+
+
 def test_a_profiler_that_exits_first_waits_for_the_action(tmp_path: Path):
     """``nsys --duration`` stops tracing and exits while the action runs on.
 
@@ -595,12 +630,13 @@ def test_a_profiler_that_exits_first_waits_for_the_action(tmp_path: Path):
 
     class _Early(_FakeBackend):
         exits_before_action = True
-        settle_seconds = 30.0
 
     session = _session(tmp_path, backend=_Early())
     _write_status(session, {
         "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
         "phase": "launched", "child_pid": os.getpid(),
+        "relay_pid": os.getpid(),
+        "relay_start_ticks": _proc_start_ticks(os.getpid()),
     })
 
     def _finish() -> None:
@@ -618,48 +654,175 @@ def test_a_profiler_that_exits_first_waits_for_the_action(tmp_path: Path):
         thread.join()
 
 
-def test_a_settle_wait_is_bounded_by_the_backend(tmp_path: Path):
-    """An action that outlives the wait is a profile failure, not a hang."""
+def test_a_windowed_profiler_does_not_cap_the_action_lifetime(tmp_path: Path):
+    """A completed window leaves execution to its actual deadline policy (#514)."""
 
     class _Early(_FakeBackend):
         exits_before_action = True
-        settle_seconds = 0.2
+
+    session = _session(tmp_path, backend=_Early())
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "launched", "child_pid": os.getpid(),
+        "relay_pid": os.getpid(),
+        "relay_start_ticks": _proc_start_ticks(os.getpid()),
+    })
+
+    def _finish() -> None:
+        time.sleep(0.15)
+        _write_status(session, {
+            "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+            "phase": "ended", "returncode": 0, "signal": None,
+            "relay_pid": os.getpid(),
+        })
+
+    thread = threading.Thread(target=_finish)
+    thread.start()
+    try:
+        assert session.action_returncode() == 0
+    finally:
+        thread.join()
+
+
+def test_a_dead_window_relay_fails_closed_without_waiting_for_a_backend_cap(
+    tmp_path: Path,
+):
+    """A departed relay cannot leave an unbounded worker wait behind (#514)."""
+
+    class _Early(_FakeBackend):
+        exits_before_action = True
+
+    relay = subprocess.Popen([sys.executable, "-c", "pass"])
+    relay.wait()
+    session = _session(tmp_path, backend=_Early())
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "launched", "child_pid": os.getpid(),
+        "relay_pid": relay.pid,
+        "relay_start_ticks": 1,
+    })
+    with pytest.raises(pb.ProfileUnusable, match="relay .* is no longer running"):
+        session.action_returncode()
+
+
+def test_an_unreaped_zombie_relay_fails_closed(tmp_path: Path):
+    """``kill(pid, 0)`` is insufficient: zombies have already exited (#514)."""
+
+    class _Early(_FakeBackend):
+        exits_before_action = True
+
+    child_pid = tmp_path / "relay.pid"
+    parent = subprocess.Popen([
+        sys.executable, "-c",
+        (
+            "import subprocess,sys,time; from pathlib import Path; "
+            "child=subprocess.Popen([sys.executable, '-c', 'pass']); "
+            "Path(sys.argv[1]).write_text(str(child.pid)); time.sleep(30)"
+        ),
+        str(child_pid),
+    ])
+    try:
+        deadline = time.monotonic() + 10.0
+        while not child_pid.exists():
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+        relay_pid = int(child_pid.read_text())
+        _await_zombie(relay_pid)
+        session = _session(tmp_path, backend=_Early())
+        _write_status(session, {
+            "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+            "phase": "launched", "child_pid": os.getpid(),
+            "relay_pid": relay_pid,
+            "relay_start_ticks": _proc_start_ticks(relay_pid),
+        })
+        with pytest.raises(pb.ProfileUnusable, match="relay .* is no longer running"):
+            session.action_returncode()
+    finally:
+        parent.kill()
+        parent.wait()
+
+
+def test_a_reused_relay_pid_identity_fails_closed(tmp_path: Path):
+    """A PID alone must not turn an unrelated live process into a relay (#514)."""
+
+    class _Early(_FakeBackend):
+        exits_before_action = True
+
+    session = _session(tmp_path, backend=_Early())
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "launched", "child_pid": os.getpid(),
+        "relay_pid": os.getpid(),
+        "relay_start_ticks": _proc_start_ticks(os.getpid()) + 1,
+    })
+    with pytest.raises(pb.ProfileUnusable, match="relay .* is no longer running"):
+        session.action_returncode()
+
+
+def test_a_relay_that_exits_after_writing_its_ending_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """The liveness check re-reads a raced terminal relay record (#514)."""
+
+    class _Early(_FakeBackend):
+        exits_before_action = True
+
+    session = _session(tmp_path, backend=_Early())
+    _write_status(session, {
+        "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+        "phase": "launched", "child_pid": os.getpid(),
+        "relay_pid": os.getpid(),
+        "relay_start_ticks": _proc_start_ticks(os.getpid()),
+    })
+
+    def finished_then_gone(pid: int, start_ticks: int) -> bool:
+        _write_status(session, {
+            "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
+            "phase": "ended", "returncode": 0, "signal": None,
+            "relay_pid": pid, "relay_start_ticks": start_ticks,
+        })
+        return False
+
+    monkeypatch.setattr(pb, "_profile_relay_is_live", finished_then_gone)
+    assert session.action_returncode() == 0
+
+
+def test_a_windowed_profile_without_a_relay_identity_fails_closed(
+    tmp_path: Path,
+):
+    class _Early(_FakeBackend):
+        exits_before_action = True
 
     session = _session(tmp_path, backend=_Early())
     _write_status(session, {
         "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
         "phase": "launched", "child_pid": os.getpid(),
     })
-    started = time.monotonic()
-    with pytest.raises(pb.ProfileUnusable):
+    with pytest.raises(pb.ProfileUnusable, match="no live relay identity"):
         session.action_returncode()
-    assert time.monotonic() - started < 10.0
 
 
-def test_an_action_that_outlives_the_wait_is_reaped(tmp_path: Path):
-    """The action outlives its profiler here, so every exit is a way to orphan it.
-
-    ``nsys --duration`` is the shipped case: the profiler is gone and the
-    workload is still on the GPU holding the output lock.  When the bounded
-    wait gives up, the run fails -- and if nothing tore the action down first,
-    it would keep running past the worker that was supposed to own it.
-    """
+def test_a_dead_relay_reaps_its_owned_action(tmp_path: Path):
+    """A broken relay fails closed without leaving its action behind (#514)."""
 
     class _Early(_FakeBackend):
         exits_before_action = True
-        settle_seconds = 0.2
 
+    relay = subprocess.Popen([sys.executable, "-c", "pass"])
+    relay.wait()
     session = _session(tmp_path, backend=_Early())
     _write_status(session, {
         "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
         "phase": "launched", "child_pid": os.getpid(),
+        "relay_pid": relay.pid,
+        "relay_start_ticks": 1,
     })
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         start_new_session=True,
     )
     try:
-        with pytest.raises(pb.ProfileUnusable):
+        with pytest.raises(pb.ProfileUnusable, match="relay .* is no longer running"):
             session.action_returncode(process)
         assert process.poll() is not None, "the action was left running"
     finally:

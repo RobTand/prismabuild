@@ -768,6 +768,12 @@ matters). Rules:
   cleanup, so only already-checkpointed evidence is guaranteed to survive
   that path; an unfinished or not-yet-ingested trace can still be lost.
   Checkpointing a profile never publishes a success receipt for the action.
+  A windowed profiler ending is not an action deadline: once its trace is
+  checkpointed, the relayed workload remains governed by the sealed execution
+  deadline or progress supervisor. The relay records its own pid and Linux
+  start ticks with the launched child; if that exact live relay is missing or
+  dead before it records an ending, the worker terminates the owned action
+  group and refuses rather than waiting without an execution authority (#514).
 - **Effective pool placement is a parameter** — `pbrun` seals the sorted,
   deduplicated conjunction of tags that its placement rule actually returned,
   including a derived hostname pin. The normalized constraint moves the action
