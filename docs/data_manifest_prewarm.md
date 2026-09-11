@@ -97,8 +97,72 @@ the `storage` role in `fleet_boxes.json`.  Every poll:
    A manifest that does not fit is refused, and refusing writes nothing.
 4. Reads each entry, in manifest order, through the host's local pool path
    (`--mount-map SHARED=LOCAL`), `--readers` at a time, `O_NOFOLLOW`, regular
-   files only.
+   files only, paced by the pool's disks (below).
 5. Writes `pb-queue/prewarm/<action_key>.json`.
+
+### Pacing, and why the reader count is 1
+
+The first deployment read with `--readers 8`, and the read rate was the only
+thing it measured.  Measured against the rest of the fleet on 2026-09-11
+(#499), that warm cost more than it saved: eight concurrent 1 MiB readers took
+the four-spindle raidz1 to 73-83% utilization, 38-54 ms read await and
+11 000-14 400 ms of backlog; the clients' sync writes queued behind that
+backlog, their replies passed the NFS-over-RDMA timeout, the server's late
+completions failed (`WC error: 10, remote access error`), and every in-flight
+RPC on *every* client was retried after a reconnect.  Both Sparks' GPUs idled
+100-130 s per row, against the ~3.5 min of prefetch the warm saved on one.
+The same bytes read at 8-12% utilization and ~0-2 ms await cost nobody
+anything.
+
+So the loop is paced by what the disks are doing, not by a thread count.
+Before every block it consults a sample of `/sys/block/<dev>/stat` for the
+pool's own data vdev members -- discovered from `zpool status -P`
+(`--pace-pool`), or named outright with `--disks` -- and holds while the worst
+disk is over any of three caps:
+
+| argument | default | harmless (measured) | stalling (measured) |
+|---|---|---|---|
+| `--max-util-pct` | 25 | 8-12 % | 73-83 % |
+| `--max-read-await-ms` | 10 | 0-2 ms | 38-54 ms |
+| `--max-backlog-ms` | 2000 | 300-450 ms | 11 000-14 400 ms |
+
+The defaults are the shape that passed on the live fleet, not the midpoint
+between the two measured states.  One reader at 40 % / 15 ms / 4 000 ms held
+the disks to 31 % peak yet still dropped both Sparks' NFS clients to ~50
+RPC/s for a minute (their own metrics collectors missed samples while it ran);
+one reader at 25 % / 10 ms / 2 000 ms warmed a 63.8 GB row at 146.5 MB/s with
+the clients untouched.  One reader is already enough to keep the pool busy:
+98 % of that run's ARC misses were *prefetch* misses, so the size of each read
+burst is set by ZFS's prefetcher (`zfetch_max_distance`), not by the reader,
+and a second reader only adds queue depth the pacer then has to take back.
+
+The three numbers are computed the way Netdata computes `disk_util`,
+`disk_await` and `disk_backlog`, so the record and the chart an operator reads
+afterwards are the same quantities.  `--pace-sample-s` bounds how often sysfs
+is read (0.25 s); every block's check reads the cached verdict.  Because the
+burst height belongs to the prefetcher, the sample interval is what bounds a
+burst's *length*.  A host with no
+pool, no `zpool`, or no readable `stat` file reads unpaced and the record says
+`disk_pacing.active: false` -- "pacing was off" is a value, not a missing key.
+A hold that starts or ends prints one `prewarm-hold` line on stderr, so a loop
+that is correctly yielding to a busy pool is visible rather than inferred from
+a warm that has not finished.
+
+Setting any cap to 0 disables that cap.  Setting all three off is how you
+reproduce the pre-#499 behaviour, and it is not a supported production shape.
+
+### The ARC arithmetic behind `--lookahead 1`
+
+The lookahead is bounded by what the ARC can hold *besides* the rows that are
+running, not by how far ahead the loop can see.  On dl380g10: `c_max` is
+245 760 MiB (257.7 GB, and both spellings appear in the record: `arcstats`
+counts bytes, Netdata's `zfs.arc_size` charts MiB), `--arc-reserve-fraction 0.8` leaves the loop 206.2 GB, and a GLM
+census row is ~64 GB.  Two rows being read plus one warmed ahead is 191.4 GB,
+14.8 GB under the budget.  A second lookahead row is 255.2 GB and does not
+fit: the only way to warm it is to displace what a running row is still
+reading, which is what the `arc_size` swing (205 -> 237 -> 220 GB) recorded on
+2026-09-11.  The headroom check already refuses that row; `--lookahead 1`
+means the loop does not spend a poll discovering it.
 
 ### What "never evicts a claimed row's data" means here
 

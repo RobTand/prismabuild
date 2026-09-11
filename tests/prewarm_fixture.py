@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prewarm_loop  # noqa: E402
 
 
-def data_manifest(paths_and_sizes, *, prefix: str) -> dict:
+def data_manifest(paths_and_sizes, *, prefix: str,
+                  annotations: dict | None = None) -> dict:
     entries = [
         {"path": path, "offset": 0, "bytes": size, "sha256": None}
         for path, size in paths_and_sizes
@@ -28,7 +29,7 @@ def data_manifest(paths_and_sizes, *, prefix: str) -> dict:
     return {
         "schema": pb.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "tests"},
-        "annotations": {},
+        "annotations": dict(annotations or {}),
         "mount_prefix": prefix,
         "entries": entries,
         "entry_count": len(entries),
@@ -55,14 +56,16 @@ class Fleet:
         return str(path), size
 
     def action(self, key_seed: str, files, *, priority: int = 0,
-               with_manifest: bool = True) -> str:
+               with_manifest: bool = True,
+               annotations: dict | None = None) -> str:
         """Seal a request carrying a manifest input and publish it ready."""
 
         action_key = hashlib.sha256(key_seed.encode()).hexdigest()
         inputs: list[dict] = []
         params: dict = {"command": ["true"]}
         if with_manifest:
-            manifest = data_manifest(files, prefix=str(self.mount))
+            manifest = data_manifest(files, prefix=str(self.mount),
+                                     annotations=annotations)
             blob = self.root / f"{key_seed}.manifest.json"
             blob.write_text(json.dumps(manifest))
             entry, _ = self.cas.ingest_input(
@@ -100,11 +103,18 @@ class Fleet:
             poll_s=0.0, arc_reserve_fraction=1.0,
             arcstats=self.arcstats(size=0, c=1 << 40, c_max=1 << 40),
             claim_grace_min=20.0, once=True, dry_run=False, log=None,
-            min_manifest_bytes=0)
+            min_manifest_bytes=0,
+            # No pool, no disks: the pacer these tests build is inactive and
+            # reads at full speed.  A test about pacing builds its own pacer
+            # on a fake stat source and hands it to ``cycle``.
+            pace_pool="", disks="", max_util_pct=40.0,
+            max_read_await_ms=15.0, max_backlog_ms=4000.0,
+            pace_sample_s=0.5, pace_hold_s=0.25)
         base.update(overrides)
         return argparse.Namespace(**base)
 
-    def cycle(self, args) -> dict:
+    def cycle(self, args, pacer=None) -> dict:
         import threading
         mounts = prewarm_loop.MountMap(list(args.mount_map))
-        return prewarm_loop.cycle(args, self.queue, mounts, threading.Event())
+        return prewarm_loop.cycle(
+            args, self.queue, mounts, threading.Event(), pacer=pacer)
