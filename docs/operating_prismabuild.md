@@ -796,6 +796,26 @@ once more at normal completion so the terminal observation retains the final
 commit. A blank `PROGRESS` column means no valid observation is available,
 not proof that the request has no progress policy. Submission notices name
 phase-grace clamps separately from the unchanged explicit hard deadline.
+
+For a loop with repeated phases, add `--progress-cycle`:
+
+    pbrun --progress encode=200 --progress publish=5 --progress-cycle -- ./loop.sh
+
+After publishing a durable unit and reporting `publish` with its cumulative
+count, report `encode` with that same count before the next long encode step.
+It gets encode's allowance, rather than retaining publish's shorter allowance.
+Each phase can grant grace once between increases in the count, so switching
+names repeatedly with no more committed work still exhausts the sum of the
+allowances. Counts never reset on a new cycle. Reports may skip intermediate
+phases between watchdog polls, and regressing counts are rejected. The ending
+records `progress_cycle` along with the current accepted phase and allowance.
+
+Cyclic mode requires an additional `progress-cycle-v1` worker capability. It
+refuses submission if no eligible offer advertises support, including an
+unknown fleet. A mixed fleet places cyclic actions only on supporting workers.
+Omitting the option preserves linear behavior and existing action identities;
+already-sealed actions require a new submission to adopt it.
+
 Queue waiting does not consume that budget; `--wait-s` controls the submitter's wait separately. A short budget
 does not wait for the next lease heartbeat before being enforced.
 
@@ -850,6 +870,8 @@ an omitted field is not passed at all.
 | `tags` | `--tag`, once per entry |
 | `env` | `--env K=V`, once per pair |
 | `timeout_s` | `--timeout-s` |
+| `progress_phases` | `--progress-phase`, once per `"name=seconds"` entry; pool only |
+| `progress_cycle` | `--progress-cycle`, boolean; requires `progress_phases` and a cyclic-capable worker |
 | `deterministic` | `--deterministic` |
 | `anywhere` | `--anywhere` |
 | `here` | `--here` |

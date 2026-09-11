@@ -84,6 +84,16 @@ actually advanced (RobTand/prismabuild#480).
 repeat it for each phase. Both spellings require a caller-selected stall
 allowance and seal the same policy.
 
+For loops that repeat phases, add `--progress-cycle` (campaign row
+`progress_cycle: true`). Example: `--progress encode=200 --progress publish=5
+--progress-cycle`. After durably publishing a unit and reporting its cumulative
+count, report `encode` with that same count before starting the next long
+step. Each phase can grant its allowance once between count increases, so
+changing names with no new work still exhausts the sum of allowances. Never
+reset the count on a new cycle. This requires a deployed worker offering
+`progress-cycle-v1`; an old or unknown fleet refuses the submission. Existing
+sealed policies remain linear. A requested hard deadline still applies.
+
 ### Emit committed units from any loop longer than a few minutes
 
 Declaring phases is half the contract; the action still has to say it is

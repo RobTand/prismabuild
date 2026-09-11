@@ -95,6 +95,18 @@ counter keeps a broken action alive. A stall ends the action with
 `status: timeout` and `termination_reason: no_progress`; a requested deadline
 with `termination_reason: execution_deadline`.
 
+For a loop that revisits phases, add `--progress-cycle`, or set
+`progress_cycle: true` alongside a campaign row's `progress_phases`. Each phase
+then grants its allowance once between increases in the cumulative committed
+count. After publishing a durable unit, report the next encode phase with that
+same count before its quiet work begins. Keep the count cumulative; changing
+phase names alone cannot renew allowances indefinitely. The sum of the
+effective phase allowances bounds quiet after the count stops increasing.
+This opt-in requires the additional `progress-cycle-v1` worker tag and is
+refused until an eligible worker advertises it. Endings record `progress_cycle`.
+Existing sealed linear policies retain their behavior; submit a new request
+to use cyclic mode.
+
 Choose the allowances from what the workload measurably does. PrismaQuant's
 pricing rows declare `startup=3600 pricing=900 finalize=1800` because a fit of
 elapsed time against committed batches over 23 completed 864-unit rows gives

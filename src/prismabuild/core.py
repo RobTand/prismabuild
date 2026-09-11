@@ -124,6 +124,8 @@ PROGRESS_TAG = "progress-v1"
 #: separate capability from :data:`PROGRESS_TAG`: an older v1 watcher accepts
 #: the record but cannot launch code that reads these names.
 PROGRESS_HELPER_TAG = "progress-helper-v1"
+# Optional cyclic phase semantics; older v1 policy readers reject the field.
+PROGRESS_CYCLE_TAG = "progress-cycle-v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
@@ -7006,12 +7008,20 @@ def validate_progress_policy(value: object, *, where: str = "action.params.progr
     exists to remove.  The phases are the workload's own: startup, capture,
     compile, the loop, finalization.  Declare what the work does and the bound
     follows from it.
+
+    Optional ``cycle: true`` lets phases repeat. Each phase grants grace once
+    between increases in the cumulative count, preserving that bound after
+    the count stops. Old readers reject the extra field; placement requires
+    the separate cyclic-watchdog capability.
     """
 
-    if not isinstance(value, Mapping) or set(value) != {"schema", "phases"}:
-        _fail(f"{where} must declare exactly schema and phases")
+    if (not isinstance(value, Mapping)
+            or set(value) not in ({"schema", "phases"}, {"schema", "phases", "cycle"})):
+        _fail(f"{where} must declare schema and phases, with optional cycle")
     if value["schema"] != PROGRESS_POLICY_SCHEMA_V1:
         _fail(f"{where}.schema must be {PROGRESS_POLICY_SCHEMA_V1!r}")
+    if "cycle" in value and type(value["cycle"]) is not bool:
+        _fail(f"{where}.cycle must be a boolean")
     phases = value["phases"]
     if not isinstance(phases, Sequence) or isinstance(phases, (str, bytes)):
         _fail(f"{where}.phases must be a list of phases")
@@ -7042,7 +7052,11 @@ def validate_progress_policy(value: object, *, where: str = "action.params.progr
         normalized.append({"name": name, "grace_s": grace})
     if not math.isfinite(sum(float(phase["grace_s"]) for phase in normalized)):
         _fail(f"{where}.phases must have a finite total grace")
-    return {"schema": PROGRESS_POLICY_SCHEMA_V1, "phases": normalized}
+    result = {"schema": PROGRESS_POLICY_SCHEMA_V1, "phases": normalized}
+    # Preserve the canonical bytes and keys of existing linear policies.
+    if value.get("cycle"):
+        result["cycle"] = True
+    return result
 
 
 def action_progress_policy(action: Mapping[str, object]) -> dict[str, object] | None:
@@ -7316,6 +7330,7 @@ __all__ = [
     "PROGRESS_RECORD_SCHEMA_V1",
     "PROGRESS_TAG",
     "PROGRESS_HELPER_TAG",
+    "PROGRESS_CYCLE_TAG",
     "action_progress_policy",
     "report_action_progress",
     "validate_progress_policy",

@@ -50,6 +50,7 @@ and each one is exactly one ``pbrun`` flag:
 ``host_class``       ``--host-class``: worker class (pool measurement) or SLURM Feature
 ``retry_safe``       ``--retry-safe``
 ``progress_phases``  ``--progress-phase``, once per entry, ``"name=seconds"``
+``progress_cycle``   ``--progress-cycle`` (boolean; requires phases)
 ``max_attempts``     ``--max-attempts``
 ===================  ====================================================
 
@@ -73,6 +74,11 @@ compose rather than conflict: a row with both keeps the hard deadline AND
 ends early on a stall.  Pool transport only, refused at load time on SLURM:
 the watchdog is the pull-queue worker's, and a scheduler time limit is the
 total duration this field exists to stop standing in for.
+
+``progress_cycle: true`` lets the declared phases repeat. Each phase grants
+its allowance once between increases in cumulative committed units, so a
+publish can return to a longer encode step without permitting endless quiet
+phase switching. This requires workers offering ``progress-cycle-v1``.
 
 An unknown field is refused rather than ignored: a typo that is silently
 dropped seals an action nobody asked for.
@@ -182,6 +188,7 @@ _SWITCH_FIELDS = (
     ("exclusive", "--exclusive"),
     ("measurement", "--measurement"),
     ("retry_safe", "--retry-safe"),
+    ("progress_cycle", "--progress-cycle"),
 )
 _REPEATED_FIELDS = (
     ("tags", "--tag"),
@@ -360,7 +367,8 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         # refuse is refused at load time with the rest of the manifest -- and
         # so the transport rule is asked of pbrun in pbrun's own words.
         pbrun.require_progress_scope(
-            progress=pbrun.parse_progress_phases(row.get("progress_phases")),
+            progress=pbrun.parse_progress_phases(
+                row.get("progress_phases"), cycle=row.get("progress_cycle", False)),
             transport=transport,
         )
     except ValueError as exc:

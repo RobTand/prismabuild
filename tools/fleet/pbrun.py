@@ -1709,17 +1709,21 @@ def _width_of_the_pin(queue, intent, tags: list[str], hostname: str,
             f"{', '.join(others)}.")
 
 
-def parse_progress_phases(declared: Sequence[str] | None) -> dict[str, object] | None:
+def parse_progress_phases(
+    declared: Sequence[str] | None, *, cycle: bool = False,
+) -> dict[str, object] | None:
     """Turn repeated ``--progress-phase NAME=SECONDS`` into a sealed policy.
 
     Order is the order they were given, and it is load-bearing: entering a
     later phase re-arms the allowance once, so the declaration reads as the
     shape of the work -- load, then compile, then the loop, then publish --
-    and the total quiet the action can ever accumulate is the sum of what was
-    declared.
+    and the quiet with no new committed units is bounded by the sum declared.
+    Cyclic policies renew these phase grants when the cumulative count rises.
     """
 
     if not declared:
+        if cycle:
+            raise SystemExit("pbrun: --progress-cycle requires --progress-phase")
         return None
     phases = []
     for entry in declared:
@@ -1735,10 +1739,17 @@ def parse_progress_phases(declared: Sequence[str] | None) -> dict[str, object] |
             ) from None
         phases.append({"name": name, "grace_s": grace})
     policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1, "phases": phases}
+    if cycle:
+        policy["cycle"] = True
     try:
         return pb.validate_progress_policy(policy)
     except pb.ActionContractError as exc:
         raise SystemExit(f"pbrun: {exc}") from None
+
+
+def progress_required_tags(policy: Mapping[str, object]) -> list[str]:
+    return [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG] + (
+        [pb.PROGRESS_CYCLE_TAG] if policy.get("cycle") else [])
 
 
 def progress_contract_notice(
@@ -1789,6 +1800,11 @@ def progress_contract_notice(
     ]
     announced = queue.placement_progress_contracts(intent)
     if not announced:
+        if policy.get("cycle"):
+            raise SystemExit(
+                f"pbrun: no eligible worker offers {pb.PROGRESS_CYCLE_TAG}; "
+                "cyclic progress support is unknown. Update the fleet's "
+                "published generation and wait for worker adoption.")
         lines.append(
             "pbrun: no worker offers on record; whether any box honours the "
             "contract is unknown.")
@@ -1837,6 +1853,26 @@ def progress_contract_notice(
             f"it requires {pb.PROGRESS_TAG} and {pb.PROGRESS_HELPER_TAG}. "
             "It waits for a helper-capable box rather than starting without "
             "the documented reporting path.")
+    if policy.get("cycle"):
+        cycle_intent = {**helper_intent, "tags": [
+            *helper_intent["tags"], pb.PROGRESS_CYCLE_TAG]}
+        cycle_hosts = set(queue.placeable_hosts(cycle_intent) or [])
+        cycle_missing = sorted(eligible - cycle_hosts)
+        eligible &= cycle_hosts
+        if not eligible:
+            raise SystemExit(
+                f"pbrun: no eligible worker offers {pb.PROGRESS_CYCLE_TAG} "
+                f"({', '.join(cycle_missing)}); update the fleet's published "
+                "generation before submitting cyclic progress.")
+        if cycle_missing:
+            lines.append("pbrun: " + ", ".join(cycle_missing)
+                         + f" do not offer {pb.PROGRESS_CYCLE_TAG}; "
+                         "this cyclic action waits for a capable worker.")
+        lines.append(
+            "pbrun: cyclic phases: each phase grants its allowance once "
+            "between increases in cumulative committed units; "
+            f"at most {total:g}s of quiet after the count stops increasing.")
+        helper_intent = cycle_intent
     ceilings = queue.placement_timeout_ceilings(helper_intent)
     for host in sorted(eligible):
         ceiling = ceilings.get(host)
@@ -3879,6 +3915,10 @@ def main() -> int:
                          "action reports with prismabuild.progress.commit, or "
                          "by running $PRISMABUILD_ACTION_PROGRESS_HELPER when "
                          "it cannot import PrismaBuild")
+    ap.add_argument("--progress-cycle", action="store_true",
+                    help="allow progress phases to repeat; each phase gets one "
+                         "allowance between increases in cumulative committed "
+                         "units. Requires --progress-phase and cyclic-capable workers")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument(
@@ -3943,7 +3983,7 @@ def main() -> int:
         not math.isfinite(args.timeout_s) or args.timeout_s <= 0
     ):
         raise SystemExit("pbrun: --timeout-s must be a positive finite number")
-    progress_policy = parse_progress_phases(args.progress_phase)
+    progress_policy = parse_progress_phases(args.progress_phase, cycle=args.progress_cycle)
 
     if args.withdraw:
         # Withdrawing is not a submission and must not need one: the operator
@@ -4123,7 +4163,7 @@ def main() -> int:
         # the receipt says the action was admitted under the contract *and*
         # ran on a box that could keep it.
         tags = pool.normalize_placement_tags(
-            [*tags, pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG])
+            [*tags, *progress_required_tags(progress_policy)])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     placement = {"required_tags": tags}
@@ -4454,7 +4494,7 @@ def main() -> int:
         q,
         {**intent, "tags": [
             t for t in tags
-            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG)
+            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG)
         ]},
         policy=progress_policy,
         requested_timeout_s=args.timeout_s,

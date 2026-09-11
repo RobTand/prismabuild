@@ -419,7 +419,7 @@ def _run_loop(stop_requested):
             # matches it on tags and then fails at run time instead of waiting
             # for a box that can serve it.
             tags.append("cpu")
-        tags.extend((pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG))
+        tags.extend((pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG))
         return tags
 
     host = socket.gethostname()

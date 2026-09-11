@@ -409,13 +409,14 @@ class ProgressPolicy(NamedTuple):
     contract's clothes.
 
     ``no_progress_bound_s`` is the honest total: every declared phase is
-    entered at most once and re-arms its allowance once, so an action that
+    entered at most once (per committed count in cyclic mode), so an action that
     never commits anything at all ends within the sum, and that sum is a
     number a submitter chose from the phases the work actually has.
     """
 
     phases: tuple[ProgressPhase, ...]
     ceiling_s: float | None
+    cycle: bool = False
 
     @property
     def no_progress_bound_s(self) -> float:
@@ -438,6 +439,7 @@ class ProgressPolicy(NamedTuple):
             "progress_stall_ceiling_s": self.ceiling_s,
             "progress_stall_clamped": self.clamped,
             "progress_no_progress_bound_s": self.no_progress_bound_s,
+            "progress_cycle": self.cycle,
         }
 
 
@@ -462,6 +464,7 @@ def progress_policy(
             for phase in phases
         ),
         ceiling,
+        cycle=bool(declared.get("cycle")),
     )
 
 
@@ -499,10 +502,12 @@ class ProgressWatch:
     * its phase is one the sealed policy declared;
     * ``units_completed`` is finite and not negative;
     * and it either passes the highest counter accepted so far, or enters a
-      phase later than the highest entered so far.
+      phase later than the highest entered so far. In cyclic mode, a phase
+      may instead grant its allowance once per cumulative committed count;
+      a regressing count is always rejected.
 
-    A repeated counter, a regression, an undeclared phase, a foreign token,
-    unparsable bytes and an absent file are all *not* advancement, and are
+    A report with neither a new count nor an eligible phase grant, an
+    undeclared phase, a foreign token and unparsable bytes are rejected and
     counted rather than discarded so a terminal record can say what the
     reporter was actually doing.  Launcher liveness and pipe bytes are not
     considered here at all: :func:`_observe_execution` samples those, on
@@ -518,7 +523,11 @@ class ProgressWatch:
         # Launch already grants the first phase's allowance. Reporting zero
         # completed units in that phase cannot grant it again.
         self.units_high_water: int | float = 0
-        self.phase_high_water = 0
+        # In cyclic mode, a phase gets one allowance per committed count.
+        # Publishing a new count permits returning to a long earlier phase;
+        # cycling names without more durable work cannot renew forever.
+        self.phase_index = 0
+        self.phases_granted = {0}
         self.phases_entered = 1
         self.last_advance_monotonic = started
         self.last_advance_unix: float | None = None
@@ -530,13 +539,13 @@ class ProgressWatch:
 
     @property
     def grace_s(self) -> float:
-        """The allowance in force: the highest phase entered, not the last named.
+        """The allowance of the last accepted phase (highest in linear mode).
 
-        Naming an earlier phase again must not be able to buy a longer quiet
-        than the phase the action has actually reached.
+        Cyclic re-entry consumes a bounded per-count grant. Rejected phase
+        reports never alter the allowance.
         """
 
-        return self.policy.phases[self.phase_high_water].effective_grace_s
+        return self.policy.phases[self.phase_index].effective_grace_s
 
     def stall_deadline(self) -> float:
         return self.last_advance_monotonic + self.grace_s
@@ -596,15 +605,27 @@ class ProgressWatch:
             self._reject("units_completed is not a finite count")
             return False
         advanced_units = units > self.units_high_water
-        advanced_phase = index > self.phase_high_water
+        advanced_phase = index > self.phase_index
+        if self.policy.cycle:
+            if units < self.units_high_water:
+                self._reject("regressing")
+                return False
+            advanced_phase = index not in self.phases_granted
         if not advanced_units and not advanced_phase:
             self._reject("replayed")
             return False
         if advanced_units:
             self.units_high_water = units
-        if advanced_phase:
-            self.phases_entered += index - self.phase_high_water
-            self.phase_high_water = index
+        if self.policy.cycle:
+            if advanced_units:
+                self.phases_granted.clear()
+            self.phases_granted.add(index)
+            if index != self.phase_index:
+                self.phases_entered += 1
+            self.phase_index = index
+        elif advanced_phase:
+            self.phases_entered += index - self.phase_index
+            self.phase_index = index
         self.accepted += 1
         self.last_advance_monotonic = now
         reported = record.get("reported_unix")
@@ -618,7 +639,7 @@ class ProgressWatch:
             else _now()
         )
         self.last_accepted = {
-            "phase": self.policy.phases[self.phase_high_water].name,
+            "phase": self.policy.phases[self.phase_index].name,
             "units_completed": self.units_high_water,
             "unit": (str(record["unit"]) if isinstance(record.get("unit"), str)
                      else None),
@@ -643,7 +664,7 @@ class ProgressWatch:
             "last_accepted": self.last_accepted,
             "quiet_s": max(0.0, now - self.last_advance_monotonic),
             "grace_s": self.grace_s,
-            "phase": self.policy.phases[self.phase_high_water].name,
+            "phase": self.policy.phases[self.phase_index].name,
             "phases_entered": self.phases_entered,
         }
 
