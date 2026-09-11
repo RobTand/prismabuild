@@ -288,7 +288,12 @@ def pool_member_devices(
         if section != "data" or not name.startswith("/"):
             continue
         device = whole_disk_of(name, sysfs=sysfs)
-        if device and device not in devices:
+        if not device:
+            # A partial topology is not a smaller healthy pool.  Letting the
+            # reader pace only the resolvable members would let an unavailable
+            # busy vdev disappear behind its quiet peer.
+            return []
+        if device not in devices:
             devices.append(device)
     return devices
 
@@ -340,10 +345,14 @@ class DiskPacer:
     The defaults come from the two states measured in #499 and are documented
     at the argument.
 
-    The first sample has no interval and therefore no verdict, so it never
-    holds.  This matters: a pacer that treated "unknown" as "over" would stall
-    forever on a host whose stat file it cannot read, which is exactly the host
-    where pacing is inactive and reading is fine.
+    A pacer with no configured disks is intentionally inactive: that is the
+    explicit non-storage-host/test shape.  Once disks are configured, however,
+    their telemetry is required.  The first complete row establishes a
+    baseline; a second complete row establishes the first verdict.  Missing
+    even one configured member is not a quiet pool, so it holds the reader
+    until a fresh complete interval arrives or the caller stops it.  That
+    avoids turning a missing sysfs row or changed topology into #499's
+    unpaced storage read.
     """
 
     def __init__(
@@ -361,7 +370,10 @@ class DiskPacer:
         reason: str = "",
         notify: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
-        self.devices = list(devices)
+        # ``--disks`` is a comma-separated operator argument, so preserve the
+        # first spelling/order but do not make a duplicate member look like a
+        # second required stat row.
+        self.devices = list(dict.fromkeys(devices))
         self.max_util_pct = float(max_util_pct)
         self.max_read_await_ms = float(max_read_await_ms)
         self.max_backlog_ms = float(max_backlog_ms)
@@ -379,9 +391,15 @@ class DiskPacer:
         self._lock = threading.Lock()
         self._previous: dict[str, list[int]] = {}
         self._previous_at = 0.0
-        self._sampled_at = 0.0
+        # ``None`` makes the first read unconditional.  A valid injected
+        # monotonic clock may begin at zero, where a numeric zero sentinel
+        # would otherwise skip the baseline for one sample interval.
+        self._sampled_at: float | None = None
         self._over = False
         self._readable = True
+        self._telemetry_complete = False
+        self._missing_devices: list[str] = []
+        self._telemetry_gaps = 0
         self._samples = 0
         self._holds = 0
         self._held_s = 0.0
@@ -395,6 +413,15 @@ class DiskPacer:
     def active(self) -> bool:
         return bool(self.devices)
 
+    def _telemetry_state_locked(self) -> str:
+        if not self.devices:
+            return "inactive"
+        if self._missing_devices:
+            return "missing"
+        if not self._telemetry_complete:
+            return "awaiting_interval"
+        return "complete"
+
     # -- sampling ---------------------------------------------------------
 
     def _measure(self, now: float) -> dict[str, float] | None:
@@ -405,15 +432,26 @@ class DiskPacer:
             row = self.stat_source(device)
             if row is not None and len(row) > STAT_WEIGHTED_IO_MS:
                 current[device] = row
-        #: "Nothing answered" and "too soon to have an interval" are both
-        #: *unknown*, but only the first one may clear a hold: an interval of
-        #: zero says nothing about the pool, while a silent disk means the
-        #: pacer has lost its evidence and must not keep holding on it.
-        self._readable = bool(current)
+        missing = [device for device in self.devices if device not in current]
+        #: A partial sample cannot borrow a quiet peer's verdict.  It also
+        #: cannot reuse the pre-gap baseline after a member returns: the first
+        #: restored row is a baseline, not an interval that proves the pool
+        #: healthy.  The hold that follows is interruptible in ``wait`` and
+        #: announced with the missing members.
+        was_missing = bool(self._missing_devices)
+        self._readable = not missing
+        self._missing_devices = missing
         previous, previous_at = self._previous, self._previous_at
+        if missing:
+            if not was_missing:
+                self._telemetry_gaps += 1
+            self._previous, self._previous_at = {}, now
+            self._telemetry_complete = False
+            return None
         self._previous, self._previous_at = current, now
         elapsed = now - previous_at
-        if not previous or elapsed <= 0:
+        if len(previous) != len(self.devices) or elapsed <= 0:
+            self._telemetry_complete = False
             return None
         worst = {"util_pct": 0.0, "read_await_ms": 0.0, "backlog_ms": 0.0,
                  "in_flight": 0.0}
@@ -433,15 +471,21 @@ class DiskPacer:
                 worst["read_await_ms"], (read_ms / reads) if reads > 0 else 0.0)
             worst["backlog_ms"] = max(worst["backlog_ms"], weighted / elapsed)
             worst["in_flight"] = max(worst["in_flight"], float(row[STAT_IN_FLIGHT]))
-        return worst if seen else None
+        if not seen:
+            self._telemetry_complete = False
+            return None
+        self._telemetry_complete = True
+        return worst
 
     def _refresh_locked(self, now: float) -> None:
         measured = self._measure(now)
         self._sampled_at = now
         if measured is None:
-            if not self._readable:
-                # A disk that stops answering must not leave a hold latched.
-                self._over = False
+            if self.active:
+                # Configured storage members are required evidence.  A missing
+                # row or a post-gap baseline must hold rather than authorize an
+                # unpaced payload read.
+                self._over = True
             return
         self._samples += 1
         for key in self._totals:
@@ -460,7 +504,8 @@ class DiskPacer:
 
         now = self.clock()
         with self._lock:
-            if now - self._sampled_at >= self.sample_s:
+            if (self._sampled_at is None
+                    or now - self._sampled_at >= self.sample_s):
                 self._refresh_locked(now)
             return self._over
 
@@ -489,7 +534,9 @@ class DiskPacer:
             if first:
                 self._hold_started = self.clock()
             self._holding += 1
-            last = dict(self._last)
+            last = {**self._last,
+                    "telemetry_state": self._telemetry_state_locked(),
+                    "missing_devices": list(self._missing_devices)}
         if first and self.notify is not None:
             self.notify({"event": "prewarm-hold", "state": "start", **last})
 
@@ -535,6 +582,9 @@ class DiskPacer:
                 "mean_read_await_ms": round(mean["read_await_ms"], 2),
                 "max_backlog_ms": round(self._maxima["backlog_ms"], 1),
                 "mean_backlog_ms": round(mean["backlog_ms"], 1),
+                "telemetry_state": self._telemetry_state_locked(),
+                "telemetry_gaps": self._telemetry_gaps,
+                "missing_devices": list(self._missing_devices),
                 "thresholds": {
                     "max_util_pct": self.max_util_pct,
                     "max_read_await_ms": self.max_read_await_ms,
@@ -546,10 +596,9 @@ class DiskPacer:
 def pacer_from_args(args) -> DiskPacer:
     """Build the pacer a cycle will use, from arguments and the pool topology.
 
-    A host with no pool, no ``zpool`` or an unreadable ``stat`` file gets an
-    inactive pacer that reads at full speed and says so in the record, rather
-    than a refusal: the storage role is the only place this loop belongs, and
-    the tests run where none of those files exist.
+    A caller that deliberately supplies no disks gets the explicit inactive
+    pacer used by non-storage tests.  ``main`` is stricter for the storage
+    role: it refuses a topology discovery failure before a cycle can read.
     """
 
     devices = [name for name in
@@ -569,6 +618,24 @@ def pacer_from_args(args) -> DiskPacer:
         hold_s=args.pace_hold_s,
         reason=reason,
     )
+
+
+def require_storage_pacing(pacer: DiskPacer) -> None:
+    """Refuse a storage-role cycle with no discoverable pacing members.
+
+    This is separate from ``DiskPacer`` so direct fixtures can deliberately
+    exercise their inactive/no-storage shape.  The supervisor restarts a role
+    that exits here; it is safer to wait for that retry than to perform one
+    unpaced warm after a transient ``zpool`` failure.
+    """
+
+    if pacer.active:
+        return
+    raise SystemExit(
+        "prewarm: this is the storage host and no disks could be paced "
+        f"({pacer.report()['reason']}); reading the pool unpaced is the "
+        "defect #499 records, so refuse rather than degrade.  Name the "
+        "members with --disks if discovery cannot see them.")
 
 
 def inactive_pacing(reason: str = "no pacer") -> dict[str, object]:
@@ -1021,7 +1088,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="the ZFS pool whose data vdev members pace the "
                              "reader; its spindles are discovered with "
                              "'zpool status -P'.  A host where that fails "
-                             "reads unpaced and records that it did")
+                             "is refused by the storage role rather than "
+                             "read unpaced")
     parser.add_argument("--disks", default="",
                         help="comma-separated block devices (sdb,sdc) to pace "
                              "on, overriding --pace-pool discovery")
@@ -1096,15 +1164,13 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr, flush=True)
 
     probe = pacer_from_args(args)
-    if not args.dry_run and not probe.active:
-        raise SystemExit(
-            "prewarm: this is the storage host and no disks could be paced "
-            f"({probe.report()['reason']}); reading the pool unpaced is the "
-            "defect #499 records, so refuse rather than degrade.  Name the "
-            "members with --disks if discovery cannot see them.")
+    if not args.dry_run:
+        require_storage_pacing(probe)
 
     while True:
         pacer = pacer_from_args(args)
+        if not args.dry_run:
+            require_storage_pacing(pacer)
         pacer.notify = announce
         event = cycle(args, queue, mounts, stop, pacer=pacer)
         line = json.dumps(event)

@@ -48,6 +48,15 @@ landed, including a hostname pin derived from a box-local executable, and seals
 them before computing the key. Flag order and duplicate tags do not move the
 key; a different admissible worker population does.
 
+### Storage prewarm pacing
+
+The storage role's data-manifest prewarm is controlled by
+[`data_manifest_prewarm.md`](data_manifest_prewarm.md).  Its disk feedback is
+required: missing a configured vdev stat row holds the reader, and a later
+topology-discovery failure stops the role for supervisor retry.  Do not turn
+that failure into an unpaced warm.  An intentional no-disk fixture remains
+inactive only outside the storage role.
+
 ## Submit one command
 
 The wrapper runs without login profiles. Use an absolute executable or seal
