@@ -534,6 +534,29 @@ def test_a_record_that_cannot_be_parsed_is_a_row_not_a_silence(fleet, capsys):
     assert "no endings filed" not in out
 
 
+def test_an_oversized_ending_is_reported_without_reading_its_payload(
+    fleet, monkeypatch,
+):
+    """A log-sized terminal record cannot make a status reader log-sized."""
+
+    key = "b4" * 32
+    path = fleet["queue"] / pool.DONE / f"{key}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": pool.POOL_OUTCOME_SCHEMA_V1,
+        "action_key": key,
+        "status": "executed",
+        "detail": {"stdout": "x" * 1024},
+    }))
+    monkeypatch.setattr(pbstatus, "MAX_ENDING_RECORD_BYTES", 512)
+
+    row = pbstatus.read_endings(fleet["queue"], limit=1)[0]
+
+    assert row["status"] == "unreadable"
+    assert row["unreadable"] == "record exceeds 512-byte reader limit"
+    assert row["path"] == str(path)
+
+
 def test_an_unreadable_record_says_which_way_it_is_unreadable(fleet, capsys):
     """A record nobody may read and a record nobody can parse are different
     faults with different fixes, and they took the same arm before."""

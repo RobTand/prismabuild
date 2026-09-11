@@ -330,7 +330,11 @@ def _terminal_metrics(
         if (age := _number(now - float(row.get("finished_unix", -math.inf)))) is not None
         and age <= window_seconds
     ]
-    complete = accessible and len(endings) < limit
+    complete = (
+        accessible
+        and len(endings) < limit
+        and all(not row.get("unreadable") for row in selected)
+    )
     metrics.family(
         "prismabuild_terminal_outcomes_window_seconds",
         "Configured lookback window for recent terminal outcome gauges.",
@@ -374,15 +378,12 @@ def _terminal_metrics(
                 continue
             key = (host, metric)
             window_peaks[key] = max(window_peaks.get(key, value), value)
-        try:
-            record = pool._read_json(Path(str(row["path"])))
-        except (OSError, ValueError):
-            record = None
-        if not isinstance(record, dict):
-            continue
-        published = _number(record.get("published_unix"))
-        claimed = _number(record.get("claimed_unix"))
-        finished = _number(record.get("finished_unix"))
+        # ``read_endings`` already projected these fields from its bounded
+        # read. Opening the complete record again doubled both NFS traffic and
+        # the allocation spike from rows that embedded action logs.
+        published = _number(row.get("published_unix"))
+        claimed = _number(row.get("claimed_unix"))
+        finished = _number(row.get("timing_finished_unix"))
         if published is not None and claimed is not None and claimed >= published:
             timings[(host, "queue_wait")].append(claimed - published)
         if claimed is not None and finished is not None and finished >= claimed:
