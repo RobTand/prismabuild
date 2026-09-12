@@ -129,6 +129,26 @@ and keeps the charge the removal was meant to return. A reclaim that fails is
 recorded on the record and nowhere else: housekeeping must not be able to hold
 a host's maintenance gate closed.
 
+Removing such a group needs settlement, not elapsed time. A holder that has
+proved its own Docker transaction closed -- its ownership marker gone, and the
+local daemon listing no container under either `prismabuild.action` or
+`prismabuild.scope`, both labels the shim refuses to let a caller set -- sends
+`settle` with that evidence under the same attempt token its `release` carries.
+The broker records `settled_unix` and the evidence. The next inventory pass
+then reclaims the group, reasserts its stop, re-reads that exact group to
+confirm it is still empty, frozen and the same kernel identity, releases it,
+and records `released_unix` with `maintenance_cleanup` of `settled container
+transaction`. A pass that has already found something wrong in its own
+namespace defers instead.
+
+A grace period would not do: nothing about elapsed time makes an already
+accepted daemon operation impossible. Settlement is the proof the fleet already
+trusts from the same holder, for the same attempt, in the same call sequence.
+What it leaves is a container the daemon created and nothing ever started,
+which holds no processes and no cgroup, and which `docker ps -aq` lists anyway.
+A tombstone whose holder is gone has no token and cannot be settled; removing
+one of those is offline work for a drain, on the same evidence.
+
 Authority records live under `/run` and therefore survive service restarts,
 not host reboots. Kernel groups and their processes disappear at reboot;
 queue recovery must still reconcile the corresponding attempt rather than

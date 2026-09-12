@@ -186,6 +186,12 @@ TOMBSTONE_SUFFIX = ".tombstone"
 LATE_FINISH_SUFFIX = ".late-finish"
 CONTAINER_OWNERS = "container-owners"
 CONTAINER_OWNER_LABEL = "prismabuild.action"
+#: The slice a container was created inside.  The owner label is the action's
+#: identity and spans its attempts; this one names a single attempt's scope.
+#: Both are reserved: the shim refuses a caller that tries to set either, and
+#: writes this one from the kernel cgroup it is running in, so a query on it is
+#: an identity match rather than a name match.
+CONTAINER_SCOPE_LABEL = "prismabuild.scope"
 DOCKER = "/usr/bin/docker"
 ATTEMPTS = "attempts"
 
@@ -1064,17 +1070,17 @@ def find_launcher_pids(action_key: str) -> list[int]:
     return found
 
 
-def _docker_owned_container_ids(owner: str) -> list[str]:
-    """Container ids carrying this action's ownership label.
+def _docker_containers_with_label(label: str, value: str) -> list[str]:
+    """Every container id the local daemon holds under one exact label.
 
-    Docker payloads are children of ``containerd-shim``, not of the action
-    group, so the daemon's label index is the authoritative join back to the
-    action.  A failed query is an unknown answer and therefore an exception;
-    callers retain capacity on it.
+    ``-a``, so a created-but-never-started container is listed too: that is the
+    one form of leftover a running-process census cannot see, and the only one
+    left once an action's payload has stopped.  A failed query is an unknown
+    answer and therefore an exception; callers retain capacity on it.
     """
 
     result = subprocess.run(
-        [DOCKER, "ps", "-aq", "--filter", f"label={CONTAINER_OWNER_LABEL}={owner}"],
+        [DOCKER, "ps", "-aq", "--filter", f"label={label}={value}"],
         capture_output=True,
         text=True,
         timeout=15,
@@ -1085,6 +1091,17 @@ def _docker_owned_container_ids(owner: str) -> list[str]:
         raise PoolContractError(
             f"docker ownership query failed ({result.returncode}): {detail}")
     return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
+
+
+def _docker_owned_container_ids(owner: str) -> list[str]:
+    """Container ids carrying this action's ownership label.
+
+    Docker payloads are children of ``containerd-shim``, not of the action
+    group, so the daemon's label index is the authoritative join back to the
+    action.
+    """
+
+    return _docker_containers_with_label(CONTAINER_OWNER_LABEL, owner)
 
 
 def _docker_remove_containers(container_ids: list[str]) -> list[str]:
@@ -3249,6 +3266,31 @@ class PoolQueue:
                 "container_owner must be a 64-character hex digest")
         return self.root / CONTAINER_OWNERS / f"{owner}.used"
 
+    def _container_settlement(self, owner: str, unit: str) -> dict[str, object]:
+        """What this holder can prove about its own Docker transaction.
+
+        Two label queries, not one.  The owner label is the action's identity
+        and spans its attempts; ``prismabuild.scope`` names this exact slice.
+        The marker is the third leg: ``_cleanup_action_containers`` unlinks it
+        only once its own re-query came back empty, so its absence is that
+        proof rather than a separate guess.
+
+        Whatever this returns is sent as-is.  The broker refuses an incomplete
+        settlement, which is the correct outcome: a scope that still has a
+        container is not settled, and nothing should pretend otherwise.
+        """
+
+        marker = self.container_marker(owner)
+        return {
+            "schema": resource_scope.CONTAINER_SETTLEMENT_SCHEMA,
+            "marker_absent": not marker.exists(),
+            "owner_container_ids": _docker_containers_with_label(
+                CONTAINER_OWNER_LABEL, owner),
+            "scope_container_ids": _docker_containers_with_label(
+                CONTAINER_SCOPE_LABEL, unit),
+            "checked_unix": _now(),
+        }
+
     def _scope_from_record(self, record: Mapping[str, object]) -> resource_scope.ResourceScope:
         control = record.get("resource_scope")
         if not isinstance(control, dict):
@@ -3501,6 +3543,31 @@ class PoolQueue:
             if not containers["complete"]:
                 return containers
             telemetry = self._sample_resource_scope(scope)
+            settle_error: str | None = None
+            if not scope_only and record.get("container_owner"):
+                # Before release, because release is where the broker decides
+                # between removing this scope and retaining it frozen: a ticket
+                # the shim could not resolve -- an ordinary nonzero ``docker``
+                # exit is enough -- makes it keep an empty frozen parent for a
+                # container that might still arrive.  Settlement is the holder
+                # saying none can, and it is the only evidence that lets the
+                # broker's inventory pass ever take that parent away (#486).
+                #
+                # Its own handler, and deliberately not the outer one.  This is
+                # housekeeping for a payload that has already stopped: if the
+                # broker refuses or never hears it, the tombstone is retained
+                # exactly as it is today.  Letting it reach the outer handler
+                # would answer ``complete: False`` and pin a claim and its
+                # tokens on a failed cleanup of somebody's memory charge, which
+                # is the fail-OPEN trade the comments above refuse to make.
+                #
+                # ``Exception`` and not ``BaseException``: a KeyboardInterrupt
+                # or SystemExit still stops the process.
+                try:
+                    scope.settle_containers(self._container_settlement(
+                        str(record["container_owner"]), str(scope.unit)))
+                except Exception as exc:                             # noqa: BLE001
+                    settle_error = f"{type(exc).__name__}: {exc}"
             released = scope.release()
             if scope.authority_path is not None:
                 # The scope is empty: nothing will sample it again, and no
@@ -3509,6 +3576,8 @@ class PoolQueue:
                 scope.authority_path.unlink(missing_ok=True)
             cleanup = {"complete": True, "released": released, "telemetry": telemetry,
                        "checked_unix": _now(), "nonce": scope.nonce}
+            if settle_error is not None:
+                cleanup["settle_error"] = settle_error
             key = str(record["action_key"])
             path = self.item_path(CLAIMED, key)
             live = _read_json(path)

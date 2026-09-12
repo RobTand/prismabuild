@@ -41,6 +41,9 @@ class Backend:
                 **({'identity':self.identity[scope]} if scope in self.identity else {})}
     def inventory(self):
         return {scope:self._row(scope) for scope in self.groups}
+    def observe(self, scope):
+        self.ops.append(('observe',scope))
+        return self._row(scope) if scope in self.groups else None
     def reclaim(self, scope):
         self.ops.append(('reclaim',scope))
         before=self.charge.get(scope,0);self.charge[scope]=0

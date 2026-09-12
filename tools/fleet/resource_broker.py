@@ -42,6 +42,33 @@ MAINTENANCE_UNOWNED='unattributed'
 # reads this from a status reply before it sends an owner, because an earlier
 # broker refuses an unknown request field outright (Authority.admin).
 MAINTENANCE_PROTOCOL=2
+# The holder's proof that no container of this attempt can still arrive: its
+# ownership marker is gone and the local daemon lists nothing under either of
+# the shim's reserved labels. The broker trusts this exactly as it already
+# trusts the same holder's `release` to mean the payload stopped -- same
+# attempt token, same authority, same caller -- and it is what turns a
+# retained tombstone into something the inventory pass may remove.
+SETTLEMENT_SCHEMA='prismabuild.container-settlement.v1'
+
+
+def _settlement_evidence(value):
+    """Validate and normalize a holder's container settlement.
+
+    Refused unless it is complete. A settlement that still names a container is
+    not a weaker settlement; it is a scope that is not settled, and a holder in
+    that state must not send one.
+    """
+    if not isinstance(value,dict):raise ValueError('invalid container settlement evidence')
+    checked=value.get('checked_unix',0.0)
+    if (set(value)-{'schema','marker_absent','owner_container_ids','scope_container_ids','checked_unix'}
+            or value.get('schema')!=SETTLEMENT_SCHEMA
+            or value.get('marker_absent') is not True
+            or value.get('owner_container_ids')!=[] or value.get('scope_container_ids')!=[]
+            or type(checked) not in (int,float) or not 0<=checked<=2**53):
+        raise ValueError('invalid container settlement evidence')
+    return {'schema':SETTLEMENT_SCHEMA,'marker_absent':True,'owner_container_ids':[],
+            'scope_container_ids':[],'checked_unix':float(checked)}
+
 
 def scope_id(key, nonce):
     return 'prismabuild-job'+hashlib.sha256((key+nonce).encode()).hexdigest()[:32]+'.slice'
@@ -192,6 +219,22 @@ class SystemdBackend:
         try:self.path(scope).stat()
         except FileNotFoundError:return False
         return True
+    def observe(self, scope):
+        """One group's inventory row, read now. None when it is already gone.
+
+        `inventory` answers for the whole namespace and is read once per pass.
+        Removing a group is the one operation that must not act on a row that
+        old, so it re-reads exactly the group it is about to remove.
+        """
+        group=self.path(scope)
+        try:info=group.lstat()
+        except FileNotFoundError:return None
+        events=dict(line.split() for line in (group/'cgroup.events').read_text().splitlines())
+        populated=events.get('populated')
+        if populated not in {'0','1'}:raise ValueError('invalid cgroup population evidence')
+        return {'populated':populated=='1',
+                'frozen':(group/'cgroup.freeze').read_text().strip()=='1',
+                'identity':[info.st_dev,info.st_ino]}
     def healthy(self):
         return {'cpu','memory'}<=set((self.root/'cgroup.controllers').read_text().split())
     def inventory(self):
@@ -406,6 +449,7 @@ class Authority:
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
         allowed=({'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','recovery_protocol'} if op=='create'
                  else {'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes'} if op=='recover_create'
+                 else {'op','action_key','nonce','token','evidence'} if op=='settle'
                  else {'op','action_key','nonce','token','reason','memory_max_bytes'})
         if set(request)-allowed:raise ValueError('unknown request field')
         if op in {'create','recover_create'}:
@@ -473,7 +517,7 @@ class Authority:
                     raise
                 record.pop('pending',None);_atomic(path,record)
                 return {'ok':True,**record}
-            if op not in {'stop','release','status'}:raise ValueError('unknown operation')
+            if op not in {'stop','release','status','settle'}:raise ValueError('unknown operation')
             record=self.records.get(scope)
             token=request.get('token')
             if not isinstance(token,str) or HEX64.fullmatch(token) is None:raise PermissionError('invalid attempt token')
@@ -501,6 +545,35 @@ class Authority:
                 _atomic(self.state_dir/(scope+'.json'),record)
                 return {'ok':True,'scope_id':scope,'released':bool(record.get('released_unix')),
                         **self._stop_details(record)}
+            if op=='settle':
+                # The holder proved its Docker transaction closed. This broker
+                # trusts that exactly as it already trusts the same holder's
+                # `release` to mean the payload stopped: one caller, one
+                # attempt token, one authority. What settlement adds is the one
+                # fact `release` cannot have -- that no ticket this scope still
+                # retains can ever be redeemed -- and it is the only thing that
+                # makes removing the retained parent safe.
+                #
+                # The scope-label half of that evidence is an identity match,
+                # not a name match: `prismabuild.scope` is a reserved label the
+                # shim refuses to let any caller set (`_has_reserved_label`),
+                # and the shim writes it from the kernel cgroup it is actually
+                # running in, never from its environment.
+                #
+                # What remains after settlement is a container the daemon
+                # created and nothing ever started. runc makes a container's
+                # cgroup when its task is created, at `start`, not at `create`,
+                # so such a container holds no processes and no cgroup: it is a
+                # Docker object leak, not an escape from containment. A later
+                # `start` needs a container the daemon already registered, and
+                # `docker ps -aq` lists those -- `-a` is the whole point -- so
+                # the holder's settlement saw it.
+                evidence=_settlement_evidence(request.get('evidence'))
+                if not record.get('stopped_unix'):raise ValueError('scope not stopped')
+                record['container_settlement']=evidence
+                record['settled_unix']=time.time()
+                _atomic(self.state_dir/(scope+'.json'),record)
+                return {'ok':True,'scope_id':scope,'settled':True,**self._stop_details(record)}
             if op=='stop':
                 reason=str(request.get('reason','requested'))[:1000]
                 if record.get('stopped_unix'):record['last_cleanup_reason']=reason
@@ -642,6 +715,37 @@ class Authority:
         try:_atomic(self.state_dir/(scope+'.json'),record)
         except OSError:pass  # the in-memory record carries it; the charge is gone either way
 
+    def _reap_retired_scope(self,scope,record):
+        """Remove a tombstone whose holder proved its container transaction closed.
+
+        The order is not interchangeable. A memory cgroup removed while it
+        still holds LRU page cache goes offline as a zombie -- the kernel
+        reparents kernel memory on offline but not page cache -- so removing
+        first would delete the directory and leave the charge behind, which is
+        the half of #486 a removal alone does not fix. Reclaim, reassert the
+        stop this record already intends, re-read the exact group, and only
+        then remove it.
+
+        The re-read is a second identity check against a fresh row, because the
+        pass's inventory was taken before both the reclaim and the stop.
+        Emptiness is asked twice on purpose, once through that row and once
+        through `backend.empty`, exactly as `release` asks it after reasserting
+        the stop.
+        """
+        self._reclaim_retired_scope(scope,record)
+        # Persisted stop intent, reasserted: the same move `release` makes
+        # before it is willing to treat emptiness as safe.
+        self.backend.stop(scope)
+        observed=self.backend.observe(scope)
+        if (observed is None or observed['populated'] or not observed['frozen']
+                or observed.get('identity')!=record.get('cgroup_identity')):
+            raise ValueError('retired scope changed before removal: '+scope)
+        if not self.backend.empty(scope):raise ValueError('retired scope became populated: '+scope)
+        self.backend.release(scope)
+        record['released_unix']=time.time()
+        record['maintenance_cleanup']='settled container transaction'
+        _atomic(self.state_dir/(scope+'.json'),record)
+
     def _maintenance_status(self):
         errors=[];active=set();inventory={}
         if self.maintenance_error:errors.append(self.maintenance_error)
@@ -649,6 +753,10 @@ class Authority:
             if not self.backend.healthy():errors.append('kernel resource controllers unavailable')
             inventory=self.backend.inventory()
         except (OSError,ValueError) as exc:errors.append(str(exc)[:1500]);active.add('unreadable kernel inventory')
+        # Named here rather than read off `errors` below, because the scan that
+        # reports these runs after this loop: a removal must not be gated on an
+        # error that has not been appended yet.
+        unknown=set(inventory)-set(self.records)
         for scope,record in self.records.items():
             kernel=inventory.get(scope)
             if (kernel is not None and record.get('cgroup_identity')
@@ -682,7 +790,18 @@ class Authority:
                     # before identity was recorded stays inactive and
                     # untouched, exactly as it was.
                     if record.get('cgroup_identity'):
-                        self._reclaim_retired_scope(scope,record)
+                        if record.get('settled_unix') and not errors and not unknown:
+                            # The same gate the unlaunched-setup cleanup above
+                            # uses: a pass that cannot read its own namespace,
+                            # or that found a group in it this broker does not
+                            # own, defers removal rather than acting on a
+                            # picture it has already found wrong.
+                            try:
+                                self._reap_retired_scope(scope,record)
+                                inventory.pop(scope,None)
+                            except (OSError,ValueError) as exc:errors.append(str(exc)[:1500])
+                        else:
+                            self._reclaim_retired_scope(scope,record)
                     continue
             active.add(scope)
         for scope in inventory:
