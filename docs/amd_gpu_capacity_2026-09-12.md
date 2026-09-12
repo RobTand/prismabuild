@@ -66,9 +66,9 @@ anything is published: VRAM total (`16577056 KB` = `16974905344` bytes exactly),
 wavefront/warp size, peak clock, and workgroup/threads-per-block. Disagreement
 means one reader is describing a different device, or that a
 `hipDeviceAttribute_t` value was renumbered under the constant the probe uses,
-and neither is something to publish a capacity claim from. `hipMemGetInfo` is
-`hipMemGetInfo`, a whole-device counter: it reported bytes already in use with
-no ROCm process of ours running, which is the Windows compositor.
+and neither is something to publish a capacity claim from. `hipMemGetInfo` is a whole-device
+counter: it reported bytes already in use with no ROCm process of ours running,
+which is the Windows compositor.
 
 The memory domain comes from `hipDeviceAttributeIntegrated` rather than from the
 card's name: `0` is `discrete`, `1` is `shared_system`, anything else is
@@ -133,6 +133,14 @@ fit; and PB work on this host is correctness work, for which WSL2 numbers are
 receipts and never performance claims. An unreadable `/proc` descriptor table —
 an unprivileged census that cannot see another user's handles — refuses rather
 than reporting an empty foreign list.
+
+One more transient, recorded so the next reader does not file it as a bug.
+`box_window.gpu_power_reference()` runs on the worker once per action and calls
+`devices()`, which on this host spawns the HIP probe: a ~100 ms holder of
+`/dev/dxg` in the worker's own cgroup, which is foreign to the broker's census.
+A broker sample landing inside that window lists one foreign process and the
+offer reads `gpu: 0` for that sample, then recovers on the next one. It is a
+self-healing flap in the safe direction, not a hole.
 
 One implementation note worth keeping: the census runs `readlink` on every
 descriptor and `stat` only on the ones that already name the device. Following a
