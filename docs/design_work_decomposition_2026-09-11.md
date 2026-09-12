@@ -150,6 +150,24 @@ batch file holds parent and plan keys, child ordinal and exact ordered tasks.
 Opaque commands without this declared input protocol remain ordinary actions;
 PB does not infer a decomposition from their command text.
 
+The batch file is an ordinary CAS input, and the path substituted for
+`{pb.task_batch}` is a path under the shared CAS root. **A containerized
+producer must mount that root to open it.** The fleet's Docker shim adds the
+ownership label and the durable marker and no mounts of its own, so an image
+run without the shared root sees the path and not the bytes; this is the same
+obligation a `data_manifest`'s `mount_prefix` states, and it applies to the
+batch whether or not the request declares a manifest. A child that cannot open
+its batch fails at its first read, which is the worst place to discover a
+mount rule.
+
+Where the plan and the publication index live: `cas/decompositions/<key[:2]>/
+<parent_key>/plan.json` and `.../publication.json`, beside `cas/requests` and
+for the same reason -- they are records *about* actions and are not action
+inputs. `pb_gc` sweeps named subtrees (claims, locks, namespaces, staging) and
+counts the rest, so a resuming campaign never finds its plan reclaimed out from
+under it. The converse is also true and is the accepted cost: nothing reclaims
+them, and a plan is a few kilobytes that stays for as long as the CAS does.
+
 ## Identity and frozen-plan semantics
 
 ```text

@@ -157,18 +157,16 @@ class Decomposed:
             self.cas, Path(str(self.cas.root)).parent, f"batch-{ordinal}.json",
             envelope, input_id=dc.TASK_BATCH_INPUT_ID,
         )
-        command = dc.resolve_task_batch(
-            self.template["params"]["command"],
-            batch_path=self.cas.blob_path(str(batch_input["sha256"])),
-        )
-        return pbrun.seal_action_from_template(
+        # Through the same call ``pbcampaign`` publishes with, so what is
+        # pinned here is the body the fleet actually gets.
+        return pbrun.seal_decomposed_child(
             self.template,
-            command=command,
-            result_path=dc.child_result_manifest_path(ordinal),
-            extra_inputs=[self.roster_input, batch_input],
-            extra_params={dc.LOGICAL_BATCH_PARAM: dc.logical_batch_param(
-                self.request, self.plan, child_ordinal=ordinal
-            )},
+            request=self.request,
+            plan=self.plan,
+            child_ordinal=ordinal,
+            roster_input=self.roster_input,
+            batch_input=batch_input,
+            cas=self.cas,
         )
 
 

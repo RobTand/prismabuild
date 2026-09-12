@@ -81,7 +81,9 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import adaptive_gpu, core as pb, pool, slurm_lane  # noqa: E402
+from prismabuild import (  # noqa: E402
+    adaptive_gpu, core as pb, decomposition as dc, pool, slurm_lane,
+)
 
 POLL_S = 5.0
 #: Which transport carries a submission.  The pull queue is still the default:
@@ -4183,6 +4185,50 @@ def seal_action_from_template(
         raise SystemExit(f"pbrun: refusing to seal the action: {exc}") from None
 
 
+def seal_decomposed_child(
+    template: Mapping[str, object],
+    *,
+    request: Mapping[str, object],
+    plan: Mapping[str, object],
+    child_ordinal: int,
+    roster_input: Mapping[str, object],
+    batch_input: Mapping[str, object],
+    cas,
+) -> dict[str, object]:
+    """Seal the ``child_ordinal``-th child of one plan, off one template.
+
+    The four overrides ``seal_action_from_template`` accepts are exactly what
+    a decomposition varies, and this is where they are filled in -- once, so
+    that the campaign that publishes children and the test that pins what a
+    child is are making the same call.  Two spellings of a child seal is how
+    a suite comes to pass on a body nothing produces.
+
+    Pure: the envelope is already a CAS blob by the time this is asked, and
+    the path sealed into the command is that blob's name.  ``blob_path``
+    rather than ``input_path`` on purpose -- the digest came from the ingest
+    that wrote it, and re-reading a campaign's worth of batches to re-learn
+    what each ingest just proved would put the whole roster through sha256 a
+    second time for nothing.
+    """
+
+    command = dc.resolve_task_batch(
+        template["params"]["command"],
+        batch_path=cas.blob_path(str(batch_input["sha256"])),
+    )
+    return seal_action_from_template(
+        template,
+        command=command,
+        result_path=dc.child_result_manifest_path(child_ordinal),
+        # The roster before the batch, in that order, on every child: the
+        # input list reaches the key, so the order is part of the identity and
+        # not a detail of how this loop was written.
+        extra_inputs=[roster_input, batch_input],
+        extra_params={dc.LOGICAL_BATCH_PARAM: dc.logical_batch_param(
+            request, plan, child_ordinal=child_ordinal
+        )},
+    )
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Read one submission's arguments, and nothing about the world.
 
@@ -4657,6 +4703,121 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def announce_placement(
+    queue,
+    action: Mapping[str, object],
+    *,
+    args: argparse.Namespace,
+    cwd: Path,
+    portable_checkout: bool,
+) -> None:
+    """Say how this work will be placed, and refuse it if it cannot be.
+
+    Four notices and one refusal, all of them about one intent -- the tags,
+    the GPU need and the demand -- which is why they are one function.  A
+    decomposed campaign calls it once, before it publishes any child: the
+    children of one plan share their whole placement, so asking the census N
+    times would print the same paragraph N times and answer it N times.
+
+    The refusal is the part that must not be skipped.  A required tag no box
+    has offered is not a slow submission -- the item matches no worker's
+    filter, so it sits in ``ready`` while every idle worker polls past it --
+    and a campaign that published forty such children would have forty of
+    them to withdraw.
+    """
+
+    params = action["params"]
+    tags = params["placement"]["required_tags"]
+    demand = params["demand"]
+    progress_policy = args.progress_policy
+    intent = {"tags": tags, "needs_gpu": bool(demand.get("gpu")), "resources": demand}
+    # Say how wide this action is before saying it was queued.  A pin is a
+    # consequence of the checkout path, and nothing used to report it, so a
+    # submitter narrowed the fleet to one box without being told.
+    notice = pin_notice(
+        queue,
+        intent,
+        cwd=cwd,
+        hostname=socket.gethostname(),
+        here=args.here,
+        portable_checkout=portable_checkout,
+    )
+    if notice:
+        print(notice, file=sys.stderr, flush=True)
+
+    # An offer can be fresh but stamped ahead of this submitter. Keep that
+    # discrepancy visible, including an offer too far ahead to use at all.
+    for host, skew in queue.offer_clock_skews().items():
+        disposition = "tolerated" if skew <= pool.OFFER_FUTURE_TOLERANCE_S else "ignored"
+        print(
+            f"pbrun: {host} offer announced {skew:.3f}s in the future "
+            f"(clock skew; {disposition}, limit {pool.OFFER_FUTURE_TOLERANCE_S:g}s)",
+            file=sys.stderr, flush=True,
+        )
+
+    # Before the placement verdicts, not after.  ``intent`` now requires
+    # ``PROGRESS_TAG``, so on a fleet that offers none the generic "no recorded
+    # worker can run this action" would fire first and name a tag the operator
+    # never typed.  Asked of the boxes eligible on every OTHER tag, which is
+    # also the honest question: of the boxes that could run this work, which
+    # can keep its stall policy?
+    progress_notice = progress_contract_notice(
+        queue,
+        {**intent, "tags": [
+            t for t in tags
+            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG)
+        ]},
+        policy=progress_policy,
+        requested_timeout_s=args.timeout_s,
+    )
+    if progress_notice:
+        print(progress_notice, file=sys.stderr, flush=True)
+
+    # Refuse work the RECORDED fleet cannot run, at the one moment the caller
+    # is still watching.  A required tag no box has offered is not a slow
+    # submission: the item matches no worker's placement filter, so it sits in
+    # `ready` -- counted, reported as pending -- while every idle worker polls
+    # past it until `--wait-s` expires a day later.
+    #
+    # Capability and liveness are deliberately different reads of the SAME
+    # matcher.  Worker offers expire for claiming and fleet-width diagnostics,
+    # but the latest record from each host remains evidence of what that box
+    # can fit.  dl380g10 and gx10-6b77 have both spent longer than the 120 s TTL
+    # inside work; while they were between announcements a fresh nonmatching
+    # offer made ``placeable`` answer False and pbrun rejected a caller willing
+    # to wait two hours.  An unbounded age reads retained capability and lets
+    # ``--wait-s`` own an offline/busy box.  ``None`` still means no worker has
+    # ever announced and stays a warning, so a fleet whose loops predate the
+    # registry can submit unchecked.
+    live_verdict = queue.placeable(intent)
+    capability_verdict = queue.placeable(
+        intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    if capability_verdict is False:
+        raise SystemExit(
+            f"pbrun: no recorded worker can run this action.\n"
+            f"  required tags: {tags or '(any box)'}\n"
+            f"  demand:        {demand}\n"
+            f"  offered on record: "
+            f"{queue.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
+            f"Fix the --tag, or start a worker on a box that offers it."
+        )
+    if capability_verdict is None:
+        print("pbrun: no worker offers on record; submitting unchecked",
+              file=sys.stderr, flush=True)
+    elif live_verdict is not True:
+        print(
+            "pbrun: no matching worker is live now; a recorded capable worker "
+            "is between announcements or offline.  Submitting so --wait-s "
+            f"{args.wait_s:g} owns how long to wait.",
+            file=sys.stderr, flush=True,
+        )
+
+    ceiling_notice = timeout_ceiling_notice(
+        queue, intent, requested=args.timeout_s if progress_policy is None else None)
+    if ceiling_notice:
+        print(ceiling_notice, file=sys.stderr, flush=True)
+
+
 def publication_row(
     action: Mapping[str, object],
     *,
@@ -4733,7 +4894,6 @@ def main() -> int:
     # and what the queue row is published with.
     tags = template["params"]["placement"]["required_tags"]
     demand = template["params"]["demand"]
-    progress_policy = args.progress_policy
     cas = template["cas"]
     action = seal_action_from_template(template)
     key = str(action["action_key"])
@@ -4832,92 +4992,8 @@ def main() -> int:
 
     q = pool.PoolQueue(SH / "pb-queue")
 
-    # Refuse work the RECORDED fleet cannot run, at the one moment the caller
-    # is still watching.  A required tag no box has offered is not a slow
-    # submission: the item matches no worker's placement filter, so it sits in
-    # `ready` -- counted, reported as pending -- while every idle worker polls
-    # past it until `--wait-s` expires a day later.
-    #
-    # Capability and liveness are deliberately different reads of the SAME
-    # matcher.  Worker offers expire for claiming and fleet-width diagnostics,
-    # but the latest record from each host remains evidence of what that box
-    # can fit.  dl380g10 and gx10-6b77 have both spent longer than the 120 s TTL
-    # inside work; while they were between announcements a fresh nonmatching
-    # offer made ``placeable`` answer False and pbrun rejected a caller willing
-    # to wait two hours.  An unbounded age reads retained capability and lets
-    # ``--wait-s`` own an offline/busy box.  ``None`` still means no worker has
-    # ever announced and stays a warning, so a fleet whose loops predate the
-    # registry can submit unchecked.
-    intent = {"tags": tags, "needs_gpu": bool(demand.get("gpu")), "resources": demand}
-    # Say how wide this action is before saying it was queued.  A pin is a
-    # consequence of the checkout path, and nothing used to report it, so a
-    # submitter narrowed the fleet to one box without being told.
-    notice = pin_notice(
-        q,
-        intent,
-        cwd=cwd,
-        hostname=socket.gethostname(),
-        here=args.here,
-        portable_checkout=portable_checkout,
-    )
-    if notice:
-        print(notice, file=sys.stderr, flush=True)
-
-    # An offer can be fresh but stamped ahead of this submitter. Keep that
-    # discrepancy visible, including an offer too far ahead to use at all.
-    for host, skew in q.offer_clock_skews().items():
-        disposition = "tolerated" if skew <= pool.OFFER_FUTURE_TOLERANCE_S else "ignored"
-        print(
-            f"pbrun: {host} offer announced {skew:.3f}s in the future "
-            f"(clock skew; {disposition}, limit {pool.OFFER_FUTURE_TOLERANCE_S:g}s)",
-            file=sys.stderr, flush=True,
-        )
-
-    # Before the placement verdicts, not after.  ``intent`` now requires
-    # ``PROGRESS_TAG``, so on a fleet that offers none the generic "no recorded
-    # worker can run this action" would fire first and name a tag the operator
-    # never typed.  Asked of the boxes eligible on every OTHER tag, which is
-    # also the honest question: of the boxes that could run this work, which
-    # can keep its stall policy?
-    progress_notice = progress_contract_notice(
-        q,
-        {**intent, "tags": [
-            t for t in tags
-            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG)
-        ]},
-        policy=progress_policy,
-        requested_timeout_s=args.timeout_s,
-    )
-    if progress_notice:
-        print(progress_notice, file=sys.stderr, flush=True)
-
-    live_verdict = q.placeable(intent)
-    capability_verdict = q.placeable(
-        intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
-    if capability_verdict is False:
-        raise SystemExit(
-            f"pbrun: no recorded worker can run this action.\n"
-            f"  required tags: {tags or '(any box)'}\n"
-            f"  demand:        {demand}\n"
-            f"  offered on record: "
-            f"{q.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
-            f"Fix the --tag, or start a worker on a box that offers it."
-        )
-    if capability_verdict is None:
-        print("pbrun: no worker offers on record; submitting unchecked",
-              file=sys.stderr, flush=True)
-    elif live_verdict is not True:
-        print(
-            "pbrun: no matching worker is live now; a recorded capable worker "
-            "is between announcements or offline.  Submitting so --wait-s "
-            f"{args.wait_s:g} owns how long to wait.",
-            file=sys.stderr, flush=True,
-        )
-
-    ceiling_notice = timeout_ceiling_notice(
-        q, intent, requested=args.timeout_s if progress_policy is None else None)
-    if ceiling_notice:
-        print(ceiling_notice, file=sys.stderr, flush=True)
+    announce_placement(
+        q, action, args=args, cwd=cwd, portable_checkout=portable_checkout)
 
     # Read the decision this submission is about to supersede, so the caller is
     # told rather than surprised.  ``publish`` retires the marker -- a key is a
