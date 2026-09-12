@@ -252,6 +252,24 @@ merged-result digest. An incomplete/failed/withdrawn set is never group success.
 Producer-specific qname merging may remain in PrismaQuant; PB need only enforce
 generic manifest identity and exact cover.
 
+The manifest is the child's *declared result*, not a file found beside its log:
+`seal_decomposed_child` points the action's `result_path` at
+`pb-child-<ordinal>.result-manifest.json` and the batch envelope tells the child
+that same name, so the two agree without either discovering the other. A child
+that exits zero having written nothing fails where it ran, and `close_group`
+reads each manifest back through `cas.result_path`, which re-verifies the bytes
+against the digest the receipt fixed. The group receipt lands at
+`cas/decompositions/<key[:2]>/<parent_key>/group.json`, first-writer like the
+plan and the index, and a differing one is refused rather than replaced: every
+field in it is a function of the immutable plan and of immutable child receipts,
+so a disagreement is the finding.
+
+The exit status follows the cover, not the children. A decomposed
+`pbcampaign` whose rows all pass but whose manifests do not answer the roster
+exits non-zero, because the cover is the claim the campaign actually makes.
+`--detach` returns before anything has run and so proves nothing; the group
+receipt is earned on the waiting path.
+
 ## Resources, retry, withdrawal and cleanup
 
 Every child inherits the common full per-process peak demand, GPU-memory budget,
@@ -286,19 +304,50 @@ cleanup. Parent/plan/group sidecars never release resources.
   batch/group-receipt schemas, canonical validators, deterministic partitioner
   and exact-cover verification. Reuse core canonical action/CAS primitives;
   extend `core.py` only where the ordinary action contract requires it.
-* `src/prismabuild/pool.py`: parent decomposition directories/claim/lease,
+* `src/prismabuild/pool.py` *(deferred: see "What is not here yet")*: parent
+  decomposition directories/claim/lease,
   immutable plan publication, idempotent child-plan reconciliation, parent
   withdrawal and group status. Reuse ordinary `publish` for every child; do not
   change execution-child claim/admission.
-* a small published `tools/fleet/decompose_loop.py` (or a supervisor role): claim
+* a small published `tools/fleet/decompose_loop.py` (or a supervisor role)
+  *(deferred)*: claim
   queued parents and drive freeze-then-publish recovery. MVP may call the same
-  library inline before deploying the role.
-* `pbwait.py`, `pbstatus.py` and structured MCP readers: parent decomposition
-  status, plan digest, child/task totals and terminal completeness.
+  library inline before deploying the role -- which is what ships first:
+  `pbcampaign.decompose` runs the freeze-then-publish sequence synchronously
+  inside the submitting process, exactly as this document's MVP clause allows.
+* `pbwait.py`, `pbstatus.py` and structured MCP readers *(deferred)*: parent
+  decomposition status, plan digest, child/task totals and terminal
+  completeness. Until then a decomposed campaign's children read as ordinary
+  rows, because that is what they are.
 * `docs/design.md`, operating policy and published skill: make pre-execution
   immutable planning the normative subdivision paradigm.
-* PrismaQuant adapter: consume batch input after resident setup, write private
+* PrismaQuant adapter *(deferred: a separate repository)*: consume batch input
+  after resident setup, write private
   child fragments, and exact-merge them under the unchanged full-band identity.
+
+### What is not here yet
+
+The first change lands the synchronous MVP: a logical request submitted through
+`pbcampaign` is validated, frozen, planned, cut, published and -- on the waiting
+path -- closed on an exact cover. What it does not land, and why:
+
+* **A durable queued parent** (`pool.py` claim/lease, `decompose_loop.py`).
+  Decomposition runs inside the submitter, so a submitter killed mid-cut leaves
+  the plan and the index behind and the next run fills the gaps; it does not
+  leave a parent some other box can pick up. This document prefers the durable
+  parent and says why, and the MVP clause above is the licence for shipping
+  the synchronous one first.
+* **Parent withdrawal.** There is no parent to withdraw yet. A published
+  child withdraws through the ordinary ladder, one key at a time.
+* **Decomposition-aware status readers.** See above.
+* **The `logical-batch-v1` offer tag.** The batch reaches the child through
+  ordinary CAS input materialization, so no worker-loop change is needed and
+  no old worker can mis-claim these actions by lacking a capability it is
+  never asked for.
+* **`--transport slurm`.** Refused with a message that says so: the SLURM lane
+  submits one job per action and has no path for publishing a plan's children.
+  The deployed generation's `default_transport` is `pool`, so this is a
+  refusal an operator meets only after asking for SLURM by name.
 
 If batch-input materialization requires worker support, add a versioned
 `logical-batch-v1` offer tag so old workers cannot claim these actions during

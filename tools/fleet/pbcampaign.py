@@ -791,7 +791,9 @@ def child_record(child, *, args, queue, cas) -> dict:
     ))
 
 
-def decompose(request, *, transport: str, priority: int) -> list[dict]:
+def decompose(
+    request, *, transport: str, priority: int
+) -> tuple[list[dict], dict]:
     """Cut one logical request into children and publish every one of them.
 
     The order is the order of what can still refuse.  Validation, then
@@ -805,6 +807,11 @@ def decompose(request, *, transport: str, priority: int) -> list[dict]:
     tree.  Re-snapshotting a mutable checkout per child would give siblings
     different code closures and therefore different parents, which is the bug
     this whole two-stage shape exists to prevent.
+
+    What comes back is one submission record per child, and beside it the
+    three things the group receipt cannot be computed without: the request the
+    cover is proved against, the plan that fixed the membership, and the
+    sealed children whose receipts carry the answers.
     """
 
     if transport == "slurm":
@@ -893,7 +900,101 @@ def decompose(request, *, transport: str, priority: int) -> list[dict]:
               f"{str(published.get('action_key') or '')[:pbwait.KEY_WIDTH]}",
               file=sys.stderr, flush=True)
         records.append(published)
-    return records
+    return records, {"request": request, "plan": plan, "children": children}
+
+
+# --------------------------------------------------------------------------
+# Closing a decomposed campaign
+# --------------------------------------------------------------------------
+
+def child_result_manifest(child, *, cas) -> dict | None:
+    """Read one finished child's result manifest, or ``None`` if it has none.
+
+    Through the receipt rather than off the worker's filesystem: a child's
+    manifest is its declared result, so ``result_path`` re-verifies the bytes
+    against the digest the receipt fixed before anything reads them.  There is
+    no second place to look, which is the point -- a child cannot pass while
+    answering for nothing, because a missing manifest is a missing result and
+    the action fails where it ran.
+    """
+
+    receipt = cas.lookup(child)
+    if receipt is None:
+        return None
+    raw = cas.result_path(receipt, child).read_bytes()
+    try:
+        return json.loads(raw)
+    except ValueError as exc:
+        raise ManifestError(
+            f"child {str(child['action_key'])[:12]} published a result that is "
+            f"not a JSON document: {exc}"
+        ) from None
+
+
+def publish_group_receipt(receipt, *, cas, parent_key: str) -> Path:
+    """Record the one receipt that says the whole roster was answered.
+
+    Written only after the cover is proved exact, and refused rather than
+    replaced when it differs from one already there.  Every field in it is a
+    function of the immutable plan and of child receipts that are themselves
+    immutable, so two runs cannot honestly disagree about it; if they do, the
+    disagreement is the finding and overwriting would hide it.
+    """
+
+    path = decomposition_dir(cas, parent_key) / "group.json"
+    raw = dc.document_bytes(receipt)
+    stored = _stored_document(path)
+    if stored is None:
+        if pb._atomic_publish(path, raw):
+            return path
+        stored = _stored_document(path)
+    if dc.document_bytes(stored) != raw:
+        raise ManifestError(
+            f"the group receipt at {path} is not the one this run verified.  "
+            f"It is a function of the plan and of immutable child receipts, so "
+            f"nothing that can legitimately vary produced this; read both "
+            f"before touching either"
+        )
+    return path
+
+
+def close_group(group, *, cas) -> int:
+    """Prove the children between them answered the roster, once each.
+
+    The last gate of a decomposed campaign and the only one that can see the
+    whole of it: every earlier refusal is about one child in isolation.  An
+    incomplete, failed or withdrawn set is never a group success, so a child
+    without a receipt ends the campaign here -- the table above has already
+    named which one, and repeating that would be noise.
+
+    It runs after the table rather than before it because the table is what an
+    operator reads to find out what happened; this line says whether what
+    happened answers the request.
+    """
+
+    plan, children = group["plan"], group["children"]
+    try:
+        manifests = []
+        for ordinal, child in enumerate(children):
+            manifest = child_result_manifest(child, cas=cas)
+            if manifest is None:
+                print(f"pbcampaign: no group receipt: child {ordinal} of "
+                      f"{len(children)} has no receipt", file=sys.stderr)
+                return 1
+            manifests.append(manifest)
+        receipt = dc.verify_exact_cover(group["request"], plan, manifests)
+        path = publish_group_receipt(
+            receipt, cas=cas, parent_key=plan["parent_key"])
+    except (ManifestError, pb.ActionContractError) as exc:
+        print(f"pbcampaign: {exc}", file=sys.stderr)
+        return 1
+    print(f"pbcampaign: group receipt "
+          f"{dc.document_sha256(receipt)[:pbwait.KEY_WIDTH]} at {path}: "
+          f"{receipt['task_count']} tasks across {receipt['child_count']} "
+          f"children, merged into "
+          f"{receipt['merged_result_sha256'][:pbwait.KEY_WIDTH]}",
+          file=sys.stderr, flush=True)
+    return 0
 
 
 def main(argv=None) -> int:
@@ -925,11 +1026,12 @@ def main(argv=None) -> int:
         rows = load_manifest(args.manifest, transport=args.transport)
     except ManifestError as exc:
         raise SystemExit(f"pbcampaign: {exc}")
+    group = None
     if isinstance(rows, dict):
         # One request, one refusal: unlike forty rows, there is nothing else
         # to go on with, so a refusal here is the campaign's.
         try:
-            submissions = decompose(
+            submissions, group = decompose(
                 rows, transport=args.transport, priority=args.priority)
         except (ManifestError, pb.ActionContractError) as exc:
             raise SystemExit(f"pbcampaign: {exc}")
@@ -971,7 +1073,14 @@ def main(argv=None) -> int:
         queue, keys, cas=cas, wait_s=args.wait_s, generations=generations)
     table = rows_for(submissions, waited)
     print(pbwait.render(table))
-    return 1 if refused else pbwait.verdict(table)
+    verdict = 1 if refused else pbwait.verdict(table)
+    if group is not None:
+        # Every child passing is not yet the request being answered: the cover
+        # is the claim a decomposed campaign actually makes, so it decides the
+        # exit status too.  ``--detach`` never reaches here, and rightly: it
+        # returns before anything has run, so there is no cover to prove.
+        verdict = max(verdict, close_group(group, cas=cas))
+    return verdict
 
 
 if __name__ == "__main__":

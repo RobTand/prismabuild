@@ -77,8 +77,9 @@ def _request(work: Path, count: int = 66) -> dict:
 
 
 def _decompose(request) -> list[dict]:
-    return pbcampaign.decompose(
+    records, _ = pbcampaign.decompose(
         dc.validate_logical_request(request), transport="pool", priority=0)
+    return records
 
 
 def _refuse_to_partition(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -268,3 +269,60 @@ def test_a_logical_request_reaches_the_campaign_through_load_manifest(
     assert isinstance(loaded, dict)
     assert loaded["schema"] == dc.LOGICAL_REQUEST_SCHEMA_V1
     assert loaded["common"]["argv"][-1] == dc.TASK_BATCH_PLACEHOLDER
+
+
+def test_a_plan_no_box_can_run_publishes_no_child(
+    tmp_path: Path, fleet,
+) -> None:
+    """Ask for more CPU than the fleet has, and nothing gets queued.
+
+    The placement verdict is taken once, before the index and before the first
+    child, precisely so a request that cannot run anywhere costs nothing
+    instead of forty unplaceable rows an operator has to withdraw one at a
+    time.  The plan is published anyway and rightly: it is a pure function of
+    the request, so the next run with a fixed demand reads back the same cut.
+    """
+
+    work, _ = fleet
+    request = _request(work)
+    request["common"]["demand"] = {"cpu": 99, "mem_gb": 4}
+
+    with pytest.raises(SystemExit) as refusal:
+        _decompose(request)
+    assert "no recorded worker can run this action" in str(refusal.value)
+
+    published = tmp_path / "cas" / pbcampaign.DECOMPOSITIONS
+    assert list(published.rglob("plan.json")), "the cut is pure; publish it"
+    assert not list(published.rglob("publication.json"))
+    assert not list((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+
+
+def test_one_commit_in_two_places_is_one_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fleet,
+) -> None:
+    """A path is not an identity; the commit and the tree are.
+
+    ``freeze_common`` promises this in as many words -- hashing the declared
+    path would "make two parents out of one campaign run from two checkouts"
+    -- and it is the half of the promise the moved-tree test above cannot
+    show.  So: clone the sealed tree somewhere else, submit the same request
+    against the copy, and refuse to let the batcher be asked again.  It is
+    never asked, because the parent key is the same one and the plan is
+    already published under it.
+    """
+
+    work, _ = fleet
+    first = _decompose(_request(work))
+
+    twin = tmp_path / "twin"
+    completed = subprocess.run(
+        ["git", "clone", "-q", str(work), str(twin)],
+        capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    _refuse_to_partition(monkeypatch)
+    second = _decompose(_request(twin))
+    assert [one["action_key"] for one in second] \
+        == [one["action_key"] for one in first]
+    assert {one["status"] for one in second} == {"attached"}

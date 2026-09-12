@@ -285,7 +285,7 @@ number.
 | `core.git_checkout_identity`, untracked digest | `    # Let Git delimit untracked pathnames. Line-oriented porcelain C-quotes` |
 | `pbrun.build_git_checkout_snapshot` | `def build_git_checkout_snapshot(` |
 | `pbrun.require_relocatable_checkout` | `def require_relocatable_checkout(` |
-| `pbrun`, snapshot publication | `    publication["checkout_snapshot"] = checkout_snapshot` |
+| `pbrun.publication_row`, snapshot publication | `        "checkout_snapshot": params["checkout_snapshot"],` |
 | `pbrun.require_complete_history` | `def require_complete_history(root: Path) -> None:` |
 | `pbrun.resolve_snapshot_refs` | `def resolve_snapshot_refs(` |
 | `pbrun`, the parent that carries ancestry | `            ["commit-tree", tree, "-p", parent],` |
