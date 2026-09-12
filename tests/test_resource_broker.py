@@ -47,7 +47,7 @@ class Backend:
     def reclaim(self, scope):
         self.ops.append(('reclaim',scope))
         before=self.charge.get(scope,0);self.charge[scope]=0
-        return {'before':before,'after':0,'complete':True}
+        return {'before':before,'after':0,'complete':True,'page_bytes_after':0}
     def release(self, scope):
         self.ops.append(('release',scope))
         if self.groups[scope]['populated']:raise ValueError('scope still populated')

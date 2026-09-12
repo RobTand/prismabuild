@@ -141,7 +141,7 @@ and records `released_unix` with `maintenance_cleanup` of `settled container
 transaction`. A pass that has already found something wrong in its own
 namespace defers instead.
 
-A failed reclaim, or a partial reclaim with residual or unknown page charge,
+A failed reclaim, or any reclaim with residual or unknown page charge,
 leaves the group online for a later pass to retry without marking it released
 or failing maintenance health. A partial reclaim can proceed to removal when
 `memory.stat` reports both `anon` and `file` zero: `memory.current` also includes

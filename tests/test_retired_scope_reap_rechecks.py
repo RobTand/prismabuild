@@ -7,7 +7,7 @@ from test_resource_broker import authority
 from test_a_settled_tombstone_is_reaped_and_a_live_scope_is_not import _retired, _pass
 
 
-@pytest.mark.parametrize('failure', ['partial', 'missing_control'])
+@pytest.mark.parametrize('failure', ['partial', 'missing_control', 'residual_after_success'])
 def test_incomplete_reclaim_keeps_the_group_available_for_retry(authority, monkeypatch, failure):
     a, b = authority
     _, _, scope = _retired(a, b, monkeypatch)
@@ -17,7 +17,8 @@ def test_incomplete_reclaim_keeps_the_group_available_for_retry(authority, monke
         if failure == 'missing_control':
             raise FileNotFoundError(errno.ENOENT, 'memory.reclaim unavailable')
         b.charge[name] = 341_000_000
-        return {'before': 341_319_680, 'after': 341_000_000, 'complete': False,
+        return {'before': 341_319_680, 'after': 341_000_000,
+                'complete': failure == 'residual_after_success',
                 'page_bytes_after': 340_000_000}
 
     monkeypatch.setattr(b, 'reclaim', reclaim)
@@ -30,7 +31,7 @@ def test_incomplete_reclaim_keeps_the_group_available_for_retry(authority, monke
         b.ops.append(('reclaim', name))
         before = b.charge[name]
         b.charge[name] = 0
-        return {'before': before, 'after': 0, 'complete': True}
+        return {'before': before, 'after': 0, 'complete': True, 'page_bytes_after': 0}
 
     monkeypatch.setattr(b, 'reclaim', completed)
     assert _pass(a)['health'] is True
@@ -51,7 +52,7 @@ def test_population_during_reclaim_is_not_stopped(authority, monkeypatch, replac
             b.identity[name] = [64, 700_999]
         b.groups[name]['populated'] = True
         b.stopped.clear()
-        return {'before': 341_319_680, 'after': 0, 'complete': True}
+        return {'before': 341_319_680, 'after': 0, 'complete': True, 'page_bytes_after': 0}
 
     monkeypatch.setattr(b, 'reclaim', reclaim)
     _pass(a)

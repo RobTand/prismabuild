@@ -722,8 +722,7 @@ class Authority:
         # memory.current includes kernel allocations; reclaim may return
         # EAGAIN after all anon/file pages are gone. Kernel-only residuals do
         # not need another reclaim attempt before the group goes offline.
-        return (observation['reclaim_complete'] is True
-                or observation['reclaim_page_bytes_after']==0)
+        return observation['reclaim_page_bytes_after']==0
 
     def _verify_retired_scope(self,scope,record):
         observed=self.backend.observe(scope)
