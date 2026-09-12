@@ -90,6 +90,16 @@ checkout, so it is not part of the action's identity.
 
 These flags say what the action needs and where it may run.
 
+Before a pool submission, `pbrun` reads worker offers once in a separate
+process with a five-second read budget. A timeout or read error refuses the
+submission before publishing a runnable `ready/` item, naming any reader that
+survives cleanup by PID and start time. Placement, progress and execution-ceiling
+checks reuse that snapshot and re-evaluate its freshness in the caller.
+The budget covers discovery and IPC waits; runtime imports, process creation,
+reply decoding and cleanup grace can add time. Other shared I/O, including CAS
+staging, publication, waiting and worker claim/lease/token operations, retains
+its existing limits. This is not a whole-submission timeout.
+
 | Flag | What it means | What SLURM gets |
 |---|---|---|
 | `--gpu` | Defaults to `gpu=1,mem_gb=16`; explicit demand overrides the defaults. Pool generation actions permit adaptive sharing. | `--gres=shard:1`, partition `gpu`. |

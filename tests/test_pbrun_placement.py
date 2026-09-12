@@ -6,8 +6,10 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -1472,6 +1474,206 @@ def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
     with pytest.raises(SystemExit) as caught:
         pbrun.exclusive_gpu_demand(queue, [])
     assert "--gpu-capacity" in str(caught.value)
+
+
+def test_bounded_offer_snapshot_keeps_healthy_placement_progress_and_exclusive(tmp_path):
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    queue.announce(
+        host="sparky", tags=["gb10", "sparky", "progress-v1", "progress-helper-v1"],
+        has_gpu=True, capacity={"gpu": 2, "mem_gb": 48, "cpu": 10},
+        timeout_ceiling_s=3600, progress_contracts=["prismabuild.action_progress.v1"],
+    )
+
+    snapshot = pbrun.bounded_offer_snapshot(queue)
+    intent = {"tags": ["gb10"], "needs_gpu": True,
+              "resources": {"gpu": 1, "mem_gb": 16}}
+    assert pbrun.exclusive_gpu_demand(snapshot, ["gb10"]) == 2
+    assert snapshot.placeable(intent) is True
+    assert snapshot.placeable_hosts(intent) == ["sparky"]
+    assert snapshot.placement_timeout_ceilings(intent) == {"sparky": 3600}
+    assert snapshot.placement_progress_contracts(intent) == {
+        "sparky": ["prismabuild.action_progress.v1"]}
+
+
+def test_bounded_offer_snapshot_refuses_a_reader_error(tmp_path, monkeypatch):
+    queue = pool_module.PoolQueue(tmp_path / "q")
+
+    def broken():
+        raise OSError("offer mount unavailable")
+
+    monkeypatch.setattr(queue, "_offer_records", broken)
+    with pytest.raises(SystemExit, match="worker-offer discovery failed"):
+        pbrun.bounded_offer_snapshot(queue)
+
+
+def test_offer_snapshot_rechecks_freshness_in_the_parent(tmp_path, monkeypatch):
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    monkeypatch.setattr(pool_module, "_now", lambda: 100.0)
+    queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
+                   capacity={"gpu": 1})
+    snapshot = pbrun.bounded_offer_snapshot(queue)
+
+    monkeypatch.setattr(pool_module, "_now", lambda: 300.0)
+    assert snapshot.offers() == []
+    assert len(snapshot.offers(max_age_s=float("inf"))) == 1
+
+
+def test_offer_snapshot_does_not_repeat_worker_discovery(tmp_path, monkeypatch):
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
+                   capacity={"gpu": 1})
+    count = tmp_path / "offer-discovery-count"
+    real = queue._offer_records
+
+    def counted():
+        with count.open("a", encoding="utf-8") as handle:
+            handle.write("1\n")
+        return real()
+
+    monkeypatch.setattr(queue, "_offer_records", counted)
+    snapshot = pbrun.bounded_offer_snapshot(queue)
+    intent = {"tags": ["gb10"], "needs_gpu": True,
+              "resources": {"gpu": 1}}
+    snapshot.placeable(intent)
+    snapshot.placeable_hosts(intent)
+    snapshot.placement_timeout_ceilings(intent)
+    snapshot.offered_tags()
+    assert count.read_text(encoding="utf-8") == "1\n"
+
+
+def test_interrupted_offer_snapshot_reaps_its_owned_reader(tmp_path, monkeypatch):
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    children = []
+    fork = pbrun.pbstatus.os.fork
+
+    def tracked_fork():
+        pid = fork()
+        if pid:
+            children.append(pid)
+        return pid
+
+    def blocked_read():
+        time.sleep(30)
+
+    def interrupt(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(queue, "_offer_records", blocked_read)
+    monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
+    monkeypatch.setattr(pbrun.pbstatus.select, "select", interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            pbrun.bounded_offer_snapshot(queue)
+        assert len(children) == 1
+        with pytest.raises(ChildProcessError):
+            os.waitpid(children[0], os.WNOHANG)
+    finally:
+        for pid in children:
+            try:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+                if not done:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+
+
+def test_retained_offer_reader_reports_identity_and_releases_parent_flock(
+    tmp_path, monkeypatch,
+):
+    """A reader surviving cleanup cannot retain its caller's lock descriptor."""
+    import fcntl
+
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    children = []
+
+    def retain(pid, section, started, abandoned):
+        children.append(pid)
+        abandoned.append({"pid": pid, "section": section,
+                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
+
+    def blocked_read():
+        time.sleep(30)
+
+    monkeypatch.setattr(queue, "_offer_records", blocked_read)
+    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
+    monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
+    held = (tmp_path / "parent.lock").open("w")
+    fcntl.flock(held, fcntl.LOCK_EX)
+    try:
+        with pytest.raises(SystemExit) as refused:
+            pbrun.bounded_offer_snapshot(queue)
+        assert len(children) == 1
+        assert '"pid": ' + str(children[0]) in str(refused.value)
+        assert '"starttime_ticks": ' in str(refused.value)
+        assert '"starttime_ticks": null' not in str(refused.value)
+        assert "no runnable submission was published" in str(refused.value)
+        assert os.waitpid(children[0], os.WNOHANG) == (0, 0)
+        # Closing rather than unlocking is deliberate: an inherited open file
+        # description would otherwise hide the defect by releasing both locks.
+        held.close()
+        with (tmp_path / "parent.lock").open("w") as contender:
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        held.close()
+        for pid in children:
+            try:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+                if not done:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_blocked_worker_offer_read_does_not_publish_a_runnable_submission(
+    tmp_path, exclusive,
+):
+    """A submission-facing offer scan must not strand its caller on the mount.
+
+    The FIFO is an owned stand-in for a hard-NFS read.  The fixture process
+    owns both the submitter and any reader it leaves behind, so the cleanup
+    below never signals an unrelated process.
+    """
+
+    checkout = _git_checkout(tmp_path)
+    root = tmp_path / "fleet"
+    workers = root / "pb-queue" / "workers"
+    workers.mkdir(parents=True)
+    os.mkfifo(workers / "wedged.json", 0o600)
+    program = """
+import socket, sys
+from pathlib import Path
+from unittest import mock
+sys.path.insert(0, 'tools/fleet')
+import pbrun
+pbrun.SH = Path(sys.argv[1])
+pbrun.RUNTIME_ROOT = Path(sys.argv[2])
+pbrun.SUBMISSION_OFFER_READ_TIMEOUT_S = 0.1
+options = ['--exclusive'] if sys.argv[4] == 'exclusive' else []
+with mock.patch.object(socket, 'gethostname', return_value='sparky'), \\
+     mock.patch.object(sys, 'argv', ['pbrun.py', '--cwd', sys.argv[3], '--wait-s', '0.01', *options, '--', 'echo', 'hi']):
+    raise SystemExit(pbrun.main())
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", program, str(root), str(PUBLISHED_RUNTIME), str(checkout),
+         "exclusive" if exclusive else "ordinary"],
+        cwd=Path(__file__).resolve().parents[1], text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+    )
+    started = time.monotonic()
+    try:
+        _out, err = process.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate(timeout=3)
+        pytest.fail("pbrun wedged while reading worker offers")
+    elapsed = time.monotonic() - started
+    assert elapsed < 2, f"offer discovery took {elapsed:.2f}s"
+    assert process.returncode != 0
+    assert "worker-offer" in err and "no runnable submission was published" in err
+    assert not list((root / "pb-queue" / "ready").glob("*.json"))
 
 
 def _submitted_environment(root: Path, *extra_argv: str) -> dict[str, str]:

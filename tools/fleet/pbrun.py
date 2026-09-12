@@ -82,6 +82,7 @@ SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import adaptive_gpu, core as pb, pool, slurm_lane  # noqa: E402
+import pbstatus  # noqa: E402
 
 POLL_S = 5.0
 #: Which transport carries a submission.  The pull queue is still the default:
@@ -105,6 +106,11 @@ DEFAULT_MAX_ATTEMPTS = 1
 #: inventing a second placement rule; workers still use the ordinary live
 #: window when deciding what may claim now.
 RECORDED_OFFER_MAX_AGE_S = float("inf")
+#: A submitter may wait for an admitted action, but it must never wait without
+#: limit merely to discover the worker offers used for pre-publication advice.
+#: This is intentionally not a user flag: it is a control-plane safety bound,
+#: not an execution policy the action can sensibly choose.
+SUBMISSION_OFFER_READ_TIMEOUT_S = 5.0
 CHECKOUT_SNAPSHOT_MAX_BYTES = 512 * 1024 * 1024
 CONTENT_TRANSFORM_ATTRIBUTES = frozenset(
     {"crlf", "eol", "filter", "ident", "text", "working-tree-encoding"}
@@ -1171,6 +1177,53 @@ def _parse_demand(text: str) -> dict[str, int]:
         key, _, value = part.partition("=")
         demand[key.strip()] = int(value)
     return demand
+
+
+class _OfferSnapshot(pool.PoolQueue):
+    """One bounded, read-only worker-offer discovery for submission advice.
+
+    The child reads records only.  The parent deliberately applies offer age
+    and future-skew rules every time it asks a verdict, after that full scan
+    has completed.  A snapshot therefore cannot turn a slow scan into a fresh
+    offer, and retained capability keeps its existing infinite-age meaning.
+    """
+
+    def __init__(self, root, records) -> None:
+        super().__init__(root)
+        self._records = list(records)
+
+    def _offer_records(self):
+        return list(self._records)
+
+
+def bounded_offer_snapshot(queue) -> _OfferSnapshot:
+    """Read worker offers once in an abandonable child, or refuse before READY.
+
+    Queue publication, claims and waits stay on the real ``PoolQueue``.  This
+    boundary covers only the advisory/capability offer scan which pbrun makes
+    before it can publish runnable work; request/CAS and later queue I/O are
+    still synchronous shared-filesystem operations.
+    """
+
+    abandoned: list[dict[str, object]] = []
+    result = pbstatus.bounded(
+        "worker-offers", queue._offer_records,
+        deadline=pbstatus.Deadline(SUBMISSION_OFFER_READ_TIMEOUT_S),
+        abandoned=abandoned,
+    )
+    if result.get("status") == "ok":
+        value = result.get("value")
+        if isinstance(value, list):
+            return _OfferSnapshot(queue.root, value)
+        reason = "reader returned an invalid snapshot"
+    elif result.get("status") == "timed_out":
+        reason = (f"timed out after {result.get('elapsed_s', SUBMISSION_OFFER_READ_TIMEOUT_S)}s")
+    else:
+        reason = f"failed: {result.get('type', 'RuntimeError')}: {result.get('error', '')}"
+    retained = f" retained reader={json.dumps(abandoned, sort_keys=True)}" if abandoned else ""
+    raise SystemExit(
+        "pbrun: worker-offer discovery " + reason + "; refusing submission; "
+        "no runnable submission was published." + retained)
 
 
 def exclusive_gpu_demand(queue, tags) -> int:
@@ -4175,6 +4228,19 @@ def main() -> int:
             [*tags, *progress_required_tags(progress_policy)])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
+    # Its offer scan remains lazy so cache-hit, withdrawal and SLURM paths
+    # keep avoiding both worker-offer reads and PoolQueue construction.
+    q = None
+    offer_snapshot = None
+
+    def offer_queue():
+        nonlocal q, offer_snapshot
+        if q is None:
+            q = pool.PoolQueue(SH / "pb-queue")
+        if offer_snapshot is None:
+            offer_snapshot = bounded_offer_snapshot(q)
+        return offer_snapshot
+
     placement = {"required_tags": tags}
     if args.exclusive and args.transport == "slurm":
         # SLURM already has a word for the whole device.  ``gpu:1`` and
@@ -4191,7 +4257,7 @@ def main() -> int:
         # in ``ready`` forever.  Read it from what the fleet announces, which
         # needs the placement tags, so it happens after them.
         demand["gpu"] = args.gpu_capacity or exclusive_gpu_demand(
-            pool.PoolQueue(SH / "pb-queue"), tags)
+            offer_queue(), tags)
         demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
 
     if portable_checkout:
@@ -4487,7 +4553,7 @@ def main() -> int:
             detach=args.detach,
         )
 
-    q = pool.PoolQueue(SH / "pb-queue")
+    offer_q = offer_queue()
 
     # Refuse work the RECORDED fleet cannot run, at the one moment the caller
     # is still watching.  A required tag no box has offered is not a slow
@@ -4510,7 +4576,7 @@ def main() -> int:
     # consequence of the checkout path, and nothing used to report it, so a
     # submitter narrowed the fleet to one box without being told.
     notice = pin_notice(
-        q,
+        offer_q,
         intent,
         cwd=cwd,
         hostname=socket.gethostname(),
@@ -4522,7 +4588,7 @@ def main() -> int:
 
     # An offer can be fresh but stamped ahead of this submitter. Keep that
     # discrepancy visible, including an offer too far ahead to use at all.
-    for host, skew in q.offer_clock_skews().items():
+    for host, skew in offer_q.offer_clock_skews().items():
         disposition = "tolerated" if skew <= pool.OFFER_FUTURE_TOLERANCE_S else "ignored"
         print(
             f"pbrun: {host} offer announced {skew:.3f}s in the future "
@@ -4537,7 +4603,7 @@ def main() -> int:
     # also the honest question: of the boxes that could run this work, which
     # can keep its stall policy?
     progress_notice = progress_contract_notice(
-        q,
+        offer_q,
         {**intent, "tags": [
             t for t in tags
             if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG)
@@ -4548,8 +4614,8 @@ def main() -> int:
     if progress_notice:
         print(progress_notice, file=sys.stderr, flush=True)
 
-    live_verdict = q.placeable(intent)
-    capability_verdict = q.placeable(
+    live_verdict = offer_q.placeable(intent)
+    capability_verdict = offer_q.placeable(
         intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
     if capability_verdict is False:
         raise SystemExit(
@@ -4557,7 +4623,7 @@ def main() -> int:
             f"  required tags: {tags or '(any box)'}\n"
             f"  demand:        {demand}\n"
             f"  offered on record: "
-            f"{q.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
+            f"{offer_q.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
             f"Fix the --tag, or start a worker on a box that offers it."
         )
     if capability_verdict is None:
@@ -4572,7 +4638,7 @@ def main() -> int:
         )
 
     ceiling_notice = timeout_ceiling_notice(
-        q, intent, requested=args.timeout_s if progress_policy is None else None)
+        offer_q, intent, requested=args.timeout_s if progress_policy is None else None)
     if ceiling_notice:
         print(ceiling_notice, file=sys.stderr, flush=True)
 
