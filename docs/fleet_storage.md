@@ -62,6 +62,49 @@ authentication is required. Two 102 GiB GPU claims and 16 ready actions were
 present, so isolated throughput and remount/reboot acceptance are also pending.
 Issue #523 stays open through those checks.
 
+### Readiness check: what `pbstatus` reports
+
+Until a host unit is installed, a client can sit at the 1 MiB window
+indefinitely with nothing in the fleet saying so. `pbstatus` now reads the
+window and reports it. It never applies, never refuses and never changes
+admission.
+
+The reading comes from `nfs_readahead.observe()`, which reuses the same mount
+discovery the host helper uses: the whole `/mnt/shared` NFS export resolved
+from `/proc/self/mountinfo`, its BDI read back from `/sys/class/bdi`. Nothing
+is written, and the value is compared against `nfs_readahead.RECOMMENDED_KIB`
+(16384).
+
+Every run carries the whole reading in `pbstatus --json` under `host_storage`,
+in one of five states:
+
+| State | Meaning |
+|---|---|
+| `ok` | The window is at or above 16384 KiB. |
+| `below_recommended` | The window is lower. This is the only state that warns. |
+| `not_nfs_client` | `/mnt/shared` is not a single NFS client export on this box. dl380g10 is the storage server and reads this way; it is informational, not a fault. |
+| `unreadable` | The mount is an NFS client export and the window could not be read. |
+| `unavailable` | The runtime generation does not carry the helper, so the check did not run. |
+
+On the text screen, `pbstatus` prints one line to stderr only when there is
+something to act on: `below_recommended` or `unreadable`. `ok`,
+`not_nfs_client` and `unavailable` stay quiet there and remain in `--json`.
+
+Three limits to state plainly:
+
+- **Host scope only.** The reading is this box's local sysfs, so a `pbstatus`
+  run reports the host it runs on. It says nothing about any other client in
+  the fleet. Fleet-wide reporting would have to carry the value in the worker
+  offer (`pool_offer.v1`); that schema is not extended here.
+- **Never a gate.** The reading reaches neither `timed_out_sections`,
+  `unavailable_sections`, `complete` nor the exit status. A host setting that
+  no admission decision depends on must not become one by being reported.
+- **Publication is required.** `fleet/storage/nfs_readahead.py` now travels
+  with a published runtime generation so a worker without a checkout can take
+  the reading. A generation published before that change reports
+  `unavailable`. Publishing the helper installs nothing: the host unit below
+  is still installed by an operator.
+
 ### Install after reviewing the measurement window
 
 Use a clean checkout of the merged change, staged locally on each Spark.
@@ -139,6 +182,8 @@ fixture, or a submission acknowledgement is not a measured fleet improvement.
   BDI and readahead window. Install the unit from the reviewed local checkout
   when adopting #523, then verify both immediate and planned mount-cycle
   readbacks. Runtime publication does not install this host unit.
+  `pbstatus --json` reports the current window for the box it runs on; read it
+  on each client rather than assuming one box's reading covers the fleet.
 - On DL380, record `zfs get sync,logbias storage_pool/shared`, the export's
   `sync` option, `zpool status -P storage_pool`, and UPS state. Retain the
   existing `sync=disabled`/L2ARC/no-SLOG decision with its durability tradeoff;

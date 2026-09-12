@@ -38,6 +38,38 @@ def test_inspection_does_not_write(host):
     assert (bdi_root / "0:64/read_ahead_kb").read_text() == "1024\n"
 
 
+def test_observe_reads_the_window_without_a_requested_value(host):
+    """The readiness check's entry point: report, never request or apply."""
+
+    mountinfo, bdi_root = host
+    (bdi_root / "0:64/read_ahead_kb").write_text("4096\n")
+    reading = helper.observe(mountinfo=mountinfo, bdi_root=bdi_root)
+    # 4096 is neither of ``configure``'s two windows, and must still report.
+    assert reading["read_ahead_kib"] == 4096
+    assert reading["recommended_kib"] == helper.RECOMMENDED_KIB == 16384
+    assert reading["bdi"] == "0:64"
+    assert reading["source"] == "10.100.98.3:/storage_pool/shared"
+    assert "applied" not in reading
+    assert all(p.read_text() == ("4096\n" if "0:64" in str(p) else "1024\n")
+               for p in bdi_root.glob("*/read_ahead_kb"))
+
+
+def test_observe_refuses_a_wrong_mount_the_same_way_configure_does(host):
+    mountinfo, bdi_root = host
+    mountinfo.write_text(AUTOFS)
+    with pytest.raises(ValueError):
+        helper.observe(mountinfo=mountinfo, bdi_root=bdi_root)
+
+
+def test_observe_reports_a_non_numeric_window_as_an_os_error(host):
+    """Kept apart from the wrong-mount refusal: different fault, different fix."""
+
+    mountinfo, bdi_root = host
+    (bdi_root / "0:64/read_ahead_kb").write_text("not a number\n")
+    with pytest.raises(OSError):
+        helper.observe(mountinfo=mountinfo, bdi_root=bdi_root)
+
+
 def test_change_only_current_nfs_bdi_and_rediscover_after_mount(host):
     mountinfo, bdi_root = host
     first = helper.configure(16384, apply=True, mountinfo=mountinfo, bdi_root=bdi_root)

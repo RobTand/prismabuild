@@ -133,6 +133,14 @@ OBSERVABILITY_FILES = (
     "prismabuild-metrics.service", "prometheus.scrape.yml", "qualify_dashboard.py",
 )
 
+# ``pbstatus`` reads the /mnt/shared NFS readahead window through this helper
+# and reports it; without the helper in the generation the reading is
+# unavailable on every box that has no checkout, which is every worker. The
+# helper is stdlib-only and read-only unless given ``--apply``, and publishing
+# it installs nothing: the host unit beside it is still installed by an
+# operator, as docs/fleet_storage.md says.
+STORAGE_FILES = ("nfs_readahead.py",)
+
 #: The modes a published generation's members carry, chosen rather than
 #: inherited.  Until #316 the mode came from ``shutil.copy2`` preserving
 #: whatever the *publishing checkout* happened to have, which is a box-local
@@ -327,6 +335,10 @@ def _publication_manifest() -> dict[str, str]:
         source = CHECKOUT / "fleet" / "observability" / name
         if source.is_file():
             published[f"fleet/observability/{name}"] = _sha256(source)
+    for name in STORAGE_FILES:
+        source = CHECKOUT / "fleet" / "storage" / name
+        if source.is_file():
+            published[f"fleet/storage/{name}"] = _sha256(source)
     return published
 
 
