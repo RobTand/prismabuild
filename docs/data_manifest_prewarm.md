@@ -101,8 +101,10 @@ the `storage` role in `fleet_boxes.json`.  Every poll:
    resident ahead of the claim frontier is bounded by the budget, not by
    `--lookahead` -- step 3 subtracts every warmed, unclaimed row's bytes.
 3. ARC headroom: `(c_max - size) * --arc-reserve-fraction`, minus the manifest
-   bytes of every action claimed inside the last `--claim-grace-min` minutes.
-   A manifest that does not fit is refused, and refusing writes nothing.
+   bytes of every action claimed inside the last `--claim-grace-min` minutes,
+   and minus the `bytes_warmed` of every row this loop has already warmed that
+   nobody has claimed yet (`warmed_reserve`).  A manifest that does not fit is
+   refused, and refusing writes nothing.
 4. Reads each entry, in manifest order, through the host's local pool path
    (`--mount-map SHARED=LOCAL`), `--readers` at a time, `O_NOFOLLOW`, regular
    files only, paced by the pool's disks (below).
