@@ -1,0 +1,12 @@
+[Unit]
+Description=Readahead for the PrismaBuild shared NFS mount
+BindsTo=mnt-shared.mount
+After=mnt-shared.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/prismabuild-nfs-readahead.py --apply --kib 16384
+
+[Install]
+WantedBy=mnt-shared.mount

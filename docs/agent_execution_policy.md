@@ -291,6 +291,11 @@ file argument rather than on the command line.
 
 ## Adding workers
 
+Record the [fleet storage configuration and provisioning checklist](fleet_storage.md)
+alongside each host's mount and storage settings. It distinguishes the pending
+Spark readahead change from DL380's existing sync/L2ARC/no-SLOG decision;
+runtime publication does not install host configuration.
+
 Mount the same CAS/queue at `/mnt/shared`, provision the declared architecture's
 interpreter and dependencies, and add one explicit host entry (or unique rename
 alias) in `tools/fleet/fleet_boxes.json`. Declare measured CPU, memory and GPU
