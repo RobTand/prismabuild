@@ -94,8 +94,12 @@ the `storage` role in `fleet_boxes.json`.  Every poll:
    loop has no opinion about what runs next; it reads the same list the
    workers read.  **It is not a second dispatcher:** it never claims,
    reserves, reorders or writes an item.
-2. The first `--lookahead` actions that carry a manifest.  Actions without one
-   are passed over and do not consume the lookahead.
+2. The first `--lookahead` actions the loop can still act on.  An action
+   without a manifest, one below `--min-manifest-bytes`, and one this loop has
+   already warmed are each passed over and do not consume the lookahead: the
+   window counts rows a warm could still make faster.  How much the loop holds
+   resident ahead of the claim frontier is bounded by the budget, not by
+   `--lookahead` -- step 3 subtracts every warmed, unclaimed row's bytes.
 3. ARC headroom: `(c_max - size) * --arc-reserve-fraction`, minus the manifest
    bytes of every action claimed inside the last `--claim-grace-min` minutes.
    A manifest that does not fit is refused, and refusing writes nothing.
@@ -179,7 +183,10 @@ census row is ~64 GB.  Two rows being read plus one warmed ahead is 191.4 GB,
 fit: the only way to warm it is to displace what a running row is still
 reading, which is what the `arc_size` swing (205 -> 237 -> 220 GB) recorded on
 2026-09-11.  The headroom check already refuses that row; `--lookahead 1`
-means the loop does not spend a poll discovering it.
+means the loop does not spend a poll discovering it while the head of the
+queue is still cold.  Once the head is warm the loop advances past it in the
+same poll, and it is then the headroom check that decides whether a second row
+fits -- a refusal that reads no data and writes no record.
 
 ### What "never evicts a claimed row's data" means here
 
