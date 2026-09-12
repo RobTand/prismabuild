@@ -16,21 +16,40 @@ def module():
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 
 class Backend:
-    def __init__(self): self.groups={};self.attached=[];self.stopped=[]
+    #: ``identity`` and ``charge`` are opt-in per scope: a test that says
+    #: nothing about them gets exactly the inventory rows this fake always
+    #: produced, and records created through it carry no ``cgroup_identity``.
+    #: ``ops`` is the order log, because "reclaim before removal" is a claim
+    #: about sequence that a pair of end-state assertions cannot make.
+    def __init__(self):
+        self.groups={};self.attached=[];self.stopped=[]
+        self.identity={};self.charge={};self.ops=[]
     def create(self, scope, budget):
         self.groups[scope]={'budget':budget,'populated':False}
         return {'cgroup_path':'/fake/'+scope,'leaf_path':'/fake/'+scope+'/payload'}
     def run(self, scope, uid, command, stdio):
         self.groups[scope]['populated']=True;self.attached.append((scope,uid));return object()
-    def stop(self, scope):self.groups[scope]['populated']=False;self.stopped.append(scope)
+    def stop(self, scope):
+        self.ops.append(('stop',scope))
+        self.groups[scope]['populated']=False;self.stopped.append(scope)
     def empty(self, scope):return scope not in self.groups or not self.groups[scope]['populated']
     def exists(self, scope):return scope in self.groups
     def path(self, scope):return Path('/sys/fs/cgroup/prismabuild.slice')/scope
     def healthy(self):return True
+    def _row(self, scope):
+        return {'populated':self.groups[scope]['populated'],'frozen':scope in self.stopped,
+                **({'identity':self.identity[scope]} if scope in self.identity else {})}
     def inventory(self):
-        return {scope:{'populated':row['populated'],'frozen':scope in self.stopped}
-                for scope,row in self.groups.items()}
+        return {scope:self._row(scope) for scope in self.groups}
+    def observe(self, scope):
+        self.ops.append(('observe',scope))
+        return self._row(scope) if scope in self.groups else None
+    def reclaim(self, scope):
+        self.ops.append(('reclaim',scope))
+        before=self.charge.get(scope,0);self.charge[scope]=0
+        return {'before':before,'after':0,'complete':True,'page_bytes_after':0}
     def release(self, scope):
+        self.ops.append(('release',scope))
         if self.groups[scope]['populated']:raise ValueError('scope still populated')
         self.groups.pop(scope)
 
