@@ -1,0 +1,86 @@
+{
+ "action_key": "<derived-from-the-queue-root>",
+ "code_closure": {
+  "closure_sha256": "<derived-from-the-queue-root>",
+  "files": [
+   {
+    "bytes": 153,
+    "path": ".pbrun-closure.<stamp-fingerprint>.json",
+    "sha256": "288d8ac2d05a1f63552d3ad14f7011e92431b66f90f8ec617772156dedc3933c"
+   }
+  ],
+  "schema": "prismaquant.prismabuild.code_closure.v1"
+ },
+ "environment": {
+  "toolchain": {},
+  "variables": {
+   "CUDA_VISIBLE_DEVICES": "",
+   "PATH": "/PB517/wrapper:/usr/local/bin:/usr/bin:/bin",
+   "PRISMABUILD_CONTAINER_MARKER": "<derived-from-the-queue-root>",
+   "PRISMABUILD_CONTAINER_OWNER": "<derived-from-the-queue-root>"
+  }
+ },
+ "execution_scope": {
+  "host_class": null,
+  "platform_key": null,
+  "portability": "portable"
+ },
+ "inputs": [
+  {
+   "bytes": "<derived-from-the-queue-root>",
+   "id": "pbrun.checkout-snapshot",
+   "sha256": "<derived-from-the-queue-root>"
+  }
+ ],
+ "params": {
+  "checkout_snapshot": {
+   "commit": "<derived-from-the-queue-root>",
+   "input": {
+    "bytes": "<derived-from-the-queue-root>",
+    "id": "pbrun.checkout-snapshot",
+    "sha256": "<derived-from-the-queue-root>"
+   },
+   "parent": "dc9126dd684e63d5f3e7dfee4f25cabdea705a0c",
+   "refs": {},
+   "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+   "subdirectory": "."
+  },
+  "command": [
+   "/bin/bash",
+   "-lc",
+   "printf ok"
+  ],
+  "cwd": ".",
+  "demand": {
+   "cpu": 1,
+   "mem_gb": 4
+  },
+  "placement": {
+   "required_tags": [
+    "sparky"
+   ]
+  },
+  "retry_policy": {
+   "max_attempts": 1,
+   "retry_safe": false
+  }
+ },
+ "schema": "prismaquant.prismabuild.action.v2",
+ "task": {
+  "argv": [
+   "/bin/bash",
+   "--noprofile",
+   "--norc",
+   "-c",
+   "export PATH=/PB517/wrapper:$PATH; /bin/bash -lc 'printf ok' 2>&1 | tee pbrun_result.<stamp-fingerprint>.txt; exit ${PIPESTATUS[0]}"
+  ],
+  "artifact_family": "generic",
+  "artifact_kind": "generic",
+  "definition_id": "fleet/pbrun",
+  "definition_version": "v1",
+  "determinism": "stochastic",
+  "result_path": "pbrun_result.<stamp-fingerprint>.txt",
+  "task_class": "generation",
+  "working_directory": "."
+ }
+}
