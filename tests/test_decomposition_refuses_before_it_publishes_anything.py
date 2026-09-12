@@ -21,6 +21,23 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import decomposition as dc  # noqa: E402
 
+
+#: A stand-in for what pbrun's Stage A resolves: the parent is keyed on the
+#: tree's snapshot digest, never on the path the submitter typed.
+SNAPSHOT = "a" * 64
+MANIFEST = "b" * 64
+
+
+def _frozen(request: dict, *, snapshot: str = SNAPSHOT, cwd: str = ".") -> dict:
+    return dc.freeze_common(
+        request["common"],
+        logical_cwd=cwd,
+        checkout_snapshot_sha256=snapshot,
+        data_manifest_sha256=(
+            None if request["common"]["data_manifest"] is None else MANIFEST
+        ),
+    )
+
 EVIDENCE = "cas:sha256:" + "0" * 64
 
 
@@ -68,6 +85,10 @@ def _common(**overrides: object) -> dict:
     return common
 
 
+def _plan(request: dict) -> dict:
+    return dc.build_plan(request, _frozen(request))
+
+
 def _request(**overrides: object) -> dict:
     request = {
         "schema": dc.LOGICAL_REQUEST_SCHEMA_V1,
@@ -88,7 +109,7 @@ def test_one_task_past_the_wall_ceiling_is_named_in_the_refusal() -> None:
     """The operator needs the task, not "infeasible"."""
 
     with pytest.raises(dc.PartitionRefused) as refused:
-        dc.build_plan(_request(roster=_roster(
+        _plan(_request(roster=_roster(
             _task(0), _task(1, estimated_seconds=900.0), _task(2),
         )))
     message = str(refused.value)
@@ -100,7 +121,7 @@ def test_a_roster_too_short_to_amortize_its_own_setup_is_refused() -> None:
     """Two tasks cannot carry a 45s setup at a 20% setup fraction."""
 
     with pytest.raises(dc.PartitionRefused) as refused:
-        dc.build_plan(_request(roster=_roster(_task(0), _task(1))))
+        _plan(_request(roster=_roster(_task(0), _task(1))))
     message = str(refused.value)
     assert "180" in message, "the refusal states the useful-work floor"
     assert "300" in message, "and the wall ceiling"
@@ -111,7 +132,7 @@ def test_setup_alone_past_the_wall_ceiling_is_refused() -> None:
     """No batch of this residency can run at all, whatever the roster."""
 
     with pytest.raises(dc.PartitionRefused, match="meets or exceeds the wall"):
-        dc.build_plan(_request(
+        _plan(_request(
             batch_policy=_policy(max_estimated_wall_seconds=40.0)
         ))
 
@@ -120,7 +141,7 @@ def test_a_floor_above_the_ceiling_is_refused_as_a_pair() -> None:
     """The two limits contradict each other; neither alone is the fault."""
 
     with pytest.raises(dc.PartitionRefused, match="admit no batch at all"):
-        dc.build_plan(_request(batch_policy=_policy(
+        _plan(_request(batch_policy=_policy(
             max_setup_fraction=0.05, max_estimated_wall_seconds=200.0,
         )))
 

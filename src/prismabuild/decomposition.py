@@ -49,6 +49,7 @@ __all__ = [
     "ActionContractError",
     "BATCH_ENVELOPE_SCHEMA_V1",
     "CHILD_RESULT_MANIFEST_SCHEMA_V1",
+    "FROZEN_COMMON_SCHEMA_V1",
     "GROUP_RECEIPT_SCHEMA_V1",
     "LOGICAL_BATCH_PARAM",
     "LOGICAL_BATCH_SCHEMA_V1",
@@ -62,6 +63,7 @@ __all__ = [
     "TASK_BATCH_PLACEHOLDER",
     "batch_envelope",
     "build_plan",
+    "freeze_common",
     "logical_batch_param",
     "parent_key",
     "partition_roster",
@@ -69,6 +71,7 @@ __all__ = [
     "validate_batch_policy",
     "validate_child_result_manifest",
     "validate_common_spec",
+    "validate_frozen_common",
     "validate_logical_request",
     "validate_plan",
     "validate_roster",
@@ -79,6 +82,7 @@ LOGICAL_REQUEST_SCHEMA_V1 = "prismabuild.logical_request.v1"
 LOGICAL_TASK_ROSTER_SCHEMA_V1 = "prismabuild.logical_task_roster.v1"
 ROSTER_BATCH_POLICY_SCHEMA_V1 = "prismabuild.roster_batch_policy.v1"
 PARENT_IDENTITY_SCHEMA_V1 = "prismabuild.logical_parent_identity.v1"
+FROZEN_COMMON_SCHEMA_V1 = "prismabuild.frozen_common.v1"
 PLAN_SCHEMA_V1 = "prismabuild.decomposition_plan.v1"
 BATCH_ENVELOPE_SCHEMA_V1 = "prismabuild.task_batch.v1"
 LOGICAL_BATCH_SCHEMA_V1 = "prismabuild.logical_batch.v1"
@@ -118,6 +122,10 @@ _COMMON_KEYS = frozenset(
     {"argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env"}
 )
 _REQUEST_KEYS = frozenset({"schema", "common", "roster", "batch_policy"})
+_FROZEN_COMMON_KEYS = frozenset(
+    {"schema", "argv", "cwd", "demand", "env", "gpu_memory_gb",
+     "checkout_snapshot_sha256", "data_manifest_sha256"}
+)
 _PLAN_KEYS = frozenset(
     {"schema", "parent_key", "algorithm_version", "partitions", "plan_key"}
 )
@@ -332,7 +340,7 @@ def validate_common_spec(value: object) -> dict[str, Any]:
         "cwd": pb._text(common["cwd"], where="common spec cwd"),
         "demand": dict(demand),
         "env": dict(env),
-        "gpu_memory_gb": common["gpu_memory_gb"],
+        "gpu_memory_gb": gpu_memory_gb,
         "data_manifest": data_manifest,
     }
 
@@ -373,7 +381,90 @@ def validate_logical_request(value: object) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 
-def parent_key(request: Mapping[str, Any]) -> str:
+def freeze_common(
+    common: Mapping[str, Any],
+    *,
+    logical_cwd: str,
+    checkout_snapshot_sha256: str,
+    data_manifest_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Replace the submitter's paths with the bytes they resolved to.
+
+    A logical request names its source and its data by *path*, because that is
+    what a producer can type.  A path is not an identity: the same
+    ``/home/rob/prismaquant`` is a different tree after every commit, and two
+    worktrees of one commit are the same tree under two names.  Hashing the
+    declaration would therefore make a parent that recovery resumes against a
+    tree that has moved on, and make two parents out of one campaign run from
+    two checkouts.
+
+    So the parent is keyed on this record instead, which pbrun's own Stage A
+    produces: the snapshot digest for the source, the ingested manifest digest
+    for the data, and the logical cwd the children will actually run in.  The
+    rest of the declaration is already identity -- argv with the placeholder
+    still in it, the demand, the environment, the GPU budget -- and is carried
+    through unchanged.
+    """
+
+    common = validate_common_spec(common)
+    declared = common["data_manifest"]
+    if (declared is None) != (data_manifest_sha256 is None):
+        # Freezing is the only place the two halves can be compared, and a
+        # mismatch here means the parent would be keyed on data nobody
+        # ingested, or ingested data no child was told to read.
+        pb._fail(
+            "frozen common declares a data manifest at "
+            f"{declared!r} and was frozen with digest "
+            f"{data_manifest_sha256!r}; both or neither"
+        )
+    return {
+        "schema": FROZEN_COMMON_SCHEMA_V1,
+        "argv": list(common["argv"]),
+        "cwd": pb._text(logical_cwd, where="frozen common cwd"),
+        "demand": dict(common["demand"]),
+        "env": dict(common["env"]),
+        "gpu_memory_gb": common["gpu_memory_gb"],
+        "checkout_snapshot_sha256": pb._sha256(
+            checkout_snapshot_sha256, where="frozen common checkout_snapshot_sha256"
+        ),
+        "data_manifest_sha256": None if data_manifest_sha256 is None else pb._sha256(
+            data_manifest_sha256, where="frozen common data_manifest_sha256"
+        ),
+    }
+
+
+def validate_frozen_common(value: object) -> dict[str, Any]:
+    """Re-check a frozen common read back from storage."""
+
+    frozen = pb._exact_mapping(
+        value, keys=_FROZEN_COMMON_KEYS, where="frozen common"
+    )
+    if frozen["schema"] != FROZEN_COMMON_SCHEMA_V1:
+        pb._fail(f"frozen common schema must be {FROZEN_COMMON_SCHEMA_V1!r}")
+    return freeze_common(
+        {
+            "argv": frozen["argv"],
+            "cwd": frozen["cwd"],
+            "demand": frozen["demand"],
+            "env": frozen["env"],
+            "gpu_memory_gb": frozen["gpu_memory_gb"],
+            # Already a digest; the declaration it came from is gone by now,
+            # so present/absent is all that has to agree.
+            "data_manifest": (
+                None if frozen["data_manifest_sha256"] is None else "<frozen>"
+            ),
+        },
+        logical_cwd=frozen["cwd"],
+        checkout_snapshot_sha256=frozen["checkout_snapshot_sha256"],
+        data_manifest_sha256=frozen["data_manifest_sha256"],
+    )
+
+
+def parent_key(
+    frozen_common: Mapping[str, Any],
+    roster: Mapping[str, Any],
+    batch_policy: Mapping[str, Any],
+) -> str:
     """The identity of the work, before anybody decides how to cut it.
 
     Deliberately free of the algorithm version: a better batcher reorganizes a
@@ -382,14 +473,19 @@ def parent_key(request: Mapping[str, Any]) -> str:
 
     return canonical_sha256({
         "schema": PARENT_IDENTITY_SCHEMA_V1,
-        "common": request["common"],
-        "roster": request["roster"],
-        "batch_policy": request["batch_policy"],
+        "common": validate_frozen_common(frozen_common),
+        "roster": validate_roster(roster),
+        "batch_policy": validate_batch_policy(batch_policy),
     })
 
 
-def build_plan(request: Mapping[str, Any]) -> dict[str, Any]:
+def build_plan(
+    request: Mapping[str, Any], frozen_common: Mapping[str, Any]
+) -> dict[str, Any]:
     """Freeze one partition of one request, and give it a key.
+
+    Takes the frozen common rather than deriving identity from the request's
+    paths, so the plan cannot exist before the tree it will run against does.
 
     The blueprint holds task *ids* rather than batch digests, and the batch
     envelopes reference the plan key rather than the other way round.  That
@@ -398,12 +494,20 @@ def build_plan(request: Mapping[str, Any]) -> dict[str, Any]:
     """
 
     validated = validate_logical_request(request)
+    frozen = validate_frozen_common(frozen_common)
+    if frozen["argv"] != validated["common"]["argv"]:
+        pb._fail(
+            "frozen common argv differs from the request's; the plan would be "
+            "keyed on a command no child runs"
+        )
     partitions = partition_roster(
         validated["roster"], validated["batch_policy"]
     )
     blueprint = {
         "schema": PLAN_SCHEMA_V1,
-        "parent_key": parent_key(validated),
+        "parent_key": parent_key(
+            frozen, validated["roster"], validated["batch_policy"]
+        ),
         "algorithm_version": PARTITION_ALGORITHM_VERSION,
         "partitions": partitions,
     }

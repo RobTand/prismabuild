@@ -26,6 +26,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import decomposition as dc  # noqa: E402
 
 
+#: A stand-in for what pbrun's Stage A resolves: the parent is keyed on the
+#: tree's snapshot digest, never on the path the submitter typed.
+SNAPSHOT = "a" * 64
+MANIFEST = "b" * 64
+
+
+def _frozen(request: dict, *, snapshot: str = SNAPSHOT, cwd: str = ".") -> dict:
+    return dc.freeze_common(
+        request["common"],
+        logical_cwd=cwd,
+        checkout_snapshot_sha256=snapshot,
+        data_manifest_sha256=(
+            None if request["common"]["data_manifest"] is None else MANIFEST
+        ),
+    )
+
+
 def _roster(*specs: tuple[str, float]) -> dict:
     return dc.validate_roster({
         "schema": dc.LOGICAL_TASK_ROSTER_SCHEMA_V1,
@@ -161,13 +178,14 @@ def test_the_same_bytes_give_the_same_plan_key_and_a_changed_task_does_not() -> 
         "roster": _roster(*[("r", 8.2) for _ in range(66)]),
         "batch_policy": _policy(("r", 45.0)),
     }
-    first = dc.build_plan(request)
-    assert dc.build_plan(request) == first
+    frozen = _frozen(request)
+    first = dc.build_plan(request, frozen)
+    assert dc.build_plan(request, frozen) == first
     assert dc.validate_plan(first) == first
 
     moved = dict(request)
     moved["batch_policy"] = _policy(("r", 45.0), fraction=0.25)
-    replanned = dc.build_plan(moved)
+    replanned = dc.build_plan(moved, _frozen(moved))
     assert replanned["parent_key"] != first["parent_key"], (
         "the policy is part of what the parent is, not only of how it is cut"
     )
@@ -177,7 +195,7 @@ def test_the_same_bytes_give_the_same_plan_key_and_a_changed_task_does_not() -> 
 def test_a_plan_key_that_does_not_match_its_blueprint_is_refused() -> None:
     """Recovery reuses published plan bytes, so it may not take them on trust."""
 
-    plan = dc.build_plan({
+    request = {
         "schema": dc.LOGICAL_REQUEST_SCHEMA_V1,
         "common": {
             "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
@@ -189,10 +207,87 @@ def test_a_plan_key_that_does_not_match_its_blueprint_is_refused() -> None:
         },
         "roster": _roster(*[("r", 8.2) for _ in range(66)]),
         "batch_policy": _policy(("r", 45.0)),
-    })
+    }
+    plan = dc.build_plan(request, _frozen(request))
     tampered = {**plan, "partitions": [
         [*plan["partitions"][0], *plan["partitions"][1]],
         *plan["partitions"][2:],
     ]}
     with pytest.raises(dc.ActionContractError, match="does not match its blueprint"):
         dc.validate_plan(tampered)
+
+
+def test_parent_identity_follows_the_tree_not_the_path() -> None:
+    """Two worktrees of one commit are one parent; two commits are two.
+
+    Keying the parent on the declared ``cwd`` would invert both halves: a
+    recovery would resume a frozen plan against a tree that had moved on since
+    it was published, and the same campaign run from a second checkout would
+    publish a second set of children for work already done.
+    """
+
+    request = {
+        "schema": dc.LOGICAL_REQUEST_SCHEMA_V1,
+        "common": {
+            "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+            "cwd": "/home/rob/prismaquant",
+            "demand": {"cpu": 1},
+            "gpu_memory_gb": None,
+            "data_manifest": None,
+            "env": {},
+        },
+        "roster": _roster(*[("r", 8.2) for _ in range(66)]),
+        "batch_policy": _policy(("r", 45.0)),
+    }
+    elsewhere = {**request, "common": {**request["common"],
+                                       "cwd": "/home/rob/tmp/a-worktree"}}
+    here = dc.build_plan(request, _frozen(request))
+    there = dc.build_plan(elsewhere, _frozen(elsewhere))
+    assert there["parent_key"] == here["parent_key"], (
+        "the same commit under a second path is the same work"
+    )
+
+    moved = dc.build_plan(request, _frozen(request, snapshot="c" * 64))
+    assert moved["parent_key"] != here["parent_key"], (
+        "a commit later, the same path is different work"
+    )
+
+
+def test_a_plan_may_not_be_keyed_on_a_command_no_child_runs() -> None:
+    request = {
+        "schema": dc.LOGICAL_REQUEST_SCHEMA_V1,
+        "common": {
+            "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+            "cwd": "/checkout",
+            "demand": {"cpu": 1},
+            "gpu_memory_gb": None,
+            "data_manifest": None,
+            "env": {},
+        },
+        "roster": _roster(*[("r", 8.2) for _ in range(66)]),
+        "batch_policy": _policy(("r", 45.0)),
+    }
+    other = {**request, "common": {**request["common"], "argv": [
+        "python", "measure.py", dc.TASK_BATCH_PLACEHOLDER]}}
+    with pytest.raises(dc.ActionContractError, match="argv differs"):
+        dc.build_plan(request, _frozen(other))
+
+
+def test_a_declared_data_manifest_must_be_frozen_with_a_digest() -> None:
+    """Half a freeze keys the parent on data nobody ingested."""
+
+    common = {
+        "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+        "cwd": "/checkout",
+        "demand": {"cpu": 1},
+        "gpu_memory_gb": None,
+        "data_manifest": "/inputs/data-manifest.json",
+        "env": {},
+    }
+    with pytest.raises(dc.ActionContractError, match="both or neither"):
+        dc.freeze_common(common, logical_cwd=".",
+                         checkout_snapshot_sha256=SNAPSHOT)
+    with pytest.raises(dc.ActionContractError, match="both or neither"):
+        dc.freeze_common({**common, "data_manifest": None}, logical_cwd=".",
+                         checkout_snapshot_sha256=SNAPSHOT,
+                         data_manifest_sha256=MANIFEST)

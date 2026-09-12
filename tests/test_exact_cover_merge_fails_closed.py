@@ -20,6 +20,23 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import decomposition as dc  # noqa: E402
 
+
+#: A stand-in for what pbrun's Stage A resolves: the parent is keyed on the
+#: tree's snapshot digest, never on the path the submitter typed.
+SNAPSHOT = "a" * 64
+MANIFEST = "b" * 64
+
+
+def _frozen(request: dict, *, snapshot: str = SNAPSHOT, cwd: str = ".") -> dict:
+    return dc.freeze_common(
+        request["common"],
+        logical_cwd=cwd,
+        checkout_snapshot_sha256=snapshot,
+        data_manifest_sha256=(
+            None if request["common"]["data_manifest"] is None else MANIFEST
+        ),
+    )
+
 EVIDENCE = "cas:sha256:" + "0" * 64
 
 
@@ -83,7 +100,7 @@ def _manifests(request: dict, plan: dict) -> list[dict]:
 @pytest.fixture
 def planned() -> tuple[dict, dict, list[dict]]:
     request = _request()
-    plan = dc.build_plan(request)
+    plan = dc.build_plan(request, _frozen(request))
     assert len(plan["partitions"]) >= 3, "fixture needs several children"
     return request, plan, _manifests(request, plan)
 
@@ -162,7 +179,8 @@ def test_a_manifest_from_another_plan_is_refused(planned) -> None:
     """Same command, same box, different frozen partition."""
 
     request, plan, manifests = planned
-    other = dc.build_plan(_request(count=88))
+    request_88 = _request(count=88)
+    other = dc.build_plan(request_88, _frozen(request_88))
     manifests[0] = {**manifests[0], "plan_key": other["plan_key"]}
     with pytest.raises(dc.ActionContractError, match="reports plan"):
         dc.verify_exact_cover(request, plan, manifests)
@@ -170,7 +188,8 @@ def test_a_manifest_from_another_plan_is_refused(planned) -> None:
 
 def test_a_manifest_from_another_parent_is_refused(planned) -> None:
     request, plan, manifests = planned
-    other = dc.build_plan(_request(count=88))
+    request_88 = _request(count=88)
+    other = dc.build_plan(request_88, _frozen(request_88))
     manifests[0] = {**manifests[0], "parent_key": other["parent_key"]}
     with pytest.raises(dc.ActionContractError, match="reports parent"):
         dc.verify_exact_cover(request, plan, manifests)
