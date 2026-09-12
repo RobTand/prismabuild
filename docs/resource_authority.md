@@ -77,6 +77,20 @@ allocation spike or guarantee a response during a kernel stall. The budget
 path has a real GB10 daemon qualification; projected-pressure behavior has
 synthetic coverage without inducing a real host OOM.
 
+Hardware whose runtime publishes no per-process GPU memory is handled by
+declaration rather than by inference. The broker's reader states
+`gpu_process_bytes` for the sample and `gpu_budget_enforceable` for each scope,
+and states the scope its foreign-process inventory covers. Where bytes are
+unreadable, ownership is still resolved from the GPU device node's open handles
+under the same process-start and cgroup-identity checks, an unattributed holder
+still refuses admission, and the separate GPU allowance is simply not
+enforceable: two confirming observations cannot be made against a counter that
+does not exist. The host cgroup limit, the discrete/shared separation and the
+predictive host-pressure path are unchanged. On shared-system hardware the
+absence of per-process bytes also removes the system-memory lower bound, so
+such a scope is incomplete and offers nothing. See
+[amd_gpu_capacity_2026-09-12.md](amd_gpu_capacity_2026-09-12.md).
+
 ## Installation and upgrades
 
 Run `tools/fleet/install_resource_broker.sh` as root on each worker before

@@ -2052,6 +2052,52 @@ When the queue is empty it uses the configured 10--20 second backoff, avoiding
 an NFS scan and telemetry read per loop per second. GPU telemetry itself is
 collected once by the broker and shared by all loops.
 
+### AMD devices, and a device with no saturation instrument (2026-09-12)
+
+`gpu_capacity.devices()` reads NVML first and, only when NVML found nothing and
+`rocminfo` is installed, an AMD reader that publishes one device from two
+runtime sources that agree on every quantity both can see: the HSA agent report
+for identity, architecture, CU count, wavefront, peak clock and the VRAM pool,
+and a short-lived HIP subprocess for device count, free/total VRAM and the
+integration attribute that states the memory domain. Disagreement publishes
+nothing. More than one AMD GPU agent publishes nothing, because one HIP ordinal
+is all the probe reads. The VRAM total is keyed on `Device Type: GPU`, never on
+pool order: the first `GLOBAL` pool in a `rocminfo` report is the CPU agent's
+host RAM. Both readers are refused unless they are root-owned and writable by
+nobody else, because the broker runs `rocminfo` and loads `libamdhip64.so` as
+root.
+
+Each device record declares its `telemetry_class`. `power_and_clocks` is the
+NVML contract. `memory_only` is a device whose runtime publishes identity and
+memory and no power, clock or throttle counter at all, which is the AMD/WSL2
+case. The adaptive controller admits a `memory_only` device on the evidence it
+carries — identity, memory domain, free VRAM against the declared budget,
+foreign holders, host memory and CPU pressure — and withholds the two
+permissions power exists to authorize: `low` is never true, so there is no
+concurrency probe and no `measurement` action, and the device runs one
+attributed job at a time. Absent power *without* the declaration remains
+invalid, so this narrows one declared class of device rather than weakening the
+contract for every sample.
+
+Attribution on such a host is a census of the GPU device node's open handles in
+`/proc`, routed through the same PID start-time and cgroup-identity checks as
+the NVML rows. It resolves ownership and reports no per-process bytes, which
+the sample declares as `gpu_process_bytes: false` and each scope as
+`gpu_budget_enforceable: false`: the Guard does not confirm a GPU-allowance
+violation it has no counter for. Ownership unknown still refuses; bytes unknown
+no longer does. A `shared_system` device without per-process bytes has no
+system-memory lower bound to state and stays incomplete.
+`foreign_inventory_scope` records how far the census could see —
+`gpu_compute_apps` for NVML, `host_gpu_handles` for the node census, which
+covers the processes this `/proc` lists and nothing outside it. A handle is
+identified by the character device's device number, not by the node's inode: a
+container runtime creates its own node for a passed-through device, so an inode
+comparison would report a containerized GPU user as holding nothing. An
+unreadable descriptor table refuses rather than reporting an empty foreign
+list. Measured
+evidence and the residual risks are in
+[amd_gpu_capacity_2026-09-12.md](amd_gpu_capacity_2026-09-12.md).
+
 ## Preferred, overflow and adaptive CPU admission
 
 Host admission uses a nonblocking local FLOCK around the box's headroom

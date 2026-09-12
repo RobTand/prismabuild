@@ -661,3 +661,71 @@ def test_invalid_sealed_gpu_budget_cannot_overflow_or_enable_sharing(tmp_path, b
 def test_gpu_budget_byte_boundaries_remain_representable(budget, expected):
     from prismabuild import adaptive_gpu
     assert adaptive_gpu.memory_budget_bytes(budget) == expected
+
+
+def _memory_only(sample):
+    """Turn the rig's GB10 sample into the AMD/WSL2 contract: no power at all."""
+    sample['devices'][0] = {
+        'uuid': 'GPU-9c30c352a59e5b7a', 'vendor': 'amd',
+        'telemetry_class': 'memory_only', 'memory_domain': 'discrete',
+        'memory_total_bytes': 16 * 1024**3, 'memory_free_bytes': 15 * 1024**3,
+        'memory_used_bytes': 1024**3, 'power_w': None, 'power_limit_w': None,
+        'power_reference_w': None, 'power_reference_scope': None,
+        'sm_clock_mhz': None, 'max_sm_clock_mhz': 2400., 'limited': None,
+    }
+    return sample
+
+
+def test_memory_only_device_runs_one_job_and_never_shares(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    _memory_only(sample)
+    for index in range(3):
+        publish(index)
+
+    first = claim()
+    assert first
+    assert first['gpu_admission']['memory_domain'] == 'discrete'
+    # A power series is what authorizes a second concurrent job. Without one
+    # there is no plateau to observe, so the device stays at one job however
+    # long it is watched -- the ledger, not an inferred headroom, is the limit.
+    for _ in range(4):
+        tick()
+        assert claim() is None
+
+    queue.finish(first['action_key'], status='executed', detail={})
+    tick()
+    assert claim()
+
+
+def test_memory_only_device_refuses_while_a_foreign_holder_is_present(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    _memory_only(sample)
+    publish(0)
+    sample['foreign_processes'] = [{'pid': 4242, 'gpu_uuid': 'GPU-9c30c352a59e5b7a',
+                                    'used_bytes': None}]
+    tick()
+    sample['foreign_processes'] = [{'pid': 4242, 'gpu_uuid': 'GPU-9c30c352a59e5b7a',
+                                    'used_bytes': None}]
+    assert claim() is None
+
+
+def test_memory_only_device_refuses_when_its_free_vram_cannot_hold_the_budget(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    _memory_only(sample)
+    sample['devices'][0]['memory_free_bytes'] = 512 * 1024**2
+    sample['devices'][0]['memory_used_bytes'] = 16 * 1024**3 - 512 * 1024**2
+    publish(0, memory=1)
+    tick()
+    assert claim() is None
+
+
+def test_absent_power_without_the_declaration_still_refuses(gpu_rig):
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    _memory_only(sample)
+    # The narrowing is keyed on the device's own declaration. A sample that
+    # merely lost its power counters is the old unreadable-telemetry case and
+    # must keep failing closed.
+    del sample['devices'][0]['telemetry_class']
+    publish(0)
+    tick()
+    assert claim() is None
