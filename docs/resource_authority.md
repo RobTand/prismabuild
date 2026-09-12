@@ -118,6 +118,17 @@ are retained recovery evidence, not running work. Do not delete them while a
 daemon request could still be in flight; maintenance needs exact ownership,
 terminal queue evidence and a quiescent daemon boundary.
 
+A retained tombstone gives its charge back. The inventory pass asks the kernel
+to reclaim what a retired, empty, frozen group with a matching recorded
+identity still holds, and records the bytes before and after on its authority
+record. Reclaiming is not removing and changes no containment: the group stays,
+still frozen, still owned, and a record written before identities were recorded
+is left alone entirely. It runs before any removal and never after, because a
+memory cgroup removed while it still holds page cache goes offline as a zombie
+and keeps the charge the removal was meant to return. A reclaim that fails is
+recorded on the record and nowhere else: housekeeping must not be able to hold
+a host's maintenance gate closed.
+
 Authority records live under `/run` and therefore survive service restarts,
 not host reboots. Kernel groups and their processes disappear at reboot;
 queue recovery must still reconcile the corresponding attempt rather than

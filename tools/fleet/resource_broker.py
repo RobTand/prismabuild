@@ -7,6 +7,7 @@ Only the configured local UID may create bounded scopes, launch user processes t
 from __future__ import annotations
 import argparse
 import array
+import errno
 import hashlib
 import hmac
 import importlib.util
@@ -57,6 +58,18 @@ def _atomic(path, value, *, mode=0o600):
         try:os.fsync(directory)
         finally:os.close(directory)
     finally:temp.unlink(missing_ok=True)
+
+
+def _write_control(path, value):
+    """Write one kernel control, and never create one.
+
+    A cgroup control that is not there is a kernel that does not offer it, not
+    a file to make: `write_text` would open O_CREAT and turn "this kernel has
+    no memory.reclaim" into a plain file nothing reads.
+    """
+    fd=os.open(path,os.O_WRONLY|os.O_NOFOLLOW)
+    try:os.write(fd,value.encode())
+    finally:os.close(fd)
 
 
 def _trusted_file(path):
@@ -152,6 +165,29 @@ class SystemdBackend:
     def empty(self, scope):
         group=self.path(scope)
         return not group.exists() or 'populated 1' not in (group/'cgroup.events').read_text()
+    def reclaim(self, scope):
+        """Give back what an empty group still holds, before anything removes it.
+
+        A memory cgroup removed while it still holds LRU page cache goes
+        offline as a zombie: the kernel reparents its kernel memory on offline
+        but not its page cache, so the charge outlives the directory it was
+        charged to. Reclaim first, remove after -- never the other way round.
+
+        Returns the charge before and after, and whether the kernel finished.
+        A partial reclaim answers EAGAIN or EBUSY, and that is progress rather
+        than failure: the bytes it did drop stay dropped, and the next pass
+        asks for the rest.
+        """
+        group=self.path(scope)
+        before=int((group/'memory.current').read_text())
+        complete=True
+        if before>0:
+            try:_write_control(group/'memory.reclaim',str(before))
+            except OSError as exc:
+                if exc.errno not in {errno.EAGAIN,errno.EBUSY}:raise
+                complete=False
+        return {'before':before,'after':int((group/'memory.current').read_text()),
+                'complete':complete}
     def exists(self, scope):
         try:self.path(scope).stat()
         except FileNotFoundError:return False
@@ -576,6 +612,36 @@ class Authority:
                 status['draining']=False;status.pop('maintenance_owner',None)
             return status
 
+    def _reclaim_retired_scope(self,scope,record):
+        """Drop a retained tombstone's charge. Never removes, never fails the pass.
+
+        `release` keeps an empty frozen parent when a container ticket was
+        never resolved, because a killed client cannot prove the daemon RPC
+        completed. Nothing ever reclaimed what that parent still held, so the
+        charge stayed on the host until it rebooted (#486).
+
+        A failure here is recorded on the record and nowhere else. Reclaim
+        removes nothing, so a reclaim that did not work leaves precisely the
+        state this broker already tolerates -- and housekeeping must never be
+        able to hold a host's maintenance gate closed.
+        """
+        observation={'reclaim_before_bytes':None,'reclaim_after_bytes':None,
+                     'reclaim_complete':None,'reclaim_error':None}
+        try:
+            result=self.backend.reclaim(scope)
+            observation.update({'reclaim_before_bytes':result['before'],
+                                'reclaim_after_bytes':result['after'],
+                                'reclaim_complete':bool(result['complete'])})
+        except (OSError,ValueError,KeyError) as exc:
+            observation['reclaim_error']=str(exc)[:500]
+        # A pass that observed exactly what the record already says writes
+        # nothing: a tombstone with nothing left to give back would otherwise
+        # rewrite its own state file on every upgrade cycle, forever.
+        if all(record.get(key)==value for key,value in observation.items()):return
+        record.update(observation);record['reclaimed_unix']=time.time()
+        try:_atomic(self.state_dir/(scope+'.json'),record)
+        except OSError:pass  # the in-memory record carries it; the charge is gone either way
+
     def _maintenance_status(self):
         errors=[];active=set();inventory={}
         if self.maintenance_error:errors.append(self.maintenance_error)
@@ -611,6 +677,12 @@ class Authority:
                 except (OSError,ValueError) as exc:errors.append(str(exc)[:1500])
             if record.get('retired_unix') and kernel is not None and not kernel['populated'] and kernel['frozen']:
                 if not record.get('cgroup_identity') or record['cgroup_identity']==kernel.get('identity'):
+                    # Only a tombstone whose kernel identity this broker can
+                    # still prove is one it may work on. A record written
+                    # before identity was recorded stays inactive and
+                    # untouched, exactly as it was.
+                    if record.get('cgroup_identity'):
+                        self._reclaim_retired_scope(scope,record)
                     continue
             active.add(scope)
         for scope in inventory:
