@@ -56,17 +56,28 @@ def test_the_lookahead_depth_still_bounds_how_many_rows_are_warmed(
                           priority=5)
     third = fleet.action("third", [fleet.file("third.pt", 1 << 16)],
                          priority=0)
+    fourth = fleet.action("fourth", [fleet.file("fourth.pt", 1 << 16)],
+                          priority=-5)
+    fifth = fleet.action("fifth", [fleet.file("fifth.pt", 1 << 16)],
+                         priority=-10)
 
     assert [w["action_key"]
             for w in fleet.cycle(fleet.args(lookahead=1))["warmed"]] == [head]
 
+    # One window, one new warm: advancing past the warm head is not the same
+    # as ignoring the depth behind it.
     one = fleet.cycle(fleet.args(lookahead=1))
     assert [w["action_key"] for w in one["warmed"]] == [second]
     assert fleet.queue.prewarm(third) is None
+    assert fleet.queue.prewarm(fourth) is None
 
+    # Two windows, two new warms, past two rows that are now warm -- and the
+    # fifth, which is one row past the depth, is still not touched.
     two = fleet.cycle(fleet.args(lookahead=2))
-    assert [w["action_key"] for w in two["warmed"]] == [third]
-    assert fleet.queue.prewarm(third)["status"] == "complete"
+    assert [w["action_key"] for w in two["warmed"]] == [third, fourth]
+    assert fleet.queue.prewarm(fifth) is None
+    assert [(s["action_key"], s["reason"]) for s in two["skipped"]] == [
+        (head, "already warm"), (second, "already warm")]
 
 
 def test_nothing_warm_yet_still_warms_exactly_the_head(tmp_path: Path) -> None:
