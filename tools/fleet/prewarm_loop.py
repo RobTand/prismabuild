@@ -60,11 +60,14 @@ It cannot *guarantee* that a claimed action's data is never evicted, and says
 so rather than implying otherwise: ZFS exposes no pin, and the ARC target ``c``
 is volatile on a shared box -- it fell 99 GB inside one five-minute window on
 2026-09-11 without any tenant asking for the memory.  What it does guarantee is
-budgetary: it never *asks* for more than ``(c_max - size) * reserve`` minus the
-manifest bytes of every action claimed inside the last ``--claim-grace-min``
-minutes, which is the window in which a claimed action is still reading.  Both
-headroom numbers are logged every cycle so the gap between the budget and the
-outcome stays visible.
+budgetary: it never *asks* for more than ``c_max * reserve`` minus the manifest
+bytes of every action claimed inside the last ``--claim-grace-min`` minutes,
+which is the window in which a claimed action is still reading, and minus what
+it has already warmed for rows nobody has claimed.  The budget is a share of
+the cache's *capacity*, not of the free space inside it, because a cache in
+steady state is full; ``arc_headroom`` carries the measurement that settled
+that.  Both headroom numbers are logged every cycle so the gap between the
+budget and the outcome stays visible.
 """
 
 from __future__ import annotations
@@ -993,11 +996,20 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                 "min_manifest_bytes": args.min_manifest_bytes,
             })
             continue
-        taken += 1
         digest = str(entry["sha256"])
         if already_warm(queue, key, digest):
+            # A row that is already resident needs nothing from this window,
+            # so it must not spend it -- the same reason a manifest below the
+            # threshold is passed over above.  #523's 2026-09-12 readback:
+            # the loop skipped one ready row as already warm from 18:50:04
+            # through ten minutes of polls, and warmed the row behind it only
+            # once the warm one was claimed, 4.3 s before that row's own
+            # claim.  Its bytes stay charged to the budget by
+            # ``warmed_reserve``, which is what still bounds how much the loop
+            # holds ahead of the claim frontier.
             event["skipped"].append({"action_key": key, "reason": "already warm"})
             continue
+        taken += 1
         if total > budget:
             # Refusing is the correct outcome, not a failure: warming a row
             # that does not fit would evict the row that is running to make
@@ -1109,7 +1121,13 @@ def main(argv: list[str] | None = None) -> int:
                              "64 GB lookahead row come to 191 GB against a "
                              "206 GB budget at the default reserve fraction, "
                              "and a second lookahead row does not fit -- it is "
-                             "bought by evicting what the running rows read")
+                             "bought by evicting what the running rows read.  "
+                             "This counts rows a warm could still make "
+                             "faster: a row already warmed by this loop is "
+                             "passed over without spending the window, and "
+                             "the budget, which still charges its bytes, is "
+                             "what bounds how many rows stay resident ahead "
+                             "of the claim frontier")
     parser.add_argument("--pace-pool", default="storage_pool",
                         help="the ZFS pool whose data vdev members pace the "
                              "reader; its spindles are discovered with "
