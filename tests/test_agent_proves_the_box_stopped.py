@@ -130,6 +130,31 @@ def test_a_one_shot_run_by_hand_is_still_a_process_that_can_claim():
     assert upgrade.serving(CENSUS) == [(101, '900'), (102, '901'), (103, '902')]
 
 
+@pytest.mark.parametrize('script', [
+    f'{GENERATION}/prewarm_loop.py',
+    f'{GENERATION.removesuffix("/fleet")}/prewarm_loop.py',
+    '/mnt/shared/prismabuild-fleet/repo/tools/prewarm_loop.py',
+    '/home/rob/prismabuild/tools/fleet/prewarm_loop.py',
+])
+def test_storage_reader_must_park_before_the_host_reports_drained(tmp_path, script):
+    gate = tmp_path / 'maintenance.json'
+    gate.write_text(json.dumps({'draining': True, 'changed_unix': 12.5}))
+    census = [(105, '904', ['python3', script, '--once'])]
+    client = agent(tmp_path, gate, census=census)
+    client.ensure_parked_root()
+    status = {'draining': True, 'active_scopes': 0}
+
+    # A prior drain and a reused PID cannot vouch for this reader.
+    for start, stamp in [('904', 11.0), ('903', 12.5)]:
+        (client.parked_root / upgrade.park_marker_name(105, start, stamp)).touch()
+    assert client.drain_evidence(status) == {
+        'drained': False, 'unparked': [105], 'active_scopes': 0}
+
+    (client.parked_root / upgrade.park_marker_name(105, '904', 12.5)).touch()
+    assert client.drain_evidence(status) == {
+        'drained': True, 'unparked': [], 'active_scopes': 0}
+
+
 def test_a_box_whose_processes_have_all_parked_has_stopped():
     markers = {upgrade.park_marker_name(pid, start, 12.5)
                for pid, start in upgrade.serving(CENSUS)}

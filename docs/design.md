@@ -1917,14 +1917,19 @@ so a loop that cannot record its park still parks and missing evidence cannot
 certify a drained host. The updater creates the directory for the unprivileged
 worker uid and reports whether every serving process has a marker for the
 current drain and the broker reports no active scopes. Processes count by argv
-basename, including a one-shot invoked through the symlink or a local checkout.
+basename: `worker_loop.py`, `worker.py` and `prewarm_loop.py`, including one-shot
+or storage invocations through the symlink, either published layout or a local
+checkout. A storage reader missing an exact current-drain PID/start-time marker
+prevents a positive observation even with zero broker scopes. Legacy storage
+readers without parking support remain unparked until they exit.
 Unreadable or malformed process evidence prevents a positive result and is
 reported explicitly; only a process directory proved gone may be omitted after
 a read failure. Process start identity is checked around the argv read. Missing
 gate identity or a gate change during the census also prevents certification.
 The drain identity comes from the gate file. This is an observation of the
 current processes, not an admission barrier or a guarantee against future
-process launches; it neither opens nor closes a drain.
+process launches; it neither opens nor closes a drain. Ordinary privileged-client
+convergence still gates on broker active scopes, not this reported observation.
 The updater also records, fleet-wide, which version of itself has run. It is
 installed by a copy step rather than by the runtime symlink, so no shared
 record answers for it: the loops' `runtime_commit` answers for the loops, a
@@ -1994,9 +1999,10 @@ supervisor replacement, even while parked. One-cycle invocations return 75
 on that transition so an unperformed cycle is not reported as complete.
 The gate and runtime are rechecked after disk setup, immediately before the
 cycle, so topology-discovery delays do not preserve an earlier open decision.
-These checks do not add the storage process to the updater's current serving
-census, establish a cross-host quorum, or enable barrier activation. The #458
-protocol still needs to include this reader in its drain and rotation proof.
+The updater includes this storage reader in its drain observation using that
+same marker. These checks establish no cross-host quorum and do not enable
+barrier activation. The #458 protocol still needs fresh epoch participation
+and a generation-uniform rotation proof that includes this reader.
 
 ## Physical and adaptive GPU admission
 

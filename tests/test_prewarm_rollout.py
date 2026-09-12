@@ -98,6 +98,25 @@ def test_open_gate_runs_one_cycle(role):
     assert list(parked.iterdir()) == []
 
 
+def test_storage_boundary_marker_satisfies_the_updaters_drain_census(role):
+    loop, gate, parked, current, calls, argv = role
+    upgrade = load('upgrade_client')
+    gate.write_text(json.dumps({'draining': True, 'changed_unix': 458.0}))
+    # Read the process identity independently of the marker writer.
+    start = Path('/proc/self/stat').read_text().rpartition(')')[2].split()[19]
+    client = upgrade.Upgrader({
+        'install_dir': str(gate.parent / 'installed'),
+        'state_dir': str(gate.parent / 'state'),
+        'maintenance_gate': str(gate),
+    }, procs=lambda: [(os.getpid(), start, ['python3', str(ROOT / 'tools/fleet/prewarm_loop.py')])])
+    status = {'draining': True, 'active_scopes': 0}
+    assert client.drain_evidence(status)['unparked'] == [os.getpid()]
+    assert loop.main(argv + ['--once']) == 75
+    assert calls == []
+    assert client.drain_evidence(status) == {
+        'drained': True, 'unparked': [], 'active_scopes': 0}
+
+
 def test_a_closed_gate_precedes_queue_and_disk_discovery(role, monkeypatch):
     loop, gate, parked, current, calls, argv = role
     gate.write_text(json.dumps({"draining": True, "changed_unix": 458.0}))
