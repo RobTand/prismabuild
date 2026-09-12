@@ -40,6 +40,8 @@ claims.  Qualification measures what the resulting execution actually costs.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import hashlib
+from pathlib import Path
 from typing import Any
 
 from . import core as pb
@@ -59,15 +61,22 @@ __all__ = [
     "PARTITION_ALGORITHM_VERSION",
     "PLAN_SCHEMA_V1",
     "PUBLICATION_INDEX_SCHEMA_V1",
+    "RESULT_MANIFEST_INPUT_ID",
+    "TASK_BATCH_INPUT_ID",
     "ROSTER_BATCH_POLICY_SCHEMA_V1",
     "TASK_BATCH_PLACEHOLDER",
     "batch_envelope",
+    "child_result_manifest_path",
+    "document_bytes",
+    "document_sha256",
+    "write_document",
     "build_plan",
     "freeze_common",
     "logical_batch_param",
     "parent_key",
     "partition_roster",
     "publication_index",
+    "resolve_task_batch",
     "validate_batch_policy",
     "validate_child_result_manifest",
     "validate_common_spec",
@@ -94,6 +103,14 @@ GROUP_RECEIPT_SCHEMA_V1 = "prismabuild.group_receipt.v1"
 #: child is an ordinary action in every other respect, so what makes it a
 #: member of a plan has to be in the bytes its key hashes.
 LOGICAL_BATCH_PARAM = "logical_batch"
+
+#: The input ids a child carries beyond an ordinary action's: the frozen
+#: roster every child of a parent shares, and the one batch envelope that
+#: is only this child's.  Separate inputs rather than one, because the
+#: roster's digest is the same across a campaign and the CAS stores it once.
+TASK_ROSTER_INPUT_ID = "prismabuild.logical-task-roster"
+TASK_BATCH_INPUT_ID = "prismabuild.task-batch"
+RESULT_MANIFEST_INPUT_ID = "prismabuild.child-result-manifest"
 
 #: Bumping this changes every ``plan_key`` while leaving parent identity alone,
 #: which is the point: a better batcher must not look like a different
@@ -559,6 +576,76 @@ def validate_plan(value: object) -> dict[str, Any]:
     return {**blueprint, "plan_key": recorded}
 
 
+def document_bytes(value: object) -> bytes:
+    """The one on-disk spelling of a decomposition document.
+
+    A plan, an envelope and a manifest are each hashed twice in two different
+    senses: ``canonical_sha256`` over the value binds it into a key, and the
+    CAS addresses the *file* by the digest of its bytes.  Those two differ by
+    a trailing newline, which is exactly the kind of difference that reads as
+    a tampered blob rather than as a formatting choice.  So there is one
+    writer, and ``document_sha256`` is what it will produce.
+    """
+
+    return pb._canonical_file_bytes(value)
+
+
+def document_sha256(value: object) -> str:
+    """The digest the CAS will give these bytes, known before they are written."""
+
+    return hashlib.sha256(document_bytes(value)).hexdigest()
+
+
+def write_document(path: str | Path, value: object) -> str:
+    """Write one decomposition document and return the digest it now has."""
+
+    Path(path).write_bytes(document_bytes(value))
+    return document_sha256(value)
+
+
+def child_result_manifest_path(child_ordinal: int) -> str:
+    """Where a child writes what it measured, relative to its working tree.
+
+    A decomposed child's declared result is its manifest, not the tee'd log:
+    the log says the process exited, and the merge needs to know which tasks
+    it answered.  The name has to be agreed rather than discovered, because
+    the action that declares it is sealed before the child that writes it
+    runs -- so it is derived from the ordinal here, carried in the batch
+    envelope the child is handed, and sealed as the child's ``result_path``.
+    Every action gets its own private checkout, so two children of one parent
+    never contend for the name.
+    """
+
+    if not isinstance(child_ordinal, int) or isinstance(child_ordinal, bool):
+        pb._fail("child ordinal must be an integer")
+    if child_ordinal < 0:
+        pb._fail(f"child ordinal must not be negative: {child_ordinal}")
+    return f"pb-child-{child_ordinal:05d}.result-manifest.json"
+
+
+def resolve_task_batch(
+    argv: Sequence[str], *, batch_path: str | Path
+) -> list[str]:
+    """Put one child's batch file where the producer reserved a slot for it.
+
+    Substitution, not expansion: the placeholder is a whole argument and is
+    replaced by a whole argument, so a path with a space, a quote or a ``$``
+    in it reaches the child as one argument and never as shell text.  The
+    producer's own command is otherwise untouched.
+    """
+
+    resolved = [
+        str(batch_path) if part == TASK_BATCH_PLACEHOLDER else part
+        for part in argv
+    ]
+    if sum(part == TASK_BATCH_PLACEHOLDER for part in argv) != 1:
+        pb._fail(
+            f"command must carry {TASK_BATCH_PLACEHOLDER} exactly once as a "
+            "whole argument before a batch can be resolved into it"
+        )
+    return resolved
+
+
 def batch_envelope(
     request: Mapping[str, Any], plan: Mapping[str, Any], *, child_ordinal: int
 ) -> dict[str, Any]:
@@ -583,6 +670,10 @@ def batch_envelope(
         "roster_sha256": canonical_sha256(request["roster"]),
         "batch_policy_sha256": canonical_sha256(request["batch_policy"]),
         "child_ordinal": child_ordinal,
+        # Told rather than derived: the child would otherwise have to
+        # reimplement the naming rule to agree with the action that already
+        # declared its result path.
+        "result_manifest_path": child_result_manifest_path(child_ordinal),
         "tasks": [by_id[task_id] for task_id in partitions[child_ordinal]],
     }
 

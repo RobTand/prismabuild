@@ -3848,7 +3848,6 @@ def freeze_action_template(
     variables: Mapping[str, str],
     determinism: str,
     retry_policy: Mapping[str, object],
-    task_class: str,
     host_class: str | None,
     measurement: bool,
     transport: str,
@@ -3874,6 +3873,10 @@ def freeze_action_template(
     Placement and demand are resolved against the live fleet by the caller, so
     they arrive already decided; this reads nothing about who might run the
     work.
+
+    ``measurement`` spells the task class and the scope at once, deliberately:
+    they are the same statement, and a caller that could set them separately
+    could seal a measurement with no platform to measure on.
     """
 
     variables = dict(variables)
@@ -4010,7 +4013,7 @@ def freeze_action_template(
         "task": {
             "definition_id": "fleet/pbrun",
             "definition_version": "v1",
-            "task_class": task_class,
+            "task_class": "measurement" if measurement else "generation",
             # A pytest or a timing run is not byte-reproducible and must not
             # claim to be: the CAS only enforces canonical equality on
             # "deterministic", so mislabelling one would be a false receipt.
@@ -4027,18 +4030,49 @@ def freeze_action_template(
     }
 
 
-def seal_action_from_template(template: Mapping[str, object]) -> dict[str, object]:
+def seal_action_from_template(
+    template: Mapping[str, object],
+    *,
+    command: Sequence[str] | None = None,
+    result_path: str | None = None,
+    extra_inputs: Sequence[Mapping[str, object]] = (),
+    extra_params: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     """Turn one frozen template into one sealed action.
 
     The command and the result path are rebuilt here rather than carried in
     the template because they are the two things a decomposed child varies:
-    its own batch in the argument list, its own manifest to write.  For an
-    ordinary submission there is nothing to vary and this is the template's
-    own command, teed to the template's own log.
+    its own batch resolved into the argument list, its own manifest to write.
+    For an ordinary submission nothing is overridden and this is the
+    template's own command, teed to the template's own log.
+
+    The four overrides are the whole of what makes a child different from an
+    ordinary action, and they are deliberately narrow.  Each one lands in the
+    sealed body, so a child's key is an ordinary ``pbrun`` key over a command,
+    an input list and a ``params`` that say which batch of which plan it
+    measured -- not a new kind of action with its own hashing rules.
+
+    ``command`` still runs under the same wrapper and still tees to a log; the
+    log just stops being the declared result, because a decomposed child's
+    result is its manifest.  ``extra_inputs`` are appended after the
+    template's, so the checkout snapshot stays ``inputs[0]``, which is where
+    the worker's materialization looks for it.  ``extra_params`` may not
+    rewrite anything the template froze: a child that could restate its own
+    command, demand or snapshot would be a different action wearing a
+    template's identity.
     """
 
     params = dict(template["params"])
-    command = list(params["command"])
+    if extra_params:
+        overwritten = sorted(set(extra_params) & set(params))
+        if overwritten:
+            raise SystemExit(
+                "pbrun: refusing to seal an action whose extra params restate "
+                f"the frozen template's: {', '.join(overwritten)}"
+            )
+        params.update(extra_params)
+    command = list(template["params"]["command"] if command is None else command)
+    params["command"] = command
     log_name = str(template["log_name"])
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
@@ -4048,9 +4082,9 @@ def seal_action_from_template(template: Mapping[str, object]) -> dict[str, objec
                      f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
                      f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
                      f"exit ${{PIPESTATUS[0]}}"],
-            "result_path": log_name,
+            "result_path": log_name if result_path is None else result_path,
         },
-        "inputs": list(template["inputs"]),
+        "inputs": [*template["inputs"], *extra_inputs],
         "code_closure": template["code_closure"],
         "params": params,
         "environment": template["environment"],

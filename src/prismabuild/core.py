@@ -3838,6 +3838,20 @@ class PrismaBuildCAS:
             finally:
                 _unlink_nofollow(staging, where="CAS staging file")
 
+    def blob_path(self, digest: str) -> Path:
+        """Where a blob of this digest lives, whether or not it is there yet.
+
+        Naming is not verification, and the two have different callers.  A
+        worker about to read an input calls ``input_path``, which reads the
+        whole blob back to prove it is the bytes the action named.  A
+        submitter sealing a CAS path into an action's command needs only the
+        name, and needs it for a blob it has just written itself -- re-reading
+        it would prove nothing the ingest did not already prove, and on a
+        campaign's worth of children it would do so once per child.
+        """
+
+        return self._blob_path(_sha256(digest, where="CAS blob digest"))
+
     def input_path(self, input_contract: object) -> Path:
         """Return an action input's CAS path after full content verification."""
 
