@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -26,6 +27,21 @@ from typing import Mapping, Sequence
 MIB = 1024**2
 GIB = 1024**3
 SCOPE_RE = re.compile(r"prismabuild-job[0-9a-f]{32}\.slice\Z")
+
+NVIDIA_SMI = "/usr/bin/nvidia-smi"
+
+#: WSL2 publishes no ``/dev/kfd`` and no DRM fdinfo, so the only handle a GPU
+#: user must hold is the WDDM paravirtualisation node. Opening it is what a HIP
+#: context does and what an import of a GPU library alone does not, which is
+#: what makes the open-handle census an ownership census rather than a guess.
+DXG_DEVICE = Path("/dev/dxg")
+
+#: How far a foreign-process inventory can actually see. ``gpu_compute_apps``
+#: is NVML's own list of contexts on the device. ``host_gpu_handles`` is every
+#: process in this kernel's PID namespace holding the device node open, which
+#: is complete for this host and says nothing about a user outside it.
+FOREIGN_SCOPE_COMPUTE_APPS = "gpu_compute_apps"
+FOREIGN_SCOPE_HOST_HANDLES = "host_gpu_handles"
 
 
 @dataclass(frozen=True)
@@ -62,6 +78,11 @@ class JobSample:
     memory_domain: str = "unknown"
     shared_gpu_lower_bound_bytes: int | None = None
     system_lower_bound_bytes: int | None = None
+    #: Whether this sample's reader can bound this scope's GPU bytes at all.
+    #: False is a property of the hardware's telemetry, not a failed read, so
+    #: it is a typed field rather than an error string: the Guard cannot
+    #: confirm a GPU-allowance violation it has no counter for.
+    gpu_budget_enforceable: bool = True
 
 
 @dataclass(frozen=True)
@@ -78,6 +99,8 @@ class Snapshot:
     foreign_gpu_reported_bytes: int | None = None
     errors: tuple[str, ...] = ()
     foreign_processes: tuple[dict, ...] = ()
+    gpu_process_bytes: bool = True
+    foreign_inventory_scope: str = FOREIGN_SCOPE_COMPUTE_APPS
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -108,10 +131,10 @@ def _process_identity(proc: Path, pid: int):
         return None
 
 
-def _gpu_processes(timeout_s: float):
+def _nvidia_processes(timeout_s: float):
     try:
         result = subprocess.run(
-            ["/usr/bin/nvidia-smi", "--query-compute-apps=pid,gpu_uuid,used_gpu_memory",
+            [NVIDIA_SMI, "--query-compute-apps=pid,gpu_uuid,used_gpu_memory",
              "--format=csv,noheader,nounits"], capture_output=True, text=True,
             timeout=timeout_s, check=False,
         )
@@ -137,6 +160,69 @@ def _gpu_processes(timeout_s: float):
         except (ValueError, TypeError):
             return None, "malformed GPU process query"
     return rows, None
+
+
+def _handle_processes(proc: Path, device: Path, identity: str):
+    """Every process in this namespace holding the GPU device node open.
+
+    Ownership only: the node carries no per-context byte count, and this
+    deliberately reports none rather than a zero that would read as proof a
+    holder allocated nothing. ``readlink`` runs on every descriptor and
+    ``stat`` on only the ones that already name the device, because following
+    a descriptor onto a stalled network mount blocks in the kernel and this
+    census runs inside the broker's sampling deadline. An unreadable
+    descriptor table is refused rather than skipped: a census that cannot see
+    another user's processes would report their GPU work as absent.
+    """
+    try:
+        node = device.stat()
+    except OSError as exc:
+        return None, f"GPU handle inventory unavailable: {type(exc).__name__}"
+    node_identity, target = (node.st_dev, node.st_ino), str(device)
+    rows = {}
+    try:
+        entries = list(proc.iterdir())
+    except OSError as exc:
+        return None, f"GPU handle inventory unavailable: {type(exc).__name__}"
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            descriptors = list((entry / "fd").iterdir())
+        except PermissionError:
+            return None, "GPU handle inventory requires the host descriptor tables"
+        except OSError:
+            continue  # The process exited; it holds nothing now.
+        for descriptor in descriptors:
+            try:
+                if os.readlink(descriptor) != target:
+                    continue
+                opened = descriptor.stat()
+            except OSError:
+                continue
+            if (opened.st_dev, opened.st_ino) == node_identity:
+                rows[(int(entry.name), identity)] = None
+                break
+    return rows, None
+
+
+def _gpu_processes(timeout_s: float, devices=None, *, proc_root: Path = Path("/proc"),
+                   device_node: Path = DXG_DEVICE):
+    """Pick the reader the installed hardware actually has.
+
+    Returns the rows, an error, whether per-process bytes are readable, and the
+    scope the foreign inventory covers.
+    """
+    devices = list(devices or ())
+    if devices and all(device.get("vendor") == "amd" for device in devices):
+        if len(devices) != 1:
+            return (None, "AMD handle attribution supports exactly one device",
+                    False, FOREIGN_SCOPE_HOST_HANDLES)
+        rows, error = _handle_processes(Path(proc_root), Path(device_node),
+                                        devices[0].get("uuid", ""))
+        return rows, error, False, FOREIGN_SCOPE_HOST_HANDLES
+    rows, error = _nvidia_processes(timeout_s)
+    return rows, error, True, FOREIGN_SCOPE_COMPUTE_APPS
 
 
 def _host(proc: Path):
@@ -176,7 +262,9 @@ def _host(proc: Path):
 def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
             cgroup_root: Path = Path("/sys/fs/cgroup"), timeout_s: float = 1.0,
             max_collect_s: float = 3.0,
-            gpu_memory_domains: Mapping[str, str] | None = None) -> Snapshot:
+            gpu_memory_domains: Mapping[str, str] | None = None,
+            gpu_devices: Sequence[Mapping] | None = None,
+            gpu_device_node: Path = DXG_DEVICE) -> Snapshot:
     """Sample all active broker scopes without holding its authority lock.
 
     Caller must run in the host PID/cgroup namespaces. GPU rows are attributed
@@ -191,6 +279,9 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
     if not math.isfinite(max_collect_s) or not timeout_s <= max_collect_s <= 10:
         raise ValueError("collection deadline must cover query and be <=10 seconds")
     proc_root, cgroup_root = Path(proc_root), Path(cgroup_root)
+    if gpu_memory_domains is None and gpu_devices is not None:
+        gpu_memory_domains = {device.get("uuid"): device.get("memory_domain")
+                              for device in gpu_devices}
     domains = {uuid: domain if domain in {"shared_system", "discrete"} else "unknown"
                for uuid, domain in (gpu_memory_domains or {}).items()}
     started = time.monotonic()
@@ -222,10 +313,13 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
     except OSError:
         pass
     remaining = deadline - time.monotonic()
+    bytes_readable, foreign_scope = True, FOREIGN_SCOPE_COMPUTE_APPS
     if remaining <= 0:
         rows, error = None, "collection deadline elapsed before GPU query"
     else:
-        rows, error = _gpu_processes(min(timeout_s, remaining))
+        rows, error, bytes_readable, foreign_scope = _gpu_processes(
+            min(timeout_s, remaining), gpu_devices, proc_root=proc_root,
+            device_node=gpu_device_node)
     errors = [error] if error else []
     complete = rows is not None and not timed_out
     if timed_out:
@@ -281,12 +375,22 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
         processes = tuple(attributed[scope.scope_id])
         observed_domains = {row['memory_domain'] for row in processes} or set(domains.values())
         domain = next(iter(observed_domains)) if len(observed_domains) == 1 else "unknown"
-        known = complete and all(row["used_bytes"] is not None for row in processes)
-        gpu_sum = sum(row["used_bytes"] for row in processes) if known else None
-        gpu_min = max((row["used_bytes"] for row in processes), default=0) if known else None
         shared = [row['used_bytes'] for row in processes if row['memory_domain'] == 'shared_system']
-        shared_min = max(shared, default=0) if known else None
-        shared_sum = sum(shared) if known else None
+        if bytes_readable:
+            known = complete and all(row["used_bytes"] is not None for row in processes)
+            gpu_sum = sum(row["used_bytes"] for row in processes) if known else None
+            gpu_min = max((row["used_bytes"] for row in processes), default=0) if known else None
+            shared_min = max(shared, default=0) if known else None
+            shared_sum = sum(shared) if known else None
+        else:
+            # Ownership is resolved and bytes are not readable at all. A
+            # discrete device keeps its whole system-memory charge in the
+            # cgroup counter, so the system bound is unaffected; shared-system
+            # hardware without per-process bytes has no bound to state, and
+            # that scope stays incomplete rather than borrowing a zero.
+            known = complete and not shared
+            gpu_sum = gpu_min = None
+            shared_min = shared_sum = 0 if known else None
         lower = max(host, shared_min) if host is not None and shared_min is not None else None
         upper = host + shared_sum if host is not None and shared_sum is not None else None
         if not known:
@@ -294,12 +398,13 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
         jobs.append(JobSample(scope.scope_id, identity, scope.budget_bytes, host, gpu_sum,
                               gpu_min, lower, upper, known and host is not None,
                               processes, tuple(failures), scope.gpu_budget_bytes or scope.budget_bytes,
-                              domain, shared_min, lower))
+                              domain, shared_min, lower, bytes_readable))
     total, available, some, full, host_errors = _host(proc_root)
     return Snapshot(time.monotonic(), time.time(), time.monotonic() - started,
                     total, available, some, full, tuple(jobs), complete,
                     None if foreign_unknown or not complete else foreign,
-                    tuple(errors + host_errors), tuple(foreign_processes))
+                    tuple(errors + host_errors), tuple(foreign_processes),
+                    bytes_readable, foreign_scope)
 
 
 @dataclass(frozen=True)

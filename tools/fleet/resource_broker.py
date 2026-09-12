@@ -992,6 +992,10 @@ class ResourceMonitor:
             device_readings=self.capacity.devices(timeout_s=self.timeout_s)
             memory_options['gpu_memory_domains']={device['uuid']:device['memory_domain']
                                                  for device in device_readings[0]}
+            # The census needs the vendor as well as the domain: which reader
+            # can attribute a process is a property of the device, and the one
+            # device query already made here is the only place that is known.
+            memory_options['gpu_devices']=device_readings[0]
         if scopes or self.capacity is not None:
             snapshot=self.gpu.collect(scopes,timeout_s=self.timeout_s,**memory_options)
             for decision in self.guard.observe(snapshot):

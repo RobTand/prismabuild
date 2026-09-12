@@ -7,11 +7,14 @@ combine this evidence with attributed residency, memory and host pressure.
 """
 from __future__ import annotations
 
+import json
 import math
+import os
 from pathlib import Path
 import re
 import socket
 import subprocess
+import sys
 import time
 import uuid
 
@@ -26,6 +29,64 @@ FIELDS = ('name', 'uuid', 'power.draw', 'enforced.power.limit', 'power.limit',
           *(f'clocks_event_reasons.{name}' for name in THROTTLE_FIELDS))
 MIB = 1024**2
 DISCRETE_NAME = re.compile(r'^(?:NVIDIA )?(?:GeForce|RTX|Quadro|Tesla|TITAN|A100|A30|A40|A10|H100|H200|B100|B200|L4|L40|V100|T4)(?:[ -]|$)')
+
+#: What a device record's counters actually cover. ``power_and_clocks`` is the
+#: NVML contract: draw, a reference, current/max clocks and throttle reasons,
+#: which is what authorizes the sharing probe. ``memory_only`` is a device whose
+#: runtime publishes identity and memory and no saturation instrument at all;
+#: it is a declaration in the sample, never an absent field a reader may guess
+#: a value for, and the admission controller narrows what such a device may do.
+TELEMETRY_POWER_AND_CLOCKS = 'power_and_clocks'
+TELEMETRY_MEMORY_ONLY = 'memory_only'
+
+NVIDIA_SMI = '/usr/bin/nvidia-smi'
+ROCMINFO = '/usr/bin/rocminfo'
+HIP_LIBRARY = '/opt/rocm/lib/libamdhip64.so'
+
+#: ``hipDeviceAttribute_t`` values inside HIP's CUDA-compatible block, whose
+#: ordering AMD fixes so the numbers match CUDA's. They are read out of the
+#: installed header rather than guessed, and every one of them is cross-checked
+#: against the same quantity in ``rocminfo`` before a device is published, so a
+#: future renumbering fails the check and refuses instead of misreporting.
+HIP_ATTRIBUTE_INTEGRATED = 16
+HIP_ATTRIBUTE_WARP_SIZE = 87
+HIP_ATTRIBUTE_CLOCK_RATE_KHZ = 5
+HIP_ATTRIBUTE_MAX_THREADS_PER_BLOCK = 56
+
+#: Runs in a short-lived subprocess. A HIP context opened inside the broker
+#: would hold the device node open for the daemon's lifetime and then appear in
+#: its own foreign-handle census.
+HIP_PROBE_SOURCE = """
+import ctypes, json, sys
+try:
+    lib = ctypes.CDLL(sys.argv[1])
+    if lib.hipInit(0) != 0:
+        raise OSError('hipInit failed')
+    out = {}
+    count = ctypes.c_int()
+    if lib.hipGetDeviceCount(ctypes.byref(count)) != 0:
+        raise OSError('hipGetDeviceCount failed')
+    out['device_count'] = count.value
+    free, total = ctypes.c_size_t(), ctypes.c_size_t()
+    if lib.hipMemGetInfo(ctypes.byref(free), ctypes.byref(total)) != 0:
+        raise OSError('hipMemGetInfo failed')
+    out['memory_free_bytes'] = free.value
+    out['memory_total_bytes'] = total.value
+    for name, attribute in json.loads(sys.argv[2]).items():
+        value = ctypes.c_int(-1)
+        if lib.hipDeviceGetAttribute(ctypes.byref(value), ctypes.c_int(attribute),
+                                     ctypes.c_int(0)) != 0:
+            raise OSError('hipDeviceGetAttribute failed: ' + name)
+        out[name] = value.value
+    print(json.dumps(out))
+except Exception as exc:
+    print(json.dumps({'error': type(exc).__name__}))
+"""
+
+_ROCMINFO_AGENT = re.compile(r'Agent \d+\Z')
+_ROCMINFO_FIELDS = frozenset((
+    'Name', 'Uuid', 'Marketing Name', 'Device Type', 'Compute Unit',
+    'Wavefront Size', 'Max Clock Freq. (MHz)', 'Workgroup Max Size'))
 
 
 def _number(value, *, positive=False):
@@ -42,13 +103,11 @@ def _flag(value):
     return {'Active': True, 'Not Active': False}.get(value)
 
 
-def devices(*, timeout_s=1.0):
+def _nvidia_devices(timeout_s):
     """Read device-level power/clock/memory counters with one bounded query."""
-    if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or not 0 < timeout_s <= 5:
-        raise ValueError('GPU telemetry timeout must be in (0, 5] seconds')
     sampled_unix = time.time()
     try:
-        result = subprocess.run(['/usr/bin/nvidia-smi', '--query-gpu=' + ','.join(FIELDS),
+        result = subprocess.run([NVIDIA_SMI, '--query-gpu=' + ','.join(FIELDS),
                                  '--format=csv,noheader,nounits'],
                                 capture_output=True, text=True, timeout=timeout_s, check=False)
         if result.returncode:
@@ -90,6 +149,7 @@ def devices(*, timeout_s=1.0):
             mask = None
         device = {
             'uuid': identity, 'name': name, 'sampled_unix': sampled_unix,
+            'vendor': 'nvidia', 'telemetry_class': TELEMETRY_POWER_AND_CLOCKS,
             'power_w': _number(row['power.draw']),
             'power_limit_w': limit, 'power_reference_w': reference, 'power_measurement_scope': 'gpu',
             'power_reference_scope': reference_scope, 'power_reference_source': reference_source,
@@ -113,6 +173,167 @@ def devices(*, timeout_s=1.0):
     if not found:
         errors.append('no GPU devices reported')
     return found, errors
+
+
+def _parse_rocminfo(text):
+    """Split one ``rocminfo`` report into agents; pools keep their segment."""
+    agents, current, segment = [], None, None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if _ROCMINFO_AGENT.fullmatch(line):
+            current, segment = {'pools': []}, None
+            agents.append(current)
+            continue
+        if current is None or ':' not in line:
+            continue
+        key, _, value = line.partition(':')
+        key, value = key.strip(), value.strip()
+        if key == 'Segment':
+            segment = value
+        elif key == 'Size' and segment is not None:
+            current['pools'].append((segment, value))
+            segment = None
+        elif key in _ROCMINFO_FIELDS:
+            current.setdefault(key, value)
+    return agents
+
+
+def _leading_int(value):
+    """``16577056(0xfcf220) KB`` and ``32(0x20)`` both carry one number."""
+    match = re.match(r'\s*(\d+)', str(value))
+    return int(match.group(1)) if match else None
+
+
+def _run_rocminfo(timeout_s):
+    try:
+        result = subprocess.run([ROCMINFO], capture_output=True, text=True,
+                                timeout=timeout_s, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f'AMD device query unavailable: {type(exc).__name__}'
+    if result.returncode:
+        return None, f'AMD device query exited {result.returncode}'
+    return result.stdout, None
+
+
+def _run_hip_probe(timeout_s):
+    """Ask the HIP runtime for device count, free/total VRAM and attributes."""
+    attributes = {'integrated': HIP_ATTRIBUTE_INTEGRATED,
+                  'warp_size': HIP_ATTRIBUTE_WARP_SIZE,
+                  'clock_rate_khz': HIP_ATTRIBUTE_CLOCK_RATE_KHZ,
+                  'max_threads_per_block': HIP_ATTRIBUTE_MAX_THREADS_PER_BLOCK}
+    try:
+        result = subprocess.run([sys.executable, '-c', HIP_PROBE_SOURCE, HIP_LIBRARY,
+                                 json.dumps(attributes)], capture_output=True,
+                                text=True, timeout=timeout_s, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f'AMD memory query unavailable: {type(exc).__name__}'
+    if result.returncode:
+        return None, f'AMD memory query exited {result.returncode}'
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        return None, 'malformed AMD memory query'
+    if not isinstance(payload, dict) or payload.get('error'):
+        return None, f"AMD memory query failed: {(payload or {}).get('error')}"
+    return payload, None
+
+
+def _amd_devices(timeout_s):
+    """Publish one AMD GPU from two independent runtime sources that agree.
+
+    ``rocminfo`` answers the HSA agent question -- identity, architecture, CU
+    count, wavefront, peak clock and the VRAM pool -- and the HIP runtime
+    answers the live memory question the agent report cannot. Four quantities
+    are visible to both, and all four must match before anything is published:
+    disagreement means one of the two readers is describing a different device
+    or a renumbered attribute, and neither is a thing to publish a capacity
+    claim from. The VRAM total in particular is the landmine this refuses --
+    the first ``GLOBAL`` pool in a ``rocminfo`` report belongs to the CPU agent
+    and is host RAM, so a reader keyed on pool order over-reports VRAM.
+    """
+    sampled_unix = time.time()
+    text, error = _run_rocminfo(timeout_s)
+    if error:
+        return [], [error]
+    agents = [agent for agent in _parse_rocminfo(text)
+              if agent.get('Device Type') == 'GPU']
+    if len(agents) != 1:
+        # One HIP ordinal is all the probe reads. Two GPU agents would need a
+        # per-ordinal probe and a proven agent-to-ordinal mapping.
+        return [], [f'AMD GPU agents reported: {len(agents)}, expected exactly one']
+    agent = agents[0]
+    identity = agent.get('Uuid', '')
+    if not isinstance(identity, str) or not identity.startswith('GPU-'):
+        return [], ['missing AMD GPU identity']
+    vram = None
+    for segment, size in agent['pools']:
+        if segment.startswith('GLOBAL') and 'COARSE GRAINED' in segment:
+            kilobytes = _leading_int(size)
+            vram = kilobytes * 1024 if kilobytes else None
+            break
+    wavefront = _leading_int(agent.get('Wavefront Size'))
+    clock_mhz = _leading_int(agent.get('Max Clock Freq. (MHz)'))
+    workgroup = _leading_int(agent.get('Workgroup Max Size'))
+    units = _leading_int(agent.get('Compute Unit'))
+    if not all((vram, wavefront, clock_mhz, workgroup, units)):
+        return [], ['incomplete AMD GPU agent report']
+    probe, error = _run_hip_probe(timeout_s)
+    if error:
+        return [], [error]
+    if probe.get('device_count') != 1:
+        return [], [f"AMD HIP devices reported: {probe.get('device_count')}, expected exactly one"]
+    agreed = (('memory_total_bytes', vram), ('warp_size', wavefront),
+              ('clock_rate_khz', clock_mhz * 1000), ('max_threads_per_block', workgroup))
+    for field, expected in agreed:
+        if probe.get(field) != expected:
+            return [], [f'AMD device readers disagree on {field}: '
+                        f'{probe.get(field)} and {expected}']
+    free = probe.get('memory_free_bytes')
+    if not isinstance(free, int) or not 0 <= free <= vram:
+        return [], ['AMD free VRAM is unreadable or out of bounds']
+    domain = {0: 'discrete', 1: 'shared_system'}.get(probe.get('integrated'), 'unknown')
+    device = {
+        'uuid': identity, 'name': agent.get('Marketing Name') or agent.get('Name'),
+        'sampled_unix': sampled_unix,
+        'vendor': 'amd', 'telemetry_class': TELEMETRY_MEMORY_ONLY,
+        'architecture': agent.get('Name'), 'compute_units': units,
+        # No amdgpu driver reaches this runtime under WSL2, and the HSA agent
+        # report carries no power or live clock at all, so these stay absent
+        # and ``telemetry_class`` says so rather than a zero implying idle.
+        'power_w': None, 'power_limit_w': None, 'power_reference_w': None,
+        'power_measurement_scope': None, 'power_reference_scope': None,
+        'power_reference_source': None,
+        'sm_clock_mhz': None, 'max_sm_clock_mhz': float(clock_mhz),
+        'memory_domain': domain,
+        'memory_total_bytes': vram, 'memory_free_bytes': free,
+        'memory_used_bytes': vram - free,
+        'memory_source': 'rocminfo:agent_pool+hip:hipMemGetInfo',
+        'throttle_active_mask': None,
+        'throttle_reasons': {name: None for name in THROTTLE_FIELDS},
+        'limited': None,
+    }
+    device['complete'] = domain in ('discrete', 'shared_system')
+    errors = [] if device['complete'] else [f'unknown AMD memory domain: {identity}']
+    return [device], errors
+
+
+def devices(*, timeout_s=1.0):
+    """Read every physical device this host can honestly describe.
+
+    NVML answers first because it is the only reader that carries the power and
+    clock counters the sharing controller needs. The AMD reader runs only when
+    NVML found nothing and ``rocminfo`` is actually installed, so a host with
+    neither spends one stat rather than a second failed process launch.
+    """
+    if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or not 0 < timeout_s <= 5:
+        raise ValueError('GPU telemetry timeout must be in (0, 5] seconds')
+    found, errors = _nvidia_devices(timeout_s)
+    if found or not os.path.exists(ROCMINFO):
+        return found, errors
+    amd_found, amd_errors = _amd_devices(timeout_s)
+    if amd_found:
+        return amd_found, amd_errors
+    return [], errors + amd_errors
 
 
 def _cpu_pressure(proc_root):
@@ -163,7 +384,8 @@ def collect(snapshot, records, *, timeout_s=1.0, proc_root=Path('/proc'), device
             'scope_id', 'cgroup_identity', 'budget_bytes', 'host_bytes',
             'gpu_reported_bytes', 'gpu_lower_bound_bytes', 'lower_bound_bytes',
             'upper_bound_bytes', 'gpu_budget_bytes', 'memory_domain',
-            'system_lower_bound_bytes', 'complete', 'processes', 'errors')}
+            'system_lower_bound_bytes', 'complete', 'gpu_budget_enforceable',
+            'processes', 'errors')}
         public.update(action_key=record['action_key'], nonce=record['nonce'],
                       gpu_budget_bytes=record.get('gpu_memory_max_bytes', record['memory_max_bytes']),
                       sampled_unix=snapshot.get('sampled_unix'))
@@ -207,5 +429,12 @@ def collect(snapshot, records, *, timeout_s=1.0, proc_root=Path('/proc'), device
                     and attributed and pressure_ok and host_ok and not errors,
         'attributed': attributed, 'devices': hardware, **host_fields,
         'foreign_processes': list(foreign), 'foreign_process_count': len(foreign),
+        # Both are declarations about the census that produced this sample, not
+        # measurements: what the foreign inventory could see, and whether the
+        # per-scope GPU allowance is enforceable at all on this hardware. A
+        # reader that wants either fact must find it stated here rather than
+        # infer it from an empty list or an absent byte count.
+        'foreign_inventory_scope': snapshot.get('foreign_inventory_scope'),
+        'gpu_process_bytes': bool(snapshot.get('gpu_process_bytes', True)),
         'jobs': jobs, 'errors': errors,
     }
