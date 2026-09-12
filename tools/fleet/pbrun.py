@@ -81,7 +81,9 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import adaptive_gpu, core as pb, pool, slurm_lane  # noqa: E402
+from prismabuild import (  # noqa: E402
+    adaptive_gpu, core as pb, decomposition as dc, pool, slurm_lane,
+)
 
 POLL_S = 5.0
 #: Which transport carries a submission.  The pull queue is still the default:
@@ -193,8 +195,8 @@ STAMP_PREFIX = getattr(pb, "PBRUN_STAMP_PREFIX", ".pbrun-closure.")
 #: ``write_deterministic_bundle`` pinned the pack, so a resubmit that landed
 #: on this same name still missed the cache on every real repository.
 RESULT_PREFIX = getattr(pb, "PBRUN_RESULT_PREFIX", "pbrun_result.")
-CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
-CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
+CONTAINER_OWNER_ENV = pool.CONTAINER_OWNER_ENV
+CONTAINER_MARKER_ENV = pool.CONTAINER_MARKER_ENV
 CONTAINER_WRAPPER_DIR = RUNTIME_ROOT / "tools"
 
 
@@ -3820,7 +3822,427 @@ def _profile_mode(text: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def main() -> int:
+# --------------------------------------------------------------------------
+# Sealing an action, in two stages
+#
+# Everything that reads the filesystem or the environment happens once, in
+# ``freeze_action_template``; turning that template into a sealed action
+# happens once per action, in ``seal_action_from_template``.  An ordinary
+# submission is the two in a row and nothing else, which is what
+# ``test_the_ordinary_pbrun_action_is_sealed_unchanged.py`` pins.
+#
+# The split exists for #517.  A decomposed parent seals many children off one
+# frozen source tree: re-snapshotting a mutable checkout per child would give
+# the children different code closures, and cloning this file's hashing rules
+# into the decomposer would give them different keys.  So the decomposer calls
+# stage A once and stage B per child, through the same code an ordinary
+# ``pbrun`` uses -- there is no second sealer to keep in step.
+# --------------------------------------------------------------------------
+
+
+def freeze_action_template(
+    *,
+    command: Sequence[str],
+    cwd: Path,
+    logical_cwd: str,
+    demand: Mapping[str, int],
+    placement: Mapping[str, object],
+    variables: Mapping[str, str],
+    determinism: str,
+    retry_policy: Mapping[str, object],
+    host_class: str | None,
+    measurement: bool,
+    transport: str,
+    pool_measurement_class: bool,
+    data_manifest_path: str | None,
+    checkout_snapshot_max_bytes: int,
+    snapshot_refs: Sequence[str],
+    exclusive: bool,
+    gpu_memory_gb: float | None,
+    execution_timeout_s: float | None,
+    progress: Mapping[str, object] | None,
+    profile: object | None,
+) -> dict[str, object]:
+    """Read the tree and the environment once, and freeze what they say.
+
+    Everything in here is a measurement of the submitter's box at one instant
+    -- the checkout's commit and its dirty digest, the bytes of the data
+    manifest, the local toolchain -- so taking it a second time for a second
+    action can produce a different answer but never a better one.  What comes
+    back is the half of an action body that every action sealed from this
+    template shares, plus the CAS the ingestion went into.
+
+    Placement and demand are resolved against the live fleet by the caller, so
+    they arrive already decided; this reads nothing about who might run the
+    work.
+
+    ``measurement`` spells the task class and the scope at once, deliberately:
+    they are the same statement, and a caller that could set them separately
+    could seal a measurement with no platform to measure on.
+    """
+
+    variables = dict(variables)
+    # Docker's payload is reparented to containerd-shim and therefore survives
+    # a kill of every process group below the action launcher.  Put the fleet's
+    # Docker shim first even under --no-default-env; it records a durable marker
+    # and adds the derived ownership label which withdrawal/finish query before
+    # returning capacity.  This is control-plane state, not an optional action
+    # convenience, so a caller cannot override either identity variable.
+    #
+    # Normalize every other environment value first.  The owner then hashes
+    # the exact action-defining state available before its own two recursive
+    # variables are injected, including the deployed wrapper path.
+    prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+    variables["PATH"] = f"{CONTAINER_WRAPPER_DIR}:{prior_path}"
+    identity = _git_identity(cwd)
+    marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
+    # This owner belongs to the template's own command, and its only job here
+    # is to be part of what the stamp name is fingerprinted over.  Ownership
+    # itself is settled per action in ``seal_action_from_template``, because
+    # two actions sealed off one template run as two lifecycles: the Docker
+    # label a shared owner would give them makes one child's cleanup remove
+    # the other's live payload, and one child's ``<owner>.used`` marker blocks
+    # the other's reclaim.  An unmodified command re-derives this exact digest
+    # there, so an ordinary submission is unchanged.
+    owner = container_owner(
+        command,
+        cwd,
+        demand,
+        variables,
+        determinism=determinism,
+        retry_policy=retry_policy,
+        marker_root=marker_root,
+        identity=identity,
+        logical_cwd=logical_cwd,
+        placement=placement,
+    )
+    marker = marker_root / f"{owner}.used"
+    variables[CONTAINER_OWNER_ENV] = owner
+    variables[CONTAINER_MARKER_ENV] = str(marker)
+
+    # Migrate the former broad prefix globs before identity asks Git for its
+    # untracked roster; otherwise a legitimate prefix-bearing payload remains
+    # hidden for this submission even though the new grammar is exact.
+    keep_droppings_out_of_git(cwd)
+    log_name, stamp_name = result_and_stamp_names(
+        command,
+        cwd,
+        demand,
+        variables,
+        identity=identity,
+        logical_cwd=logical_cwd,
+        placement=placement,
+    )
+    # Seal the stamp only in the private snapshot index. Publishing it in the
+    # source tree creates both litter and races: another submitter can hash a
+    # scratch name just as it is renamed. Unlinking the final stamp also races
+    # with readers sealing the same fingerprint. No shared stamp path exists
+    # now; workers still verify the same name and bytes in the materialization.
+    payload = json.dumps(
+        {"cwd": logical_cwd, **identity}, indent=1, sort_keys=True
+    )
+    cas = pb.PrismaBuildCAS(SH / "cas")
+    checkout_snapshot = build_git_checkout_snapshot(
+        cwd,
+        stamp_name=stamp_name,
+        stamp_payload=payload,
+        cas=cas,
+        max_bytes=checkout_snapshot_max_bytes,
+        expected_identity=identity,
+        snapshot_refs=list(snapshot_refs),
+    )
+    inputs = [checkout_snapshot["input"]]
+    if data_manifest_path is not None:
+        # Validated before ingestion, not after: a malformed manifest must
+        # fail at the submitter, where the operator can read the reason,
+        # rather than becoming an immutable CAS blob that every later reader
+        # has to refuse. The bytes are ingested unchanged so the input's
+        # digest is the digest of the file the operator named.
+        manifest = pb.load_data_manifest(data_manifest_path)
+        manifest_input, _ = cas.ingest_input(
+            data_manifest_path,
+            input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        )
+        inputs.append(manifest_input)
+        data_manifest_summary = {
+            "input": manifest_input,
+            "mount_prefix": manifest["mount_prefix"],
+            "entry_count": manifest["entry_count"],
+            "total_bytes": manifest["total_bytes"],
+        }
+    else:
+        data_manifest_summary = None
+    execution_scope, toolchain = host_class_scope(
+        host_class, measurement=measurement, transport=transport)
+    if pool_measurement_class and demand.get("gpu", 0) and (
+        "cuda_compute_capability" not in toolchain or "nvidia_driver" not in toolchain
+    ):
+        raise SystemExit("pbrun: class-scoped GPU measurement requires live accelerator "
+                         "model, compute capability and driver evidence")
+    params: dict[str, object] = {
+        "command": list(command),
+        "cwd": logical_cwd,
+        "demand": demand,
+        "placement": placement,
+        "checkout_snapshot": checkout_snapshot,
+        "retry_policy": retry_policy,
+    }
+    if data_manifest_summary is not None:
+        # A summary, not the list: the prewarm budget and the ARC check read
+        # these two numbers every poll, and making them fetch and parse a
+        # 200 KB blob to learn a byte count would put the manifest on the
+        # scheduler's hot path. The list itself stays in the CAS.
+        params["data_manifest"] = data_manifest_summary
+    if demand.get("gpu"):
+        params["gpu_exclusive"] = bool(exclusive)
+        if gpu_memory_gb is not None:
+            params["gpu_memory_gb"] = gpu_memory_gb
+    if execution_timeout_s is not None:
+        params["execution_timeout_s"] = execution_timeout_s
+    if progress is not None:
+        # Sealed, like the profiler mode and for the same reason: an action
+        # admitted under the progress contract is a different action from its
+        # unbounded twin, so the store never answers one with the other's
+        # receipt.  Absent, the key is byte-identical to what it was before
+        # this flag existed.
+        params[pb.PROGRESS_PARAM] = progress
+    if profile is not None:
+        # Sealed, and only when asked for.  Present, it makes a profiled run a
+        # different action from its unprofiled twin, which is what stops the
+        # CAS from answering a profile request with a receipt that has none.
+        # Absent, the key is byte-identical to what it was before this flag
+        # existed, so nothing already in the store is orphaned.
+        params[pb.PROFILE_PARAM] = profile
+    return {
+        "cas": cas,
+        "marker_root": marker_root,
+        "checkout_identity": identity,
+        "log_name": log_name,
+        "stamp_name": stamp_name,
+        "task": {
+            "definition_id": "fleet/pbrun",
+            "definition_version": "v1",
+            "task_class": "measurement" if measurement else "generation",
+            # A pytest or a timing run is not byte-reproducible and must not
+            # claim to be: the CAS only enforces canonical equality on
+            # "deterministic", so mislabelling one would be a false receipt.
+            "determinism": determinism,
+            "artifact_family": "generic",
+            "artifact_kind": "generic",
+            "working_directory": ".",
+        },
+        "inputs": inputs,
+        "code_closure": build_stamp_closure(stamp_name, payload),
+        "params": params,
+        "environment": {"variables": variables, "toolchain": toolchain},
+        "execution_scope": execution_scope,
+    }
+
+
+#: The template entries that are the submitter's own handles rather than any
+#: part of a sealed action: the CAS it ingested into, the marker namespace and
+#: the recorded checkout identity ownership is re-derived against, and the two
+#: fingerprinted names.  Everything else in a template is, by construction,
+#: the half of an action that no action sealed from it varies -- which is why
+#: :func:`template_action_common` subtracts rather than enumerates.  A field
+#: added to the template is therefore never silently dropped from a parent's
+#: identity: it either belongs to the shared half, in which case it must also
+#: be named in ``decomposition._ACTION_COMMON_KEYS``, or it is a submitter
+#: handle and belongs here.  Named in neither, ``validate_action_common``
+#: refuses the record -- which is the right answer, because nobody has yet
+#: decided which of the two it is.
+_TEMPLATE_SUBMITTER_KEYS = frozenset(
+    {"cas", "marker_root", "checkout_identity", "log_name", "stamp_name"}
+)
+
+
+def template_action_common(template: Mapping[str, object]) -> dict[str, object]:
+    """The half of every action sealed from this template that none of them varies.
+
+    A decomposition's parent has to be keyed on exactly this.  Key it on less
+    -- on the producer's declared command, demand and environment alone -- and
+    two campaigns that differ in placement, retry policy, timeout, profiler
+    mode or the local toolchain collapse onto one parent while their children
+    take different keys; the publication index then refuses the second run with
+    a key mismatch that names the child rather than the cause.
+
+    The two container variables come off, because ownership is per action by
+    the time anything is sealed, and a child's own owner is a function of this
+    record and its own command.
+    """
+
+    shared = {name: value for name, value in template.items()
+              if name not in _TEMPLATE_SUBMITTER_KEYS}
+    shared["params"] = {name: value
+                        for name, value in shared["params"].items()
+                        if name != "command"}
+    variables = dict(shared["environment"]["variables"])
+    variables.pop(CONTAINER_OWNER_ENV, None)
+    variables.pop(CONTAINER_MARKER_ENV, None)
+    shared["environment"] = {**shared["environment"], "variables": variables}
+    return shared
+
+
+def seal_action_from_template(
+    template: Mapping[str, object],
+    *,
+    command: Sequence[str] | None = None,
+    result_path: str | None = None,
+    extra_inputs: Sequence[Mapping[str, object]] = (),
+    extra_params: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Turn one frozen template into one sealed action.
+
+    The command and the result path are rebuilt here rather than carried in
+    the template because they are the two things a decomposed child varies:
+    its own batch resolved into the argument list, its own manifest to write.
+    For an ordinary submission nothing is overridden and this is the
+    template's own command, teed to the template's own log.
+
+    The four overrides are the whole of what makes a child different from an
+    ordinary action, and they are deliberately narrow.  Each one lands in the
+    sealed body, so a child's key is an ordinary ``pbrun`` key over a command,
+    an input list and a ``params`` that say which batch of which plan it
+    measured -- not a new kind of action with its own hashing rules.
+
+    ``command`` still runs under the same wrapper and still tees to a log; the
+    log just stops being the declared result, because a decomposed child's
+    result is its manifest.  ``extra_inputs`` are appended after the
+    template's, so the checkout snapshot stays ``inputs[0]``, which is where
+    the worker's materialization looks for it.  ``extra_params`` may not
+    rewrite anything the template froze: a child that could restate its own
+    command, demand or snapshot would be a different action wearing a
+    template's identity.
+
+    Container ownership is settled here rather than in the template because it
+    is a property of one running action, not of the source tree.  Two children
+    sealed off one template are two Docker lifecycles on what may be one box:
+    a shared ownership label makes the first to finish ``docker rm -f`` the
+    other's live payload, and a shared ``<owner>.used`` marker makes each
+    one's reclaim wait on the other's use.  So the owner is re-derived from
+    this action's own command and re-injected.  With nothing overridden the
+    inputs are the template's, so the digest is the template's and an ordinary
+    submission seals byte for byte what it did before this split existed.
+    """
+
+    params = dict(template["params"])
+    if extra_params:
+        overwritten = sorted(set(extra_params) & set(params))
+        if overwritten:
+            raise SystemExit(
+                "pbrun: refusing to seal an action whose extra params restate "
+                f"the frozen template's: {', '.join(overwritten)}"
+            )
+        params.update(extra_params)
+    command = list(template["params"]["command"] if command is None else command)
+    params["command"] = command
+    # Strip the two injected variables back off to recover exactly the mapping
+    # the template hashed, so an unoverridden command lands on the same digest.
+    variables = dict(template["environment"]["variables"])
+    variables.pop(CONTAINER_OWNER_ENV, None)
+    variables.pop(CONTAINER_MARKER_ENV, None)
+    marker_root = template["marker_root"]
+    owner = container_owner(
+        command,
+        params["cwd"],
+        params["demand"],
+        variables,
+        determinism=template["task"]["determinism"],
+        retry_policy=params["retry_policy"],
+        marker_root=marker_root,
+        # Recorded by the template, never re-read: the tree may have moved on
+        # since, and every action sealed from one template must answer for the
+        # tree that template froze.
+        identity=template["checkout_identity"],
+        logical_cwd=params["cwd"],
+        placement=params["placement"],
+    )
+    variables[CONTAINER_OWNER_ENV] = owner
+    variables[CONTAINER_MARKER_ENV] = str(marker_root / f"{owner}.used")
+    log_name = str(template["log_name"])
+    body = {
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {
+            **template["task"],
+            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
+                     f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
+                     f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
+                     f"exit ${{PIPESTATUS[0]}}"],
+            "result_path": log_name if result_path is None else result_path,
+        },
+        "inputs": [*template["inputs"], *extra_inputs],
+        "code_closure": template["code_closure"],
+        "params": params,
+        "environment": {**template["environment"], "variables": variables},
+        "execution_scope": template["execution_scope"],
+    }
+    try:
+        return pb.seal_action(body)
+    except pb.ActionContractError as exc:
+        # A refused contract is the caller's to fix; nothing has been queued
+        # or ingested, so say what was refused and stop.  A traceback here
+        # names core.py internals for what is a submission error (issue #21).
+        raise SystemExit(f"pbrun: refusing to seal the action: {exc}") from None
+
+
+def seal_decomposed_child(
+    template: Mapping[str, object],
+    *,
+    request: Mapping[str, object],
+    plan: Mapping[str, object],
+    child_ordinal: int,
+    roster_input: Mapping[str, object],
+    batch_input: Mapping[str, object],
+    cas,
+) -> dict[str, object]:
+    """Seal the ``child_ordinal``-th child of one plan, off one template.
+
+    The four overrides ``seal_action_from_template`` accepts are exactly what
+    a decomposition varies, and this is where they are filled in -- once, so
+    that the campaign that publishes children and the test that pins what a
+    child is are making the same call.  Two spellings of a child seal is how
+    a suite comes to pass on a body nothing produces.
+
+    Pure: the envelope is already a CAS blob by the time this is asked, and
+    the path sealed into the command is that blob's name.  ``blob_path``
+    rather than ``input_path`` on purpose -- the digest came from the ingest
+    that wrote it, and re-reading a campaign's worth of batches to re-learn
+    what each ingest just proved would put the whole roster through sha256 a
+    second time for nothing.
+    """
+
+    command = dc.resolve_task_batch(
+        template["params"]["command"],
+        batch_path=cas.blob_path(str(batch_input["sha256"])),
+    )
+    return seal_action_from_template(
+        template,
+        command=command,
+        result_path=dc.child_result_manifest_path(child_ordinal),
+        # The roster before the batch, in that order, on every child: the
+        # input list reaches the key, so the order is part of the identity and
+        # not a detail of how this loop was written.
+        extra_inputs=[roster_input, batch_input],
+        extra_params={dc.LOGICAL_BATCH_PARAM: dc.logical_batch_param(
+            request, plan, child_ordinal=child_ordinal
+        )},
+    )
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Read one submission's arguments, and nothing about the world.
+
+    Split out so a caller that is not the command line -- ``pbcampaign``
+    decomposing one logical request into many actions -- can build the same
+    namespace the CLI builds and hand it to ``prepare_submission``.  Every
+    refusal below is a statement about the arguments alone, so it holds
+    wherever they came from.
+
+    ``--progress-phase`` is parsed here rather than at its use: the policy is
+    the normalized form of two flags, a typo in one of them is an argument
+    error, and saying so before ``--withdraw`` is where ``main`` said it.
+    """
+
     ap = argparse.ArgumentParser(
         description="Submit one command to the PrismaBuild fleet and wait for "
                     "it. Either the pull queue or SLURM carries it, per "
@@ -3987,28 +4409,40 @@ def main() -> int:
     ap.add_argument("command", nargs=argparse.REMAINDER,
                     help="the command to run, after a bare --; every word "
                          "past it belongs to the command and not to pbrun")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.timeout_s is not None and (
         not math.isfinite(args.timeout_s) or args.timeout_s <= 0
     ):
         raise SystemExit("pbrun: --timeout-s must be a positive finite number")
-    progress_policy = parse_progress_phases(args.progress_phase, cycle=args.progress_cycle)
+    args.progress_policy = parse_progress_phases(
+        args.progress_phase, cycle=args.progress_cycle)
+    # Some things an argument gets wrong can only be judged once the demand
+    # is resolved -- a GPU budget on a slot that reserves no GPU is the case
+    # -- and they are argument errors all the same.  So the parser that
+    # produced this namespace travels with it, and ``prepare_submission``
+    # reports them the way every other argument error reports: usage,
+    # message, exit 2.
+    args.refuse_argument = ap.error
+    return args
 
-    if args.withdraw:
-        # Withdrawing is not a submission and must not need one: the operator
-        # cancelling four suites has no command to give and no checkout to
-        # stamp, so this returns before any of the submit machinery runs.
-        if [c for c in args.command if c != "--"]:
-            raise SystemExit("pbrun: --withdraw takes no command")
-        try:
-            who = getpass.getuser()
-        except Exception:                                        # noqa: BLE001
-            who = "unknown"      # no passwd entry is not a reason to refuse
-        return withdraw_routed(
-            args.withdraw, transport=args.transport, reason=args.reason,
-            by=f"{who}@{socket.gethostname()}",
-        )
 
+def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
+    """Resolve one submission against this box, and freeze what it says.
+
+    Everything between the arguments and the frozen template: the checkout
+    gates, the default environment, the demand, the placement the fleet's
+    offers decide, and the refusals each of those can raise.  None of it is
+    optional for a decomposed submission -- a parent's children inherit this
+    placement and this environment, so they inherit these refusals too, and
+    a second copy of the block in ``pbcampaign`` would be a second answer to
+    the same questions.
+
+    The returned ``cwd`` and ``portable_checkout`` are here only because the
+    submission notices report them; the template carries everything else,
+    including the resolved tags and demand.
+    """
+
+    progress_policy = args.progress_policy
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
@@ -4104,7 +4538,7 @@ def main() -> int:
         try:
             adaptive_gpu.memory_budget_bytes(args.gpu_memory_gb)
         except ValueError as exc:
-            ap.error(f"--gpu-memory-gb: {exc}")
+            args.refuse_argument(f"--gpu-memory-gb: {exc}")
     if args.gpu:
         demand.setdefault("gpu", 1)
         demand.setdefault("mem_gb", 16)
@@ -4222,12 +4656,12 @@ def main() -> int:
             transport=args.transport,
         )
     except ValueError as exc:
-        ap.error(str(exc))
+        args.refuse_argument(str(exc))
     try:
         require_progress_scope(
             progress=progress_policy, transport=args.transport)
     except ValueError as exc:
-        ap.error(str(exc))
+        args.refuse_argument(str(exc))
     if not demand.get("gpu"):
         if declared not in (None, ""):
             raise SystemExit(
@@ -4239,160 +4673,229 @@ def main() -> int:
                 "slot), or drop the variable.")
         variables["CUDA_VISIBLE_DEVICES"] = ""
 
-    # Docker's payload is reparented to containerd-shim and therefore survives
-    # a kill of every process group below the action launcher.  Put the fleet's
-    # Docker shim first even under --no-default-env; it records a durable marker
-    # and adds the derived ownership label which withdrawal/finish query before
-    # returning capacity.  This is control-plane state, not an optional action
-    # convenience, so a caller cannot override either identity variable.
-    #
-    # Normalize every other environment value first.  The owner then hashes
-    # the exact action-defining state available before its own two recursive
-    # variables are injected, including the deployed wrapper path.
-    prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
-    variables["PATH"] = f"{CONTAINER_WRAPPER_DIR}:{prior_path}"
-    identity = _git_identity(cwd)
-    marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
-    owner = container_owner(
-        command,
-        cwd,
-        demand,
-        variables,
+    template = freeze_action_template(
+        command=command,
+        cwd=cwd,
+        logical_cwd=logical_cwd,
+        demand=demand,
+        placement=placement,
+        variables=variables,
         determinism=determinism,
         retry_policy=retry_policy,
-        marker_root=marker_root,
-        identity=identity,
-        logical_cwd=logical_cwd,
-        placement=placement,
+        host_class=args.host_class,
+        measurement=args.measurement,
+        transport=args.transport,
+        pool_measurement_class=bool(pool_measurement_class),
+        data_manifest_path=args.data_manifest,
+        checkout_snapshot_max_bytes=args.checkout_snapshot_max_bytes,
+        snapshot_refs=args.snapshot_ref,
+        exclusive=args.exclusive,
+        gpu_memory_gb=args.gpu_memory_gb,
+        execution_timeout_s=args.timeout_s,
+        progress=progress_policy,
+        profile=args.profile,
     )
-    marker = marker_root / f"{owner}.used"
-    variables[CONTAINER_OWNER_ENV] = owner
-    variables[CONTAINER_MARKER_ENV] = str(marker)
-
-    # Migrate the former broad prefix globs before identity asks Git for its
-    # untracked roster; otherwise a legitimate prefix-bearing payload remains
-    # hidden for this submission even though the new grammar is exact.
-    keep_droppings_out_of_git(cwd)
-    log_name, stamp_name = result_and_stamp_names(
-        command,
-        cwd,
-        demand,
-        variables,
-        identity=identity,
-        logical_cwd=logical_cwd,
-        placement=placement,
-    )
-    # Seal the stamp only in the private snapshot index. Publishing it in the
-    # source tree creates both litter and races: another submitter can hash a
-    # scratch name just as it is renamed. Unlinking the final stamp also races
-    # with readers sealing the same fingerprint. No shared stamp path exists
-    # now; workers still verify the same name and bytes in the materialization.
-    payload = json.dumps(
-        {"cwd": logical_cwd, **identity}, indent=1, sort_keys=True
-    )
-    cas = pb.PrismaBuildCAS(SH / "cas")
-    checkout_snapshot = build_git_checkout_snapshot(
-        cwd,
-        stamp_name=stamp_name,
-        stamp_payload=payload,
-        cas=cas,
-        max_bytes=args.checkout_snapshot_max_bytes,
-        expected_identity=identity,
-        snapshot_refs=list(args.snapshot_ref),
-    )
-    inputs = [checkout_snapshot["input"]]
-    if args.data_manifest is not None:
-        # Validated before ingestion, not after: a malformed manifest must
-        # fail at the submitter, where the operator can read the reason,
-        # rather than becoming an immutable CAS blob that every later reader
-        # has to refuse. The bytes are ingested unchanged so the input's
-        # digest is the digest of the file the operator named.
-        manifest = pb.load_data_manifest(args.data_manifest)
-        manifest_input, _ = cas.ingest_input(
-            args.data_manifest,
-            input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
-        )
-        inputs.append(manifest_input)
-        data_manifest_summary = {
-            "input": manifest_input,
-            "mount_prefix": manifest["mount_prefix"],
-            "entry_count": manifest["entry_count"],
-            "total_bytes": manifest["total_bytes"],
-        }
-    else:
-        data_manifest_summary = None
-    execution_scope, toolchain = host_class_scope(
-        args.host_class, measurement=args.measurement, transport=args.transport)
-    if pool_measurement_class and demand.get("gpu", 0) and (
-        "cuda_compute_capability" not in toolchain or "nvidia_driver" not in toolchain
-    ):
-        raise SystemExit("pbrun: class-scoped GPU measurement requires live accelerator "
-                         "model, compute capability and driver evidence")
-    body = {
-        "schema": pb.ACTION_SCHEMA_V2,
-        "task": {
-            "definition_id": "fleet/pbrun",
-            "definition_version": "v1",
-            "task_class": "measurement" if args.measurement else "generation",
-            # A pytest or a timing run is not byte-reproducible and must not
-            # claim to be: the CAS only enforces canonical equality on
-            # "deterministic", so mislabelling one would be a false receipt.
-            "determinism": determinism,
-            "artifact_family": "generic",
-            "artifact_kind": "generic",
-            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
-                     f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
-                     f"exit ${{PIPESTATUS[0]}}"],
-            "working_directory": ".",
-            "result_path": log_name,
-        },
-        "inputs": inputs,
-        "code_closure": build_stamp_closure(stamp_name, payload),
-        "params": {
-            "command": command,
-            "cwd": logical_cwd,
-            "demand": demand,
-            "placement": placement,
-            "checkout_snapshot": checkout_snapshot,
-            "retry_policy": retry_policy,
-        },
-        "environment": {"variables": variables, "toolchain": toolchain},
-        "execution_scope": execution_scope,
+    return {
+        "args": args,
+        "template": template,
+        "cwd": cwd,
+        "portable_checkout": portable_checkout,
     }
-    if data_manifest_summary is not None:
-        # A summary, not the list: the prewarm budget and the ARC check read
-        # these two numbers every poll, and making them fetch and parse a
-        # 200 KB blob to learn a byte count would put the manifest on the
-        # scheduler's hot path. The list itself stays in the CAS.
-        body["params"]["data_manifest"] = data_manifest_summary
-    if demand.get("gpu"):
-        body["params"]["gpu_exclusive"] = bool(args.exclusive)
-        if args.gpu_memory_gb is not None:
-            body["params"]["gpu_memory_gb"] = args.gpu_memory_gb
-    if args.timeout_s is not None:
-        body["params"]["execution_timeout_s"] = args.timeout_s
-    if progress_policy is not None:
-        # Sealed, like the profiler mode and for the same reason: an action
-        # admitted under the progress contract is a different action from its
-        # unbounded twin, so the store never answers one with the other's
-        # receipt.  Absent, the key is byte-identical to what it was before
-        # this flag existed.
-        body["params"][pb.PROGRESS_PARAM] = progress_policy
-    if args.profile is not None:
-        # Sealed, and only when asked for.  Present, it makes a profiled run a
-        # different action from its unprofiled twin, which is what stops the
-        # CAS from answering a profile request with a receipt that has none.
-        # Absent, the key is byte-identical to what it was before this flag
-        # existed, so nothing already in the store is orphaned.
-        body["params"][pb.PROFILE_PARAM] = args.profile
-    try:
-        action = pb.seal_action(body)
-    except pb.ActionContractError as exc:
-        # A refused contract is the caller's to fix; nothing has been queued
-        # or ingested, so say what was refused and stop.  A traceback here
-        # names core.py internals for what is a submission error (issue #21).
-        raise SystemExit(f"pbrun: refusing to seal the action: {exc}") from None
+
+
+def announce_placement(
+    queue,
+    action: Mapping[str, object],
+    *,
+    args: argparse.Namespace,
+    cwd: Path,
+    portable_checkout: bool,
+) -> None:
+    """Say how this work will be placed, and refuse it if it cannot be.
+
+    Four notices and one refusal, all of them about one intent -- the tags,
+    the GPU need and the demand -- which is why they are one function.  A
+    decomposed campaign calls it once, before it publishes any child: the
+    children of one plan share their whole placement, so asking the census N
+    times would print the same paragraph N times and answer it N times.
+
+    The refusal is the part that must not be skipped.  A required tag no box
+    has offered is not a slow submission -- the item matches no worker's
+    filter, so it sits in ``ready`` while every idle worker polls past it --
+    and a campaign that published forty such children would have forty of
+    them to withdraw.
+    """
+
+    params = action["params"]
+    tags = params["placement"]["required_tags"]
+    demand = params["demand"]
+    progress_policy = args.progress_policy
+    intent = {"tags": tags, "needs_gpu": bool(demand.get("gpu")), "resources": demand}
+    # Say how wide this action is before saying it was queued.  A pin is a
+    # consequence of the checkout path, and nothing used to report it, so a
+    # submitter narrowed the fleet to one box without being told.
+    notice = pin_notice(
+        queue,
+        intent,
+        cwd=cwd,
+        hostname=socket.gethostname(),
+        here=args.here,
+        portable_checkout=portable_checkout,
+    )
+    if notice:
+        print(notice, file=sys.stderr, flush=True)
+
+    # An offer can be fresh but stamped ahead of this submitter. Keep that
+    # discrepancy visible, including an offer too far ahead to use at all.
+    for host, skew in queue.offer_clock_skews().items():
+        disposition = "tolerated" if skew <= pool.OFFER_FUTURE_TOLERANCE_S else "ignored"
+        print(
+            f"pbrun: {host} offer announced {skew:.3f}s in the future "
+            f"(clock skew; {disposition}, limit {pool.OFFER_FUTURE_TOLERANCE_S:g}s)",
+            file=sys.stderr, flush=True,
+        )
+
+    # Before the placement verdicts, not after.  ``intent`` now requires
+    # ``PROGRESS_TAG``, so on a fleet that offers none the generic "no recorded
+    # worker can run this action" would fire first and name a tag the operator
+    # never typed.  Asked of the boxes eligible on every OTHER tag, which is
+    # also the honest question: of the boxes that could run this work, which
+    # can keep its stall policy?
+    progress_notice = progress_contract_notice(
+        queue,
+        {**intent, "tags": [
+            t for t in tags
+            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG)
+        ]},
+        policy=progress_policy,
+        requested_timeout_s=args.timeout_s,
+    )
+    if progress_notice:
+        print(progress_notice, file=sys.stderr, flush=True)
+
+    # Refuse work the RECORDED fleet cannot run, at the one moment the caller
+    # is still watching.  A required tag no box has offered is not a slow
+    # submission: the item matches no worker's placement filter, so it sits in
+    # `ready` -- counted, reported as pending -- while every idle worker polls
+    # past it until `--wait-s` expires a day later.
+    #
+    # Capability and liveness are deliberately different reads of the SAME
+    # matcher.  Worker offers expire for claiming and fleet-width diagnostics,
+    # but the latest record from each host remains evidence of what that box
+    # can fit.  dl380g10 and gx10-6b77 have both spent longer than the 120 s TTL
+    # inside work; while they were between announcements a fresh nonmatching
+    # offer made ``placeable`` answer False and pbrun rejected a caller willing
+    # to wait two hours.  An unbounded age reads retained capability and lets
+    # ``--wait-s`` own an offline/busy box.  ``None`` still means no worker has
+    # ever announced and stays a warning, so a fleet whose loops predate the
+    # registry can submit unchecked.
+    live_verdict = queue.placeable(intent)
+    capability_verdict = queue.placeable(
+        intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    if capability_verdict is False:
+        raise SystemExit(
+            f"pbrun: no recorded worker can run this action.\n"
+            f"  required tags: {tags or '(any box)'}\n"
+            f"  demand:        {demand}\n"
+            f"  offered on record: "
+            f"{queue.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
+            f"Fix the --tag, or start a worker on a box that offers it."
+        )
+    if capability_verdict is None:
+        print("pbrun: no worker offers on record; submitting unchecked",
+              file=sys.stderr, flush=True)
+    elif live_verdict is not True:
+        print(
+            "pbrun: no matching worker is live now; a recorded capable worker "
+            "is between announcements or offline.  Submitting so --wait-s "
+            f"{args.wait_s:g} owns how long to wait.",
+            file=sys.stderr, flush=True,
+        )
+
+    ceiling_notice = timeout_ceiling_notice(
+        queue, intent, requested=args.timeout_s if progress_policy is None else None)
+    if ceiling_notice:
+        print(ceiling_notice, file=sys.stderr, flush=True)
+
+
+def publication_row(
+    action: Mapping[str, object],
+    *,
+    args: argparse.Namespace,
+    queue,
+) -> dict[str, object]:
+    """The queue row that submits one sealed action.
+
+    A queue row and the action it points at are two spellings of one
+    submission, so every field that describes the work is read off the sealed
+    body itself rather than off a template or a local the caller happens to
+    still be holding.  That matters most for the owner: the lifecycle cleanup
+    asks Docker for a label derived from it, so a row naming a different owner
+    than the body would query a label nothing carries.  It matters for the
+    rest because a decomposed child seals its own ``params``: reading the row
+    off the body is what makes a child's row describe the child.
+
+    Only the submitter's own handles -- priority, the attempt ceiling, retry
+    safety -- come from ``args``, and they are exactly the fields no action
+    body carries, because they say how hard to try rather than what to run.
+
+    ``pbcampaign`` publishes decomposed children through this too.  The
+    alternative is a second copy of the literal, which is how a row and a body
+    come to disagree about one action.
+    """
+
+    params = action["params"]
+    demand = params["demand"]
+    variables = action["environment"]["variables"]
+    row: dict[str, object] = {
+        "action_key": str(action["action_key"]),
+        "cas_root": str(SH / "cas"),
+        "worker_script": str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
+        "tags": params["placement"]["required_tags"],
+        "needs_gpu": bool(demand.get("gpu")),
+        "priority": args.priority,
+        "resources": demand,
+        "max_attempts": args.max_attempts,
+        "container_owner": str(variables[CONTAINER_OWNER_ENV]),
+        "checkout_snapshot": params["checkout_snapshot"],
+    }
+    # The repo checkout can advance just before the atomic runtime generation
+    # rolls.  The previous PoolQueue already accepts the safety-critical bound,
+    # so keep that mixed window usable; add the explanatory annotation once the
+    # loaded runtime exposes it.  The sealed action params carry the full
+    # contract in both cases.
+    if "retry_safe" in inspect.signature(queue.publish).parameters:
+        row["retry_safe"] = args.retry_safe
+    return row
+
+
+def main() -> int:
+    args = parse_args()
+    if args.withdraw:
+        # Withdrawing is not a submission and must not need one: the operator
+        # cancelling four suites has no command to give and no checkout to
+        # stamp, so this returns before any of the submit machinery runs.
+        if [c for c in args.command if c != "--"]:
+            raise SystemExit("pbrun: --withdraw takes no command")
+        try:
+            who = getpass.getuser()
+        except Exception:                                        # noqa: BLE001
+            who = "unknown"      # no passwd entry is not a reason to refuse
+        return withdraw_routed(
+            args.withdraw, transport=args.transport, reason=args.reason,
+            by=f"{who}@{socket.gethostname()}",
+        )
+    prepared = prepare_submission(args)
+    template = prepared["template"]
+    cwd = prepared["cwd"]
+    portable_checkout = prepared["portable_checkout"]
+    # The resolved half of the submission is the template's, not a second
+    # copy kept alongside it: what was sealed is what the notices describe
+    # and what the queue row is published with.
+    tags = template["params"]["placement"]["required_tags"]
+    demand = template["params"]["demand"]
+    cas = template["cas"]
+    action = seal_action_from_template(template)
     key = str(action["action_key"])
 
     request_path = cas.publish_action_request(action)
@@ -4489,92 +4992,8 @@ def main() -> int:
 
     q = pool.PoolQueue(SH / "pb-queue")
 
-    # Refuse work the RECORDED fleet cannot run, at the one moment the caller
-    # is still watching.  A required tag no box has offered is not a slow
-    # submission: the item matches no worker's placement filter, so it sits in
-    # `ready` -- counted, reported as pending -- while every idle worker polls
-    # past it until `--wait-s` expires a day later.
-    #
-    # Capability and liveness are deliberately different reads of the SAME
-    # matcher.  Worker offers expire for claiming and fleet-width diagnostics,
-    # but the latest record from each host remains evidence of what that box
-    # can fit.  dl380g10 and gx10-6b77 have both spent longer than the 120 s TTL
-    # inside work; while they were between announcements a fresh nonmatching
-    # offer made ``placeable`` answer False and pbrun rejected a caller willing
-    # to wait two hours.  An unbounded age reads retained capability and lets
-    # ``--wait-s`` own an offline/busy box.  ``None`` still means no worker has
-    # ever announced and stays a warning, so a fleet whose loops predate the
-    # registry can submit unchecked.
-    intent = {"tags": tags, "needs_gpu": bool(demand.get("gpu")), "resources": demand}
-    # Say how wide this action is before saying it was queued.  A pin is a
-    # consequence of the checkout path, and nothing used to report it, so a
-    # submitter narrowed the fleet to one box without being told.
-    notice = pin_notice(
-        q,
-        intent,
-        cwd=cwd,
-        hostname=socket.gethostname(),
-        here=args.here,
-        portable_checkout=portable_checkout,
-    )
-    if notice:
-        print(notice, file=sys.stderr, flush=True)
-
-    # An offer can be fresh but stamped ahead of this submitter. Keep that
-    # discrepancy visible, including an offer too far ahead to use at all.
-    for host, skew in q.offer_clock_skews().items():
-        disposition = "tolerated" if skew <= pool.OFFER_FUTURE_TOLERANCE_S else "ignored"
-        print(
-            f"pbrun: {host} offer announced {skew:.3f}s in the future "
-            f"(clock skew; {disposition}, limit {pool.OFFER_FUTURE_TOLERANCE_S:g}s)",
-            file=sys.stderr, flush=True,
-        )
-
-    # Before the placement verdicts, not after.  ``intent`` now requires
-    # ``PROGRESS_TAG``, so on a fleet that offers none the generic "no recorded
-    # worker can run this action" would fire first and name a tag the operator
-    # never typed.  Asked of the boxes eligible on every OTHER tag, which is
-    # also the honest question: of the boxes that could run this work, which
-    # can keep its stall policy?
-    progress_notice = progress_contract_notice(
-        q,
-        {**intent, "tags": [
-            t for t in tags
-            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG)
-        ]},
-        policy=progress_policy,
-        requested_timeout_s=args.timeout_s,
-    )
-    if progress_notice:
-        print(progress_notice, file=sys.stderr, flush=True)
-
-    live_verdict = q.placeable(intent)
-    capability_verdict = q.placeable(
-        intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
-    if capability_verdict is False:
-        raise SystemExit(
-            f"pbrun: no recorded worker can run this action.\n"
-            f"  required tags: {tags or '(any box)'}\n"
-            f"  demand:        {demand}\n"
-            f"  offered on record: "
-            f"{q.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
-            f"Fix the --tag, or start a worker on a box that offers it."
-        )
-    if capability_verdict is None:
-        print("pbrun: no worker offers on record; submitting unchecked",
-              file=sys.stderr, flush=True)
-    elif live_verdict is not True:
-        print(
-            "pbrun: no matching worker is live now; a recorded capable worker "
-            "is between announcements or offline.  Submitting so --wait-s "
-            f"{args.wait_s:g} owns how long to wait.",
-            file=sys.stderr, flush=True,
-        )
-
-    ceiling_notice = timeout_ceiling_notice(
-        q, intent, requested=args.timeout_s if progress_policy is None else None)
-    if ceiling_notice:
-        print(ceiling_notice, file=sys.stderr, flush=True)
+    announce_placement(
+        q, action, args=args, cwd=cwd, portable_checkout=portable_checkout)
 
     # Read the decision this submission is about to supersede, so the caller is
     # told rather than surprised.  ``publish`` retires the marker -- a key is a
@@ -4588,26 +5007,8 @@ def main() -> int:
     except (OSError, ValueError):
         superseding = None
 
-    publication = {
-        "action_key": key,
-        "cas_root": str(SH / "cas"),
-        "worker_script": str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
-        "tags": tags,
-        "needs_gpu": bool(demand.get("gpu")),
-        "priority": args.priority,
-        "resources": demand,
-        "max_attempts": args.max_attempts,
-        "container_owner": owner,
-    }
-    publication["checkout_snapshot"] = checkout_snapshot
-    # The repo checkout can advance just before the atomic runtime generation
-    # rolls.  The previous PoolQueue already accepts the safety-critical bound,
-    # so keep that mixed window usable; add the explanatory annotation once the
-    # loaded runtime exposes it.  The sealed action params carry the full
-    # contract in both cases.
-    if "retry_safe" in inspect.signature(q.publish).parameters:
-        publication["retry_safe"] = args.retry_safe
-    queued_path = publish_or_refuse(q, publication)
+    queued_path = publish_or_refuse(
+        q, publication_row(action, args=args, queue=q))
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.

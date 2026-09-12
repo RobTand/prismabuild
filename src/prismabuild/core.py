@@ -3152,6 +3152,65 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
         os.close(staging_fd)
 
 
+def _stage_bytes(raw: bytes, staging_directory: Path) -> tuple[Path, str, int]:
+    """Take a stable regular-file snapshot of bytes already in memory.
+
+    The same private inode ``_copy_to_staging`` produces, for a caller whose
+    payload was never a file.  A decomposition's batch envelopes are the case:
+    they are derived from the request, so writing them out just to read them
+    back would be a temporary file per child, in a directory somebody has to
+    choose, for bytes this process already holds.
+
+    Nothing here reads a source, so the source-did-not-change check has
+    nothing to check; everything else -- the mode, the fsync, the directory
+    identity -- is the ceremony a copy performs, because what the CAS then
+    publishes must be the same kind of inode either way.
+    """
+
+    staging_directory = _absolute_nofollow_path(
+        staging_directory, where="CAS staging directory"
+    )
+    staging_fd = _open_directory_nofollow(
+        staging_directory, where="CAS staging directory", create=True
+    )
+    descriptor = -1
+    temporary_name: str | None = None
+    try:
+        descriptor, temporary_raw = tempfile.mkstemp(
+            prefix=".payload.", suffix=".tmp", dir=f"/proc/self/fd/{staging_fd}"
+        )
+        temporary_name = Path(temporary_raw).name
+        handle = os.fdopen(descriptor, "wb")
+        # ``os.fdopen`` owns the descriptor from here.
+        descriptor = -1
+        with handle as destination:
+            destination.write(raw)
+            destination.flush()
+            os.fchmod(destination.fileno(), 0o444)
+            os.fsync(destination.fileno())
+        _assert_directory_identity(
+            staging_fd, staging_directory, where="CAS staging directory"
+        )
+        return (staging_directory / temporary_name,
+                hashlib.sha256(raw).hexdigest(), len(raw))
+    except BaseException:
+        if descriptor >= 0:
+            with suppress(OSError):
+                os.close(descriptor)
+            descriptor = -1
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=staging_fd)
+            except FileNotFoundError:
+                pass
+        raise
+    finally:
+        if descriptor >= 0:
+            with suppress(OSError):
+                os.close(descriptor)
+        os.close(staging_fd)
+
+
 def _normalize_controller_evidence(value: object) -> dict[str, object]:
     controller = _exact_mapping(
         value,
@@ -3837,6 +3896,50 @@ class PrismaBuildCAS:
                 return entry, won
             finally:
                 _unlink_nofollow(staging, where="CAS staging file")
+
+    def ingest_bytes(
+        self, raw: bytes, *, input_id: str
+    ) -> tuple[dict[str, object], bool]:
+        """Publish bytes held in memory as an immutable action input.
+
+        ``ingest_input`` for a payload that was never a file.  It publishes
+        through the same staging inode and the same hard-link race, so the
+        blob is indistinguishable from one ingested off disk -- which is the
+        point: a reader cannot tell, and must not have to.
+        """
+
+        identity = _text(input_id, where="input id", pattern=_ID_RE)
+        if not isinstance(raw, (bytes, bytearray)):
+            raise ActionContractError(
+                f"ingested input bytes must be bytes, not {type(raw).__name__}"
+            )
+        raw = bytes(raw)
+        with _private_staging_directory(self.root / ".staging") as private:
+            staging, digest, size = _stage_bytes(raw, private)
+            try:
+                entry = validate_input_contract(
+                    {"id": identity, "sha256": digest, "bytes": size}
+                )
+                _, won = self._publish_staged_input_blob(
+                    staging, {"sha256": digest, "bytes": size}
+                )
+                return entry, won
+            finally:
+                _unlink_nofollow(staging, where="CAS staging file")
+
+    def blob_path(self, digest: str) -> Path:
+        """Where a blob of this digest lives, whether or not it is there yet.
+
+        Naming is not verification, and the two have different callers.  A
+        worker about to read an input calls ``input_path``, which reads the
+        whole blob back to prove it is the bytes the action named.  A
+        submitter sealing a CAS path into an action's command needs only the
+        name, and needs it for a blob it has just written itself -- re-reading
+        it would prove nothing the ingest did not already prove, and on a
+        campaign's worth of children it would do so once per child.
+        """
+
+        return self._blob_path(_sha256(digest, where="CAS blob digest"))
 
     def input_path(self, input_contract: object) -> Path:
         """Return an action input's CAS path after full content verification."""

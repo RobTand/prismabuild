@@ -117,6 +117,37 @@ action's params.  So an exclusive row keyed on one transport is a different
 action on the other, and the two do not memoize each other.  Every other field
 seals identically either way.
 
+A logical request instead of a list
+----------------------------------
+
+A manifest may also be one JSON *object* whose ``schema`` is
+``prismabuild.logical_request.v1``.  That is the work before anybody cut it,
+and this tool cuts it: one ``common`` half that every child executes
+identically, one ``roster`` of tasks with their residency keys and estimated
+seconds, and one ``batch_policy`` saying how much setup a batch may amortize
+and how long one may be estimated to run.  The partition is an exact cover --
+every task in exactly one batch -- and it is published under the parent's key,
+so a campaign interrupted halfway resumes into the same batches and publishes
+only the children that are missing.
+
+``common`` carries six fields, spelled as the row fields above: ``argv``,
+``cwd``, ``demand``, ``env``, ``gpu_memory_gb`` and ``data_manifest``.  Its
+``argv`` must contain ``{pb.task_batch}`` exactly once, as a whole argument.
+That is where each child's own batch file lands -- substituted, never expanded
+-- and the substituted value is a path into the CAS.
+
+**A containerized producer has to mount the CAS root to open it.**  The fleet's
+Docker shim adds no mounts of its own, so a child whose ``argv`` runs inside a
+container sees the batch path but not the bytes unless the image is run with
+the shared root mounted, exactly as a ``data_manifest``'s ``mount_prefix``
+requires.  A child that cannot open its batch fails at its first read, which
+is a poor way to learn this.
+
+``--priority`` applies to the children; a row in a list manifest keeps its own
+``priority`` field.  Decomposition is pull-queue work: ``--transport slurm``
+is refused, because the SLURM lane submits one job per action and has no path
+for publishing a plan's children.
+
 Example
 -------
 
@@ -164,7 +195,9 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import core as pb, pool  # noqa: E402
+from prismabuild import (  # noqa: E402
+    core as pb, decomposition as dc, pool,
+)
 
 import fleet_submit  # noqa: E402
 import pbrun  # noqa: E402
@@ -396,7 +429,7 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         )
 
 
-def load_manifest(path, *, transport: str = "slurm") -> list[dict]:
+def load_manifest(path, *, transport: str = "slurm") -> list[dict] | dict:
     """Read the manifest, and refuse anything it cannot mean.
 
     Refused at load time, before a single row is sealed: a campaign that
@@ -407,6 +440,10 @@ def load_manifest(path, *, transport: str = "slurm") -> list[dict]:
     fields ``pbrun`` itself would refuse.  A count that arrived as a word used
     to convert while the row was being turned into a command line, which is
     after the rows before it had been submitted.
+
+    Two shapes, and the JSON says which: a list is rows somebody already cut,
+    a ``prismabuild.logical_request.v1`` object is one piece of work for this
+    tool to cut.  The caller branches on what comes back.
 
     ``transport`` is the campaign's; scope and GPU-budget rules read it.
     The default is the lane, where a class is honoured, so a caller checking a
@@ -420,9 +457,22 @@ def load_manifest(path, *, transport: str = "slurm") -> list[dict]:
         raise ManifestError(f"cannot read the manifest: {exc}") from None
     except ValueError as exc:
         raise ManifestError(f"the manifest is not JSON: {exc}") from None
+    if isinstance(value, dict) and value.get("schema") == dc.LOGICAL_REQUEST_SCHEMA_V1:
+        # The work before anybody cut it.  Validated here for the same reason
+        # rows are: a request that names an impossible batch policy must be
+        # refused at the operator's terminal, not after a plan is published
+        # under a parent key that will outlive the mistake.
+        try:
+            return dc.validate_logical_request(value)
+        except pb.ActionContractError as exc:
+            raise ManifestError(f"this logical request is malformed: {exc}") from None
     if not isinstance(value, list):
         raise ManifestError(
-            f"a manifest is a JSON list of rows, not {type(value).__name__}"
+            f"a manifest is a JSON list of rows, or one "
+            f"{dc.LOGICAL_REQUEST_SCHEMA_V1} object -- not "
+            f"{type(value).__name__}"
+            + (f" with schema {value.get('schema')!r}"
+               if isinstance(value, dict) else "")
         )
     rows = []
     for index, row in enumerate(value):
@@ -587,6 +637,366 @@ def rows_for(submissions, waited) -> list[dict]:
     return table
 
 
+# ---------------------------------------------------------------------------
+# One logical request, decomposed
+# ---------------------------------------------------------------------------
+#
+# A manifest is N rows somebody already cut.  A logical request is the work
+# before anybody cut it: one command with one reserved slot, one roster of
+# tasks and one policy saying how much setup a batch may amortize.  The cut
+# happens here, before a single action is published, which is the whole point
+# of #517 -- the fleet is handed independently retryable quanta rather than
+# one long action that has to be watched.
+#
+# Nothing about the cut is negotiable after the fact.  The plan is published
+# under the parent's key and reused verbatim by every later run, so a campaign
+# interrupted halfway resumes into the same batches rather than asking the
+# batcher for a second opinion about a roster that has not changed.
+
+DECOMPOSITIONS = "decompositions"
+
+
+def decomposition_dir(cas, parent_key: str) -> Path:
+    """Where one parent's plan and publication index live.
+
+    Beside the CAS's own shards rather than inside them: these are records
+    about actions, like ``cas/requests``, and neither is an action input.
+    ``pb_gc`` sweeps named subtrees -- claims, locks, namespaces, staging --
+    and counts the rest, so a directory it does not know is never removed
+    under a resuming campaign.  It is also never reclaimed: a plan is a few
+    kilobytes per campaign and stays forever, which is the price of being
+    able to resume one.
+    """
+
+    return Path(str(cas.root)) / DECOMPOSITIONS / parent_key[:2] / parent_key
+
+
+def _stored_document(path: Path) -> object | None:
+    """What is published at ``path``, or ``None`` if nothing is."""
+
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ManifestError(f"cannot read {path}: {exc}") from None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
+        raise ManifestError(
+            f"{path} is published but is not JSON: {exc}.  It is immutable, "
+            f"so this is damage rather than drift; move it aside deliberately "
+            f"before re-running this campaign"
+        ) from None
+
+
+def frozen_plan(request, frozen_common, *, cas) -> dict:
+    """The one partition of this parent, derived once and thereafter read.
+
+    Read before build, on purpose.  A resumed campaign must not call the
+    batcher again: the roster and the policy are the same bytes, so a second
+    call would have to produce the same cut to be correct, and nothing but the
+    published plan can prove that it did.  Reading it back instead makes the
+    cut a fact about the parent rather than a property of whichever version of
+    the batcher happened to run.
+
+    The first writer wins the hard link; a loser reads the winner's bytes and
+    validates them, including that the key they name is the parent asked for.
+    """
+
+    key = dc.parent_key(
+        frozen_common, request["roster"], request["batch_policy"])
+    path = decomposition_dir(cas, key) / "plan.json"
+    stored = _stored_document(path)
+    if stored is None:
+        plan = dc.build_plan(request, frozen_common)
+        if not pb._atomic_publish(path, dc.document_bytes(plan)):
+            stored = _stored_document(path)
+        else:
+            return plan
+    plan = dc.validate_plan(stored)
+    if plan["parent_key"] != key:
+        raise ManifestError(
+            f"the plan published at {path} is keyed on parent "
+            f"{plan['parent_key'][:12]}, not on {key[:12]}"
+        )
+    return plan
+
+
+def publish_index(index, *, cas, parent_key: str) -> None:
+    """Record which children this plan authorizes, before publishing any.
+
+    Written first so that a crash in the middle of a campaign leaves behind a
+    statement of which keys were meant to exist; the next run fills the gaps
+    and publishes nothing else.  Everything upstream of it is pure or
+    content-addressed, so this is the first byte that says these children are
+    real.
+
+    A differing index under one parent is refused rather than replaced.  Every
+    input to it -- the plan, the envelopes, their digests, the sealed child
+    keys -- is a deterministic function of bytes already fixed, so two runs
+    that disagree here disagree about something that cannot vary, and the
+    honest answer is to stop and say so.
+    """
+
+    path = decomposition_dir(cas, parent_key) / "publication.json"
+    raw = dc.document_bytes(index)
+    stored = _stored_document(path)
+    if stored is None:
+        if pb._atomic_publish(path, raw):
+            return
+        stored = _stored_document(path)
+    if dc.document_bytes(stored) != raw:
+        raise ManifestError(
+            f"the publication index at {path} names different children than "
+            f"this run sealed.  The index is a function of the plan and the "
+            f"roster, so nothing that can legitimately vary produced this; "
+            f"read both before touching either"
+        )
+
+
+def child_record(child, *, args, queue, cas) -> dict:
+    """Publish one child, or attach to what is already answering for it.
+
+    The same three answers a detached ``pbrun`` gives, in the same shape, so
+    the campaign's table and ``pbwait`` read a decomposed child exactly as
+    they read a hand-written row: already in the CAS, already running, or
+    published now.
+    """
+
+    key = str(child["action_key"])
+    cas.publish_action_request(child)
+    if cas.lookup(child) is not None:
+        return json.loads(pbrun.detach_line(
+            key, transport=args.transport, status="cache_hit",
+            queue_root=queue.root,
+        ))
+    live = pbrun.live_submission(queue, key)
+    if live is not None:
+        transport, generation, submission = live
+        ready = queue.root / pool.READY / f"{key}.json"
+        record = ready if ready.exists() else (
+            queue.root / pool.CLAIMED / f"{key}.json")
+        return json.loads(pbrun.detach_line(
+            key, transport=transport, status="attached",
+            queue_root=queue.root, published_unix=generation,
+            submission=record,
+        ))
+    queued = pbrun.publish_or_refuse(
+        queue, pbrun.publication_row(child, args=args, queue=queue))
+    return json.loads(pbrun.detach_line(
+        key, transport="pool", status="submitted", queue_root=queue.root,
+        published_unix=pbrun.published_generation(queue, key, queued),
+        submission=queued,
+    ))
+
+
+def decompose(
+    request, *, transport: str, priority: int
+) -> tuple[list[dict], dict]:
+    """Cut one logical request into children and publish every one of them.
+
+    The order is the order of what can still refuse.  Validation, then
+    ``pbrun``'s own argument parsing and submission resolution, then the
+    freeze that cross-checks the declaration against what was sealed, then the
+    plan, then every ingest and every child seal, then the placement verdict
+    -- and only then the index and the children.  Everything that can say no
+    says it before anything durable names a child.
+
+    The children are sealed off one template, so they answer for one source
+    tree.  Re-snapshotting a mutable checkout per child would give siblings
+    different code closures and therefore different parents, which is the bug
+    this whole two-stage shape exists to prevent.
+
+    What comes back is one submission record per child, and beside it the
+    three things the group receipt cannot be computed without: the request the
+    cover is proved against, the plan that fixed the membership, and the
+    sealed children whose receipts carry the answers.
+    """
+
+    if transport == "slurm":
+        raise ManifestError(
+            "a logical request is decomposed onto the pull queue; the SLURM "
+            "lane submits one job per action and has no path for publishing "
+            "a plan's children.  Re-run with --transport pool"
+        )
+    flags = ["--detach", "--transport", transport, "--priority", str(priority)]
+    flags += pbrun_argv(request["common"])
+    try:
+        args = pbrun.parse_args(flags)
+        prepared = pbrun.prepare_submission(args)
+    except SystemExit as exc:
+        # ``pbrun`` refuses with the explanation as the exception's argument,
+        # and the text is the diagnosis.  Prefixed, because from here it is
+        # the campaign that refused: there are no other rows to go on with.
+        raise ManifestError(
+            f"pbrun refused this request's common half: "
+            f"{exc.code if not isinstance(exc.code, int) else f'exit {exc.code}'}"
+            f"\n  pbrun {' '.join(flags)}"
+        ) from None
+    template = prepared["template"]
+    cas = template["cas"]
+
+    frozen = dc.freeze_common(
+        request["common"],
+        action_common=pbrun.template_action_common(template),
+    )
+    plan = frozen_plan(request, frozen, cas=cas)
+    roster_input, _ = cas.ingest_bytes(
+        dc.document_bytes(request["roster"]), input_id=dc.TASK_ROSTER_INPUT_ID)
+
+    children, digests = [], []
+    for ordinal in range(len(plan["partitions"])):
+        batch_input, _ = cas.ingest_bytes(
+            dc.document_bytes(
+                dc.batch_envelope(request, plan, child_ordinal=ordinal)),
+            input_id=dc.TASK_BATCH_INPUT_ID,
+        )
+        children.append(pbrun.seal_decomposed_child(
+            template,
+            request=request,
+            plan=plan,
+            child_ordinal=ordinal,
+            roster_input=roster_input,
+            batch_input=batch_input,
+            cas=cas,
+        ))
+        digests.append(str(batch_input["sha256"]))
+
+    queue = pool.PoolQueue(pbrun.SH / "pb-queue")
+    # Once, not once per child.  Every child of one plan carries the same
+    # placement and the same demand, so the census answers them all the same
+    # way, and printing that answer N times would bury it.
+    pbrun.announce_placement(
+        queue, children[0], args=args, cwd=prepared["cwd"],
+        portable_checkout=prepared["portable_checkout"],
+    )
+
+    publish_index(
+        dc.publication_index(
+            plan,
+            batch_input_digests=digests,
+            child_action_keys=[str(child["action_key"]) for child in children],
+        ),
+        cas=cas,
+        parent_key=plan["parent_key"],
+    )
+    print(f"pbcampaign: parent {plan['parent_key'][:pbwait.KEY_WIDTH]} "
+          f"cut into {len(children)} children", file=sys.stderr, flush=True)
+
+    records = []
+    for ordinal, child in enumerate(children):
+        try:
+            published = child_record(child, args=args, queue=queue, cas=cas)
+        except SystemExit as exc:
+            # One child's refusal, reported like one row's.  The children
+            # already published are in ``records`` and are the whole of what a
+            # detached campaign hands back; raising out of here would strand
+            # every one of their keys.
+            published = {"status": "refused", "flags": [],
+                         "action_key": str(child["action_key"]),
+                         "error": str(exc.code)}
+        print(f"pbcampaign: child {ordinal} {published['status']} "
+              f"{str(published.get('action_key') or '')[:pbwait.KEY_WIDTH]}",
+              file=sys.stderr, flush=True)
+        records.append(published)
+    return records, {"request": request, "plan": plan, "children": children}
+
+
+# --------------------------------------------------------------------------
+# Closing a decomposed campaign
+# --------------------------------------------------------------------------
+
+def child_result_manifest(child, *, cas) -> dict | None:
+    """Read one finished child's result manifest, or ``None`` if it has none.
+
+    Through the receipt rather than off the worker's filesystem: a child's
+    manifest is its declared result, so ``result_path`` re-verifies the bytes
+    against the digest the receipt fixed before anything reads them.  There is
+    no second place to look, which is the point -- a child cannot pass while
+    answering for nothing, because a missing manifest is a missing result and
+    the action fails where it ran.
+    """
+
+    receipt = cas.lookup(child)
+    if receipt is None:
+        return None
+    raw = cas.result_path(receipt, child).read_bytes()
+    try:
+        return json.loads(raw)
+    except ValueError as exc:
+        raise ManifestError(
+            f"child {str(child['action_key'])[:12]} published a result that is "
+            f"not a JSON document: {exc}"
+        ) from None
+
+
+def publish_group_receipt(receipt, *, cas, parent_key: str) -> Path:
+    """Record the one receipt that says the whole roster was answered.
+
+    Written only after the cover is proved exact, and refused rather than
+    replaced when it differs from one already there.  Every field in it is a
+    function of the immutable plan and of child receipts that are themselves
+    immutable, so two runs cannot honestly disagree about it; if they do, the
+    disagreement is the finding and overwriting would hide it.
+    """
+
+    path = decomposition_dir(cas, parent_key) / "group.json"
+    raw = dc.document_bytes(receipt)
+    stored = _stored_document(path)
+    if stored is None:
+        if pb._atomic_publish(path, raw):
+            return path
+        stored = _stored_document(path)
+    if dc.document_bytes(stored) != raw:
+        raise ManifestError(
+            f"the group receipt at {path} is not the one this run verified.  "
+            f"It is a function of the plan and of immutable child receipts, so "
+            f"nothing that can legitimately vary produced this; read both "
+            f"before touching either"
+        )
+    return path
+
+
+def close_group(group, *, cas) -> int:
+    """Prove the children between them answered the roster, once each.
+
+    The last gate of a decomposed campaign and the only one that can see the
+    whole of it: every earlier refusal is about one child in isolation.  An
+    incomplete, failed or withdrawn set is never a group success, so a child
+    without a receipt ends the campaign here -- the table above has already
+    named which one, and repeating that would be noise.
+
+    It runs after the table rather than before it because the table is what an
+    operator reads to find out what happened; this line says whether what
+    happened answers the request.
+    """
+
+    plan, children = group["plan"], group["children"]
+    try:
+        manifests = []
+        for ordinal, child in enumerate(children):
+            manifest = child_result_manifest(child, cas=cas)
+            if manifest is None:
+                print(f"pbcampaign: no group receipt: child {ordinal} of "
+                      f"{len(children)} has no receipt", file=sys.stderr)
+                return 1
+            manifests.append(manifest)
+        receipt = dc.verify_exact_cover(group["request"], plan, manifests)
+        path = publish_group_receipt(
+            receipt, cas=cas, parent_key=plan["parent_key"])
+    except (ManifestError, pb.ActionContractError) as exc:
+        print(f"pbcampaign: {exc}", file=sys.stderr)
+        return 1
+    print(f"pbcampaign: group receipt "
+          f"{dc.document_sha256(receipt)[:pbwait.KEY_WIDTH]} at {path}: "
+          f"{receipt['task_count']} tasks across {receipt['child_count']} "
+          f"children, merged into "
+          f"{receipt['merged_result_sha256'][:pbwait.KEY_WIDTH]}",
+          file=sys.stderr, flush=True)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Submit a manifest of actions to the fleet and wait."
@@ -601,6 +1011,11 @@ def main(argv=None) -> int:
              "forwarded to pbrun unchanged. It is one flag and not a row "
              "field because the transport is a fact about the fleet, not "
              "about the work")
+    ap.add_argument("--priority", type=int, default=0,
+                    help="queue hint for a decomposed request's children, "
+                         "higher runs sooner; not part of an action's "
+                         "identity.  A row in a list manifest carries its own "
+                         "priority field, and this does not override it")
     ap.add_argument("--detach", action="store_true",
                     help="print each row's submission line and return without "
                          "waiting; wait for them later with pbwait.py")
@@ -611,10 +1026,19 @@ def main(argv=None) -> int:
         rows = load_manifest(args.manifest, transport=args.transport)
     except ManifestError as exc:
         raise SystemExit(f"pbcampaign: {exc}")
-    if not rows:
-        raise SystemExit("pbcampaign: the manifest has no rows")
-
-    submissions = submit(rows, transport=args.transport)
+    group = None
+    if isinstance(rows, dict):
+        # One request, one refusal: unlike forty rows, there is nothing else
+        # to go on with, so a refusal here is the campaign's.
+        try:
+            submissions, group = decompose(
+                rows, transport=args.transport, priority=args.priority)
+        except (ManifestError, pb.ActionContractError) as exc:
+            raise SystemExit(f"pbcampaign: {exc}")
+    else:
+        if not rows:
+            raise SystemExit("pbcampaign: the manifest has no rows")
+        submissions = submit(rows, transport=args.transport)
     refused = [one for one in submissions if one.get("status") == "refused"]
     for one in refused:
         print(f"pbcampaign: {one.get('error')}\n"
@@ -649,7 +1073,14 @@ def main(argv=None) -> int:
         queue, keys, cas=cas, wait_s=args.wait_s, generations=generations)
     table = rows_for(submissions, waited)
     print(pbwait.render(table))
-    return 1 if refused else pbwait.verdict(table)
+    verdict = 1 if refused else pbwait.verdict(table)
+    if group is not None:
+        # Every child passing is not yet the request being answered: the cover
+        # is the claim a decomposed campaign actually makes, so it decides the
+        # exit status too.  ``--detach`` never reaches here, and rightly: it
+        # returns before anything has run, so there is no cover to prove.
+        verdict = max(verdict, close_group(group, cas=cas))
+    return verdict
 
 
 if __name__ == "__main__":
