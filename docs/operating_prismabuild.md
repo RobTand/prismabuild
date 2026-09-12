@@ -57,6 +57,15 @@ topology-discovery failure stops the role for supervisor retry.  Do not turn
 that failure into an unpaced warm.  An intentional no-disk fixture remains
 inactive only outside the storage role.
 
+The published storage loop honors the host maintenance gate before every
+cycle. Missing or unreadable gates keep it parked too. It finishes an active
+cycle before parking; a blocked disk read or pacing hold can delay that boundary.
+When the published generation changes, it exits and the supervisor starts its
+replacement from the new generation. `--once` honors both checks and exits 75
+when its cycle is deferred, also with `--dry-run`. Private fixtures must provide
+their own explicit open gate and stable runtime identity. This supplies storage
+participation hooks for #458; fleet barrier activation remains unavailable.
+
 ## Submit one command
 
 The wrapper runs without login profiles. Use an absolute executable or seal
