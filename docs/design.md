@@ -59,9 +59,19 @@ they were tolerated or ignored. The discrepancy compares the record's writer
 clock with the reader, not with an independently trusted time source. Offers
 retain their existing wire format. CPU/GPU telemetry freshness, capacity
 reservation, containment and lease recovery receive no additional tolerance.
-Shared filesystem I/O itself
-remains synchronous and has no caller deadline; this expiry rule does not bound a
-queue read or repair an NFS client stall (issue #16).
+The pool's shared filesystem calls remain synchronous. `pbrun` runs its one
+pre-submission **worker-offer** record scan in
+an abandonable reader with a fixed five-second budget. It refuses loudly if
+that reader times out or fails, names any retained reader identity, and never
+publishes a runnable `ready/` item from an unavailable snapshot. The parent
+re-evaluates freshness and future skew only after the complete child scan, for
+each verdict; retained capability therefore still has its infinite-age rule.
+The five-second read budget includes child FD isolation and IPC waits. Parent
+process creation, decoding the completed reply, cleanup grace and runtime
+imports are not themselves interruptible at that deadline.
+The boundary covers no CAS request/staging, publication, wait, claim, lease,
+token, or other queue read/write, which remain synchronous and can still stall
+(issue #16).
 The pool status census likewise collects active records and admission, lease,
 and denial sidecars before deriving worker/sample freshness and placement. Its
 `sampled_unix` is the time that collection finished; it remains a non-atomic
