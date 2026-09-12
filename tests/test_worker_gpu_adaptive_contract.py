@@ -117,8 +117,14 @@ def test_live_gb10_shapes_use_one_autodetected_physical_gpu_policy():
         args = config[host]["args"]
         assert "--gpu" in args
         assert "--gpu-slots" not in args
-    assert "--gpu" not in config["dl380g10"]["args"]
-    assert "--gpu-slots" not in config["dl380g10"]["args"]
+    # Every box whose GPU the capacity probe cannot read declares neither
+    # flag.  wsl-gpu carries an RX 9070 XT that ``gpu_capacity.devices`` has
+    # no way to see -- it queries ``/usr/bin/nvidia-smi`` and nothing else --
+    # so ``--gpu`` there would publish a device the pool can never admit.
+    for host in ("dl380g10", "wsl-gpu"):
+        args = config[host]["args"]
+        assert "--gpu" not in args
+        assert "--gpu-slots" not in args
 
 
 class _Ledger:

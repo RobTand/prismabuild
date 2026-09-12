@@ -78,6 +78,36 @@
           "20"
         ]
       }
+    },
+    "wsl-gpu": {
+      "_alias": "DESKTOP-P5UOGNJ",
+      "_alias_why": "WSL2 takes its hostname from the Windows machine name, so socket.gethostname() answers DESKTOP-P5UOGNJ while every submission spells this box wsl-gpu. One machine, one shape, the same mechanism gx10-6b77/sparklina already uses. The offer therefore lands at pb-queue/workers/DESKTOP-P5UOGNJ.json, and --tag wsl-gpu is what places work here.",
+      "_why": "A Ryzen 9800X3D under WSL2 with an RX 9070 XT (gfx1201, RDNA4). It joins as CPU capacity only. --gpu is deliberately absent and is not an oversight: gpu_capacity.devices() queries /usr/bin/nvidia-smi and nothing else, so on this box the broker snapshot reads {\"attributed\": false, \"complete\": false, \"devices\": [], \"errors\": [\"GPU device query unavailable: FileNotFoundError\"]}, and box_capacity.observe({\"gpu\": 1, ...}) answered capacity gpu=0 with gpu_capacity_error \"incomplete or unattributed GPU capacity snapshot\" when it was run on the box itself. Declaring --gpu would publish a device the pool can never admit. The gfx1201/rocm/rdna4 tags name the hardware that is physically present so CPU-side AMD work can be routed here; until AMD capacity detection exists, a submission that pairs one of those tags with --gpu waits in ready forever rather than running.",
+      "_capacity_why": "27.41 GiB physical. box_capacity.MEMORY_MARGIN_GB is 8 and the box read MemAvailable 24 GiB, so 16 GiB is the largest budget it can offer without eating the margin; observe() returned exactly mem_gb 16. 16 vCPU: cpu_topology.inherited_tiers() classifies the 8 physical cores [0,2,4,6,8,10,12,14] preferred and the 8 SMT siblings [1,3,5,7,9,11,13,15] fallback, so --all-cores retains all 16 and still reserves physical cores first. Three loops keeps roughly dl380g10's five-cores-per-loop ratio. --python is the interpreter that launches the pool worker, not a project environment: /usr/bin/python3 here is 3.14.4, the same version as dl380g10's pb-cpu, and all 19 prismabuild modules plus supervise/worker_loop/worker/pbrun import under it. The project environments PrismaQuant CPU shards pass with their own --python are provisioned at the same paths this fleet already uses, /home/rob/venvs/pb-cpu and /home/rob/venvs/pq-cpu312.",
+      "loops": 3,
+      "args": [
+        "--class",
+        "x86",
+        "--tag",
+        "wsl-gpu",
+        "--tag",
+        "gfx1201",
+        "--tag",
+        "rocm",
+        "--tag",
+        "rdna4",
+        "--mem-gb",
+        "16",
+        "--all-cores",
+        "--timeout-s",
+        "3600",
+        "--max-idle",
+        "2000",
+        "--poll-s",
+        "10",
+        "--python",
+        "/usr/bin/python3"
+      ]
     }
   },
   "_measured_2026_09_04": "Both GB10 boxes are 121 GB unified. The historical gpu-slots values of two and three were concurrency guesses rather than hardware: each box has one physical GPU. They are retained here only as the measurement that exposed why fixed slots strand light jobs and stack heavy jobs; adaptive admission now consumes attributed broker telemetry instead. The RAM bounds remain 72 GiB on sparky and 80 GiB on sparklina because host-memory containment is a separate hard limit.",
