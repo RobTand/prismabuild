@@ -141,10 +141,7 @@ class Decomposed:
         self.cas = self.template["cas"]
         self.frozen = dc.freeze_common(
             self.request["common"],
-            logical_cwd=str(self.template["params"]["cwd"]),
-            checkout_snapshot_sha256=str(
-                self.template["params"]["checkout_snapshot"]["input"]["sha256"]
-            ),
+            action_common=pbrun.template_action_common(self.template),
         )
         self.plan = dc.build_plan(self.request, self.frozen)
         self.roster_input = _ingest(

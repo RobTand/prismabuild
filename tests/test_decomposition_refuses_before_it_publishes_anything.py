@@ -19,22 +19,39 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import conftest  # noqa: E402
 from prismabuild import decomposition as dc  # noqa: E402
 
 
 #: A stand-in for what pbrun's Stage A resolves: the parent is keyed on the
-#: tree's snapshot digest, never on the path the submitter typed.
-SNAPSHOT = "a" * 64
-MANIFEST = "b" * 64
+#: tree's snapshot digest and on the rest of what was sealed against it, never
+#: on the path the submitter typed.
+SNAPSHOT = conftest.DECOMPOSITION_SNAPSHOT
+MANIFEST = conftest.DECOMPOSITION_MANIFEST
 
 
-def _frozen(request: dict, *, snapshot: str = SNAPSHOT, cwd: str = ".") -> dict:
+def _frozen(request: dict, *, snapshot: str = SNAPSHOT, cwd: str = ".",
+            variables: dict | None = None, **sealed: object) -> dict:
+    """What pbrun's Stage A would have sealed for this request.
+
+    The declaration reaches the sealed half the way a real template carries it
+    -- the manifest ingested, the GPU budget attached to a GPU demand, the
+    environment merged into the resolved variables -- because that agreement is
+    exactly what ``freeze_common`` refuses to take on trust.  Keywords override
+    it, so a test can say "the same request, sealed differently".
+    """
+
+    common = request["common"]
+    if common["gpu_memory_gb"] is not None:
+        sealed.setdefault("gpu_memory_gb", common["gpu_memory_gb"])
     return dc.freeze_common(
-        request["common"],
-        logical_cwd=cwd,
-        checkout_snapshot_sha256=snapshot,
-        data_manifest_sha256=(
-            None if request["common"]["data_manifest"] is None else MANIFEST
+        common,
+        action_common=conftest.action_common(
+            snapshot=snapshot,
+            cwd=cwd,
+            manifest=None if common["data_manifest"] is None else MANIFEST,
+            variables={**common["env"], **(variables or {})},
+            **sealed,
         ),
     )
 

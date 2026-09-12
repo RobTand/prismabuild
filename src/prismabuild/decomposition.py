@@ -46,6 +46,10 @@ from typing import Any
 
 from . import core as pb
 from .core import ActionContractError, canonical_sha256
+# The two sealed variables that carry container ownership.  Named here so the
+# frozen half a parent is keyed on can refuse to contain them: ownership is a
+# property of one running action, not of what its siblings share.
+from .pool import CONTAINER_MARKER_ENV, CONTAINER_OWNER_ENV
 
 __all__ = [
     "ActionContractError",
@@ -139,9 +143,14 @@ _COMMON_KEYS = frozenset(
     {"argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env"}
 )
 _REQUEST_KEYS = frozenset({"schema", "common", "roster", "batch_policy"})
-_FROZEN_COMMON_KEYS = frozenset(
-    {"schema", "argv", "cwd", "demand", "env", "gpu_memory_gb",
-     "checkout_snapshot_sha256", "data_manifest_sha256"}
+_FROZEN_COMMON_KEYS = frozenset({"schema", "argv", "action_common"})
+#: The half of a sealed action that a decomposition does not vary.  Exactly
+#: these, because a child's body has exactly these plus its own command, its
+#: own batch input and its own membership -- so a parent keyed on this record
+#: binds everything its children share and nothing they do not.
+_ACTION_COMMON_KEYS = frozenset(
+    {"task", "params", "inputs", "code_closure", "environment",
+     "execution_scope"}
 )
 _PLAN_KEYS = frozenset(
     {"schema", "parent_key", "algorithm_version", "partitions", "plan_key"}
@@ -294,6 +303,40 @@ def validate_batch_policy(value: object) -> dict[str, Any]:
     }
 
 
+def _validate_batch_argv(value: object, *, where: str) -> list[str]:
+    """A command with exactly one whole-argument slot for a batch."""
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        pb._fail(f"{where} must be an array")
+    if not value:
+        pb._fail(f"{where} must not be empty")
+    argv = [
+        pb._text(part, where=f"{where}[{index}]", allow_control=True)
+        for index, part in enumerate(value)
+    ]
+    # Embedding is checked first.  An embedded placeholder does not count as
+    # one, so the arity check would otherwise answer "you have none of these"
+    # to a producer who wrote one and chose the wrong shape -- the diagnosis
+    # they need last rather than first.
+    for index, part in enumerate(argv):
+        if TASK_BATCH_PLACEHOLDER in part and part != TASK_BATCH_PLACEHOLDER:
+            pb._fail(
+                f"{where}[{index}] embeds {TASK_BATCH_PLACEHOLDER} in a larger "
+                "argument; it is a whole-argument placeholder, not string "
+                "interpolation"
+            )
+    if argv.count(TASK_BATCH_PLACEHOLDER) != 1:
+        # Exactly one, because a child that cannot say which batch it measured
+        # is an opaque action wearing a plan's identity, and two placeholders
+        # would give one child two answers to that question.
+        pb._fail(
+            f"{where} must carry {TASK_BATCH_PLACEHOLDER} exactly once as a "
+            "whole argument; a command without the declared batch input "
+            "protocol stays an ordinary action"
+        )
+    return argv
+
+
 def validate_common_spec(value: object) -> dict[str, Any]:
     """Canonicalize what every child of this parent executes identically.
 
@@ -303,35 +346,7 @@ def validate_common_spec(value: object) -> dict[str, Any]:
     """
 
     common = pb._exact_mapping(value, keys=_COMMON_KEYS, where="common spec")
-    raw_argv = common["argv"]
-    if not isinstance(raw_argv, Sequence) or isinstance(raw_argv, (str, bytes)):
-        pb._fail("common spec argv must be an array")
-    if not raw_argv:
-        pb._fail("common spec argv must not be empty")
-    argv = [
-        pb._text(part, where=f"common spec argv[{index}]", allow_control=True)
-        for index, part in enumerate(raw_argv)
-    ]
-    # Embedding is checked first.  An embedded placeholder does not count as
-    # one, so the arity check would otherwise answer "you have none of these"
-    # to a producer who wrote one and chose the wrong shape -- the diagnosis
-    # they need last rather than first.
-    for index, part in enumerate(argv):
-        if TASK_BATCH_PLACEHOLDER in part and part != TASK_BATCH_PLACEHOLDER:
-            pb._fail(
-                f"common spec argv[{index}] embeds {TASK_BATCH_PLACEHOLDER} in a "
-                "larger argument; it is a whole-argument placeholder, not "
-                "string interpolation"
-            )
-    if argv.count(TASK_BATCH_PLACEHOLDER) != 1:
-        # Exactly one, because a child that cannot say which batch it measured
-        # is an opaque action wearing a plan's identity, and two placeholders
-        # would give one child two answers to that question.
-        pb._fail(
-            f"common spec argv must carry {TASK_BATCH_PLACEHOLDER} exactly once "
-            "as a whole argument; a command without the declared batch input "
-            "protocol stays an ordinary action"
-        )
+    argv = _validate_batch_argv(common["argv"], where="common spec argv")
     demand = pb._normalize_json_value(common["demand"], where="common spec demand")
     if not isinstance(demand, Mapping) or not demand:
         pb._fail("common spec demand must be a non-empty object")
@@ -398,14 +413,57 @@ def validate_logical_request(value: object) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 
+def validate_action_common(value: object) -> dict[str, Any]:
+    """Re-check the sealed half a parent is keyed on.
+
+    Shape only: these bytes came from ``pbrun``'s own frozen template and are
+    re-checked here because a parent record read back off the shared mount is
+    the one thing recovery trusts without re-reading a tree.  The two refusals
+    are the two ways the half could stop being *common*: a command in it would
+    make every child restate one, and a container variable in it would make
+    ownership -- which is per action -- part of what the siblings share.
+    """
+
+    common = pb._exact_mapping(
+        pb._normalize_json_value(value, where="action common"),
+        keys=_ACTION_COMMON_KEYS,
+        where="action common",
+    )
+    params = common["params"]
+    if not isinstance(params, Mapping):
+        pb._fail("action common params must be an object")
+    if "command" in params:
+        pb._fail(
+            "action common must not carry a command; it is the half of an "
+            "action every child of one parent shares, and each child resolves "
+            "its own batch into its own"
+        )
+    for name in ("cwd", "demand", "placement", "retry_policy",
+                 "checkout_snapshot"):
+        if name not in params:
+            pb._fail(f"action common params must carry {name!r}")
+    environment = common["environment"]
+    if not isinstance(environment, Mapping):
+        pb._fail("action common environment must be an object")
+    variables = environment.get("variables")
+    if not isinstance(variables, Mapping):
+        pb._fail("action common environment variables must be an object")
+    for name in (CONTAINER_OWNER_ENV, CONTAINER_MARKER_ENV):
+        if name in variables:
+            pb._fail(
+                f"action common must not carry {name}; container ownership is "
+                "a property of one running action, and siblings that shared it "
+                "would reap each other's payloads"
+            )
+    return common
+
+
 def freeze_common(
     common: Mapping[str, Any],
     *,
-    logical_cwd: str,
-    checkout_snapshot_sha256: str,
-    data_manifest_sha256: str | None = None,
+    action_common: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Replace the submitter's paths with the bytes they resolved to.
+    """Replace the submitter's declaration with the bytes it actually sealed.
 
     A logical request names its source and its data by *path*, because that is
     what a producer can type.  A path is not an identity: the same
@@ -415,38 +473,54 @@ def freeze_common(
     tree that has moved on, and make two parents out of one campaign run from
     two checkouts.
 
-    So the parent is keyed on this record instead, which pbrun's own Stage A
-    produces: the snapshot digest for the source, the ingested manifest digest
-    for the data, and the logical cwd the children will actually run in.  The
-    rest of the declaration is already identity -- argv with the placeholder
-    still in it, the demand, the environment, the GPU budget -- and is carried
-    through unchanged.
+    So the parent is keyed on what ``pbrun``'s Stage A actually froze: the
+    snapshot digest, the ingested manifest, the logical cwd, the placement, the
+    retry policy, the timeout, the profiler mode, the resolved environment and
+    the local toolchain -- the whole half of a child's body that decomposition
+    does not vary, taken by subtraction so a field nobody thought about here is
+    bound rather than dropped.  The declared ``argv`` rides alongside because
+    it is the one shared thing the sealed half deliberately excludes: each
+    child carries its own resolved command, and the placeholder-bearing
+    original is what says they are resolutions of one campaign.
+
+    What is checked is that the declaration and the seal agree about the three
+    things a producer could otherwise watch PrismaBuild silently drop.
     """
 
     common = validate_common_spec(common)
+    shared = validate_action_common(action_common)
+    params, variables = shared["params"], shared["environment"]["variables"]
+
     declared = common["data_manifest"]
-    if (declared is None) != (data_manifest_sha256 is None):
+    if (declared is None) != (params.get("data_manifest") is None):
         # Freezing is the only place the two halves can be compared, and a
-        # mismatch here means the parent would be keyed on data nobody
-        # ingested, or ingested data no child was told to read.
+        # mismatch means the parent would be keyed on data nobody ingested, or
+        # on ingested data no child was told to read.
         pb._fail(
-            "frozen common declares a data manifest at "
-            f"{declared!r} and was frozen with digest "
-            f"{data_manifest_sha256!r}; both or neither"
+            f"common spec declares a data manifest at {declared!r} but the "
+            "sealed action "
+            + ("carries one" if declared is None else "carries none")
         )
+    budget = common["gpu_memory_gb"]
+    if budget is not None and params.get("gpu_memory_gb") != budget:
+        # A GPU budget only reaches the sealed params when the demand asks for
+        # a GPU.  Declared and dropped, it would bound nothing and bind
+        # nothing, which is the quietest way to lose a producer's limit.
+        pb._fail(
+            f"common spec declares gpu_memory_gb {budget!r} but the sealed "
+            f"action carries {params.get('gpu_memory_gb')!r}; a GPU memory "
+            "budget needs a GPU in the demand to take effect"
+        )
+    for name, text in common["env"].items():
+        if variables.get(name) != text:
+            pb._fail(
+                f"common spec declares env[{name!r}]={text!r} but the sealed "
+                f"action carries {variables.get(name)!r}"
+            )
     return {
         "schema": FROZEN_COMMON_SCHEMA_V1,
         "argv": list(common["argv"]),
-        "cwd": pb._text(logical_cwd, where="frozen common cwd"),
-        "demand": dict(common["demand"]),
-        "env": dict(common["env"]),
-        "gpu_memory_gb": common["gpu_memory_gb"],
-        "checkout_snapshot_sha256": pb._sha256(
-            checkout_snapshot_sha256, where="frozen common checkout_snapshot_sha256"
-        ),
-        "data_manifest_sha256": None if data_manifest_sha256 is None else pb._sha256(
-            data_manifest_sha256, where="frozen common data_manifest_sha256"
-        ),
+        "action_common": shared,
     }
 
 
@@ -458,23 +532,11 @@ def validate_frozen_common(value: object) -> dict[str, Any]:
     )
     if frozen["schema"] != FROZEN_COMMON_SCHEMA_V1:
         pb._fail(f"frozen common schema must be {FROZEN_COMMON_SCHEMA_V1!r}")
-    return freeze_common(
-        {
-            "argv": frozen["argv"],
-            "cwd": frozen["cwd"],
-            "demand": frozen["demand"],
-            "env": frozen["env"],
-            "gpu_memory_gb": frozen["gpu_memory_gb"],
-            # Already a digest; the declaration it came from is gone by now,
-            # so present/absent is all that has to agree.
-            "data_manifest": (
-                None if frozen["data_manifest_sha256"] is None else "<frozen>"
-            ),
-        },
-        logical_cwd=frozen["cwd"],
-        checkout_snapshot_sha256=frozen["checkout_snapshot_sha256"],
-        data_manifest_sha256=frozen["data_manifest_sha256"],
-    )
+    return {
+        "schema": FROZEN_COMMON_SCHEMA_V1,
+        "argv": _validate_batch_argv(frozen["argv"], where="frozen common argv"),
+        "action_common": validate_action_common(frozen["action_common"]),
+    }
 
 
 def parent_key(

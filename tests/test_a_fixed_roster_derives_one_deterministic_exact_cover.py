@@ -23,22 +23,39 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import conftest  # noqa: E402
 from prismabuild import decomposition as dc  # noqa: E402
 
 
 #: A stand-in for what pbrun's Stage A resolves: the parent is keyed on the
-#: tree's snapshot digest, never on the path the submitter typed.
-SNAPSHOT = "a" * 64
-MANIFEST = "b" * 64
+#: tree's snapshot digest and on the rest of what was sealed against it, never
+#: on the path the submitter typed.
+SNAPSHOT = conftest.DECOMPOSITION_SNAPSHOT
+MANIFEST = conftest.DECOMPOSITION_MANIFEST
 
 
-def _frozen(request: dict, *, snapshot: str = SNAPSHOT, cwd: str = ".") -> dict:
+def _frozen(request: dict, *, snapshot: str = SNAPSHOT, cwd: str = ".",
+            variables: dict | None = None, **sealed: object) -> dict:
+    """What pbrun's Stage A would have sealed for this request.
+
+    The declaration reaches the sealed half the way a real template carries it
+    -- the manifest ingested, the GPU budget attached to a GPU demand, the
+    environment merged into the resolved variables -- because that agreement is
+    exactly what ``freeze_common`` refuses to take on trust.  Keywords override
+    it, so a test can say "the same request, sealed differently".
+    """
+
+    common = request["common"]
+    if common["gpu_memory_gb"] is not None:
+        sealed.setdefault("gpu_memory_gb", common["gpu_memory_gb"])
     return dc.freeze_common(
-        request["common"],
-        logical_cwd=cwd,
-        checkout_snapshot_sha256=snapshot,
-        data_manifest_sha256=(
-            None if request["common"]["data_manifest"] is None else MANIFEST
+        common,
+        action_common=conftest.action_common(
+            snapshot=snapshot,
+            cwd=cwd,
+            manifest=None if common["data_manifest"] is None else MANIFEST,
+            variables={**common["env"], **(variables or {})},
+            **sealed,
         ),
     )
 
@@ -284,10 +301,51 @@ def test_a_declared_data_manifest_must_be_frozen_with_a_digest() -> None:
         "data_manifest": "/inputs/data-manifest.json",
         "env": {},
     }
-    with pytest.raises(dc.ActionContractError, match="both or neither"):
-        dc.freeze_common(common, logical_cwd=".",
-                         checkout_snapshot_sha256=SNAPSHOT)
-    with pytest.raises(dc.ActionContractError, match="both or neither"):
-        dc.freeze_common({**common, "data_manifest": None}, logical_cwd=".",
-                         checkout_snapshot_sha256=SNAPSHOT,
-                         data_manifest_sha256=MANIFEST)
+    with pytest.raises(dc.ActionContractError, match="carries none"):
+        dc.freeze_common(common, action_common=conftest.action_common())
+    with pytest.raises(dc.ActionContractError, match="carries one"):
+        dc.freeze_common(
+            {**common, "data_manifest": None},
+            action_common=conftest.action_common(manifest=MANIFEST),
+        )
+
+
+def test_the_parent_binds_every_sealed_thing_the_children_share() -> None:
+    """Not just the declaration: everything the template resolved for them.
+
+    Two campaigns with one ``common`` can still seal different children -- a
+    different placement, retry policy, timeout or local toolchain all reach a
+    child's key.  If the parent did not bind them, the two would collapse onto
+    one parent and one plan, and the publication index would refuse the second
+    run with a key mismatch naming the child instead of the cause.
+    """
+
+    request = {
+        "schema": dc.LOGICAL_REQUEST_SCHEMA_V1,
+        "common": {
+            "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+            "cwd": "/checkout",
+            "demand": {"cpu": 4, "mem_gb": 16},
+            "gpu_memory_gb": None,
+            "data_manifest": None,
+            "env": {},
+        },
+        "roster": _roster(("r", 10.0), ("r", 10.0)),
+        "batch_policy": _policy(("r", 1.0)),
+    }
+    here = dc.parent_key(_frozen(request), request["roster"],
+                         request["batch_policy"])
+    for moved in (
+        {"placement": {"required_tags": ["sparky"]}},
+        {"retry_policy": {"max_attempts": 3, "retry_safe": True}},
+        {"execution_timeout_s": 900.0},
+        {"profile": {"backend": "sample"}},
+    ):
+        assert dc.parent_key(
+            _frozen(request, **moved), request["roster"],
+            request["batch_policy"],
+        ) != here, moved
+    assert dc.parent_key(
+        _frozen(request, variables={"CUDA_VISIBLE_DEVICES": ""}),
+        request["roster"], request["batch_policy"],
+    ) != here, "the resolved environment is part of what the children share"

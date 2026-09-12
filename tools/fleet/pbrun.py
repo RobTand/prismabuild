@@ -193,8 +193,8 @@ STAMP_PREFIX = getattr(pb, "PBRUN_STAMP_PREFIX", ".pbrun-closure.")
 #: ``write_deterministic_bundle`` pinned the pack, so a resubmit that landed
 #: on this same name still missed the cache on every real repository.
 RESULT_PREFIX = getattr(pb, "PBRUN_RESULT_PREFIX", "pbrun_result.")
-CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
-CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
+CONTAINER_OWNER_ENV = pool.CONTAINER_OWNER_ENV
+CONTAINER_MARKER_ENV = pool.CONTAINER_MARKER_ENV
 CONTAINER_WRAPPER_DIR = RUNTIME_ROOT / "tools"
 
 
@@ -4035,6 +4035,46 @@ def freeze_action_template(
         "environment": {"variables": variables, "toolchain": toolchain},
         "execution_scope": execution_scope,
     }
+
+
+#: The template entries that are the submitter's own handles rather than any
+#: part of a sealed action: the CAS it ingested into, the marker namespace and
+#: the recorded checkout identity ownership is re-derived against, and the two
+#: fingerprinted names.  Everything else in a template is, by construction,
+#: the half of an action that no action sealed from it varies -- which is why
+#: :func:`template_action_common` subtracts rather than enumerates.  A field
+#: added to the template lands in the parent's identity unless it is named
+#: here on purpose.
+_TEMPLATE_SUBMITTER_KEYS = frozenset(
+    {"cas", "marker_root", "checkout_identity", "log_name", "stamp_name"}
+)
+
+
+def template_action_common(template: Mapping[str, object]) -> dict[str, object]:
+    """The half of every action sealed from this template that none of them varies.
+
+    A decomposition's parent has to be keyed on exactly this.  Key it on less
+    -- on the producer's declared command, demand and environment alone -- and
+    two campaigns that differ in placement, retry policy, timeout, profiler
+    mode or the local toolchain collapse onto one parent while their children
+    take different keys; the publication index then refuses the second run with
+    a key mismatch that names the child rather than the cause.
+
+    The two container variables come off, because ownership is per action by
+    the time anything is sealed, and a child's own owner is a function of this
+    record and its own command.
+    """
+
+    shared = {name: value for name, value in template.items()
+              if name not in _TEMPLATE_SUBMITTER_KEYS}
+    shared["params"] = {name: value
+                        for name, value in shared["params"].items()
+                        if name != "command"}
+    variables = dict(shared["environment"]["variables"])
+    variables.pop(CONTAINER_OWNER_ENV, None)
+    variables.pop(CONTAINER_MARKER_ENV, None)
+    shared["environment"] = {**shared["environment"], "variables": variables}
+    return shared
 
 
 def seal_action_from_template(
