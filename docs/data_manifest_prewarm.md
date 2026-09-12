@@ -4,6 +4,10 @@ Issue #487.  Two pieces: a second content-addressed input that says which
 bytes an action will read off the shared mount, and a single loop on the
 storage host that makes those bytes resident before anybody claims the action.
 
+The [fleet storage host record](fleet_storage.md) describes the clients'
+readahead proposal and DL380's existing sync/L2ARC/no-SLOG configuration
+(#523). These host settings do not replace the prewarmer's disk pacing.
+
 ## Why
 
 A campaign whose working set is far larger than the file server's ARC gets
