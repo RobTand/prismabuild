@@ -2063,7 +2063,9 @@ integration attribute that states the memory domain. Disagreement publishes
 nothing. More than one AMD GPU agent publishes nothing, because one HIP ordinal
 is all the probe reads. The VRAM total is keyed on `Device Type: GPU`, never on
 pool order: the first `GLOBAL` pool in a `rocminfo` report is the CPU agent's
-host RAM.
+host RAM. Both readers are refused unless they are root-owned and writable by
+nobody else, because the broker runs `rocminfo` and loads `libamdhip64.so` as
+root.
 
 Each device record declares its `telemetry_class`. `power_and_clocks` is the
 NVML contract. `memory_only` is a device whose runtime publishes identity and
@@ -2087,8 +2089,12 @@ no longer does. A `shared_system` device without per-process bytes has no
 system-memory lower bound to state and stays incomplete.
 `foreign_inventory_scope` records how far the census could see —
 `gpu_compute_apps` for NVML, `host_gpu_handles` for the node census, which
-covers this kernel's PID namespace and nothing outside it. An unreadable
-descriptor table refuses rather than reporting an empty foreign list. Measured
+covers the processes this `/proc` lists and nothing outside it. A handle is
+identified by the character device's device number, not by the node's inode: a
+container runtime creates its own node for a passed-through device, so an inode
+comparison would report a containerized GPU user as holding nothing. An
+unreadable descriptor table refuses rather than reporting an empty foreign
+list. Measured
 evidence and the residual risks are in
 [amd_gpu_capacity_2026-09-12.md](amd_gpu_capacity_2026-09-12.md).
 

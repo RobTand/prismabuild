@@ -123,7 +123,20 @@ Three consequences, all declared in the sample rather than inferred:
   offers nothing. This path is reachable only on a future integrated AMD part.
 
 `foreign_inventory_scope: host_gpu_handles` says how far that census can see:
-every GPU user in this kernel's PID namespace, and nothing outside it. Under
+every GPU user among the processes this `/proc` lists, and nothing outside it.
+A handle is matched by the character device's device number, not by the node's
+inode, because a container runtime `mknod`s its own node for a device passed in
+with `--device /dev/dxg`: same card, different filesystem and inode. Matching
+inodes would have made a GPU user inside a container — the containerized ROCm
+vLLM being built for this very box — invisible to the census, and opened the
+offer onto a busy device. Three narrower blind spots remain and are not fixed
+here: a holder in another PID namespace (a sibling WSL2 distro), a holder whose
+thread-group leader has exited while its threads keep the descriptor, and a
+holder that opened the card through a second path, since the census prefilters
+on the link text before it stats. Completeness also assumes the census can read
+every process's descriptor table, which is why it runs as root and refuses on
+`PermissionError`; a `hidepid` mount would hide other users' processes without
+raising one. Under
 WSL2 a Windows-side GPU user is invisible to it — the compositor's bytes are in
 `memory_used` with no holder to name. That is a real residual: co-resident
 Windows GPU work degrades throughput here and will not be reported as a foreign

@@ -204,7 +204,27 @@ def _leading_int(value):
     return int(match.group(1)) if match else None
 
 
+def _trusted_reader(path):
+    """Refuse a device reader anyone but root can rewrite.
+
+    This module runs inside the root broker and both AMD readers are executed
+    or loaded as root: ``rocminfo`` as a subprocess and ``libamdhip64.so``
+    through ctypes. A packaged ROCm installs both root-owned; a writable one is
+    a reader whose answers, and whose code, some other account chooses.
+    """
+    try:
+        entry = os.stat(path)
+    except OSError as exc:
+        return f'AMD reader unavailable: {type(exc).__name__}'
+    if entry.st_uid != 0 or entry.st_mode & 0o022:
+        return f'AMD reader is writable outside root: {path}'
+    return None
+
+
 def _run_rocminfo(timeout_s):
+    untrusted = _trusted_reader(ROCMINFO)
+    if untrusted:
+        return None, untrusted
     try:
         result = subprocess.run([ROCMINFO], capture_output=True, text=True,
                                 timeout=timeout_s, check=False)
@@ -221,6 +241,9 @@ def _run_hip_probe(timeout_s):
                   'warp_size': HIP_ATTRIBUTE_WARP_SIZE,
                   'clock_rate_khz': HIP_ATTRIBUTE_CLOCK_RATE_KHZ,
                   'max_threads_per_block': HIP_ATTRIBUTE_MAX_THREADS_PER_BLOCK}
+    untrusted = _trusted_reader(HIP_LIBRARY)
+    if untrusted:
+        return None, untrusted
     try:
         result = subprocess.run([sys.executable, '-c', HIP_PROBE_SOURCE, HIP_LIBRARY,
                                  json.dumps(attributes)], capture_output=True,

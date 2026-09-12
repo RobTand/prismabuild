@@ -1,7 +1,9 @@
 """GPU bytes are attributed to exact owned scopes; ambiguous jobs stay alive."""
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
@@ -330,9 +332,9 @@ def holder(proc, node, pid, group, *, descriptors=1, start=9):
 
 def amd_system(tmp_path):
     proc, cgroup, scope = system(tmp_path)
-    node = tmp_path / 'dxg'
-    node.write_text('')
-    return proc, cgroup, scope, node
+    # A real character device, because the census identifies a handle by the
+    # device number a regular file does not have.
+    return proc, cgroup, scope, gm.Path('/dev/null')
 
 
 def test_open_gpu_handles_attribute_ownership_without_inventing_bytes(tmp_path, monkeypatch):
@@ -397,6 +399,37 @@ def test_a_descriptor_on_another_file_is_not_a_gpu_handle(tmp_path):
     assert sample.foreign_processes == ()
 
 
+def test_a_regular_file_is_refused_as_the_device_node(tmp_path):
+    proc, cgroup, scope, _ = amd_system(tmp_path)
+    node = tmp_path / 'dxg'
+    node.write_text('')
+
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_devices=[AMD_DEVICE], gpu_device_node=node)
+
+    assert not sample.gpu_query_complete
+    assert any('not a file' in error for error in sample.errors)
+
+
+class FakeStat:
+    def __init__(self, mode, dev, ino, rdev):
+        self.st_mode, self.st_dev, self.st_ino, self.st_rdev = mode, dev, ino, rdev
+
+
+def test_a_containerized_holder_of_the_same_card_is_still_a_holder():
+    # A container runtime makes its own node for a passed-through device: same
+    # hardware, different filesystem and inode. Identifying a handle by inode
+    # would report a GPU user inside a container as holding nothing.
+    node = FakeStat(stat.S_IFCHR | 0o666, 6, 400, os.makedev(10, 63))
+    inside = FakeStat(stat.S_IFCHR | 0o666, 43, 12, os.makedev(10, 63))
+    other_card = FakeStat(stat.S_IFCHR | 0o666, 6, 401, os.makedev(10, 64))
+    plain_file = FakeStat(stat.S_IFREG | 0o644, 6, 400, 0)
+
+    assert gm._names_device(node, inside)
+    assert not gm._names_device(node, other_card)
+    assert not gm._names_device(node, plain_file)
+
+
 def test_shared_system_hardware_without_per_process_bytes_stays_incomplete(tmp_path):
     proc, cgroup, scope, node = amd_system(tmp_path)
     holder(proc, node, 10, f'/prismabuild.slice/{SID}/payload')
@@ -413,8 +446,8 @@ def test_shared_system_hardware_without_per_process_bytes_stays_incomplete(tmp_p
 
 
 def test_a_missing_device_node_refuses_rather_than_reporting_no_holders(tmp_path):
-    proc, cgroup, scope, node = amd_system(tmp_path)
-    node.unlink()
+    proc, cgroup, scope, _ = amd_system(tmp_path)
+    node = tmp_path / 'absent-dxg'
 
     sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
                         gpu_devices=[AMD_DEVICE], gpu_device_node=node)

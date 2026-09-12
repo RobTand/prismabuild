@@ -20,6 +20,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat as stat_module
 import subprocess
 import time
 from typing import Mapping, Sequence
@@ -162,6 +163,18 @@ def _nvidia_processes(timeout_s: float):
     return rows, None
 
 
+def _names_device(node, opened) -> bool:
+    """Whether an opened descriptor refers to this piece of hardware.
+
+    Identity is the device number, not the inode. A container runtime creates
+    its own node for a passed-through device, so a containerized GPU user
+    holds a node with a different inode on a different filesystem while naming
+    the same card; comparing inodes would report that process as holding
+    nothing and open the offer onto a busy device.
+    """
+    return stat_module.S_ISCHR(opened.st_mode) and opened.st_rdev == node.st_rdev
+
+
 def _handle_processes(proc: Path, device: Path, identity: str):
     """Every process in this namespace holding the GPU device node open.
 
@@ -178,7 +191,9 @@ def _handle_processes(proc: Path, device: Path, identity: str):
         node = device.stat()
     except OSError as exc:
         return None, f"GPU handle inventory unavailable: {type(exc).__name__}"
-    node_identity, target = (node.st_dev, node.st_ino), str(device)
+    if not stat_module.S_ISCHR(node.st_mode):
+        return None, "GPU handle inventory needs a device node, not a file"
+    target = str(device)
     rows = {}
     try:
         entries = list(proc.iterdir())
@@ -200,7 +215,7 @@ def _handle_processes(proc: Path, device: Path, identity: str):
                 opened = descriptor.stat()
             except OSError:
                 continue
-            if (opened.st_dev, opened.st_ino) == node_identity:
+            if _names_device(node, opened):
                 rows[(int(entry.name), identity)] = None
                 break
     return rows, None

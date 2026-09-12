@@ -358,3 +358,18 @@ def test_a_host_without_rocminfo_never_launches_the_amd_reader(monkeypatch, tmp_
 
     assert devices == [] and not calls
     assert 'GPU device query unavailable: FileNotFoundError' in errors
+
+
+def test_a_reader_writable_outside_root_is_refused(tmp_path, monkeypatch):
+    # rocminfo runs as a subprocess of the root broker and libamdhip64.so is
+    # loaded into a root process, so a writable one is somebody else's code.
+    reader = tmp_path / 'rocminfo'
+    reader.write_text('#!/bin/sh\n')
+    reader.chmod(0o777)
+    monkeypatch.setattr(gc, 'ROCMINFO', str(reader))
+
+    report, error = gc._run_rocminfo(1.0)
+
+    assert report is None and 'writable outside root' in error
+    # A root-owned, root-writable-only reader passes the same check.
+    assert gc._trusted_reader('/usr/bin/env') is None
