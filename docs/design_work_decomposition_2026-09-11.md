@@ -268,7 +268,10 @@ The exit status follows the cover, not the children. A decomposed
 `pbcampaign` whose rows all pass but whose manifests do not answer the roster
 exits non-zero, because the cover is the claim the campaign actually makes.
 `--detach` returns before anything has run and so proves nothing; the group
-receipt is earned on the waiting path.
+receipt is earned on the waiting path. An operator who detached reaches it by
+re-running the same request once the children are done: every child is then a
+cache hit, nothing is submitted, and that second run is where the roster is
+shown to have been answered.
 
 ## Resources, retry, withdrawal and cleanup
 

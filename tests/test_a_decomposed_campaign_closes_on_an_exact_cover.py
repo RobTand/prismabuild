@@ -24,6 +24,7 @@ from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 import pbcampaign  # noqa: E402
+import pbwait  # noqa: E402
 
 from test_pbrun_detach import _checkout, _queue  # noqa: E402
 
@@ -236,3 +237,86 @@ def test_a_group_receipt_is_refused_rather_than_replaced(
             cas=cas, parent_key=group["plan"]["parent_key"],
         )
     assert "not the one this run verified" in str(refusal.value)
+
+
+# --------------------------------------------------------------------------
+# The cover decides the campaign, at the boundary an operator actually uses
+# --------------------------------------------------------------------------
+
+def _manifest(tmp_path: Path, request) -> str:
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(request), encoding="utf-8")
+    return str(path)
+
+
+def _group_receipts(tmp_path: Path) -> list[Path]:
+    return sorted(
+        (tmp_path / "cas" / pbcampaign.DECOMPOSITIONS).rglob("group.json"))
+
+
+def _detached_keys(out: str) -> list[str]:
+    return [json.loads(line)["action_key"] for line in out.splitlines() if line]
+
+
+def test_the_group_receipt_is_what_a_re_run_without_detach_adds(
+    tmp_path: Path, fleet, capsys,
+) -> None:
+    """The path to a decomposed campaign's verdict, as it is actually walked.
+
+    ``--detach`` returns before anything has run, so it proves no cover and
+    publishes no group receipt.  Re-running the same request once the children
+    are done submits nothing -- every child is a cache hit -- and that second
+    run is where the roster is finally shown to have been answered.
+    """
+
+    work, queue = fleet
+    manifest = _manifest(tmp_path, _request(work))
+
+    assert pbcampaign.main(["--transport", "pool", "--detach", manifest]) == 0
+    children = _detached_keys(capsys.readouterr().out)
+    assert len(children) >= 2, "one child is not a decomposition"
+    assert _group_receipts(tmp_path) == []
+
+    assert _serve(queue) == len(children)
+
+    assert pbcampaign.main(
+        ["--transport", "pool", "--wait-s", "60", manifest]) == 0
+    table = capsys.readouterr().out.splitlines()
+    assert len(table) == 1 + len(children)
+    assert all("cache_hit" in line for line in table[1:])
+
+    receipts = _group_receipts(tmp_path)
+    assert len(receipts) == 1
+    receipt = json.loads(receipts[0].read_text())
+    assert receipt["task_count"] == 66
+    assert receipt["child_count"] == len(children)
+
+
+def test_a_campaign_whose_every_row_passed_still_fails_on_an_open_cover(
+    tmp_path: Path, fleet, capsys,
+) -> None:
+    """The exit status follows the cover, not the rows.
+
+    Every child ran, exited zero and is a cache hit, so the table this prints
+    is a table of successes and ``pbwait``'s own verdict on it is 0.  The
+    campaign still exits 1, because the roster it was given is not answered.
+    """
+
+    work, queue = fleet
+    manifest = _manifest(tmp_path, _request(work, output='"elsewhere"'))
+
+    assert pbcampaign.main(["--transport", "pool", "--detach", manifest]) == 0
+    children = _detached_keys(capsys.readouterr().out)
+    assert _serve(queue) == len(children)
+
+    assert pbcampaign.main(
+        ["--transport", "pool", "--wait-s", "60", manifest]) == 1
+    printed = capsys.readouterr()
+    table = printed.out.splitlines()
+    assert len(table) == 1 + len(children)
+    assert all("cache_hit" in line for line in table[1:])
+    assert pbwait.verdict([
+        {"status": "cache_hit", "succeeded": True} for _ in children
+    ]) == 0, "the rows this campaign failed on are rows pbwait passes"
+    assert "not the roster's" in printed.err
+    assert _group_receipts(tmp_path) == []
