@@ -129,7 +129,21 @@ inode, because a container runtime `mknod`s its own node for a device passed in
 with `--device /dev/dxg`: same card, different filesystem and inode. Matching
 inodes would have made a GPU user inside a container — the containerized ROCm
 vLLM being built for this very box — invisible to the census, and opened the
-offer onto a busy device. Three narrower blind spots remain and are not fixed
+offer onto a busy device. Measured on this host, with one container holding the
+device open:
+
+```
+container init pid 115772
+-- inside the container, the node it was given:
+/dev/dxg type=character special file dev=117 ino=11  rdev=a:102
+-- from the host, that process descriptor 3:
+/dev/dxg
+fd3      type=character special file dev=117 ino=11  rdev=a:102
+/dev/dxg type=character special file dev=6   ino=138 rdev=a:102
+```
+
+The link text is `/dev/dxg`, so the census's prefilter keeps the row; the device
+number is the same card; the inode is not. That is the whole finding. Three narrower blind spots remain and are not fixed
 here: a holder in another PID namespace (a sibling WSL2 distro), a holder whose
 thread-group leader has exited while its threads keep the descriptor, and a
 holder that opened the card through a second path, since the census prefilters
