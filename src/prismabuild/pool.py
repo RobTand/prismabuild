@@ -1431,6 +1431,7 @@ class ResourceLedger:
     def __init__(self, root: str | Path, host: str | None = None) -> None:
         self.root = Path(root)
         self.host = host or socket.gethostname()
+        self.last_token_shortage: dict[str, object] | None = None
 
     @property
     def base(self) -> Path:
@@ -1763,6 +1764,7 @@ class ResourceLedger:
         return the tokens itself.
         """
 
+        self.last_token_shortage = None
         wanted = {k: int(v) for k, v in demand.items() if int(v) > 0}
         handle = (
             f"{ACQUIRING_PREFIX}{int(_now() * 1_000_000)}.{action_key}"
@@ -1789,6 +1791,12 @@ class ResourceLedger:
                                            and adaptive.get("borrowing"))
                                           or (kind == "gpu" and adaptive_gpu is not None
                                               and adaptive_gpu.get("probe"))):
+                    # Capture the tokens this acquisition could actually obtain,
+                    # before rollback. No extra shared scan, and no claim that a
+                    # later reader sees the same free capacity (issue #520).
+                    self.last_token_shortage = {
+                        "resource": kind, "requested": need, "available": taken,
+                    }
                     raise _Insufficient(kind)
             if adaptive_gpu:
                 metadata = dict(adaptive_gpu, borrowed_gpu=max(
@@ -4518,14 +4526,17 @@ class PoolQueue:
                         # population when the mount was slow (#351).
                         refused = False
                         refusal_source = None
+                        cpu_decision = gpu_decision = token_shortage = None
                         with self._admission_lock(controller):
                             if controller is not None:
                                 adaptive = controller.decision(item, demand, identity=identity)
+                                cpu_decision = getattr(controller, "last_decision", None)
                                 refused = adaptive is None
                                 if refused:
                                     refusal_source = "adaptive_cpu_refused"
                             if not refused and gpu_controller is not None and demand.get("gpu"):
                                 adaptive_gpu = gpu_controller.decision(item, demand, contract=contract)
+                                gpu_decision = getattr(gpu_controller, "last_decision", None)
                                 refused = adaptive_gpu is None
                                 if refused:
                                     refusal_source = "adaptive_gpu_refused"
@@ -4540,6 +4551,7 @@ class PoolQueue:
                                               ledger.begin_acquire(key, demand, adaptive=adaptive,
                                                                    cpu_tiers=cpu_tiers))
                                     asked = demand
+                                token_shortage = ledger.last_token_shortage
                                 if handle is not None:
                                     # A funded reservation spends its probe and borrow
                                     # freshness under the same exclusion as its decision.
@@ -4554,9 +4566,9 @@ class PoolQueue:
                             # capacity authority. Keep its I/O outside host admission.
                             # The per-key transition lock still protects this item.
                             self.record_pass(key)
-                            decision = (getattr(gpu_controller, "last_decision", None)
+                            decision = (gpu_decision
                                         if refusal_source == "adaptive_gpu_refused"
-                                        else getattr(controller, "last_decision", None))
+                                        else cpu_decision)
                             self.record_denial(item, refusal_source or "adaptive_refused",
                                                {"decision": decision or {}})
                             continue
@@ -4578,10 +4590,11 @@ class PoolQueue:
                                                "reservation_unavailable_past_ceiling" if withholding else
                                                "reservation_unavailable", {
                                 "demand": demand, "reservation_demand": reservation_demand,
+                                "token_shortage": token_shortage,
                                 "capacity_total": total, "denials": denials,
                                 "withhold_age_s": age, "withhold_ceiling_s": WITHHOLD_CEILING_S,
-                                "cpu_decision": getattr(controller, "last_decision", None),
-                                "gpu_decision": getattr(gpu_controller, "last_decision", None),
+                                "cpu_decision": cpu_decision,
+                                "gpu_decision": gpu_decision,
                             })
                             if withholding and age <= WITHHOLD_CEILING_S:
                                 return None

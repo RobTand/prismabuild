@@ -953,6 +953,19 @@ def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
             for n in nodes))
 
 
+def _token_shortage_text(denial: Mapping[str, object]) -> str:
+    evidence = denial.get('evidence')
+    shortage = evidence.get('token_shortage') if isinstance(evidence, dict) else None
+    if not isinstance(shortage, dict):
+        return ''
+    resource, requested, available = (shortage.get(k) for k in ('resource', 'requested', 'available'))
+    if (not isinstance(resource, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', resource)
+            or type(requested) is not int or type(available) is not int
+            or not 0 <= available < requested):
+        return ''
+    return f" [{resource}: requested {requested}, available {available}; waiting for release]"
+
+
 def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, object]) -> list[str]:
     if not jobs:
         return ["no jobs ready or claimed" if summary.get('empty') is True else "pool job state unavailable"]
@@ -964,6 +977,7 @@ def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, o
          j.get('admission_passes'), None if not j.get('admission_denials') else '; '.join(
              f"{denial['host']}: {denial['reason']}"
              + (f"/{denial['decision_reason']}" if denial.get('decision_reason') else '')
+             + _token_shortage_text(denial)
              + f" ({denial['age_s']:.0f}s ago)"
              for denial in j['admission_denials']),
          j.get('unstarted_releases'), j.get('placeable_hosts'),

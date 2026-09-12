@@ -116,6 +116,15 @@ claiming an item does not erase its diagnostic history. Status exposes each
 host's record on ready and claimed rows only when it matches that submission,
 with the original observation age. A malformed diagnostic makes the census
 partial without making its valid job unreadable or erasing queue counts.
+An unfunded token acquisition also retains `token_shortage`: the first failing
+resource, the physical tokens requested after any CPU borrowing adjustment,
+and the tokens actually obtainable before rollback. This is evidence from the
+acquisition itself, with no diagnostic rescan or additional shared write. It is
+not a current free-capacity snapshot or a claim that all other resources fit.
+Only controllers evaluated for this candidate contribute decision evidence;
+a CPU-only denial cannot inherit a previous candidate's GPU decision. Old
+denial snapshots without shortage details remain readable. Admission, rollback,
+aging and the bounded/coalesced diagnostic publication remain unchanged.
 Withholding-age reads also run outside admission. A denied reservation owns
 no tokens or probe/borrow credit. Background preemption selection still requires
 host exclusion to serialize pending releases; it reacquires admission
