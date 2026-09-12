@@ -194,8 +194,10 @@ def test_children_share_everything_the_template_froze(decomposed) -> None:
     """One source tree, one closure, one environment -- across the campaign."""
 
     first, second = decomposed.child(0), decomposed.child(1)
-    for field in ("code_closure", "environment", "execution_scope"):
+    for field in ("code_closure", "execution_scope"):
         assert first[field] == second[field], field
+    assert (first["environment"]["toolchain"]
+            == second["environment"]["toolchain"])
     for field in ("cwd", "demand", "placement", "retry_policy",
                   "checkout_snapshot"):
         assert first["params"][field] == second["params"][field], field
@@ -214,7 +216,8 @@ def test_a_child_differs_from_its_siblings_in_exactly_four_places(
         field for field in set(first) | set(second)
         if first.get(field) != second.get(field)
     }
-    assert differing == {"action_key", "task", "inputs", "params"}
+    assert differing == {"action_key", "task", "inputs", "params",
+                         "environment"}
     assert first["task"]["argv"] != second["task"]["argv"]
     assert first["task"]["result_path"] != second["task"]["result_path"]
     assert first["inputs"][:2] == second["inputs"][:2], (
@@ -223,6 +226,47 @@ def test_a_child_differs_from_its_siblings_in_exactly_four_places(
     assert first["inputs"][2] != second["inputs"][2]
     assert (first["params"][dc.LOGICAL_BATCH_PARAM]
             != second["params"][dc.LOGICAL_BATCH_PARAM])
+    ours, theirs = (dict(first["environment"]["variables"]),
+                    dict(second["environment"]["variables"]))
+    assert {name for name in set(ours) | set(theirs)
+            if ours.get(name) != theirs.get(name)} == {
+        pbrun.CONTAINER_OWNER_ENV, pbrun.CONTAINER_MARKER_ENV}, (
+        "the environment varies in ownership and in nothing else"
+    )
+
+
+def test_each_child_owns_its_own_container_lifecycle(decomposed) -> None:
+    """Siblings can land on one box; one label would make cleanup kill both.
+
+    Withdrawal and finish reap by the Docker ownership label and then wait on
+    the ``<owner>.used`` marker, so two concurrent children under one owner
+    would have the first to finish remove the other's live payload and the
+    other's marker block its reclaim.  The owner is therefore a property of
+    the action, re-derived from the child's own command, and each child's
+    marker path follows the owner it actually carries.
+    """
+
+    first, second = decomposed.child(0), decomposed.child(1)
+    owners = [child["environment"]["variables"][pbrun.CONTAINER_OWNER_ENV]
+              for child in (first, second)]
+    assert owners[0] != owners[1]
+    for child, owner in zip((first, second), owners):
+        variables = dict(child["environment"]["variables"])
+        assert variables.pop(pbrun.CONTAINER_MARKER_ENV).endswith(
+            f"{owner}.used")
+        assert variables.pop(pbrun.CONTAINER_OWNER_ENV) == owner
+        assert owner == pbrun.container_owner(
+            child["params"]["command"],
+            child["params"]["cwd"],
+            child["params"]["demand"],
+            variables,
+            determinism=child["task"]["determinism"],
+            retry_policy=child["params"]["retry_policy"],
+            marker_root=decomposed.template["marker_root"],
+            identity=decomposed.template["checkout_identity"],
+            logical_cwd=child["params"]["cwd"],
+            placement=child["params"]["placement"],
+        ), "a child's owner is the ordinary digest over its own body"
 
 
 def test_the_same_child_seals_the_same_key_twice(decomposed) -> None:

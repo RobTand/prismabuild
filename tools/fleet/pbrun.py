@@ -3894,6 +3894,14 @@ def freeze_action_template(
     variables["PATH"] = f"{CONTAINER_WRAPPER_DIR}:{prior_path}"
     identity = _git_identity(cwd)
     marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
+    # This owner belongs to the template's own command, and its only job here
+    # is to be part of what the stamp name is fingerprinted over.  Ownership
+    # itself is settled per action in ``seal_action_from_template``, because
+    # two actions sealed off one template run as two lifecycles: the Docker
+    # label a shared owner would give them makes one child's cleanup remove
+    # the other's live payload, and one child's ``<owner>.used`` marker blocks
+    # the other's reclaim.  An unmodified command re-derives this exact digest
+    # there, so an ordinary submission is unchanged.
     owner = container_owner(
         command,
         cwd,
@@ -4005,8 +4013,7 @@ def freeze_action_template(
         params[pb.PROFILE_PARAM] = profile
     return {
         "cas": cas,
-        "container_owner": owner,
-        "container_marker": str(marker),
+        "marker_root": marker_root,
         "checkout_identity": identity,
         "log_name": log_name,
         "stamp_name": stamp_name,
@@ -4060,6 +4067,16 @@ def seal_action_from_template(
     rewrite anything the template froze: a child that could restate its own
     command, demand or snapshot would be a different action wearing a
     template's identity.
+
+    Container ownership is settled here rather than in the template because it
+    is a property of one running action, not of the source tree.  Two children
+    sealed off one template are two Docker lifecycles on what may be one box:
+    a shared ownership label makes the first to finish ``docker rm -f`` the
+    other's live payload, and a shared ``<owner>.used`` marker makes each
+    one's reclaim wait on the other's use.  So the owner is re-derived from
+    this action's own command and re-injected.  With nothing overridden the
+    inputs are the template's, so the digest is the template's and an ordinary
+    submission seals byte for byte what it did before this split existed.
     """
 
     params = dict(template["params"])
@@ -4073,6 +4090,29 @@ def seal_action_from_template(
         params.update(extra_params)
     command = list(template["params"]["command"] if command is None else command)
     params["command"] = command
+    # Strip the two injected variables back off to recover exactly the mapping
+    # the template hashed, so an unoverridden command lands on the same digest.
+    variables = dict(template["environment"]["variables"])
+    variables.pop(CONTAINER_OWNER_ENV, None)
+    variables.pop(CONTAINER_MARKER_ENV, None)
+    marker_root = template["marker_root"]
+    owner = container_owner(
+        command,
+        params["cwd"],
+        params["demand"],
+        variables,
+        determinism=template["task"]["determinism"],
+        retry_policy=params["retry_policy"],
+        marker_root=marker_root,
+        # Recorded by the template, never re-read: the tree may have moved on
+        # since, and every action sealed from one template must answer for the
+        # tree that template froze.
+        identity=template["checkout_identity"],
+        logical_cwd=params["cwd"],
+        placement=params["placement"],
+    )
+    variables[CONTAINER_OWNER_ENV] = owner
+    variables[CONTAINER_MARKER_ENV] = str(marker_root / f"{owner}.used")
     log_name = str(template["log_name"])
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
@@ -4087,7 +4127,7 @@ def seal_action_from_template(
         "inputs": [*template["inputs"], *extra_inputs],
         "code_closure": template["code_closure"],
         "params": params,
-        "environment": template["environment"],
+        "environment": {**template["environment"], "variables": variables},
         "execution_scope": template["execution_scope"],
     }
     try:
@@ -4527,7 +4567,6 @@ def main() -> int:
         variables=variables,
         determinism=determinism,
         retry_policy=retry_policy,
-        task_class="measurement" if args.measurement else "generation",
         host_class=args.host_class,
         measurement=args.measurement,
         transport=args.transport,
@@ -4542,10 +4581,13 @@ def main() -> int:
         profile=args.profile,
     )
     cas = template["cas"]
-    owner = template["container_owner"]
     checkout_snapshot = template["params"]["checkout_snapshot"]
     action = seal_action_from_template(template)
     key = str(action["action_key"])
+    # One source for ownership: the sealed body.  The queue row and the action
+    # the worker executes have to name the same owner, or the lifecycle
+    # cleanup queries a label nothing carries.
+    owner = str(action["environment"]["variables"][CONTAINER_OWNER_ENV])
 
     request_path = cas.publish_action_request(action)
 
