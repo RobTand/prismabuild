@@ -146,6 +146,18 @@ alone does not identify the action's execution policy. Read the sealed request
 and terminal policy fields to distinguish a missing observation from an action
 with no declared progress policy.
 
+Prepare the smallest useful independent execution units before publishing them.
+A logical parent may first be queued for a PB-owned decomposition stage, which
+must validate and freeze its complete child plan before publishing any child.
+Once a child is published, preserve its scope and task membership while ready,
+running and retrying. Do not split or resize it to react to availability; let
+existing admission assign whole ready units to eligible workers. Reuse verified
+durable results when retrying the same unit. Preserve calibration, dependency
+and residency boundaries, and use measured setup/work costs to avoid both
+wasteful cold-start quanta and opaque long worklists. Producers do not choose
+hosts or fleet shard counts. The [#517 design](design_work_decomposition_2026-09-11.md)
+specifies the proposed decomposer; current tools do not yet implement it.
+
 Use `pbtest.py` to split suites into independent file shards and
 `pbcampaign.py` for explicit action manifests. Cap pytest fanout at `-n 4` with
 one native thread per worker (`OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`,

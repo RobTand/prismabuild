@@ -42,3 +42,23 @@ submission requires a runtime advertising both `progress-v1` and
 `progress-helper-v1` on the pool transport. A source merge alone
 does not establish deployed support. Never change an existing sealed request
 to extend it; use supported recovery and its identity-bound checkpoints.
+
+## Work decomposition — Rob, 2026-09-11
+
+Decompose declared logical work into the smallest useful independent execution
+units before those units are published. A logical parent may first be queued
+for a PB decomposition stage. PB owns decomposition, placement and balancing;
+producers declare tasks, real dependencies, residency needs and measured cost
+inputs instead of assigning hosts or choosing fleet shard counts.
+
+Validate and freeze the complete child plan before publishing its first unit.
+Once published, an execution unit's scope and task membership stay immutable,
+whether ready or running. Availability changes which worker takes a unit, not
+what the unit contains. Retry the same unit and adopt its verified durable
+results; do not split or resize queued/running units. Amortize startup and
+resident input preparation within useful units without hiding a long independent
+worklist in one opaque action. Report an unsupported decomposition explicitly.
+
+The agreed implementation design is
+[PB #517](docs/design_work_decomposition_2026-09-11.md); its new decomposer remains
+proposed until implemented and validated.
