@@ -41,7 +41,7 @@ MAINTENANCE_UNOWNED = 'unattributed'
 #: states whether a drain is open but not when it opened, and the marker names
 #: a parked loop leaves are keyed on when.
 MAINTENANCE_GATE = '/run/prismabuild/maintenance.json'
-#: What can still claim work off the shared queue on this box, matched on the
+#: What can still claim or prewarm work from the shared queue on this box, matched on the
 #: basename of any argv element.
 #:
 #: Not on a generation-store prefix. A supervised loop carries the resolved
@@ -54,7 +54,7 @@ MAINTENANCE_GATE = '/run/prismabuild/maintenance.json'
 #: A basename match has false positives: an editor, a grep, a test named after
 #: the file. Each one leaves this box reading as still admitting, and something
 #: waiting on the drain keeps waiting, which is the direction to be wrong in.
-SERVING_NAMES = frozenset({'worker_loop.py', 'worker.py'})
+SERVING_NAMES = frozenset({'worker_loop.py', 'worker.py', 'prewarm_loop.py'})
 #: Mirrors worker_loop._KEY_SAFE. The two modules cannot import each other --
 #: the loop runs unprivileged out of a published generation, this runs as root
 #: out of the install directory -- so the spelling is asserted between them by
@@ -306,7 +306,7 @@ def proc_census(root='/proc'):
 
 
 def serving(census):
-    """The (pid, starttime) of everything in `census` that could claim work."""
+    """The (pid, starttime) of queue claimants and storage readers in `census`."""
     return [(pid, starttime) for pid, starttime, argv in census
             if any(PurePosixPath(part).name in SERVING_NAMES for part in argv)]
 
@@ -314,7 +314,7 @@ def serving(census):
 def drained(census, markers, changed_unix, active_scopes):
     """Whether this box has stopped admitting, and which processes have not.
 
-    Two conditions, and neither is a clock. Every process that could claim has
+    Two conditions, and neither is a clock. Every claimant and storage reader has
     left a park marker for this drain, and the broker holds no active scope.
 
     A loop holding a claim is inside serve_once, not at the top of its poll
@@ -325,6 +325,11 @@ def drained(census, markers, changed_unix, active_scopes):
     `worker.py` writes no marker at all, so a live one-shot leaves this box
     un-drained whatever else is true, which is what stops it claiming under a
     generation the fleet is halfway through leaving.
+
+    The storage role records the same marker after its active cycle finishes.
+    Legacy readers without that boundary stay unparked until they exit. This
+    observation does not gate ordinary client convergence, which waits for
+    broker scopes independently of these process markers.
     """
     unparked = [pid for pid, starttime in serving(census)
                 if changed_unix is None

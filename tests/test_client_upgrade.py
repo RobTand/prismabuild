@@ -154,6 +154,19 @@ def test_active_jobs_drain_without_restart_and_next_tick_upgrades(setup):
     assert updater.run()['state'] == 'updated'
 
 
+def test_storage_drain_observation_does_not_gate_ordinary_client_convergence(setup):
+    updater, backend, _ = setup
+    updater.procs = lambda: [(105, '904', ['python3', '/checkout/prewarm_loop.py'])]
+    backend.active = 1
+    result = updater.run()
+    assert result['state'] == 'draining'
+    assert result['drained'] is False
+    assert result['unparked'] == [105]
+    backend.active = 0
+    assert updater.run()['state'] == 'updated'
+    assert not backend.draining
+
+
 def test_bad_new_health_restores_complete_previous_installation(setup):
     updater, backend, _ = setup
     old = updater.installed()
