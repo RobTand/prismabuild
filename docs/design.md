@@ -1992,6 +1992,8 @@ park; disk holds and filesystem waits can therefore delay parking. At the next
 boundary a changed runtime commit or generation makes the process exit for
 supervisor replacement, even while parked. One-cycle invocations return 75
 on that transition so an unperformed cycle is not reported as complete.
+The gate and runtime are rechecked after disk setup, immediately before the
+cycle, so topology-discovery delays do not preserve an earlier open decision.
 These checks do not add the storage process to the updater's current serving
 census, establish a cross-host quorum, or enable barrier activation. The #458
 protocol still needs to include this reader in its drain and rotation proof.

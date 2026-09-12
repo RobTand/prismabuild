@@ -1172,7 +1172,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--once", action="store_true",
                         help="run one cycle and exit; return 75 if maintenance or runtime rotation defers it")
     parser.add_argument("--dry-run", action="store_true",
-                        help="decide and report; read nothing, write nothing")
+                        help="plan without warming data or recording prewarm results; maintenance checks still apply")
     parser.add_argument("--log", default=None,
                         help="append one JSON object per cycle here")
     args = parser.parse_args(argv)
@@ -1191,15 +1191,18 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({**payload, "unix": round(time.time(), 3)}),
               file=sys.stderr, flush=True)
 
+    def runtime_moved() -> bool:
+        current = runtime_gate.published_commit()
+        current_generation = runtime_gate._generation_at(runtime_gate.RUNTIME_VERSION)
+        return bool((current and current != loaded_commit) or (
+            loaded_generation and current_generation
+            and loaded_generation != current_generation))
+
     while True:
         # Finish the current cycle before parking; a marker must never certify
         # a reader that is still inside its file reads. Check rotation first so
         # even a parked role leaves old imports for supervisor replacement.
-        current = runtime_gate.published_commit()
-        current_generation = runtime_gate._generation_at(runtime_gate.RUNTIME_VERSION)
-        if (current and current != loaded_commit) or (
-                loaded_generation and current_generation
-                and loaded_generation != current_generation):
+        if runtime_moved():
             print("prewarm: runtime moved; exiting for supervisor reload",
                   file=sys.stderr, flush=True)
             return 75 if args.once else 0
@@ -1221,6 +1224,10 @@ def main(argv: list[str] | None = None) -> int:
         if not args.dry_run:
             require_storage_pacing(pacer)
         pacer.notify = announce
+        # Topology discovery may block. Re-enter the boundary if its setup
+        # outlived an open gate or the runtime it was preparing to serve.
+        if runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
+            continue
         event = cycle(args, queue, mounts, stop, pacer=pacer)
         line = json.dumps(event)
         print(line, flush=True)

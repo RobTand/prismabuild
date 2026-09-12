@@ -126,3 +126,18 @@ def test_cycle_finishes_before_maintenance_park(role, monkeypatch):
         loop.main(argv)
     assert calls == [True]
     assert len(list(parked.iterdir())) == 1
+
+
+@pytest.mark.parametrize("transition", ["maintenance", "generation"])
+def test_runtime_boundary_is_rechecked_after_disk_setup(role, monkeypatch, transition):
+    loop, gate, parked, current, calls, argv = role
+    build = loop.pacer_from_args
+    def setup(args):
+        if transition == "maintenance":
+            gate.write_text(json.dumps({"draining": True, "changed_unix": 458.0}))
+        else:
+            current.write_text(json.dumps({"generation": "new", "commit": "b" * 40}))
+        return build(args)
+    monkeypatch.setattr(loop, "pacer_from_args", setup)
+    assert loop.main(argv + ["--once"]) == 75
+    assert calls == []
