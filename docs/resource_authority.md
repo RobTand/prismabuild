@@ -135,11 +135,19 @@ local daemon listing no container under either `prismabuild.action` or
 `prismabuild.scope`, both labels the shim refuses to let a caller set -- sends
 `settle` with that evidence under the same attempt token its `release` carries.
 The broker records `settled_unix` and the evidence. The next inventory pass
-then reclaims the group, reasserts its stop, re-reads that exact group to
-confirm it is still empty, frozen and the same kernel identity, releases it,
+then reclaims the group, verifies that it is still empty, frozen and the same
+kernel identity before reasserting its stop, rechecks those facts, releases it,
 and records `released_unix` with `maintenance_cleanup` of `settled container
 transaction`. A pass that has already found something wrong in its own
 namespace defers instead.
+
+A failed reclaim, or a partial reclaim with residual or unknown page charge,
+leaves the group online for a later pass to retry without marking it released
+or failing maintenance health. A partial reclaim can proceed to removal when
+`memory.stat` reports both `anon` and `file` zero: `memory.current` also includes
+kernel allocations, so total charge need not reach zero. The broker records
+residual page bytes separately from total bytes. The kernel documents
+[under-reclaim and the counters](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files).
 
 A grace period would not do: nothing about elapsed time makes an already
 accepted daemon operation impossible. Settlement is the proof the fleet already

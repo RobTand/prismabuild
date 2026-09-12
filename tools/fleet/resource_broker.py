@@ -213,8 +213,11 @@ class SystemdBackend:
             except OSError as exc:
                 if exc.errno not in {errno.EAGAIN,errno.EBUSY}:raise
                 complete=False
+        stats=dict(line.split() for line in (group/'memory.stat').read_text().splitlines())
+        pages=[int(stats[name]) for name in ('anon','file')]
+        if any(value<0 for value in pages):raise ValueError('invalid residual page charge')
         return {'before':before,'after':int((group/'memory.current').read_text()),
-                'complete':complete}
+                'complete':complete,'page_bytes_after':sum(pages)}
     def exists(self, scope):
         try:self.path(scope).stat()
         except FileNotFoundError:return False
@@ -699,21 +702,34 @@ class Authority:
         able to hold a host's maintenance gate closed.
         """
         observation={'reclaim_before_bytes':None,'reclaim_after_bytes':None,
+                     'reclaim_page_bytes_after':None,
                      'reclaim_complete':None,'reclaim_error':None}
         try:
             result=self.backend.reclaim(scope)
             observation.update({'reclaim_before_bytes':result['before'],
                                 'reclaim_after_bytes':result['after'],
+                                'reclaim_page_bytes_after':result.get('page_bytes_after'),
                                 'reclaim_complete':bool(result['complete'])})
         except (OSError,ValueError,KeyError) as exc:
             observation['reclaim_error']=str(exc)[:500]
         # A pass that observed exactly what the record already says writes
         # nothing: a tombstone with nothing left to give back would otherwise
         # rewrite its own state file on every upgrade cycle, forever.
-        if all(record.get(key)==value for key,value in observation.items()):return
-        record.update(observation);record['reclaimed_unix']=time.time()
-        try:_atomic(self.state_dir/(scope+'.json'),record)
-        except OSError:pass  # the in-memory record carries it; the charge is gone either way
+        if not all(record.get(key)==value for key,value in observation.items()):
+            record.update(observation);record['reclaimed_unix']=time.time()
+            try:_atomic(self.state_dir/(scope+'.json'),record)
+            except OSError:pass  # retain the observation in memory for this pass
+        # memory.current includes kernel allocations; reclaim may return
+        # EAGAIN after all anon/file pages are gone. Kernel-only residuals do
+        # not need another reclaim attempt before the group goes offline.
+        return (observation['reclaim_complete'] is True
+                or observation['reclaim_page_bytes_after']==0)
+
+    def _verify_retired_scope(self,scope,record):
+        observed=self.backend.observe(scope)
+        if (observed is None or observed['populated'] or not observed['frozen']
+                or observed.get('identity')!=record.get('cgroup_identity')):
+            raise ValueError('retired scope changed before removal: '+scope)
 
     def _reap_retired_scope(self,scope,record):
         """Remove a tombstone whose holder proved its container transaction closed.
@@ -722,29 +738,31 @@ class Authority:
         still holds LRU page cache goes offline as a zombie -- the kernel
         reparents kernel memory on offline but not page cache -- so removing
         first would delete the directory and leave the charge behind, which is
-        the half of #486 a removal alone does not fix. Reclaim, reassert the
-        stop this record already intends, re-read the exact group, and only
-        then remove it.
+        the half of #486 a removal alone does not fix. Complete reclaim, verify
+        the exact group, reassert its stop, verify again, and only then remove.
 
-        The re-read is a second identity check against a fresh row, because the
-        pass's inventory was taken before both the reclaim and the stop.
-        Emptiness is asked twice on purpose, once through that row and once
-        through `backend.empty`, exactly as `release` asks it after reasserting
-        the stop.
+        Inventory precedes reclaim, which can take time. Check before stop so
+        a mismatch is not discovered only after signalling a replacement.
+        Retain the post-stop observation and final `backend.empty` check too.
         """
-        self._reclaim_retired_scope(scope,record)
+        if not self._reclaim_retired_scope(scope,record):
+            # A failed reclaim or one with residual/unknown page charge must
+            # leave the group online for retry without failing the gate.
+            return False
+        # Reclaim can take time. Do not stop a replacement or a group that
+        # became populated since inventory; checking only after stop would
+        # discover the mismatch after signalling it.
+        self._verify_retired_scope(scope,record)
         # Persisted stop intent, reasserted: the same move `release` makes
         # before it is willing to treat emptiness as safe.
         self.backend.stop(scope)
-        observed=self.backend.observe(scope)
-        if (observed is None or observed['populated'] or not observed['frozen']
-                or observed.get('identity')!=record.get('cgroup_identity')):
-            raise ValueError('retired scope changed before removal: '+scope)
+        self._verify_retired_scope(scope,record)
         if not self.backend.empty(scope):raise ValueError('retired scope became populated: '+scope)
         self.backend.release(scope)
         record['released_unix']=time.time()
         record['maintenance_cleanup']='settled container transaction'
         _atomic(self.state_dir/(scope+'.json'),record)
+        return True
 
     def _maintenance_status(self):
         errors=[];active=set();inventory={}
@@ -797,8 +815,8 @@ class Authority:
                             # own, defers removal rather than acting on a
                             # picture it has already found wrong.
                             try:
-                                self._reap_retired_scope(scope,record)
-                                inventory.pop(scope,None)
+                                if self._reap_retired_scope(scope,record):
+                                    inventory.pop(scope,None)
                             except (OSError,ValueError) as exc:errors.append(str(exc)[:1500])
                         else:
                             self._reclaim_retired_scope(scope,record)

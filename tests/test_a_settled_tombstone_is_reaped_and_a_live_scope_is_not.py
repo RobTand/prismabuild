@@ -78,7 +78,7 @@ def test_a_settled_tombstone_is_reclaimed_first_and_then_removed(authority, monk
     assert status['health'] is True and status['errors'] == []
     assert scope not in b.groups, 'the slice is gone after the next inventory pass'
     names = [op for op, _ in b.ops]
-    assert names == ['reclaim', 'stop', 'observe', 'release']
+    assert names == ['reclaim', 'observe', 'stop', 'observe', 'release']
     assert names.index('reclaim') < names.index('release'), (
         'a memcg removed while it still holds page cache goes offline as a '
         'zombie and keeps the charge: reclaim cannot follow the removal')
@@ -165,7 +165,7 @@ def test_an_identity_that_changes_under_the_removal_refuses_and_reports(
     status = _pass(a)
     assert status['health'] is False
     assert any('changed before removal' in error for error in status['errors'])
-    assert scope in b.groups and [op for op, _ in b.ops] == ['reclaim', 'stop', 'observe']
+    assert scope in b.groups and [op for op, _ in b.ops] == ['reclaim', 'observe']
 
 
 def test_a_group_that_vanished_under_the_removal_refuses_rather_than_guessing(

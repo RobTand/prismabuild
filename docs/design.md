@@ -446,6 +446,19 @@ profile. Broker stop/release still proves aggregate containment, including
 containers; an empty frozen retired scope remains protected against late Docker
 RPCs by the existing broker contract.
 
+Retired scopes with a recorded matching kernel identity can reclaim memory
+while they remain empty and frozen. Reclamation does not release containment.
+For the action's own scope, the holder can submit token-authenticated container
+settlement after cleanup proves its ownership marker absent and both reserved
+Docker label queries empty. Inventory removes only settled scopes after a
+completed reclaim request (or a partial reclaim with no remaining anon/file
+charge) and fresh empty/frozen/identity checks before and after reasserting stop.
+Failed reclaim and residual or unknown page charge retain the group for retry
+without failing maintenance health. Legacy unsettled groups remain retained;
+their removal needs the offline evidence described in
+[resource authority](resource_authority.md#recovery-evidence). Late-finish
+cleanup has no authority to settle the action-wide container transaction.
+
 Unproven cleanup retains the late-finish record with its original result, exact
 scope authority, failure count and first/last failure times. A restart can retry
 it without the original worker, and it is never converted to a lost lease or

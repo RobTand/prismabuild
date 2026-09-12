@@ -177,6 +177,7 @@ def _cgroup_tree(root, scope, *, current=829_808_640, reclaim_file=True):
     group = root / 'prismabuild.slice' / scope
     group.mkdir(parents=True)
     (group / 'memory.current').write_text(f'{current}\n')
+    (group / 'memory.stat').write_text(f'anon 0\nfile {current}\n')
     if reclaim_file:
         (group / 'memory.reclaim').write_text('')
     return group
@@ -191,13 +192,15 @@ def test_the_backend_asks_the_kernel_for_the_exact_charge_it_read(tmp_path):
     group = _cgroup_tree(tmp_path, SCOPE)
     result = backend.reclaim(SCOPE)
     assert (group / 'memory.reclaim').read_text() == '829808640'
-    assert result == {'before': 829_808_640, 'after': 829_808_640, 'complete': True}
+    assert result == {'before': 829_808_640, 'after': 829_808_640,
+                      'complete': True, 'page_bytes_after': 829_808_640}
 
 
 def test_the_backend_asks_for_nothing_when_there_is_nothing_charged(tmp_path):
     backend = module().SystemdBackend(root=tmp_path)
     group = _cgroup_tree(tmp_path, SCOPE, current=0)
-    assert backend.reclaim(SCOPE) == {'before': 0, 'after': 0, 'complete': True}
+    assert backend.reclaim(SCOPE) == {'before': 0, 'after': 0, 'complete': True,
+                                    'page_bytes_after': 0}
     assert (group / 'memory.reclaim').read_text() == ''
 
 
