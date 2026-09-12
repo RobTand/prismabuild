@@ -28,6 +28,18 @@ import prewarm_loop  # noqa: E402
 REPO = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def private_open_runtime(tmp_path, monkeypatch):
+    """Pricing fixtures have their own open gate and stable runtime identity."""
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
+    version = tmp_path / "runtime.json"
+    version.write_text(json.dumps({"generation": "pricing-fixture", "commit": "a" * 40}))
+    monkeypatch.setattr(prewarm_loop.runtime_gate, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(prewarm_loop.runtime_gate, "RUNTIME_VERSION", version)
+    monkeypatch.setattr(prewarm_loop.runtime_gate, "GENERATION_VERSION", version)
+
+
 def test_the_record_carries_the_disk_numbers_beside_the_rate(
         tmp_path: Path) -> None:
     fleet = Fleet(tmp_path)

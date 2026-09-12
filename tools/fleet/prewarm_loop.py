@@ -90,6 +90,7 @@ from pathlib import Path
 # be resolved by the rule that knows both layouts (the rule ``pbtest.py`` uses).
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
+import worker_loop as runtime_gate  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
@@ -1169,7 +1170,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="a claim younger than this still counts its "
                              "manifest bytes against the prewarm budget")
     parser.add_argument("--once", action="store_true",
-                        help="run one cycle and exit")
+                        help="run one cycle and exit; return 75 if maintenance or runtime rotation defers it")
     parser.add_argument("--dry-run", action="store_true",
                         help="decide and report; read nothing, write nothing")
     parser.add_argument("--log", default=None,
@@ -1181,18 +1182,41 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             "prewarm: no local mount from --mount-map exists on this host; "
             "this loop belongs on the storage host only")
-    queue = pool.PoolQueue(Path(args.pool_root))
+    queue = None
     stop = threading.Event()
+    loaded_commit = runtime_gate.loaded_runtime_commit()
+    loaded_generation = runtime_gate._generation_at(runtime_gate.GENERATION_VERSION)
 
     def announce(payload: dict[str, object]) -> None:
         print(json.dumps({**payload, "unix": round(time.time(), 3)}),
               file=sys.stderr, flush=True)
 
-    probe = pacer_from_args(args)
-    if not args.dry_run:
-        require_storage_pacing(probe)
-
     while True:
+        # Finish the current cycle before parking; a marker must never certify
+        # a reader that is still inside its file reads. Check rotation first so
+        # even a parked role leaves old imports for supervisor replacement.
+        current = runtime_gate.published_commit()
+        current_generation = runtime_gate._generation_at(runtime_gate.RUNTIME_VERSION)
+        if (current and current != loaded_commit) or (
+                loaded_generation and current_generation
+                and loaded_generation != current_generation):
+            print("prewarm: runtime moved; exiting for supervisor reload",
+                  file=sys.stderr, flush=True)
+            return 75 if args.once else 0
+        gate = runtime_gate.read_maintenance_gate()
+        if gate is not None:
+            runtime_gate.post_park_marker(gate)
+            print("prewarm: maintenance gate closed; storage cycle deferred",
+                  file=sys.stderr, flush=True)
+            if args.once:
+                return 75
+            time.sleep(args.poll_s)
+            continue
+        if queue is None:
+            queue = pool.PoolQueue(Path(args.pool_root))
+            probe = pacer_from_args(args)
+            if not args.dry_run:
+                require_storage_pacing(probe)
         pacer = pacer_from_args(args)
         if not args.dry_run:
             require_storage_pacing(pacer)

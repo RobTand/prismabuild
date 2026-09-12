@@ -1983,6 +1983,19 @@ burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not
 an independent signature. See [client upgrades](client_upgrade.md).
 
+The storage prewarm role also checks the existing maintenance gate before each
+queue cycle. A closed, missing or unreadable gate parks the continuous process
+and records its PID/start-time marker through the worker's existing helper.
+`--once` returns 75 without starting a cycle under the same conditions, including
+with `--dry-run`. An in-progress cycle finishes before the process records a
+park; disk holds and filesystem waits can therefore delay parking. At the next
+boundary a changed runtime commit or generation makes the process exit for
+supervisor replacement, even while parked. One-cycle invocations return 75
+on that transition so an unperformed cycle is not reported as complete.
+These checks do not add the storage process to the updater's current serving
+census, establish a cross-host quorum, or enable barrier activation. The #458
+protocol still needs to include this reader in its drain and rotation proof.
+
 ## Physical and adaptive GPU admission
 
 Both current GB10 workers have one physical GPU. Their fleet shape uses the
