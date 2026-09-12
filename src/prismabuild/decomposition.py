@@ -422,6 +422,12 @@ def validate_action_common(value: object) -> dict[str, Any]:
     are the two ways the half could stop being *common*: a command in it would
     make every child restate one, and a container variable in it would make
     ownership -- which is per action -- part of what the siblings share.
+
+    The key set is exact, so a section added to ``pbrun``'s template arrives
+    here as a refusal rather than as a silent addition to every parent key.
+    That is deliberate: adding it to :data:`_ACTION_COMMON_KEYS` says it is
+    shared, adding it to ``pbrun._TEMPLATE_SUBMITTER_KEYS`` says it is the
+    submitter's own, and the refusal is what makes somebody choose.
     """
 
     common = pb._exact_mapping(

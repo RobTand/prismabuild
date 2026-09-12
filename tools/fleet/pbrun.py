@@ -4043,8 +4043,12 @@ def freeze_action_template(
 #: fingerprinted names.  Everything else in a template is, by construction,
 #: the half of an action that no action sealed from it varies -- which is why
 #: :func:`template_action_common` subtracts rather than enumerates.  A field
-#: added to the template lands in the parent's identity unless it is named
-#: here on purpose.
+#: added to the template is therefore never silently dropped from a parent's
+#: identity: it either belongs to the shared half, in which case it must also
+#: be named in ``decomposition._ACTION_COMMON_KEYS``, or it is a submitter
+#: handle and belongs here.  Named in neither, ``validate_action_common``
+#: refuses the record -- which is the right answer, because nobody has yet
+#: decided which of the two it is.
 _TEMPLATE_SUBMITTER_KEYS = frozenset(
     {"cas", "marker_root", "checkout_identity", "log_name", "stamp_name"}
 )
@@ -4179,7 +4183,20 @@ def seal_action_from_template(
         raise SystemExit(f"pbrun: refusing to seal the action: {exc}") from None
 
 
-def main() -> int:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Read one submission's arguments, and nothing about the world.
+
+    Split out so a caller that is not the command line -- ``pbcampaign``
+    decomposing one logical request into many actions -- can build the same
+    namespace the CLI builds and hand it to ``prepare_submission``.  Every
+    refusal below is a statement about the arguments alone, so it holds
+    wherever they came from.
+
+    ``--progress-phase`` is parsed here rather than at its use: the policy is
+    the normalized form of two flags, a typo in one of them is an argument
+    error, and saying so before ``--withdraw`` is where ``main`` said it.
+    """
+
     ap = argparse.ArgumentParser(
         description="Submit one command to the PrismaBuild fleet and wait for "
                     "it. Either the pull queue or SLURM carries it, per "
@@ -4346,28 +4363,40 @@ def main() -> int:
     ap.add_argument("command", nargs=argparse.REMAINDER,
                     help="the command to run, after a bare --; every word "
                          "past it belongs to the command and not to pbrun")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.timeout_s is not None and (
         not math.isfinite(args.timeout_s) or args.timeout_s <= 0
     ):
         raise SystemExit("pbrun: --timeout-s must be a positive finite number")
-    progress_policy = parse_progress_phases(args.progress_phase, cycle=args.progress_cycle)
+    args.progress_policy = parse_progress_phases(
+        args.progress_phase, cycle=args.progress_cycle)
+    # Some things an argument gets wrong can only be judged once the demand
+    # is resolved -- a GPU budget on a slot that reserves no GPU is the case
+    # -- and they are argument errors all the same.  So the parser that
+    # produced this namespace travels with it, and ``prepare_submission``
+    # reports them the way every other argument error reports: usage,
+    # message, exit 2.
+    args.refuse_argument = ap.error
+    return args
 
-    if args.withdraw:
-        # Withdrawing is not a submission and must not need one: the operator
-        # cancelling four suites has no command to give and no checkout to
-        # stamp, so this returns before any of the submit machinery runs.
-        if [c for c in args.command if c != "--"]:
-            raise SystemExit("pbrun: --withdraw takes no command")
-        try:
-            who = getpass.getuser()
-        except Exception:                                        # noqa: BLE001
-            who = "unknown"      # no passwd entry is not a reason to refuse
-        return withdraw_routed(
-            args.withdraw, transport=args.transport, reason=args.reason,
-            by=f"{who}@{socket.gethostname()}",
-        )
 
+def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
+    """Resolve one submission against this box, and freeze what it says.
+
+    Everything between the arguments and the frozen template: the checkout
+    gates, the default environment, the demand, the placement the fleet's
+    offers decide, and the refusals each of those can raise.  None of it is
+    optional for a decomposed submission -- a parent's children inherit this
+    placement and this environment, so they inherit these refusals too, and
+    a second copy of the block in ``pbcampaign`` would be a second answer to
+    the same questions.
+
+    The returned ``cwd`` and ``portable_checkout`` are here only because the
+    submission notices report them; the template carries everything else,
+    including the resolved tags and demand.
+    """
+
+    progress_policy = args.progress_policy
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
@@ -4463,7 +4492,7 @@ def main() -> int:
         try:
             adaptive_gpu.memory_budget_bytes(args.gpu_memory_gb)
         except ValueError as exc:
-            ap.error(f"--gpu-memory-gb: {exc}")
+            args.refuse_argument(f"--gpu-memory-gb: {exc}")
     if args.gpu:
         demand.setdefault("gpu", 1)
         demand.setdefault("mem_gb", 16)
@@ -4581,12 +4610,12 @@ def main() -> int:
             transport=args.transport,
         )
     except ValueError as exc:
-        ap.error(str(exc))
+        args.refuse_argument(str(exc))
     try:
         require_progress_scope(
             progress=progress_policy, transport=args.transport)
     except ValueError as exc:
-        ap.error(str(exc))
+        args.refuse_argument(str(exc))
     if not demand.get("gpu"):
         if declared not in (None, ""):
             raise SystemExit(
@@ -4620,14 +4649,94 @@ def main() -> int:
         progress=progress_policy,
         profile=args.profile,
     )
+    return {
+        "args": args,
+        "template": template,
+        "cwd": cwd,
+        "portable_checkout": portable_checkout,
+    }
+
+
+def publication_row(
+    action: Mapping[str, object],
+    *,
+    args: argparse.Namespace,
+    queue,
+) -> dict[str, object]:
+    """The queue row that submits one sealed action.
+
+    A queue row and the action it points at are two spellings of one
+    submission, so every field that describes the work is read off the sealed
+    body itself rather than off a template or a local the caller happens to
+    still be holding.  That matters most for the owner: the lifecycle cleanup
+    asks Docker for a label derived from it, so a row naming a different owner
+    than the body would query a label nothing carries.  It matters for the
+    rest because a decomposed child seals its own ``params``: reading the row
+    off the body is what makes a child's row describe the child.
+
+    Only the submitter's own handles -- priority, the attempt ceiling, retry
+    safety -- come from ``args``, and they are exactly the fields no action
+    body carries, because they say how hard to try rather than what to run.
+
+    ``pbcampaign`` publishes decomposed children through this too.  The
+    alternative is a second copy of the literal, which is how a row and a body
+    come to disagree about one action.
+    """
+
+    params = action["params"]
+    demand = params["demand"]
+    variables = action["environment"]["variables"]
+    row: dict[str, object] = {
+        "action_key": str(action["action_key"]),
+        "cas_root": str(SH / "cas"),
+        "worker_script": str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
+        "tags": params["placement"]["required_tags"],
+        "needs_gpu": bool(demand.get("gpu")),
+        "priority": args.priority,
+        "resources": demand,
+        "max_attempts": args.max_attempts,
+        "container_owner": str(variables[CONTAINER_OWNER_ENV]),
+        "checkout_snapshot": params["checkout_snapshot"],
+    }
+    # The repo checkout can advance just before the atomic runtime generation
+    # rolls.  The previous PoolQueue already accepts the safety-critical bound,
+    # so keep that mixed window usable; add the explanatory annotation once the
+    # loaded runtime exposes it.  The sealed action params carry the full
+    # contract in both cases.
+    if "retry_safe" in inspect.signature(queue.publish).parameters:
+        row["retry_safe"] = args.retry_safe
+    return row
+
+
+def main() -> int:
+    args = parse_args()
+    if args.withdraw:
+        # Withdrawing is not a submission and must not need one: the operator
+        # cancelling four suites has no command to give and no checkout to
+        # stamp, so this returns before any of the submit machinery runs.
+        if [c for c in args.command if c != "--"]:
+            raise SystemExit("pbrun: --withdraw takes no command")
+        try:
+            who = getpass.getuser()
+        except Exception:                                        # noqa: BLE001
+            who = "unknown"      # no passwd entry is not a reason to refuse
+        return withdraw_routed(
+            args.withdraw, transport=args.transport, reason=args.reason,
+            by=f"{who}@{socket.gethostname()}",
+        )
+    prepared = prepare_submission(args)
+    template = prepared["template"]
+    cwd = prepared["cwd"]
+    portable_checkout = prepared["portable_checkout"]
+    # The resolved half of the submission is the template's, not a second
+    # copy kept alongside it: what was sealed is what the notices describe
+    # and what the queue row is published with.
+    tags = template["params"]["placement"]["required_tags"]
+    demand = template["params"]["demand"]
+    progress_policy = args.progress_policy
     cas = template["cas"]
-    checkout_snapshot = template["params"]["checkout_snapshot"]
     action = seal_action_from_template(template)
     key = str(action["action_key"])
-    # One source for ownership: the sealed body.  The queue row and the action
-    # the worker executes have to name the same owner, or the lifecycle
-    # cleanup queries a label nothing carries.
-    owner = str(action["environment"]["variables"][CONTAINER_OWNER_ENV])
 
     request_path = cas.publish_action_request(action)
 
@@ -4822,26 +4931,8 @@ def main() -> int:
     except (OSError, ValueError):
         superseding = None
 
-    publication = {
-        "action_key": key,
-        "cas_root": str(SH / "cas"),
-        "worker_script": str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
-        "tags": tags,
-        "needs_gpu": bool(demand.get("gpu")),
-        "priority": args.priority,
-        "resources": demand,
-        "max_attempts": args.max_attempts,
-        "container_owner": owner,
-    }
-    publication["checkout_snapshot"] = checkout_snapshot
-    # The repo checkout can advance just before the atomic runtime generation
-    # rolls.  The previous PoolQueue already accepts the safety-critical bound,
-    # so keep that mixed window usable; add the explanatory annotation once the
-    # loaded runtime exposes it.  The sealed action params carry the full
-    # contract in both cases.
-    if "retry_safe" in inspect.signature(q.publish).parameters:
-        publication["retry_safe"] = args.retry_safe
-    queued_path = publish_or_refuse(q, publication)
+    queued_path = publish_or_refuse(
+        q, publication_row(action, args=args, queue=q))
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
