@@ -1288,6 +1288,16 @@ submission timestamp. A displayed skip describes that earlier observation,
 not a current refusal or a prediction of the next claim. Successful claims
 retain this evidence until it is evicted from the bounded host snapshot.
 
+For token exhaustion, `DENIAL` also explains the observed shortage, for example
+`mem_gb: requested 8, available 3; waiting for release`. The JSON evidence's
+`token_shortage` names the resource and counts observed by that acquisition
+before its partial reservation was returned. The displayed age matters: this
+is not a fresh capacity check or a promise of immediate admission after a
+release. It names the first failing resource; CPU borrowing and GPU sharing
+retain their admission rules. Older workers may omit this optional detail.
+Use measured aggregate peak memory when sizing an action; reducing a reservation
+to force a claim can exhaust its enforced memory budget.
+
 `claim-denials.json` holds the latest 256 action generations per host in local
 admission state. The existing asynchronous publisher copies it to
 `reservations/<host>/adaptive/` at most once per second. It may coalesce or
