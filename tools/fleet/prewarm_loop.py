@@ -60,11 +60,14 @@ It cannot *guarantee* that a claimed action's data is never evicted, and says
 so rather than implying otherwise: ZFS exposes no pin, and the ARC target ``c``
 is volatile on a shared box -- it fell 99 GB inside one five-minute window on
 2026-09-11 without any tenant asking for the memory.  What it does guarantee is
-budgetary: it never *asks* for more than ``(c_max - size) * reserve`` minus the
-manifest bytes of every action claimed inside the last ``--claim-grace-min``
-minutes, which is the window in which a claimed action is still reading.  Both
-headroom numbers are logged every cycle so the gap between the budget and the
-outcome stays visible.
+budgetary: it never *asks* for more than ``c_max * reserve`` minus the manifest
+bytes of every action claimed inside the last ``--claim-grace-min`` minutes,
+which is the window in which a claimed action is still reading, and minus what
+it has already warmed for rows nobody has claimed.  The budget is a share of
+the cache's *capacity*, not of the free space inside it, because a cache in
+steady state is full; ``arc_headroom`` carries the measurement that settled
+that.  Both headroom numbers are logged every cycle so the gap between the
+budget and the outcome stays visible.
 """
 
 from __future__ import annotations

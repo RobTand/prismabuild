@@ -100,7 +100,7 @@ the `storage` role in `fleet_boxes.json`.  Every poll:
    window counts rows a warm could still make faster.  How much the loop holds
    resident ahead of the claim frontier is bounded by the budget, not by
    `--lookahead` -- step 3 subtracts every warmed, unclaimed row's bytes.
-3. ARC headroom: `(c_max - size) * --arc-reserve-fraction`, minus the manifest
+3. ARC headroom: `c_max * --arc-reserve-fraction`, minus the manifest
    bytes of every action claimed inside the last `--claim-grace-min` minutes,
    and minus the `bytes_warmed` of every row this loop has already warmed that
    nobody has claimed yet (`warmed_reserve`).  A manifest that does not fit is
