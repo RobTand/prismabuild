@@ -3820,6 +3820,251 @@ def _profile_mode(text: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+# --------------------------------------------------------------------------
+# Sealing an action, in two stages
+#
+# Everything that reads the filesystem or the environment happens once, in
+# ``freeze_action_template``; turning that template into a sealed action
+# happens once per action, in ``seal_action_from_template``.  An ordinary
+# submission is the two in a row and nothing else, which is what
+# ``test_the_ordinary_pbrun_action_is_sealed_unchanged.py`` pins.
+#
+# The split exists for #517.  A decomposed parent seals many children off one
+# frozen source tree: re-snapshotting a mutable checkout per child would give
+# the children different code closures, and cloning this file's hashing rules
+# into the decomposer would give them different keys.  So the decomposer calls
+# stage A once and stage B per child, through the same code an ordinary
+# ``pbrun`` uses -- there is no second sealer to keep in step.
+# --------------------------------------------------------------------------
+
+
+def freeze_action_template(
+    *,
+    command: Sequence[str],
+    cwd: Path,
+    logical_cwd: str,
+    demand: Mapping[str, int],
+    placement: Mapping[str, object],
+    variables: Mapping[str, str],
+    determinism: str,
+    retry_policy: Mapping[str, object],
+    task_class: str,
+    host_class: str | None,
+    measurement: bool,
+    transport: str,
+    pool_measurement_class: bool,
+    data_manifest_path: str | None,
+    checkout_snapshot_max_bytes: int,
+    snapshot_refs: Sequence[str],
+    exclusive: bool,
+    gpu_memory_gb: float | None,
+    execution_timeout_s: float | None,
+    progress: Mapping[str, object] | None,
+    profile: object | None,
+) -> dict[str, object]:
+    """Read the tree and the environment once, and freeze what they say.
+
+    Everything in here is a measurement of the submitter's box at one instant
+    -- the checkout's commit and its dirty digest, the bytes of the data
+    manifest, the local toolchain -- so taking it a second time for a second
+    action can produce a different answer but never a better one.  What comes
+    back is the half of an action body that every action sealed from this
+    template shares, plus the CAS the ingestion went into.
+
+    Placement and demand are resolved against the live fleet by the caller, so
+    they arrive already decided; this reads nothing about who might run the
+    work.
+    """
+
+    variables = dict(variables)
+    # Docker's payload is reparented to containerd-shim and therefore survives
+    # a kill of every process group below the action launcher.  Put the fleet's
+    # Docker shim first even under --no-default-env; it records a durable marker
+    # and adds the derived ownership label which withdrawal/finish query before
+    # returning capacity.  This is control-plane state, not an optional action
+    # convenience, so a caller cannot override either identity variable.
+    #
+    # Normalize every other environment value first.  The owner then hashes
+    # the exact action-defining state available before its own two recursive
+    # variables are injected, including the deployed wrapper path.
+    prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+    variables["PATH"] = f"{CONTAINER_WRAPPER_DIR}:{prior_path}"
+    identity = _git_identity(cwd)
+    marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
+    owner = container_owner(
+        command,
+        cwd,
+        demand,
+        variables,
+        determinism=determinism,
+        retry_policy=retry_policy,
+        marker_root=marker_root,
+        identity=identity,
+        logical_cwd=logical_cwd,
+        placement=placement,
+    )
+    marker = marker_root / f"{owner}.used"
+    variables[CONTAINER_OWNER_ENV] = owner
+    variables[CONTAINER_MARKER_ENV] = str(marker)
+
+    # Migrate the former broad prefix globs before identity asks Git for its
+    # untracked roster; otherwise a legitimate prefix-bearing payload remains
+    # hidden for this submission even though the new grammar is exact.
+    keep_droppings_out_of_git(cwd)
+    log_name, stamp_name = result_and_stamp_names(
+        command,
+        cwd,
+        demand,
+        variables,
+        identity=identity,
+        logical_cwd=logical_cwd,
+        placement=placement,
+    )
+    # Seal the stamp only in the private snapshot index. Publishing it in the
+    # source tree creates both litter and races: another submitter can hash a
+    # scratch name just as it is renamed. Unlinking the final stamp also races
+    # with readers sealing the same fingerprint. No shared stamp path exists
+    # now; workers still verify the same name and bytes in the materialization.
+    payload = json.dumps(
+        {"cwd": logical_cwd, **identity}, indent=1, sort_keys=True
+    )
+    cas = pb.PrismaBuildCAS(SH / "cas")
+    checkout_snapshot = build_git_checkout_snapshot(
+        cwd,
+        stamp_name=stamp_name,
+        stamp_payload=payload,
+        cas=cas,
+        max_bytes=checkout_snapshot_max_bytes,
+        expected_identity=identity,
+        snapshot_refs=list(snapshot_refs),
+    )
+    inputs = [checkout_snapshot["input"]]
+    if data_manifest_path is not None:
+        # Validated before ingestion, not after: a malformed manifest must
+        # fail at the submitter, where the operator can read the reason,
+        # rather than becoming an immutable CAS blob that every later reader
+        # has to refuse. The bytes are ingested unchanged so the input's
+        # digest is the digest of the file the operator named.
+        manifest = pb.load_data_manifest(data_manifest_path)
+        manifest_input, _ = cas.ingest_input(
+            data_manifest_path,
+            input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        )
+        inputs.append(manifest_input)
+        data_manifest_summary = {
+            "input": manifest_input,
+            "mount_prefix": manifest["mount_prefix"],
+            "entry_count": manifest["entry_count"],
+            "total_bytes": manifest["total_bytes"],
+        }
+    else:
+        data_manifest_summary = None
+    execution_scope, toolchain = host_class_scope(
+        host_class, measurement=measurement, transport=transport)
+    if pool_measurement_class and demand.get("gpu", 0) and (
+        "cuda_compute_capability" not in toolchain or "nvidia_driver" not in toolchain
+    ):
+        raise SystemExit("pbrun: class-scoped GPU measurement requires live accelerator "
+                         "model, compute capability and driver evidence")
+    params: dict[str, object] = {
+        "command": list(command),
+        "cwd": logical_cwd,
+        "demand": demand,
+        "placement": placement,
+        "checkout_snapshot": checkout_snapshot,
+        "retry_policy": retry_policy,
+    }
+    if data_manifest_summary is not None:
+        # A summary, not the list: the prewarm budget and the ARC check read
+        # these two numbers every poll, and making them fetch and parse a
+        # 200 KB blob to learn a byte count would put the manifest on the
+        # scheduler's hot path. The list itself stays in the CAS.
+        params["data_manifest"] = data_manifest_summary
+    if demand.get("gpu"):
+        params["gpu_exclusive"] = bool(exclusive)
+        if gpu_memory_gb is not None:
+            params["gpu_memory_gb"] = gpu_memory_gb
+    if execution_timeout_s is not None:
+        params["execution_timeout_s"] = execution_timeout_s
+    if progress is not None:
+        # Sealed, like the profiler mode and for the same reason: an action
+        # admitted under the progress contract is a different action from its
+        # unbounded twin, so the store never answers one with the other's
+        # receipt.  Absent, the key is byte-identical to what it was before
+        # this flag existed.
+        params[pb.PROGRESS_PARAM] = progress
+    if profile is not None:
+        # Sealed, and only when asked for.  Present, it makes a profiled run a
+        # different action from its unprofiled twin, which is what stops the
+        # CAS from answering a profile request with a receipt that has none.
+        # Absent, the key is byte-identical to what it was before this flag
+        # existed, so nothing already in the store is orphaned.
+        params[pb.PROFILE_PARAM] = profile
+    return {
+        "cas": cas,
+        "container_owner": owner,
+        "container_marker": str(marker),
+        "checkout_identity": identity,
+        "log_name": log_name,
+        "stamp_name": stamp_name,
+        "task": {
+            "definition_id": "fleet/pbrun",
+            "definition_version": "v1",
+            "task_class": task_class,
+            # A pytest or a timing run is not byte-reproducible and must not
+            # claim to be: the CAS only enforces canonical equality on
+            # "deterministic", so mislabelling one would be a false receipt.
+            "determinism": determinism,
+            "artifact_family": "generic",
+            "artifact_kind": "generic",
+            "working_directory": ".",
+        },
+        "inputs": inputs,
+        "code_closure": build_stamp_closure(stamp_name, payload),
+        "params": params,
+        "environment": {"variables": variables, "toolchain": toolchain},
+        "execution_scope": execution_scope,
+    }
+
+
+def seal_action_from_template(template: Mapping[str, object]) -> dict[str, object]:
+    """Turn one frozen template into one sealed action.
+
+    The command and the result path are rebuilt here rather than carried in
+    the template because they are the two things a decomposed child varies:
+    its own batch in the argument list, its own manifest to write.  For an
+    ordinary submission there is nothing to vary and this is the template's
+    own command, teed to the template's own log.
+    """
+
+    params = dict(template["params"])
+    command = list(params["command"])
+    log_name = str(template["log_name"])
+    body = {
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {
+            **template["task"],
+            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
+                     f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
+                     f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
+                     f"exit ${{PIPESTATUS[0]}}"],
+            "result_path": log_name,
+        },
+        "inputs": list(template["inputs"]),
+        "code_closure": template["code_closure"],
+        "params": params,
+        "environment": template["environment"],
+        "execution_scope": template["execution_scope"],
+    }
+    try:
+        return pb.seal_action(body)
+    except pb.ActionContractError as exc:
+        # A refused contract is the caller's to fix; nothing has been queued
+        # or ingested, so say what was refused and stop.  A traceback here
+        # names core.py internals for what is a submission error (issue #21).
+        raise SystemExit(f"pbrun: refusing to seal the action: {exc}") from None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Submit one command to the PrismaBuild fleet and wait for "
@@ -4239,160 +4484,33 @@ def main() -> int:
                 "slot), or drop the variable.")
         variables["CUDA_VISIBLE_DEVICES"] = ""
 
-    # Docker's payload is reparented to containerd-shim and therefore survives
-    # a kill of every process group below the action launcher.  Put the fleet's
-    # Docker shim first even under --no-default-env; it records a durable marker
-    # and adds the derived ownership label which withdrawal/finish query before
-    # returning capacity.  This is control-plane state, not an optional action
-    # convenience, so a caller cannot override either identity variable.
-    #
-    # Normalize every other environment value first.  The owner then hashes
-    # the exact action-defining state available before its own two recursive
-    # variables are injected, including the deployed wrapper path.
-    prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
-    variables["PATH"] = f"{CONTAINER_WRAPPER_DIR}:{prior_path}"
-    identity = _git_identity(cwd)
-    marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
-    owner = container_owner(
-        command,
-        cwd,
-        demand,
-        variables,
+    template = freeze_action_template(
+        command=command,
+        cwd=cwd,
+        logical_cwd=logical_cwd,
+        demand=demand,
+        placement=placement,
+        variables=variables,
         determinism=determinism,
         retry_policy=retry_policy,
-        marker_root=marker_root,
-        identity=identity,
-        logical_cwd=logical_cwd,
-        placement=placement,
+        task_class="measurement" if args.measurement else "generation",
+        host_class=args.host_class,
+        measurement=args.measurement,
+        transport=args.transport,
+        pool_measurement_class=bool(pool_measurement_class),
+        data_manifest_path=args.data_manifest,
+        checkout_snapshot_max_bytes=args.checkout_snapshot_max_bytes,
+        snapshot_refs=args.snapshot_ref,
+        exclusive=args.exclusive,
+        gpu_memory_gb=args.gpu_memory_gb,
+        execution_timeout_s=args.timeout_s,
+        progress=progress_policy,
+        profile=args.profile,
     )
-    marker = marker_root / f"{owner}.used"
-    variables[CONTAINER_OWNER_ENV] = owner
-    variables[CONTAINER_MARKER_ENV] = str(marker)
-
-    # Migrate the former broad prefix globs before identity asks Git for its
-    # untracked roster; otherwise a legitimate prefix-bearing payload remains
-    # hidden for this submission even though the new grammar is exact.
-    keep_droppings_out_of_git(cwd)
-    log_name, stamp_name = result_and_stamp_names(
-        command,
-        cwd,
-        demand,
-        variables,
-        identity=identity,
-        logical_cwd=logical_cwd,
-        placement=placement,
-    )
-    # Seal the stamp only in the private snapshot index. Publishing it in the
-    # source tree creates both litter and races: another submitter can hash a
-    # scratch name just as it is renamed. Unlinking the final stamp also races
-    # with readers sealing the same fingerprint. No shared stamp path exists
-    # now; workers still verify the same name and bytes in the materialization.
-    payload = json.dumps(
-        {"cwd": logical_cwd, **identity}, indent=1, sort_keys=True
-    )
-    cas = pb.PrismaBuildCAS(SH / "cas")
-    checkout_snapshot = build_git_checkout_snapshot(
-        cwd,
-        stamp_name=stamp_name,
-        stamp_payload=payload,
-        cas=cas,
-        max_bytes=args.checkout_snapshot_max_bytes,
-        expected_identity=identity,
-        snapshot_refs=list(args.snapshot_ref),
-    )
-    inputs = [checkout_snapshot["input"]]
-    if args.data_manifest is not None:
-        # Validated before ingestion, not after: a malformed manifest must
-        # fail at the submitter, where the operator can read the reason,
-        # rather than becoming an immutable CAS blob that every later reader
-        # has to refuse. The bytes are ingested unchanged so the input's
-        # digest is the digest of the file the operator named.
-        manifest = pb.load_data_manifest(args.data_manifest)
-        manifest_input, _ = cas.ingest_input(
-            args.data_manifest,
-            input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
-        )
-        inputs.append(manifest_input)
-        data_manifest_summary = {
-            "input": manifest_input,
-            "mount_prefix": manifest["mount_prefix"],
-            "entry_count": manifest["entry_count"],
-            "total_bytes": manifest["total_bytes"],
-        }
-    else:
-        data_manifest_summary = None
-    execution_scope, toolchain = host_class_scope(
-        args.host_class, measurement=args.measurement, transport=args.transport)
-    if pool_measurement_class and demand.get("gpu", 0) and (
-        "cuda_compute_capability" not in toolchain or "nvidia_driver" not in toolchain
-    ):
-        raise SystemExit("pbrun: class-scoped GPU measurement requires live accelerator "
-                         "model, compute capability and driver evidence")
-    body = {
-        "schema": pb.ACTION_SCHEMA_V2,
-        "task": {
-            "definition_id": "fleet/pbrun",
-            "definition_version": "v1",
-            "task_class": "measurement" if args.measurement else "generation",
-            # A pytest or a timing run is not byte-reproducible and must not
-            # claim to be: the CAS only enforces canonical equality on
-            # "deterministic", so mislabelling one would be a false receipt.
-            "determinism": determinism,
-            "artifact_family": "generic",
-            "artifact_kind": "generic",
-            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
-                     f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
-                     f"exit ${{PIPESTATUS[0]}}"],
-            "working_directory": ".",
-            "result_path": log_name,
-        },
-        "inputs": inputs,
-        "code_closure": build_stamp_closure(stamp_name, payload),
-        "params": {
-            "command": command,
-            "cwd": logical_cwd,
-            "demand": demand,
-            "placement": placement,
-            "checkout_snapshot": checkout_snapshot,
-            "retry_policy": retry_policy,
-        },
-        "environment": {"variables": variables, "toolchain": toolchain},
-        "execution_scope": execution_scope,
-    }
-    if data_manifest_summary is not None:
-        # A summary, not the list: the prewarm budget and the ARC check read
-        # these two numbers every poll, and making them fetch and parse a
-        # 200 KB blob to learn a byte count would put the manifest on the
-        # scheduler's hot path. The list itself stays in the CAS.
-        body["params"]["data_manifest"] = data_manifest_summary
-    if demand.get("gpu"):
-        body["params"]["gpu_exclusive"] = bool(args.exclusive)
-        if args.gpu_memory_gb is not None:
-            body["params"]["gpu_memory_gb"] = args.gpu_memory_gb
-    if args.timeout_s is not None:
-        body["params"]["execution_timeout_s"] = args.timeout_s
-    if progress_policy is not None:
-        # Sealed, like the profiler mode and for the same reason: an action
-        # admitted under the progress contract is a different action from its
-        # unbounded twin, so the store never answers one with the other's
-        # receipt.  Absent, the key is byte-identical to what it was before
-        # this flag existed.
-        body["params"][pb.PROGRESS_PARAM] = progress_policy
-    if args.profile is not None:
-        # Sealed, and only when asked for.  Present, it makes a profiled run a
-        # different action from its unprofiled twin, which is what stops the
-        # CAS from answering a profile request with a receipt that has none.
-        # Absent, the key is byte-identical to what it was before this flag
-        # existed, so nothing already in the store is orphaned.
-        body["params"][pb.PROFILE_PARAM] = args.profile
-    try:
-        action = pb.seal_action(body)
-    except pb.ActionContractError as exc:
-        # A refused contract is the caller's to fix; nothing has been queued
-        # or ingested, so say what was refused and stop.  A traceback here
-        # names core.py internals for what is a submission error (issue #21).
-        raise SystemExit(f"pbrun: refusing to seal the action: {exc}") from None
+    cas = template["cas"]
+    owner = template["container_owner"]
+    checkout_snapshot = template["params"]["checkout_snapshot"]
+    action = seal_action_from_template(template)
     key = str(action["action_key"])
 
     request_path = cas.publish_action_request(action)
