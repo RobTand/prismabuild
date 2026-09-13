@@ -340,7 +340,12 @@ launcher on a contained run), `scope` (the attempt's cgroup — `memory_peak_byt
 and the user/system CPU split), `process_io` (`rchar`/`wchar` and
 `read_bytes`/`write_bytes` over the processes in the scope) and `box_window`
 (GPU power against the device's own reference, unified memory, CPU busy and the
-pressure stalls, from `pqteld` and Netdata). It is always on and is not a profile mode: there is
+pressure stalls, from `pqteld` and Netdata; memory-only discrete GPU windows
+also retain whole-device VRAM total and sampled peak from the existing broker
+capacity snapshots). Discrete VRAM includes other device users, is separate
+from host RAM, and supplies no power or utilization reading. Sample counts and
+timestamps describe the observations; allocations between ticks can be missed.
+It is always on and is not a profile mode: there is
 no flag to choose. Its cost is bounded rather than absent — a shared two-second
 budget at finish to read the box window, including the GPU reference query
 (0.14–0.18 s measured before the query shared that budget), plus a sampler that

@@ -1965,6 +1965,19 @@ idle" call for different responses.
     from the wrapped response's `view_update_every`, when valid. This is the
     bucket interval, not the database collection interval. Missing intervals
     are absent.
+    On a memory-only discrete GPU such as WSL's RX 9070 XT, the existing
+    broker capacity snapshot supplies `box_window.gpu` with
+    `source: broker_gpu_capacity`, `telemetry_class: memory_only` and
+    `memory_domain: discrete`. Its `framebuffer_total_bytes`,
+    `framebuffer_used_bytes_peak` and `framebuffer_free_bytes_min` are
+    whole-device readings sampled while the exact action scope was running,
+    with device identity, `samples`, `first_sampled_unix` and
+    `last_sampled_unix`. They include foreign device usage; they do not measure
+    the action's own allocations. Power and utilization fields remain absent,
+    as do `unified_*` memory fields. A missing or rejected snapshot adds no
+    samples, and allocations between ticks may be missed. The retained peak
+    survives allocation release; no finish-time HIP query is used to invent
+    history. This adds no device probe to the existing sampler.
     On GB10 the power reference is the SoC TDP and
     covers the CPU too, which `power_reference_scope` says; it is a reference,
     not a measured saturation point. Reading the window is bounded to about two
@@ -1972,7 +1985,8 @@ idle" call for different responses.
     `{"source": "unavailable", "reason": ...}` and the action still completes.
 
 `pbstatus` prints peak memory, the bytes moved and the GPU power peak against
-its reference in the endings table's `RESOURCE` column, and `pbrun` ends a run
+its reference (or `vram=peak/total` for a discrete framebuffer window) in the
+endings table's `RESOURCE` column, and `pbrun` ends a run
 with the same line. `pbmetrics` exports the live peaks as
 `prismabuild_attempt_peak_resources` and the endings' windows as
 `prismabuild_terminal_box_window`. Every one of them renders a field no record
