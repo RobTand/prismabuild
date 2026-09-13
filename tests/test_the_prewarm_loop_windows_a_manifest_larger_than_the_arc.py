@@ -129,3 +129,72 @@ def test_a_phase_table_that_does_not_describe_this_manifest_is_ignored(
     assert [s["reason"] for s in event["skipped"]] == ["headroom"]
     assert event["skipped"][0]["phased"] is False
     assert fleet.queue.prewarm(key) is None
+
+
+def test_a_phase_boundary_inside_an_entry_is_not_a_resident_window(
+        tmp_path: Path) -> None:
+    """A window is safe only when its boundary is an entry boundary."""
+
+    fleet = Fleet(tmp_path)
+    key = fleet.action(
+        "split-entry", [fleet.file("whole.pt", 8)],
+        annotations={"phases": [
+            {"name": "head", "bytes": 3, "cumulative_bytes": 3},
+            {"name": "tail", "bytes": 5, "cumulative_bytes": 8},
+        ]},
+    )
+    stats = fleet.arcstats(size=0, c=3, c_max=3)
+
+    fleet.cycle(fleet.args(arcstats=stats, lookahead=1))
+
+    record = fleet.queue.prewarm(key)
+    assert record is None
+
+
+def test_a_reporting_claim_keeps_its_window_after_claim_grace(
+        tmp_path: Path) -> None:
+    """Claim grace is the fallback only while no read frontier is known."""
+
+    fleet, key, stats = _fleet(tmp_path)
+    fleet.cycle(fleet.args(arcstats=stats))
+    fleet.claim(key, age_s=20 * 60 + 1)
+    fleet.report_progress(key, "layer-1")
+
+    event = fleet.cycle(fleet.args(arcstats=stats))
+
+    assert event["advanced"]
+    assert fleet.queue.prewarm(key)["warmed_bytes"] == 12288
+
+
+def test_a_progress_jump_does_not_rewarm_the_consumed_gap(tmp_path: Path) -> None:
+    """An advance begins at the later of the old window and read frontier."""
+
+    fleet, key, stats = _fleet(tmp_path)
+    fleet.cycle(fleet.args(arcstats=stats))
+    fleet.claim(key)
+    fleet.report_progress(key, "layer-3")
+
+    fleet.cycle(fleet.args(arcstats=stats))
+
+    record = fleet.queue.prewarm(key)
+    assert record["window_start_bytes"] == 12288
+    assert record["bytes_warmed"] == 4096
+
+
+def test_a_failed_prefix_never_becomes_a_contiguous_warm_frontier(
+        tmp_path: Path) -> None:
+    """Bytes read after a failed entry are not resident for the prefix."""
+
+    fleet = Fleet(tmp_path)
+    missing = str(fleet.mount / "missing.pt")
+    key = fleet.action(
+        "gapped", [(missing, 4096), fleet.file("later.pt", 4096)],
+        annotations={"phases": phase_table([("missing", 4096), ("later", 4096)])},
+    )
+    stats = fleet.arcstats(size=0, c=8192, c_max=8192)
+
+    fleet.cycle(fleet.args(arcstats=stats, lookahead=1))
+
+    record = fleet.queue.prewarm(key)
+    assert record is not None
+    assert record["warmed_bytes"] == 0

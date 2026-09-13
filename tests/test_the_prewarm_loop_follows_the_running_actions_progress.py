@@ -118,7 +118,13 @@ def test_a_report_from_an_earlier_launch_releases_nothing(
     claimed = fleet.claim(running)
     import json
     claimed_unix = json.loads(claimed.read_text())["claimed_unix"]
-    fleet.report_progress(running, "compute", at=claimed_unix - 60.0)
+    # The raw reporter path is deliberately not authority for prewarm: a
+    # previous launch can leave it behind, but it has no matching accepted
+    # observation in this launch's lease.
+    fleet.queue.action_progress_path(running).write_text(json.dumps({
+        "schema": "prismabuild.action_progress.v1", "phase": "compute",
+        "reported_unix": claimed_unix - 60.0,
+    }))
 
     event = fleet.cycle(fleet.args(arcstats=stats, lookahead=2))
 

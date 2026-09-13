@@ -1012,22 +1012,25 @@ class Reader:
     ) -> dict[str, object]:
         if self.pacer is not None:
             self.pacer.begin_row()
-        work: "queuelib.Queue[dict[str, object] | None]" = queuelib.Queue()
-        for entry in entries:
-            work.put(entry)
+        work: "queuelib.Queue[tuple[int, dict[str, object]] | None]" = queuelib.Queue()
+        for index, entry in enumerate(entries):
+            work.put((index, entry))
         for _ in range(self.readers):
             work.put(None)
         lock = threading.Lock()
-        state = {"bytes": 0, "entries": 0, "budget": int(budget_bytes)}
+        state = {"bytes": 0, "entries": 0, "budget": int(budget_bytes),
+                 "reserved": 0}
+        completed = [0] * len(entries)
         errors: list[str] = []
 
         def worker() -> None:
             buffer = bytearray(self.block)
             view = memoryview(buffer)
             while not stop.is_set():
-                job = work.get()
-                if job is None:
+                queued = work.get()
+                if queued is None:
                     return
+                index, job = queued
                 with lock:
                     if state["bytes"] >= state["budget"]:
                         return
@@ -1057,13 +1060,30 @@ class Reader:
                             self.pacer.wait(stop)
                             if stop.is_set():
                                 break
-                        chunk = os.readv(fd, [view[: min(self.block, remaining)]])
+                        with lock:
+                            allowance = max(0, state["budget"] - state["bytes"]
+                                            - state["reserved"])
+                            if not allowance:
+                                break
+                            allowance = min(allowance, self.block, remaining)
+                            state["reserved"] += allowance
+                        try:
+                            chunk = os.readv(fd, [view[:allowance]])
+                        except OSError:
+                            with lock:
+                                state["reserved"] -= allowance
+                            raise
+                        with lock:
+                            # Return the reservation and commit its actual
+                            # bytes as one transition, so another reader
+                            # cannot claim the credit between those steps.
+                            state["reserved"] -= allowance
+                            state["bytes"] += chunk
                         if not chunk:
                             break
                         got += chunk
                         remaining -= chunk
                         with lock:
-                            state["bytes"] += chunk
                             if state["bytes"] >= state["budget"]:
                                 break
                 except OSError as exc:
@@ -1073,11 +1093,13 @@ class Reader:
                 finally:
                     os.close(fd)
                 with lock:
-                    state["entries"] += 1
+                    completed[index] = got
+                    if got == want_total:
+                        state["entries"] += 1
                     if recheck is not None and state["entries"] % 64 == 0:
                         room = recheck()
-                        if room <= 0:
-                            state["budget"] = state["bytes"]
+                        state["budget"] = min(
+                            state["budget"], state["bytes"] + max(0, room))
 
         started = time.time()
         threads = [threading.Thread(target=worker, daemon=True)
@@ -1087,8 +1109,15 @@ class Reader:
         for thread in threads:
             thread.join()
         elapsed = max(1e-9, time.time() - started)
+        contiguous = 0
+        for entry, got in zip(entries, completed):
+            want = int(entry["bytes"])
+            if got != want:
+                break
+            contiguous += want
         return {
             "bytes_warmed": state["bytes"],
+            "contiguous_bytes": contiguous,
             "entries_warmed": state["entries"],
             "seconds": round(elapsed, 3),
             "mb_per_s": round(state["bytes"] / 1e6 / elapsed, 1),
@@ -1195,6 +1224,16 @@ def manifest_phases(manifest: dict) -> list[dict[str, object]]:
     if not isinstance(declared, list) or not declared:
         return []
     total = int(manifest.get("total_bytes", 0))
+    # A reader submits whole manifest entries.  A phase table whose boundary
+    # cuts one in half would make the stated window smaller than the bytes the
+    # reader actually faults into ARC, so it is not a usable residency table.
+    entry_boundaries: set[int] = set()
+    entry_total = 0
+    for entry in manifest.get("entries", []):
+        entry_total += int(entry.get("bytes", 0))
+        entry_boundaries.add(entry_total)
+    if entry_total != total:
+        return []
     table: list[dict[str, object]] = []
     seen: set[str] = set()
     previous = 0
@@ -1207,7 +1246,8 @@ def manifest_phases(manifest: dict) -> list[dict[str, object]]:
             return []
         if isinstance(cumulative, bool) or not isinstance(cumulative, int):
             return []
-        if cumulative < previous or cumulative > total:
+        if cumulative < previous or cumulative > total \
+                or cumulative not in entry_boundaries:
             return []
         seen.add(name)
         table.append({"name": name, "cumulative_bytes": cumulative})
@@ -1307,27 +1347,38 @@ def progress_phase(queue: pool.PoolQueue, action_key: str,
     keeps the claim-plus-grace behaviour for it.
     """
 
-    path = queue.action_progress_path(action_key)
+    # The raw channel is owned by the running action and requires a launch
+    # token only its worker knows.  The storage role cannot authenticate that
+    # token.  Its authority is therefore the matching lease's accepted
+    # ProgressWatch observation, which has already checked token, policy,
+    # counter monotonicity and regular-file identity at heartbeat cadence.
+    path = queue.lease_path(action_key)
     try:
-        if path.stat().st_size > progress_v1.MAX_ACTION_PROGRESS_BYTES:
-            return None
-        record = json.loads(path.read_text())
-    except (OSError, ValueError):
+        raw = pb._read_regular_file_nofollow(
+            path, where="prewarm progress lease",
+            max_bytes=progress_v1.MAX_ACTION_PROGRESS_BYTES)
+        record = pb._decode_strict_json(raw, where="prewarm progress lease")
+    except (OSError, pb.ActionContractError, pb.CASTamperError,
+            pb.CASUnavailableError, RecursionError):
         return None
     if not isinstance(record, dict):
         return None
-    if record.get("schema") != progress_v1.PROGRESS_RECORD_SCHEMA_V1:
+    if record.get("action_key") != action_key:
         return None
-    reported = record.get("reported_unix")
-    if not isinstance(reported, (int, float)) or isinstance(reported, bool):
+    lease_claimed = record.get("claimed_unix")
+    if not isinstance(lease_claimed, (int, float)) or lease_claimed != claimed_unix:
         return None
-    if float(reported) < claimed_unix:
+    observed = record.get("progress_observation")
+    if not isinstance(observed, dict) or observed.get("source") != "action-progress":
         return None
-    phase = record.get("phase")
+    accepted = observed.get("last_accepted")
+    if not isinstance(accepted, dict):
+        return None
+    phase = accepted.get("phase")
     if not isinstance(phase, str) or not phase:
         return None
-    return {"phase": phase, "reported_unix": float(reported),
-            "units_completed": record.get("units_completed")}
+    return {"phase": phase, "reported_unix": accepted.get("reported_unix"),
+            "units_completed": accepted.get("units_completed")}
 
 
 def resident_bytes(record: Mapping[str, object] | None) -> int:
@@ -1385,8 +1436,6 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
         claimed_unix = record.get("claimed_unix")
         if not isinstance(claimed_unix, (int, float)):
             continue
-        if now - float(claimed_unix) > grace_s:
-            continue
         key = str(record.get("action_key", path.stem))
         root = Path(str(record.get("cas_root") or cas_root))
         request = sealed_request(root, key)
@@ -1394,14 +1443,23 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
         if not size:
             continue
         warmed = queue.prewarm(key)
+        declared = declares_progress(request)
         if not (warmed and warmed.get("phased")):
+            if now - float(claimed_unix) > grace_s and not declared:
+                continue
             # No window: the whole manifest is what the claim may still read.
             reserved += size
             keys.append(key)
             continue
         resident = min(size, resident_bytes(warmed))
+        policy = ((request.get("params") or {}).get(pb.PROGRESS_PARAM)
+                  if isinstance(request, dict) else None)
+        cyclic = isinstance(policy, dict) and bool(policy.get("cycle"))
         reported = (progress_phase(queue, key, float(claimed_unix))
-                    if declares_progress(request) else None)
+                    if declared and not cyclic else None)
+        if (now - float(claimed_unix) > grace_s and reported is None
+                and not declared):
+            continue
         consumed = 0
         if reported is not None:
             # The manifest is opened only here, for a claimed row that is both
@@ -1554,7 +1612,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             )
         after = arc_headroom(args.arc_reserve_fraction, args.arcstats)
         finished = time.time()
-        resident = start_bytes + int(result["bytes_warmed"])
+        resident = start_bytes + int(result.get("contiguous_bytes", result["bytes_warmed"]))
         record = {
             "action_key": key,
             # The row the campaign calls this, beside the key PrismaBuild
@@ -1639,10 +1697,11 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                 "budget": row_budget,
             })
             continue
+        start = max(resident, consumed)
         record = warm(
             key=key, manifest=manifest, digest=str(entry["sha256"]),
-            entries=entries_between(list(manifest["entries"]), resident, target),
-            start_bytes=resident, target=target, phase=phase, phased=True,
+            entries=entries_between(list(manifest["entries"]), start, target),
+            start_bytes=start, target=target, phase=phase, phased=True,
             trigger="progress" if window["phase"] else "claim",
         )
         event["advanced"].append({

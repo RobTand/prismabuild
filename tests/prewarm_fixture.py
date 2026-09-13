@@ -128,16 +128,21 @@ class Fleet:
 
     def report_progress(self, action_key: str, phase: str, *,
                         units: int = 1, at: float | None = None) -> Path:
-        """Write what the running action would write, where it writes it."""
+        """Write the matching worker's accepted heartbeat observation."""
 
-        path = self.queue.action_progress_path(action_key)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        claimed = json.loads((self.queue.root / "claimed" /
+                              f"{action_key}.json").read_text())
+        path = self.queue.lease_path(action_key)
         path.write_text(json.dumps({
-            "schema": progress_v1.PROGRESS_RECORD_SCHEMA_V1,
-            "token": "fixture-token",
-            "phase": phase,
-            "units_completed": units,
-            "reported_unix": time.time() if at is None else at,
+            "action_key": action_key,
+            "claimed_unix": claimed["claimed_unix"],
+            "progress_observation": {
+                "source": "action-progress",
+                "last_accepted": {
+                    "phase": phase, "units_completed": units,
+                    "reported_unix": time.time() if at is None else at,
+                },
+            },
         }))
         return path
 
