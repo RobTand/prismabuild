@@ -1,5 +1,10 @@
 # Operating PrismaBuild
 
+> **Barrier status:** the rollout-epoch source protocol is present, but
+> `FINAL_BARRIER_QUALIFICATION_GUARD` keeps every public barrier publication,
+> activation, resume and rollback disabled pending reviewed PB qualification
+> and live-host lifecycle evidence. `--stage-only` remains non-mutating.
+
 This guide is for the operator or agent who puts work on the fleet. It covers
 submitting a command, waiting for it, running a campaign, watching what the
 fleet is doing, stopping work, and reading a failure.
@@ -2198,7 +2203,8 @@ republished.
 **Publishing a generation, and cutting the fleet over to a transport, need
 Rob's explicit word and an idle queue.** That is a standing constraint of the
 campaign freeze, not a suggestion, and it holds even when the change looks
-small. The install and the cutover are his to run
+small. Existing explicit authorization for maintenance publication satisfies the
+authorization requirement; it need not be requested again. The install and the cutover are his to run
 (`fleet/slurm/install.sh`, then `fleet/slurm/cutover.sh`); see the
 [README](../README.md) and the [SLURM install
 runbook](slurm_runbook_2026-09-04.md).
@@ -2210,21 +2216,80 @@ time and a nonce, then moves `repo` onto it in one namespace operation. A
 reader therefore sees one whole generation or the previous one, never a
 half-copied mixture.
 
+Public barrier activation, resume and rollback remain disabled by the source
+qualification guard. The barrier commands below describe the guarded protocol;
+private NFS actors simulate host services and cannot qualify real reboot or
+service lifecycle behavior. Ordinary maintenance publication still requires a
+reviewed rolling compatibility reason and an idle queue.
+
     tools/fleet/publish_runtime.py --rollout barrier --dry-run
 
 `--dry-run` checks the selected rollout policy, prints the commit and every
 file that would be published, and writes nothing when its preflight succeeds.
 
-`barrier` is the default. `--rollout barrier --dry-run` checks whether every roster host
-has posted a historical attestation for the target updater version. With
-`--activate-generation`, it checks the version in that generation's receipt.
-The preflight reports missing hosts and previously posted versions. A match
-does not establish current participation, a fleet drain or completed rotation;
-write-once markers survive later version changes. Actual barrier publication
-and activation are refused before staging or moving `repo` until the epoch
-protocol tracked in #458 is implemented. A successful preflight is not a
-barrier rollout or permission to bypass the publication window.
+`barrier` is the default. Its `--dry-run` checks historical updater attestations
+for the target bytes and reports missing hosts and previous versions. It does
+not prove current participation or simulate either quorum.
 
+For a barrier, first stage the committed generation through an admitted PB action:
+
+    tools/fleet/publish_runtime.py --stage-only
+
+This performs the import probe and seals the candidate, prints its generation
+name, and leaves `repo` unchanged. Then run the authorized control-plane step
+outside the live fleet's own PB action scope:
+
+    tools/fleet/publish_runtime.py --activate-generation <staged-name> --barrier-wait-s 300
+
+The coordinator must not be an action whose scope it waits to drain. Staging,
+import probes and qualification tests still require PB. Activation verifies sealed
+members and writes only rollout decisions and the runtime pointer.
+
+The source and target must contain the same rollout-aware updater. For the first
+adoption, or whenever that updater changes, publish a reviewed rolling bridge and
+verify the installed updater SHA-256 and healthy status on every roster host.
+Historical attestations alone are insufficient. The target roster and source
+roster both participate; fresh offers resolve their host aliases. An unavailable,
+ambiguous or undeclared host prevents arming.
+
+An armed epoch closes local durable admission gates, lets existing actions finish,
+and waits for all worker and prewarm processes to park. Every host must publish
+its epoch-bound `drained` record before `repo` moves. Every host must then prove
+its privileged clients are healthy and its supervisor, workers and prewarmer use
+the chosen immutable generation before the coordinator writes `resume`. Each
+host rechecks local proof before release. Inspect `pbstatus`'s `rollout` section,
+local updater status and `rollout/epochs/<epoch>/` for the pending phase and
+missing hosts. A terminal record appears only after every host acknowledges resume.
+
+A wait expiry returns 75 and retains the epoch and all unreleased holds. Continue
+that same epoch, without editing or deleting its evidence:
+
+This source delivery keeps public barrier mutation qualification-guarded. The
+following recovery commands document the protocol and are exercised only by
+the private qualifier; ordinary use refuses until reviewed PB qualification and
+live-host lifecycle evidence remove that guard.
+
+When the guard is eventually removed, source and target still must carry the
+same published updater and coordinator bytes. A coordinator change requires a
+reviewed rolling bridge before it can coordinate an epoch.
+
+    tools/fleet/publish_runtime.py --resume-barrier <epoch> --barrier-wait-s 300
+
+Before a resume decision, request a coordinated return to the exact source:
+
+    tools/fleet/publish_runtime.py --rollback-barrier <epoch> --rollback-reason '<observed failure>'
+
+A participant rotation failure also triggers this rollback. All hosts remain held
+until the complete rollback quorum permits resume. Completed rollback returns 1;
+completed forward rollout returns 0. After resume, a reverse transition requires
+a new barrier. A crashed coordinator may be restarted with `--resume-barrier`,
+including after the atomic pointer move but before its decision record.
+
+Publishers serialize through the permanent NFS POSIX `.publication.lock`; do not
+unlink it. An active or unreadable epoch blocks another publication, including an
+explicit rolling request. The supported drain policy is natural completion;
+there is no force-timeout release, missing-host exclusion, quarantine, or automatic
+interrupt/requeue. Repair an unavailable participant and continue its epoch.
 For a reviewed transition that tolerates independent host convergence, explicitly
 select `--rollout rolling --rollout-reason TEXT` for both the dry-run and the
 publication. The reason must be nonblank and explain why old and new processes
@@ -2279,7 +2344,8 @@ that has moved would not be the same thing. A name that is not a direct child
 of the generation store, a dot-name, or a directory with no receipt is refused
 before `repo` is touched. A dot-name matters: a staging tree left by an
 interrupted publish carries a receipt but was never sealed or probed.
-Existing-generation activation also defaults to the unavailable barrier path.
+Existing-generation activation also defaults to the barrier protocol and rehashes
+its sealed members before activation. Use a compatible source/target updater pair.
 Rolling activation needs its own explicit choice and reason; it does not infer
 reverse-transition compatibility from an old receipt, including one that records
 a forward rolling reason. The activation prints this reason without changing
@@ -2652,8 +2718,9 @@ installed clients, matching healthy broker bytes and zero active scopes. Check
 `/var/lib/prismabuild-client-upgrade/status.json` when a booted supervisor is
 running but its workers remain parked; do not remove a gate to resume work.
 Deploy the paired worker/updater change and verify both versions fleet-wide.
-The gate remains volatile, so this does not preserve a named drain across a
-host reboot or qualify a synchronized rollout; #458 still owns those requirements.
+The gate is a volatile mirror of the root-owned durable broker hold. An active
+fleet epoch retains that hold across reboot and requires its validated resume
+decision plus fresh local rotation proof before admission reopens.
 
 The service uses `KillMode=process` so systemd signals the supervisor rather
 than an action's process group. `TimeoutStopSec=infinity` and `SendSIGKILL=no`

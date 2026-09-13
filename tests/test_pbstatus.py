@@ -624,7 +624,7 @@ def test_json_is_one_object_with_the_three_lists(fleet, capsys):
     assert set(payload) == {"schema", "transport", "pool", "nodes", "jobs",
                             "endings", "scheduler", "complete",
                             "timed_out_sections", "unavailable_sections",
-                            "abandoned_children", "host_storage"}
+                            "abandoned_children", "host_storage", "rollout"}
     assert payload["host_storage"]["check"] == "nfs_readahead"
     # Whatever this box is, the reading did not make the census incomplete.
     assert payload["host_storage"]["state"] in {

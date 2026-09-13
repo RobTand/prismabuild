@@ -760,6 +760,8 @@ class Session:
                             lambda: pbstatus.read_endings(self.queue_root, limit=limit))
         reservations = call.read("reservations",
                                  lambda: _reservations(self.queue_root))
+        rollout = call.read("rollout",
+                            lambda: pbstatus.read_rollout_summary(self.repo_link))
         census = census or {}
         return {
             "queue_root": str(self.queue_root),
@@ -770,6 +772,7 @@ class Session:
             "endings": endings,
             "endings_limit": limit,
             "reservations": reservations,
+            "rollout": rollout,
         }
 
     # -- pb_action ---------------------------------------------------------
@@ -1089,6 +1092,8 @@ class Session:
             "manifest",
             lambda: _read_record(self.repo_link / "RUNTIME_VERSION.json"))
         census = call.read("pool", lambda: pbstatus.read_pool(self.queue_root))
+        rollout = call.read("rollout",
+                            lambda: pbstatus.read_rollout_summary(self.repo_link))
         nodes = (census or {}).get("nodes") or []
         return {
             "repo_link": str(self.repo_link),
@@ -1109,6 +1114,7 @@ class Session:
                  "loops": node.get("loops"), "age_s": node.get("age_s")}
                 for node in nodes
             ],
+            "rollout": rollout,
         }
 
     # -- helpers -----------------------------------------------------------

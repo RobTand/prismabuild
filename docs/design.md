@@ -1962,9 +1962,8 @@ The upgraded updater refuses candidates lacking either durable broker or
 durable updater support, and refuses missing running capability. That guard
 takes effect after the coupled updater/broker generation converges; the older
 updater executing the first transition may still restore its previous files.
-This is host-local hold
-recovery only: it neither enables a fleet barrier nor supplies epoch participation,
-quorum, or coordinated rollback.
+This host-local authority retains the fleet rollout hold across reboot; shared
+epoch decisions, described below, determine when that hold may be released.
 A loop that parks on a drain records that it parked, one file per process per
 drain under `/run/prismabuild/rollout/parked/`, named for the gate's
 `changed_unix` so a marker left by an earlier drain reads as the earlier drain.
@@ -2010,35 +2009,102 @@ source manifest, and `--activate-generation` preflight uses the existing
 generation's receipt. The publisher loads the updater's marker-name function
 and member key from its checkout. A marker counts only when its schema and
 body reproduce its filename through that function.
-These write-once markers establish history, not the currently installed
-version or current participation: they survive upgrades, downgrades and host
-loss. A successful preflight grants no activation authority. Without
-`--dry-run`, both barrier paths refuse before staging or changing the runtime
-symlink, even when all historical attestations match. Issue #458 must supply
-fresh participation tied to the rollout epoch, the drain and rotation quorums,
-and coordinated rollback before barrier activation can be enabled. The
-publisher defaults to `barrier`, so an ordinary publication or existing-generation
-activation refuses while that protocol is unavailable. Independent host
-convergence requires explicit `--rollout rolling --rollout-reason TEXT`, with a
-nonblank explanation of why the proposed transition tolerates mixed generations.
-New rolling generations record `rollout` and `rollout_reason` in their immutable
-receipt; dry-run and activation output also state the reason. Existing-generation
-activation requires its own explicit choice and reason, including for a legacy
-receipt without a rollout declaration. A reason is a reviewable compatibility
-claim, not proof or an override of the publication window. Historical attestations
-still grant no current participation, and there is no supported synchronized
-activation. Workers, including the one-shot entrypoint, refuse admission when
-the local `/run` gate is missing. After boot the updater initializes that gate
-through the broker's owned drain/release operations only after desired and
-installed clients match, the running broker's hashes and health agree, and no
-active scopes remain. An existing owned drain also waits for zero scopes on
-later current-client ticks; another holder's drain stays held. Unavailable gate
-reads are not absence, and `current` requires an explicit open gate readback.
-This fences the interval before the updater initializes admission. The broker's
-separate host-local authority now persists a named hold across reboot, while the
-volatile `/run` mirror remains the worker-facing v1 gate. Fresh epoch participation,
-both fleet quorums, and coordinated rollback remain required before durable host
-markers can authorize a coordinated rollout.
+These historical markers grant no activation authority. Public barrier mutation
+remains disabled by `FINAL_BARRIER_QUALIFICATION_GUARD` pending real host lifecycle
+qualification. The following describes the guarded protocol, exercised by private
+qualification actors. With the guard removed, the publisher defaults
+to `barrier`: it seals and verifies a candidate, then writes a fresh immutable
+intent under `rollout/epochs/<epoch>/intent.json`. The intent fixes the source
+and target generation, sorted host roster, participating updater SHA-256 and
+`wait` drain policy. The roster includes both generations' declared hosts;
+fresh offers resolve aliases and reject undeclared or ambiguous live identities.
+Offers do not count as participation. Both sealed generations must contain the
+same rollout-aware updater. A new updater therefore needs a reviewed rolling
+bridge and fleet-wide installed-hash verification before a barrier can use it.
+
+Each root updater persists the epoch and intent hash on local durable storage
+before participating. It reads bounded shared evidence through its root-owned
+export program running as the configured reader uid, independently validates
+that evidence, and keeps its owned durable maintenance hold closed. An unreadable
+or corrupt rollout tree, missing persisted epoch, another drain holder, incomplete
+process census or unhealthy broker cannot authorize release. Each host posts a
+fresh `drained` record only with zero active scopes and all worker, one-shot and
+prewarm processes parked on the current drain. Its executing and installed updater
+hashes must match the intent. Existing actions finish naturally; this protocol
+does not interrupt or requeue them.
+
+The epoch records and `repo` pointer publish atomically but are read separately.
+If a valid pointer move falls between an updater's desired-receipt read and its
+next epoch refresh, the updater keeps its durable drain and retries with a fresh
+view. It does not write `failed`: that marker is reserved for a verified local
+transaction, recovery, or service failure and would otherwise trigger an
+unwarranted coordinated rollback.
+
+Only the complete drain quorum permits the coordinator to atomically move `repo`
+and record `activated`. Each participant then verifies its desired and installed
+privileged bytes and healthy loaded broker, and observes exactly one supervisor
+and at least one worker loop running from the selected immutable generation.
+Workers, one-shot workers and the continuous prewarm loop must be parked on that
+host's current drain. The prewarm loop finishes its current cycle before parking
+and follows generation changes even while parked. Only the complete `rotated`
+quorum permits a shared `resume` decision. Every host rechecks local rotation and
+health before releasing its own gate and posting `resumed`; the complete resumed
+quorum permits a terminal `completed` record.
+
+Intent and phase records are write-once, published by fsync plus exclusive link.
+Every marker carries its epoch and canonical intent hash. Coordinator decisions
+bind the exact canonical SHA-256 of every required participant record; readers
+validate the complete dependency chain. Diagnostic wall-clock timestamps never
+establish ordering or replace quorum. A permanent POSIX publication lock with
+in-process exclusion serializes publishers across the NFS mount and its local
+server path. Never unlink this lock. An active or unreadable epoch blocks ordinary
+publication and explicit rolling activation too.
+
+Before a resume decision, a participant failure or explicit `--rollback-barrier`
+records rollback under the same drain quorum, restores the exact source pointer,
+and waits for every host's `rolled-back` proof before authorizing resume. A local
+transaction failure restores verified previous bytes while retaining the fleet
+hold. An interrupted coordinator can replay a pointer move that preceded its
+activation marker. `--resume-barrier` continues the same immutable intent;
+`--barrier-wait-s` bounds the coordinator's polling between completed reads,
+returns 75 on expiry and
+never releases admission. Rollback after resume is refused and requires a new
+epoch. No missing-host exclusion, quarantine or interrupt/requeue policy is
+implemented: an unavailable participant leaves the epoch pending until repaired.
+Direct coordinator filesystem reads can block past that polling deadline; they
+retain the publication lock and admission holds until the read or process ends.
+
+`--stage-only` seals and import-probes through PB without arming an epoch or moving
+`repo`. The subsequent activation/recovery coordinator performs control-plane
+work outside the live fleet's own admitted scope, which it must drain; it refuses
+to wait on its own scope. Historical `--dry-run` attestation checks remain bootstrap
+diagnostics, not a simulation of the epoch or permission to activate. Independent
+host convergence requires explicit `--rollout rolling --rollout-reason TEXT` with
+a nonblank compatibility explanation, recorded in a new generation receipt.
+Existing-generation rolling activation requires its own reason. A reason neither
+proves compatibility nor waives the publication window.
+
+The source delivery keeps `FINAL_BARRIER_QUALIFICATION_GUARD` enabled. Every
+public barrier mutation, including publication, activation, resume and rollback,
+therefore refuses before staging or stepping the epoch state machine.
+`--stage-only` remains available because it only seals and import-probes a
+candidate. The private qualifier disables the guard only after asserting that
+its root is below `/mnt/shared/pb-qualification`; its simulated broker, service
+and process census remain source evidence, not live-host qualification.
+An epoch also binds the exact SHA-256 of `publish_runtime.py`. Source and target
+generations must carry the same updater and coordinator bytes, and recovery
+rechecks its captured coordinator bytes plus the imported updater-marker
+semantics before every pointer move or decision publication. A coordinator
+change therefore needs a reviewed rolling bridge before it can drive a barrier.
+
+Workers, including the one-shot entrypoint, refuse admission when the local
+`/run` gate is missing. After boot the updater initializes the gate through the
+broker only after desired and installed clients match, loaded hashes and health
+agree, and no active scopes remain. An active epoch additionally requires its
+quorum-backed resume decision. An existing owned drain waits for zero scopes;
+another holder's drain stays held. Unavailable reads are not absence, and
+`current` requires an explicit open gate readback. The volatile worker-facing
+mirror and root-owned durable authority serve these same rules after reboot.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not

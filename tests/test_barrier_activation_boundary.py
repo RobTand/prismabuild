@@ -1,8 +1,8 @@
-"""Historical attestations cannot authorize a runtime swap (#458, #469).
+"""Historical attestations alone cannot authorize a runtime swap (#458, #469).
 
 Exercise both publisher entry paths against a private generation store. The
-rollback case extends the retained #470 maintenance regression; the publication
-case also proves that an unsupported barrier cannot stage a generation.
+rollback case extends the retained #470 maintenance regression; unqualified
+bridge generations must still refuse before staging or epoch creation.
 """
 import hashlib
 
@@ -27,12 +27,15 @@ def test_default_barrier_refuses_mutation_before_history_io(fleet, monkeypatch, 
     if operation == "activate":
         argv += ["--activate-generation", target.name]
     monkeypatch.setattr(publish_runtime.sys, "argv", argv)
+    monkeypatch.setattr(publish_runtime, "_commit_identity", lambda: "c" * 40)
+    monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: False)
+    monkeypatch.setattr(publish_runtime, "_git_index_modes", lambda: {})
     monkeypatch.setattr(
         publish_runtime, "_require_attested_fleet",
         lambda *_args: pytest.fail("mutating default read historical attestations"),
     )
 
-    with pytest.raises(SystemExit, match="barrier activation is not implemented"):
+    with pytest.raises(SystemExit, match="barrier|generation"):
         publish_runtime.main()
     assert publish_runtime.MIRROR.resolve() == previous
     assert set(target.parent.iterdir()) == before
@@ -70,7 +73,7 @@ def test_barrier_refuses_mutation_even_with_matching_history(
         monkeypatch.setattr(publish_runtime, "_probe", lambda _: None)
     monkeypatch.setattr(publish_runtime.sys, "argv", argv)
 
-    with pytest.raises(SystemExit, match="barrier activation is not implemented"):
+    with pytest.raises(SystemExit, match="barrier|generation"):
         publish_runtime.main()
     assert publish_runtime.MIRROR.resolve() == previous
     assert set(target.parent.iterdir()) == before
