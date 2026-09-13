@@ -125,3 +125,42 @@ def test_exact_decoded_limit_is_accepted(tmp_path, monkeypatch):
     source.write_bytes(gzip.compress(raw, mtime=0))
     monkeypatch.setattr(pb, "DATA_MANIFEST_MAX_DECODED_BYTES", len(raw))
     assert pb.load_data_manifest(source)["entry_count"] == 2
+
+
+def test_storage_loop_warms_gzip_input_inside_its_first_phase(tmp_path):
+    from prewarm_fixture import Fleet, phase_table
+
+    fleet = Fleet(tmp_path)
+    entries = [fleet.file(f"head-{i}", 3000) for i in range(3)]
+    key = fleet.action("gzip-head", entries,
+                       annotations={"phases": phase_table([("head", 9000)])},
+                       progress_phases=["head"])
+    source = fleet.root / "gzip-head.manifest.json"
+    packed = fleet.root / "gzip-head.manifest.gz"
+    packed.write_bytes(gzip.compress(source.read_bytes(), mtime=0))
+    descriptor, _ = fleet.cas.ingest_input(
+        packed, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+    request_path = fleet.cas_root / "requests" / key[:2] / f"{key}.json"
+    request = json.loads(request_path.read_text())
+    request["inputs"] = [descriptor]
+    request["params"]["data_manifest"].update(
+        input=descriptor, content_encoding="gzip")
+    request_path.write_text(json.dumps(request))
+    args = fleet.args(arcstats=fleet.arcstats(size=0, c=5000, c_max=5000))
+
+    event = fleet.cycle(args)
+    assert event["warmed"][0]["action_key"] == key
+    record = fleet.queue.prewarm(key)
+    assert record["warmed_bytes"] == 3000
+    assert record["bytes_warmed"] == 3000
+    assert record["status"] == "partial"
+    assert record["manifest_sha256"] == descriptor["sha256"]
+    assert record["warmed_through_phase"] == ""
+    # Retained resident bytes consume the next cycle's allowance. Neither
+    # another poll nor arbitrary progress units lets us exceed that window.
+    assert fleet.cycle(args)["warmed"] == []
+    fleet.claim(key)
+    fleet.report_progress(key, "head", units=1000000)
+    event = fleet.cycle(args)
+    assert event["claimed_reserved_bytes"] == 3000
+    assert fleet.queue.prewarm(key)["warmed_bytes"] == 3000
