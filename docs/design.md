@@ -60,7 +60,7 @@ clock with the reader, not with an independently trusted time source. Offers
 retain their existing wire format. CPU/GPU telemetry freshness, capacity
 reservation, containment and lease recovery receive no additional tolerance.
 The pool's shared filesystem calls remain synchronous except for the bounded
-`pbrun` offer and pull-queue outcome reads and `pbwait` prefix discovery
+`pbrun` offer, detached attachment and pull-queue outcome reads and `pbwait` observations
 described below. `pbrun` runs its one pre-submission **worker-offer** record scan in
 an abandonable reader with a fixed five-second budget. It refuses loudly if
 that reader times out or fails, names any retained reader identity, and never
@@ -73,6 +73,18 @@ imports are not themselves interruptible at that deadline.
 The offer boundary covers no CAS request/staging, publication, terminal wait,
 claim, lease, token, or other queue read/write, which remain synchronous and
 can still stall (issue #16).
+Detached attachment discovery has its own five-second isolated-reader budget.
+It reads recorded submissions, covering outcomes and leases using the existing
+liveness rules, and returns the display path with the selected generation so
+printing an attachment performs no further queue read. Reader timeout, setup
+failure or retained child refuses with exit 74 before runnable publication;
+the error retains any unreaped PID/start-time identity. SLURM controller queries
+stay in the parent under their existing command timeouts. Record parsing keeps
+its historical tolerant behavior; this boundary does not make a swallowed
+record error distinguishable from absence. CAS lookup/staging, publication,
+post-publication generation discovery, runtime imports and other shared
+operations remain outside this bound. Process creation, reply decoding and
+cleanup retain the same isolated-reader limitations as the offer boundary.
 The pool status census likewise collects active records and admission, lease,
 and denial sidecars before deriving worker/sample freshness and placement. Its
 `sampled_unix` is the time that collection finished; it remains a non-atomic
