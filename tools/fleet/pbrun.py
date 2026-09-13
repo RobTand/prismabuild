@@ -1172,6 +1172,28 @@ def require_relocatable_checkout(
         )
 
 
+_FLEET_DEMAND_KINDS = frozenset({"cpu", "gpu", "mem_gb"})
+
+
+def validate_fleet_demand(demand: Mapping[str, object]) -> None:
+    """Refuse a ``pbrun`` resource that no live worker offer can hold.
+
+    The generic pool ledger intentionally remains open to producer-specific
+    resources. ``pbrun`` is the fleet-command client, though, and both its
+    live pool offers and SLURM translation have this closed vocabulary.
+    """
+
+    if "" in demand:
+        raise SystemExit("--demand resource name cannot be empty")
+    unsupported = sorted(set(demand) - _FLEET_DEMAND_KINDS)
+    if unsupported:
+        rendered = ", ".join(repr(kind) for kind in unsupported)
+        accepted = ", ".join(sorted(_FLEET_DEMAND_KINDS))
+        raise SystemExit(
+            f"--demand has unsupported resource {rendered}; accepted resources are {accepted}"
+        )
+
+
 def _parse_demand(text: str) -> dict[str, int]:
     demand: dict[str, int] = {}
     for part in text.split(","):
@@ -1181,7 +1203,16 @@ def _parse_demand(text: str) -> dict[str, int]:
         if "=" not in part:
             raise SystemExit(f"--demand wants k=v pairs, got {part!r}")
         key, _, value = part.partition("=")
-        demand[key.strip()] = int(value)
+        key = key.strip()
+        if not key:
+            raise SystemExit("--demand resource name cannot be empty")
+        try:
+            demand[key] = int(value)
+        except ValueError:
+            raise SystemExit(
+                f"--demand resource {key!r} needs an integer count, got {value!r}"
+            ) from None
+    validate_fleet_demand(demand)
     return demand
 
 

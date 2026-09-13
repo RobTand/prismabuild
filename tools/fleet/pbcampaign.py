@@ -364,6 +364,17 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
     """
 
     try:
+        # Preserve pbrun's whitespace normalization and ask its one closed
+        # fleet-client vocabulary before any row can publish. The generic
+        # PoolQueue ledger remains available to other producers through its
+        # own API.
+        demand = row.get("demand") or {}
+        pbrun.validate_fleet_demand(
+            {name.strip(): count for name, count in demand.items()}
+        )
+    except SystemExit as exc:
+        raise ManifestError(f"row {index}: {exc}") from None
+    try:
         pbrun.require_host_class_scope(
             measurement=bool(row.get("measurement")),
             host_class=row.get("host_class"),

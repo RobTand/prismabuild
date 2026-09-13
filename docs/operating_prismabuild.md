@@ -176,6 +176,13 @@ its existing limits. This is not a whole-submission timeout.
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 | `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree; `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
 
+`pbrun` accepts only `cpu`, `gpu`, and `mem_gb` in `--demand`. It refuses an
+unknown resource before sealing, since the live pool offers and the SLURM lane
+can ledger only those names. `pbcampaign` performs the same client validation
+while loading the entire manifest, before it publishes even an earlier valid
+row. This is a command-client boundary: the generic `PoolQueue` API retains
+its producer-defined resource vocabulary.
+
 ### `--profile`: an opt-in profile, sealed into the key
 
 `--profile sample` runs py-spy at 100 Hz over the action's whole process tree
