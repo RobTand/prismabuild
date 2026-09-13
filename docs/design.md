@@ -1931,6 +1931,28 @@ containment, priority and admission are unchanged. Supervisors adopt the
 published configuration through the existing idle-worker transition; a live
 attempt retains the ceiling under which it started.
 
+## Campaign submission windows
+
+`pbcampaign --max-inflight N` is optional waiting-pool controller policy, outside
+sealed action identity and the resource ledger. One invocation retains at most
+N distinct unfinished action keys and publishes a replacement only after a
+successful `pbwait` observation and absence of that key's READY/CLAIMED leaves.
+A receipt or withdrawal outcome alone cannot free a slot while queue work or
+claim cleanup remains. Leaf read errors stop publication; they grant no capacity.
+Rows keep ordinary sealing, placement, admission, containment and receipts.
+The initial window is published before the shared monotonic wait budget starts;
+expiry leaves published work intact and reports the unsubmitted suffix.
+
+The controller stops refilling at any refusal, failed action or unreadable
+observation, preserving an ordered resumable prefix. Continuing beyond a failure
+would let a restart republish failed early rows before encountering later live
+work. Restart requires the previous controller to stop and the ordered manifest,
+source identity, options and limit to stay the same; existing pbrun cache/attach
+semantics recover that prefix. No durable parent or background dispatcher is
+introduced. Concurrent controllers and other producers do not share this count;
+there is no per-host or bandwidth guarantee. The option refuses detached and
+SLURM modes. Omitted policy retains the existing submit-all campaign behavior.
+
 ## Fleet durability and terminal publication (2026-09-05)
 
 The two NFS client exports on dl380g10 now use `sync`, with ZFS
