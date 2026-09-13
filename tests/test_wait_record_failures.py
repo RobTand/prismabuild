@@ -40,6 +40,13 @@ def test_corruption_landing_during_pool_wait_ends_the_wait(tmp_path, monkeypatch
         assert pbrun.await_outcome(q, key, wait_s=60, generation=1.0) == 1
         assert 'not valid JSON' in capsys.readouterr().err
     else:
+        # ``pbwait`` now owns its bounded observations in its own parent loop;
+        # land the malformed ending between those passes rather than through
+        # pbrun's former synchronous inner wait.
+        monkeypatch.setattr(
+            pbwait, 'time',
+            SimpleNamespace(monotonic=time.monotonic, time=time.time, sleep=land),
+        )
         row = pbwait.wait_one(q, key, cas=pb.PrismaBuildCAS(tmp_path / 'cas'), deadline=time.monotonic() + 60)
         assert row['status'] == 'unreadable'
         assert 'not valid JSON' in row['note']

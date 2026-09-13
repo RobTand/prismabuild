@@ -677,8 +677,27 @@ A full 64-hex key begins waiting without a recorded-key scan. A prefix first
 uses one isolated, five-second read of the recorded SLURM rows, pull-queue
 state directories, and withdrawal decisions. A scan that times out, fails, or
 leaves a retained reader exits 74 with any retained reader's identity; it is not reported
-as a missing or unique prefix and `pbwait` does not start another scan. This
-bound covers prefix resolution only, not later queue or CAS reads while waiting.
+as a missing or unique prefix and `pbwait` does not start another scan.
+
+Every later `pbwait` pass bounds its combined read-only submission, pool outcome,
+preemption-lineage, and any needed sealed-request/CAS receipt observation to
+five seconds; a landed immutable ending-summary read gets one separate
+five-second budget. A filed terminal or unreadable terminal is checked
+before any CAS lookup. A failed, timed-out, or retained reader produces that
+key's `record_error` row and exit 74 without another parent diagnostic read or
+record write. The parent keeps the exact generation selected by a preemption
+handoff and follows it immediately under the original `--wait-s` deadline.
+It defers request/CAS lookup until that successor is observed.
+SLURM resume and terminal filing stay in that parent, never in a disposable
+reader; a malformed SLURM terminal can therefore still be recovered by its
+recorded job. These are read-operation budgets, not a bound on controller work,
+process creation, cleanup, decoding, or an uninterruptible shared-filesystem
+syscall.
+
+Multi-key waits retain their thread-per-key concurrency. Their bounded readers
+fork from that multithreaded process: FD isolation prevents retained reader FDs
+from keeping caller resources alive, but cannot remove inherited-lock/startup
+hazards. A setup or reader failure is still reported per key as exit 74.
 
 Under SLURM, `pbwait` does more than watch. The waiting process files the
 terminal record, so a detached submission has nobody to file one. `pbwait`
