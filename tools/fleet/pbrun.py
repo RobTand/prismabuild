@@ -117,6 +117,9 @@ SUBMISSION_OFFER_READ_TIMEOUT_S = 5.0
 #: finite process boundary even for a non-blocking probe or for verification of
 #: an outcome that has already landed.
 OUTCOME_READ_TIMEOUT_S = 5.0
+#: Detached repeats discover a prior submission before publishing anything.
+#: This read is independent of caller patience and execution deadlines.
+ATTACHMENT_READ_TIMEOUT_S = 5.0
 CHECKOUT_SNAPSHOT_MAX_BYTES = 512 * 1024 * 1024
 CONTENT_TRANSFORM_ATTRIBUTES = frozenset(
     {"crlf", "eol", "filter", "ident", "text", "working-tree-encoding"}
@@ -2765,6 +2768,21 @@ def live_submission(q, key: str, *, lane_root=None, **lane_commands):
     queue's own reaper would arrange for anyway.
     """
 
+    found = _live_submission_records(q, key, lane_root=lane_root)
+    if found is not None and found[0] == "slurm":
+        if not _slurm_submission_live(str(found[2]["job_id"]), **lane_commands):
+            return None
+    return found
+
+
+def _slurm_submission_live(job_id: str, **lane_commands) -> bool:
+    state = slurm_lane.query_state(job_id, **lane_commands)
+    return state is not None and state[0] not in slurm_lane.TERMINAL_STATES
+
+
+def _live_submission_records(q, key: str, *, lane_root=None):
+    """Read shared liveness evidence; leave SLURM controller queries to the parent."""
+
     found = outstanding_submission(q, key, lane_root=lane_root)
     if found is None:
         return None
@@ -2775,9 +2793,6 @@ def live_submission(q, key: str, *, lane_root=None, **lane_commands):
         job_id = str(submission.get("job_id") or "")
         if not job_id:
             return None
-        state = slurm_lane.query_state(job_id, **lane_commands)
-        if state is None or state[0] in slurm_lane.TERMINAL_STATES:
-            return None
         return found
     if q.item_path(pool.READY, key).exists():
         return found
@@ -2785,6 +2800,57 @@ def live_submission(q, key: str, *, lane_root=None, **lane_commands):
     if age is not None and age < pool.LEASE_TIMEOUT_S:
         return found
     return None
+
+
+def _attachment_value(q, key: str, *, lane_root=None):
+    found = _live_submission_records(q, key, lane_root=lane_root)
+    if found is None:
+        return None
+    transport, generation, submission = found
+    if transport == "slurm":
+        directory = Path(str(submission.get("directory") or "."))
+        record = slurm_lane.submission_record_path(
+            directory, published_unix=generation,
+            attempt=int(submission.get("attempt") or 1))
+        job_id = str(submission.get("job_id") or "")
+    else:
+        ready = q.item_path(pool.READY, key)
+        record = ready if ready.exists() else q.item_path(pool.CLAIMED, key)
+        job_id = ""
+    return {"transport": transport, "generation": generation,
+            "job_id": job_id, "submission": str(record)}
+
+
+def bounded_attachment(q, key: str, *, lane_root=None, **lane_commands):
+    """Discover an attachment without letting a queue read park the submitter.
+
+    The child only reads. Its reply includes the display path so rendering
+    cannot re-read READY in the parent. Scheduler commands have their existing
+    timeouts and run in the parent, keeping their process ownership unchanged.
+    Existing tolerant record parsing and liveness rules remain in force.
+    """
+
+    value = _bounded_pool_read(
+        "attachment discovery",
+        lambda: _attachment_value(q, key, lane_root=lane_root),
+        budget_s=ATTACHMENT_READ_TIMEOUT_S)
+    if value is None:
+        return None
+    if (not isinstance(value, dict)
+            or value.get("transport") not in {"pool", "slurm"}
+            or not isinstance(value.get("generation"), (int, float))
+            or isinstance(value.get("generation"), bool)
+            or not math.isfinite(value["generation"])
+            or not isinstance(value.get("job_id"), str)
+            or not isinstance(value.get("submission"), str)
+            or not value["submission"]):
+        raise OutcomeReadUnavailable("attachment discovery returned an invalid payload")
+    if value["transport"] == "slurm":
+        if not value["job_id"]:
+            raise OutcomeReadUnavailable("attachment discovery returned no SLURM job id")
+        if not _slurm_submission_live(value["job_id"], **lane_commands):
+            return None
+    return value
 
 
 def await_outcome(
@@ -4794,21 +4860,15 @@ def main() -> int:
         # Not in the CAS, but perhaps already running: a campaign whose waiter
         # died is re-run to find out where it got to, and every row still on a
         # node must be attached to rather than submitted again.
-        live = live_submission(pool.PoolQueue(SH / "pb-queue"), key)
+        try:
+            live = bounded_attachment(pool.PoolQueue(SH / "pb-queue"), key)
+        except (OutcomeReadUnavailable, OSError) as exc:
+            print(f"pbrun: unavailable detached attachment for {key[:12]}: {exc}",
+                  file=sys.stderr, flush=True)
+            return RECORD_WRITE_FAILED_EXIT
         if live is not None:
-            transport, generation, submission = live
-            if transport == "slurm":
-                directory = Path(str(submission.get("directory") or "."))
-                record = slurm_lane.submission_record_path(
-                    directory, published_unix=generation,
-                    attempt=int(submission.get("attempt") or 1),
-                )
-                job_id = str(submission.get("job_id") or "")
-            else:
-                ready = (SH / "pb-queue" / pool.READY / f"{key}.json")
-                record = ready if ready.exists() else (
-                    SH / "pb-queue" / pool.CLAIMED / f"{key}.json")
-                job_id = ""
+            transport, generation = live["transport"], live["generation"]
+            record, job_id = live["submission"], live["job_id"]
             print(f"pbrun: {key[:12]} is already running "
                   f"({transport}{' job ' + job_id if job_id else ''}); "
                   f"attaching to it rather than submitting a second copy",

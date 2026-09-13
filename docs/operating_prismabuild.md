@@ -662,6 +662,18 @@ run rather than starting a second copy of it. `--detach` refuses
 `--max-attempts` greater than 1, because a retry needs somebody alive to see
 the first attempt fail.
 
+Discovery of an existing submission for `--detach` uses a five-second isolated
+filesystem reader, including the attachment's displayed record path. If the
+reader times out, cannot start or cannot be reaped, `pbrun` reports unavailable
+attachment discovery and exits **74** before publishing runnable work. Any
+retained reader is named by PID and start time. This is neither an action
+failure nor expiry of `--wait-s`. SLURM controller queries remain in the parent
+with their existing timeouts. Existing tolerant record parsing is unchanged.
+The bound covers this attachment observation only: CAS lookup/staging, runtime
+imports, publication and post-publication generation reads can still stall.
+Process creation, reply decoding and cleanup have the same limits as the
+bounded pool waiter.
+
 Wait for detached keys later, in any number, with `pbwait`:
 
     tools/fleet/pbwait.py 8fc86da0e13f 4b19a02cc551
