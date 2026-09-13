@@ -72,8 +72,9 @@ the action reads them:
 }
 ```
 
-Names are unique and non-empty, `cumulative_bytes` never decreases, and the
-last boundary is the manifest's `total_bytes`.  A table that breaks any of
+Names are unique and non-empty, each cumulative boundary falls between manifest
+entries, `cumulative_bytes` never decreases, and the last boundary is the
+manifest's `total_bytes`. A table that breaks any of
 those rules is treated as absent rather than repaired: windowing on the wrong
 boundaries reads the wrong bytes and then records them as resident.  Every
 other annotation stays uninterpreted -- PrismaBuild reads `row_id` for the
@@ -130,12 +131,12 @@ the `storage` role in `fleet_boxes.json`.  Every poll:
    bytes.
 4. ARC headroom: `c_max * --arc-reserve-fraction`, minus what claimed actions
    may still read, and minus the bytes of every row this loop has already
-   warmed that nobody has claimed yet (`warmed_reserve`).  A claim inside the
-   last `--claim-grace-min` minutes reserves its whole manifest; a claim that
-   reports progress reserves only the phases it has not read yet; a claim
-   whose manifest was warmed a window at a time reserves that window, because
-   bytes nobody warmed are on the spindles either way.  A manifest that fits
-   no window at all is refused, and refusing writes nothing.
+   warmed that nobody has claimed yet (`warmed_reserve`). A phased claim reserves
+   its warmed window ahead of the accepted read frontier. A declared progress
+   policy keeps that reservation past `--claim-grace-min`; missing observations
+   release no bytes. Claims without a progress policy use the grace fallback.
+   Unphased manifests retain whole-manifest accounting. A manifest that fits
+   no window is skipped without a new prewarm record.
 5. Reads the window's entries, in manifest order, through the host's local
    pool path (`--mount-map SHARED=LOCAL`), `--readers` at a time,
    `O_NOFOLLOW`, regular files only, paced by the pool's disks and by whether
@@ -161,14 +162,20 @@ whose `cumulative_bytes` fits the budget and records how far it got:
  "bytes_warmed": 133209948160, "phased": true, "trigger": "claim"}
 ```
 
-`warmed_bytes` is everything the loop has made resident for this manifest;
-`bytes_warmed` is what the last read moved.  They differ only for a manifest
-warmed a window at a time.  On later polls, when the action is claimed and its
-progress record names a phase, the window advances from where it stopped and
-the record is rewritten in place -- one file per key, so `already_warm` still
-answers the same question.  The invariant the advance keeps is the budget's
-own: warmed minus consumed never exceeds the budget, so the loop never holds
-more of one manifest resident than the cache was going to keep anyway.
+`warmed_bytes` is the absolute manifest offset reached by a contiguous sequence
+of fully read entries. `bytes_warmed` counts the actual I/O in the latest pass;
+`contiguous_bytes` counts only its successfully read prefix. An error or partial
+entry does not advance the frontier past a gap, even when parallel readers
+successfully read later entries. `warmed_through_phase` names the selected target;
+check the byte frontier and errors to determine whether that target was reached.
+
+On later polls, the window starts at the later of the previous frontier and
+the bytes the consumer has finished. It does not reread a consumed gap when
+progress jumps ahead. A phased action claimed before the storage poll can start
+its first window from the claimed queue. The sidecar is rewritten in place.
+The loop budgets the bytes ahead of consumption together with all other
+protected rows, and reader threads share one byte allowance. These records
+describe reads and budgeting, not proof that ZFS still retains every page.
 
 For a windowed row, "already warm" means *everything the budget allows is
 resident*, which is the honest claim about a manifest that will never fit
@@ -183,23 +190,22 @@ ahead of the claim and overlapped that row's own reads at 256.7 MB/s: the
 client saw no speedup at all, because the bytes arrived exactly as late as if
 nobody had warmed them.
 
-A claim is the end of the useful window, not the start of one.  An action that
-declares `params.progress` writes `prismabuild.action_progress.v1` records to
-`claimed/<key>.progress` (`PRISMABUILD_ACTION_PROGRESS_PATH`), which the loop
-reads from the queue side without asking the worker anything.  The phases
-before the one it names are read: the ARC may evict them, nothing is waiting
-for them, and they leave the claimed reserve.  The next row becomes warmable
-while the running one is still working.
+An action declares `params.progress` and reports through
+`PRISMABUILD_ACTION_PROGRESS_PATH`. Its worker validates the launch token,
+sealed phase names and cumulative counts, then publishes its accepted
+`ProgressWatch` observation in the claim's lease. The storage loop reads that
+observation through the bounded, strict, no-follow regular-file reader and
+checks that the lease belongs to the current claim. It never treats the raw
+action-written channel or its wall-clock timestamp as proof of advancement.
+The worker's heartbeat cadence and the storage poll cadence bound how quickly
+a newly accepted phase becomes visible to this loop.
 
-Two rules keep that honest:
-
-* The sealed request must declare the policy.  A record beside an action that
-  asked for no progress reporting is not a report the platform asked for, and
-  it does not move the budget.
-* The record must be younger than the claim.  The launcher unlinks the path
-  and mints a fresh token before every launch, and the token is deliberately
-  not published to the queue, so a leftover record from an earlier attempt is
-  rejected by its instant instead.
+Manifest phase names must describe the consumer's read order: entering a phase
+means preceding phases are no longer needed. Those preceding bytes leave the
+claimed reserve, allowing the next row to warm while the current action works.
+Cyclic progress can revisit earlier input phases, so it does not release an
+irreversible manifest frontier. A declared policy with no accepted observation
+also releases no bytes; its reservation remains while the claim is active.
 
 The cycle event says which signal fired, with the key, the phase and the bytes
 it released:
@@ -212,9 +218,8 @@ it released:
 ```
 
 `trigger` is an observation, not a label: a row is `"progress"` only when it
-fits the budget with the release and would not have fit without it.  An action
-that reports nothing keeps the claim-plus-`--claim-grace-min` behaviour it has
-today.
+fits the budget with the release and would not have fit without it. An action
+that declares no progress policy keeps claim-plus-`--claim-grace-min` accounting.
 
 ### Pacing, and why the reader count is 1
 
@@ -267,9 +272,9 @@ order of magnitude above an idle mount's attribute traffic.
 
 A host that cannot read the counter paces as though clients were always
 reading: blind is not idle, and one missing file must not turn the pacer off
-on the box that needs it most.  Missing *disk* telemetry still holds whoever
-is reading, for the same reason it always did -- that hold is a blind pacer,
-not a busy pool.  A hold is released at half the cap that started it, so a
+on the box that needs it most. Missing disk telemetry holds reads regardless
+of client activity until complete samples return. A hold is released at half
+the cap that started it, so a
 disk sitting exactly on a threshold does not flap the reader once per sample.
 
 `--max-util-pct` is still accepted and still recorded beside the rate, because
@@ -328,8 +333,8 @@ existing hold is never reset by that accounting boundary.
 
 Setting any cap to 0 disables that cap.  Setting the await and backlog caps
 off is how you reproduce the pre-#499 behaviour, and it is not a supported
-production shape.  Setting `--client-active-mb-s 0` holds whenever the disks
-are over, whoever is reading, which is the pre-#523 shape.
+production shape. Setting `--client-active-mb-s 0` treats any positive measured
+client read rate as active; a measured zero rate remains idle.
 
 ### The ARC arithmetic behind `--lookahead 1`
 
@@ -361,9 +366,9 @@ so the gap between the budget and the outcome stays visible.
 
 `pb-queue/prewarm/<action_key>.json` is the only thing the loop writes,
 anywhere.  It is a sidecar for the same reason `passes/` is one: the action is
-still in `ready` when the warm runs, and rewriting a ready item races the claim
-that may already have moved it -- which would resurrect a claimed action and
-hand it to a second worker.  Nothing under the shared data mount is written.
+may move from `ready` to `claimed` while the warm runs. Rewriting the ready item
+could resurrect a claimed action and hand it to a second worker. Nothing under
+the shared data mount is written.
 
 ### The receipt
 
@@ -379,24 +384,25 @@ because "nobody looked" and "warmed nothing" are different facts.
 
 ### Restarting the role after a publication
 
-The supervisor spawns the storage role from `_current_root()` -- the generation
-`/mnt/shared/prismabuild-fleet/repo` points at -- but a role that is already
-running keeps executing the file it started with.  Publishing a new generation
-therefore does not move a running loop.  Restart it by ending that one process
-and letting the supervisor respawn it:
+Follow the operating guide's publication prerequisites first. Publication
+changes the desired generation; it does not replace code inside a running
+process. Current storage loops detect the new generation between cycles and
+exit for the supervisor to replace them. An active read or pacing hold can
+delay that boundary, and an older loop may lack the rotation check.
 
-```
-pgrep -af prewarm_loop.py            # the role's pid and its arguments
-kill -TERM <role pid>                # the loop, never the supervisor
-```
+If the role needs a targeted restart, use its supervisor log to identify the
+storage child. Record its PID, parent PID, `/proc/<pid>/stat` start time,
+`/proc/<pid>/cmdline`, and service cgroup. Confirm that its parent is this
+host's active PrismaBuild supervisor and its script belongs to the old published
+generation. Recheck the same identity immediately before sending `SIGTERM` to
+that exact PID. A name search alone is insufficient. Keep the supervisor
+running so it can replace the role without interrupting other work.
 
-The supervisor respawns the role from the live generation within its poll
-interval.  Verify with the `spawned`/`role` line in the supervisor log and the
-new pid's `/proc/<pid>/cmdline`, which must name the new generation directory.
-
-Never `systemctl stop prismabuild-supervisor.service` for this: that stops
-every worker loop on the box as well, and the role is the only thing that
-needed to move.
+After the old child exits, inspect the supervisor's new storage-child log and
+the replacement's PID/start time and command line. Its resolved script path
+must belong to the live generation and its SHA-256 must match that generation's
+`RUNTIME_VERSION.json`. Confirm its configured reader/pacing arguments and a
+new cycle event. A sent signal or moved `repo` link alone is not adoption.
 
 Measured example (2026-09-13, dl380g10): `kill -TERM 2486293` at 04:12:24Z
 ended the role running generation `953c95e5fb52`; at 04:12:29Z the supervisor,
