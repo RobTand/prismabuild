@@ -2665,6 +2665,18 @@ non-storage mode, never a storage fallback.  Sequential rows retain the
 shared pacing verdict and stat baseline, while their receipts reset only the
 row's accounting counters.
 
+Large manifests may declare entry-aligned cumulative phase boundaries.  The
+role holds only the resident window ahead of an action's accepted read
+frontier, advances it on the matching claim lease's `ProgressWatch`
+observation, and keeps a declared action reserved when that observation is
+absent; claim grace is only the fallback for actions with no progress policy.
+The storage role never trusts the action-writable progress file directly,
+because only the worker has the per-launch token that authenticates it.  Cyclic
+progress does not establish an irreversible manifest frontier.  A disk hold
+also requires active NFS client reads and a read-await or backlog breach;
+unreadable disk telemetry remains a fail-closed hold and unreadable client
+telemetry is treated as active.
+
 ## Model-level Tessera dispatch
 
 The [full-model dispatcher](tessera_model_dispatch.md) owns decomposition into

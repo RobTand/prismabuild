@@ -91,6 +91,25 @@ topology-discovery failure stops the role for supervisor retry.  Do not turn
 that failure into an unpaced warm.  An intentional no-disk fixture remains
 inactive only outside the storage role.
 
+With complete disk telemetry, a hold requires this host's NFS server to serve
+more than `--client-active-mb-s` and the pool to exceed its read-await or backlog
+cap. Unknown client activity is treated as active. `--max-util-pct` is recorded
+and no longer holds by itself. A pool busy with a scrub and no client reads can
+continue warming. Missing disk telemetry still holds reads regardless of client
+activity.
+
+### Restarting the storage role after a publication
+
+Current loops detect a new generation between cycles and exit for supervisor
+replacement. An active cycle can delay that boundary; older loops may lack
+the check. For a targeted restart, identify the storage child from its supervisor
+log and verify its PID/start time, parent supervisor, command line, service
+cgroup and old generation path. Recheck that identity immediately before
+sending `SIGTERM` to the exact child. A process-name match alone is insufficient.
+Keep the supervisor running. Verify the replacement's PID/start time, resolved
+script path and manifest hash, configured arguments, and a new cycle event.
+See the [storage-role restart procedure](data_manifest_prewarm.md#restarting-the-role-after-a-publication).
+
 The published storage loop honors the host maintenance gate before every
 cycle. Missing or unreadable gates keep it parked too. It finishes an active
 cycle before parking; a blocked disk read or pacing hold can delay that boundary.
