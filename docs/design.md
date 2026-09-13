@@ -59,8 +59,9 @@ they were tolerated or ignored. The discrepancy compares the record's writer
 clock with the reader, not with an independently trusted time source. Offers
 retain their existing wire format. CPU/GPU telemetry freshness, capacity
 reservation, containment and lease recovery receive no additional tolerance.
-The pool's shared filesystem calls remain synchronous. `pbrun` runs its one
-pre-submission **worker-offer** record scan in
+The pool's shared filesystem calls remain synchronous except for `pbrun`'s
+pre-submission offer scan and synchronous pull-queue outcome reads described
+below. `pbrun` runs its one pre-submission **worker-offer** record scan in
 an abandonable reader with a fixed five-second budget. It refuses loudly if
 that reader times out or fails, names any retained reader identity, and never
 publishes a runnable `ready/` item from an unavailable snapshot. The parent
@@ -69,9 +70,9 @@ each verdict; retained capability therefore still has its infinite-age rule.
 The five-second read budget includes child FD isolation and IPC waits. Parent
 process creation, decoding the completed reply, cleanup grace and runtime
 imports are not themselves interruptible at that deadline.
-The boundary covers no CAS request/staging, publication, wait, claim, lease,
-token, or other queue read/write, which remain synchronous and can still stall
-(issue #16).
+The offer boundary covers no CAS request/staging, publication, terminal wait,
+claim, lease, token, or other queue read/write, which remain synchronous and
+can still stall (issue #16).
 The pool status census likewise collects active records and admission, lease,
 and denial sidecars before deriving worker/sample freshness and placement. Its
 `sampled_unix` is the time that collection finished; it remains a non-atomic
@@ -209,6 +210,25 @@ attempt as its source. Attempts predating this context provide no inferred link.
 The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
 handoff cannot report cancellation while the replacement is being published.
+
+The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
+time in an isolated child with a five-second read budget. That snapshot covers
+the three mutable terminal rows, immutable withdrawal decisions, archived
+preemption evidence, and the exact successor selection above; the selected
+generation returns to the parent and is carried into the next snapshot.
+After an ending lands, its immutable attempt history and logs are verified in a
+second, separately bounded child before `pbrun` prints a result. The parent
+keeps the original `--wait-s` deadline across polls and sleeps itself, so each
+new child cannot renew caller patience. A `--wait-s 0` caller still receives
+one immediate bounded snapshot. An unavailable reader (timeout, child failure,
+or reader that cannot be reaped) returns filesystem exit 74 with its retained
+PID/start-time identity; it does not cancel work, publish a record, or
+manufacture a verdict. A published unreadable terminal retains its existing
+exit-1 report, and immutable contract validation retains its existing error.
+The budget covers the child read and IPC wait; process creation, completed JSON
+decoding, cleanup grace, runtime imports, and output can add time. This is only
+the synchronous pool `pbrun` path: it does not bound the whole submission,
+`pbwait`, a kernel syscall, or an actual cross-host hard-NFS stall.
 
 The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements
