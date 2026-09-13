@@ -81,14 +81,23 @@ in one of five states:
 | State | Meaning |
 |---|---|
 | `ok` | The window is at or above 16384 KiB. |
-| `below_recommended` | The window is lower. This is the only state that warns. |
+| `below_recommended` | The window is lower; stderr reports both values. |
 | `not_nfs_client` | `/mnt/shared` is not a single NFS client export on this box. dl380g10 is the storage server and reads this way; it is informational, not a fault. |
 | `unreadable` | The mount is an NFS client export and the window could not be read. |
-| `unavailable` | The runtime generation does not carry the helper, so the check did not run. |
+| `unavailable` | The helper is absent, could not load, or the bounded observation did not finish. |
 
 On the text screen, `pbstatus` prints one line to stderr only when there is
 something to act on: `below_recommended` or `unreadable`. `ok`,
-`not_nfs_client` and `unavailable` stay quiet there and remain in `--json`.
+`not_nfs_client` and a missing helper stay quiet there and remain in `--json`.
+A bounded-reader timeout or error also prints an informational line and records
+`read_status` in `host_storage`; no window is inferred from a failed reading.
+
+The helper itself lives on NFS. Loading it and reading the attributes happen in
+the existing bounded child after required queue reads, with at most 0.25 seconds
+of their remaining deadline, plus existing cleanup grace. A retained child is
+identified in `abandoned_children`. An exhausted deadline skips the observation.
+As with other status reads, explicit `--timeout-s 0` disables this bound.
+Loading the helper does not write Python bytecode.
 
 Three limits to state plainly:
 
@@ -101,8 +110,9 @@ Three limits to state plainly:
   no admission decision depends on must not become one by being reported.
 - **Publication is required.** `fleet/storage/nfs_readahead.py` now travels
   with a published runtime generation so a worker without a checkout can take
-  the reading. A generation published before that change reports
-  `unavailable`. Publishing the helper installs nothing: the host unit below
+  the reading. Older versions of `pbstatus` may omit `host_storage` entirely;
+  a version carrying the check but missing its helper reports `unavailable`.
+  Publishing the helper installs nothing: the host unit below
   is still installed by an operator.
 
 ### Install after reviewing the measurement window

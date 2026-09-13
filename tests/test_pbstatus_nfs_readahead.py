@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import time
 
 import pytest
 
@@ -225,3 +226,42 @@ def test_an_unreadable_window_on_a_client_is_worth_a_line(
         "warning": False, "note": "host storage: could not be read"})
     captured = _screen(tmp_path, capsys)
     assert "host storage: could not be read" in captured.err
+
+
+def test_blocked_helper_load_does_not_hold_the_census(tmp_path, capsys, monkeypatch):
+    """The helper lives on NFS even though the attributes it reads are local."""
+    real_load = pbstatus._load_module
+
+    def blocked_load(*args, **kwargs):
+        time.sleep(3)
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(pbstatus, "_load_module", blocked_load)
+    started = time.monotonic()
+    captured = _screen(tmp_path, capsys, "--json", "--timeout-s", "2")
+    assert time.monotonic() - started < 2
+    payload = json.loads(captured.out)
+    assert payload["complete"] is True
+    assert payload["timed_out_sections"] == []
+    assert payload["host_storage"]["state"] == "unavailable"
+    assert payload["host_storage"]["read_status"] == "timed_out"
+    assert payload["host_storage"]["read_ahead_kib"] is None
+    assert payload["abandoned_children"] == []
+
+
+def test_loading_helper_does_not_create_bytecode(host, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    helper = tmp_path / "local_helper.py"
+    helper.write_bytes(HELPER.read_bytes())
+    before = set(tmp_path.rglob("*"))
+    assert read(host, helper_path=helper)["state"] == "below_recommended"
+    assert set(tmp_path.rglob("*")) == before
+
+
+def test_helper_missing_its_interface_is_unavailable(host, tmp_path):
+    helper = tmp_path / "incomplete_helper.py"
+    helper.write_text("# No observation interface in this helper.\n")
+    reading = read(host, helper_path=helper)
+    assert reading["state"] == "unavailable"
+    assert reading["warning"] is False

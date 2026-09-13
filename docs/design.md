@@ -2527,6 +2527,15 @@ These completeness checks use explicit stat calls, preserving ENOENT as missing
 and permission/I/O errors as unavailable. Boolean pathlib predicates are not
 evidence of absence because Python 3.14 suppresses OSError in them.
 
+`pbstatus` also reports the local NFS readahead window in `host_storage`.
+This optional observation never changes admission, census completeness or exit
+status. Its generation helper is on NFS, so loading and observing run in the
+existing bounded child after required census reads, capped at 0.25 seconds of
+the remaining deadline plus cleanup grace. Failure retains unknown values and
+`read_status` under `host_storage`; unreaped child identity remains in
+`abandoned_children`. Explicit `--timeout-s 0` disables the bound. The helper
+loader creates no bytecode, and runtime publication installs no host unit.
+
 ### Structured status for agent consumers
 
 `pbmcp` serves the same census to a program instead of a person, over MCP's

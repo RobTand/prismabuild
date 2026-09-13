@@ -111,6 +111,7 @@ KILL_GRACE_S = 0.25
 #: on each client, so it is loaded by path.  Absent from a generation published
 #: before it travelled, which the reading reports rather than raising on.
 NFS_READAHEAD_HELPER = "fleet/storage/nfs_readahead.py"
+HOST_STORAGE_BUDGET_S = 0.25
 
 #: The slice of the budget the wedged-peer scan may spend.  Capped so that a
 #: scan which blocks cannot consume the census's budget: the peers this counts
@@ -1521,7 +1522,8 @@ def _load_module(path: Path, name: str):
     if spec is None or spec.loader is None:
         raise ImportError(f"{path} cannot be loaded as a module")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # A status observation must not create __pycache__ in a mutable checkout.
+    exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
     return module
 
 
@@ -1552,10 +1554,9 @@ def nfs_readahead_reading(*, helper_path: str | Path | None = None,
         fault: it reads as ``not_nfs_client``, carries its reason, and warns
         about nothing.
 
-    Not spent from the census deadline and not wrapped in ``bounded``: this
-    reads ``/proc/self/mountinfo`` and ``/sys/class/bdi``, and neither can
-    block on the shared mount, which is the only thing the deadline exists
-    for. Wrapping it would fork a child to guard a read that cannot hang.
+    The attributes are local, but loading the helper reads the generation on
+    NFS. ``main`` bounds this entire call after the required census reads,
+    using their remaining deadline and a short optional-observation cap.
 
     Scope: **this box only.** The reading is local sysfs, so a
     ``pbstatus`` run reports the host it runs on and says nothing about any
@@ -1572,6 +1573,8 @@ def nfs_readahead_reading(*, helper_path: str | Path | None = None,
             else RUNTIME_ROOT / NFS_READAHEAD_HELPER)
     try:
         helper = _load_module(path, "pbstatus_nfs_readahead")
+        reading["recommended_kib"] = helper.RECOMMENDED_KIB
+        observe = helper.observe
     except Exception as exc:                       # noqa: BLE001 - diagnostic
         # A generation published before this helper travelled, or a checkout
         # without it.  The check did not run; saying so is the honest answer
@@ -1580,14 +1583,13 @@ def nfs_readahead_reading(*, helper_path: str | Path | None = None,
             f"host storage: the /mnt/shared readahead helper at {path} could "
             f"not be loaded ({type(exc).__name__}); the window was not read")
         return reading
-    reading["recommended_kib"] = helper.RECOMMENDED_KIB
     overrides = {}
     if mountinfo is not None:
         overrides["mountinfo"] = Path(mountinfo)
     if bdi_root is not None:
         overrides["bdi_root"] = Path(bdi_root)
     try:
-        observed = helper.observe(**overrides)
+        observed = observe(**overrides)
     except ValueError as exc:
         reading["state"] = "not_nfs_client"
         reading["note"] = (
@@ -1615,8 +1617,7 @@ def nfs_readahead_reading(*, helper_path: str | Path | None = None,
         reading["note"] = (
             f"host storage: /mnt/shared read_ahead_kb={kib} on bdi "
             f"{observed['bdi']} ({observed['source']}) is below the "
-            f"{recommended} KiB issue #523 recommends; a serial reader keeps "
-            f"about one RPC in flight at this window.  Reported only -- "
+            f"{recommended} KiB proposed in issue #523.  Reported only -- "
             f"nothing is refused and no admission changes.  See "
             f"docs/fleet_storage.md to install the host unit")
     else:
@@ -2046,19 +2047,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if peer_note:
         print(peer_note, file=sys.stderr)
 
-    # Same shape as the scan above -- a local-host observation, counted and
-    # never enforced -- and for the same reason: an operator running this
-    # needs the fleet, not a refusal.  The reading never reaches ``timed_out``,
-    # ``unavailable``, ``pool_partial`` or ``complete``; it travels whole in
-    # ``--json`` and prints one stderr line only when there is something to
-    # act on.  ``ok`` and ``not_nfs_client`` say nothing on stderr because
-    # nothing is wrong, and ``unavailable`` says nothing because a generation
-    # published before the helper travelled is a fact about the runtime, not
-    # about the box, and would otherwise print on every run on every box.
-    host_storage = nfs_readahead_reading()
-    if host_storage["warning"] or host_storage["state"] == "unreadable":
-        print(host_storage["note"], file=sys.stderr)
-
     transport_note = None
     if transport is None:
         selected = bounded("transport", default_transport, deadline=deadline,
@@ -2164,6 +2152,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                           f"{args.timeout_s:g}s; this table is not an empty queue")
         if empty_note:
             notes.append(empty_note)
+
+    # Required fleet reads go first. Loading this optional helper also reads
+    # NFS, so it must share the deadline and exact-child cleanup machinery.
+    # Its availability says nothing about census completeness or admission.
+    storage_read = bounded("host-storage", nfs_readahead_reading,
+                           deadline=deadline, abandoned=abandoned,
+                           cap_s=HOST_STORAGE_BUDGET_S)
+    if storage_read["status"] == "ok":
+        host_storage = storage_read["value"]
+    else:
+        host_storage = {
+            "check": "nfs_readahead", "mount": "/mnt/shared",
+            "state": "unavailable", "read_ahead_kib": None,
+            "recommended_kib": None, "bdi": None, "source": None,
+            "warning": False, "read_status": storage_read["status"],
+            "note": "host storage: readahead observation unavailable "
+                    f"({storage_read['status']}); the window was not read",
+        }
+        if storage_read["status"] == "error":
+            host_storage["error"] = storage_read["error"]
+        print(host_storage["note"], file=sys.stderr)
+    if host_storage["warning"] or host_storage["state"] == "unreadable":
+        print(host_storage["note"], file=sys.stderr)
 
     # Whole means every required section read, and read entirely: the deadline
     # held, nothing raised, and the pool census came back with every record
