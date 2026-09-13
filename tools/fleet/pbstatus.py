@@ -38,6 +38,7 @@ not an atomic scheduler snapshot or a process-liveness proof.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import os
@@ -103,6 +104,14 @@ EXIT_INCOMPLETE = 3
 #: child's next scheduling point, so an immediate ``WNOHANG`` says "still
 #: running" about a child that is already dying.
 KILL_GRACE_S = 0.25
+
+#: The host helper the NFS readahead reading is taken through, relative to the
+#: runtime generation this command was launched from.  It is a script rather
+#: than an importable module because an operator installs a copy of it as root
+#: on each client, so it is loaded by path.  Absent from a generation published
+#: before it travelled, which the reading reports rather than raising on.
+NFS_READAHEAD_HELPER = "fleet/storage/nfs_readahead.py"
+HOST_STORAGE_BUDGET_S = 0.25
 
 #: The slice of the budget the wedged-peer scan may spend.  Capped so that a
 #: scan which blocks cannot consume the census's budget: the peers this counts
@@ -1506,6 +1515,119 @@ def _proc_stat_fields(pid: int, proc: Path) -> list[bytes] | None:
     return fields if len(fields) > 19 else None
 
 
+def _load_module(path: Path, name: str):
+    """Load a fleet helper that is a script rather than an importable module."""
+
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"{path} cannot be loaded as a module")
+    module = importlib.util.module_from_spec(spec)
+    # A status observation must not create __pycache__ in a mutable checkout.
+    exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+    return module
+
+
+def nfs_readahead_reading(*, helper_path: str | Path | None = None,
+                          mountinfo: str | Path | None = None,
+                          bdi_root: str | Path | None = None) -> dict:
+    """Report this box's /mnt/shared NFS readahead window. Never refuse on it.
+
+    Issue #523 measured both Spark clients at ``read_ahead_kb=1024`` with
+    ``rsize=1M``, which holds a serial reader to about one READ RPC in flight,
+    and proposes 16 MiB. Nothing in the fleet could say what the window is
+    now, so a box could sit at the low value indefinitely with no operator
+    seeing it. This says.
+
+    Three properties this must keep, and they are the whole design:
+
+    *   **Read-only.** Mount discovery is ``nfs_readahead.shared_mount`` and
+        the reading is ``nfs_readahead.observe``, which writes nothing. The
+        window is changed by an operator running the host unit, never here.
+    *   **Never a gate.** The result reaches ``--json`` and, when there is
+        something to act on, one stderr line. It reaches neither
+        ``timed_out_sections``, ``unavailable_sections``, ``complete`` nor the
+        exit status. A host setting that no admission decision depends on must
+        not become one by being reported.
+    *   **Quiet where there is nothing to say.** dl380g10 is the storage
+        server and has no NFS client mount at /mnt/shared, so ``shared_mount``
+        raises there every time. That is the box being what it is, not a
+        fault: it reads as ``not_nfs_client``, carries its reason, and warns
+        about nothing.
+
+    The attributes are local, but loading the helper reads the generation on
+    NFS. ``main`` bounds this entire call after the required census reads,
+    using their remaining deadline and a short optional-observation cap.
+
+    Scope: **this box only.** The reading is local sysfs, so a
+    ``pbstatus`` run reports the host it runs on and says nothing about any
+    other client in the fleet. Fleet-wide reporting would have to carry the
+    value in the worker offer (``pool_offer.v1``); that is a separate change
+    and is not made here.
+    """
+
+    reading = {"check": "nfs_readahead", "mount": "/mnt/shared",
+               "state": "unavailable", "read_ahead_kib": None,
+               "recommended_kib": None, "bdi": None, "source": None,
+               "warning": False, "note": ""}
+    path = (Path(helper_path) if helper_path is not None
+            else RUNTIME_ROOT / NFS_READAHEAD_HELPER)
+    try:
+        helper = _load_module(path, "pbstatus_nfs_readahead")
+        reading["recommended_kib"] = helper.RECOMMENDED_KIB
+        observe = helper.observe
+    except Exception as exc:                       # noqa: BLE001 - diagnostic
+        # A generation published before this helper travelled, or a checkout
+        # without it.  The check did not run; saying so is the honest answer
+        # and is not a fault of the box being looked at.
+        reading["note"] = (
+            f"host storage: the /mnt/shared readahead helper at {path} could "
+            f"not be loaded ({type(exc).__name__}); the window was not read")
+        return reading
+    overrides = {}
+    if mountinfo is not None:
+        overrides["mountinfo"] = Path(mountinfo)
+    if bdi_root is not None:
+        overrides["bdi_root"] = Path(bdi_root)
+    try:
+        observed = observe(**overrides)
+    except ValueError as exc:
+        reading["state"] = "not_nfs_client"
+        reading["note"] = (
+            f"host storage: /mnt/shared is not a single NFS client export on "
+            f"this box ({exc}); no readahead window to report")
+        return reading
+    except OSError as exc:
+        reading["state"] = "unreadable"
+        reading["note"] = (
+            f"host storage: /mnt/shared is an NFS client mount and its "
+            f"readahead window could not be read ({type(exc).__name__}: {exc})")
+        return reading
+    except Exception as exc:                       # noqa: BLE001 - diagnostic
+        reading["state"] = "unreadable"
+        reading["note"] = (
+            f"host storage: reading the /mnt/shared readahead window raised "
+            f"{type(exc).__name__}: {exc}")
+        return reading
+    for field in ("bdi", "source", "read_ahead_kib", "recommended_kib"):
+        reading[field] = observed[field]
+    kib, recommended = observed["read_ahead_kib"], observed["recommended_kib"]
+    if kib < recommended:
+        reading["state"] = "below_recommended"
+        reading["warning"] = True
+        reading["note"] = (
+            f"host storage: /mnt/shared read_ahead_kb={kib} on bdi "
+            f"{observed['bdi']} ({observed['source']}) is below the "
+            f"{recommended} KiB proposed in issue #523.  Reported only -- "
+            f"nothing is refused and no admission changes.  See "
+            f"docs/fleet_storage.md to install the host unit")
+    else:
+        reading["state"] = "ok"
+        reading["note"] = (
+            f"host storage: /mnt/shared read_ahead_kb={kib} on bdi "
+            f"{observed['bdi']} meets the {recommended} KiB recommendation")
+    return reading
+
+
 def wedged_peers(*, proc: Path = Path("/proc"), self_pid: int | None = None,
                  limit: int = PEER_SCAN_MAX_PIDS,
                  budget_s: float = PEER_SCAN_BUDGET_S) -> dict:
@@ -2031,6 +2153,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         if empty_note:
             notes.append(empty_note)
 
+    # Required fleet reads go first. Loading this optional helper also reads
+    # NFS, so it must share the deadline and exact-child cleanup machinery.
+    # Its availability says nothing about census completeness or admission.
+    storage_read = bounded("host-storage", nfs_readahead_reading,
+                           deadline=deadline, abandoned=abandoned,
+                           cap_s=HOST_STORAGE_BUDGET_S)
+    if storage_read["status"] == "ok":
+        host_storage = storage_read["value"]
+    else:
+        host_storage = {
+            "check": "nfs_readahead", "mount": "/mnt/shared",
+            "state": "unavailable", "read_ahead_kib": None,
+            "recommended_kib": None, "bdi": None, "source": None,
+            "warning": False, "read_status": storage_read["status"],
+            "note": "host storage: readahead observation unavailable "
+                    f"({storage_read['status']}); the window was not read",
+        }
+        if storage_read["status"] == "error":
+            host_storage["error"] = storage_read["error"]
+        print(host_storage["note"], file=sys.stderr)
+    if host_storage["warning"] or host_storage["state"] == "unreadable":
+        print(host_storage["note"], file=sys.stderr)
+
     # Whole means every required section read, and read entirely: the deadline
     # held, nothing raised, and the pool census came back with every record
     # legible.  Any one of those failing is a partial answer, and a partial
@@ -2061,6 +2206,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             # starttime)`` rather than a PID, because a PID is reusable and
             # therefore not an identity (#349).
             "abandoned_children": abandoned,
+            # This box's /mnt/shared NFS readahead window, read-only and
+            # scoped to the host this ran on (#523).  Deliberately not folded
+            # into ``scheduler``: that list is what the census could not read,
+            # and a wrapper acting on it would then act on a host setting that
+            # gates nothing.  It never changes ``complete`` or the exit status.
+            "host_storage": host_storage,
             "pool": pool_summary,
             "nodes": nodes,
             "jobs": jobs,

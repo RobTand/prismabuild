@@ -616,10 +616,20 @@ def test_json_is_one_object_with_the_three_lists(fleet, capsys):
     # ``unavailable_sections`` is the second half of that answer -- a section
     # that raised is also a census nobody read, and it needs a different fix
     # from a section that ran out of clock.
+    # ``host_storage`` joined it with #523: this box's /mnt/shared NFS
+    # readahead window, read-only, host-scoped and never a gate.  It is a
+    # separate key rather than a ``scheduler`` note because that list is what
+    # the census could not read, and this is a host setting that gates
+    # nothing.
     assert set(payload) == {"schema", "transport", "pool", "nodes", "jobs",
                             "endings", "scheduler", "complete",
                             "timed_out_sections", "unavailable_sections",
-                            "abandoned_children"}
+                            "abandoned_children", "host_storage"}
+    assert payload["host_storage"]["check"] == "nfs_readahead"
+    # Whatever this box is, the reading did not make the census incomplete.
+    assert payload["host_storage"]["state"] in {
+        "ok", "below_recommended", "not_nfs_client", "unreadable",
+        "unavailable"}
     assert payload["transport"] == "slurm" and payload["pool"] is None
     assert payload["scheduler"] == []
     assert payload["complete"] is True
