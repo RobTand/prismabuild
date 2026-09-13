@@ -77,6 +77,20 @@ allocation spike or guarantee a response during a kernel stall. The budget
 path has a real GB10 daemon qualification; projected-pressure behavior has
 synthetic coverage without inducing a real host OOM.
 
+Hardware whose runtime publishes no per-process GPU memory is handled by
+declaration rather than by inference. The broker's reader states
+`gpu_process_bytes` for the sample and `gpu_budget_enforceable` for each scope,
+and states the scope its foreign-process inventory covers. Where bytes are
+unreadable, ownership is still resolved from the GPU device node's open handles
+under the same process-start and cgroup-identity checks, an unattributed holder
+still refuses admission, and the separate GPU allowance is simply not
+enforceable: two confirming observations cannot be made against a counter that
+does not exist. The host cgroup limit, the discrete/shared separation and the
+predictive host-pressure path are unchanged. On shared-system hardware the
+absence of per-process bytes also removes the system-memory lower bound, so
+such a scope is incomplete and offers nothing. See
+[amd_gpu_capacity_2026-09-12.md](amd_gpu_capacity_2026-09-12.md).
+
 ## Installation and upgrades
 
 Run `tools/fleet/install_resource_broker.sh` as root on each worker before
@@ -117,6 +131,45 @@ previously persisted stop intention. These records and frozen empty groups
 are retained recovery evidence, not running work. Do not delete them while a
 daemon request could still be in flight; maintenance needs exact ownership,
 terminal queue evidence and a quiescent daemon boundary.
+
+A retained tombstone gives its charge back. The inventory pass asks the kernel
+to reclaim what a retired, empty, frozen group with a matching recorded
+identity still holds, and records the bytes before and after on its authority
+record. Reclaiming is not removing and changes no containment: the group stays,
+still frozen, still owned, and a record written before identities were recorded
+is left alone entirely. It runs before any removal and never after, because a
+memory cgroup removed while it still holds page cache goes offline as a zombie
+and keeps the charge the removal was meant to return. A reclaim that fails is
+recorded on the record and nowhere else: housekeeping must not be able to hold
+a host's maintenance gate closed.
+
+Removing such a group needs settlement, not elapsed time. A holder that has
+proved its own Docker transaction closed -- its ownership marker gone, and the
+local daemon listing no container under either `prismabuild.action` or
+`prismabuild.scope`, both labels the shim refuses to let a caller set -- sends
+`settle` with that evidence under the same attempt token its `release` carries.
+The broker records `settled_unix` and the evidence. The next inventory pass
+then reclaims the group, verifies that it is still empty, frozen and the same
+kernel identity before reasserting its stop, rechecks those facts, releases it,
+and records `released_unix` with `maintenance_cleanup` of `settled container
+transaction`. A pass that has already found something wrong in its own
+namespace defers instead.
+
+A failed reclaim, or any reclaim with residual or unknown page charge,
+leaves the group online for a later pass to retry without marking it released
+or failing maintenance health. A partial reclaim can proceed to removal when
+`memory.stat` reports both `anon` and `file` zero: `memory.current` also includes
+kernel allocations, so total charge need not reach zero. The broker records
+residual page bytes separately from total bytes. The kernel documents
+[under-reclaim and the counters](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files).
+
+A grace period would not do: nothing about elapsed time makes an already
+accepted daemon operation impossible. Settlement is the proof the fleet already
+trusts from the same holder, for the same attempt, in the same call sequence.
+What it leaves is a container the daemon created and nothing ever started,
+which holds no processes and no cgroup, and which `docker ps -aq` lists anyway.
+A tombstone whose holder is gone has no token and cannot be settled; removing
+one of those is offline work for a drain, on the same evidence.
 
 Authority records live under `/run` and therefore survive service restarts,
 not host reboots. Kernel groups and their processes disappear at reboot;

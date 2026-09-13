@@ -113,12 +113,19 @@ def test_live_gb10_shapes_use_one_autodetected_physical_gpu_policy():
         (Path(__file__).resolve().parents[1] / "tools/fleet/fleet_boxes.json").read_text()
     )["boxes"]
 
-    for host in ("sparky", "gx10-6b77"):
+    # The rule is that a box declares ``--gpu`` exactly when the capacity probe
+    # can read its device, and never a hand-tuned slot count.  wsl-gpu joined
+    # this list when the AMD reader landed (#529): its broker snapshot reports
+    # one attributed discrete gfx1201, so the flag now names a device the pool
+    # can admit.  dl380g10 has no GPU at all and declares neither.
+    for host in ("sparky", "gx10-6b77", "wsl-gpu"):
         args = config[host]["args"]
         assert "--gpu" in args
         assert "--gpu-slots" not in args
-    assert "--gpu" not in config["dl380g10"]["args"]
-    assert "--gpu-slots" not in config["dl380g10"]["args"]
+    for host in ("dl380g10",):
+        args = config[host]["args"]
+        assert "--gpu" not in args
+        assert "--gpu-slots" not in args
 
 
 class _Ledger:

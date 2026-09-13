@@ -59,8 +59,9 @@ they were tolerated or ignored. The discrepancy compares the record's writer
 clock with the reader, not with an independently trusted time source. Offers
 retain their existing wire format. CPU/GPU telemetry freshness, capacity
 reservation, containment and lease recovery receive no additional tolerance.
-The pool's shared filesystem calls remain synchronous. `pbrun` runs its one
-pre-submission **worker-offer** record scan in
+The pool's shared filesystem calls remain synchronous except for `pbrun`'s
+pre-submission offer scan and synchronous pull-queue outcome reads described
+below. `pbrun` runs its one pre-submission **worker-offer** record scan in
 an abandonable reader with a fixed five-second budget. It refuses loudly if
 that reader times out or fails, names any retained reader identity, and never
 publishes a runnable `ready/` item from an unavailable snapshot. The parent
@@ -69,9 +70,9 @@ each verdict; retained capability therefore still has its infinite-age rule.
 The five-second read budget includes child FD isolation and IPC waits. Parent
 process creation, decoding the completed reply, cleanup grace and runtime
 imports are not themselves interruptible at that deadline.
-The boundary covers no CAS request/staging, publication, wait, claim, lease,
-token, or other queue read/write, which remain synchronous and can still stall
-(issue #16).
+The offer boundary covers no CAS request/staging, publication, terminal wait,
+claim, lease, token, or other queue read/write, which remain synchronous and
+can still stall (issue #16).
 The pool status census likewise collects active records and admission, lease,
 and denial sidecars before deriving worker/sample freshness and placement. Its
 `sampled_unix` is the time that collection finished; it remains a non-atomic
@@ -209,6 +210,25 @@ attempt as its source. Attempts predating this context provide no inferred link.
 The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
 handoff cannot report cancellation while the replacement is being published.
+
+The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
+time in an isolated child with a five-second read budget. That snapshot covers
+the three mutable terminal rows, immutable withdrawal decisions, archived
+preemption evidence, and the exact successor selection above; the selected
+generation returns to the parent and is carried into the next snapshot.
+After an ending lands, its immutable attempt history and logs are verified in a
+second, separately bounded child before `pbrun` prints a result. The parent
+keeps the original `--wait-s` deadline across polls and sleeps itself, so each
+new child cannot renew caller patience. A `--wait-s 0` caller still receives
+one immediate bounded snapshot. An unavailable reader (timeout, child failure,
+or reader that cannot be reaped) returns filesystem exit 74 with its retained
+PID/start-time identity; it does not cancel work, publish a record, or
+manufacture a verdict. A published unreadable terminal retains its existing
+exit-1 report, and immutable contract validation retains its existing error.
+The budget covers the child read and IPC wait; process creation, completed JSON
+decoding, cleanup grace, runtime imports, and output can add time. This is only
+the synchronous pool `pbrun` path: it does not bound the whole submission,
+`pbwait`, a kernel syscall, or an actual cross-host hard-NFS stall.
 
 The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements
@@ -445,6 +465,19 @@ telemetry instead lives under the existing ledger's
 profile. Broker stop/release still proves aggregate containment, including
 containers; an empty frozen retired scope remains protected against late Docker
 RPCs by the existing broker contract.
+
+Retired scopes with a recorded matching kernel identity can reclaim memory
+while they remain empty and frozen. Reclamation does not release containment.
+For the action's own scope, the holder can submit token-authenticated container
+settlement after cleanup proves its ownership marker absent and both reserved
+Docker label queries empty. Inventory removes only settled scopes after a
+reclaim request followed by no remaining anon/file charge and fresh
+empty/frozen/identity checks before and after reasserting stop.
+Failed reclaim and residual or unknown page charge retain the group for retry
+without failing maintenance health. Legacy unsettled groups remain retained;
+their removal needs the offline evidence described in
+[resource authority](resource_authority.md#recovery-evidence). Late-finish
+cleanup has no authority to settle the action-wide container transaction.
 
 Unproven cleanup retains the late-finish record with its original result, exact
 scope authority, failure count and first/last failure times. A restart can retry
@@ -2038,6 +2071,52 @@ at most once per second so a fresh capacity decision can admit work promptly.
 When the queue is empty it uses the configured 10--20 second backoff, avoiding
 an NFS scan and telemetry read per loop per second. GPU telemetry itself is
 collected once by the broker and shared by all loops.
+
+### AMD devices, and a device with no saturation instrument (2026-09-12)
+
+`gpu_capacity.devices()` reads NVML first and, only when NVML found nothing and
+`rocminfo` is installed, an AMD reader that publishes one device from two
+runtime sources that agree on every quantity both can see: the HSA agent report
+for identity, architecture, CU count, wavefront, peak clock and the VRAM pool,
+and a short-lived HIP subprocess for device count, free/total VRAM and the
+integration attribute that states the memory domain. Disagreement publishes
+nothing. More than one AMD GPU agent publishes nothing, because one HIP ordinal
+is all the probe reads. The VRAM total is keyed on `Device Type: GPU`, never on
+pool order: the first `GLOBAL` pool in a `rocminfo` report is the CPU agent's
+host RAM. Both readers are refused unless they are root-owned and writable by
+nobody else, because the broker runs `rocminfo` and loads `libamdhip64.so` as
+root.
+
+Each device record declares its `telemetry_class`. `power_and_clocks` is the
+NVML contract. `memory_only` is a device whose runtime publishes identity and
+memory and no power, clock or throttle counter at all, which is the AMD/WSL2
+case. The adaptive controller admits a `memory_only` device on the evidence it
+carries — identity, memory domain, free VRAM against the declared budget,
+foreign holders, host memory and CPU pressure — and withholds the two
+permissions power exists to authorize: `low` is never true, so there is no
+concurrency probe and no `measurement` action, and the device runs one
+attributed job at a time. Absent power *without* the declaration remains
+invalid, so this narrows one declared class of device rather than weakening the
+contract for every sample.
+
+Attribution on such a host is a census of the GPU device node's open handles in
+`/proc`, routed through the same PID start-time and cgroup-identity checks as
+the NVML rows. It resolves ownership and reports no per-process bytes, which
+the sample declares as `gpu_process_bytes: false` and each scope as
+`gpu_budget_enforceable: false`: the Guard does not confirm a GPU-allowance
+violation it has no counter for. Ownership unknown still refuses; bytes unknown
+no longer does. A `shared_system` device without per-process bytes has no
+system-memory lower bound to state and stays incomplete.
+`foreign_inventory_scope` records how far the census could see —
+`gpu_compute_apps` for NVML, `host_gpu_handles` for the node census, which
+covers the processes this `/proc` lists and nothing outside it. A handle is
+identified by the character device's device number, not by the node's inode: a
+container runtime creates its own node for a passed-through device, so an inode
+comparison would report a containerized GPU user as holding nothing. An
+unreadable descriptor table refuses rather than reporting an empty foreign
+list. Measured
+evidence and the residual risks are in
+[amd_gpu_capacity_2026-09-12.md](amd_gpu_capacity_2026-09-12.md).
 
 ## Preferred, overflow and adaptive CPU admission
 

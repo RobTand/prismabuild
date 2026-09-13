@@ -1,7 +1,9 @@
 """GPU bytes are attributed to exact owned scopes; ambiguous jobs stay alive."""
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
@@ -313,3 +315,157 @@ def test_unreadable_host_pressure_never_selects_a_victim(tmp_path, monkeypatch):
                         gpu_memory_domains={'GPU-abc': 'shared_system'})
     assert sample.psi_some_avg10 is None and sample.psi_full_avg10 is None
     assert 'memory PSI unavailable' in sample.errors
+
+
+AMD_DEVICE = {'uuid': 'GPU-9c30c352a59e5b7a', 'vendor': 'amd',
+              'telemetry_class': 'memory_only', 'memory_domain': 'discrete'}
+
+
+def holder(proc, node, pid, group, *, descriptors=1, start=9):
+    """A process that has opened the GPU device node, as /proc shows it."""
+    process(proc, pid, group, start=start)
+    fds = proc / str(pid) / 'fd'
+    fds.mkdir(exist_ok=True)
+    for index in range(descriptors):
+        (fds / str(index)).symlink_to(node)
+
+
+def amd_system(tmp_path):
+    proc, cgroup, scope = system(tmp_path)
+    # A real character device, because the census identifies a handle by the
+    # device number a regular file does not have.
+    return proc, cgroup, scope, gm.Path('/dev/null')
+
+
+def test_open_gpu_handles_attribute_ownership_without_inventing_bytes(tmp_path, monkeypatch):
+    proc, cgroup, scope, node = amd_system(tmp_path)
+    holder(proc, node, 10, f'/prismabuild.slice/{SID}/payload', descriptors=2)
+    holder(proc, node, 20, '/user.slice/vllm')
+    process(proc, 30, '/user.slice/idle')  # holds no handle, so holds no GPU
+
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_devices=[AMD_DEVICE], gpu_device_node=node)
+
+    job = sample.jobs[0]
+    assert job.complete
+    assert [row['pid'] for row in job.processes] == [10]
+    assert [row['pid'] for row in sample.foreign_processes] == [20]
+    # Ownership is known; bytes are not readable at all on this hardware, and
+    # the sample says so rather than reporting a zero that reads as proof.
+    assert job.gpu_reported_bytes is None and job.gpu_lower_bound_bytes is None
+    assert job.gpu_budget_enforceable is False
+    assert sample.gpu_process_bytes is False
+    assert sample.foreign_inventory_scope == gm.FOREIGN_SCOPE_HOST_HANDLES
+    # A discrete device keeps the scope's system charge in the cgroup counter,
+    # so the system-memory bound is unchanged by the missing GPU counter.
+    assert job.lower_bound_bytes == 100 * gm.MIB
+    assert job.upper_bound_bytes == 100 * gm.MIB
+    json.dumps(sample.as_dict())
+
+
+def test_an_unreadable_descriptor_table_refuses_the_handle_census(tmp_path, monkeypatch):
+    proc, cgroup, scope, node = amd_system(tmp_path)
+    holder(proc, node, 10, f'/prismabuild.slice/{SID}/payload')
+    real = gm.Path.iterdir
+
+    def iterdir(self):
+        if self.name == 'fd':
+            raise PermissionError(13, 'Permission denied')
+        return real(self)
+
+    monkeypatch.setattr(gm.Path, 'iterdir', iterdir)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_devices=[AMD_DEVICE], gpu_device_node=node)
+
+    # An unprivileged census cannot see another user's handles, so its empty
+    # foreign list would be a claim it has no evidence for.
+    assert not sample.gpu_query_complete
+    assert not sample.jobs[0].complete
+
+
+def test_a_descriptor_on_another_file_is_not_a_gpu_handle(tmp_path):
+    proc, cgroup, scope, node = amd_system(tmp_path)
+    decoy = tmp_path / 'dxg.log'
+    decoy.write_text('')
+    process(proc, 10, f'/prismabuild.slice/{SID}/payload')
+    fds = proc / '10' / 'fd'
+    fds.mkdir()
+    (fds / '1').symlink_to(decoy)
+
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_devices=[AMD_DEVICE], gpu_device_node=node)
+
+    assert sample.jobs[0].processes == ()
+    assert sample.foreign_processes == ()
+
+
+def test_a_regular_file_is_refused_as_the_device_node(tmp_path):
+    proc, cgroup, scope, _ = amd_system(tmp_path)
+    node = tmp_path / 'dxg'
+    node.write_text('')
+
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_devices=[AMD_DEVICE], gpu_device_node=node)
+
+    assert not sample.gpu_query_complete
+    assert any('not a file' in error for error in sample.errors)
+
+
+class FakeStat:
+    def __init__(self, mode, dev, ino, rdev):
+        self.st_mode, self.st_dev, self.st_ino, self.st_rdev = mode, dev, ino, rdev
+
+
+def test_a_containerized_holder_of_the_same_card_is_still_a_holder():
+    # A container runtime makes its own node for a passed-through device: same
+    # hardware, different filesystem and inode. Identifying a handle by inode
+    # would report a GPU user inside a container as holding nothing.
+    node = FakeStat(stat.S_IFCHR | 0o666, 6, 400, os.makedev(10, 63))
+    inside = FakeStat(stat.S_IFCHR | 0o666, 43, 12, os.makedev(10, 63))
+    other_card = FakeStat(stat.S_IFCHR | 0o666, 6, 401, os.makedev(10, 64))
+    plain_file = FakeStat(stat.S_IFREG | 0o644, 6, 400, 0)
+
+    assert gm._names_device(node, inside)
+    assert not gm._names_device(node, other_card)
+    assert not gm._names_device(node, plain_file)
+
+
+def test_shared_system_hardware_without_per_process_bytes_stays_incomplete(tmp_path):
+    proc, cgroup, scope, node = amd_system(tmp_path)
+    holder(proc, node, 10, f'/prismabuild.slice/{SID}/payload')
+
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_devices=[{**AMD_DEVICE, 'memory_domain': 'shared_system'}],
+                        gpu_device_node=node)
+
+    # On shared-system hardware the GPU bytes are also system bytes, so with no
+    # per-process counter there is no system-memory lower bound to state.
+    job = sample.jobs[0]
+    assert not job.complete
+    assert job.system_lower_bound_bytes is None
+
+
+def test_a_missing_device_node_refuses_rather_than_reporting_no_holders(tmp_path):
+    proc, cgroup, scope, _ = amd_system(tmp_path)
+    node = tmp_path / 'absent-dxg'
+
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_devices=[AMD_DEVICE], gpu_device_node=node)
+
+    assert not sample.gpu_query_complete
+    assert any('handle inventory unavailable' in error for error in sample.errors)
+
+
+def test_nvidia_hosts_keep_the_compute_apps_reader_and_its_bytes(tmp_path, monkeypatch):
+    proc, cgroup, scope = system(tmp_path)
+    process(proc, 10, f'/prismabuild.slice/{SID}/payload')
+    query(monkeypatch, '10, GPU-abc, 512\n')
+
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_devices=[{'uuid': 'GPU-abc', 'vendor': 'nvidia',
+                                      'memory_domain': 'shared_system'}])
+
+    assert sample.gpu_process_bytes is True
+    assert sample.foreign_inventory_scope == gm.FOREIGN_SCOPE_COMPUTE_APPS
+    assert sample.jobs[0].gpu_reported_bytes == 512 * gm.MIB
+    assert sample.jobs[0].gpu_budget_enforceable is True
