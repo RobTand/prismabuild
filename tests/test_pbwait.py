@@ -231,7 +231,7 @@ def test_prefix_resolution_ignores_a_nonhex_slurm_directory(
     assert "nothing recorded matches" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("namespace", ["lane", "decisions"])
+@pytest.mark.parametrize("namespace", ["lane", "decisions", "record"])
 def test_prefix_resolution_refuses_an_unavailable_namespace_before_matching_pool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, namespace: str,
 ) -> None:
@@ -241,6 +241,9 @@ def test_prefix_resolution_refuses_an_unavailable_namespace_before_matching_pool
     _file(queue, pool.DONE, _outcome(key, 1.0, status="executed", returncode=0))
     lane_root = tmp_path / "lane"
     lane_root.mkdir()
+    record_path = lane_root / key / "latest.json"
+    record_path.parent.mkdir()
+    record_path.write_text(json.dumps({"action_key": key}), encoding="utf-8")
     blocked = (lane_root if namespace == "lane"
                else queue.dir(pool.WITHDRAWN) / "decisions")
     real_listdir = os.listdir
@@ -251,6 +254,19 @@ def test_prefix_resolution_refuses_an_unavailable_namespace_before_matching_pool
         return real_listdir(path)
 
     monkeypatch.setattr(pbwait.os, "listdir", unavailable)
+    if namespace == "record":
+        monkeypatch.setattr(pbwait.os, "listdir", real_listdir)
+        real_read_text = Path.read_text
+
+        def unreadable_record(path, *args, **kwargs):
+            if path == record_path:
+                raise OSError(5, "Input/output error", str(path))
+            return real_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", unreadable_record)
+        # Existing SLURM consumers keep their historical unavailable-as-absent
+        # behavior, while prefix discovery must not trust a partial match.
+        assert slurm_lane.resolve_recorded(key[:12], root=lane_root) == []
     with pytest.raises(SystemExit) as raised:
         pbwait.resolve_key(queue, key[:12], lane_root=lane_root)
     assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT

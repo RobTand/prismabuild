@@ -676,7 +676,7 @@ generation; run `pbwait` again and it reads the newer one.
 A full 64-hex key begins waiting without a recorded-key scan. A prefix first
 uses one isolated, five-second read of the recorded SLURM rows, pull-queue
 state directories, and withdrawal decisions. A scan that times out, fails, or
-leaves a retained reader exits 74 with the reader identity; it is not reported
+leaves a retained reader exits 74 with any retained reader's identity; it is not reported
 as a missing or unique prefix and `pbwait` does not start another scan. This
 bound covers prefix resolution only, not later queue or CAS reads while waiting.
 

@@ -59,9 +59,9 @@ they were tolerated or ignored. The discrepancy compares the record's writer
 clock with the reader, not with an independently trusted time source. Offers
 retain their existing wire format. CPU/GPU telemetry freshness, capacity
 reservation, containment and lease recovery receive no additional tolerance.
-The pool's shared filesystem calls remain synchronous except for `pbrun`'s
-pre-submission offer scan and synchronous pull-queue outcome reads described
-below. `pbrun` runs its one pre-submission **worker-offer** record scan in
+The pool's shared filesystem calls remain synchronous except for the bounded
+`pbrun` offer and pull-queue outcome reads and `pbwait` prefix discovery
+described below. `pbrun` runs its one pre-submission **worker-offer** record scan in
 an abandonable reader with a fixed five-second budget. It refuses loudly if
 that reader times out or fails, names any retained reader identity, and never
 publishes a runnable `ready/` item from an unavailable snapshot. The parent
@@ -233,7 +233,7 @@ the synchronous pool `pbrun` path: it does not bound the whole submission.
 the five pull-queue state directories, and withdrawal decisions in one
 isolated child with the same five-second read budget. It returns candidate key
 strings only; the parent retains the exit-2 not-found/ambiguity decision. A
-timed-out, failed, or retained prefix reader exits 74 and names the retained
+timed-out, failed, or retained prefix reader exits 74 and names any retained
 PID/start-time identity, without retrying any scanner in the parent. Full
 64-hex keys retain their no-read fast path. This does not bound `pbwait`'s
 queue/CAS construction, later waiting or terminal reads, a kernel syscall, or
