@@ -166,6 +166,22 @@ def test_a_reporting_claim_keeps_its_window_after_claim_grace(
     assert fleet.queue.prewarm(key)["warmed_bytes"] == 12288
 
 
+def test_a_claimed_phased_row_can_start_its_window_without_ready_sidecar(
+        tmp_path: Path) -> None:
+    """A fast claim must not make a large manifest unwindowable forever."""
+
+    fleet, key, stats = _fleet(tmp_path)
+    fleet.claim(key)
+    fleet.report_progress(key, "layer-1")
+
+    event = fleet.cycle(fleet.args(arcstats=stats))
+
+    assert event["advanced"]
+    record = fleet.queue.prewarm(key)
+    assert record["window_start_bytes"] == 4096
+    assert record["warmed_bytes"] == 12288
+
+
 def test_a_progress_jump_does_not_rewarm_the_consumed_gap(tmp_path: Path) -> None:
     """An advance begins at the later of the old window and read frontier."""
 

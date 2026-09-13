@@ -1333,18 +1333,12 @@ def declares_progress(request: dict | None) -> bool:
 
 def progress_phase(queue: pool.PoolQueue, action_key: str,
                    claimed_unix: float) -> dict | None:
-    """What a claimed action last said it was reading, if it says anything.
+    """The matching worker's accepted progress observation, if it has one.
 
-    ``progress-v1`` actions write ``prismabuild.action_progress.v1`` records to
-    ``PRISMABUILD_ACTION_PROGRESS_PATH``, which is
-    ``queue.action_progress_path(key)`` -- readable from the queue side without
-    asking the worker anything.  The launcher unlinks that path and mints a new
-    token before every launch, and the token is deliberately not published to
-    the queue, so a record from an earlier launch is rejected here by its
-    instant instead: a report older than the claim is not this run's.
-
-    An action that declares no progress policy writes nothing, and the loop
-    keeps the claim-plus-grace behaviour for it.
+    The action-writable channel is not authority for the storage role: its
+    launch token is intentionally known only to the worker.  The claim lease
+    carries the worker's already authenticated ``ProgressWatch`` observation,
+    keyed to this exact claim and refreshed at heartbeat cadence.
     """
 
     # The raw channel is owned by the running action and requires a launch
@@ -1445,6 +1439,31 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
         warmed = queue.prewarm(key)
         declared = declares_progress(request)
         if not (warmed and warmed.get("phased")):
+            # A worker can claim between the storage role's ready-list polls.
+            # For a phased manifest that must not turn the first missed warm
+            # into a whole-manifest reserve: initialize an empty window at the
+            # accepted read frontier and let the ordinary claimed-window pass
+            # fill it below.  Nothing is charged yet because no bytes have
+            # been warmed.
+            entry = manifest_input_of(request)
+            manifest = load_manifest(root, entry) if entry is not None else None
+            phases = manifest_phases(manifest) if manifest else []
+            if declared and phases:
+                policy = ((request.get("params") or {}).get(pb.PROGRESS_PARAM)
+                          if isinstance(request, dict) else None)
+                cyclic = isinstance(policy, dict) and bool(policy.get("cycle"))
+                reported = (progress_phase(queue, key, float(claimed_unix))
+                            if not cyclic else None)
+                consumed = (consumed_through(phases, reported["phase"])
+                            if reported is not None else 0)
+                windows.append({
+                    "action_key": key, "cas_root": str(root),
+                    "status": "partial", "manifest_sha256": str(entry["sha256"]),
+                    "manifest_bytes": size, "warmed_bytes": 0,
+                    "consumed_bytes": consumed, "resident_ahead": 0,
+                    "phase": reported["phase"] if reported else "",
+                })
+                continue
             if now - float(claimed_unix) > grace_s and not declared:
                 continue
             # No window: the whole manifest is what the claim may still read.

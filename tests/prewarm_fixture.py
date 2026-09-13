@@ -121,7 +121,8 @@ class Fleet:
         item = json.loads(source.read_text())
         source.unlink()
         item.update({"action_key": action_key,
-                     "claimed_unix": time.time() - age_s})
+                     "claimed_unix": time.time() - age_s,
+                     "claimed_by": "prewarm-fixture"})
         target = self.queue.root / "claimed" / f"{action_key}.json"
         target.write_text(json.dumps(item))
         return target
@@ -132,19 +133,17 @@ class Fleet:
 
         claimed = json.loads((self.queue.root / "claimed" /
                               f"{action_key}.json").read_text())
-        path = self.queue.lease_path(action_key)
-        path.write_text(json.dumps({
-            "action_key": action_key,
-            "claimed_unix": claimed["claimed_unix"],
-            "progress_observation": {
+        observation = {
                 "source": "action-progress",
                 "last_accepted": {
                     "phase": phase, "units_completed": units,
                     "reported_unix": time.time() if at is None else at,
                 },
-            },
-        }))
-        return path
+            }
+        self.queue.write_lease(
+            action_key, owner="prewarm-fixture", claim_snapshot=claimed,
+            progress_observation=observation)
+        return self.queue.lease_path(action_key)
 
     def arcstats(self, *, size: int, c: int, c_max: int) -> str:
         # One file per set of counters, never one file rewritten: a fixture
