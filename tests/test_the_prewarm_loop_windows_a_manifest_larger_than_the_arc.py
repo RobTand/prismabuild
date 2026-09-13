@@ -55,6 +55,51 @@ def test_a_manifest_that_cannot_fit_is_warmed_through_the_last_phase_that_does(
     assert record["entries_warmed"] == 2, "two layers, read in manifest order"
 
 
+def test_a_window_can_end_at_an_entry_inside_an_oversized_phase(
+        tmp_path: Path) -> None:
+    """A phase is an accepted-progress frontier, not a minimum warm size.
+
+    The production shape has a roughly 390 GB phase against a roughly 206 GB
+    ARC allowance.  Its entries remain consumption-ordered and may safely end
+    a resident prefix; refusing to use that prefix leaves almost all of the
+    allowance idle.  Progress still releases only the phase boundary, never
+    an inferred count of arbitrary bytes within this phase.
+    """
+
+    fleet = Fleet(tmp_path)
+    entries = [
+        fleet.file("head.pt", 1024),
+        fleet.file("layer-part-0.pt", 3000),
+        fleet.file("layer-part-1.pt", 3000),
+        fleet.file("layer-part-2.pt", 3000),
+    ]
+    key = fleet.action(
+        "oversized-phase", entries,
+        annotations={"phases": phase_table([
+            ("head", 1024), ("layer", 9000),
+        ])},
+        progress_phases=["head", "layer"],
+    )
+
+    event = fleet.cycle(fleet.args(
+        arcstats=fleet.arcstats(size=0, c=5000, c_max=5000), lookahead=1))
+
+    assert [row["action_key"] for row in event["warmed"]] == [key]
+    record = fleet.queue.prewarm(key)
+    assert record["status"] == "partial"
+    assert record["warmed_bytes"] == 4024
+    assert record["warmed_through_phase"] == ""
+    assert record["warmed_bytes"] <= 5000
+
+    fleet.claim(key)
+    fleet.report_progress(key, "layer", units=999999)
+    after_progress = fleet.cycle(fleet.args(
+        arcstats=fleet.arcstats(size=0, c=5000, c_max=5000), lookahead=1))
+    assert after_progress["claimed_reserved_bytes"] == 3000, (
+        "only the accepted phase boundary releases the 1024-byte head; "
+        "progress units never imply bytes consumed inside layer")
+
+
 def test_a_window_that_reaches_as_far_as_the_budget_allows_is_already_warm(
         tmp_path: Path) -> None:
     """"Already warm" means "everything the budget allows is resident".

@@ -2684,10 +2684,13 @@ Parsed objects require memory beyond the decoded-byte ceiling. See the input
 guide for producer and deployed-storage-role adoption requirements.
 
 Large manifests may declare entry-aligned cumulative phase boundaries.  The
-role holds only the resident window ahead of an action's accepted read
-frontier, advances it on the matching claim lease's `ProgressWatch`
-observation, and keeps a declared action reserved when that observation is
-absent; claim grace is only the fallback for actions with no progress policy.
+role may end a warm window at any entry boundary that fits its budget, including
+inside an oversized phase, but holds only the resident window ahead of an
+action's accepted read frontier.  Only the matching claim lease's
+`ProgressWatch` phase observation advances that frontier and releases reserve;
+the role never infers consumed bytes from arbitrary progress units. It keeps a
+declared action reserved when that observation is absent; claim grace is only
+the fallback for actions with no progress policy.
 The storage role never trusts the action-writable progress file directly,
 because only the worker has the per-launch token that authenticates it.  Cyclic
 progress does not establish an irreversible manifest frontier.  A disk hold

@@ -177,8 +177,9 @@ construction, so the pass read every byte off the spindles.
 
 What has to fit in the cache was never the manifest.  It is the distance
 between what the action has read and what the loop has made resident.  So when
-`annotations.phases` is present the loop warms through the last phase boundary
-whose `cumulative_bytes` fits the budget and records how far it got:
+`annotations.phases` is present the loop warms through the last entry boundary
+that fits the budget, including a boundary inside one oversized phase, and
+records how far it got:
 
 ```json
 {"status": "partial", "warmed_through_phase": "layer-1",
@@ -190,8 +191,13 @@ whose `cumulative_bytes` fits the budget and records how far it got:
 of fully read entries. `bytes_warmed` counts the actual I/O in the latest pass;
 `contiguous_bytes` counts only its successfully read prefix. An error or partial
 entry does not advance the frontier past a gap, even when parallel readers
-successfully read later entries. `warmed_through_phase` names the selected target;
-check the byte frontier and errors to determine whether that target was reached.
+successfully read later entries. `warmed_through_phase` names the selected target
+only when the entry boundary is also a phase boundary; it is empty for an
+in-phase target. Check the byte frontier and errors to determine whether that
+target was reached. Entry boundaries make safe residency cuts, but do not move
+the accepted read frontier: only a matching `ProgressWatch` phase observation
+releases claimed reserve, and arbitrary progress units are never converted to
+consumed bytes.
 
 On later polls, the window starts at the later of the previous frontier and
 the bytes the consumer has finished. It does not reread a consumed gap when
