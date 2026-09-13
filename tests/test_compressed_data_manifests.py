@@ -65,6 +65,36 @@ def test_submitter_seals_the_wire_digest_and_compressed_encoding(tmp_path, monke
         assert set(summary) == {"input", "mount_prefix", "entry_count", "total_bytes"}
 
 
+@pytest.mark.parametrize("replacement_encoding", ["gzip", "identity"])
+def test_sealed_summary_describes_the_ingested_bytes_after_source_replacement(
+        tmp_path, monkeypatch, replacement_encoding):
+    from test_pbrun_host_class import _sealed_body
+
+    source = tmp_path / "manifest"
+    source.write_bytes(gzip.compress(json.dumps(_manifest()).encode(), mtime=0))
+    replacement = _manifest()
+    replacement["entries"][0]["bytes"] = 1000
+    replacement["total_bytes"] = 1020
+    raw = json.dumps(replacement).encode()
+    wire = gzip.compress(raw, mtime=0) if replacement_encoding == "gzip" else raw
+    original_ingest = pb.PrismaBuildCAS.ingest_input
+
+    def replace_then_ingest(self, path, *, input_id):
+        if input_id == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID:
+            Path(path).write_bytes(wire)
+        return original_ingest(self, path, input_id=input_id)
+
+    monkeypatch.setattr(pb.PrismaBuildCAS, "ingest_input", replace_then_ingest)
+    body = _sealed_body(
+        ["--anywhere", "--data-manifest", str(source), "--", "true"],
+        monkeypatch, tmp_path,
+    )
+    summary = body["params"]["data_manifest"]
+    assert summary["input"]["sha256"] == hashlib.sha256(wire).hexdigest()
+    assert summary["total_bytes"] == 1020
+    assert summary.get("content_encoding", "identity") == replacement_encoding
+
+
 def test_decompression_ceiling_is_applied_before_json_parsing(tmp_path, monkeypatch):
     source = tmp_path / "bomb"
     source.write_bytes(gzip.compress(b" " * 100_000, mtime=0))

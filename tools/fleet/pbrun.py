@@ -4665,16 +4665,16 @@ def main() -> int:
     )
     inputs = [checkout_snapshot["input"]]
     if args.data_manifest is not None:
-        # Validated before ingestion, not after: a malformed manifest must
-        # fail at the submitter, where the operator can read the reason,
-        # rather than becoming an immutable CAS blob that every later reader
-        # has to refuse. The bytes are ingested unchanged so the input's
-        # digest is the digest of the file the operator named.
-        manifest, manifest_encoding = pb.read_data_manifest(args.data_manifest)
+        # Refuse a malformed source before ingestion, then derive the sealed
+        # summary from verified CAS bytes. The source can be replaced between
+        # these reads; its earlier totals/encoding must not describe a later
+        # blob. Discard the preliminary parse before allocating another one.
+        pb.load_data_manifest(args.data_manifest)
         manifest_input, _ = cas.ingest_input(
             args.data_manifest,
             input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
         )
+        manifest, manifest_encoding = pb.read_data_manifest(cas.input_path(manifest_input))
         inputs.append(manifest_input)
         data_manifest_summary = {
             "input": manifest_input,
