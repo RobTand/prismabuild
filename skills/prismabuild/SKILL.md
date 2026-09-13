@@ -61,6 +61,16 @@ universal setting. Use `pbtest.py` for suite fanout and `pbcampaign.py` for a
 manifest of independent actions. Prefer portable placement; add a host tag only
 for a real dependency or a controlled measurement.
 
+For an I/O-bound campaign, `pbcampaign --transport pool --max-inflight N`
+keeps one waiting controller's outstanding row count bounded without inflating
+memory demand. It includes ready work and claim cleanup, refills after any
+success, and stops publication on failures or uncertain outcomes. Keep that
+controller alive; `--detach` and SLURM refuse this option. Stop it before
+resuming the same ordered manifest, checkout, options and limit. This is a
+campaign-wide window, not a per-host or shared I/O budget; other controllers
+are outside its count. Do not run an external pacer alongside it. At `--wait-s`
+expiry, retain the printed keys and rerun the manifest for `not_submitted` rows.
+
 A long action that can say when it commits work should be bounded by whether
 it is working rather than by how long it has run. Declare the phases it walks
 and the quiet each is allowed -- `--progress-phase startup=1800

@@ -1111,6 +1111,46 @@ Two rows, one wanting a GPU and one that must not have one:
       }
     ]
 
+### Limit a campaign's outstanding work
+
+For an I/O-bound row set, keep demand honest and give the waiting pool
+controller a submission window:
+
+    python3 /mnt/shared/prismabuild-fleet/repo/tools/pbcampaign.py \
+        --transport pool --max-inflight 4 manifest.json
+
+This invocation publishes at most four distinct unfinished actions at a time,
+including queued rows, attached rows and claims still cleaning up. It refills
+when any row completes successfully, so a slow first row does not hold up the
+rest of the window. Cached results do not consume a slot after any outstanding
+queue work has drained. The option does not change row identity, resource
+reservations, placement or sharding; omit it to retain submit-all behavior.
+
+The first window is submitted even with `--wait-s 0`. One monotonic wait budget
+then covers all refills and final waiting. At expiry, already submitted work
+continues and the suffix is reported as `not_submitted`, with each manifest row
+index. Exit 75 means there is still work to finish or submit, provided no row
+failed. Full action keys print to stderr as each submission returns, so retain
+that stream if the controller may be interrupted. Queue/CAS reads and sealing
+remain synchronous; the wait budget is not a bound on a blocked filesystem call.
+
+A refusal, failed action, unreadable outcome or slot read error stops further
+publication and reports the remaining suffix. Existing work is not cancelled.
+Stopping on failure preserves a resumable prefix: otherwise a restart could
+resubmit failed early rows before discovering a later full window. Correct the
+reported fault, stop the previous controller, and rerun the **same ordered
+manifest, checkout, options and limit**. Successful rows cache-hit and outstanding
+rows attach through ordinary `pbrun`; `as_sealed_by` remains necessary to retain
+keys across runtime publications. A changed manifest or limit cannot retroactively
+bound work already submitted.
+
+This is one controller's campaign-wide limit, not a shared admission group,
+per-host ceiling or I/O bandwidth reservation. Use one controller for the row
+set; concurrent controllers, other manifests and external work are outside its
+count. Do not combine it with the external pacer it replaces. `--detach` and
+SLURM refuse this option before loading or submitting the manifest: this mode
+needs a live pool controller and the pool's claim-cleanup evidence.
+
 ### Resume a campaign
 
 Run the same manifest again. A row that finished is a cache hit and costs
@@ -1125,7 +1165,7 @@ use `--detach`, then `pbwait` on the keys it printed.
 | --- | --- |
 | 0 | Every row's work is done. A cache hit counts as done. |
 | 1 | A row was refused before submission, a row's work failed, or the manifest did not load. |
-| 75 | Nothing failed, and at least one row was still running when `--wait-s` ran out. |
+| 75 | Nothing failed, and at least one row was still running or remained `not_submitted` when `--wait-s` ran out. |
 
 A refusal outranks a failure and a failure outranks a wait, so 75 means the
 work is still out there and the keys are still worth waiting on. Under

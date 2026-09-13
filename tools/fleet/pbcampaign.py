@@ -164,8 +164,10 @@ import argparse
 import contextlib
 import io
 import json
+import math
 from pathlib import Path
 import sys
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
@@ -559,25 +561,123 @@ def submit_row(row, *, transport: str = "") -> dict:
     return published
 
 
+def _submit_record(row, *, index: int, transport: str) -> dict:
+    """Keep earlier keys when one submission fails, and print each full key."""
+
+    try:
+        published = submit_row(row, transport=transport)
+    except Exception as exc:                                     # noqa: BLE001
+        published = {"status": "refused", "flags": [],
+                     "error": f"row {index}: {type(exc).__name__}: {exc}"}
+    key = str(published.get("action_key") or "")
+    print(f"pbcampaign: row {index} {published['status']} "
+          f"{key or '-'}", file=sys.stderr, flush=True)
+    return published
+
+
 def submit(rows, *, transport: str = "") -> list[dict]:
     """Submit every row, in order, and return one submission record each."""
 
-    submissions = []
-    for index, row in enumerate(rows):
+    return [_submit_record(row, index=index, transport=transport)
+            for index, row in enumerate(rows)]
+
+
+def _pool_slot_occupied(queue, key: str) -> bool:
+    """A terminal or receipt can precede a withdrawn claim's cleanup.
+
+    Missing leaves are absence; unreadable leaves are not capacity. Check
+    ready before claimed so a ready-to-claimed move cannot open a slot.
+    This is a controller observation, never permission to release tokens.
+    """
+
+    for state in (pool.READY, pool.CLAIMED):
         try:
-            published = submit_row(row, transport=transport)
-        except Exception as exc:                                 # noqa: BLE001
-            # The loop is where the records live, so it is the last place that
-            # can keep them.  Every row already submitted is in
-            # ``submissions``, and a caller that raised out of here would
-            # return none of them.
-            published = {"status": "refused", "flags": [],
-                         "error": f"row {index}: {type(exc).__name__}: {exc}"}
-        key = str(published.get("action_key") or "")
-        print(f"pbcampaign: row {index} {published['status']} "
-              f"{key[:pbwait.KEY_WIDTH] or '-'}", file=sys.stderr, flush=True)
-        submissions.append(published)
-    return submissions
+            queue.item_path(state, key).lstat()
+        except FileNotFoundError:
+            continue
+        return True
+    return False
+
+
+def run_windowed(rows, *, transport: str, max_inflight: int,
+                 wait_s: float) -> tuple[list[dict], list[dict]]:
+    """Publish a bounded window, refilling after any row drains.
+
+    A single controller owns this window. It keeps only ordinary pbrun
+    submissions; restarting the same manifest attaches to its published
+    prefix. Unknown outcomes never authorize another submission. The first
+    window is published even with wait_s=0; subsequent work shares one
+    monotonic wait budget, including time spent submitting replacements.
+    """
+
+    queue = pool.PoolQueue(pbrun.SH / "pb-queue")
+    cas = pb.PrismaBuildCAS(pbrun.SH / "cas")
+    submissions, pending, observed = [], {}, {}
+    deadline = None
+    stopped = False
+    while True:
+        while len(submissions) < len(rows) and len(pending) < max_inflight:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            index = len(submissions)
+            # Keep the existing per-row exception boundary and print the full
+            # digest immediately: a killed controller must leave its keys.
+            published = _submit_record(rows[index], index=index, transport=transport)
+            submissions.append(published)
+            key = str(published.get("action_key") or "")
+            if published.get("status") not in {"submitted", "attached", "cache_hit"} or not key:
+                # Even a refusal may follow an uncertain publication. Do not
+                # spend the next slot while its fate is unknown.
+                stopped = True
+                break
+            pending[key] = published.get("published_unix")
+
+        if deadline is None:
+            deadline = time.monotonic() + wait_s
+        if pending:
+            waited = pbwait.wait_for_keys(
+                queue, list(pending), cas=cas, wait_s=0.0,
+                generations={key: stamp for key, stamp in pending.items()
+                             if isinstance(stamp, (int, float))},
+            )
+            for row in waited:
+                key = row["action_key"]
+                if row["status"] in {"record_error", "unreadable"}:
+                    stopped = True
+                elif row["status"] != "waiting":
+                    try:
+                        occupied = transport == "pool" and _pool_slot_occupied(queue, key)
+                    except OSError as exc:
+                        row = dict(row, status="record_error", succeeded=False,
+                                   note=f"cannot establish a free campaign slot: {exc}")
+                        stopped = True
+                    else:
+                        if occupied:
+                            row = dict(row, status="waiting", succeeded=False,
+                                       note="queue work or claim cleanup still present")
+                        else:
+                            pending.pop(key, None)
+                            if not row["succeeded"]:
+                                # Keep a resumable prefix: continuing past a
+                                # failure could let a restart republish that
+                                # failed prefix before it discovers a later
+                                # full window that is still running.
+                                stopped = True
+                observed[key] = row
+
+        if stopped or (not pending and len(submissions) == len(rows)):
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if pending and (len(pending) >= max_inflight or len(submissions) == len(rows)):
+            time.sleep(min(pbrun.POLL_S, remaining))
+
+    for index in range(len(submissions), len(rows)):
+        print(f"pbcampaign: row {index} not_submitted; "
+              "resume the same manifest to continue", file=sys.stderr, flush=True)
+        submissions.append({"status": "not_submitted", "row": index})
+    return submissions, list(observed.values())
 
 
 def rows_for(submissions, waited) -> list[dict]:
@@ -594,7 +694,8 @@ def rows_for(submissions, waited) -> list[dict]:
     for published in submissions:
         key = str(published.get("action_key") or "")
         status = str(published.get("status") or "refused")
-        if status in {"submitted", "attached"} and key in by_key:
+        if key in by_key and (status in {"submitted", "attached"} or
+                              by_key[key]["status"] in {"waiting", "unreadable", "record_error"}):
             table.append(by_key[key])
         elif status == "cache_hit":
             table.append({
@@ -604,10 +705,12 @@ def rows_for(submissions, waited) -> list[dict]:
             })
         else:
             table.append({
-                "action_key": key, "status": "refused",
+                "action_key": key, "status": status if status == "not_submitted" else "refused",
                 "transport": str(published.get("transport") or "-"),
                 "host": "-", "elapsed_s": None, "returncode": None,
                 "receipt_published": None, "succeeded": False,
+                "note": (f"row {published['row']}; resume the same manifest"
+                         if status == "not_submitted" else None),
             })
     return table
 
@@ -629,8 +732,18 @@ def main(argv=None) -> int:
     ap.add_argument("--detach", action="store_true",
                     help="print each row's submission line and return without "
                          "waiting; wait for them later with pbwait.py")
+    ap.add_argument("--max-inflight", type=int,
+                    help="publish at most N unfinished distinct actions from "
+                         "this controller at once; requires waiting pool mode")
     ap.add_argument("manifest", help="JSON list of rows; see the module docstring")
     args = ap.parse_args(argv)
+    if args.max_inflight is not None:
+        if args.max_inflight < 1:
+            ap.error("--max-inflight must be at least 1")
+        if args.detach or args.transport != "pool":
+            ap.error("--max-inflight requires waiting pool mode (no --detach)")
+        if not math.isfinite(args.wait_s) or args.wait_s < 0:
+            ap.error("--max-inflight requires a finite nonnegative --wait-s")
 
     try:
         rows = load_manifest(args.manifest, transport=args.transport)
@@ -639,7 +752,12 @@ def main(argv=None) -> int:
     if not rows:
         raise SystemExit("pbcampaign: the manifest has no rows")
 
-    submissions = submit(rows, transport=args.transport)
+    if args.max_inflight is not None:
+        submissions, waited = run_windowed(
+            rows, transport=args.transport, max_inflight=args.max_inflight,
+            wait_s=args.wait_s)
+    else:
+        submissions = submit(rows, transport=args.transport)
     refused = [one for one in submissions if one.get("status") == "refused"]
     for one in refused:
         print(f"pbcampaign: {one.get('error')}\n"
@@ -653,6 +771,14 @@ def main(argv=None) -> int:
                 payload.pop("flags", None)
                 print(json.dumps(payload, sort_keys=True), flush=True)
         return 1 if refused else 0
+
+    if args.max_inflight is not None:
+        table = rows_for(submissions, waited)
+        print(pbwait.render(table))
+        # An unpublished suffix is unfinished work, not a failed action.
+        verdict_rows = [dict(row, status="waiting")
+                        if row["status"] == "not_submitted" else row for row in table]
+        return 1 if refused else pbwait.verdict(verdict_rows)
 
     # ``attached`` is a row that was already running when the campaign was
     # re-run: there is a job to wait for, it is just not this run's job.
