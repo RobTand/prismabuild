@@ -30,9 +30,12 @@ three days stale.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -41,11 +44,15 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
-CHECKOUT = Path(__file__).resolve().parents[2]
+_SCRIPT = Path(__file__).resolve()
+CHECKOUT = _SCRIPT.parents[1] if _SCRIPT.parent.name == "tools" else _SCRIPT.parents[2]
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
+_PUBLISH_MUTEX = threading.RLock()
+_PUBLISH_LOCK_DEPTH = 0
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
 FLEET_SCRIPTS = (
     "dispatch_tessera_model.py",
@@ -105,6 +112,10 @@ FLEET_SCRIPTS = (
 #: The tuple exists so that leaving one out is a decision
 #: somebody wrote down rather than an omission nobody noticed.
 EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("qualify_rollout.py",
+     "paired rollout qualification actors use submitted checkouts and a fresh "
+     "private shared root; their simulated host services are not an operator "
+     "command or permission to activate the production barrier"),
     ("qualify_claim_recovery.py",
      "paired queue-recovery qualification actors run from an isolated "
      "checkout through pbcampaign against a fresh private queue root; "
@@ -168,7 +179,20 @@ STORAGE_FILES = ("nfs_readahead.py",)
 #: is exactly preserved.
 PUBLISHED_EXECUTABLE_MODE = 0o555
 PUBLISHED_FILE_MODE = 0o444
+
+# Source and private qualification may exercise the epoch state machine, but a
+# live publication stays disabled until the coordinator has reviewed the
+# cross-host qualification evidence.  This guard is intentionally adjacent to
+# the publication entrypoint rather than an operator flag: no command spelling
+# can accidentally turn a source-only protocol into a fleet transition.
+FINAL_BARRIER_QUALIFICATION_GUARD = True
 PUBLISHED_DIRECTORY_MODE = 0o555
+
+# Capture the coordinator bytes before loading any epoch.  Recovery may run
+# from a mutable checkout, so later mutation of this pathname is a refusal,
+# never permission for different code to publish a retained decision.
+COORDINATOR_SOURCE = Path(__file__).resolve()
+COORDINATOR_SHA256 = hashlib.sha256(COORDINATOR_SOURCE.read_bytes()).hexdigest()
 
 
 def _sha256(path: Path) -> str:
@@ -514,9 +538,395 @@ def _rollout_reason(rollout: str, reason: str | None) -> str | None:
     return None
 
 
+@contextmanager
+def _publication_lock():
+    """One publisher or recovery coordinator, across NFS clients and threads.
+
+    This permanent POSIX lock is never removed or broken on elapsed time.
+    Closing another descriptor for this inode would release a process's lock,
+    so nested entry reuses the outer descriptor instead of opening it again.
+    """
+    global _PUBLISH_LOCK_DEPTH
+    with _PUBLISH_MUTEX:
+        if _PUBLISH_LOCK_DEPTH:
+            _PUBLISH_LOCK_DEPTH += 1
+            try:
+                yield
+            finally:
+                _PUBLISH_LOCK_DEPTH -= 1
+            return
+        path = MIRROR.parent / ".publication.lock"
+        try:
+            MIRROR.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        except OSError as exc:
+            raise SystemExit(f"cannot open publication lock {path}: {exc}; nothing activated") from exc
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise SystemExit(f"publication lock is not a regular file: {path}")
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise SystemExit("another publication or barrier coordinator holds the publication lock") from exc
+            _PUBLISH_LOCK_DEPTH = 1
+            try:
+                yield
+            finally:
+                _PUBLISH_LOCK_DEPTH = 0
+        finally:
+            os.close(fd)
+
+
+def _rollout_config():
+    return {"runtime": str(MIRROR),
+            "generation_store": str(MIRROR.parent / "runtime-generations"),
+            "rollout_root": str(MIRROR.parent / "rollout")}
+
+
+def _require_external_coordinator():
+    # A production barrier waits for every admitted scope, including its own
+    # caller. Stage/probe through PB, then drive only the control-plane
+    # transition externally. Private qualification fleets remain admitted.
+    if (MIRROR.parent.resolve() == Path("/mnt/shared/prismabuild-fleet").resolve()
+            and re.search(r"prismabuild-job[0-9a-f]{32}\.slice",
+                          Path("/proc/self/cgroup").read_text())):
+        raise SystemExit("a live barrier cannot coordinate from its own admitted scope; "
+                         "use --stage-only through PB, then activate or resume externally")
+
+
+def _require_barrier_qualification() -> None:
+    """Keep every public barrier mutation disabled until qualification is reviewed.
+
+    Private source fixtures deliberately set the module constant false around
+    their state-machine exercise.  No pathname is an authority boundary here:
+    public publication, resume, and rollback all refuse by default everywhere.
+    """
+    if FINAL_BARRIER_QUALIFICATION_GUARD:
+        raise SystemExit(
+            "barrier activation remains qualification-guarded: source protocol "
+            "is present, but no runtime generation was staged or activated"
+        )
+
+
+def _rollout_view(epoch=None):
+    try:
+        agent = _agent_definitions()
+        view = agent.read_rollout(_rollout_config(), epoch)
+        if view is not None:
+            _assert_coordinator_identity(view, agent=agent)
+        return view
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(f"rollout epoch evidence unavailable: {exc}; admission must remain held") from exc
+
+
+def _assert_coordinator_identity(view, *, agent=None):
+    """Bind retained decisions to the exact coordinator and marker semantics."""
+    expected = view["intent"].get("coordinator_sha256")
+    if expected != COORDINATOR_SHA256:
+        raise SystemExit("rollout coordinator identity differs from the armed epoch")
+    try:
+        if _sha256(COORDINATOR_SOURCE) != COORDINATOR_SHA256:
+            raise SystemExit("rollout coordinator source changed after it was loaded")
+        expected_agent = view["intent"]["agent_sha256"]
+        if agent is None:
+            agent = _agent_definitions(expected_sha=expected_agent)
+        if agent._pb_source_sha256 != expected_agent:
+            raise SystemExit("rollout marker semantics identity differs from the armed updater hash")
+        source = CHECKOUT / "tools" / "fleet" / "upgrade_client.py"
+        if _sha256(source) != expected_agent:
+            raise SystemExit("rollout marker semantics differ from the armed updater hash")
+        if not hasattr(agent, "validate_marker"):
+            raise SystemExit("rollout marker helper lacks validation semantics")
+    except OSError as exc:
+        raise SystemExit(f"rollout coordinator identity cannot be read: {exc}") from exc
+    return agent
+
+
+def _require_no_epoch():
+    # Retain rolling/bootstrap use from minimal source trees before epochs
+    # existed. An unavailable directory is never the same as an absent one.
+    directory = MIRROR.parent / "rollout" / "epochs"
+    try:
+        directory.stat()
+    except FileNotFoundError:
+        return
+    view = _rollout_view()
+    if view is not None:
+        raise SystemExit(f"rollout epoch {view['intent']['epoch']} remains active; "
+                         "use --resume-barrier, not another publication")
+
+
+def _barrier_generation(name):
+    """Revalidate the immutable generation before trusting its rollout inputs."""
+    if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name) is None:
+        raise SystemExit(f"invalid barrier generation: {name!r}")
+    store = (MIRROR.parent / "runtime-generations").resolve(strict=True)
+    root = store / name
+    if root.resolve(strict=True) != root or root.stat().st_mode & 0o222:
+        raise SystemExit(f"barrier generation is not sealed: {name}")
+    try:
+        receipt = json.loads((root / "RUNTIME_VERSION.json").read_text())
+        if (receipt.get("schema") != "prismaquant.prismabuild.runtime_version.v1"
+                or receipt.get("generation") != name
+                or re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("commit", ""))) is None
+                or not isinstance(receipt.get("files"), dict)):
+            raise ValueError("invalid generation receipt")
+        for member, expected in receipt["files"].items():
+            parts = Path(member).parts
+            if not parts or Path(member).is_absolute() or any(p in (".", "..") for p in parts):
+                raise ValueError("unsafe generation member path")
+            path = root / member
+            if (path.resolve(strict=True) != path or not path.is_file()
+                    or path.stat().st_mode & 0o222 or _sha256(path) != expected):
+                raise ValueError(f"unsealed or changed generation member: {member}")
+        agent_path = "tools/upgrade_client.py"
+        if agent_path not in receipt["files"]:
+            raise ValueError("no updater in generation")
+        if not re.search(rb"(?m)^CLIENT_UPGRADE_ROLLOUT_PROTOCOL[ \t]*=[ \t]*1[ \t]*$",
+                         (root / agent_path).read_bytes()):
+            raise ValueError("generation has no rollout-aware updater; a rolling bridge is required")
+        return root, receipt
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(f"cannot qualify barrier generation {name}: {exc}") from exc
+
+
+def _barrier_roster(generations):
+    """Freeze the union of old/new boxes; a roster edit cannot drop a member."""
+    groups = []
+    for root, receipt in generations:
+        member = "tools/fleet/fleet_boxes.json"
+        if member not in receipt["files"]:
+            raise SystemExit(f"barrier roster is absent from {root.name}")
+        try:
+            boxes = json.loads((root / member).read_text())["boxes"]
+            if not isinstance(boxes, dict) or not boxes:
+                raise ValueError("empty roster")
+            for key, value in boxes.items():
+                names = {key}
+                if isinstance(value, dict) and value.get("_alias"):
+                    names.add(value["_alias"])
+                if any(not isinstance(n, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", n) is None for n in names):
+                    raise ValueError("invalid roster name")
+                overlap = [group for group in groups if group & names]
+                for group in overlap:
+                    names |= group
+                    groups.remove(group)
+                groups.append(names)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise SystemExit(f"invalid barrier roster in {root.name}: {exc}") from exc
+    # Offers only resolve spelling and reject undeclared live participants.
+    # Their age is evaluated after the complete read, never used as quorum.
+    offers = []
+    directory = MIRROR.parent / "pb-queue/workers"
+    try:
+        for path in directory.iterdir():
+            if path.name.startswith(".") or path.suffix != ".json":
+                continue
+            value = json.loads(path.read_text())
+            if (not isinstance(value, dict) or value.get("schema") != "prismaquant.prismabuild.pool_offer.v1"
+                    or path.name != str(value.get("host")) + ".json"):
+                raise ValueError(f"invalid worker offer {path.name}")
+            stamp = value.get("announced_unix")
+            if type(stamp) not in (int, float) or not math.isfinite(stamp):
+                raise ValueError(f"invalid worker offer time {path.name}")
+            offers.append(value)
+    except (OSError, ValueError, TypeError) as exc:
+        raise SystemExit(f"cannot establish live barrier roster: {exc}") from exc
+    now = time.time()
+    live = {o["host"] for o in offers if -60 <= now - o["announced_unix"] <= 120}
+    declared = set().union(*groups)
+    if live - declared:
+        raise SystemExit(f"undeclared live barrier hosts: {sorted(live - declared)}")
+    canonical = []
+    for group in groups:
+        matches = live & group
+        if len(matches) != 1:
+            raise SystemExit(f"barrier roster requires exactly one live identity for {sorted(group)}; found {sorted(matches)}")
+        canonical.append(matches.pop())
+    return sorted(canonical)
+
+
+def _quorum(view, phase):
+    agent = _assert_coordinator_identity(view)
+    observed, missing = {}, []
+    for host in view["intent"]["roster"]:
+        name = agent.marker_name(host, phase)
+        value = view["markers"].get(name)
+        if value is None:
+            missing.append(host)
+        else:
+            agent.validate_marker(name, value, view["intent"], view["intent_sha256"])
+            observed[host] = agent.digest(agent.canonical_json(value))
+    return observed, missing
+
+
+def _decision(view, phase, *, direction, observed, **extra):
+    agent = _assert_coordinator_identity(view)
+    generation = view["intent"]["to_generation" if direction == "forward" else "from_generation"]
+    value = agent.make_marker(view["intent"], phase, generation=generation,
+                              direction=direction, observed=observed,
+                              decided_unix=time.time(),
+                              decided_by=f"{socket.gethostname()}:{os.getuid()}", **extra)
+    name = phase + ".json"
+    agent.validate_marker(name, value, view["intent"], view["intent_sha256"])
+    existing = view["markers"].get(name)
+    if existing is not None:
+        if any(existing.get(k) != v for k, v in value.items() if k not in ("decided_unix", "decided_by")):
+            raise SystemExit(f"conflicting rollout decision: {name}")
+        return
+    _assert_coordinator_identity(view, agent=agent)
+    if not agent.post_marker(MIRROR.parent / "rollout", f"epochs/{view['intent']['epoch']}/{name}",
+                             agent.canonical_json(value)):
+        raise SystemExit(f"rollout decision raced: {name}; re-read with --resume-barrier")
+
+
+def _barrier_step(epoch, *, rollback_reason=None):
+    """One recoverable step. No observation of elapsed time grants a swap."""
+    view = _rollout_view(epoch)
+    if view is None:
+        raise SystemExit(f"rollout epoch disappeared: {epoch}")
+    agent = _assert_coordinator_identity(view)
+    intent, markers = view["intent"], view["markers"]
+    source, target = intent["from_generation"], intent["to_generation"]
+    live = view["live_generation"]
+    if "terminal.json" in markers:
+        return {"epoch": epoch, "state": markers["terminal.json"]["outcome"], "complete": True}
+    drained, missing = _quorum(view, "drained")
+    if rollback_reason is not None and "resume.json" in markers:
+        raise SystemExit("rollback is refused after the fleet resume decision; use a new barrier")
+    failures = [h for h in intent["roster"] if agent.marker_name(h, "failed") in markers]
+    if rollback_reason is not None or (failures and "resume.json" not in markers):
+        if missing:
+            return {"epoch": epoch, "state": "draining", "missing": missing, "failed": failures, "complete": False}
+        if "rollback.json" not in markers:
+            _decision(view, "rollback", direction="rollback", observed=drained,
+                      reason=rollback_reason or f"member rotation failed on {', '.join(failures)}")
+            return {"epoch": epoch, "state": "rollback_declared", "complete": False}
+    rollback = "rollback.json" in markers
+    direction = "rollback" if rollback else "forward"
+    expected = source if rollback else target
+    if missing:
+        if live != source:
+            raise SystemExit("rollout symlink moved before the fleet drain quorum")
+        return {"epoch": epoch, "state": "draining", "missing": missing, "complete": False}
+    activation = "reverted" if rollback else "activated"
+    if activation + ".json" not in markers:
+        if live not in (source, target):
+            raise SystemExit("unexpected third generation during rollout; all hosts remain held")
+        root, _ = _barrier_generation(expected)
+        _assert_coordinator_identity(_rollout_view(epoch))
+        # The caller owns the publication lock. Re-read after potentially slow
+        # member hashing so an external symlink change cannot become our swap.
+        actual = MIRROR.resolve(strict=True).name
+        if actual != live:
+            raise SystemExit("runtime moved during rollout verification; admission remains held")
+        if actual != expected:
+            _activate(root, migrate_directory=False)
+        if MIRROR.resolve(strict=True) != root:
+            raise SystemExit("rollout activation readback mismatch; admission remains held")
+        _decision(view, activation, direction=direction, observed=drained)
+        return {"epoch": epoch, "state": activation, "complete": False}
+    if live != expected:
+        raise SystemExit("runtime differs from recorded rollout activation; admission remains held")
+    rotated, missing = _quorum(view, "rolled-back" if rollback else "rotated")
+    if "resume.json" not in markers:
+        if missing:
+            return {"epoch": epoch, "state": "rollback_rotating" if rollback else "rotating",
+                    "missing": missing, "complete": False}
+        _decision(view, "resume", direction=direction, observed=rotated)
+        return {"epoch": epoch, "state": "resume_authorized", "complete": False}
+    resumed, missing = _quorum(view, "resumed")
+    if missing:
+        return {"epoch": epoch, "state": "resuming", "missing": missing, "complete": False}
+    outcome = "rolled_back" if rollback else "completed"
+    _decision(view, "terminal", direction=direction, observed=resumed, outcome=outcome)
+    return {"epoch": epoch, "state": outcome, "complete": True}
+
+
+def _wait_barrier(epoch, *, wait_s=300, rollback_reason=None):
+    _require_barrier_qualification()
+    _require_external_coordinator()
+    if not math.isfinite(wait_s) or wait_s < 0:
+        raise SystemExit("--barrier-wait-s must be finite and nonnegative")
+    deadline, previous = time.monotonic() + wait_s, None
+    while True:
+        result = _barrier_step(epoch, rollback_reason=rollback_reason)
+        rendered = json.dumps(result, sort_keys=True)
+        if rendered != previous:
+            print(rendered, flush=True)
+            previous = rendered
+        if result["complete"]:
+            return 0 if result["state"] == "completed" else 1
+        if time.monotonic() >= deadline:
+            print(f"barrier {epoch} remains pending; --resume-barrier {epoch} continues it. "
+                  "No timeout releases admission.", flush=True)
+            return 75
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
+
+
+def _arm_barrier(name, *, wait_s=300):
+    _require_barrier_qualification()
+    _require_external_coordinator()
+    _require_no_epoch()
+    if not MIRROR.is_symlink():
+        raise SystemExit("barrier requires an existing sealed runtime symlink")
+    source = _barrier_generation(MIRROR.resolve(strict=True).name)
+    target = _barrier_generation(name)
+    if source[0] == target[0]:
+        print(f"runtime already activates {name}; no rollout required")
+        return 0
+    member = "tools/upgrade_client.py"
+    sha = target[1]["files"][member]
+    coordinator_member = "tools/fleet/publish_runtime.py"
+    coordinator_sha = target[1]["files"].get(coordinator_member)
+    if (not isinstance(coordinator_sha, str)
+            or source[1]["files"].get(coordinator_member) != coordinator_sha
+            or coordinator_sha != COORDINATOR_SHA256):
+        raise SystemExit("barrier requires the same executing coordinator in source and target; "
+                         "converge a reviewed rolling bridge first")
+    if source[1]["files"][member] != sha:
+        raise SystemExit("barrier requires the same rollout-aware updater in both generations; "
+                         "converge a reviewed rolling bridge first")
+    roster = _barrier_roster((source, target))
+    # Historical presence is only the inexpensive bootstrap check. Fresh
+    # participant markers, durable holds and quorums grant actual movement.
+    agent = _agent_definitions(expected_sha=sha)
+    attested = _attested_agents(agent)
+    missing = [host for host in roster if sha not in attested.get(host, set())]
+    if missing:
+        raise SystemExit(f"barrier updater bootstrap attestations missing on {missing}")
+    epoch = uuid.uuid4().hex
+    intent = {"schema": "prismabuild.rollout_barrier.intent.v1", "epoch": epoch,
+              "from_generation": source[0].name, "to_generation": name,
+              "roster": roster, "agent_sha256": sha,
+              "coordinator_sha256": coordinator_sha, "drain_policy": "wait",
+              "armed_unix": time.time(), "armed_by": f"{socket.gethostname()}:{os.getuid()}"}
+    agent.validate_intent(intent, epoch=epoch)
+    if MIRROR.resolve(strict=True) != source[0]:
+        raise SystemExit("runtime moved while arming the barrier")
+    _assert_coordinator_identity({"intent": intent}, agent=agent)
+    if not agent.post_marker(MIRROR.parent / "rollout", f"epochs/{epoch}/intent.json",
+                             agent.canonical_json(intent)):
+        raise SystemExit("rollout epoch identity collided; nothing activated")
+    print(f"armed barrier {epoch}: {source[0].name} -> {name}; hosts={roster}", flush=True)
+    return _wait_barrier(epoch, wait_s=wait_s)
+
+
 def _activate_existing(
     name: str, *, dry_run: bool, rollout: str = "barrier",
-    rollout_reason: str | None = None,
+    rollout_reason: str | None = None, wait_s: float = 300,
+) -> int:
+    if dry_run:
+        return _activate_existing_locked(name, dry_run=True, rollout=rollout,
+                                         rollout_reason=rollout_reason, wait_s=wait_s)
+    with _publication_lock():
+        return _activate_existing_locked(name, dry_run=False, rollout=rollout,
+                                         rollout_reason=rollout_reason, wait_s=wait_s)
+
+
+def _activate_existing_locked(
+    name: str, *, dry_run: bool, rollout: str = "barrier",
+    rollout_reason: str | None = None, wait_s: float = 300,
 ) -> int:
     """Point the live runtime at a generation that already exists.
 
@@ -533,6 +943,9 @@ def _activate_existing(
     """
 
     rollout_reason = _rollout_reason(rollout, rollout_reason)
+    _require_no_epoch()
+    if rollout == "barrier" and not dry_run:
+        return _arm_barrier(name, wait_s=wait_s)
     store = MIRROR.parent / "runtime-generations"
     # A dot-name is never a generation, and one shape of it is dangerous.  A
     # publish stages at ``.<generation>.staging`` in this same store, writes
@@ -590,7 +1003,7 @@ def _activate_existing(
     return 0
 
 
-def _agent_definitions():
+def _agent_definitions(*, expected_sha=None):
     """The agent's own module, loaded from the checkout being published.
 
     The coordinator has to spell a marker name exactly the way the agent
@@ -611,10 +1024,16 @@ def _agent_definitions():
     # source bytes directly so the check neither writes nor trusts a cached
     # version of the definitions it is supposed to read from this source.
     try:
-        code = compile(source.read_bytes(), str(source), "exec")
+        raw = source.read_bytes()
+        actual_sha = hashlib.sha256(raw).hexdigest()
+        if expected_sha is not None and actual_sha != expected_sha:
+            raise SystemExit("rollout marker semantics identity differs from the armed updater hash")
+        code = compile(raw, str(source), "exec")
     except (OSError, SyntaxError) as exc:
         raise SystemExit(f"cannot read the client agent at {source}: {exc}") from exc
     exec(code, module.__dict__)
+    # Bind the bytes actually executed, independently of later pathname reads.
+    module._pb_source_sha256 = actual_sha
     return module
 
 
@@ -734,20 +1153,19 @@ def _require_attested_fleet(agent_sha: str) -> None:
 
 
 def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
-    """Expose the history check without granting it activation authority."""
+    """Check bootstrap compatibility; epoch quorums grant activation later."""
 
     if not dry_run:
-        raise SystemExit(
-            "barrier activation is not implemented: historical attestations "
-            "cannot prove current participation, a fleet drain or rotation. "
-            "Use --rollout barrier --dry-run for the attestation preflight; "
-            "issue #458 tracks the required epoch protocol. Nothing was staged "
-            "or activated."
-        )
+        if not MIRROR.is_symlink():
+            raise SystemExit("barrier requires an existing sealed runtime symlink")
+        _, receipt = _barrier_generation(MIRROR.resolve(strict=True).name)
+        if receipt["files"]["tools/upgrade_client.py"] != agent_sha:
+            raise SystemExit("barrier updater differs from the live generation; "
+                             "converge a reviewed rolling bridge first")
     _require_attested_fleet(agent_sha)
     print(
         "barrier preflight: historical attestations match; current participation, "
-        "drain and rotation have not been proved. Barrier activation is unavailable."
+        "drain and rotation have not been proved. Only epoch quorums authorize activation."
     )
 
 
@@ -777,14 +1195,21 @@ def main() -> int:
     )
     ap.add_argument(
         "--rollout", choices=("rolling", "barrier"), default="barrier",
-        help="barrier is the safe default and requires --dry-run until the "
-             "epoch protocol is implemented. rolling uses independent host "
-             "convergence only with a stated mixed-generation-safety reason; "
-             "barrier --dry-run checks historical agent "
-             "attestations only; it does not prove current participation. "
-             "Actual barrier publication and activation are refused until "
-             "the fleet epoch protocol is implemented.",
+        help="barrier drains and rotates the fleet before admission resumes; "
+             "rolling requires a stated mixed-generation-safety reason. "
+             "Barrier --dry-run checks bootstrap history only.",
     )
+    ap.add_argument("--stage-only", action="store_true",
+                    help="seal and import-probe a generation without arming or activating it; "
+                         "use inside PB, then activate with the external control-plane coordinator")
+    ap.add_argument("--resume-barrier", metavar="EPOCH",
+                    help="continue a retained epoch without creating a new publication")
+    ap.add_argument("--rollback-barrier", metavar="EPOCH",
+                    help="declare rollback to this epoch's source before its resume decision")
+    ap.add_argument("--rollback-reason", metavar="TEXT",
+                    help="required reason for --rollback-barrier")
+    ap.add_argument("--barrier-wait-s", type=float, default=300,
+                    help="how long the coordinator waits; expiry returns 75 and never releases admission")
     ap.add_argument(
         "--rollout-reason", default=None,
         help="required nonblank mixed-generation-safety reason for --rollout rolling; "
@@ -800,19 +1225,50 @@ def main() -> int:
              "runtime is not repointed.",
     )
     args = ap.parse_args()
+    if not math.isfinite(args.barrier_wait_s) or args.barrier_wait_s < 0:
+        ap.error("--barrier-wait-s must be finite and nonnegative")
+    recovery = args.resume_barrier or args.rollback_barrier
+    if args.resume_barrier and args.rollback_barrier:
+        ap.error("choose one of --resume-barrier and --rollback-barrier")
+    if recovery and (args.activate_generation or args.stage_only or args.allow_dirty
+                     or args.migrate_directory or args.default_transport
+                     or args.rollout != "barrier" or args.rollout_reason):
+        ap.error("barrier recovery cannot be combined with publication options")
+    if args.rollback_barrier and not (args.rollback_reason and args.rollback_reason.strip()):
+        ap.error("--rollback-barrier requires a nonblank --rollback-reason")
+    if args.rollback_reason is not None and not args.rollback_barrier:
+        ap.error("--rollback-reason requires --rollback-barrier")
+    if args.stage_only and args.activate_generation:
+        ap.error("--stage-only cannot activate an existing generation")
+    if args.dry_run:
+        return _run_publication(args)
+    with _publication_lock():
+        return _run_publication(args)
+
+
+def _run_publication(args) -> int:
     rollout_reason = _rollout_reason(args.rollout, args.rollout_reason)
+    recovery = args.resume_barrier or args.rollback_barrier
+    # Refuse before reading/staging a candidate generation.  The recovery
+    # branch would otherwise reach `_wait_barrier`, which can call the pointer
+    # mutation through `_barrier_step`.
+    if args.rollout == "barrier" and not args.dry_run and not args.stage_only:
+        _require_barrier_qualification()
+    if recovery:
+        if args.dry_run:
+            view = _rollout_view(recovery)
+            print(json.dumps(view, sort_keys=True))
+            return 0
+        return _wait_barrier(recovery, wait_s=args.barrier_wait_s,
+                             rollback_reason=args.rollback_reason)
+
+    _require_no_epoch()
 
     if args.activate_generation is not None:
         return _activate_existing(
             args.activate_generation, dry_run=args.dry_run, rollout=args.rollout,
-            rollout_reason=rollout_reason,
+            rollout_reason=rollout_reason, wait_s=args.barrier_wait_s,
         )
-
-    # The implemented barrier is a read-only historical preflight. Refuse a
-    # mutating request before resolving publication identity or looking at the
-    # shared marker tree, so the safe default cannot stage anything by mistake.
-    if args.rollout == "barrier" and not args.dry_run:
-        _barrier_preflight("", dry_run=False)
 
     # Identity is established before MIRROR is even enumerated, much less
     # touched.  Failure here is a refusal, never an empty field in a receipt.
@@ -830,7 +1286,7 @@ def main() -> int:
     # which of its members are programs refuses here, not halfway
     # through a tree it then has to clean up.
     index_modes = _git_index_modes()
-    if args.rollout == "barrier":
+    if args.rollout == "barrier" and not args.stage_only:
         member = _agent_definitions().MEMBERS["upgrade_client.py"]
         agent_sha = published.get(member)
         if not isinstance(agent_sha, str) or not agent_sha:
@@ -921,6 +1377,12 @@ def main() -> int:
         _fsync_directory(stage)
         os.replace(stage, generation)
         _fsync_directory(store)
+        if args.stage_only:
+            print(json.dumps({"state": "staged", "generation": generation_name,
+                              "path": str(generation), "activated": False}, sort_keys=True))
+            return 0
+        if args.rollout == "barrier":
+            return _arm_barrier(generation_name, wait_s=args.barrier_wait_s)
         legacy = _activate(
             generation, migrate_directory=args.migrate_directory
         )

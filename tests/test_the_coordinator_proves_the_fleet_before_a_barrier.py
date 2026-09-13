@@ -232,19 +232,20 @@ def test_the_member_key_the_coordinator_reads_is_a_key_the_manifest_writes():
     assert member in publish_runtime._publication_manifest()
 
 
-def test_default_mutating_publication_is_a_barrier_and_never_looks_at_history(monkeypatch):
+def test_default_mutating_publication_requires_a_bridge_before_history(monkeypatch, tmp_path):
     """Safe is the default; rolling must be an explicit reviewed choice."""
 
     def refuse(*args, **kwargs):
         raise AssertionError("barrier preflight reached history unexpectedly")
 
     monkeypatch.setattr(publish_runtime, "_require_attested_fleet", refuse)
+    monkeypatch.setattr(publish_runtime, "MIRROR", tmp_path / "repo")
     monkeypatch.setattr(publish_runtime, "_commit_identity", lambda: "c" * 40)
     monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: False)
     monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {"tools/x.py": SHA})
     monkeypatch.setattr(publish_runtime, "_git_index_modes", lambda: {})
     monkeypatch.setattr(publish_runtime.sys, "argv", ["publish_runtime.py"])
-    with pytest.raises(SystemExit, match="barrier activation is not implemented"):
+    with pytest.raises(SystemExit, match="qualification-guarded"):
         publish_runtime.main()
 
 

@@ -55,6 +55,7 @@ from collections.abc import Iterable, Mapping, Sequence
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
+import upgrade_client  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
@@ -67,6 +68,66 @@ from prismabuild.core import _sigterm_unwinds_this_process  # noqa: E402
 #: same spelling ``pbrun``, ``pool_reset`` and ``tessera_status`` use.
 SHARED_ROOT = Path("/mnt/shared/prismabuild-fleet")
 DEFAULT_QUEUE_ROOT = SHARED_ROOT / "pb-queue"
+
+
+def read_rollout_summary(repo_link: str | Path, epoch: str | None = None) -> dict:
+    """Read an active barrier, with no epoch as the normal idle state."""
+    runtime = Path(repo_link)
+    snapshot = upgrade_client.read_rollout({
+        "runtime": str(runtime),
+        "generation_store": str(runtime.parent / "runtime-generations"),
+        "rollout_root": str(runtime.parent / "rollout"),
+    }, epoch=epoch)
+    if snapshot is None:
+        return {"state": "idle", "epoch": None, "pending_phase": None,
+                "outstanding_hosts": [], "failed_hosts": []}
+    intent, markers = snapshot["intent"], snapshot["markers"]
+    roster = list(intent["roster"])
+    def missing(phase):
+        return [host for host in roster
+                if upgrade_client.marker_name(host, phase) not in markers]
+    def decision(phase):
+        return upgrade_client.marker_name(None, phase) in markers
+    failed = [host for host in roster
+              if upgrade_client.marker_name(host, "failed") in markers]
+    if decision("terminal"):
+        pending, outstanding = "terminal", []
+    elif decision("rollback"):
+        outstanding = missing("rolled-back")
+        if outstanding: pending = "rolled-back"
+        elif not decision("reverted"): pending = "reverted"
+        elif not decision("resume"): pending = "resume"
+        else:
+            outstanding = missing("resumed")
+            pending = "resumed" if outstanding else "terminal"
+    else:
+        outstanding = missing("drained")
+        if outstanding: pending = "drained"
+        elif not decision("activated"): pending = "activated"
+        else:
+            outstanding = missing("rotated")
+            if outstanding: pending = "rotated"
+            elif not decision("resume"): pending = "resume"
+            else:
+                outstanding = missing("resumed")
+                pending = "resumed" if outstanding else "terminal"
+    return {"state": "active", "epoch": intent["epoch"],
+            "from_generation": intent["from_generation"],
+            "to_generation": intent["to_generation"],
+            "live_generation": snapshot["live_generation"],
+            "intent_sha256": snapshot["intent_sha256"], "roster": roster,
+            "pending_phase": pending, "outstanding_hosts": outstanding,
+            "failed_hosts": failed}
+
+
+def rollout_lines(summary: Mapping[str, object] | None) -> list[str]:
+    if summary is None:
+        return ["rollout status unavailable"]
+    if summary.get("state") == "idle":
+        return ["no active rollout epoch"]
+    outstanding = ", ".join(summary.get("outstanding_hosts") or []) or ABSENT
+    return [f"epoch {summary.get('epoch')}  live {summary.get('live_generation')}",
+            f"pending {summary.get('pending_phase')}  outstanding {outstanding}"]
 
 #: How long any one scheduler command has to answer.  Shorter than the lane's
 #: own 60 s, deliberately: a ``pbrun`` waiting on a job is willing to wait for
@@ -1983,7 +2044,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--queue-root", default=str(DEFAULT_QUEUE_ROOT),
         help=f"the queue root holding done/ and failed/ (default "
-             f"{DEFAULT_QUEUE_ROOT})")
+                        f"{DEFAULT_QUEUE_ROOT})")
+    parser.add_argument("--repo-link", default=str(SHARED_ROOT / "repo"),
+                        help="published runtime link used to read rollout status")
     parser.add_argument(
         "--timeout-s", type=float, default=DEFAULT_TIMEOUT_S,
         help=f"how long the whole run may spend reading the queue root "
@@ -2176,6 +2239,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if host_storage["warning"] or host_storage["state"] == "unreadable":
         print(host_storage["note"], file=sys.stderr)
 
+    rollout = None
+    read = bounded("rollout", lambda: read_rollout_summary(args.repo_link),
+                   deadline=deadline, abandoned=abandoned)
+    if read["status"] == "ok":
+        rollout = read["value"]
+    elif read["status"] == "error":
+        unavailable.append({"section": "rollout", "type": read["type"],
+                            "error": read["error"]})
+    else:
+        timed_out.append("rollout")
+
     # Whole means every required section read, and read entirely: the deadline
     # held, nothing raised, and the pool census came back with every record
     # legible.  Any one of those failing is a partial answer, and a partial
@@ -2216,6 +2290,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "nodes": nodes,
             "jobs": jobs,
             "endings": endings,
+            "rollout": rollout,
             "scheduler": notes,
         }, sort_keys=True, indent=1))
         return _incomplete(timed_out, unavailable, pool_partial, args.timeout_s)
@@ -2238,6 +2313,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"== endings (newest {args.recent})")
     print("\n".join([ending_note] if ending_note
                      else ending_lines(endings, note=empty_note)))
+    print()
+    print("== rollout")
+    print("\n".join(rollout_lines(rollout)))
     return _incomplete(timed_out, unavailable, pool_partial, args.timeout_s)
 
 

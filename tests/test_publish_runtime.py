@@ -433,7 +433,7 @@ def test_a_generation_store_that_cannot_be_written_is_a_refusal(
                                         "--rollout-reason", "fixture publication"])
     fleet.chmod(0o555)
     try:
-        with pytest.raises(SystemExit, match="cannot write the generation store"):
+        with pytest.raises(SystemExit, match="cannot (write the generation store|open publication lock)"):
             publish_runtime.main()
     finally:
         fleet.chmod(0o755)

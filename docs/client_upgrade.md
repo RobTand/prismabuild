@@ -92,12 +92,36 @@ durable maintenance once its installed broker has that capability. Missing or
 stale running capability also refuses the transition before drain or service
 mutation. First converge that updater/broker generation everywhere;
 an older updater can still perform a pre-convergence rollback and consequently
-does not preserve the reboot guarantee. This is a durable-host-hold prerequisite
-for #458, not fresh epoch participation, quorums, or coordinated rollback.
-Rolling the runtime back to workers older than #505 also loses their missing-gate
-protection; the client downgrade guard does not prevent a runtime symlink move.
-Barrier activation remains refused until epoch participation, quorums and
-coordinated rollback are implemented and qualified.
+does not preserve the reboot guarantee. Fleet rollout builds on this durable hold with an immutable epoch and two
+quorums. See the [publication procedure](operating_prismabuild.md#publish-the-runtime-the-fleet-executes).
+The updater persists `rollout-epoch.json` beside its local transaction state,
+reads the shared epoch through a bounded unprivileged export, and retains its
+drain until the shared resume decision proves every roster host rotated. It
+verifies that decision's participant hashes and rechecks local health, installed
+bytes and generation-bound parked processes before release. Missing, corrupt or
+unavailable evidence retains the hold; coordinator timeout does not reopen it.
+The pointer and epoch records are independently atomic reads, so a pointer move
+can be observed between a desired-receipt read and a refreshed epoch view. That
+coherent transition retains the durable hold and retries on the next tick; it
+does not publish a participant failure. Verified local install, recovery, or
+service-start failures still restore local bytes, retain the hold, and publish
+the failure that permits coordinated rollback.
+
+Both source and target generations must contain the same participating updater.
+Deploy a new updater through an explicitly reviewed rolling bridge first and
+verify its installed SHA-256 on every host. Once installed, an epoch-aware updater
+refuses candidates without epoch support. Existing-generation rolling activation
+still needs its own compatibility assessment; a symlink move is not proof of
+installed client or worker compatibility.
+
+During an epoch, journal recovery and transaction failure restore verified local
+bytes while keeping admission closed. The coordinator may restore the source
+pointer before resume, wait for every host's rollback proof and then authorize
+release. Durable local state distinguishes a host that has released from one
+still waiting, so a crash between release acknowledgement and shared posting can
+retry its acknowledgement. Boot loss of the volatile gate requires fresh local
+rotation proof before reopening. A completed epoch can be cleaned up locally
+even after a subsequent generation has become live.
 
 A drain records the holder that opened it, and only that holder reopens
 admission. The updater states `client-upgrade` and releases nothing else: a tick
@@ -128,7 +152,9 @@ journalctl -u prismabuild-client-upgrade.service
 ```
 
 Status reports desired generation/commit/hashes, actual installed hashes, check
-time and `current`, `draining`, `held`, `updated`, `rolled_back` or `error`. A timer being
+time and `current`, `draining`, `held`, `updated`, `rolled_back`, `rollout_*` or
+`error`. `pbstatus` and the MCP status response include a bounded fleet rollout
+summary with the pending phase and missing hosts. A timer being
 active alone does not demonstrate convergence. Check the latest record and the
 broker's health; preserve transaction and journal evidence on failure.
 
