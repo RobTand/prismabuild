@@ -50,6 +50,30 @@ existing CAS ingestion carries it.  The blob it addresses is a JSON manifest:
 }
 ```
 
+For a large read set, the blob may instead be one standard gzip member
+containing this same UTF-8 JSON document (#543). The loader detects the gzip
+header, including when the CAS pathname has no extension. Submit the compressed
+path through the same `--data-manifest` flag or campaign `data_manifest` field.
+The sealed `params.data_manifest.content_encoding` is `"gzip"`; plain inputs
+keep their existing summary and action identity. The input digest and byte
+length address the **compressed file**, so changing its encoding changes the
+action key even when the expanded read list agrees.
+
+The stored-file ceiling remains 64 MiB. A gzip member may expand to at most
+512 MiB, and the existing 1,000,000-entry ceiling still applies. The loader
+bounds both reads before parsing JSON and rejects a corrupt CRC, incomplete
+stream, concatenated members or trailing bytes. Compression does not relax
+path validation, duplicate checks, totals or consumption order. These are byte
+bounds, not a process-memory ceiling: decoded JSON objects and validation
+indexes require additional memory. Budget producer/validation work accordingly.
+
+A producer can use `gzip.compress(json_bytes, mtime=0)` or `gzip -n -c` to
+write a separate compressed manifest; retain those exact bytes for resealing.
+Do not replace a manifest inside an existing sealed request. The storage loop
+must load a published generation supporting gzip before it can warm these
+inputs; an older loop refuses the compressed hint. Submission still carries
+the ordinary CAS input and requires no worker-side decompression for execution.
+
 `validate_data_manifest` refuses anything that is not exact identity: a path
 outside `mount_prefix`, a path that is not already normalized, a relative path,
 a repeated `(path, offset)`, a zero-length entry, and totals that disagree with
@@ -153,8 +177,9 @@ construction, so the pass read every byte off the spindles.
 
 What has to fit in the cache was never the manifest.  It is the distance
 between what the action has read and what the loop has made resident.  So when
-`annotations.phases` is present the loop warms through the last phase boundary
-whose `cumulative_bytes` fits the budget and records how far it got:
+`annotations.phases` is present the loop warms through the last entry boundary
+that fits the budget, including a boundary inside one oversized phase, and
+records how far it got:
 
 ```json
 {"status": "partial", "warmed_through_phase": "layer-1",
@@ -166,8 +191,13 @@ whose `cumulative_bytes` fits the budget and records how far it got:
 of fully read entries. `bytes_warmed` counts the actual I/O in the latest pass;
 `contiguous_bytes` counts only its successfully read prefix. An error or partial
 entry does not advance the frontier past a gap, even when parallel readers
-successfully read later entries. `warmed_through_phase` names the selected target;
-check the byte frontier and errors to determine whether that target was reached.
+successfully read later entries. `warmed_through_phase` names the selected target
+only when the entry boundary is also a phase boundary; it is empty for an
+in-phase target. Check the byte frontier and errors to determine whether that
+target was reached. Entry boundaries make safe residency cuts, but do not move
+the accepted read frontier: only a matching `ProgressWatch` phase observation
+releases claimed reserve, and arbitrary progress units are never converted to
+consumed bytes.
 
 On later polls, the window starts at the later of the previous frontier and
 the bytes the consumer has finished. It does not reread a consumed gap when

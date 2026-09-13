@@ -2696,11 +2696,23 @@ non-storage mode, never a storage fallback.  Sequential rows retain the
 shared pacing verdict and stat baseline, while their receipts reset only the
 row's accounting counters.
 
+Data-manifest inputs retain the v1 JSON contract and may be carried as one gzip
+member. Stored bytes remain capped at 64 MiB; gzip decoding is bounded at
+512 MiB before parsing, with at most 1,000,000 entries. The CAS input binds the
+wire bytes and compressed summaries declare `content_encoding: gzip`; plain
+summaries are unchanged. Header-based decoding works on extensionless CAS
+paths and refuses incomplete, corrupt, concatenated or trailing gzip data.
+Parsed objects require memory beyond the decoded-byte ceiling. See the input
+guide for producer and deployed-storage-role adoption requirements.
+
 Large manifests may declare entry-aligned cumulative phase boundaries.  The
-role holds only the resident window ahead of an action's accepted read
-frontier, advances it on the matching claim lease's `ProgressWatch`
-observation, and keeps a declared action reserved when that observation is
-absent; claim grace is only the fallback for actions with no progress policy.
+role may end a warm window at any entry boundary that fits its budget, including
+inside an oversized phase, but holds only the resident window ahead of an
+action's accepted read frontier.  Only the matching claim lease's
+`ProgressWatch` phase observation advances that frontier and releases reserve;
+the role never infers consumed bytes from arbitrary progress units. It keeps a
+declared action reserved when that observation is absent; claim grace is only
+the fallback for actions with no progress policy.
 The storage role never trusts the action-writable progress file directly,
 because only the worker has the per-launch token that authenticates it.  Cyclic
 progress does not establish an irreversible manifest frontier.  A disk hold

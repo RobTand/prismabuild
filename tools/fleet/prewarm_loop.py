@@ -33,11 +33,11 @@ A manifest larger than the budget used to be refused whole, which meant the
 loop could not help the jobs that need it most: the GLM joint pass reads about
 4.75 TB layer-major against an ARC ceiling of 257.7 GB.  When the producer
 writes ``annotations.phases`` -- a running byte sum over ``entries`` in the
-order the action reads them -- the loop warms through the last phase boundary
-that fits instead, records ``status: "partial"`` with the phase it reached, and
-extends the window on later polls.  What has to fit in the cache is the
-distance between what the action has read and what the loop has made resident,
-never the manifest.
+order the action reads them -- the loop warms through the last entry boundary
+that fits, including one inside an oversized phase, and extends the window on
+later polls.  Phases remain the accepted-progress frontiers that release
+reserve.  What has to fit in the cache is the distance between what the action
+has read and what the loop has made resident, never the manifest.
 
 Where the action reports it, the loop reads that distance rather than guessing
 it.  An action declaring ``params.progress`` writes ``progress-v1`` records to
@@ -1280,26 +1280,31 @@ def consumed_through(phases: list[dict[str, object]], phase_name: str) -> int:
     return 0
 
 
-def window_target(phases: list[dict[str, object]], *, consumed: int,
-                  budget: int) -> tuple[int, str]:
-    """The furthest phase boundary that stays within ``budget`` of the reader.
+def window_target(phases: list[dict[str, object]], entries: list[dict[str, object]],
+                  *, consumed: int, budget: int) -> tuple[int, str]:
+    """The furthest entry boundary that stays within ``budget`` of the reader.
 
-    Returns the boundary in manifest bytes and the phase it belongs to, or
-    ``(0, "")`` when not even the next phase fits.  Bounding the *window*
-    rather than the manifest is the whole point: what has to fit in the cache
-    is the distance between what the action has read and what this loop has
-    made resident, never the manifest.
+    Phase boundaries are accepted-progress frontiers: only a matching worker
+    observation can move ``consumed`` to one.  They are not a minimum warm
+    unit.  An oversized phase can contain many manifest entries, and any
+    entry-aligned prefix inside it is safe to fault into ARC without claiming
+    that the action has consumed those bytes.  Return the target boundary and
+    its phase name when it happens to end a phase; an in-phase target has no
+    phase name.
     """
 
-    target, name = 0, ""
-    for phase in phases:
-        cumulative = int(phase["cumulative_bytes"])
+    phase_names = {int(phase["cumulative_bytes"]): str(phase["name"])
+                   for phase in phases}
+    target = 0
+    cumulative = 0
+    for entry in entries:
+        cumulative += int(entry["bytes"])
         if cumulative <= consumed:
             continue
         if cumulative - consumed > budget:
             break
-        target, name = cumulative, str(phase["name"])
-    return target, name
+        target = cumulative
+    return target, phase_names.get(target, "")
 
 
 def entries_between(entries: list[dict[str, object]], start: int,
@@ -1716,8 +1721,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # already; pricing the advance against a budget that also pays for
         # them would stop a window from ever extending.
         row_budget = budget + int(window["resident_ahead"])
-        target, phase = window_target(phases, consumed=consumed,
-                                      budget=row_budget)
+        target, phase = window_target(phases, list(manifest["entries"]),
+                                      consumed=consumed, budget=row_budget)
         if target <= resident:
             event["advanced"].append({
                 "action_key": key, "status": "window full" if target else "headroom",
@@ -1779,7 +1784,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         row_budget = budget + resident
         row_budget_before_progress = budget_before_progress + resident
         if phases:
-            target, phase = window_target(phases, consumed=0, budget=row_budget)
+            target, phase = window_target(phases, list(manifest["entries"]),
+                                          consumed=0, budget=row_budget)
         else:
             target, phase = (total if total <= row_budget else 0), ""
         if (prior and prior.get("status") == "complete") or (
