@@ -296,6 +296,16 @@ action key and use published `pbwait.py`/`pbstatus.py` to inspect the terminal
 state. Check exit status, actual logs and the CAS receipt/payload. Record test
 counts, skips, devices and missing tooling; do not certify a wrapper's “done”.
 
+Runtime publication changes ordinary resealed action keys through the Docker
+wrapper's generation path. When collecting prior work across a publication,
+use `pbrun --as-sealed-by FULL_ACTION_KEY`, or `as_sealed_by` on each campaign
+row, with the original checkout and options. The current client recovers the
+retained wrapper path and refuses a differing complete key before submitting.
+It does not run a historical submitter. A verified receipt is a cache hit;
+missing receipts may still submit the same key. Missing retained requests or
+wrapper generations refuse. Keep receipt manifests outside the sealed source
+tree so they do not change its identity. See the operating guide for limits.
+
 Read status and your own actions as data, not as text. Register the read-only
 MCP server -- `claude mcp add --scope local prismabuild -- /usr/bin/python3
 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbmcp.py`, or the same command
