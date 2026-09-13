@@ -105,26 +105,11 @@ def _prefix_candidates(q, text: str, *, lane_root=None) -> list[str]:
     unique or absent prefix.
     """
 
-    found: set[str] = set()
-    root = slurm_lane.lane_root(lane_root)
-    try:
-        lane_names = sorted(os.listdir(root))
-    except FileNotFoundError:
-        lane_names = []
-    for name in lane_names:
-        if (name == slurm_lane.JOB_STATE_DIRNAME or not name.startswith(text)
-                or len(name) != 64):
-            continue
-        try:
-            raw = (root / name / "latest.json").read_text(encoding="utf-8")
-        except FileNotFoundError:
-            continue
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            found.add(str(value["action_key"]))
+    found = {
+        str(record["action_key"])
+        for record in slurm_lane.resolve_recorded(
+            text, root=lane_root, report_unavailable=True)
+    }
     for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
                   pool.WITHDRAWN):
         try:

@@ -215,6 +215,47 @@ def test_prefix_reader_setup_error_is_exit_seventy_four(
     assert "Too many open files" in capsys.readouterr().err
 
 
+def test_prefix_resolution_ignores_a_nonhex_slurm_directory(
+    tmp_path: Path, capsys,
+) -> None:
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    invalid = "z" * 64
+    lane = tmp_path / "lane" / invalid
+    lane.mkdir(parents=True)
+    (lane / "latest.json").write_text(json.dumps({"action_key": invalid}),
+                                      encoding="utf-8")
+    with pytest.raises(SystemExit) as raised:
+        pbwait.resolve_key(queue, "z", lane_root=tmp_path / "lane")
+    assert raised.value.code == pbwait.MISNAMED_EXIT
+    assert "nothing recorded matches" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("namespace", ["lane", "decisions"])
+def test_prefix_resolution_refuses_an_unavailable_namespace_before_matching_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, namespace: str,
+) -> None:
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    key = "a" * 64
+    _file(queue, pool.DONE, _outcome(key, 1.0, status="executed", returncode=0))
+    lane_root = tmp_path / "lane"
+    lane_root.mkdir()
+    blocked = (lane_root if namespace == "lane"
+               else queue.dir(pool.WITHDRAWN) / "decisions")
+    real_listdir = os.listdir
+
+    def unavailable(path):
+        if Path(path) == blocked:
+            raise OSError(5, "Input/output error", str(path))
+        return real_listdir(path)
+
+    monkeypatch.setattr(pbwait.os, "listdir", unavailable)
+    with pytest.raises(SystemExit) as raised:
+        pbwait.resolve_key(queue, key[:12], lane_root=lane_root)
+    assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT
+
+
 # --------------------------------------------------------------------------
 # The pull queue: the worker files the ending, this only watches
 # --------------------------------------------------------------------------

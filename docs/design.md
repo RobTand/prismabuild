@@ -227,7 +227,8 @@ manufacture a verdict. A published unreadable terminal retains its existing
 exit-1 report, and immutable contract validation retains its existing error.
 The budget covers the child read and IPC wait; process creation, completed JSON
 decoding, cleanup grace, runtime imports, and output can add time. This is only
-the synchronous pool `pbrun` path: it does not bound the whole submission,
+the synchronous pool `pbrun` path: it does not bound the whole submission.
+
 `pbwait` also resolves a non-full key prefix by scanning recorded SLURM rows,
 the five pull-queue state directories, and withdrawal decisions in one
 isolated child with the same five-second read budget. It returns candidate key
