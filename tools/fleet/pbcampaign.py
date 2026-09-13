@@ -613,6 +613,7 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
     queue = pool.PoolQueue(pbrun.SH / "pb-queue")
     cas = pb.PrismaBuildCAS(pbrun.SH / "cas")
     submissions, pending, observed = [], {}, {}
+    cached = set()
     deadline = None
     stopped = False
     while True:
@@ -631,6 +632,10 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
                 stopped = True
                 break
             pending[key] = published.get("published_unix")
+            if published["status"] == "cache_hit":
+                cached.add(key)
+            else:
+                cached.discard(key)
 
         if deadline is None:
             deadline = time.monotonic() + wait_s
@@ -657,7 +662,10 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
                                        note="queue work or claim cleanup still present")
                         else:
                             pending.pop(key, None)
-                            if not row["succeeded"]:
+                            # A pbrun cache hit already verified reusable
+                            # output; an older failed attempt is not its
+                            # verdict. The slot still needed the check above.
+                            if not row["succeeded"] and key not in cached:
                                 # Keep a resumable prefix: continuing past a
                                 # failure could let a restart republish that
                                 # failed prefix before it discovers a later

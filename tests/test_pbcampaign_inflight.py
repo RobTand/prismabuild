@@ -204,3 +204,16 @@ def test_refill_does_not_renew_the_campaign_deadline(monkeypatch):
     )
     assert events == [("submit", 0), ("poll", [0])]
     assert submissions[1]['status'] == 'not_submitted'
+
+
+def test_cache_hit_can_continue_past_an_old_failed_attempt(monkeypatch):
+    # pbrun has verified the reusable receipt. pbwait can also see an older
+    # failed attempt for that key (e.g. a broker EOF after receipt publication).
+    keys, events = _window_fakes(monkeypatch, [
+        {0: "failed"}, {1: "cache_hit"},
+    ], submitted_status="cache_hit")
+    submissions, waited = pbcampaign.run_windowed(
+        [{"index": 0}, {"index": 1}], transport="pool", max_inflight=1, wait_s=30,
+    )
+    assert events == [("submit", 0), ("poll", [0]), ("submit", 1), ("poll", [1])]
+    assert pbcampaign.pbwait.verdict(pbcampaign.rows_for(submissions, waited)) == 0
