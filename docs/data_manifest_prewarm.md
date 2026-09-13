@@ -57,6 +57,28 @@ the list.  `offset` is there because the consumer reads tensor byte ranges out
 of safetensors shards rather than whole files, and a whole-file manifest would
 price the warm at several times the bytes the action touches.
 
+`annotations.phases` is optional and is what lets a manifest larger than the
+cache be warmed at all.  It is a running byte sum over `entries`, in the order
+the action reads them:
+
+```json
+"annotations": {
+  "row_id": "joint-3c",
+  "phases": [
+    {"name": "head", "bytes": 14829322240, "cumulative_bytes": 14829322240},
+    {"name": "layer-0", "bytes": 118380625920,
+     "cumulative_bytes": 133209948160}
+  ]
+}
+```
+
+Names are unique and non-empty, `cumulative_bytes` never decreases, and the
+last boundary is the manifest's `total_bytes`.  A table that breaks any of
+those rules is treated as absent rather than repaired: windowing on the wrong
+boundaries reads the wrong bytes and then records them as resident.  Every
+other annotation stays uninterpreted -- PrismaBuild reads `row_id` for the
+receipt's label and `phases` for the window, and nothing else.
+
 `entries` are in *consumption* order and are never re-sorted, so a warm cut
 short by the budget leaves a useful prefix rather than a random subset.
 
@@ -94,21 +116,105 @@ the `storage` role in `fleet_boxes.json`.  Every poll:
    loop has no opinion about what runs next; it reads the same list the
    workers read.  **It is not a second dispatcher:** it never claims,
    reserves, reorders or writes an item.
-2. The first `--lookahead` actions the loop can still act on.  An action
-   without a manifest, one below `--min-manifest-bytes`, and one this loop has
-   already warmed are each passed over and do not consume the lookahead: the
-   window counts rows a warm could still make faster.  How much the loop holds
-   resident ahead of the claim frontier is bounded by the budget, not by
-   `--lookahead` -- step 3 subtracts every warmed, unclaimed row's bytes.
-3. ARC headroom: `c_max * --arc-reserve-fraction`, minus the manifest
-   bytes of every action claimed inside the last `--claim-grace-min` minutes,
-   and minus the `bytes_warmed` of every row this loop has already warmed that
-   nobody has claimed yet (`warmed_reserve`).  A manifest that does not fit is
-   refused, and refusing writes nothing.
-4. Reads each entry, in manifest order, through the host's local pool path
-   (`--mount-map SHARED=LOCAL`), `--readers` at a time, `O_NOFOLLOW`, regular
-   files only, paced by the pool's disks (below).
-5. Writes `pb-queue/prewarm/<action_key>.json`.
+2. The window of any claimed action that is reading a manifest larger than the
+   budget moves forward first (below).  It does not consume the lookahead: a
+   claimed action is not a row the lookahead is counting.
+3. The first `--lookahead` actions the loop can still act on.  An action
+   without a manifest, one below `--min-manifest-bytes`, one this loop has
+   already warmed as far as the budget allows, and one that does not fit
+   today's budget are each passed over and do not consume the lookahead: the
+   window counts rows a warm could still make faster, and one oversized
+   submission must not turn prewarm off for the rows behind it.  How much the
+   loop holds resident ahead of the claim frontier is bounded by the budget,
+   not by `--lookahead` -- step 4 subtracts every warmed, unclaimed row's
+   bytes.
+4. ARC headroom: `c_max * --arc-reserve-fraction`, minus what claimed actions
+   may still read, and minus the bytes of every row this loop has already
+   warmed that nobody has claimed yet (`warmed_reserve`).  A claim inside the
+   last `--claim-grace-min` minutes reserves its whole manifest; a claim that
+   reports progress reserves only the phases it has not read yet; a claim
+   whose manifest was warmed a window at a time reserves that window, because
+   bytes nobody warmed are on the spindles either way.  A manifest that fits
+   no window at all is refused, and refusing writes nothing.
+5. Reads the window's entries, in manifest order, through the host's local
+   pool path (`--mount-map SHARED=LOCAL`), `--readers` at a time,
+   `O_NOFOLLOW`, regular files only, paced by the pool's disks and by whether
+   any client is reading (below).
+6. Writes `pb-queue/prewarm/<action_key>.json`.
+
+### Windows, when the manifest is larger than the ARC
+
+The jobs that need prewarm most were the ones it refused.  The GLM joint pass
+(chain step 3b `prepare`, 3c `run`) reads about 4.75 TB layer-major: 45 hidden
+layers, layers 3-44 about 111-124 GB each, against an ARC `c_max` of 257.7 GB
+and a 206 GB budget.  A whole-manifest `total > budget` check refuses that by
+construction, so the pass read every byte off the spindles.
+
+What has to fit in the cache was never the manifest.  It is the distance
+between what the action has read and what the loop has made resident.  So when
+`annotations.phases` is present the loop warms through the last phase boundary
+whose `cumulative_bytes` fits the budget and records how far it got:
+
+```json
+{"status": "partial", "warmed_through_phase": "layer-1",
+ "warmed_bytes": 133209948160, "window_start_bytes": 0,
+ "bytes_warmed": 133209948160, "phased": true, "trigger": "claim"}
+```
+
+`warmed_bytes` is everything the loop has made resident for this manifest;
+`bytes_warmed` is what the last read moved.  They differ only for a manifest
+warmed a window at a time.  On later polls, when the action is claimed and its
+progress record names a phase, the window advances from where it stopped and
+the record is rewritten in place -- one file per key, so `already_warm` still
+answers the same question.  The invariant the advance keeps is the budget's
+own: warmed minus consumed never exceeds the budget, so the loop never holds
+more of one manifest resident than the cache was going to keep anyway.
+
+For a windowed row, "already warm" means *everything the budget allows is
+resident*, which is the honest claim about a manifest that will never fit
+whole.  A manifest without phases keeps the whole-manifest rule, unchanged.
+
+### Following the running action, instead of its claim
+
+#523 measured what the old trigger cost.  The loop warmed the next ready row
+when the lookahead slot freed -- which is the instant the previous row was
+claimed and started its own cold reads.  On 2026-09-12 the warm ran 4.3 s
+ahead of the claim and overlapped that row's own reads at 256.7 MB/s: the
+client saw no speedup at all, because the bytes arrived exactly as late as if
+nobody had warmed them.
+
+A claim is the end of the useful window, not the start of one.  An action that
+declares `params.progress` writes `prismabuild.action_progress.v1` records to
+`claimed/<key>.progress` (`PRISMABUILD_ACTION_PROGRESS_PATH`), which the loop
+reads from the queue side without asking the worker anything.  The phases
+before the one it names are read: the ARC may evict them, nothing is waiting
+for them, and they leave the claimed reserve.  The next row becomes warmable
+while the running one is still working.
+
+Two rules keep that honest:
+
+* The sealed request must declare the policy.  A record beside an action that
+  asked for no progress reporting is not a report the platform asked for, and
+  it does not move the budget.
+* The record must be younger than the claim.  The launcher unlinks the path
+  and mints a fresh token before every launch, and the token is deliberately
+  not published to the queue, so a leftover record from an earlier attempt is
+  rejected by its instant instead.
+
+The cycle event says which signal fired, with the key, the phase and the bytes
+it released:
+
+```json
+{"claimed_released_bytes": 14829322240,
+ "progress_triggers": [{"action_key": "...", "phase": "layer-1",
+                        "released_bytes": 14829322240}],
+ "warmed": [{"action_key": "...", "trigger": "progress"}]}
+```
+
+`trigger` is an observation, not a label: a row is `"progress"` only when it
+fits the budget with the release and would not have fit without it.  An action
+that reports nothing keeps the claim-plus-`--claim-grace-min` behaviour it has
+today.
 
 ### Pacing, and why the reader count is 1
 
@@ -128,13 +234,62 @@ So the loop is paced by what the disks are doing, not by a thread count.
 Before every block it consults a sample of `/sys/block/<dev>/stat` for the
 pool's own data vdev members -- discovered from `zpool status -P`
 (`--pace-pool`), or named outright with `--disks` -- and holds while the worst
-disk is over any of three caps:
+disk is over a cap:
 
-| argument | default | harmless (measured) | stalling (measured) |
-|---|---|---|---|
-| `--max-util-pct` | 25 | 8-12 % | 73-83 % |
-| `--max-read-await-ms` | 10 | 0-2 ms | 38-54 ms |
-| `--max-backlog-ms` | 2000 | 300-450 ms | 11 000-14 400 ms |
+| argument | default | harmless (measured) | stalling (measured) | holds |
+|---|---|---|---|---|
+| `--client-active-mb-s` | 2.6 | 0 MB/s (nobody reading) | 26 MB/s and up | required |
+| `--max-read-await-ms` | 10 | 0-2 ms | 38-54 ms | yes |
+| `--max-backlog-ms` | 2000 | 300-450 ms | 11 000-14 400 ms | yes |
+| `--max-util-pct` | 25 | 8-12 % | 73-83 % | no, recorded only |
+
+### A hold needs a client to protect
+
+The pacer exists to protect NFS clients, so the first question a hold answers
+is whether anybody is reading.  Measured on dl380g10 at 2026-09-13 04:05Z: a
+`zpool scrub` (53.4 % done, issuing 736 MB/s) drove sdb to 88 % utilization at
+153.8 MB/s with 9.4 ms read await; the storage role's pacer had held for
+5709 s cumulative and was holding at every sample, `util_pct` 100 and backlog
+up to 26 s; and no NFS client read a byte for the whole window.  The loop
+warmed nothing for hours and protected nobody.  Utilization answered "is the
+disk busy"; nobody had asked that question.
+
+So the verdict is an AND: hold while clients are reading **and** the pool is
+over its service-time or backlog cap.  Client activity is read from this
+host's own NFS server counters (`--nfsd-io`, the `io` line of
+`/proc/net/rpc/nfsd`), which count bytes `nfsd` served; the loop reads the pool
+through the host's local path, so its own reads never appear there and the
+measurement cannot chase itself.  The threshold has to sit *below* the slowest
+read worth protecting -- a client already slowed by the warm would otherwise
+read as idle and release the hold that would give it the disks back -- so the
+default is a tenth of the 26 MB/s cold-start client read #523 measured, an
+order of magnitude above an idle mount's attribute traffic.
+
+A host that cannot read the counter paces as though clients were always
+reading: blind is not idle, and one missing file must not turn the pacer off
+on the box that needs it most.  Missing *disk* telemetry still holds whoever
+is reading, for the same reason it always did -- that hold is a blind pacer,
+not a busy pool.  A hold is released at half the cap that started it, so a
+disk sitting exactly on a threshold does not flap the reader once per sample.
+
+`--max-util-pct` is still accepted and still recorded beside the rate, because
+it is the number an operator compares against Netdata; it no longer holds on
+its own.  Removing it would have broken every command line in
+`fleet_boxes.json` and thrown away a measurement, for a flag whose only defect
+was being consulted.
+
+The pacing report separates the two questions an operator actually asks --
+what pacing cost, and what it cost for nothing:
+
+```json
+{"held_seconds": 41.2, "held_seconds_total": 5709.0,
+ "held_while_clients_active_s": 0.0, "held_while_clients_idle_s": 5709.0,
+ "samples": 88, "samples_total": 21714,
+ "clients_active": false, "client_read_mb_s": 0.0}
+```
+
+`held_seconds` prices one row and resets with it; the totals belong to the
+role and outlive the pacer each cycle rebuilds.
 
 The defaults are the shape that passed on the live fleet, not the midpoint
 between the two measured states.  One reader at 40 % / 15 ms / 4 000 ms held
@@ -171,8 +326,10 @@ rows in a poll, but receipt accounting is row-scoped: samples, means, maxima,
 holds, held seconds, and telemetry gaps are reset at each row boundary.  An
 existing hold is never reset by that accounting boundary.
 
-Setting any cap to 0 disables that cap.  Setting all three off is how you
-reproduce the pre-#499 behaviour, and it is not a supported production shape.
+Setting any cap to 0 disables that cap.  Setting the await and backlog caps
+off is how you reproduce the pre-#499 behaviour, and it is not a supported
+production shape.  Setting `--client-active-mb-s 0` holds whenever the disks
+are over, whoever is reading, which is the pre-#523 shape.
 
 ### The ARC arithmetic behind `--lookahead 1`
 
@@ -212,11 +369,42 @@ hand it to a second worker.  Nothing under the shared data mount is written.
 
 `claim` copies the sidecar onto the claimed record as `prewarm`, in the write
 it was already making, and `finish` carries it into the terminal record's
-`detail.prewarm`.  A worker that measured its own residency wins: `finish`
+`detail.prewarm`.  For a windowed manifest that copy is the claim-time
+snapshot: the window advances after the claim, so the sidecar under
+`pb-queue/prewarm/` is where the final window state lives.  A worker that measured its own residency wins: `finish`
 uses `setdefault`.  An action nobody warmed carries no `prewarm` key at all,
 because "nobody looked" and "warmed nothing" are different facts.
 
 ## Deploying
+
+### Restarting the role after a publication
+
+The supervisor spawns the storage role from `_current_root()` -- the generation
+`/mnt/shared/prismabuild-fleet/repo` points at -- but a role that is already
+running keeps executing the file it started with.  Publishing a new generation
+therefore does not move a running loop.  Restart it by ending that one process
+and letting the supervisor respawn it:
+
+```
+pgrep -af prewarm_loop.py            # the role's pid and its arguments
+kill -TERM <role pid>                # the loop, never the supervisor
+```
+
+The supervisor respawns the role from the live generation within its poll
+interval.  Verify with the `spawned`/`role` line in the supervisor log and the
+new pid's `/proc/<pid>/cmdline`, which must name the new generation directory.
+
+Never `systemctl stop prismabuild-supervisor.service` for this: that stops
+every worker loop on the box as well, and the role is the only thing that
+needed to move.
+
+Measured example (2026-09-13, dl380g10): `kill -TERM 2486293` at 04:12:24Z
+ended the role running generation `953c95e5fb52`; at 04:12:29Z the supervisor,
+already re-exec'd to `176021ec3efb-1789272169-6533ecef8514`, spawned pid
+2201912 with the same arguments from
+`runtime-generations/176021ec3efb-1789272169-6533ecef8514/tools/prewarm_loop.py`.
+Its first cycles logged `ready=1`, `pacing_active=true`, `arc_size` 251.2 GB
+of a 257.7 GB `c_max`.
 
 The `storage` role only exists once a runtime generation carrying
 `prewarm_loop.py` is published.  A supervisor running an older generation

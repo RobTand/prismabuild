@@ -91,6 +91,25 @@ topology-discovery failure stops the role for supervisor retry.  Do not turn
 that failure into an unpaced warm.  An intentional no-disk fixture remains
 inactive only outside the storage role.
 
+A hold also requires a client to protect.  The loop holds only while this
+host's NFS server is serving more than `--client-active-mb-s` and the pool is
+over its read-await or backlog cap; `--max-util-pct` is recorded and no longer
+holds by itself.  A pool busy with a scrub and no client behind it is not a
+reason to stop warming (2026-09-13: 5709 s of cumulative hold at 100 %
+utilization with every client idle).
+
+### Restarting the storage role after a publication
+
+The supervisor spawns the role from the generation `repo` points at, but a
+running role keeps executing the file it started with, so a publication does
+not move it.  Find the loop with `pgrep -af prewarm_loop.py` and send that pid
+`SIGTERM`; the supervisor respawns it from the live generation within its poll
+interval.  Confirm with the `spawned`/`role` line in the supervisor log and the
+new pid's `/proc/<pid>/cmdline`.  Never `systemctl stop` the whole supervisor
+for this -- that stops every worker loop on the box.  Measured on dl380g10:
+`kill -TERM 2486293` at 04:12:24Z on 2026-09-13, respawned as pid 2201912 from
+`176021ec3efb-1789272169-6533ecef8514` five seconds later, same arguments.
+
 The published storage loop honors the host maintenance gate before every
 cycle. Missing or unreadable gates keep it parked too. It finishes an active
 cycle before parking; a blocked disk read or pacing hold can delay that boundary.

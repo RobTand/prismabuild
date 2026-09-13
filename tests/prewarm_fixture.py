@@ -11,10 +11,12 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import progress as progress_v1  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prewarm_loop  # noqa: E402
@@ -37,6 +39,22 @@ def data_manifest(paths_and_sizes, *, prefix: str,
     }
 
 
+def phase_table(named_sizes) -> list[dict]:
+    """``annotations.phases``: a running byte sum in the consumer's read order.
+
+    The same shape PrismaQuant's producer writes (PQ #524), built from the
+    sizes the test already declares, so a fixture phase boundary can never
+    drift from the entry it is supposed to fall between.
+    """
+
+    table: list[dict] = []
+    total = 0
+    for name, size in named_sizes:
+        total += size
+        table.append({"name": name, "bytes": size, "cumulative_bytes": total})
+    return table
+
+
 class Fleet:
     """A queue, a CAS and a shared mount with real files in it."""
 
@@ -57,12 +75,22 @@ class Fleet:
 
     def action(self, key_seed: str, files, *, priority: int = 0,
                with_manifest: bool = True,
-               annotations: dict | None = None) -> str:
+               annotations: dict | None = None,
+               progress_phases: list[str] | None = None) -> str:
         """Seal a request carrying a manifest input and publish it ready."""
 
         action_key = hashlib.sha256(key_seed.encode()).hexdigest()
         inputs: list[dict] = []
         params: dict = {"command": ["true"]}
+        if progress_phases is not None:
+            # The policy the action seals, in the shape ``core`` validates.
+            # The loop reads records only where one of these exists, so a test
+            # about progress has to declare it exactly as a submitter does.
+            params[pb.PROGRESS_PARAM] = {
+                "schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+                "phases": [{"name": name, "grace_s": 600.0}
+                           for name in progress_phases],
+            }
         if with_manifest:
             manifest = data_manifest(files, prefix=str(self.mount),
                                      annotations=annotations)
@@ -85,6 +113,33 @@ class Fleet:
             worker_script=str(self.root / "worker.py"),
             checkout_root=str(self.root), priority=priority)
         return action_key
+
+    def claim(self, action_key: str, *, age_s: float = 0.0) -> Path:
+        """Move a ready item into ``claimed/`` the way a claim moves it."""
+
+        source = self.queue.root / "ready" / f"{action_key}.json"
+        item = json.loads(source.read_text())
+        source.unlink()
+        item.update({"action_key": action_key,
+                     "claimed_unix": time.time() - age_s})
+        target = self.queue.root / "claimed" / f"{action_key}.json"
+        target.write_text(json.dumps(item))
+        return target
+
+    def report_progress(self, action_key: str, phase: str, *,
+                        units: int = 1, at: float | None = None) -> Path:
+        """Write what the running action would write, where it writes it."""
+
+        path = self.queue.action_progress_path(action_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "schema": progress_v1.PROGRESS_RECORD_SCHEMA_V1,
+            "token": "fixture-token",
+            "phase": phase,
+            "units_completed": units,
+            "reported_unix": time.time() if at is None else at,
+        }))
+        return path
 
     def arcstats(self, *, size: int, c: int, c_max: int) -> str:
         # One file per set of counters, never one file rewritten: a fixture
@@ -109,7 +164,11 @@ class Fleet:
             # on a fake stat source and hands it to ``cycle``.
             pace_pool="", disks="", max_util_pct=40.0,
             max_read_await_ms=15.0, max_backlog_ms=4000.0,
-            pace_sample_s=0.5, pace_hold_s=0.25)
+            pace_sample_s=0.5, pace_hold_s=0.25,
+            # No client counter either: these fixtures build no pacer that
+            # reads one, and a pacer that cannot see clients treats them as
+            # reading, which is the shape every non-pacing test wants.
+            nfsd_io="", client_active_mb_s=prewarm_loop.CLIENT_ACTIVE_MB_S)
         base.update(overrides)
         return argparse.Namespace(**base)
 
