@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from prismabuild import box_window
 from prismabuild import pool
 
@@ -65,12 +67,54 @@ def test_framebuffer_window_rejects_missing_malformed_stale_and_non_discrete_sam
         {},
         _sample(sampled_unix=now - 6),
         _sample(total=16 * GIB, free=13 * GIB, used=4 * GIB),
-        {**_sample(), "devices": [{**_sample()["devices"][0], "memory_domain": "shared_system"}]},
-        {**_sample(), "jobs": []},
+        {**_sample(sampled_unix=now), "devices": [{**_sample(sampled_unix=now)["devices"][0], "memory_domain": "shared_system"}]},
+        {**_sample(sampled_unix=now), "jobs": []},
     ]
     for sample in bad:
         assert not window.observe(sample, now=now)
     assert window.group() is None
+
+
+def test_framebuffer_window_does_not_import_device_usage_from_before_the_action():
+    window = box_window.DiscreteFramebufferWindow(KEY, NONCE, SCOPE, start_unix=100.0)
+    sample = _sample(sampled_unix=101.0)
+    sample["devices"][0]["sampled_unix"] = 99.5
+    assert not window.observe(sample, now=101.1)
+    assert window.group() is None
+    sample["devices"][0]["sampled_unix"] = 100.5
+    assert window.observe(sample, now=101.1)
+
+
+@pytest.mark.parametrize("change", [
+    "stale_device", "future_device", "future_snapshot", "bool_bytes",
+    "wrong_nonce", "wrong_scope", "wrong_class", "device_change", "replay_time",
+])
+def test_invalid_later_observations_preserve_the_valid_window(change):
+    window = box_window.DiscreteFramebufferWindow(KEY, NONCE, SCOPE)
+    assert window.observe(_sample(sample_id="valid", sampled_unix=100.0), now=101.0)
+    before = window.group()
+    sample = _sample(sample_id="later", sampled_unix=101.0, used=12 * GIB)
+    device = sample["devices"][0]
+    if change == "stale_device":
+        device["sampled_unix"] = 90.0
+    elif change == "future_device":
+        device["sampled_unix"] = 103.0
+    elif change == "future_snapshot":
+        sample["sampled_unix"] = 103.0
+    elif change == "bool_bytes":
+        device["memory_used_bytes"] = True
+    elif change == "wrong_nonce":
+        sample["jobs"][0]["nonce"] = "d" * 32
+    elif change == "wrong_scope":
+        sample["jobs"][0]["scope_id"] = "another-scope"
+    elif change == "wrong_class":
+        device["telemetry_class"] = "power_and_clocks"
+    elif change == "device_change":
+        device["uuid"] = "GPU-another"
+    elif change == "replay_time":
+        sample["sampled_unix"] = 100.0
+    assert not window.observe(sample, now=102.0)
+    assert window.group() == before
 
 
 def test_framebuffer_window_keeps_whole_device_measurement_when_global_attribution_is_incomplete():

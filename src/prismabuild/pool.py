@@ -3478,7 +3478,7 @@ class PoolQueue:
             # canonical scope identity; a reconstructed scope at finish
             # cannot turn its one final snapshot into an action-time peak.
             scope._framebuffer_window = box_window.DiscreteFramebufferWindow(
-                key, scope.nonce, scope.unit)
+                key, scope.nonce, scope.unit, start_unix=_now())
         control["started_monotonic"] = scope.started
         control["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         try:

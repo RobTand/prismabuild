@@ -5,7 +5,7 @@ the machine around it was loaded, and no in-process tool can. This module reads
 that second view from the recorders the boxes already run, summarises it over
 one action's window, and names the source of every field it reports.
 
-Two recorders, because neither covers the whole box:
+The sources cover different parts of the box:
 
 *   ``pqteld`` is a 2 Hz flight recorder on the GB10 boxes. Its CSV carries GPU
     power and utilisation, the unified memory pool, and the memory and I/O
@@ -14,6 +14,9 @@ Two recorders, because neither covers the whole box:
     ``system.cpu`` and ``system.cpu_some_pressure`` are where the CPU fields
     come from, on every host rather than only the one without a recorder, so a
     field means the same thing wherever it is read.
+*   Memory-only discrete GPU windows retain existing broker capacity samples
+    during the action. They carry framebuffer occupancy, with no power or
+    utilization measurement and no additional per-action driver probe.
 
 So the summary is grouped by what produced it and each group names its own
 source. A field the recorders do not record is absent; a cell they left empty
@@ -89,10 +92,12 @@ class DiscreteFramebufferWindow:
     attributable process allocation (WSL exposes no per-process VRAM bytes).
     """
 
-    def __init__(self, action_key: str, nonce: str, scope_id: str) -> None:
+    def __init__(self, action_key: str, nonce: str, scope_id: str,
+                 *, start_unix: float = 0.0) -> None:
         self.action_key = action_key
         self.nonce = nonce
         self.scope_id = scope_id
+        self.start_unix = start_unix
         self._last_sample_id: str | None = None
         self._device_uuid: str | None = None
         self._device_name: str | None = None
@@ -117,6 +122,7 @@ class DiscreteFramebufferWindow:
         sampled = sample.get("sampled_unix")
         if (not isinstance(sample_id, str) or not sample_id
                 or type(sampled) not in (int, float) or not math.isfinite(sampled)
+                or sampled < self.start_unix
                 or not 0 <= now - sampled <= GPU_SAMPLE_MAX_AGE_S):
             return False
         # The broker's publication identity is an observation identity, not
@@ -146,6 +152,7 @@ class DiscreteFramebufferWindow:
         used = _finite_nonnegative_int(device.get("memory_used_bytes"))
         if (not isinstance(identity, str) or not identity or not isinstance(name, str) or not name
                 or type(device_sampled) not in (int, float) or not math.isfinite(device_sampled)
+                or device_sampled < self.start_unix
                 or not 0 <= now - device_sampled <= GPU_SAMPLE_MAX_AGE_S
                 or total is None or total <= 0 or free is None or used is None
                 or free > total or used > total or free + used != total):

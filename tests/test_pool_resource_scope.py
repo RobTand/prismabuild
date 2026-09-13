@@ -204,9 +204,9 @@ def _memory_only_gpu_sample(item):
     now = pool._now()
     return {
         "schema": "prismabuild.gpu_capacity.v1", "sample_id": "sample-1",
-        "sampled_unix": now - .1, "complete": False, "attributed": False,
+        "sampled_unix": now, "complete": False, "attributed": False,
         "devices": [{"uuid": "GPU-amd", "name": "AMD Radeon RX 9070 XT",
-                     "sampled_unix": now - .1, "telemetry_class": "memory_only",
+                     "sampled_unix": now, "telemetry_class": "memory_only",
                      "memory_domain": "discrete", "memory_total_bytes": 16 * 1024**3,
                      "memory_free_bytes": 12 * 1024**3,
                      "memory_used_bytes": 4 * 1024**3}],
