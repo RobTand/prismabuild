@@ -673,6 +673,13 @@ recorded has since been superseded by a newer submission of the same key, it
 waits out `--wait-s` and exits 75 rather than file an ending for the wrong
 generation; run `pbwait` again and it reads the newer one.
 
+A full 64-hex key begins waiting without a recorded-key scan. A prefix first
+uses one isolated, five-second read of the recorded SLURM rows, pull-queue
+state directories, and withdrawal decisions. A scan that times out, fails, or
+leaves a retained reader exits 74 with the reader identity; it is not reported
+as a missing or unique prefix and `pbwait` does not start another scan. This
+bound covers prefix resolution only, not later queue or CAS reads while waiting.
+
 Under SLURM, `pbwait` does more than watch. The waiting process files the
 terminal record, so a detached submission has nobody to file one. `pbwait`
 resumes the recorded job, waits on it, and files that ending. Under the pull

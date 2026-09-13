@@ -62,6 +62,11 @@ MISNAMED_EXIT = 2
 #: shows, so it is what an operator has to compare against.
 KEY_WIDTH = 12
 
+#: A prefix is only a convenience for an already recorded action. Resolving it
+#: must not leave the caller in a hard shared-filesystem operation before the
+#: actual wait has begun. This is separate from ``--wait-s``.
+PREFIX_RESOLUTION_READ_TIMEOUT_S = 5.0
+
 _COLUMNS = (
     ("key", "key"),
     ("status", "status"),
@@ -92,6 +97,66 @@ def _misnamed(message: str) -> SystemExit:
     return SystemExit(MISNAMED_EXIT)
 
 
+def _prefix_candidates(q, text: str, *, lane_root=None) -> list[str]:
+    """Read recorded prefix namespaces in the isolated bounded reader.
+
+    Missing optional directories are empty namespaces. Other errors escape to
+    the parent, which refuses rather than treating a partial census as a
+    unique or absent prefix.
+    """
+
+    found: set[str] = set()
+    root = slurm_lane.lane_root(lane_root)
+    try:
+        lane_names = sorted(os.listdir(root))
+    except FileNotFoundError:
+        lane_names = []
+    for name in lane_names:
+        if (name == slurm_lane.JOB_STATE_DIRNAME or not name.startswith(text)
+                or len(name) != 64):
+            continue
+        try:
+            raw = (root / name / "latest.json").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            found.add(str(value["action_key"]))
+    for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
+                  pool.WITHDRAWN):
+        try:
+            names = os.listdir(q.dir(state))
+        except FileNotFoundError:
+            continue
+        found.update(
+            entry[: -len(".json")] for entry in names
+            if entry.startswith(text) and entry.endswith(".json")
+        )
+    decisions = q.dir(pool.WITHDRAWN) / "decisions"
+    try:
+        decision_names = os.listdir(decisions)
+    except FileNotFoundError:
+        decision_names = []
+    for name in decision_names:
+        if not name.startswith(text):
+            continue
+        try:
+            entries = os.listdir(decisions / name)
+        except FileNotFoundError:
+            continue
+        if any(entry.endswith(".json") for entry in entries):
+            found.add(name)
+    return sorted(found)
+
+
+def _prefix_unavailable(message: str) -> SystemExit:
+    print(f"pbwait: prefix resolution unavailable: {message}", file=sys.stderr)
+    return SystemExit(pbrun.RECORD_WRITE_FAILED_EXIT)
+
+
 def resolve_key(q, name: str, *, lane_root=None) -> str:
     """Turn what an operator has into the key the records are filed under.
 
@@ -106,27 +171,14 @@ def resolve_key(q, name: str, *, lane_root=None) -> str:
         return text
     if not text:
         raise _misnamed("pbwait: an empty key resolves to nothing")
-    found = {
-        str(record["action_key"])
-        for record in slurm_lane.resolve_recorded(text, root=lane_root)
-    }
-    for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
-                  pool.WITHDRAWN):
-        try:
-            names = os.listdir(q.dir(state))
-        except OSError:
-            continue
-        found.update(
-            entry[: -len(".json")] for entry in names
-            if entry.startswith(text) and entry.endswith(".json")
-        )
-    decisions = q.dir(pool.WITHDRAWN) / "decisions"
     try:
-        for directory in decisions.iterdir():
-            if directory.name.startswith(text) and directory.is_dir() and any(directory.glob("*.json")):
-                found.add(directory.name)
-    except FileNotFoundError:
-        pass
+        found = set(pbrun._bounded_pool_read(
+            "pbwait prefix resolution",
+            lambda: _prefix_candidates(q, text, lane_root=lane_root),
+            budget_s=PREFIX_RESOLUTION_READ_TIMEOUT_S,
+        ))
+    except (pbrun.OutcomeReadUnavailable, OSError) as exc:
+        raise _prefix_unavailable(str(exc)) from None
     if not found:
         raise _misnamed(
             f"pbwait: nothing recorded matches {name!r}; a prefix can only be "

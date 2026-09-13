@@ -228,7 +228,15 @@ exit-1 report, and immutable contract validation retains its existing error.
 The budget covers the child read and IPC wait; process creation, completed JSON
 decoding, cleanup grace, runtime imports, and output can add time. This is only
 the synchronous pool `pbrun` path: it does not bound the whole submission,
-`pbwait`, a kernel syscall, or an actual cross-host hard-NFS stall.
+`pbwait` also resolves a non-full key prefix by scanning recorded SLURM rows,
+the five pull-queue state directories, and withdrawal decisions in one
+isolated child with the same five-second read budget. It returns candidate key
+strings only; the parent retains the exit-2 not-found/ambiguity decision. A
+timed-out, failed, or retained prefix reader exits 74 and names the retained
+PID/start-time identity, without retrying any scanner in the parent. Full
+64-hex keys retain their no-read fast path. This does not bound `pbwait`'s
+queue/CAS construction, later waiting or terminal reads, a kernel syscall, or
+an actual cross-host hard-NFS stall.
 
 The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements

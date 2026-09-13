@@ -11,10 +11,13 @@ them.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -66,6 +69,150 @@ def _file(queue, state: str, record: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record), encoding="utf-8")
     return path
+
+
+def test_prefix_resolution_bounds_a_private_blocked_pool_scan(
+    tmp_path: Path,
+) -> None:
+    """A blocked private pool scan must refuse instead of wedging ``pbwait``."""
+
+    source = Path(__file__).resolve().parents[1]
+    queue_root = tmp_path / "queue"
+    lane_root = tmp_path / "lane"
+    blocker = tmp_path / "blocker"
+    marker = tmp_path / "entered-blocked-read"
+    code = f'''\
+import os
+from pathlib import Path
+import sys
+sys.path[:0] = [{str(source / "src")!r}, {str(source / "tools" / "fleet")!r}]
+from prismabuild import pool
+import pbwait
+queue = pool.PoolQueue(Path({str(queue_root)!r}))
+queue.ensure_layout()
+blocker = Path({str(blocker)!r})
+marker = Path({str(marker)!r})
+os.mkfifo(blocker)
+real_listdir = pbwait.os.listdir
+pbwait.slurm_lane.resolve_recorded = lambda *_args, **_kwargs: []
+pbwait.PREFIX_RESOLUTION_READ_TIMEOUT_S = 0.05
+def blocked(path):
+    if Path(path) == queue.dir(pool.READY):
+        marker.write_text("entered", encoding="utf-8")
+        fd = os.open(blocker, os.O_RDONLY)
+        try:
+            return []
+        finally:
+            os.close(fd)
+    return real_listdir(path)
+pbwait.os.listdir = blocked
+pbwait.resolve_key(queue, "a", lane_root=Path({str(lane_root)!r}))
+'''
+    try:
+        completed = subprocess.run([sys.executable, "-c", code], text=True,
+                                   capture_output=True, timeout=2.0, check=False)
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        pytest.fail("prefix resolution exceeded its reader budget; marker="
+                    + str(marker.exists()) + "; stdout=" + stdout)
+    assert completed.returncode == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert marker.read_text(encoding="utf-8") == "entered"
+    assert "prefix resolution timed out" in completed.stderr
+
+
+def test_full_key_resolution_never_starts_a_prefix_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    key = "a" * 64
+    monkeypatch.setattr(pbrun, "_bounded_pool_read", lambda *_args, **_kwargs:
+                        pytest.fail("a full key must retain its fast path"))
+    assert pbwait.resolve_key(queue, key) == key
+
+
+def test_prefix_resolution_retained_reader_stops_before_another_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    retained: list[int] = []
+
+    def block(*_args, **_kwargs):
+        time.sleep(30)
+
+    def retain(pid, section, _started, abandoned):
+        retained.append(pid)
+        abandoned.append({"section": section, "pid": pid,
+                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
+
+    monkeypatch.setattr(pbwait, "PREFIX_RESOLUTION_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbwait, "_prefix_candidates", block)
+    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
+    try:
+        with pytest.raises(SystemExit) as raised:
+            pbwait.resolve_key(queue, "a")
+        assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT
+        assert len(retained) == 1
+        shown = capsys.readouterr().err
+        assert '"pid": ' + str(retained[0]) in shown
+        assert '"starttime_ticks": null' not in shown
+    finally:
+        for pid in retained:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+
+
+def test_prefix_resolution_keeps_not_found_and_ambiguity_as_exit_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    monkeypatch.setattr(pbwait, "_prefix_candidates", lambda *_args, **_kwargs: [])
+    with pytest.raises(SystemExit) as missing:
+        pbwait.resolve_key(queue, "abc")
+    assert missing.value.code == pbwait.MISNAMED_EXIT
+
+    monkeypatch.setattr(pbwait, "_prefix_candidates", lambda *_args, **_kwargs:
+                        ["a" * 64, "ab" + "b" * 62])
+    with pytest.raises(SystemExit) as ambiguous:
+        pbwait.resolve_key(queue, "a")
+    assert ambiguous.value.code == pbwait.MISNAMED_EXIT
+
+
+def test_prefix_resolution_filesystem_error_is_exit_seventy_four(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(pbwait, "_prefix_candidates", unavailable)
+    with pytest.raises(SystemExit) as raised:
+        pbwait.resolve_key(queue, "a")
+    assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert "prefix resolution unavailable" in capsys.readouterr().err
+
+
+def test_prefix_reader_setup_error_is_exit_seventy_four(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+
+    def cannot_fork(*_args, **_kwargs):
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(pbrun, "_bounded_pool_read", cannot_fork)
+    with pytest.raises(SystemExit) as raised:
+        pbwait.resolve_key(queue, "a")
+    assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert "Too many open files" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------
