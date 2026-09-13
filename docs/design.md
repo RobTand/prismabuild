@@ -546,6 +546,16 @@ lookup paths remain responsible for the exact matched action. A cache miss
 can submit that same key; this is not a receipts-only switch. Runtime
 execution/attestation provenance remains the existing worker/receipt contract.
 
+### Fleet command demand vocabulary
+
+`pbrun` and manifests consumed by `pbcampaign` use the closed demand vocabulary
+`cpu`, `gpu`, and `mem_gb`. Validation occurs before a request is sealed; a
+manifest is validated as a whole before its first row is published. The live
+pool offers and SLURM translation both define only these resource kinds, so an
+unknown name would otherwise create an action no worker could admit. This does
+not narrow the generic `PoolQueue` resource ledger, whose direct producers may
+define resources outside the fleet-command client contract.
+
 ## Test fanout submission
 
 `pbtest` validates every requested path before fanout. A path that is neither
