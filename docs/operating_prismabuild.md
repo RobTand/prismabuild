@@ -572,6 +572,24 @@ By default `pbrun` waits. `--wait-s` bounds how long it waits and defaults to
 86400 seconds. It bounds only your patience: nothing is cancelled when it
 expires, and the job keeps running.
 
+For a synchronous pool submission, each read-only terminal observation runs in
+an isolated child with a five-second budget. The observation includes terminal
+rows, withdrawal/preemption lineage, and archived successor evidence; once an
+ending lands, immutable attempt and log verification gets one separate
+five-second budget before any result is printed. The parent retains the
+original `--wait-s` deadline across observations and does the polling sleep,
+so a repeated preemption follows its exact generation without granting a fresh
+wait. `--wait-s 0` still makes one immediate bounded observation. A timed-out,
+failed, or retained reader exits 74 and names the retained PID/start time when
+available; it neither withdraws work nor claims a failure, success, or timeout
+verdict. A published unreadable ending still reports exit 1, and immutable
+contract validation retains its existing error. The budget covers child read
+and IPC wait; process creation, completed reply decoding, cleanup grace,
+runtime imports, and output can add time. These are read-operation bounds, not
+a bound on the entire submission or syscall completion. They do not change
+`pbwait`, whose SLURM path can resume and file a job ending, and they do not
+qualify a real cross-host hard-NFS stall.
+
 To submit without waiting, use `--detach`:
 
     tools/fleet/pbrun.py --detach --gpu -- ./stage.sh --shard 3

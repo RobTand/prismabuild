@@ -111,6 +111,12 @@ RECORDED_OFFER_MAX_AGE_S = float("inf")
 #: This is intentionally not a user flag: it is a control-plane safety bound,
 #: not an execution policy the action can sensibly choose.
 SUBMISSION_OFFER_READ_TIMEOUT_S = 5.0
+#: A synchronous pool wait may spend this much on one read-only observation.
+#: This is deliberately separate from ``--wait-s``: the latter is the caller's
+#: patience for an outcome to land, while a hard shared-filesystem read needs a
+#: finite process boundary even for a non-blocking probe or for verification of
+#: an outcome that has already landed.
+OUTCOME_READ_TIMEOUT_S = 5.0
 CHECKOUT_SNAPSHOT_MAX_BYTES = 512 * 1024 * 1024
 CONTENT_TRANSFORM_ATTRIBUTES = frozenset(
     {"crlf", "eol", "filter", "ident", "text", "working-tree-encoding"}
@@ -2317,6 +2323,94 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
         return min(successors) if successors else None
 
 
+def outcome_poll(
+    q, key: str, generation: float | None, *, report_unreadable: bool = False,
+):
+    """Read one terminal-outcome snapshot and select its next state.
+
+    This is the canonical selection step shared by the historical synchronous
+    waiter and its bounded pool caller.  It returns ``(landed, generation)``:
+    ``landed`` is ``(path, record)`` when this snapshot reached a terminal
+    verdict, otherwise ``None``; ``generation`` is either the input generation
+    or the exact successor a preemption published.  Keeping that successor in
+    the return value is essential because a bounded caller observes each poll
+    in a new child process.
+
+    It never changes an action's state.  The preemption lookup may take the
+    queue's existing transition lock while it reads the handoff, but a missing
+    successor is still a withdrawal verdict and a failed or unavailable reader
+    never cancels, republishes, or invents a terminal outcome.
+    """
+
+    def _stamp(entry) -> float:
+        value = entry[1].get("published_unix")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return float("-inf")
+
+    watched = [q.item_path(state, key)
+               for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
+    found = []
+    broken = []
+    for path in watched:
+        try:
+            record = terminal_record(
+                path, generation, report_unreadable=report_unreadable)
+        except UnreadableTerminal as exc:
+            broken.append(exc)
+            continue
+        if record is not None:
+            found.append((path, record))
+    # The immutable cancellation is already an ending if its writer died
+    # before updating withdrawn/<key>.json, or publication retired that
+    # visible marker while an earlier generation's waiter was still here.
+    decisions = (
+        q.withdrawal_decisions(key)
+        if generation is None
+        else q.withdrawal_decisions(key, generation=generation)
+    )
+    for path, record in decisions:
+        if generation is None or float(record["published_unix"]) == float(generation):
+            if not any(existing.get("status") == "withdrawn"
+                       and existing.get("published_unix") == record.get("published_unix")
+                       for _, existing in found):
+                found.append((path, record))
+    if generation is not None and not any(
+            record.get("published_unix") == generation for _, record in found):
+        # A later same-status generation may have replaced the only mutable
+        # terminal row. The preemption successor's immutable attempt still
+        # carries its generation link, complete history and original verdict.
+        found.extend(q.archived_preemption_outcomes(key, generation=generation))
+    if generation is not None and found:
+        # A legacy ending with no generation remains the fallback when it is
+        # the only account of this run.  It must not outrank an exact ending
+        # that is also present: otherwise an old unstamped DONE can hide this
+        # generation's withdrawal and report cancelled work as successful.
+        exact = [
+            entry for entry in found
+            if isinstance(entry[1].get("published_unix"), (int, float))
+            and not isinstance(entry[1].get("published_unix"), bool)
+            and float(entry[1]["published_unix"]) == float(generation)
+        ]
+        landed = (exact or found)[0]
+        requeued = _preemption_requeue(q, key, landed[1], generation)
+        if requeued is None:
+            return landed, generation
+        # Admission stopped this generation to give a foreground item the box,
+        # and published another one to run it again (#364).  Reporting the
+        # cancellation would tell the caller its work was decided against,
+        # when the queue is already running it: follow the generation the
+        # requeue published instead.
+        return None, requeued
+    if len(found) == 1:
+        return found[0], generation
+    if found:
+        return max(found, key=_stamp), generation
+    if broken:
+        raise broken[0]
+    return None, generation
+
+
 def landed_outcome(
     q, key: str, *, wait_s: float, generation: float | None = None,
     report_unreadable: bool = False,
@@ -2346,81 +2440,146 @@ def landed_outcome(
     that failed.
     """
 
-    def _stamp(entry) -> float:
-        value = entry[1].get("published_unix")
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return float(value)
-        return float("-inf")
-
-    watched = [q.item_path(state, key)
-               for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
     deadline = time.monotonic() + wait_s
     while True:
-        found = []
-        broken = []
-        for path in watched:
-            try:
-                record = terminal_record(
-                    path, generation, report_unreadable=report_unreadable)
-            except UnreadableTerminal as exc:
-                broken.append(exc)
-                continue
-            if record is not None:
-                found.append((path, record))
-        # The immutable cancellation is already an ending if its writer died
-        # before updating withdrawn/<key>.json, or publication retired that
-        # visible marker while an earlier generation's waiter was still here.
-        decisions = (
-            q.withdrawal_decisions(key)
-            if generation is None
-            else q.withdrawal_decisions(key, generation=generation)
-        )
-        for path, record in decisions:
-            if generation is None or float(record["published_unix"]) == float(generation):
-                if not any(existing.get("status") == "withdrawn"
-                           and existing.get("published_unix") == record.get("published_unix")
-                           for _, existing in found):
-                    found.append((path, record))
-        if generation is not None and not any(
-                record.get("published_unix") == generation for _, record in found):
-            # A later same-status generation may have replaced the only mutable
-            # terminal row. The preemption successor's immutable attempt still
-            # carries its generation link, complete history and original verdict.
-            found.extend(q.archived_preemption_outcomes(key, generation=generation))
-        if generation is not None and found:
-            # A legacy ending with no generation remains the fallback when it
-            # is the only account of this run.  It must not outrank an exact
-            # ending that is also present: otherwise an old unstamped DONE can
-            # hide this generation's withdrawal and report cancelled work as
-            # successful.
-            exact = [
-                entry for entry in found
-                if isinstance(entry[1].get("published_unix"), (int, float))
-                and not isinstance(entry[1].get("published_unix"), bool)
-                and float(entry[1]["published_unix"]) == float(generation)
-            ]
-            landed = (exact or found)[0]
-            requeued = _preemption_requeue(q, key, landed[1], generation)
-            if requeued is None:
-                return landed
-            # Admission stopped this generation to give a foreground item the
-            # box, and published another one to run it again (#364).  Reporting
-            # the cancellation would tell the caller its work was decided
-            # against, when the queue is already running it: follow the
-            # generation the requeue published instead.
-            generation = requeued
+        previous_generation = generation
+        landed, generation = outcome_poll(
+            q, key, generation, report_unreadable=report_unreadable)
+        if landed is not None:
+            return landed
+        # Preserve the original immediate handoff chain: a preemption that
+        # already named its successor is not an idle poll and does not spend a
+        # sleep interval before following that exact lineage.
+        if generation != previous_generation:
             continue
-        if len(found) == 1:
-            return found[0]
-        if found:
-            return max(found, key=_stamp)
-        if broken:
-            raise broken[0]
         # ``>=``, so a non-blocking probe (``wait_s=0``) does not spend a poll
         # interval finding out that it had none to spend.
         if time.monotonic() >= deadline:
             return None
         time.sleep(POLL_S)
+
+
+class OutcomeReadUnavailable(RuntimeError):
+    """A bounded pool outcome read did not return a trustworthy result."""
+
+
+def _bounded_pool_read(section: str, read, *, budget_s: float):
+    """Return one pool reader's value or raise without continuing a wait.
+
+    A reader retained after its pipe reached EOF is still unsafe to ignore: its
+    exit and resources are no longer known, and it is the exact reader a later
+    poll would otherwise race with. Refuse before launching another reader,
+    naming its PID/starttime pair in the error so an operator can identify it.
+    """
+
+    abandoned: list[dict] = []
+    result = pbstatus.bounded(
+        section, read, deadline=pbstatus.Deadline(budget_s), abandoned=abandoned)
+    retained = ("; retained reader=" + json.dumps(abandoned, sort_keys=True)
+                if abandoned else "")
+    if abandoned:
+        raise OutcomeReadUnavailable(
+            f"{section} reader could not be reaped{retained}")
+    if result.get("status") == "ok":
+        return result.get("value")
+    if result.get("status") == "timed_out":
+        raise OutcomeReadUnavailable(
+            f"{section} timed out after {result.get('elapsed_s', budget_s)}s")
+    kind = str(result.get("type") or "RuntimeError")
+    message = str(result.get("error") or "reader failed")
+    # These two historical errors remain meaningful to callers of
+    # ``await_outcome`` even though their originating read now lived in a child.
+    if kind == "PoolContractError":
+        raise pool.PoolContractError(message)
+    raise OutcomeReadUnavailable(f"{section} failed: {kind}: {message}")
+
+
+def bounded_outcome_observation(
+    q, key: str, generation: float | None, *, budget_s: float,
+):
+    """Read and select one pool outcome snapshot in an abandonable child.
+
+    The child returns only JSON values.  In particular, paths become strings
+    and the generation selected after a preemption is returned to the parent;
+    the next poll must not rediscover a different generation from mutable
+    queue rows.
+    """
+
+    value = _bounded_pool_read(
+        "pool outcome observation",
+        lambda: _outcome_observation_value(q, key, generation),
+        budget_s=budget_s,
+    )
+    if not isinstance(value, dict):
+        raise OutcomeReadUnavailable("pool outcome observation returned an invalid payload")
+    unreadable = value.get("unreadable")
+    if unreadable is not None:
+        if (not isinstance(unreadable, dict)
+                or not isinstance(unreadable.get("path"), str)
+                or not isinstance(unreadable.get("reason"), str)):
+            raise OutcomeReadUnavailable(
+                "pool outcome observation returned an invalid unreadable ending")
+        raise UnreadableTerminal(Path(unreadable["path"]), unreadable["reason"])
+    next_generation = value.get("generation")
+    if (next_generation is not None
+            and (not isinstance(next_generation, (int, float))
+                 or isinstance(next_generation, bool))):
+        raise OutcomeReadUnavailable("pool outcome observation returned an invalid generation")
+    landed = value.get("landed")
+    if landed is None:
+        return None, float(next_generation) if next_generation is not None else None
+    if (not isinstance(landed, dict) or not isinstance(landed.get("path"), str)
+            or not isinstance(landed.get("record"), dict)):
+        raise OutcomeReadUnavailable("pool outcome observation returned an invalid ending")
+    return (Path(landed["path"]), landed["record"]), (
+        float(next_generation) if next_generation is not None else None)
+
+
+def _outcome_observation_value(q, key: str, generation: float | None) -> dict:
+    try:
+        landed, next_generation = outcome_poll(
+            q, key, generation, report_unreadable=True)
+    except UnreadableTerminal as exc:
+        return {"unreadable": {"path": str(exc.path), "reason": exc.reason}}
+    return {
+        "generation": next_generation,
+        "landed": None if landed is None else {
+            "path": str(landed[0]), "record": landed[1],
+        },
+    }
+
+
+def bounded_outcome_render(q, outcome_path: Path, outcome: dict, *, budget_s: float) -> dict:
+    """Verify and expand one landed ending in a separate bounded read.
+
+    Immutable attempt records and their logs are part of the outcome verdict.
+    This read occurs after the caller has received an ending, so it gets its
+    own finite verification budget rather than borrowing or resetting the
+    deadline that governed how long the caller waited for an ending to land.
+    """
+
+    value = _bounded_pool_read(
+        "pool outcome verification",
+        lambda: _outcome_render_value(q, str(outcome_path), outcome),
+        budget_s=budget_s,
+    )
+    if not isinstance(value, dict):
+        raise OutcomeReadUnavailable("pool outcome verification returned an invalid payload")
+    if not isinstance(value.get("summary"), dict) or not isinstance(value.get("attempts"), list):
+        raise OutcomeReadUnavailable("pool outcome verification returned an invalid summary")
+    return value
+
+
+def _outcome_render_value(q, outcome_path: str, outcome: dict) -> dict:
+    summary = outcome_summary(q, Path(outcome_path), outcome)
+    attempts = q.attempt_outcomes(outcome) if summary["adopted"] is not None else []
+    missing = outcome.get("attempt_history_missing_before", 0)
+    return {
+        "summary": summary,
+        "attempts": attempts,
+        "missing": missing,
+        "total_attempts": outcome.get("attempts", len(attempts)),
+    }
 
 
 def outcome_summary(q, outcome_path, outcome) -> dict:
@@ -2600,32 +2759,78 @@ def live_submission(q, key: str, *, lane_root=None, **lane_commands):
 def await_outcome(
     q, key: str, *, wait_s: float, generation: float | None = None
 ) -> int:
-    """Block until this action reaches a terminal directory, then report it.
+    """Block until this pool action reaches a terminal directory, then report it.
 
-    Split out of ``main`` so the outcome half can be tested without a
-    submission: the bug this exists to prevent lived entirely in which
-    directories the loop watched, which is exactly the part a live-queue
-    test would have been least likely to reach.
+    The parent owns ``wait_s`` and sleeps between polls. Each filesystem
+    observation and the separate immutable-summary verification run in a
+    finite, FD-isolated child; an unavailable reader is an I/O failure (74),
+    never a cancelled action, a failure verdict, or an exhausted caller wait
+    (75). ``wait_s=0`` retains its useful historical meaning: one immediate
+    observation with a finite read budget. A preemption handoff after that
+    probe cannot start another observation once caller patience is exhausted.
     """
 
+    deadline = time.monotonic() + wait_s
+    first_observation = True
     try:
-        landed = landed_outcome(
-            q, key, wait_s=wait_s, generation=generation,
-            report_unreadable=True)
+        while True:
+            if first_observation and wait_s <= 0:
+                budget_s = OUTCOME_READ_TIMEOUT_S
+            else:
+                remaining = deadline - time.monotonic()
+                if not first_observation and remaining <= 0:
+                    landed = None
+                    break
+                # Preserve the first immediate observation even if scheduling
+                # consumed a very short wait before it entered this loop.
+                budget_s = (min(OUTCOME_READ_TIMEOUT_S, remaining)
+                            if remaining > 0 else OUTCOME_READ_TIMEOUT_S)
+            previous_generation = generation
+            landed, generation = bounded_outcome_observation(
+                q, key, generation, budget_s=budget_s)
+            first_observation = False
+            if landed is not None:
+                break
+            if generation != previous_generation:
+                # The just-observed preemption named an exact successor.
+                # Preserve the old immediate lineage handoff without allowing
+                # a caller whose deadline has expired to start another reader.
+                if wait_s > 0 and time.monotonic() < deadline:
+                    continue
+                landed = None
+                break
+            if wait_s <= 0 or time.monotonic() >= deadline:
+                landed = None
+                break
+            time.sleep(min(POLL_S, max(0.0, deadline - time.monotonic())))
     except UnreadableTerminal as exc:
         print(f"pbrun: unreadable ending for {key[:12]}: {exc}", file=sys.stderr)
         return 1
+    except OutcomeReadUnavailable as exc:
+        print(f"pbrun: unavailable pool outcome for {key[:12]}: {exc}",
+              file=sys.stderr)
+        return RECORD_WRITE_FAILED_EXIT
     if landed is None:
         print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
         return GAVE_UP_EXIT
     outcome_path, outcome = landed
 
-    summary = outcome_summary(q, outcome_path, outcome)
+    try:
+        rendered = bounded_outcome_render(
+            q, outcome_path, outcome, budget_s=OUTCOME_READ_TIMEOUT_S)
+    except UnreadableTerminal as exc:
+        print(f"pbrun: unreadable ending for {key[:12]}: {exc}", file=sys.stderr)
+        return 1
+    except OutcomeReadUnavailable as exc:
+        print(f"pbrun: unavailable pool outcome for {key[:12]}: {exc}",
+              file=sys.stderr)
+        return RECORD_WRITE_FAILED_EXIT
+    summary = rendered["summary"]
     detail = summary["detail"]
     status = summary["status"]
     if summary["adopted"] is not None:
-        attempts = q.attempt_outcomes(outcome)
-        missing = outcome.get("attempt_history_missing_before", 0)
+        attempts = rendered["attempts"]
+        missing = rendered["missing"]
         if isinstance(missing, int) and not isinstance(missing, bool) and missing:
             noun = "attempt" if missing == 1 else "attempts"
             print(
@@ -2633,7 +2838,7 @@ def await_outcome(
                 "predates immutable history",
                 file=sys.stderr,
             )
-        total_attempts = int(outcome.get("attempts", len(attempts)))
+        total_attempts = int(rendered["total_attempts"])
         for attempt in attempts:
             print(
                 f"pbrun: attempt {attempt['attempt']}/{total_attempts} "
@@ -2647,8 +2852,8 @@ def await_outcome(
         sys.stdout.write(str(detail.get("stdout") or ""))
         sys.stderr.write(str(detail.get("stderr") or ""))
     if status == "withdrawn":
-        who = outcome.get("withdrawn_by") or "an operator"
-        why = str(outcome.get("reason") or "").strip()
+        who = summary.get("withdrawn_by") or "an operator"
+        why = str(summary.get("reason") or "").strip()
         print(f"pbrun: withdrawn by {who}"
               f"{' -- ' + why if why else ''}", file=sys.stderr)
         return WITHDRAWN_EXIT
@@ -2667,7 +2872,7 @@ def await_outcome(
     if error:
         print(f"pbrun: {error}", file=sys.stderr)
     print(f"pbrun: outcome filed under {outcome_path.parent.name} after "
-          f"{outcome.get('attempts', '?')} attempt(s)", file=sys.stderr)
+          f"{rendered.get('total_attempts', '?')} attempt(s)", file=sys.stderr)
     return 1
 
 
