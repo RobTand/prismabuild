@@ -2674,6 +2674,15 @@ non-storage mode, never a storage fallback.  Sequential rows retain the
 shared pacing verdict and stat baseline, while their receipts reset only the
 row's accounting counters.
 
+Data-manifest inputs retain the v1 JSON contract and may be carried as one gzip
+member. Stored bytes remain capped at 64 MiB; gzip decoding is bounded at
+512 MiB before parsing, with at most 1,000,000 entries. The CAS input binds the
+wire bytes and compressed summaries declare `content_encoding: gzip`; plain
+summaries are unchanged. Header-based decoding works on extensionless CAS
+paths and refuses incomplete, corrupt, concatenated or trailing gzip data.
+Parsed objects require memory beyond the decoded-byte ceiling. See the input
+guide for producer and deployed-storage-role adoption requirements.
+
 Large manifests may declare entry-aligned cumulative phase boundaries.  The
 role holds only the resident window ahead of an action's accepted read
 frontier, advances it on the matching claim lease's `ProgressWatch`

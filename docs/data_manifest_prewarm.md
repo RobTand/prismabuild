@@ -50,6 +50,30 @@ existing CAS ingestion carries it.  The blob it addresses is a JSON manifest:
 }
 ```
 
+For a large read set, the blob may instead be one standard gzip member
+containing this same UTF-8 JSON document (#543). The loader detects the gzip
+header, including when the CAS pathname has no extension. Submit the compressed
+path through the same `--data-manifest` flag or campaign `data_manifest` field.
+The sealed `params.data_manifest.content_encoding` is `"gzip"`; plain inputs
+keep their existing summary and action identity. The input digest and byte
+length address the **compressed file**, so changing its encoding changes the
+action key even when the expanded read list agrees.
+
+The stored-file ceiling remains 64 MiB. A gzip member may expand to at most
+512 MiB, and the existing 1,000,000-entry ceiling still applies. The loader
+bounds both reads before parsing JSON and rejects a corrupt CRC, incomplete
+stream, concatenated members or trailing bytes. Compression does not relax
+path validation, duplicate checks, totals or consumption order. These are byte
+bounds, not a process-memory ceiling: decoded JSON objects and validation
+indexes require additional memory. Budget producer/validation work accordingly.
+
+A producer can use `gzip.compress(json_bytes, mtime=0)` or `gzip -n -c` to
+write a separate compressed manifest; retain those exact bytes for resealing.
+Do not replace a manifest inside an existing sealed request. The storage loop
+must load a published generation supporting gzip before it can warm these
+inputs; an older loop refuses the compressed hint. Submission still carries
+the ordinary CAS input and requires no worker-side decompression for execution.
+
 `validate_data_manifest` refuses anything that is not exact identity: a path
 outside `mount_prefix`, a path that is not already normalized, a relative path,
 a repeated `(path, offset)`, a zero-length entry, and totals that disagree with

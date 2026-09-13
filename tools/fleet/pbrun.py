@@ -4197,7 +4197,8 @@ def main() -> int:
                     help="pin the materialized checkout to this box")
     ap.add_argument(
         "--data-manifest",
-        help="path to a data manifest naming the shared-mount bytes this "
+        help="path to a plain JSON or gzip data manifest (64 MiB stored; "
+             "gzip expands to at most 512 MiB) naming the shared-mount bytes this "
              "action will read; attached as a second content-addressed input "
              "so a storage-role loop can make them resident before the action "
              "is claimed. It is part of the action key: the same command with "
@@ -4669,7 +4670,7 @@ def main() -> int:
         # rather than becoming an immutable CAS blob that every later reader
         # has to refuse. The bytes are ingested unchanged so the input's
         # digest is the digest of the file the operator named.
-        manifest = pb.load_data_manifest(args.data_manifest)
+        manifest, manifest_encoding = pb.read_data_manifest(args.data_manifest)
         manifest_input, _ = cas.ingest_input(
             args.data_manifest,
             input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
@@ -4681,6 +4682,10 @@ def main() -> int:
             "entry_count": manifest["entry_count"],
             "total_bytes": manifest["total_bytes"],
         }
+        # Preserve ordinary v1 action identity; only compressed inputs need
+        # the encoding declaration. The CAS digest still covers wire bytes.
+        if manifest_encoding != "identity":
+            data_manifest_summary["content_encoding"] = manifest_encoding
     else:
         data_manifest_summary = None
     execution_scope, toolchain = host_class_scope(

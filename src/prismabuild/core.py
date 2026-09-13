@@ -145,11 +145,10 @@ PBRUN_CHECKOUT_SNAPSHOT_REF_NAME = "prismabuild-snapshot"
 #: submission produces a different action.
 PBCAMPAIGN_DATA_MANIFEST_INPUT_ID = "pbcampaign.data-manifest"
 DATA_MANIFEST_SCHEMA_V1 = "prismaquant.prismabuild.data_manifest.v1"
-#: A manifest is a residency hint read by a helper loop, not a payload.  The
-#: ceiling is four orders of magnitude above the 212 KB the GLM census emits
-#: and still small enough that a malformed submission cannot make a reader
-#: allocate its way out of memory.
+#: Stored bytes retain the original ceiling. Gzip permits larger read lists
+#: without an unbounded decompression; parsed JSON objects cost extra memory.
 DATA_MANIFEST_MAX_BYTES = 64 * 1024 * 1024
+DATA_MANIFEST_MAX_DECODED_BYTES = 512 * 1024 * 1024
 DATA_MANIFEST_MAX_ENTRIES = 1_000_000
 LOCAL_RESULT_CLAIM_SCHEMA_V1 = "prismaquant.prismabuild.local_result_claim.v1"
 INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1 = (
@@ -2302,23 +2301,53 @@ def validate_data_manifest(value: object) -> dict[str, object]:
     }
 
 
-def load_data_manifest(path: str | Path) -> dict[str, object]:
-    """Read and validate a data manifest file, refusing an oversized one."""
+def read_data_manifest(path: str | Path) -> tuple[dict[str, object], str]:
+    """Validate plain JSON or one gzip member and return its wire encoding.
+
+    Detection uses the gzip header, never a suffix: a CAS blob has no suffix.
+    Stored bytes and decoded bytes are bounded independently, before JSON
+    parsing. Trailing bytes, concatenated members and incomplete streams refuse.
+    """
 
     source = Path(path)
     try:
-        size = source.stat().st_size
+        # Bound the read itself as well as the size check: a file may grow
+        # after stat. O_NONBLOCK prevents a FIFO from blocking the submitter.
+        fd = os.open(source, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                _fail("data manifest must be a regular file")
+            if info.st_size > DATA_MANIFEST_MAX_BYTES:
+                _fail(f"data manifest exceeds {DATA_MANIFEST_MAX_BYTES} bytes: {info.st_size}")
+            raw = handle.read(DATA_MANIFEST_MAX_BYTES + 1)
     except OSError as exc:
         raise ActionContractError(f"unreadable data manifest: {exc}") from exc
-    if size > DATA_MANIFEST_MAX_BYTES:
-        raise ActionContractError(
-            f"data manifest exceeds {DATA_MANIFEST_MAX_BYTES} bytes: {size}"
-        )
+    if len(raw) > DATA_MANIFEST_MAX_BYTES:
+        _fail(f"data manifest exceeds {DATA_MANIFEST_MAX_BYTES} bytes")
+    encoding = "gzip" if raw.startswith(b"\x1f\x8b") else "identity"
+    if encoding == "gzip":
+        try:
+            decoder = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+            decoded = decoder.decompress(raw, DATA_MANIFEST_MAX_DECODED_BYTES + 1)
+        except zlib.error as exc:
+            raise ActionContractError(f"invalid gzip data manifest: {exc}") from exc
+        if len(decoded) > DATA_MANIFEST_MAX_DECODED_BYTES:
+            _fail(f"decoded data manifest exceeds {DATA_MANIFEST_MAX_DECODED_BYTES} bytes")
+        if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+            _fail("gzip data manifest must contain exactly one complete member")
+        raw = decoded
     try:
-        loaded = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        loaded = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
         raise ActionContractError(f"unreadable data manifest: {exc}") from exc
-    return validate_data_manifest(loaded)
+    return validate_data_manifest(loaded), encoding
+
+
+def load_data_manifest(path: str | Path) -> dict[str, object]:
+    """Read a bounded plain or gzip manifest, preserving the v1 return shape."""
+
+    return read_data_manifest(path)[0]
 
 
 def _normalize_task(value: object) -> dict[str, object]:
@@ -7625,6 +7654,7 @@ __all__ = [
     "identify_executable",
     "is_pbrun_generated_path",
     "load_data_manifest",
+    "read_data_manifest",
     "main",
     "preflight_action",
     "profile_backend_for",
