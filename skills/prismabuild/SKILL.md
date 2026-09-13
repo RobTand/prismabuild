@@ -61,6 +61,16 @@ universal setting. Use `pbtest.py` for suite fanout and `pbcampaign.py` for a
 manifest of independent actions. Prefer portable placement; add a host tag only
 for a real dependency or a controlled measurement.
 
+When a test checkout has `tools/resolve_<module>_dev_pin.py`, `pbtest` runs
+each resolver inside the admitted shard and checks the target interpreter's
+installed dependency against its full Git commit before pytest starts. Missing
+or mismatched Git provenance, editable/local-directory installs, changed RECORD
+bytes and import shadows refuse; package/contract version equality is not a
+commit check. No shared venv is modified. Use a separately provisioned pinned
+environment, or wait until every user is idle before re-provisioning a shared
+one. See the operating guide's project test environment section for the
+installation/provenance contract. Generic `pbrun` commands remain caller-owned.
+
 For an I/O-bound campaign, `pbcampaign --transport pool --max-inflight N`
 keeps one waiting controller's outstanding row count bounded without inflating
 memory demand. It includes ready work and claim cleanup, refills after any

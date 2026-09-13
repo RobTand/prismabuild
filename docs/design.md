@@ -607,6 +607,26 @@ Surface report names expand `{shard}` or receive `.shard-N` before the final
 suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
 identity through `pbrun`; no second dispatcher or placement policy is added.
 
+A checkout containing `tools/resolve_<module>_dev_pin.py` opts into reviewed
+Python dependency verification for every `pbtest` shard. The resolver runs
+under the target interpreter inside the admitted, sealed checkout and must
+print one full lowercase Git commit. The module must have one owning installed
+distribution, non-editable PEP 610 Git provenance at that commit, and intact
+hashed RECORD files. Python's selected module must be recorded by that
+distribution; unrecorded package files refuse. Missing/ambiguous provenance,
+local-directory installs without Git metadata, resolver errors, drift and
+import shadows refuse before pytest. Nothing installs into a shared venv.
+
+The standard-library guard is embedded in the shard command and therefore
+enters action identity; old unguarded receipts cannot satisfy guarded requests.
+Verified module, distribution, expected/installed commits and import origin
+travel in the action's stdout payload. Existing requests remain immutable and
+projects with no resolvers retain their previous commands. This trusts managed
+installation metadata; it is not a package signature or a sandbox against
+tests/resolvers changing imports. Environments must remain immutable while
+actions use them, including between verification and pytest execution. Generic
+`pbrun` commands do not opt into this `pbtest` convention automatically.
+
 ## Problem
 
 Campaign work (screens, per-point KL fan-outs, per-tensor encodes, A/Bs)

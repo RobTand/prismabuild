@@ -1304,6 +1304,33 @@ the current GB10 workers, and `--anywhere` asserts that external dependencies
 are available throughout the eligible population. PB does not infer a project's
 Python imports from the checkout or install its packages at submission.
 
+`pbtest` checks reviewed development pins when the checkout contains
+`tools/resolve_<module>_dev_pin.py` (for example,
+`tools/resolve_tessera_dev_pin.py`). Each resolver must print one full lowercase
+Git commit. It runs on the admitted worker using the named test interpreter,
+before pytest imports or collects tests. The module name is mapped through
+installed package metadata: `tessera` is owned by `tessera-quant`.
+
+The installed distribution must record that exact Git commit in pip's
+`direct_url.json`, must not be editable, and must pass its RECORD hashes.
+Missing metadata, local-directory installs without a recorded commit, changed
+files, ambiguous ownership and a different copy on Python's import path refuse
+the shard. The diagnostic names the resolver and expected/installed commits;
+an unprovable installed commit is shown as `<unknown>`. A matching package
+prints `pbtest dependency pin` JSON into the action's retained stdout.
+Contract/package version equality alone does not prove the reviewed revision.
+
+Provision an environment with an immutable Git requirement, for example
+`python -m pip install --no-deps 'git+https://github.com/RobTand/tessera.git@<full-reviewed-commit>'`,
+then qualify it through PB. A local-directory `pip install` does not preserve
+the source Git commit and will be refused even if its directory name looks like
+one. Prefer a separate environment for a new pin. Re-provisioning a shared
+venv requires all users of that environment to be idle; never change it under
+a running shard. The guard performs no installation and does not make mutable
+environments safe. It verifies managed provenance, not a signature against
+tampered installation metadata. Generic `pbrun` commands retain their explicit
+dependency responsibilities; the automatic convention belongs to `pbtest`.
+
 The project environment has CPU PyTorch and the common PrismaQuant runtime and
 test dependencies, including `compressed_tensors`, which its autouse fixture
 imports even for otherwise dependency-light tests. Tests requiring Tessera's
