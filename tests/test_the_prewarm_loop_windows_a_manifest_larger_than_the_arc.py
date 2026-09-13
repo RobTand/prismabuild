@@ -17,9 +17,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prewarm_fixture import Fleet, phase_table  # noqa: E402
+from prewarm_fixture import Fleet, phase_table, prewarm_loop  # noqa: E402
 
 #: Four layers of 4096 bytes against a cache that holds two of them: the same
 #: shape as 45 layers of ~118 GB against 206 GB of budget, in bytes a test can
@@ -214,3 +215,37 @@ def test_a_failed_prefix_never_becomes_a_contiguous_warm_frontier(
     record = fleet.queue.prewarm(key)
     assert record is not None
     assert record["warmed_bytes"] == 0
+
+
+def test_a_positive_arc_contraction_is_a_total_reader_ceiling(
+        tmp_path: Path) -> None:
+    """A later 80-byte cap does not mean 80 more bytes after 64 read."""
+
+    entries = []
+    for index in range(100):
+        path = tmp_path / f"entry-{index}"
+        path.write_bytes(b"x")
+        entries.append({"path": str(path), "offset": 0, "bytes": 1})
+    result = prewarm_loop.Reader(
+        1, prewarm_loop.MountMap([f"{tmp_path}={tmp_path}"]), block=1,
+    ).read(entries, budget_bytes=100, stop=threading.Event(),
+           recheck=lambda: 80)
+
+    assert result["bytes_warmed"] == 80
+
+
+def test_concurrent_readers_never_spend_past_a_contracted_ceiling(
+        tmp_path: Path) -> None:
+    """Already-admitted blocks are accounted before a smaller cap is applied."""
+
+    entries = []
+    for index in range(100):
+        path = tmp_path / f"parallel-entry-{index}"
+        path.write_bytes(b"x")
+        entries.append({"path": str(path), "offset": 0, "bytes": 1})
+    result = prewarm_loop.Reader(
+        4, prewarm_loop.MountMap([f"{tmp_path}={tmp_path}"]), block=1,
+    ).read(entries, budget_bytes=100, stop=threading.Event(),
+           recheck=lambda: 80)
+
+    assert result["bytes_warmed"] <= 80

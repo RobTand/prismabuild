@@ -1098,8 +1098,14 @@ class Reader:
                         state["entries"] += 1
                     if recheck is not None and state["entries"] % 64 == 0:
                         room = recheck()
-                        state["budget"] = min(
-                            state["budget"], state["bytes"] + max(0, room))
+                        # ``recheck`` returns this row's total ceiling, not
+                        # additional credit after bytes already read.  Keep
+                        # enough budget for reads already admitted by sibling
+                        # threads; those I/Os cannot be recalled, but no new
+                        # credit is issued beyond that cooperative boundary.
+                        ceiling = min(state["budget"], max(0, int(room)))
+                        state["budget"] = max(
+                            state["bytes"] + state["reserved"], ceiling)
 
         started = time.time()
         threads = [threading.Thread(target=worker, daemon=True)
@@ -1603,12 +1609,14 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         "skipped": [],
     }
 
+    cycle_spent = 0
+
     def warm(*, key: str, manifest: dict, digest: str, entries: list,
              start_bytes: int, target: int, phase: str, phased: bool,
              trigger: str) -> dict:
         """Read one window of one manifest and file what is now resident."""
 
-        nonlocal budget, budget_before_progress
+        nonlocal budget, budget_before_progress, cycle_spent
         total = int(manifest["total_bytes"])
         want = max(0, target - start_bytes)
         started = time.time()
@@ -1625,9 +1633,9 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                 # Re-read rather than trust the cycle's opening number: the
                 # ceiling can be lowered under a running warm, and a row that
                 # started inside its budget must stop when it leaves it.
-                recheck=lambda: arc_headroom(
+                recheck=lambda: max(0, arc_headroom(
                     args.arc_reserve_fraction,
-                    args.arcstats)["capacity_budget"] - protected,
+                    args.arcstats)["capacity_budget"] - protected - cycle_spent),
             )
         after = arc_headroom(args.arc_reserve_fraction, args.arcstats)
         finished = time.time()
@@ -1678,6 +1686,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # and the plan claims to warm more than the ARC can hold.  Charge what
         # the read would have cost.
         spent = want if args.dry_run else int(result["bytes_warmed"])
+        cycle_spent += spent
         budget = max(0, budget - spent)
         budget_before_progress = max(0, budget_before_progress - spent)
         return record
