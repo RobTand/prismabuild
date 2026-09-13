@@ -363,6 +363,18 @@ def main() -> int:
         sys.stderr.write(f"no test files under {args.paths} in {checkout}\n")
         return 2
     buckets = shard(files, args.shards)
+    # Resolve reviewed dependencies only inside each admitted worker action.
+    # Embed the guard bytes in argv so neither a target-local helper path nor
+    # an older receipt can silently omit the check. Unpinned projects retain
+    # their existing commands and identities.
+    python_entry = [args.python, "-m", "pytest"]
+    if any((checkout / "tools").glob("resolve_*_dev_pin.py")):
+        try:
+            guard = Path(__file__).with_name("pbtest_pins.py").read_text()
+        except OSError as exc:
+            sys.stderr.write(f"pbtest: cannot load dependency pin guard: {exc}\n")
+            return 2
+        python_entry = [args.python, "-c", guard]
     # ``pbrun`` transports the checkout but never itself: it seals its own
     # ``prismabuild_worker.py`` as an absolute path into the action.  Out of
     # the published runtime that path is on every box; out of a worktree it is
@@ -448,7 +460,7 @@ def main() -> int:
             "--", "env", "TMPDIR=/home/rob/tmp",
             *threads, *explicit_env,
             "PYTHONPATH=src:experiments",
-            args.python, "-m", "pytest", "-q", "--no-header",
+            *python_entry, "-q", "--no-header",
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
