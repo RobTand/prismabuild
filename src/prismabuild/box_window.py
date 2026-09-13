@@ -5,7 +5,7 @@ the machine around it was loaded, and no in-process tool can. This module reads
 that second view from the recorders the boxes already run, summarises it over
 one action's window, and names the source of every field it reports.
 
-Two recorders, because neither covers the whole box:
+The sources cover different parts of the box:
 
 *   ``pqteld`` is a 2 Hz flight recorder on the GB10 boxes. Its CSV carries GPU
     power and utilisation, the unified memory pool, and the memory and I/O
@@ -14,6 +14,9 @@ Two recorders, because neither covers the whole box:
     ``system.cpu`` and ``system.cpu_some_pressure`` are where the CPU fields
     come from, on every host rather than only the one without a recorder, so a
     field means the same thing wherever it is read.
+*   Memory-only discrete GPU windows retain existing broker capacity samples
+    during the action. They carry framebuffer occupancy, with no power or
+    utilization measurement and no additional per-action driver probe.
 
 So the summary is grouped by what produced it and each group names its own
 source. A field the recorders do not record is absent; a cell they left empty
@@ -66,6 +69,123 @@ _FLEET_CONFIG_PATHS = (_ROOT / "tools" / "fleet_boxes.json",
 _GPU_COLUMNS = ("power_draw_w", "gpu_util", "uvm_residual_kb", "temp_gpu_c")
 _MEMORY_COLUMNS = ("MemTotal", "MemAvailable", "psi_mem_full_avg10",
                    "psi_io_full_avg10")
+GPU_CAPACITY_SCHEMA = "prismabuild.gpu_capacity.v1"
+MEMORY_ONLY_TELEMETRY = "memory_only"
+GPU_SAMPLE_MAX_AGE_S = 5.0
+
+
+def _finite_nonnegative_int(value: object) -> int | None:
+    """A byte counter that can safely describe a framebuffer."""
+
+    if type(value) is not int or value < 0:
+        return None
+    return value
+
+
+class DiscreteFramebufferWindow:
+    """One action's distinct trusted broker readings of discrete VRAM.
+
+    The broker already refreshes its public capacity snapshot alongside the
+    exact scope census.  This object deliberately consumes that snapshot; it
+    never launches a second device probe from an action's finish path.  It
+    reports box-device occupancy while this exact action was alive, not an
+    attributable process allocation (WSL exposes no per-process VRAM bytes).
+    """
+
+    def __init__(self, action_key: str, nonce: str, scope_id: str,
+                 *, start_unix: float = 0.0) -> None:
+        self.action_key = action_key
+        self.nonce = nonce
+        self.scope_id = scope_id
+        self.start_unix = start_unix
+        self._last_sample_id: str | None = None
+        self._device_uuid: str | None = None
+        self._device_name: str | None = None
+        self._total: int | None = None
+        self._used_peak: int | None = None
+        self._free_min: int | None = None
+        self._first: float | None = None
+        self._last: float | None = None
+        self._samples = 0
+
+    def observe(self, sample: object, *, now: float) -> bool:
+        """Retain one valid, previously unseen capacity sample.
+
+        A repeated read of the broker's same ``sample_id`` is not another
+        measurement.  A malformed, stale, foreign, unified-memory, or
+        differently identified device never changes an already valid window.
+        """
+
+        if not isinstance(sample, dict) or sample.get("schema") != GPU_CAPACITY_SCHEMA:
+            return False
+        sample_id = sample.get("sample_id")
+        sampled = sample.get("sampled_unix")
+        if (not isinstance(sample_id, str) or not sample_id
+                or type(sampled) not in (int, float) or not math.isfinite(sampled)
+                or sampled < self.start_unix
+                or not 0 <= now - sampled <= GPU_SAMPLE_MAX_AGE_S):
+            return False
+        # The broker's publication identity is an observation identity, not
+        # an event stream.  Keep constant state for an arbitrarily long
+        # progress-governed action and refuse a replay or clock regression.
+        if (sample_id == self._last_sample_id
+                or self._last is not None and sampled <= self._last):
+            return False
+        devices = sample.get("devices")
+        jobs = sample.get("jobs")
+        if not isinstance(devices, list) or len(devices) != 1 or not isinstance(devices[0], dict):
+            return False
+        if not isinstance(jobs, list) or not any(
+                isinstance(job, dict) and job.get("action_key") == self.action_key
+                and job.get("nonce") == self.nonce and job.get("scope_id") == self.scope_id
+                and job.get("complete") is True for job in jobs):
+            return False
+        device = devices[0]
+        if (device.get("telemetry_class") != MEMORY_ONLY_TELEMETRY
+                or device.get("memory_domain") != "discrete"):
+            return False
+        identity = device.get("uuid")
+        name = device.get("name")
+        device_sampled = device.get("sampled_unix")
+        total = _finite_nonnegative_int(device.get("memory_total_bytes"))
+        free = _finite_nonnegative_int(device.get("memory_free_bytes"))
+        used = _finite_nonnegative_int(device.get("memory_used_bytes"))
+        if (not isinstance(identity, str) or not identity or not isinstance(name, str) or not name
+                or type(device_sampled) not in (int, float) or not math.isfinite(device_sampled)
+                or device_sampled < self.start_unix
+                or not 0 <= now - device_sampled <= GPU_SAMPLE_MAX_AGE_S
+                or total is None or total <= 0 or free is None or used is None
+                or free > total or used > total or free + used != total):
+            return False
+        if self._device_uuid is not None and (identity != self._device_uuid or total != self._total):
+            return False
+        self._last_sample_id = sample_id
+        self._device_uuid, self._device_name, self._total = identity, name, total
+        self._used_peak = used if self._used_peak is None else max(self._used_peak, used)
+        self._free_min = free if self._free_min is None else min(self._free_min, free)
+        self._first = sampled if self._first is None else min(self._first, sampled)
+        self._last = sampled if self._last is None else max(self._last, sampled)
+        self._samples += 1
+        return True
+
+    def group(self) -> dict[str, object] | None:
+        """The measured GPU group, absent until a running-scope sample exists."""
+
+        if not self._samples:
+            return None
+        return {
+            "source": "broker_gpu_capacity",
+            "telemetry_class": MEMORY_ONLY_TELEMETRY,
+            "memory_domain": "discrete",
+            "device_uuid": self._device_uuid,
+            "device_name": self._device_name,
+            "samples": self._samples,
+            "first_sampled_unix": self._first,
+            "last_sampled_unix": self._last,
+            "framebuffer_total_bytes": self._total,
+            "framebuffer_used_bytes_peak": self._used_peak,
+            "framebuffer_free_bytes_min": self._free_min,
+        }
 
 
 class _Series:

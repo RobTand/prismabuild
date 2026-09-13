@@ -1216,7 +1216,8 @@ _CLAIM_IDENTITY = ("claimed_by", "claimed_unix", "published_unix", "attempts")
 #: absence of one, and "not measured" never renders as a measurement of zero.
 RESOURCE_SUMMARY_FIELDS = ("memory_peak_bytes", "io_read_bytes", "io_write_bytes",
                            "gpu_power_peak_w", "gpu_power_reference_w",
-                           "gpu_power_peak_fraction")
+                           "gpu_power_peak_fraction", "gpu_framebuffer_used_peak_bytes",
+                           "gpu_framebuffer_total_bytes")
 
 
 def _measured(value: object) -> float | int | None:
@@ -1257,6 +1258,10 @@ def resource_profile_summary(detail: Mapping[str, object]) -> dict[str, object]:
         summary["gpu_power_reference_w"] = _measured(gpu.get("power_reference_w"))
         summary["gpu_power_peak_fraction"] = _measured(
             gpu.get("power_peak_fraction_of_reference"))
+        summary["gpu_framebuffer_used_peak_bytes"] = _measured(
+            gpu.get("framebuffer_used_bytes_peak"))
+        summary["gpu_framebuffer_total_bytes"] = _measured(
+            gpu.get("framebuffer_total_bytes"))
     return summary
 
 
@@ -1298,6 +1303,10 @@ def describe_resource_profile(ending: Mapping[str, object]) -> str:
         if fraction is not None:
             cell += f"({float(fraction) * 100:.0f}%)"
         parts.append(cell)
+    used = ending.get("gpu_framebuffer_used_peak_bytes")
+    total = ending.get("gpu_framebuffer_total_bytes")
+    if used is not None:
+        parts.append(f"vram={_si_bytes(used)}/{_si_bytes(total)}")
     return " ".join(parts) if parts else "-"
 
 
@@ -3368,6 +3377,18 @@ class PoolQueue:
     @staticmethod
     def _sample_resource_scope(scope: resource_scope.ResourceScope) -> dict:
         telemetry = scope.sample()
+        framebuffer = getattr(scope, "_framebuffer_window", None)
+        if isinstance(framebuffer, box_window.DiscreteFramebufferWindow):
+            # Read the broker's already-published public sample beside the
+            # existing exact-scope sampler.  This is deliberately a read, not
+            # a per-action HIP/NVML probe; the broker remains the producer.
+            try:
+                framebuffer.observe(gpu_admission.trusted_sample(), now=_now())
+            except Exception as exc:                             # noqa: BLE001
+                # GPU-window telemetry is descriptive. A broken public read
+                # must neither stop the payload nor discard prior samples.
+                telemetry["gpu_framebuffer_error"] = (
+                    f"broker GPU capacity snapshot unavailable: {type(exc).__name__}")
         try:
             status = scope._request("status")
             if status.get("stop_reason"):
@@ -3452,6 +3473,12 @@ class PoolQueue:
         # The broker may finish after a client timeout or worker crash. Both
         # claim and lease now retain the exact nonce needed for reconciliation.
         control = scope.create()
+        if demand.get("gpu"):
+            # Kept on the live scope only.  The broker has now validated the
+            # canonical scope identity; a reconstructed scope at finish
+            # cannot turn its one final snapshot into an action-time peak.
+            scope._framebuffer_window = box_window.DiscreteFramebufferWindow(
+                key, scope.nonce, scope.unit, start_unix=_now())
         control["started_monotonic"] = scope.started
         control["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         try:
@@ -7714,7 +7741,21 @@ class PoolQueue:
                     if key not in ("live", "retired", "members")
                 }
 
-        profile["box_window"] = self._box_window(start, finished_unix)
+        window = self._box_window(start, finished_unix)
+        framebuffer = outcome.pop("gpu_framebuffer_window", None)
+        if isinstance(framebuffer, Mapping):
+            # A memory-only discrete device has no power, clock or unified
+            # memory series.  Its broker-derived VRAM reading is therefore the
+            # GPU group for this action's box window, never a fabricated zero
+            # in the pqteld shape.
+            window["gpu"] = dict(framebuffer)
+            sources = {str(group.get("source")) for group in window.values()
+                       if isinstance(group, Mapping) and group.get("source")}
+            window["source"] = "+".join(sorted(sources))
+            reason = window.pop("reason", None)
+            if isinstance(reason, str) and reason:
+                window["errors"] = [*window.get("errors", []), reason]
+        profile["box_window"] = window
         return profile
 
     @staticmethod
@@ -7890,6 +7931,11 @@ class PoolQueue:
                 if watch is not None:
                     outcome["progress_observation"] = watch.as_record(
                         now=time.monotonic())
+                framebuffer = getattr(scope, "_framebuffer_window", None)
+                if isinstance(framebuffer, box_window.DiscreteFramebufferWindow):
+                    group = framebuffer.group()
+                    if group is not None:
+                        outcome["gpu_framebuffer_window"] = group
                 with suppress(OSError):
                     progress_path.unlink()
                 return self._merge_action_status(outcome, status_path)

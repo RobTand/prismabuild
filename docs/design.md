@@ -2268,6 +2268,30 @@ list. Measured
 evidence and the residual risks are in
 [amd_gpu_capacity_2026-09-12.md](amd_gpu_capacity_2026-09-12.md).
 
+### Memory-only GPU action windows
+
+For a contained GPU action on a `memory_only`, `discrete` device, the worker
+samples the existing root-owned GPU capacity snapshot during its running-scope
+telemetry ticks. It retains distinct fresh observations for that exact attempt
+and device in constant space. No extra HIP or NVML probe is launched per action.
+The resulting `resource_profile.box_window.gpu` group declares
+`source: broker_gpu_capacity`, `telemetry_class: memory_only`,
+`memory_domain: discrete`, device identity, sample count and first/last sample
+timestamps. `framebuffer_total_bytes`, `framebuffer_used_bytes_peak` and
+`framebuffer_free_bytes_min` describe the whole device during observed instants.
+They include other users' occupancy and are not per-process allocation or an
+enforceable per-attempt GPU budget. No power, utilization or unified-memory
+field is invented. This is diagnostic run metadata, with no admission or
+action-identity change.
+
+Repeated, stale, malformed or mismatched observations add no samples. A window
+with no accepted running-scope observation has no framebuffer group; a single
+finish-time driver reading cannot reconstruct a prior peak. Sampling can miss
+short-lived allocations and does not certify complete interval coverage. CPU
+windows remain sourced from Netdata and GB10 windows from their existing
+recorders. Status and metrics expose discrete VRAM peak/total separately from
+host cgroup memory and GPU power.
+
 ## Preferred, overflow and adaptive CPU admission
 
 Host admission uses a nonblocking local FLOCK around the box's headroom

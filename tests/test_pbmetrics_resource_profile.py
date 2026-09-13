@@ -122,5 +122,27 @@ class ResourceProfileMetrics(unittest.TestCase):
             "an ending with no window must not read as a window of zero")
 
 
+    def test_memory_only_window_exports_framebuffer_without_power(self) -> None:
+        path = self.queue / "done" / f"{DONE_KEY}.json"
+        record = json.loads(path.read_text())
+        record["detail"]["resource_profile"] = {
+            "schema": "prismabuild.resource_profile.v1",
+            "box_window": {"source": "broker_gpu_capacity", "gpu": {
+                "source": "broker_gpu_capacity", "telemetry_class": "memory_only",
+                "memory_domain": "discrete", "framebuffer_total_bytes": 16 * 1024**3,
+                "framebuffer_used_bytes_peak": 2 * 1024**3}},
+        }
+        _write(path, record)
+        text = self.collect(terminal_limit=20)
+        samples = _samples(text, "prismabuild_terminal_box_window")
+        self.assertIn(
+            'prismabuild_terminal_box_window{host="sparky",'
+            'metric="gpu_framebuffer_used_peak_bytes"} 2147483648', text)
+        self.assertIn(
+            'prismabuild_terminal_box_window{host="sparky",'
+            'metric="gpu_framebuffer_total_bytes"} 17179869184', text)
+        self.assertFalse([line for line in samples if 'metric="gpu_power_' in line])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from prismabuild import core as pb, pool, resource_scope
+from prismabuild import box_window, core as pb, pool, resource_scope
 
 
 @pytest.fixture
@@ -15,6 +15,9 @@ def scoped(tmp_path, monkeypatch, request):
     checkout = tmp_path / 'checkout'
     checkout.mkdir()
     (checkout / 'task.py').write_text('print("ok")\n')
+    demand = {'mem_gb': 2, 'cpu': 1}
+    if getattr(request, 'param', None) == 'gpu':
+        demand['gpu'] = 1
     action = pb.seal_action({
         'schema': pb.ACTION_SCHEMA_V2,
         'task': {'definition_id': 'tests/scope', 'definition_version': 'v1',
@@ -23,7 +26,7 @@ def scoped(tmp_path, monkeypatch, request):
                  'argv': [sys.executable, 'task.py'], 'working_directory': '.',
                  'result_path': 'result'},
         'inputs': [], 'code_closure': pb.build_code_closure(checkout, ['task.py']),
-        'params': {'demand': {'mem_gb': 2, 'cpu': 1}} if getattr(request, 'param', True) else {},
+        'params': {'demand': demand} if getattr(request, 'param', True) else {},
         'environment': {'variables': {}, 'toolchain': {}},
         'execution_scope': {'portability': 'portable', 'platform_key': None, 'host_class': None},
     })
@@ -32,8 +35,8 @@ def scoped(tmp_path, monkeypatch, request):
     queue = pool.PoolQueue(tmp_path / 'queue')
     queue.publish(action_key=action['action_key'], cas_root=cas.root,
                   checkout_root=checkout, worker_script='/worker.py',
-                  resources={'mem_gb': 2, 'cpu': 1}, max_attempts=2, retry_safe=True)
-    item = queue.claim(capacity={'mem_gb': 2, 'cpu': 1})
+                  resources=demand, max_attempts=2, retry_safe=True)
+    item = queue.claim(capacity=demand)
     calls = []
 
     def request(scope, op, **extra):
@@ -60,10 +63,9 @@ def scoped(tmp_path, monkeypatch, request):
     return queue, item, calls
 
 
-def _process(monkeypatch, queue, item, calls, *, ticks=0):
+def _process(monkeypatch, queue, item, calls, *, ticks=0, returncode=0):
     class Process:
         pid = 999999999
-        returncode = 0
         def __init__(self, argv, **kw):
             persisted = json.loads(queue.item_path(pool.CLAIMED, item['action_key']).read_text())
             assert persisted['resource_scope']['token'] == 'b'*64
@@ -71,6 +73,7 @@ def _process(monkeypatch, queue, item, calls, *, ticks=0):
             assert '--token' in argv
             calls.append('launch')
             self.remaining = ticks
+            self.returncode = returncode
         def communicate(self, *, timeout):
             if self.remaining:
                 assert timeout <= 2.0, 'scope telemetry must not wait for a 30s heartbeat'
@@ -194,6 +197,47 @@ def test_timeout_stops_exact_scope_before_proxy_signal(scoped, monkeypatch):
     queue.finish(item['action_key'], status='timeout', detail=outcome, claim_snapshot=item)
     assert 'release' in calls
     assert queue.ledger().held() == {}
+
+
+def _memory_only_gpu_sample(item):
+    scope = item["resource_scope"]
+    now = pool._now()
+    return {
+        "schema": "prismabuild.gpu_capacity.v1", "sample_id": "sample-1",
+        "sampled_unix": now, "complete": False, "attributed": False,
+        "devices": [{"uuid": "GPU-amd", "name": "AMD Radeon RX 9070 XT",
+                     "sampled_unix": now, "telemetry_class": "memory_only",
+                     "memory_domain": "discrete", "memory_total_bytes": 16 * 1024**3,
+                     "memory_free_bytes": 12 * 1024**3,
+                     "memory_used_bytes": 4 * 1024**3}],
+        "jobs": [{"action_key": item["action_key"], "nonce": scope["nonce"],
+                  "scope_id": scope["scope_id"], "complete": True}],
+    }
+
+
+@pytest.mark.parametrize("status", ["executed", "failed", "timeout"])
+@pytest.mark.parametrize("scoped", ["gpu"], indirect=True)
+def test_contained_gpu_scope_carries_heartbeat_framebuffer_peak_to_every_ending(
+    scoped, monkeypatch, status,
+):
+    queue, item, calls = scoped
+    _process(monkeypatch, queue, item, calls, ticks=1,
+             returncode=7 if status == "failed" else 0)
+    monkeypatch.setattr(pool.gpu_admission, "trusted_sample",
+                        lambda: _memory_only_gpu_sample(item))
+    monkeypatch.setattr(queue, "_box_window", lambda *args: {
+        "schema": box_window.BOX_WINDOW_SCHEMA_V1, "source": "unavailable",
+        "reason": "no recorder answered"})
+    if status == "timeout":
+        outcome = queue.execute(item, containment=True, heartbeat_s=30, timeout_s=1e-9)
+    else:
+        outcome = queue.execute(item, containment=True, heartbeat_s=30)
+    assert outcome["status"] == status
+    gpu = outcome["resource_profile"]["box_window"]["gpu"]
+    assert gpu["source"] == "broker_gpu_capacity"
+    assert gpu["samples"] == 1
+    assert gpu["framebuffer_used_bytes_peak"] == 4 * 1024**3
+    assert "gpu_framebuffer_window" not in outcome
 
 
 def test_orphan_lease_retains_scope_authority_for_cleanup(scoped, monkeypatch):
