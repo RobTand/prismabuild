@@ -48,6 +48,35 @@ landed, including a hostname pin derived from a box-local executable, and seals
 them before computing the key. Flag order and duplicate tags do not move the
 key; a different admissible worker population does.
 
+The runtime-generation path of PB's Docker wrapper is also sealed. Publishing
+a new runtime can therefore change an ordinary re-run's key even when its
+code is unchanged. Retain the full action keys from the first submission. To
+reproduce an earlier key through the current client, pass:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd /path/to/original-checkout --as-sealed-by FULL_ACTION_KEY \
+  --detach -- <the original command and arguments>
+```
+
+Keep the original resource, environment, placement, input and execution
+options too. `--as-sealed-by` recovers the old immutable wrapper location,
+seals your current work and refuses unless its full key matches. An unchanged
+receipted action returns `cache_hit`; an active one attaches normally. Missing
+receipts can still submit the same key, so this is not a receipts-only mode.
+A changed checkout or sealing contract refuses with the expected and observed
+keys; it never silently submits different work. The original read-only CAS
+request and retained runtime generation must remain available. Publication
+does not rewrite those objects. Default unpinned resealing remains sensitive
+to runtime publication (#535).
+
+For a mixed-generation campaign, add `"as_sealed_by": "<original full key>"`
+to each corresponding manifest row. Each row uses its own original wrapper
+without changing the default for subsequent rows; no grouping by generation
+or invocation of historical submitters is needed. Keep this manifest outside
+the checkout being sealed, or in an already-ignored output directory: adding
+it as new source changes the checkout identity and correctly refuses.
+
 ### Storage prewarm pacing
 
 The storage role's data-manifest prewarm is controlled by

@@ -523,6 +523,29 @@ remain caller-owned. Parallel test processes must reserve their combined CPU
 and memory demand. These defaults change new action identities; old immutable
 requests and receipts retain their original meaning.
 
+The immutable runtime-generation Docker wrapper path participates in both
+sealed PATH and wrapper argv, and therefore in action, snapshot and container
+owner identity. An ordinary re-seal after publication can produce a new key
+even when the command and runtime code are unchanged. Request-bound resealing
+(`pbrun --as-sealed-by ACTION_KEY`, campaign row `as_sealed_by`) recovers only
+that wrapper path from the original canonical, validated CAS request. The
+path must name a retained generation in this fleet; its read-only generation
+receipt and Docker shim digest must agree. It never invokes the old submitter
+or imports command/options from the request. Current checkout bytes, inputs,
+environment, placement and all other parameters are sealed normally, then the
+complete action key must equal the requested key before publishing an action
+request or queue item. Snapshot inputs may already have been ingested when a
+key mismatch refuses. Missing/corrupt reference evidence refuses without
+falling back to a fresh key. The option itself adds no identity field.
+
+This is explicit recovery across a publication, not a migration of old keys or
+generation-independent default memoization. A retained old wrapper remains
+required; a change in the sealing algorithm can still prevent reproduction
+and is refused. The ordinary transport, attachment, retry and verified CAS
+lookup paths remain responsible for the exact matched action. A cache miss
+can submit that same key; this is not a receipts-only switch. Runtime
+execution/attestation provenance remains the existing worker/receipt contract.
+
 ## Test fanout submission
 
 `pbtest` validates every requested path before fanout. A path that is neither

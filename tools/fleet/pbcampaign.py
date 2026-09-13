@@ -23,6 +23,13 @@ a demand and some tags; the tool that reads it must stay usable by any producer
 and on any worker the fleet grows, so it names no project, no partition and no
 host.
 
+Runtime publication changes the Docker wrapper path sealed by an ordinary
+row. For receipt collection across a publication, retain the first row keys
+and add ``as_sealed_by`` to each row. The current submitter uses that key's
+retained wrapper and refuses unless the complete current seal matches; a
+receipted row is then a cache hit, including a manifest spanning generations.
+This is not a receipts-only mode: a missing receipt can submit the same key.
+
 Manifest schema
 ---------------
 
@@ -32,6 +39,7 @@ and each one is exactly one ``pbrun`` flag:
 ===================  ====================================================
 ``argv``             the command, as a list; the part after ``pbrun --``
 ``cwd``              ``--cwd``: the Git checkout to seal (default: here)
+``as_sealed_by``     ``--as-sealed-by``: require the original full action key
 ``demand``           ``--demand``: ``{"gpu": 1, "cpu": 8, "mem_gb": 32}``
 ``tags``             ``--tag``, once per entry
 ``env``              ``--env K=V``, once per pair
@@ -175,6 +183,7 @@ import pbwait  # noqa: E402
 #: is mechanical: a row is a ``pbrun`` command line and nothing else.
 _VALUE_FIELDS = (
     ("cwd", "--cwd"),
+    ("as_sealed_by", "--as-sealed-by"),
     ("timeout_s", "--timeout-s"),
     ("gpu_capacity", "--gpu-capacity"),
     ("gpu_memory_gb", "--gpu-memory-gb"),
@@ -220,7 +229,7 @@ _INTEGER_FIELDS = (
 )
 
 #: Fields whose value reaches ``pbrun`` as text.
-_TEXT_FIELDS = ("cwd", "host_class", "profile", "data_manifest")
+_TEXT_FIELDS = ("cwd", "host_class", "profile", "data_manifest", "as_sealed_by")
 
 
 def _refuse(index: int, field: str, wanted: str, value) -> ManifestError:
@@ -271,6 +280,11 @@ def _require_row_shape(row, *, index: int) -> None:
         value = row.get(field)
         if value is not None and not isinstance(value, str):
             raise _refuse(index, field, "must be a string", value)
+    if "as_sealed_by" in row:
+        try:
+            pbrun.require_reseal_key(row["as_sealed_by"])
+        except ValueError as exc:
+            raise _refuse(index, "as_sealed_by", str(exc), row["as_sealed_by"]) from None
     for field, minimum in _INTEGER_FIELDS:
         if row.get(field) is not None:
             _require_integer(row[field], index=index, field=field,

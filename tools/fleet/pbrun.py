@@ -4078,6 +4078,52 @@ def _profile_mode(text: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def require_reseal_key(key: object) -> None:
+    if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
+        raise ValueError("--as-sealed-by requires a full lowercase 64-hex action key")
+
+
+def reseal_wrapper(key: str) -> Path:
+    """Recover only the wrapper location; the complete new seal must still match.
+
+    Never run an old submitter or copy its command, inputs or environment into
+    a new request. The caller's current work is sealed by this submitter, with
+    the original immutable Docker wrapper, and checked before publication.
+    """
+    require_reseal_key(key)
+    where = f"--as-sealed-by {key}"
+    request = SH / "cas" / "requests" / key[:2] / f"{key}.json"
+    raw = pb._read_regular_file_nofollow(
+        request, where=where, require_readonly=True, max_bytes=16 * 1024 * 1024)
+    action = pb.validate_action(pb._decode_strict_json(raw, where=where))
+    if action["action_key"] != key:
+        raise ValueError(f"{where}: request does not match its address")
+    if action["task"]["definition_id"] != "fleet/pbrun":
+        raise ValueError(f"{where}: request is not a pbrun action")
+    prefix = action["environment"]["variables"].get("PATH", "").split(":", 1)[0]
+    wrapper = Path(prefix)
+    generation = wrapper.parent
+    if (str(wrapper) != prefix or wrapper.name != "tools"
+            or generation.parent != SH / "runtime-generations"
+            or generation.name.startswith(".")):
+        raise ValueError(f"{where}: wrapper is not in a retained fleet generation")
+    raw_version = pb._read_regular_file_nofollow(
+        generation / "RUNTIME_VERSION.json", where=where,
+        require_readonly=True, max_bytes=1024 * 1024)
+    version = pb._decode_strict_json(raw_version, where=where)
+    if (not isinstance(version, dict)
+            or version.get("schema") != "prismaquant.prismabuild.runtime_version.v1"
+            or version.get("generation") != generation.name
+            or not isinstance(version.get("files"), dict)):
+        raise ValueError(f"{where}: invalid retained generation receipt")
+    shim = pb._read_regular_file_nofollow(
+        wrapper / "docker", where=where, require_readonly=True,
+        max_bytes=16 * 1024 * 1024)
+    if hashlib.sha256(shim).hexdigest() != version["files"].get("tools/docker"):
+        raise ValueError(f"{where}: retained Docker wrapper differs from its receipt")
+    return wrapper
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Submit one command to the PrismaBuild fleet and wait for "
@@ -4148,6 +4194,12 @@ def main() -> int:
                          "inside the checkout being sealed; it is recorded "
                          "in the action as a path relative to the checkout "
                          "root, so the action stays portable")
+    ap.add_argument(
+        "--as-sealed-by", metavar="ACTION_KEY",
+        help="reuse the retained runtime wrapper of this full action key and "
+             "require the complete current seal to match before submission; "
+             "collect pre-publication receipts without creating a new key",
+    )
     ap.add_argument("--deterministic", action="store_true",
                     help="declare byte-identical output; enables CAS reuse")
     ap.add_argument(
@@ -4246,6 +4298,14 @@ def main() -> int:
                     help="the command to run, after a bare --; every word "
                          "past it belongs to the command and not to pbrun")
     args = ap.parse_args()
+    if args.as_sealed_by is not None and args.withdraw:
+        ap.error("--as-sealed-by cannot be combined with --withdraw")
+    wrapper_dir = CONTAINER_WRAPPER_DIR
+    if args.as_sealed_by is not None:
+        try:
+            wrapper_dir = reseal_wrapper(args.as_sealed_by)
+        except (OSError, ValueError, pb.PrismaBuildError) as exc:
+            raise SystemExit(f"pbrun: cannot reseal: {exc}") from None
     if args.timeout_s is not None and (
         not math.isfinite(args.timeout_s) or args.timeout_s <= 0
     ):
@@ -4521,7 +4581,7 @@ def main() -> int:
     # the exact action-defining state available before its own two recursive
     # variables are injected, including the deployed wrapper path.
     prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
-    variables["PATH"] = f"{CONTAINER_WRAPPER_DIR}:{prior_path}"
+    variables["PATH"] = f"{wrapper_dir}:{prior_path}"
     identity = _git_identity(cwd)
     marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
     owner = container_owner(
@@ -4612,7 +4672,7 @@ def main() -> int:
             "artifact_family": "generic",
             "artifact_kind": "generic",
             "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     f"export PATH={shlex.quote(str(CONTAINER_WRAPPER_DIR))}:$PATH; "
+                     f"export PATH={shlex.quote(str(wrapper_dir))}:$PATH; "
                      f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
                      f"exit ${{PIPESTATUS[0]}}"],
             "working_directory": ".",
@@ -4665,6 +4725,15 @@ def main() -> int:
         # names core.py internals for what is a submission error (issue #21).
         raise SystemExit(f"pbrun: refusing to seal the action: {exc}") from None
     key = str(action["action_key"])
+
+    if args.as_sealed_by is not None and key != args.as_sealed_by:
+        raise SystemExit(
+            f"pbrun: --as-sealed-by expected {args.as_sealed_by}, but current "
+            f"work seals to {key}; nothing submitted. Restore the original "
+            "checkout, command, inputs and options, or omit --as-sealed-by "
+            "to request different work. A changed sealing contract can also "
+            "prevent reproduction by this client."
+        )
 
     request_path = cas.publish_action_request(action)
 
