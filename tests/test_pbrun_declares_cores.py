@@ -79,6 +79,30 @@ def test_an_explicit_demand_still_wins(monkeypatch, tmp_path):
     assert demand["cpu"] == 8
 
 
+def test_pbrun_refuses_a_resource_the_fleet_cannot_ledger(monkeypatch, tmp_path):
+    """A typo must fail before it becomes an unplaceable sealed action."""
+
+    with pytest.raises(SystemExit, match="unsupported resource 'cpus'"):
+        _demand(["--demand", "cpus=4", "--", "true"], monkeypatch, tmp_path)
+
+
+def test_pbrun_accepts_every_resource_the_live_fleet_ledgers(monkeypatch, tmp_path):
+    demand = _demand(
+        ["--demand", "cpu=4,gpu=1,mem_gb=16", "--", "true"],
+        monkeypatch, tmp_path,
+    )
+    assert demand == {"cpu": 4, "gpu": 1, "mem_gb": 16}
+
+
+@pytest.mark.parametrize(("text", "message"), [
+    ("cpu", "--demand wants k=v pairs"),
+    ("cpu=many", "resource 'cpu' needs an integer count"),
+])
+def test_pbrun_names_malformed_demand(text, message):
+    with pytest.raises(SystemExit, match=message):
+        pbrun._parse_demand(text)
+
+
 def test_zero_cores_is_refused(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         _demand(["--cpus", "0", "--", "true"], monkeypatch, tmp_path)

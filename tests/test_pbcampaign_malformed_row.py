@@ -107,6 +107,29 @@ def test_a_word_where_a_count_belongs_is_refused_before_the_first_submission(
     assert out == ""
 
 
+def test_unknown_demand_resource_refuses_the_whole_manifest_before_submission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _manifest(tmp_path, [
+        {"argv": ["/bin/true"]},
+        {"argv": ["/bin/true"], "demand": {"cpus": 4}},
+    ])
+
+    with pytest.raises(
+        pbcampaign.ManifestError,
+        match="row 1:.*unsupported resource 'cpus'",
+    ):
+        pbcampaign.load_manifest(manifest, transport="pool")
+
+    recorder = _Recorder()
+    code, out, err = _campaign(
+        ["--transport", "pool", "--detach", str(manifest)], recorder, monkeypatch)
+    assert recorder.calls == []
+    assert code == 1
+    assert "row 1" in err
+    assert out == ""
+
+
 def test_every_other_field_shape_is_refused_at_load_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
