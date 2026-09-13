@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -223,3 +224,60 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
     )
     assert [row["status"] for row in rows] == ["record_error", "executed"]
     assert "pbwait observation timed out" in str(rows[0]["note"])
+
+
+def test_reader_setup_failure_never_retries_reads_in_the_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue = _queue(tmp_path)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    def setup_failed(*_args, **_kwargs):
+        raise OSError(24, "Too many open files")
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("reader setup failure must not retry shared reads")
+
+    monkeypatch.setattr(pbrun, "_bounded_pool_read", setup_failed)
+    monkeypatch.setattr(pbwait, "outstanding", forbidden)
+    monkeypatch.setattr(pbwait, "recorded_action", forbidden)
+    row = pbwait.wait_one(queue, KEY, cas=cas, deadline=time.monotonic() + 30)
+    assert pbwait.verdict([row]) == 74
+    assert "Too many open files" in row["note"]
+
+
+def test_retained_observation_reader_stops_before_render_or_another_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue = _queue(tmp_path)
+    queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    retained = []
+
+    def retain(pid, section, _started, abandoned):
+        record = {"pid": pid, "section": section,
+                  "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)}
+        retained.append(record)
+        abandoned.append(record)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("an unreaped observation must not reach terminal verification")
+
+    monkeypatch.setattr(pbrun.pbstatus, "_reap_within", lambda *_args: False)
+    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
+    monkeypatch.setattr(pbrun, "bounded_outcome_render", forbidden)
+    try:
+        row = pbwait.wait_one(queue, KEY, cas=cas, deadline=time.monotonic() + 30)
+        assert pbwait.verdict([row]) == 74
+        assert len(retained) == 1
+        assert retained[0]["starttime_ticks"] is not None
+        assert '"pid": ' + str(retained[0]["pid"]) in row["note"]
+        assert "could not be reaped" in row["note"]
+    finally:
+        # Exact children created by this fixture only; never a process-name scan.
+        for record in retained:
+            try:
+                os.kill(record["pid"], signal.SIGKILL)
+                os.waitpid(record["pid"], 0)
+            except (ChildProcessError, ProcessLookupError):
+                pass
