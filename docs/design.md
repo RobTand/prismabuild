@@ -235,9 +235,29 @@ isolated child with the same five-second read budget. It returns candidate key
 strings only; the parent retains the exit-2 not-found/ambiguity decision. A
 timed-out, failed, or retained prefix reader exits 74 and names any retained
 PID/start-time identity, without retrying any scanner in the parent. Full
-64-hex keys retain their no-read fast path. This does not bound `pbwait`'s
-queue/CAS construction, later waiting or terminal reads, a kernel syscall, or
-an actual cross-host hard-NFS stall.
+64-hex keys retain their no-read fast path.
+
+Each later `pbwait` pass runs its read-only submission lookup, pool outcome and
+preemption selection, and any needed sealed-request/CAS receipt lookup in one
+five-second bounded child. A landed outcome's immutable attempt/log verification
+runs in a second separately bounded child. A terminal
+or unreadable outcome outranks CAS lookup; a SLURM parent may then resume and
+repair its own terminal record, but no resume or record mutation runs in a
+disposable reader. The parent retains the selected exact generation across
+passes and follows a just-observed preemption successor immediately without
+renewing the original deadline; it defers request/CAS lookup until that
+successor is observed. A failed, timed-out, or retained observation
+becomes that key's `record_error` row and exit 74; it does not start another
+parent diagnostic read, CAS lookup, or record mutation. The five-second budget
+does not bound SLURM controller work, process creation, child cleanup, JSON
+decoding, a kernel syscall, or an actual cross-host hard-NFS stall.
+
+`wait_for_keys` retains its existing thread-per-key concurrency. Its bounded
+readers therefore fork from a multithreaded `pbwait` process; the reader's FD
+isolation prevents an abandoned child retaining parent descriptors, but cannot
+remove POSIX inherited-lock/startup risk. A fork/setup/reader failure still
+becomes the per-key exit-74 result rather than a retry or a claim about a
+terminal verdict.
 
 The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements
