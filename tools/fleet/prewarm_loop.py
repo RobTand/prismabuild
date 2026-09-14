@@ -1170,8 +1170,9 @@ def declared_manifest_bytes(request: dict | None) -> int:
         return 0
     summary = (request.get("params") or {}).get("data_manifest")
     if isinstance(summary, dict):
-        value = summary.get("total_bytes")
-        if isinstance(value, int) and value >= 0:
+        value = summary.get("read_bytes" if summary.get("schema") ==
+                            pb.DATA_MANIFEST_SCHEMA_V2 else "total_bytes")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return value
     return 0
 
@@ -1223,6 +1224,12 @@ def manifest_phases(manifest: dict) -> list[dict[str, object]]:
     calls them resident, which is worse than not windowing at all.
     """
 
+    if manifest.get("schema") == pb.DATA_MANIFEST_SCHEMA_V2:
+        # The core validator checked every reference, running sum and phase
+        # name before the storage role sees this CAS-backed manifest.
+        return [{"name": phase["name"],
+                 "cumulative_bytes": phase["cumulative_bytes"]}
+                for phase in manifest["read_plan"]["phases"]]
     annotations = manifest.get("annotations")
     if not isinstance(annotations, dict):
         return []
@@ -1261,6 +1268,23 @@ def manifest_phases(manifest: dict) -> list[dict[str, object]]:
     if previous != total:
         return []
     return table
+
+
+def manifest_read_entries(manifest: dict) -> list[dict[str, object]]:
+    """Actual read timeline; v1 keeps its original consumption-order list."""
+
+    entries = manifest["entries"]
+    if manifest.get("schema") != pb.DATA_MANIFEST_SCHEMA_V2:
+        return list(entries)
+    return [entries[index]
+            for phase in manifest["read_plan"]["phases"]
+            for index in phase["entry_indices"]]
+
+
+def manifest_read_bytes(manifest: dict) -> int:
+    if manifest.get("schema") == pb.DATA_MANIFEST_SCHEMA_V2:
+        return int(manifest["read_plan"]["read_bytes"])
+    return int(manifest["total_bytes"])
 
 
 def consumed_through(phases: list[dict[str, object]], phase_name: str) -> int:
@@ -1622,7 +1646,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         """Read one window of one manifest and file what is now resident."""
 
         nonlocal budget, budget_before_progress, cycle_spent
-        total = int(manifest["total_bytes"])
+        total = manifest_read_bytes(manifest)
         want = max(0, target - start_bytes)
         started = time.time()
         if args.dry_run:
@@ -1721,7 +1745,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # already; pricing the advance against a budget that also pays for
         # them would stop a window from ever extending.
         row_budget = budget + int(window["resident_ahead"])
-        target, phase = window_target(phases, list(manifest["entries"]),
+        read_entries = manifest_read_entries(manifest)
+        target, phase = window_target(phases, read_entries,
                                       consumed=consumed, budget=row_budget)
         if target <= resident:
             event["advanced"].append({
@@ -1733,7 +1758,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         start = max(resident, consumed)
         record = warm(
             key=key, manifest=manifest, digest=str(entry["sha256"]),
-            entries=entries_between(list(manifest["entries"]), start, target),
+            entries=entries_between(read_entries, start, target),
             start_bytes=start, target=target, phase=phase, phased=True,
             trigger="progress" if window["phase"] else "claim",
         )
@@ -1760,7 +1785,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         if manifest is None:
             event["skipped"].append({"action_key": key, "reason": "unreadable manifest"})
             continue
-        total = int(manifest["total_bytes"])
+        total = manifest_read_bytes(manifest)
         if total < args.min_manifest_bytes:
             # A trivial action is not worth a warm window. On the GLM census
             # only 42 of 132 rows are 864-unit expert rows; the other 90 carry
@@ -1776,6 +1801,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             continue
         digest = str(entry["sha256"])
         phases = manifest_phases(manifest)
+        read_entries = manifest_read_entries(manifest)
         prior = warm_record(queue, key, digest)
         resident = resident_bytes(prior)
         # This row's own warmed bytes are already charged to the budget by
@@ -1784,7 +1810,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         row_budget = budget + resident
         row_budget_before_progress = budget_before_progress + resident
         if phases:
-            target, phase = window_target(phases, list(manifest["entries"]),
+            target, phase = window_target(phases, read_entries,
                                           consumed=0, budget=row_budget)
         else:
             target, phase = (total if total <= row_budget else 0), ""
@@ -1818,8 +1844,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         taken += 1
         record = warm(
             key=key, manifest=manifest, digest=digest,
-            entries=(entries_between(list(manifest["entries"]), resident, target)
-                     if phases else list(manifest["entries"])),
+            entries=(entries_between(read_entries, resident, target)
+                     if phases else read_entries),
             start_bytes=resident if phases else 0,
             target=target, phase=phase, phased=bool(phases),
             trigger=("progress" if target > row_budget_before_progress

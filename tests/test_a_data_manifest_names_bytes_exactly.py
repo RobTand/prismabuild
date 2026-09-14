@@ -79,7 +79,7 @@ def test_a_well_formed_manifest_normalizes_to_its_own_entries() -> None:
                       {"path": "/mnt/shared/a.pt", "offset": 0, "bytes": 5,
                        "sha256": None}],
           "entry_count": 2, "total_bytes": 10}, "the same byte range twice"),
-        ({"schema": "prismaquant.prismabuild.data_manifest.v2"},
+        ({"schema": "prismaquant.prismabuild.data_manifest.v3"},
          "a schema this version does not know"),
     ],
 )

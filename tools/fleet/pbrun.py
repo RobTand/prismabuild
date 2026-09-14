@@ -1847,6 +1847,47 @@ def progress_required_tags(policy: Mapping[str, object]) -> list[str]:
         [pb.PROGRESS_CYCLE_TAG] if policy.get("cycle") else [])
 
 
+def require_deployed_read_plan_storage(*, source_root: Path = RUNTIME_ROOT,
+                                       published_root: Path = SH / "repo") -> None:
+    """Refuse a v2 row until the published storage reader has the same bytes.
+
+    A source checkout can seal v2 before the fleet's storage role knows it.
+    The old role would skip the manifest and the row would claim cold; compare
+    the exact two contract owners to the published, hashed generation first.
+    The operator also verifies the DL380 role has reloaded that generation.
+    """
+
+    try:
+        receipt = json.loads((published_root / "RUNTIME_VERSION.json").read_text())
+        files = receipt["files"]
+        for member in ("src/prismabuild/core.py", "tools/fleet/prewarm_loop.py"):
+            expected = hashlib.sha256((source_root / member).read_bytes()).hexdigest()
+            if (files.get(member) != expected or
+                    hashlib.sha256((published_root / member).read_bytes()).hexdigest()
+                    != expected):
+                raise ValueError(f"{member} is not the compatible published bytecode")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(
+            f"pbrun: v2 read plan requires the compatible published storage "
+            f"generation: {exc}") from None
+
+
+def require_linear_read_plan_progress(manifest: Mapping[str, object],
+                                      progress: Mapping[str, object] | None) -> None:
+    """A read phase boundary matters only when the worker accepts that phase."""
+
+    names = [phase["name"] for phase in manifest["read_plan"]["phases"]]
+    reported = ([phase["name"] for phase in progress["phases"]]
+                if isinstance(progress, dict) and not progress.get("cycle")
+                else [])
+    if not reported or not set(names).issubset(reported):
+        raise SystemExit(
+            "pbrun: v2 read plan requires linear progress reporting "
+            "with every read phase named")
+    if [name for name in reported if name in set(names)] != names:
+        raise SystemExit("pbrun: read plan phases must follow progress order")
+
+
 def progress_contract_notice(
     queue,
     intent: Mapping[str, object],
@@ -4373,6 +4414,11 @@ def freeze_action_template(
             "entry_count": manifest["entry_count"],
             "total_bytes": manifest["total_bytes"],
         }
+        if manifest["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+            require_deployed_read_plan_storage()
+            require_linear_read_plan_progress(manifest, progress)
+            data_manifest_summary["schema"] = pb.DATA_MANIFEST_SCHEMA_V2
+            data_manifest_summary["read_bytes"] = manifest["read_plan"]["read_bytes"]
         # Preserve ordinary v1 action identity; only compressed inputs need
         # the encoding declaration. The CAS digest still covers wire bytes.
         if manifest_encoding != "identity":

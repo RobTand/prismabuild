@@ -107,6 +107,55 @@ receipt's label and `phases` for the window, and nothing else.
 `entries` are in *consumption* order and are never re-sorted, so a warm cut
 short by the budget leaves a useful prefix rather than a random subset.
 
+### Opt-in v2 read timeline for later source revisits
+
+A v2 manifest keeps `entries`, `entry_count`, and `total_bytes` as a unique
+registry of byte ranges. It adds a required, versioned read plan, whose ordered
+references name those entries by zero-based index:
+
+```json
+{
+  "schema": "prismaquant.prismabuild.data_manifest.v2",
+  "entries": ["... unique entry objects, unchanged from v1 ..."],
+  "entry_count": 2,
+  "total_bytes": 8,
+  "read_plan": {
+    "phases": [
+      {"name": "forward", "entry_indices": [0, 1],
+       "bytes": 8, "cumulative_bytes": 8},
+      {"name": "compute", "entry_indices": [],
+       "bytes": 0, "cumulative_bytes": 8},
+      {"name": "reverse", "entry_indices": [1, 0],
+       "bytes": 8, "cumulative_bytes": 16}
+    ],
+    "read_bytes": 16
+  }
+}
+```
+
+The example omits the otherwise required v1 `produced_by`, `annotations` and
+`mount_prefix` fields. Each unique entry must appear at least once; a phase
+can hold zero read references when compute progress needs a named frontier.
+Repeating one index inside a phase is refused, but a later phase may read the
+same range again. The validator checks each reference, unique phase name, per
+phase byte count, cumulative boundary and final read total; its read-reference
+ceiling is 4,000,000. `total_bytes` still names the unique entry bytes, while
+`read_bytes` names the complete read timeline, including revisits. The stored
+manifest's CAS digest seals both. V1 has neither the plan nor a changed
+summary, so its bytes and behavior remain unchanged.
+
+The submitter seals `schema` and `read_bytes` in the v2 summary and requires
+linear progress reporting with the read phases in the same order; progress
+phases may also include startup or publication. The storage role budgets and
+warms the timeline, and an accepted `ProgressWatch` report for the *current*
+phase releases only preceding read operations. It never converts arbitrary
+unit counts into byte offsets. A cold start can stop at an entry boundary
+inside a phase. Failed reads do not advance its contiguous warm frontier.
+Old storage generations reject v2 manifests rather than silently treating
+the unique entry registry as the read schedule. Publish the compatible storage
+generation and verify its running role before submitting v2 campaign rows;
+source changes or a producer capable of sealing v2 are not deployment proof.
+
 `sha256` may be null on every entry, and is for the GLM census.  Hashing a
 terabyte of calibration captures costs far more than the residency it buys,
 and integrity is not what this contract carries.  What binds the byte list to
