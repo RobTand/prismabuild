@@ -639,10 +639,17 @@ ending lands, immutable attempt and log verification gets one separate
 five-second budget before any result is printed. The parent retains the
 original `--wait-s` deadline across observations and does the polling sleep,
 so a repeated preemption follows its exact generation without granting a fresh
-wait. `--wait-s 0` still makes one immediate bounded observation. A timed-out,
-failed, or retained reader exits 74 and names the retained PID/start time when
-available; it neither withdraws work nor claims a failure, success, or timeout
-verdict. A published unreadable ending still reports exit 1, and immutable
+wait. `--wait-s 0` still makes one immediate bounded observation, and a
+timed-out read exits 74. With `--wait-s` above 0, a read that timed out and
+whose reader was killed and reaped is retried at the next poll inside the same
+deadline; a timed-out verification goes back to observation. A retry starts
+only after the previous reader was reaped, so a wait has at most one reader
+alive at any moment. A failed reader, or one that cannot be reaped, exits 74 at
+once and names the retained PID/start time when available. If the deadline
+passes while the last read was unavailable, `pbrun` exits 74 and says so
+("unavailable pool outcome for KEY when the wait ended"): no record was read,
+so the action may still be running or may already have landed. None of these
+withdraws work or claims a failure, success, or timeout verdict. A published unreadable ending still reports exit 1, and immutable
 contract validation retains its existing error. The budget covers child read
 and IPC wait; process creation, completed reply decoding, cleanup grace,
 runtime imports, and output can add time. These are read-operation bounds, not
@@ -695,9 +702,13 @@ Every later `pbwait` pass bounds its combined read-only submission, pool outcome
 preemption-lineage, and any needed sealed-request/CAS receipt observation to
 five seconds; a landed immutable ending-summary read gets one separate
 five-second budget. A filed terminal or unreadable terminal is checked
-before any CAS lookup. A failed, timed-out, or retained reader produces that
-key's `record_error` row and exit 74 without another parent diagnostic read or
-record write. The parent keeps the exact generation selected by a preemption
+before any CAS lookup. A failed or retained reader produces that key's
+`record_error` row and exit 74 without another parent diagnostic read or record
+write. A read that timed out and whose reader was reaped is retried at the next
+poll while `--wait-s` lasts; at zero patience, or when the deadline passes on
+it, it is also a `record_error` row and exit 74, and a patient wait's note says
+the read was still unavailable when the wait ended. `pbcampaign --max-inflight`
+keeps such a key pending, holding its slot, until its own deadline. The parent keeps the exact generation selected by a preemption
 handoff and follows it immediately under the original `--wait-s` deadline.
 It defers request/CAS lookup until that successor is observed.
 SLURM resume and terminal filing stay in that parent, never in a disposable
@@ -732,7 +743,7 @@ already finished, and exited 75.
 | 0 | The work is done. A `cache_hit` counts as done. |
 | 1 | The action failed. `pbrun` prints the worker's message and the log paths. `pbwait` also exits 1 when an ending was filed and cannot be read, and names the file: that is not 75, because waiting again only re-reads the same record. |
 | 2 | `pbrun --withdraw` matched no submission, matched more than one, or every `scancel` refused. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
-| 74 | A filesystem or record-persistence error prevented `pbrun` or `pbwait` from completing the operation. The diagnostic distinguishes a known accepted job from an unverified submission, and says whether a withdrawal reached `scancel`. |
+| 74 | A filesystem or record-persistence error prevented `pbrun` or `pbwait` from completing the operation. The diagnostic distinguishes a known accepted job from an unverified submission, and says whether a withdrawal reached `scancel`. A wait that ends while its last terminal-record read was unavailable is also 74, not 75: nothing was read, so the work may already be done. Read the named `pb-queue` record or run `pbwait` again. `pbtest` reports such a shard as `OUTCOME UNOBSERVED`, not as files that did not run. |
 | 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
 
@@ -1167,6 +1178,9 @@ remain synchronous; the wait budget is not a bound on a blocked filesystem call.
 
 A refusal, failed action, unreadable outcome or slot read error stops further
 publication and reports the remaining suffix. Existing work is not cancelled.
+The exception is an outcome read that timed out after its reader was reaped:
+that key keeps its slot, grants no new one, and is read again at each poll
+until the wait budget ends, where it is exit 74.
 Stopping on failure preserves a resumable prefix: otherwise a restart could
 resubmit failed early rows before discovering a later full window. Correct the
 reported fault, stop the previous controller, and rerun the **same ordered

@@ -85,7 +85,9 @@ installation/provenance contract. Generic `pbrun` commands remain caller-owned.
 For an I/O-bound campaign, `pbcampaign --transport pool --max-inflight N`
 keeps one waiting controller's outstanding row count bounded without inflating
 memory demand. It includes ready work and claim cleanup, refills after any
-success, and stops publication on failures or uncertain outcomes. Keep that
+success, and stops publication on failures or uncertain outcomes. A read that
+timed out and whose reader was reaped holds its slot and is read again until
+the campaign deadline, where it is exit 74. Keep that
 controller alive; `--detach` and SLURM refuse this option. Stop it before
 resuming the same ordered manifest, checkout, options and limit. This is a
 campaign-wide window, not a per-host or shared I/O budget; other controllers

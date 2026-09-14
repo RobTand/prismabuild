@@ -453,11 +453,37 @@ def wait_one(
         lambda text: print(f"pbwait: {text}", file=sys.stderr, flush=True))
     state = {"generation": generation, "found": None, "action": None,
              "receipt_published": False, "handoff": False}
+    entered = time.monotonic()
+    unavailable_count = 0
+    last_notice = None
     while True:
         row = _look_once(
             q, key, cas=cas, deadline=deadline, state=state,
             lane_root=lane_root, queue_root=queue_root, **lane_commands,
         )
+        if row is not None and row.get("observation_timed_out"):
+            # The reader timed out and was reaped, so nothing is left to race
+            # a later read. A caller with patience left retries at the next
+            # poll under the same deadline; a caller without patience gets
+            # the row as it is.
+            unavailable_count += 1
+            now = time.monotonic()
+            if now < deadline:
+                if last_notice is None or now - last_notice >= \
+                        pbrun.UNAVAILABLE_NOTICE_INTERVAL_S:
+                    last_notice = now
+                    print(f"pbwait: {key[:12]} not observed yet ({row['note']}); "
+                          f"{unavailable_count} consecutive unavailable read(s), "
+                          "retrying inside --wait-s", file=sys.stderr, flush=True)
+                time.sleep(max(0.0, min(pbrun.POLL_S, deadline - time.monotonic())))
+                continue
+            if deadline > entered:
+                row = dict(row, note=(
+                    f"{row['note']}; still unavailable when the wait ended after "
+                    f"{unavailable_count} consecutive unavailable read(s). The "
+                    "action may still be running or may already have landed"))
+            return row
+        unavailable_count = 0
         if row is not None:
             return row
         if state["handoff"]:
@@ -488,8 +514,14 @@ def _look_once(q, key: str, *, cas, **kwargs):
     except pbrun.UnreadableTerminal as exc:
         return _row(
             key, "unreadable", note=str(exc))
+    except pbrun.OutcomeObservationTimedOut as exc:
+        # The reader ran out of budget and was killed and reaped, so no
+        # earlier reader remains for a later read to race. The row is marked
+        # so that ``wait_one`` and a ``pbcampaign`` window can look again
+        # while their deadline lasts; at the deadline it stays exit 74.
+        return _row(key, "record_error", note=str(exc), observation_timed_out=True)
     except pbrun.OutcomeReadUnavailable as exc:
-        # A timed-out or retained child is the exact reader a later diagnostic
+        # A retained or failed child is the exact reader a later diagnostic
         # read would race.  Refuse this key without another shared-filesystem
         # observation, lookup, or record mutation.
         return _row(key, "record_error", note=str(exc))

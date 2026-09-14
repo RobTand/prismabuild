@@ -235,7 +235,13 @@ new child cannot renew caller patience. A `--wait-s 0` caller still receives
 one immediate bounded snapshot. An unavailable reader (timeout, child failure,
 or reader that cannot be reaped) returns filesystem exit 74 with its retained
 PID/start-time identity; it does not cancel work, publish a record, or
-manufacture a verdict. A published unreadable terminal retains its existing
+manufacture a verdict. The one exception is patience: with `--wait-s` above 0,
+a snapshot or verification that timed out, and whose reader was killed and
+reaped, is taken again at the next poll under the same deadline. Because a
+retry follows only a reaped reader, one wait never has two readers alive, and a
+reader that cannot be reaped still ends the wait at once. A deadline that
+passes on an unavailable read exits 74 with its own message, not 75, because
+no record was read to show the work unfinished. A published unreadable terminal retains its existing
 exit-1 report, and immutable contract validation retains its existing error.
 The budget covers the child read and IPC wait; process creation, completed JSON
 decoding, cleanup grace, runtime imports, and output can add time. This is only
@@ -258,9 +264,12 @@ repair its own terminal record, but no resume or record mutation runs in a
 disposable reader. The parent retains the selected exact generation across
 passes and follows a just-observed preemption successor immediately without
 renewing the original deadline; it defers request/CAS lookup until that
-successor is observed. A failed, timed-out, or retained observation
-becomes that key's `record_error` row and exit 74; it does not start another
-parent diagnostic read, CAS lookup, or record mutation. The five-second budget
+successor is observed. A failed or retained observation becomes that key's
+`record_error` row and exit 74; it does not start another parent diagnostic
+read, CAS lookup, or record mutation. A timed-out observation whose reader was
+reaped is marked on its row (`observation_timed_out`); `wait_one` repeats the
+pass while its deadline lasts, and a `pbcampaign` window keeps the key pending
+instead of stopping. At the deadline it stays `record_error` and exit 74. The five-second budget
 does not bound SLURM controller work, process creation, child cleanup, JSON
 decoding, a kernel syscall, or an actual cross-host hard-NFS stall.
 
@@ -2011,6 +2020,8 @@ N distinct unfinished action keys and publishes a replacement only after a
 successful `pbwait` observation and absence of that key's READY/CLAIMED leaves.
 A receipt or withdrawal outcome alone cannot free a slot while queue work or
 claim cleanup remains. Leaf read errors stop publication; they grant no capacity.
+An outcome read that timed out with its reader reaped keeps the key pending and
+its slot held until the shared deadline, then reports exit 74.
 Rows keep ordinary sealing, placement, admission, containment and receipts.
 The initial window is published before the shared monotonic wait budget starts;
 expiry leaves published work intact and reports the unsubmitted suffix.
