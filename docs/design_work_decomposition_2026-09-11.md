@@ -260,8 +260,8 @@ duplicate or foreign task results fail the child closed.
 After all child receipts exist, a generic exact-cover verifier checks each receipt
 and payload against its child action, the immutable plan, one result per roster
 task/output ID, and common parent identity. Only then does PB publish a group
-receipt binding `parent_key`, `plan_key`, ordered child action/receipt digests and
-merged-result digest. An incomplete/failed/withdrawn set is never group success.
+receipt binding `parent_key`, `plan_key`, ordered child action/receipt digests (`children` entries with `action_key`
+and `receipt_sha256`) and merged-result digest. An incomplete/failed/withdrawn set is never group success.
 Producer-specific qname merging may remain in PrismaQuant; PB need only enforce
 generic manifest identity and exact cover.
 
@@ -434,7 +434,8 @@ pre-execution boundary takes precedence over any earlier draft.
 
 ## Existing overlap
 
-No PR references #517. Closed #387 is GPU pytest file fanout; #480 is progress/
+At the original design snapshot no PR referenced #517; PR #518 now carries
+the synchronous MVP. Closed #387 is GPU pytest file fanout; #480 is progress/
 liveness; open #487 supplies the reusable data-manifest prewarm path. Historical
 elastic-worker changes scale claimant loops, not work supply. PrismaQuant #282's
 group fanout and current per-unit journals are producer-side reuse; this change
