@@ -119,6 +119,10 @@ SUBMISSION_OFFER_READ_TIMEOUT_S = 5.0
 #: finite process boundary even for a non-blocking probe or for verification of
 #: an outcome that has already landed.
 OUTCOME_READ_TIMEOUT_S = 5.0
+#: A patient wait retries an observation whose reader timed out and was reaped.
+#: In a shared-filesystem stall that can happen at every poll for hours, so the
+#: stderr notice about it is printed at most this often.
+UNAVAILABLE_NOTICE_INTERVAL_S = 60.0
 #: Detached repeats discover a prior submission before publishing anything.
 #: This read is independent of caller patience and execution deadlines.
 ATTACHMENT_READ_TIMEOUT_S = 5.0
@@ -2540,6 +2544,18 @@ class OutcomeReadUnavailable(RuntimeError):
     """A bounded pool outcome read did not return a trustworthy result."""
 
 
+class OutcomeObservationTimedOut(OutcomeReadUnavailable):
+    """A bounded read ran out of budget, and its reader was killed and reaped.
+
+    This is the one unavailable read that a caller with patience left may
+    repeat. No reader is left behind, so the next reader cannot race an earlier
+    one. A reader that could not be reaped, a reader that failed, and an
+    invalid reply all stay plain ``OutcomeReadUnavailable`` and end the wait.
+    Every existing ``except OutcomeReadUnavailable`` also catches this subclass,
+    so a caller that does not retry keeps its exit 74.
+    """
+
+
 def _bounded_pool_read(section: str, read, *, budget_s: float):
     """Return one pool reader's value or raise without continuing a wait.
 
@@ -2560,7 +2576,10 @@ def _bounded_pool_read(section: str, read, *, budget_s: float):
     if result.get("status") == "ok":
         return result.get("value")
     if result.get("status") == "timed_out":
-        raise OutcomeReadUnavailable(
+        # ``abandoned`` is empty here: ``pbstatus._stop_reader`` killed and
+        # reaped this reader (or never started one), so a later read cannot
+        # race it. Only this case is transient.
+        raise OutcomeObservationTimedOut(
             f"{section} timed out after {result.get('elapsed_s', budget_s)}s")
     kind = str(result.get("type") or "RuntimeError")
     message = str(result.get("error") or "reader failed")
@@ -2903,15 +2922,32 @@ def await_outcome(
 
     The parent owns ``wait_s`` and sleeps between polls. Each filesystem
     observation and the separate immutable-summary verification run in a
-    finite, FD-isolated child; an unavailable reader is an I/O failure (74),
+    finite, FD-isolated child. An unavailable reader is an I/O failure (74),
     never a cancelled action, a failure verdict, or an exhausted caller wait
     (75). ``wait_s=0`` retains its useful historical meaning: one immediate
-    observation with a finite read budget. A preemption handoff after that
-    probe cannot start another observation once caller patience is exhausted.
+    observation with a finite read budget, and 74 if that read is unavailable.
+    A preemption handoff after that probe cannot start another observation
+    once caller patience is exhausted.
+
+    With ``wait_s > 0``, a read that timed out and whose reader was reaped
+    (``OutcomeObservationTimedOut``) is repeated at the next poll, inside the
+    original deadline. A timed-out verification goes back to observation. The
+    retry starts only after ``_bounded_pool_read`` has confirmed that nothing
+    was abandoned, so at most one reader per wait is alive at any moment. A
+    reader that cannot be reaped, a failed reader, or an invalid reply still
+    ends the wait at once with 74. When the deadline passes and the last read
+    was unavailable, the wait also exits 74, with its own message: no record
+    was read, so ``pbrun`` cannot claim the work is still running (75).
     """
 
     deadline = time.monotonic() + wait_s
     first_observation = True
+    landed = None
+    rendered = None
+    # The most recent transient read, cleared by any read that succeeds.
+    unavailable: OutcomeObservationTimedOut | None = None
+    unavailable_count = 0
+    last_notice = None
     try:
         while True:
             if first_observation and wait_s <= 0:
@@ -2926,11 +2962,34 @@ def await_outcome(
                 budget_s = (min(OUTCOME_READ_TIMEOUT_S, remaining)
                             if remaining > 0 else OUTCOME_READ_TIMEOUT_S)
             previous_generation = generation
-            landed, generation = bounded_outcome_observation(
-                q, key, generation, budget_s=budget_s)
-            first_observation = False
-            if landed is not None:
-                break
+            try:
+                landed, generation = bounded_outcome_observation(
+                    q, key, generation, budget_s=budget_s)
+                first_observation = False
+                if landed is not None:
+                    # Verification keeps its own full budget once an ending
+                    # has landed; it does not borrow the caller's deadline.
+                    rendered = bounded_outcome_render(
+                        q, landed[0], landed[1], budget_s=OUTCOME_READ_TIMEOUT_S)
+                    break
+            except OutcomeObservationTimedOut as exc:
+                first_observation = False
+                landed = None
+                if wait_s <= 0:
+                    raise
+                unavailable, unavailable_count = exc, unavailable_count + 1
+                if time.monotonic() >= deadline:
+                    break
+                now = time.monotonic()
+                if last_notice is None or now - last_notice >= UNAVAILABLE_NOTICE_INTERVAL_S:
+                    last_notice = now
+                    print(f"pbrun: pool outcome for {key[:12]} not observed yet "
+                          f"({exc}); {unavailable_count} consecutive unavailable "
+                          "read(s), retrying inside --wait-s",
+                          file=sys.stderr, flush=True)
+                time.sleep(min(POLL_S, max(0.0, deadline - time.monotonic())))
+                continue
+            unavailable, unavailable_count = None, 0
             if generation != previous_generation:
                 # The just-observed preemption named an exact successor.
                 # Preserve the old immediate lineage handoff without allowing
@@ -2950,21 +3009,18 @@ def await_outcome(
         print(f"pbrun: unavailable pool outcome for {key[:12]}: {exc}",
               file=sys.stderr)
         return RECORD_WRITE_FAILED_EXIT
+    if landed is None and unavailable is not None:
+        print(f"pbrun: unavailable pool outcome for {key[:12]} when the wait "
+              f"ended: {unavailable_count} consecutive unavailable read(s), "
+              f"the last: {unavailable}. The action may still be running or "
+              "may already have landed; nothing was cancelled. Read "
+              f"pb-queue/{{done,failed,withdrawn}}/{key[:12]}*.json or run "
+              f"pbwait.py {key[:12]}", file=sys.stderr)
+        return RECORD_WRITE_FAILED_EXIT
     if landed is None:
         print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
         return GAVE_UP_EXIT
     outcome_path, outcome = landed
-
-    try:
-        rendered = bounded_outcome_render(
-            q, outcome_path, outcome, budget_s=OUTCOME_READ_TIMEOUT_S)
-    except UnreadableTerminal as exc:
-        print(f"pbrun: unreadable ending for {key[:12]}: {exc}", file=sys.stderr)
-        return 1
-    except OutcomeReadUnavailable as exc:
-        print(f"pbrun: unavailable pool outcome for {key[:12]}: {exc}",
-              file=sys.stderr)
-        return RECORD_WRITE_FAILED_EXIT
     summary = rendered["summary"]
     detail = summary["detail"]
     status = summary["status"]

@@ -53,7 +53,9 @@ def test_fifo_submission_observation_is_bounded_with_a_causal_marker(
 
     The child-owned FIFO has no writer. The marker is made at the exact
     ``outstanding_submission`` read, before its open blocks, so the outer
-    watchdog distinguishes this regression from a test-runner delay.
+    watchdog distinguishes this regression from a test-runner delay. The wait
+    has zero patience, so this pins the single-read contract: a patient wait
+    retries a reaped timeout (#558, ``test_pbwait_observation_retry.py``).
     """
 
     queue = _queue(tmp_path)
@@ -77,7 +79,7 @@ def blocked(path, *args, **kwargs):
 Path.read_text = blocked
 pbwait.slurm_lane.recorded_submission = lambda *_args, **_kwargs: None
 pbwait.PBWAIT_READ_TIMEOUT_S = 0.05
-row = pbwait.wait_one(queue, {KEY!r}, cas=pb.PrismaBuildCAS(Path({str(tmp_path / "cas")!r})), deadline=time.monotonic() + 1)
+row = pbwait.wait_one(queue, {KEY!r}, cas=pb.PrismaBuildCAS(Path({str(tmp_path / "cas")!r})), deadline=time.monotonic())
 print(row["status"])
 print(row["note"])
 '''
@@ -109,9 +111,10 @@ def test_immutable_summary_verification_is_bounded_per_key(
         time.sleep(30)
 
     monkeypatch.setattr(pbrun, "outcome_summary", blocked)
+    # Zero patience pins one bounded verification; a patient wait retries it.
     row = pbwait.wait_one(
         queue, KEY, cas=pb.PrismaBuildCAS(tmp_path / "cas"),
-        deadline=time.monotonic() + 1,
+        deadline=time.monotonic(),
     )
     assert row["status"] == "record_error"
     assert "pool outcome verification timed out" in str(row["note"])
@@ -218,9 +221,11 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
     good = {**_outcome(), "action_key": healthy}
     queue.item_path(pool.DONE, healthy).write_text(json.dumps(good), encoding="utf-8")
     monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S", 0.05)
+    # Zero patience: the blocked key's single timed-out read is its row. A
+    # patient wait would retry it until the deadline (#558).
     rows = pbwait.wait_for_keys(
         queue, [blocked, healthy], cas=pb.PrismaBuildCAS(tmp_path / "cas"),
-        wait_s=1,
+        wait_s=0,
     )
     assert [row["status"] for row in rows] == ["record_error", "executed"]
     assert "pbwait observation timed out" in str(rows[0]["note"])

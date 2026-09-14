@@ -704,7 +704,15 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
             for row in waited:
                 key = row["action_key"]
                 if row["status"] in {"record_error", "unreadable"}:
-                    stopped = True
+                    # A reaped, timed-out read says nothing about the action.
+                    # While the campaign deadline lasts, keep the key pending:
+                    # it still holds its slot, so no new submission is
+                    # authorized by it, and the next pass looks again. The
+                    # row is still recorded, so a deadline that passes on it
+                    # reports exit 74 rather than a verdict.
+                    if not (row.get("observation_timed_out")
+                            and time.monotonic() < deadline):
+                        stopped = True
                 elif row["status"] != "waiting":
                     try:
                         occupied = transport == "pool" and _pool_slot_occupied(queue, key)

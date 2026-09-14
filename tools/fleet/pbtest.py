@@ -103,6 +103,23 @@ def pytest_summary(lines: list[str]) -> str:
             return line.strip()
     return ""
 
+
+#: The line ``pbrun`` prints, with exit 74, when it could not read an action's
+#: ending: at zero patience, when a reader could not be reaped, or when a
+#: patient wait ended while the last read was unavailable.
+UNOBSERVED_OUTCOME = re.compile(r"^pbrun: unavailable pool outcome for ([0-9a-f]{12})\b")
+
+
+def unobserved_outcome(lines: list[str]) -> str | None:
+    """The 12-character key whose ending ``pbrun`` could not read, or ``None``."""
+
+    for line in reversed(lines):
+        match = UNOBSERVED_OUTCOME.match(ANSI.sub("", line).strip())
+        if match:
+            return match.group(1)
+    return None
+
+
 def replayed_output(out: str) -> str:
     """The shard's own stdout, when ``pbrun`` printed a receipt instead of it.
 
@@ -493,8 +510,19 @@ def main() -> int:
             # find the returncode elsewhere to tell them apart.
             rc = proc.returncode
             how = f"signal {-rc}" if rc < 0 else f"rc={rc}"
-            summary = (f"NO PYTEST SUMMARY -- {len(bucket)} file(s) did not run "
-                       f"(the shard ended {how}, before or outside pytest)")
+            unobserved = unobserved_outcome(tail) if rc == 74 else None
+            if unobserved is not None:
+                # pbrun could not read the shard's ending. The action may have
+                # run to completion or may still be running, so "did not run"
+                # would be a claim nobody observed. It is still not green.
+                summary = (f"OUTCOME UNOBSERVED -- {len(bucket)} file(s) have no "
+                           f"observed result (rc=74; action {unobserved} may still "
+                           "be running or may already have landed; read "
+                           f"pb-queue/{{done,failed,withdrawn}}/{unobserved}*.json "
+                           "before rerunning)")
+            else:
+                summary = (f"NO PYTEST SUMMARY -- {len(bucket)} file(s) did not run "
+                           f"(the shard ended {how}, before or outside pytest)")
         results.append({"shard": index, "files": bucket,
                         "returncode": proc.returncode, "summary": summary,
                         "ran": ran, "output": out})
