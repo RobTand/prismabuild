@@ -25,8 +25,10 @@ plan before publishing its first child. Once published, a child's scope and
 task membership are immutable, whether ready or running. Availability changes
 placement, not unit membership. Retry the same unit and adopt verified durable
 results; do not split or resize queued/running units. The agreed
-[decomposer design](../../docs/design_work_decomposition_2026-09-11.md) is proposed
-support, not a capability of the current runtime.
+[decomposer design](../../docs/design_work_decomposition_2026-09-11.md) describes
+the synchronous MVP implemented in PR #518. Durable queued parents and parent
+withdrawal remain unimplemented. Verify the published generation before using
+logical requests; a source merge alone does not provide runtime support.
 
 Use PrismaBuild's supported fanout and campaign interfaces. Give `pbtest.py`
 the suite and let it partition tests; give `pbcampaign.py` independent logical

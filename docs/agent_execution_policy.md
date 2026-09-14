@@ -156,7 +156,9 @@ durable results when retrying the same unit. Preserve calibration, dependency
 and residency boundaries, and use measured setup/work costs to avoid both
 wasteful cold-start quanta and opaque long worklists. Producers do not choose
 hosts or fleet shard counts. The [#517 design](design_work_decomposition_2026-09-11.md)
-specifies the proposed decomposer; current tools do not yet implement it.
+specifies the synchronous MVP implemented in PR #518. Durable queued parents
+and parent withdrawal remain unimplemented; source support alone does not
+establish deployed support.
 
 Use `pbtest.py` to split suites into independent file shards and
 `pbcampaign.py` for explicit action manifests. Cap pytest fanout at `-n 4` with

@@ -138,8 +138,11 @@ every task in exactly one batch -- and it is published under the parent's key,
 so a campaign interrupted halfway resumes into the same batches and publishes
 only the children that are missing.
 
-``common`` carries six fields, spelled as the row fields above: ``argv``,
-``cwd``, ``demand``, ``env``, ``gpu_memory_gb`` and ``data_manifest``.  Its
+``common`` carries six base fields, spelled as the row fields above: ``argv``,
+``cwd``, ``demand``, ``env``, ``gpu_memory_gb`` and ``data_manifest``. It also
+accepts the ordinary progress, timeout, profile, retry, placement and snapshot
+policies; the same row validation and pbrun sealing apply. ``priority`` stays
+on the campaign CLI, and a single-action ``as_sealed_by`` key is refused. Its
 ``argv`` must contain ``{pb.task_batch}`` exactly once, as a whole argument.
 That is where each child's own batch file lands -- substituted, never expanded
 -- and the substituted value is a path into the CAS.
@@ -490,7 +493,10 @@ def load_manifest(path, *, transport: str = "slurm") -> list[dict] | dict:
         # refused at the operator's terminal, not after a plan is published
         # under a parent key that will outlive the mistake.
         try:
-            return dc.validate_logical_request(value)
+            request = dc.validate_logical_request(value)
+            _require_row_shape(request["common"], index=0)
+            _require_submittable_row(request["common"], index=0, transport=transport)
+            return request
         except pb.ActionContractError as exc:
             raise ManifestError(f"this logical request is malformed: {exc}") from None
     if not isinstance(value, list):

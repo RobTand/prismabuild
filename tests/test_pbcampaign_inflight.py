@@ -217,3 +217,13 @@ def test_cache_hit_can_continue_past_an_old_failed_attempt(monkeypatch):
     )
     assert events == [("submit", 0), ("poll", [0]), ("submit", 1), ("poll", [1])]
     assert pbcampaign.pbwait.verdict(pbcampaign.rows_for(submissions, waited)) == 0
+
+
+def test_logical_request_refuses_window_before_decomposition(monkeypatch):
+    monkeypatch.setattr(pbcampaign, "load_manifest", lambda *a, **k: {"schema": "logical"})
+    def unexpected(*a, **k):
+        raise AssertionError("unsupported window must refuse before decomposition")
+    monkeypatch.setattr(pbcampaign, "decompose", unexpected)
+    with pytest.raises(SystemExit) as error:
+        pbcampaign.main(["--transport", "pool", "--max-inflight", "2", "unused.json"])
+    assert error.value.code == 2

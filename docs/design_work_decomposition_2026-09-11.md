@@ -198,6 +198,18 @@ Freeze the common source/action template once. Later decomposition recovery or
 child publication must not snapshot a mutable checkout again. Extract and reuse
 `pbrun`'s ordinary sealer rather than cloning its hashing rules.
 
+The logical ``common`` declaration carries its six execution fields
+(``argv``, ``cwd``, ``demand``, ``env``, ``gpu_memory_gb`` and
+``data_manifest``) plus any ordinary child policy that all batches share:
+timeout/progress/profile, retry, tags and portability, snapshot references,
+determinism/environment flags, exclusive GPU capacity, and measurement or
+host-class scope. ``pbcampaign`` applies its existing row-shape and
+submittable-policy validation before this common half freezes, so a malformed
+placement, progress, memory, or retry policy cannot become a parent record.
+``priority`` stays the campaign's queue hint and ``as_sealed_by`` stays a
+single-action receipt/reseal handle; neither has one valid meaning for a
+logical parent with many children.
+
 For the PrismaQuant consumer, the common domain identity remains the original
 full-band campaign identity; PB's parent request additionally binds scheduling
 policy and generic execution semantics. Each child action key binds one

@@ -139,9 +139,16 @@ _RESIDENCY_KEYS = frozenset({"key", "setup_seconds", "setup_evidence"})
 _POLICY_KEYS = frozenset(
     {"schema", "residencies", "max_setup_fraction", "max_estimated_wall_seconds"}
 )
-_COMMON_KEYS = frozenset(
-    {"argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env"}
-)
+_COMMON_KEYS = frozenset({
+    "argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env",
+    # Policies every child shares. Submission priority and --as-sealed-by are
+    # excluded: the former is a queue hint and the latter names one complete
+    # action, whereas a logical parent deliberately becomes many children.
+    "timeout_s", "progress_phases", "progress_cycle", "profile",
+    "retry_safe", "max_attempts", "tags", "snapshot_ref",
+    "deterministic", "no_default_env", "exclusive", "gpu_capacity",
+    "measurement", "host_class", "anywhere", "here",
+})
 _REQUEST_KEYS = frozenset({"schema", "common", "roster", "batch_policy"})
 _FROZEN_COMMON_KEYS = frozenset({"schema", "argv", "action_common"})
 #: The half of a sealed action that a decomposition does not vary.  Exactly
@@ -337,6 +344,59 @@ def _validate_batch_argv(value: object, *, where: str) -> list[str]:
     return argv
 
 
+_COMMON_BOOLEAN_POLICY_KEYS = frozenset({
+    "progress_cycle", "retry_safe", "deterministic", "no_default_env",
+    "exclusive", "measurement", "anywhere", "here",
+})
+_COMMON_LIST_POLICY_KEYS = frozenset({"progress_phases", "tags", "snapshot_ref"})
+
+
+def _validate_common_policies(common: Mapping[str, object]) -> dict[str, Any]:
+    """Keep optional policies structurally compatible with campaign rows.
+
+    pbcampaign invokes its existing row-shape and submittable-row checks
+    before it freezes or publishes a logical request. This library deliberately
+    leaves placement, progress, profile and retry semantics to that boundary,
+    while refusing values that cannot become row flags at all.
+    """
+
+    policies: dict[str, Any] = {}
+    for key in _COMMON_BOOLEAN_POLICY_KEYS:
+        if key in common:
+            value = common[key]
+            if not isinstance(value, bool):
+                pb._fail(f"common spec {key} must be true or false")
+            policies[key] = value
+    for key in _COMMON_LIST_POLICY_KEYS:
+        if key not in common:
+            continue
+        value = common[key]
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            pb._fail(f"common spec {key} must be an array of non-empty strings")
+        policies[key] = [
+            pb._text(entry, where=f"common spec {key}[{index}]")
+            for index, entry in enumerate(value)
+        ]
+    if "timeout_s" in common:
+        policies["timeout_s"] = _finite_positive(
+            common["timeout_s"], where="common spec timeout_s"
+        )
+    if "profile" in common:
+        policies["profile"] = pb._text(
+            common["profile"], where="common spec profile"
+        )
+    if "host_class" in common:
+        policies["host_class"] = pb._text(
+            common["host_class"], where="common spec host_class"
+        )
+    for key in ("max_attempts", "gpu_capacity"):
+        if key in common:
+            policies[key] = pb._nonnegative_integer(
+                common[key], where=f"common spec {key}"
+            )
+    return policies
+
+
 def validate_common_spec(value: object) -> dict[str, Any]:
     """Canonicalize what every child of this parent executes identically.
 
@@ -374,6 +434,7 @@ def validate_common_spec(value: object) -> dict[str, Any]:
         "env": dict(env),
         "gpu_memory_gb": gpu_memory_gb,
         "data_manifest": data_manifest,
+        **_validate_common_policies(common),
     }
 
 
