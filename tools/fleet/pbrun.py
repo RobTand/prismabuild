@@ -1242,6 +1242,20 @@ class _OfferSnapshot(pool.PoolQueue):
         return list(self._records)
 
 
+class OfferDiscoveryTimedOut(SystemExit):
+    """Worker-offer discovery ran out of time, and its reader was reaped.
+
+    It is still a refusal.  Plain ``pbrun`` exits 1 with the same text, and no
+    runnable submission was published.  It is a separate class because it is
+    the one refusal that repeating the submission can clear: the offer scan
+    was slow, and nothing shows a problem with the action.  ``pbcampaign
+    --max-inflight`` retries it within its own deadline (#560).  A read error,
+    an invalid reply or a reader that survived cleanup stays a plain
+    ``SystemExit``: a retry could not fix the first two, and would race the
+    third.
+    """
+
+
 def bounded_offer_snapshot(queue) -> _OfferSnapshot:
     """Read worker offers once in an abandonable child, or refuse before READY.
 
@@ -1267,9 +1281,11 @@ def bounded_offer_snapshot(queue) -> _OfferSnapshot:
     else:
         reason = f"failed: {result.get('type', 'RuntimeError')}: {result.get('error', '')}"
     retained = f" retained reader={json.dumps(abandoned, sort_keys=True)}" if abandoned else ""
-    raise SystemExit(
-        "pbrun: worker-offer discovery " + reason + "; refusing submission; "
-        "no runnable submission was published." + retained)
+    message = ("pbrun: worker-offer discovery " + reason + "; refusing submission; "
+               "no runnable submission was published." + retained)
+    if result.get("status") == "timed_out" and not abandoned:
+        raise OfferDiscoveryTimedOut(message)
+    raise SystemExit(message)
 
 
 def exclusive_gpu_demand(queue, tags) -> int:

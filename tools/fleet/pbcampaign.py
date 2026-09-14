@@ -565,6 +565,11 @@ def pbrun_argv(row) -> list[str]:
     return flags + ["--", *[str(item) for item in row["argv"]]]
 
 
+# The ``retryable`` value ``submit_row`` puts on a refused record when pbrun's
+# worker-offer discovery timed out and its reader was reaped.
+OFFER_DISCOVERY_TIMED_OUT = "offer_discovery_timed_out"
+
+
 def submit_row(row, *, transport: str = "") -> dict:
     """Seal and submit one row through ``pbrun``, and return what it printed.
 
@@ -595,6 +600,12 @@ def submit_row(row, *, transport: str = "") -> dict:
     try:
         with contextlib.redirect_stdout(captured):
             code = pbrun.main()
+    except pbrun.OfferDiscoveryTimedOut as exc:
+        # Still a refusal, so the submit-all and decomposed paths count it as
+        # one.  The marker lets a windowed controller retry the row, because
+        # pbrun published no runnable item before the offer scan (#560).
+        return {"status": "refused", "retryable": OFFER_DISCOVERY_TIMED_OUT,
+                "error": str(exc.code), "flags": flags}
     except SystemExit as exc:
         # ``pbrun`` refuses by raising ``SystemExit`` with the explanation as
         # its argument, so the text IS the diagnosis -- which tag no box
@@ -626,7 +637,10 @@ def _submit_record(row, *, index: int, transport: str) -> dict:
         published = {"status": "refused", "flags": [],
                      "error": f"row {index}: {type(exc).__name__}: {exc}"}
     key = str(published.get("action_key") or "")
-    print(f"pbcampaign: row {index} {published['status']} "
+    label = str(published["status"])
+    if published.get("retryable"):
+        label += f" ({published['retryable']})"
+    print(f"pbcampaign: row {index} {label} "
           f"{key or '-'}", file=sys.stderr, flush=True)
     return published
 
@@ -664,6 +678,8 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
     prefix. Unknown outcomes never authorize another submission. The first
     window is published even with wait_s=0; subsequent work shares one
     monotonic wait budget, including time spent submitting replacements.
+    A worker-offer discovery timeout publishes nothing, so that row is retried
+    within the same budget instead of stopping the window.
     """
 
     queue = pool.PoolQueue(pbrun.SH / "pb-queue")
@@ -673,6 +689,7 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
     deadline = None
     stopped = False
     while True:
+        retrying = False
         while len(submissions) < len(rows) and len(pending) < max_inflight:
             if deadline is not None and time.monotonic() >= deadline:
                 break
@@ -680,6 +697,17 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
             # Keep the existing per-row exception boundary and print the full
             # digest immediately: a killed controller must leave its keys.
             published = _submit_record(rows[index], index=index, transport=transport)
+            if published.get("retryable") == OFFER_DISCOVERY_TIMED_OUT:
+                # pbrun refused before it published a runnable item, so no
+                # outcome is uncertain and no slot is held.  The offer scan
+                # was slow, which says nothing about the row.  Submit the same
+                # row again at the next poll while the wait budget lasts; when
+                # the budget runs out the row is reported not_submitted (#560).
+                print(f"pbcampaign: row {index} not submitted yet: "
+                      f"{published.get('error')}; retrying while --wait-s lasts",
+                      file=sys.stderr, flush=True)
+                retrying = True
+                break
             submissions.append(published)
             key = str(published.get("action_key") or "")
             if published.get("status") not in {"submitted", "attached", "cache_hit"} or not key:
@@ -742,7 +770,10 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        if pending and (len(pending) >= max_inflight or len(submissions) == len(rows)):
+        # A retry also waits a poll, so a slow offer scan is not asked again at
+        # once, even when nothing else is pending.
+        if retrying or (pending and (len(pending) >= max_inflight
+                                     or len(submissions) == len(rows))):
             time.sleep(min(pbrun.POLL_S, remaining))
 
     for index in range(len(submissions), len(rows)):
