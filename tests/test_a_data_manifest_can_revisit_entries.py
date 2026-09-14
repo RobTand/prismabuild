@@ -119,6 +119,28 @@ def test_claimed_first_and_failed_revisit_keep_linear_frontier(tmp_path: Path) -
     assert record["status"] == "partial"
 
 
+def test_a_failed_revisit_does_not_adopt_a_later_successful_reference(
+        tmp_path: Path) -> None:
+    fleet = Fleet(tmp_path)
+    key = fleet.action(
+        "revisit-gap", [fleet.file("a.pt", 4), fleet.file("b.pt", 4)],
+        read_plan=_plan(),
+        progress_phases=[phase["name"] for phase in _plan()["phases"]])
+    args = fleet.args(arcstats=fleet.arcstats(size=0, c=8, c_max=8))
+    fleet.cycle(args)
+    assert fleet.queue.prewarm(key)["warmed_bytes"] == 8
+    fleet.claim(key)
+    fleet.report_progress(key, "reverse-1")
+    (fleet.mount / "b.pt").unlink()
+
+    fleet.cycle(args)
+
+    record = fleet.queue.prewarm(key)
+    assert record["bytes_warmed"] == 4, "the later a.pt did read"
+    assert record["warmed_bytes"] == 8, "failed b.pt creates a gap"
+    assert record["status"] == "partial"
+
+
 def test_read_window_can_stop_inside_one_phase_without_releasing_its_bytes(
         tmp_path: Path) -> None:
     fleet = Fleet(tmp_path)
