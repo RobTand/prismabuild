@@ -76,7 +76,8 @@ class Fleet:
     def action(self, key_seed: str, files, *, priority: int = 0,
                with_manifest: bool = True,
                annotations: dict | None = None,
-               progress_phases: list[str] | None = None) -> str:
+               progress_phases: list[str] | None = None,
+               read_plan: dict | None = None) -> str:
         """Seal a request carrying a manifest input and publish it ready."""
 
         action_key = hashlib.sha256(key_seed.encode()).hexdigest()
@@ -94,6 +95,10 @@ class Fleet:
         if with_manifest:
             manifest = data_manifest(files, prefix=str(self.mount),
                                      annotations=annotations)
+            if read_plan is not None:
+                manifest["schema"] = pb.DATA_MANIFEST_SCHEMA_V2
+                manifest["read_plan"] = read_plan
+            manifest = pb.validate_data_manifest(manifest)
             blob = self.root / f"{key_seed}.manifest.json"
             blob.write_text(json.dumps(manifest))
             entry, _ = self.cas.ingest_input(
@@ -104,6 +109,11 @@ class Fleet:
                 "entry_count": manifest["entry_count"],
                 "total_bytes": manifest["total_bytes"],
             }
+            if read_plan is not None:
+                params["data_manifest"].update({
+                    "schema": pb.DATA_MANIFEST_SCHEMA_V2,
+                    "read_bytes": manifest["read_plan"]["read_bytes"],
+                })
         request = self.cas_root / "requests" / action_key[:2] / f"{action_key}.json"
         request.parent.mkdir(parents=True, exist_ok=True)
         request.write_text(json.dumps(

@@ -2809,6 +2809,16 @@ action's accepted read frontier.  Only the matching claim lease's
 the role never infers consumed bytes from arbitrary progress units. It keeps a
 declared action reserved when that observation is absent; claim grace is only
 the fallback for actions with no progress policy.
+Opt-in data-manifest v2 separates the unique tensor-range registry
+(`entry_count`, `total_bytes`) from an ordered `read_plan` of phase-local entry
+references. A later phase may reference the same range again, and the role
+uses `read_bytes` including these revisits for its linear window/frontier and
+ARC reservation. Each v2 read phase must match a sealed linear progress phase
+in order. Empty read phases can mark compute frontiers. The source-side v2
+validator closes malformed references and totals, while an older storage
+generation refuses the schema; deployment of the compatible running storage
+role is a prerequisite to v2 submission. V1 summaries and consumption order
+are unchanged. See the input guide for the exact wire contract.
 The storage role never trusts the action-writable progress file directly,
 because only the worker has the per-launch token that authenticates it.  Cyclic
 progress does not establish an irreversible manifest frontier.  A disk hold

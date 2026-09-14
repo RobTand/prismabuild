@@ -145,11 +145,13 @@ PBRUN_CHECKOUT_SNAPSHOT_REF_NAME = "prismabuild-snapshot"
 #: submission produces a different action.
 PBCAMPAIGN_DATA_MANIFEST_INPUT_ID = "pbcampaign.data-manifest"
 DATA_MANIFEST_SCHEMA_V1 = "prismaquant.prismabuild.data_manifest.v1"
+DATA_MANIFEST_SCHEMA_V2 = "prismaquant.prismabuild.data_manifest.v2"
 #: Stored bytes retain the original ceiling. Gzip permits larger read lists
 #: without an unbounded decompression; parsed JSON objects cost extra memory.
 DATA_MANIFEST_MAX_BYTES = 64 * 1024 * 1024
 DATA_MANIFEST_MAX_DECODED_BYTES = 512 * 1024 * 1024
 DATA_MANIFEST_MAX_ENTRIES = 1_000_000
+DATA_MANIFEST_MAX_READS = 4_000_000
 LOCAL_RESULT_CLAIM_SCHEMA_V1 = "prismaquant.prismabuild.local_result_claim.v1"
 INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1 = (
     "prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1"
@@ -340,6 +342,11 @@ _ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,255}\Z")
 _DATA_MANIFEST_KEYS = frozenset(
     {"schema", "produced_by", "mount_prefix", "entries", "entry_count",
      "total_bytes", "annotations"}
+)
+_DATA_MANIFEST_V2_KEYS = _DATA_MANIFEST_KEYS | {"read_plan"}
+_DATA_MANIFEST_READ_PLAN_KEYS = frozenset({"phases", "read_bytes"})
+_DATA_MANIFEST_READ_PHASE_KEYS = frozenset(
+    {"name", "entry_indices", "bytes", "cumulative_bytes"}
 )
 _DATA_MANIFEST_ENTRY_KEYS = frozenset({"path", "offset", "bytes", "sha256"})
 _GIT_OBJECT_ID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
@@ -2228,12 +2235,16 @@ def validate_data_manifest(value: object) -> dict[str, object]:
     CAS like any other input, so the action key covers these bytes exactly.
     """
 
+    if not isinstance(value, Mapping):
+        _fail("data manifest must be an object")
+    raw_schema = value.get("schema")
+    if raw_schema not in (DATA_MANIFEST_SCHEMA_V1, DATA_MANIFEST_SCHEMA_V2):
+        _fail("data manifest schema must be a supported version")
     manifest = _exact_mapping(
-        value, keys=_DATA_MANIFEST_KEYS, where="data manifest"
+        value, keys=(_DATA_MANIFEST_V2_KEYS if raw_schema == DATA_MANIFEST_SCHEMA_V2
+                     else _DATA_MANIFEST_KEYS), where="data manifest"
     )
     schema = _text(manifest["schema"], where="data manifest schema")
-    if schema != DATA_MANIFEST_SCHEMA_V1:
-        _fail(f"data manifest schema must be {DATA_MANIFEST_SCHEMA_V1}")
     if not isinstance(manifest["produced_by"], Mapping):
         _fail("data manifest produced_by must be an object")
     if not isinstance(manifest["annotations"], Mapping):
@@ -2290,7 +2301,7 @@ def validate_data_manifest(value: object) -> dict[str, object]:
         manifest["total_bytes"], where="data manifest total_bytes"
     ) != total:
         _fail("data manifest total_bytes disagrees with entries")
-    return {
+    normalized = {
         "schema": schema,
         "produced_by": dict(manifest["produced_by"]),
         "annotations": dict(manifest["annotations"]),
@@ -2299,6 +2310,62 @@ def validate_data_manifest(value: object) -> dict[str, object]:
         "entry_count": len(entries),
         "total_bytes": total,
     }
+    if schema == DATA_MANIFEST_SCHEMA_V2:
+        if "phases" in manifest["annotations"]:
+            _fail("data manifest v2 uses read_plan, not annotations.phases")
+        plan = _exact_mapping(manifest["read_plan"],
+                              keys=_DATA_MANIFEST_READ_PLAN_KEYS,
+                              where="data manifest read_plan")
+        raw_phases = plan["phases"]
+        if type(raw_phases) is not list or not raw_phases:
+            _fail("data manifest read_plan.phases must be a non-empty array")
+        phases: list[dict[str, object]] = []
+        names: set[str] = set()
+        used: set[int] = set()
+        cumulative = 0
+        reads = 0
+        for index, raw in enumerate(raw_phases):
+            where = f"data manifest read_plan.phases[{index}]"
+            phase = _exact_mapping(raw, keys=_DATA_MANIFEST_READ_PHASE_KEYS,
+                                   where=where)
+            name = _text(phase["name"], where=f"{where}.name")
+            if name.strip() != name or "\x00" in name:
+                _fail(f"{where}.name must match a progress phase name")
+            if name in names:
+                _fail("data manifest read phase names must be unique")
+            names.add(name)
+            indices = phase["entry_indices"]
+            if type(indices) is not list:
+                _fail(f"{where}.entry_indices must be an array")
+            reads += len(indices)
+            if reads > DATA_MANIFEST_MAX_READS:
+                _fail(f"data manifest read references exceed {DATA_MANIFEST_MAX_READS}")
+            local: set[int] = set()
+            size = 0
+            for ref in indices:
+                ref = _nonnegative_integer(ref, where=f"{where}.entry_indices")
+                if ref >= len(entries):
+                    _fail(f"{where}.entry_indices references an absent entry")
+                if ref in local:
+                    _fail(f"{where}.entry_indices repeats an entry within a phase")
+                local.add(ref)
+                used.add(ref)
+                size += int(entries[ref]["bytes"])
+            if _nonnegative_integer(phase["bytes"], where=f"{where}.bytes") != size:
+                _fail(f"{where}.bytes disagrees with entry references")
+            cumulative += size
+            if (_nonnegative_integer(phase["cumulative_bytes"],
+                                     where=f"{where}.cumulative_bytes") != cumulative):
+                _fail(f"{where}.cumulative_bytes disagrees with entry references")
+            phases.append({"name": name, "entry_indices": list(indices),
+                           "bytes": size, "cumulative_bytes": cumulative})
+        if len(used) != len(entries):
+            _fail("data manifest read_plan must reference every unique entry")
+        if (_nonnegative_integer(plan["read_bytes"], where="data manifest read_plan.read_bytes")
+                != cumulative):
+            _fail("data manifest read_plan.read_bytes disagrees with phases")
+        normalized["read_plan"] = {"phases": phases, "read_bytes": cumulative}
+    return normalized
 
 
 def read_data_manifest(path: str | Path) -> tuple[dict[str, object], str]:
@@ -7712,7 +7779,9 @@ __all__ = [
     "INITIAL_MISS_RENDEZVOUS_RECEIPT_SCHEMA_V1",
     "DATA_MANIFEST_MAX_BYTES",
     "DATA_MANIFEST_MAX_ENTRIES",
+    "DATA_MANIFEST_MAX_READS",
     "DATA_MANIFEST_SCHEMA_V1",
+    "DATA_MANIFEST_SCHEMA_V2",
     "LOCAL_RESULT_CLAIM_SCHEMA_V1",
     "PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH",
     "PBCAMPAIGN_DATA_MANIFEST_INPUT_ID",
