@@ -597,6 +597,26 @@ unknown name would otherwise create an action no worker could admit. This does
 not narrow the generic `PoolQueue` resource ledger, whose direct producers may
 define resources outside the fleet-command client contract.
 
+## Work decomposition boundary
+
+Rob's 2026-09-11 design decision is to partition logical requests into small,
+useful execution units before those units are published. The logical parent
+may be queued first and pass through a PB-owned decomposer. That stage freezes
+and validates the complete child plan before publishing ordinary child actions.
+After publication, child scope and task membership are immutable, both while
+ready and while running. Existing admission chooses where a child executes;
+retry preserves that child's identity and adopts verified durable results.
+
+The detailed [decomposer design](design_work_decomposition_2026-09-11.md) is a
+contract for #517. PR #518 implements synchronous immutable decomposition and
+exact-cover closure; durable queued parents and parent withdrawal remain
+proposed. This is source support, not deployed qualification. The ordinary
+campaign path still accepts complete independent action rows. Producers must expose their
+logical tasks and necessary calibration/residency boundaries; PB must not guess
+how to split an opaque command or modify a published execution unit.
+The ordinary row controller retains `--max-inflight`; logical requests refuse
+that option until bounded child publication is supported.
+
 ## Test fanout submission
 
 `pbtest` validates every requested path before fanout. A path that is neither

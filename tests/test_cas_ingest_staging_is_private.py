@@ -214,3 +214,50 @@ def test_cleanup_ignores_a_held_directory_enumeration_offset(
         with os.scandir(private_descriptors[0]) as entries:
             assert [entry.name for entry in entries] == [pb.PRIVATE_STAGING_OWNER]
     assert not private.exists()
+
+
+# --------------------------------------------------------------------------
+# Bytes that were never a file
+# --------------------------------------------------------------------------
+
+def test_bytes_ingest_to_a_blob_indistinguishable_from_a_copied_one(
+    tmp_path: Path,
+) -> None:
+    """A decomposition's batch envelopes never touch a filesystem of their own.
+
+    They are derived from the request, so writing each one out to read it back
+    would be a temporary file per child in a directory somebody has to choose
+    -- and #517's campaigns run where ``/tmp`` is off limits.  What the CAS
+    publishes has to be the same inode a copy would have produced, because
+    every reader downstream treats the two identically.
+    """
+
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    raw = b'{"schema": "prismabuild.task_batch.v1"}\n'
+    (tmp_path / "same.json").write_bytes(raw)
+    copied, _ = cas.ingest_input(
+        tmp_path / "same.json", input_id="prismabuild.task-batch")
+
+    entry, won = cas.ingest_bytes(raw, input_id="prismabuild.task-batch")
+    assert entry == copied, "the same bytes are the same input row"
+    assert won is False, "the copy already occupied the content address"
+
+    blob = cas.blob_path(str(entry["sha256"]))
+    assert blob.read_bytes() == raw
+    assert not blob.stat().st_mode & 0o222, "a published blob is read-only"
+    assert cas.input_path(entry) == blob, "and it verifies on a full read"
+
+
+def test_a_bytes_ingest_leaves_no_staging_behind(tmp_path: Path) -> None:
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    cas.ingest_bytes(b"one\n", input_id="prismabuild.task-batch")
+    staging = tmp_path / "cas" / ".staging"
+    assert not staging.exists() or not list(staging.iterdir())
+
+
+def test_a_bytes_ingest_refuses_anything_that_is_not_bytes(tmp_path: Path) -> None:
+    """A ``str`` would encode under whatever the locale said, which is not a digest."""
+
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    with pytest.raises(pb.ActionContractError):
+        cas.ingest_bytes("not bytes", input_id="prismabuild.task-batch")

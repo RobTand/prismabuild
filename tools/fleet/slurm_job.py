@@ -42,7 +42,7 @@ from prismabuild import core, materialize, pool, slurm_lane  # noqa: E402
 #: therefore the one the Epilog needs to find them again.  Read from the sealed
 #: action rather than recomputed: recomputing an identity is how two answers to
 #: one question get into a system.
-CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
+CONTAINER_OWNER_ENV = pool.CONTAINER_OWNER_ENV
 
 #: The durable marker the shim writes on first container creation, and the
 #: file the pull queue's ``cleanup_action_containers`` unlinks once an action's
@@ -50,7 +50,7 @@ CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 #: ``container-owners/`` directory grew one file per containerized action and
 #: never shrank.  The Epilog does it now, which is why the path is written down
 #: here: it is in the sealed environment, so it is read rather than rebuilt.
-CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
+CONTAINER_MARKER_ENV = pool.CONTAINER_MARKER_ENV
 
 
 def _load_action(path: Path) -> dict[str, object]:

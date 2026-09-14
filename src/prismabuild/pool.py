@@ -192,6 +192,16 @@ CONTAINER_OWNER_LABEL = "prismabuild.action"
 #: writes this one from the kernel cgroup it is running in, so a query on it is
 #: an identity match rather than a name match.
 CONTAINER_SCOPE_LABEL = "prismabuild.scope"
+
+#: The sealed environment variable whose value becomes that label, and the
+#: sealed path of the marker the shim writes on first container creation.  They
+#: live beside the label because they are one contract with it: a submitter
+#: seals them, the Docker shim reads them, and finish, withdrawal and the SLURM
+#: Epilog all find an action's payloads by joining the three.  Three files
+#: spelled them separately, which is one edit away from a reaper querying a
+#: label nothing carries.
+CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
+CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 DOCKER = "/usr/bin/docker"
 ATTEMPTS = "attempts"
 
