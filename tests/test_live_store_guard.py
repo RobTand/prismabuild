@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import conftest
+import pytest
 
 # The pull queue's own materialization fixture, so this file proves the guard
 # against the sequence a real test runs rather than a re-creation of it.
@@ -68,6 +73,157 @@ def test_a_missing_store_lists_empty(tmp_path: Path) -> None:
     assert conftest.listing(tmp_path / "absent") == {
         "": set(), **{rel: set() for rel in conftest.WATCHED}
     }
+
+
+def test_a_reachable_store_with_a_blocked_traversal_is_not_certified(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """Session hooks bound a traversal that stalls after the root probe (#554)."""
+
+    live = _store(tmp_path / "live")
+
+    def blocked(_root: Path):
+        time.sleep(30)
+        return set(), True, []
+
+    class Plugins:
+        @staticmethod
+        def get_plugin(_name: str):
+            return None
+
+    config = SimpleNamespace(pluginmanager=Plugins())
+    session = SimpleNamespace(config=config)
+    monkeypatch.setattr(conftest, "LIVE_ROOT", live)
+    monkeypatch.setattr(conftest, "LIVE_PROBE_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(conftest, "reachable", lambda _root: True)
+    monkeypatch.setattr(conftest, "_walk", blocked)
+    started = time.monotonic()
+    conftest.pytest_sessionstart(session)
+    conftest.pytest_sessionfinish(session, 0)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10, f"the blocked census held pytest for {elapsed:.1f}s"
+    assert config._pb_live_before is None
+    assert "start census is unavailable (timed_out)" in capsys.readouterr().out
+
+
+def test_blocked_leak_attribution_is_not_counted_as_a_clean_census(
+        tmp_path: Path, monkeypatch) -> None:
+    """Content reads happen under the same abandonable finish boundary (#554)."""
+
+    live = _store(tmp_path / "live")
+    before = conftest.listing(live)
+    (live / "pb-queue/done/new.json").write_text('{"path": "new"}')
+
+    def blocked(_path: Path, _needle: str):
+        time.sleep(30)
+        return False, True, []
+
+    monkeypatch.setattr(conftest, "_names", blocked)
+    started = time.monotonic()
+    result = conftest.bounded_leaked_entries(
+        before, live_root=live, basetemp=str(tmp_path / "pytest"), timeout_s=0.1,
+    )
+    assert time.monotonic() - started < 10
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "timed_out"
+
+
+def test_top_level_files_and_absent_optional_directories_are_complete(tmp_path: Path) -> None:
+    """Only failed directory reads make an otherwise valid census partial."""
+
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "fleet-note.json").write_text("{}")
+    result = conftest.bounded_listing(live, timeout_s=1)
+    assert result["status"] == "complete"
+    assert result["listing"][""] == {"fleet-note.json"}
+    assert set(conftest.WATCHED).issubset(result["listing"])
+
+
+@pytest.mark.parametrize("timeout_s", [0, -1, float("inf"), float("nan")])
+def test_census_timeout_cannot_select_an_unbounded_reader(timeout_s: float) -> None:
+    with pytest.raises(ValueError, match="finite positive"):
+        conftest.bounded_listing(timeout_s=timeout_s)
+
+
+def test_xdist_workers_skip_the_full_history_census(monkeypatch) -> None:
+    """The controller's shared basetemp owns one before/after inventory."""
+
+    config = SimpleNamespace(workerinput={})
+    session = SimpleNamespace(config=config)
+    monkeypatch.setattr(
+        conftest, "bounded_listing",
+        lambda *_args, **_kwargs: pytest.fail("an xdist worker censused live history"),
+    )
+    conftest.pytest_sessionstart(session)
+    assert config._pb_live_guard_worker is True
+
+
+@pytest.mark.parametrize("workers", [0, 2])
+def test_real_session_rejects_a_leak_from_its_test_worker(tmp_path: Path, workers: int) -> None:
+    """The controller's before/after observations must catch worker basetemps."""
+
+    live = _store(tmp_path / "scratch-live")
+    suite = tmp_path / "suite"
+    tests = suite / "tests"
+    tests.mkdir(parents=True)
+    (tests / "conftest.py").symlink_to(Path(conftest.__file__).resolve())
+    (tests / "test_writer.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "def test_write(tmp_path):\n"
+        "    root = Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT'])\n"
+        "    (root / 'pb-queue/done/leak.json').write_text(str(tmp_path))\n"
+    )
+    env = dict(os.environ, PRISMABUILD_TEST_LIVE_ROOT=str(live),
+               PRISMABUILD_TEST_LIVE_PROBE_TIMEOUT_S="5")
+    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly",
+               "--basetemp", str(tmp_path / "child-basetemp")]
+    if workers:
+        command += ["-n", str(workers)]
+    result = subprocess.run(command + ["tests"], cwd=suite, env=env,
+                            text=True, capture_output=True, timeout=45)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 passed" in result.stdout, result.stdout + result.stderr
+    assert "were written by this test session" in result.stdout
+    assert "did not certify" not in result.stdout
+
+
+def test_a_traversal_error_is_partial_evidence(tmp_path: Path, monkeypatch) -> None:
+    live = _store(tmp_path / "live")
+
+    def denied(_root, *, onerror):
+        onerror(PermissionError("injected unreadable directory"))
+        return iter(())
+
+    monkeypatch.setattr(conftest.os, "walk", denied)
+    observation = conftest.bounded_listing(live, timeout_s=1)
+    assert observation["status"] == "partial"
+    assert "injected unreadable directory" in observation["detail"]
+    assert "listing" not in observation
+
+
+def test_a_positive_leak_in_partial_finish_evidence_still_fails_session(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """A known leak remains a failure even when another finish read is short."""
+
+    class Plugins:
+        @staticmethod
+        def get_plugin(_name: str):
+            return None
+
+    config = SimpleNamespace(
+        pluginmanager=Plugins(),
+        _pb_live_before={"": set()},
+        _tmp_path_factory=SimpleNamespace(getbasetemp=lambda: tmp_path / "pytest"),
+    )
+    session = SimpleNamespace(config=config, exitstatus=0)
+    monkeypatch.setattr(conftest, "bounded_leaked_entries", lambda *_args, **_kwargs: {
+        "status": "partial", "reason": "traversal_error", "detail": "denied",
+        "leaked": ["pb-queue/done/leak.json"], "abandoned": [],
+    })
+    conftest.pytest_sessionfinish(session, 0)
+    assert session.exitstatus == 1
+    assert "despite the partial census" in capsys.readouterr().out
 
 
 def test_the_quarantine_is_not_watched(tmp_path: Path) -> None:

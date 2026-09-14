@@ -19,20 +19,33 @@ Two guards, because neither is complete on its own:
     ``tmp_path`` before each test. It cannot reach a default bound at function
     definition, such as ``PoolQueue(root=DEFAULT_POOL_ROOT)``, so a test that
     calls one of those without a root still gets the live path.
-*   ``pytest_sessionfinish`` walks the live store before the session and after
-    it, and fails the session when a new entry names this session's
-    ``basetemp``. A new entry that does not is reported but not counted: the
-    fleet may file real work while the suite runs.
+*   ``pytest_sessionstart`` and ``pytest_sessionfinish`` census the live store
+    in an abandonable reader, and fail the session when complete before/after
+    observations find a new entry naming this session's ``basetemp``. A new
+    entry that does not is reported but not counted: the fleet may file real
+    work while the suite runs. An unavailable or partial observation says so;
+    it is never treated as a clean leak check.
 """
 from __future__ import annotations
 
 import os
+import math
+import stat
 import subprocess
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 import sys
 
 import pytest
+
+# The status reader already owns the fleet's bounded fork-and-abandon contract.
+# Reuse it here rather than adding a second timeout shape for a hard-mounted
+# store. The root conftest adds ``src``; this test-only hook also needs the
+# script directory because ``pbstatus`` is intentionally not a package module.
+_FLEET_TOOLS = Path(__file__).resolve().parents[1] / "tools" / "fleet"
+if str(_FLEET_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_FLEET_TOOLS))
+import pbstatus  # noqa: E402
 
 #: The mount the fleet executes against. The environment override exists so
 #: the guard itself can be exercised against a scratch store.
@@ -47,8 +60,18 @@ LIVE_ROOT = Path(
 #: answered after 15 s and the xdist workers sat in ``rpc_wait_bit_killable``
 #: for over 330 s. The guard is a convenience and the suite is not, so an
 #: unreachable store costs this many seconds and then the guard stands down.
-LIVE_PROBE_TIMEOUT_S = float(
-    os.environ.get("PRISMABUILD_TEST_LIVE_PROBE_TIMEOUT_S") or "10"
+def _positive_timeout(value: object, *, name: str) -> float:
+    """Reject a timeout spelling that would select pbstatus's unbounded path."""
+
+    timeout_s = float(value)
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise ValueError(f"{name} must be a finite positive number of seconds")
+    return timeout_s
+
+
+LIVE_PROBE_TIMEOUT_S = _positive_timeout(
+    os.environ.get("PRISMABUILD_TEST_LIVE_PROBE_TIMEOUT_S") or "10",
+    name="PRISMABUILD_TEST_LIVE_PROBE_TIMEOUT_S",
 )
 
 #: Top-level entries of ``LIVE_ROOT`` the guard leaves alone. The quarantine
@@ -159,16 +182,17 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     yield
 
 
-def _top_level(live_root: Path) -> set[str]:
+def _top_level(live_root: Path) -> tuple[set[str], bool, list[str]]:
     """The store's own entries, empty for a store that is not mounted."""
 
     try:
-        return {name for name in os.listdir(live_root) if name not in UNWATCHED}
-    except OSError:
-        return set()
+        return ({name for name in os.listdir(live_root) if name not in UNWATCHED},
+                True, [])
+    except OSError as exc:
+        return set(), False, [f"{live_root}: {type(exc).__name__}: {exc}"]
 
 
-def _walk(root: Path) -> set[str]:
+def _walk(root: Path) -> tuple[set[str], bool, list[str]]:
     """Every path under ``root``, relative to it, empty for a missing one.
 
     ``os.walk`` rather than ``Path.rglob``: a stale NFS handle or a directory
@@ -183,12 +207,32 @@ def _walk(root: Path) -> set[str]:
     into the live runtime under both names, which is the direction to err in.
     """
 
+    try:
+        mode = os.stat(root).st_mode
+    except FileNotFoundError:
+        # A known store component may legitimately not exist yet. It was not
+        # listed at the root, so this is an empty complete branch, not an I/O
+        # failure hidden as a clean census.
+        return set(), True, []
+    except OSError as exc:
+        return set(), False, [f"{root}: {type(exc).__name__}: {exc}"]
+    if not stat.S_ISDIR(mode):
+        # ``listing`` walks newly discovered root entries too. Ordinary files
+        # are entries to compare, not directories whose lack of children makes
+        # the whole census partial.
+        return set(), True, []
+
     found: set[str] = set()
-    for directory, subdirectories, files in os.walk(root, onerror=lambda _e: None):
+    errors: list[str] = []
+
+    def record_error(exc: OSError) -> None:
+        errors.append(f"{root}: {type(exc).__name__}: {exc}")
+
+    for directory, subdirectories, files in os.walk(root, onerror=record_error):
         base = Path(directory).relative_to(root)
         for name in (*subdirectories, *files):
             found.add((base / name).as_posix())
-    return found
+    return found, not errors, errors
 
 
 def listing(live_root: Path = LIVE_ROOT) -> dict[str, set[str]]:
@@ -206,26 +250,109 @@ def listing(live_root: Path = LIVE_ROOT) -> dict[str, set[str]]:
     store itself is a new entry too.
     """
 
+    return _census(live_root)["listing"]
+
+
+def _census(live_root: Path) -> dict:
+    """Read the full inventory and retain whether every directory answered."""
+
     root = Path(live_root)
-    out: dict[str, set[str]] = {"": _top_level(root)}
-    for name in sorted(out[""] | set(WATCHED)):
-        out[name] = _walk(root / name)
-    return out
+    top_level, complete, errors = _top_level(root)
+    out: dict[str, set[str]] = {"": top_level}
+    for name in sorted(top_level | set(WATCHED)):
+        found, walked, walk_errors = _walk(root / name)
+        out[name] = found
+        complete = complete and walked
+        errors.extend(walk_errors)
+    return {"listing": out, "complete": complete, "errors": errors}
 
 
-def _names(path: Path, needle: str) -> bool:
-    """Whether the file, or any file in the directory, contains ``needle``."""
+def _census_payload(live_root: Path) -> dict:
+    """Make the set-based inventory safe to carry over ``pbstatus.bounded``."""
 
+    census = _census(live_root)
+    return {
+        "complete": census["complete"],
+        "errors": census["errors"],
+        "listing": {name: sorted(entries)
+                    for name, entries in census["listing"].items()},
+    }
+
+
+def bounded_listing(live_root: Path = LIVE_ROOT,
+                    timeout_s: float = LIVE_PROBE_TIMEOUT_S) -> dict:
+    """Return a complete live-store census, or explicit incomplete evidence.
+
+    The entire recursive traversal runs in ``pbstatus.bounded``.  A hard NFS
+    read can stall after the root probe succeeds, so placing only ``reachable``
+    in an abandonable child does not protect this test session.
+
+    This bounds the pytest parent rather than promising that every cleanup is
+    bounded: a reader stuck in uninterruptible I/O can survive SIGKILL, remain
+    in the admitted PrismaBuild action's scope, and delay its final cleanup or
+    receipt until the mount recovers. Its PID/start-time identity is retained
+    as evidence instead of being mistaken for a completed read.
+    """
+
+    timeout_s = _positive_timeout(timeout_s, name="live-store census timeout")
+    abandoned: list[dict] = []
+    observed = pbstatus.bounded(
+        "pytest live-store census", lambda: _census_payload(Path(live_root)),
+        deadline=pbstatus.Deadline(timeout_s), abandoned=abandoned,
+    )
+    if observed["status"] != "ok":
+        return {
+            "status": "unavailable", "reason": observed["status"],
+            "detail": observed.get("error"), "abandoned": abandoned,
+        }
+    payload = observed["value"]
+    if not isinstance(payload, dict) or not isinstance(payload.get("listing"), dict):
+        return {
+            "status": "unavailable", "reason": "invalid_payload",
+            "detail": "the census reader returned no inventory", "abandoned": abandoned,
+        }
+    try:
+        inventory = {str(name): set(entries)
+                     for name, entries in payload["listing"].items()}
+    except (TypeError, ValueError):
+        return {
+            "status": "unavailable", "reason": "invalid_payload",
+            "detail": "the census reader returned an invalid inventory",
+            "abandoned": abandoned,
+        }
+    if payload.get("complete") is not True:
+        return {
+            "status": "partial", "reason": "traversal_error",
+            "detail": "; ".join(str(error) for error in payload.get("errors", [])),
+            "abandoned": abandoned,
+        }
+    return {"status": "complete", "listing": inventory, "abandoned": abandoned}
+
+
+def _names(path: Path, needle: str) -> tuple[bool, bool, list[str]]:
+    """Read a new entry for ``needle`` without hiding an incomplete read."""
+
+    errors: list[str] = []
+    try:
+        mode = os.stat(path).st_mode
+    except OSError as exc:
+        return False, False, [f"{path}: {type(exc).__name__}: {exc}"]
     candidates = [path]
-    if path.is_dir():
-        candidates = [p for p in path.rglob("*") if p.is_file()]
+    if stat.S_ISDIR(mode):
+        candidates = []
+
+        def record_error(exc: OSError) -> None:
+            errors.append(f"{path}: {type(exc).__name__}: {exc}")
+
+        for directory, _subdirectories, files in os.walk(path, onerror=record_error):
+            candidates.extend(Path(directory) / name for name in files)
     for candidate in candidates:
         try:
             if needle in candidate.read_text(encoding="utf-8", errors="replace"):
-                return True
-        except OSError:
-            continue
-    return False
+                return True, not errors, errors
+        except OSError as exc:
+            errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+    return False, not errors, errors
 
 
 def leaked_entries(
@@ -247,8 +374,25 @@ def leaked_entries(
         ``(leaked, unattributed)``, each a list of paths relative to the store.
     """
 
+    leaked, unattributed, _complete, _errors = _leaked_entries(
+        before, after, live_root=live_root, basetemp=basetemp,
+    )
+    return leaked, unattributed
+
+
+def _leaked_entries(
+    before: dict[str, set[str]],
+    after: dict[str, set[str]],
+    *,
+    live_root: Path,
+    basetemp: str,
+) -> tuple[list[str], list[str], bool, list[str]]:
+    """Like ``leaked_entries``, but retain incomplete attribution evidence."""
+
     leaked: list[str] = []
     unattributed: list[str] = []
+    complete = True
+    errors: list[str] = []
     for rel, names in after.items():
         fresh = names - before.get(rel, set())
         # A new directory and everything inside it are one leak. Reporting the
@@ -264,11 +408,57 @@ def leaked_entries(
         )
         for name in outermost:
             entry = f"{rel}/{name}" if rel else name
-            if _names(live_root / rel / name, basetemp):
+            names_basetemp, read_complete, read_errors = _names(
+                live_root / rel / name, basetemp
+            )
+            complete = complete and read_complete
+            errors.extend(read_errors)
+            if names_basetemp:
                 leaked.append(entry)
             else:
                 unattributed.append(entry)
-    return leaked, unattributed
+    return leaked, unattributed, complete, errors
+
+
+def bounded_leaked_entries(
+    before: dict[str, set[str]], *, live_root: Path = LIVE_ROOT,
+    basetemp: str, timeout_s: float = LIVE_PROBE_TIMEOUT_S,
+) -> dict:
+    """Census and attribute new entries in one abandonable reader."""
+
+    timeout_s = _positive_timeout(timeout_s, name="live-store leak-check timeout")
+    abandoned: list[dict] = []
+
+    def read() -> dict:
+        census = _census(Path(live_root))
+        if not census["complete"]:
+            return {"complete": False, "errors": census["errors"]}
+        leaked, unattributed, complete, errors = _leaked_entries(
+            before, census["listing"], live_root=Path(live_root), basetemp=basetemp,
+        )
+        return {"complete": complete, "errors": errors, "leaked": leaked,
+                "unattributed": unattributed}
+
+    observed = pbstatus.bounded(
+        "pytest live-store leak check", read,
+        deadline=pbstatus.Deadline(timeout_s), abandoned=abandoned,
+    )
+    if observed["status"] != "ok":
+        return {"status": "unavailable", "reason": observed["status"],
+                "detail": observed.get("error"), "abandoned": abandoned}
+    payload = observed["value"]
+    if not isinstance(payload, dict):
+        return {"status": "unavailable", "reason": "invalid_payload",
+                "detail": "the leak-check reader returned no result", "abandoned": abandoned}
+    if payload.get("complete") is not True:
+        return {"status": "partial", "reason": "traversal_error",
+                "detail": "; ".join(str(error) for error in payload.get("errors", [])),
+                "leaked": list(payload.get("leaked", [])),
+                "unattributed": list(payload.get("unattributed", [])),
+                "abandoned": abandoned}
+    return {"status": "complete", "leaked": list(payload.get("leaked", [])),
+            "unattributed": list(payload.get("unattributed", [])),
+            "abandoned": abandoned}
 
 
 def _probe_argv(root: Path) -> list[str]:
@@ -313,44 +503,98 @@ def reachable(
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
+    # xdist workers still receive the per-test root-repointing fixture above.
+    # The controller's basetemp is their common parent, so one controller
+    # before/after census attributes every worker while avoiding a full live
+    # history traversal per worker.
+    if hasattr(session.config, "workerinput"):
+        session.config._pb_live_guard_worker = True  # type: ignore[attr-defined]
+        return
     available = reachable(LIVE_ROOT)
     session.config._pb_live_reachable = available  # type: ignore[attr-defined]
-    session.config._pb_live_before = listing() if available else None  # type: ignore[attr-defined]
+    observation = (
+        bounded_listing(LIVE_ROOT, timeout_s=LIVE_PROBE_TIMEOUT_S)
+        if available else {"status": "unavailable", "reason": "probe_failed"}
+    )
+    session.config._pb_live_guard_start = observation  # type: ignore[attr-defined]
+    session.config._pb_live_before = (  # type: ignore[attr-defined]
+        observation.get("listing") if observation["status"] == "complete" else None
+    )
+
+
+def _guard_write(session: pytest.Session, message: str) -> None:
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    write = reporter.write_line if reporter is not None else print
+    write(message)
+
+
+def _guard_evidence(observation: dict) -> str:
+    detail = observation.get("detail")
+    retained = observation.get("abandoned") or []
+    suffix = f"; {detail}" if detail else ""
+    if retained:
+        suffix += "; retained reader " + ", ".join(
+            f"pid={child.get('pid')} starttime={child.get('starttime_ticks')}"
+            for child in retained
+        )
+    return suffix
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if getattr(session.config, "_pb_live_guard_worker", False):
+        return
     before = getattr(session.config, "_pb_live_before", None)
     if before is None:
-        # Absent and unreachable are different, and the guard used to report
-        # neither. A box without the mount is expected and silent; a box whose
-        # mount did not answer means the suite ran unguarded, and the operator
-        # has to be told which of the two happened.
-        if getattr(session.config, "_pb_live_reachable", True) is False and LIVE_ROOT.parent.exists():
-            reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-            write = reporter.write_line if reporter is not None else print
-            write(
-                f"note: {LIVE_ROOT} did not answer within "
-                f"{LIVE_PROBE_TIMEOUT_S:g}s, so the live-store leak guard did "
-                "not run this session. Re-run it when the mount is back."
-            )
+        observation = getattr(session.config, "_pb_live_guard_start", {
+            "status": "unavailable", "reason": "no_start_observation",
+        })
+        _guard_write(
+            session,
+            f"note: live-store leak guard start census is {observation['status']} "
+            f"({observation.get('reason', 'unknown')}); its census budget was "
+            f"{LIVE_PROBE_TIMEOUT_S:g}s, so it did not certify this session."
+            + _guard_evidence(observation),
+        )
         return
     factory = getattr(session.config, "_tmp_path_factory", None)
     if factory is None:
         return
     basetemp = str(factory.getbasetemp())
-    leaked, unattributed = leaked_entries(
-        before, listing(), live_root=LIVE_ROOT, basetemp=basetemp
+    observation = bounded_leaked_entries(
+        before, live_root=LIVE_ROOT, basetemp=basetemp,
+        timeout_s=LIVE_PROBE_TIMEOUT_S,
     )
-    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-    write = reporter.write_line if reporter is not None else print
+    if observation["status"] != "complete":
+        _guard_write(
+            session,
+            f"note: live-store leak guard finish census is {observation['status']} "
+            f"({observation.get('reason', 'unknown')}); its census budget was "
+            f"{LIVE_PROBE_TIMEOUT_S:g}s, so it did not certify this session."
+            + _guard_evidence(observation),
+        )
+        leaked = observation.get("leaked", [])
+        if leaked:
+            _guard_write(
+                session,
+                f"FAILED: {len(leaked)} entries under {LIVE_ROOT} were written by "
+                f"this test session despite the partial census (they name {basetemp}). "
+                "A test reached the live store; pass it a root under tmp_path. "
+                "Entries: " + ", ".join(leaked[:10]),
+            )
+            session.exitstatus = 1
+        return
+    leaked = observation["leaked"]
+    unattributed = observation["unattributed"]
     if unattributed:
-        write(
+        _guard_write(
+            session,
             f"note: {len(unattributed)} new entries under {LIVE_ROOT} during "
             "this session do not name its basetemp; the fleet may have filed "
             "them: " + ", ".join(unattributed[:5])
         )
     if leaked:
-        write(
+        _guard_write(
+            session,
             f"FAILED: {len(leaked)} entries under {LIVE_ROOT} were written by "
             f"this test session (they name {basetemp}). A test reached the "
             "live store; pass it a root under tmp_path. Entries: "
