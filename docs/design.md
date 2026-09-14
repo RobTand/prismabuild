@@ -59,9 +59,32 @@ they were tolerated or ignored. The discrepancy compares the record's writer
 clock with the reader, not with an independently trusted time source. Offers
 retain their existing wire format. CPU/GPU telemetry freshness, capacity
 reservation, containment and lease recovery receive no additional tolerance.
-Shared filesystem I/O itself
-remains synchronous and has no caller deadline; this expiry rule does not bound a
-queue read or repair an NFS client stall (issue #16).
+The pool's shared filesystem calls remain synchronous except for the bounded
+`pbrun` offer, detached attachment and pull-queue outcome reads and `pbwait` observations
+described below. `pbrun` runs its one pre-submission **worker-offer** record scan in
+an abandonable reader with a fixed five-second budget. It refuses loudly if
+that reader times out or fails, names any retained reader identity, and never
+publishes a runnable `ready/` item from an unavailable snapshot. The parent
+re-evaluates freshness and future skew only after the complete child scan, for
+each verdict; retained capability therefore still has its infinite-age rule.
+The five-second read budget includes child FD isolation and IPC waits. Parent
+process creation, decoding the completed reply, cleanup grace and runtime
+imports are not themselves interruptible at that deadline.
+The offer boundary covers no CAS request/staging, publication, terminal wait,
+claim, lease, token, or other queue read/write, which remain synchronous and
+can still stall (issue #16).
+Detached attachment discovery has its own five-second isolated-reader budget.
+It reads recorded submissions, covering outcomes and leases using the existing
+liveness rules, and returns the display path with the selected generation so
+printing an attachment performs no further queue read. Reader timeout, setup
+failure or retained child refuses with exit 74 before runnable publication;
+the error retains any unreaped PID/start-time identity. SLURM controller queries
+stay in the parent under their existing command timeouts. Record parsing keeps
+its historical tolerant behavior; this boundary does not make a swallowed
+record error distinguishable from absence. CAS lookup/staging, publication,
+post-publication generation discovery, runtime imports and other shared
+operations remain outside this bound. Process creation, reply decoding and
+cleanup retain the same isolated-reader limitations as the offer boundary.
 The pool status census likewise collects active records and admission, lease,
 and denial sidecars before deriving worker/sample freshness and placement. Its
 `sampled_unix` is the time that collection finished; it remains a non-atomic
@@ -106,6 +129,15 @@ claiming an item does not erase its diagnostic history. Status exposes each
 host's record on ready and claimed rows only when it matches that submission,
 with the original observation age. A malformed diagnostic makes the census
 partial without making its valid job unreadable or erasing queue counts.
+An unfunded token acquisition also retains `token_shortage`: the first failing
+resource, the physical tokens requested after any CPU borrowing adjustment,
+and the tokens actually obtainable before rollback. This is evidence from the
+acquisition itself, with no diagnostic rescan or additional shared write. It is
+not a current free-capacity snapshot or a claim that all other resources fit.
+Only controllers evaluated for this candidate contribute decision evidence;
+a CPU-only denial cannot inherit a previous candidate's GPU decision. Old
+denial snapshots without shortage details remain readable. Admission, rollback,
+aging and the bounded/coalesced diagnostic publication remain unchanged.
 Withholding-age reads also run outside admission. A denied reservation owns
 no tokens or probe/borrow credit. Background preemption selection still requires
 host exclusion to serialize pending releases; it reacquires admission
@@ -190,6 +222,54 @@ attempt as its source. Attempts predating this context provide no inferred link.
 The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
 handoff cannot report cancellation while the replacement is being published.
+
+The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
+time in an isolated child with a five-second read budget. That snapshot covers
+the three mutable terminal rows, immutable withdrawal decisions, archived
+preemption evidence, and the exact successor selection above; the selected
+generation returns to the parent and is carried into the next snapshot.
+After an ending lands, its immutable attempt history and logs are verified in a
+second, separately bounded child before `pbrun` prints a result. The parent
+keeps the original `--wait-s` deadline across polls and sleeps itself, so each
+new child cannot renew caller patience. A `--wait-s 0` caller still receives
+one immediate bounded snapshot. An unavailable reader (timeout, child failure,
+or reader that cannot be reaped) returns filesystem exit 74 with its retained
+PID/start-time identity; it does not cancel work, publish a record, or
+manufacture a verdict. A published unreadable terminal retains its existing
+exit-1 report, and immutable contract validation retains its existing error.
+The budget covers the child read and IPC wait; process creation, completed JSON
+decoding, cleanup grace, runtime imports, and output can add time. This is only
+the synchronous pool `pbrun` path: it does not bound the whole submission.
+
+`pbwait` also resolves a non-full key prefix by scanning recorded SLURM rows,
+the five pull-queue state directories, and withdrawal decisions in one
+isolated child with the same five-second read budget. It returns candidate key
+strings only; the parent retains the exit-2 not-found/ambiguity decision. A
+timed-out, failed, or retained prefix reader exits 74 and names any retained
+PID/start-time identity, without retrying any scanner in the parent. Full
+64-hex keys retain their no-read fast path.
+
+Each later `pbwait` pass runs its read-only submission lookup, pool outcome and
+preemption selection, and any needed sealed-request/CAS receipt lookup in one
+five-second bounded child. A landed outcome's immutable attempt/log verification
+runs in a second separately bounded child. A terminal
+or unreadable outcome outranks CAS lookup; a SLURM parent may then resume and
+repair its own terminal record, but no resume or record mutation runs in a
+disposable reader. The parent retains the selected exact generation across
+passes and follows a just-observed preemption successor immediately without
+renewing the original deadline; it defers request/CAS lookup until that
+successor is observed. A failed, timed-out, or retained observation
+becomes that key's `record_error` row and exit 74; it does not start another
+parent diagnostic read, CAS lookup, or record mutation. The five-second budget
+does not bound SLURM controller work, process creation, child cleanup, JSON
+decoding, a kernel syscall, or an actual cross-host hard-NFS stall.
+
+`wait_for_keys` retains its existing thread-per-key concurrency. Its bounded
+readers therefore fork from a multithreaded `pbwait` process; the reader's FD
+isolation prevents an abandoned child retaining parent descriptors, but cannot
+remove POSIX inherited-lock/startup risk. A fork/setup/reader failure still
+becomes the per-key exit-74 result rather than a retry or a claim about a
+terminal verdict.
 
 The pull queue admits the generation actually moved from `ready/`, including
 its placement and resource demand. A replacement whose admission requirements
@@ -427,6 +507,19 @@ profile. Broker stop/release still proves aggregate containment, including
 containers; an empty frozen retired scope remains protected against late Docker
 RPCs by the existing broker contract.
 
+Retired scopes with a recorded matching kernel identity can reclaim memory
+while they remain empty and frozen. Reclamation does not release containment.
+For the action's own scope, the holder can submit token-authenticated container
+settlement after cleanup proves its ownership marker absent and both reserved
+Docker label queries empty. Inventory removes only settled scopes after a
+reclaim request followed by no remaining anon/file charge and fresh
+empty/frozen/identity checks before and after reasserting stop.
+Failed reclaim and residual or unknown page charge retain the group for retry
+without failing maintenance health. Legacy unsettled groups remain retained;
+their removal needs the offline evidence described in
+[resource authority](resource_authority.md#recovery-evidence). Late-finish
+cleanup has no authority to settle the action-wide container transaction.
+
 Unproven cleanup retains the late-finish record with its original result, exact
 scope authority, failure count and first/last failure times. A restart can retry
 it without the original worker, and it is never converted to a lost lease or
@@ -471,6 +564,39 @@ remain caller-owned. Parallel test processes must reserve their combined CPU
 and memory demand. These defaults change new action identities; old immutable
 requests and receipts retain their original meaning.
 
+The immutable runtime-generation Docker wrapper path participates in both
+sealed PATH and wrapper argv, and therefore in action, snapshot and container
+owner identity. An ordinary re-seal after publication can produce a new key
+even when the command and runtime code are unchanged. Request-bound resealing
+(`pbrun --as-sealed-by ACTION_KEY`, campaign row `as_sealed_by`) recovers only
+that wrapper path from the original canonical, validated CAS request. The
+path must name a retained generation in this fleet; its read-only generation
+receipt and Docker shim digest must agree. It never invokes the old submitter
+or imports command/options from the request. Current checkout bytes, inputs,
+environment, placement and all other parameters are sealed normally, then the
+complete action key must equal the requested key before publishing an action
+request or queue item. Snapshot inputs may already have been ingested when a
+key mismatch refuses. Missing/corrupt reference evidence refuses without
+falling back to a fresh key. The option itself adds no identity field.
+
+This is explicit recovery across a publication, not a migration of old keys or
+generation-independent default memoization. A retained old wrapper remains
+required; a change in the sealing algorithm can still prevent reproduction
+and is refused. The ordinary transport, attachment, retry and verified CAS
+lookup paths remain responsible for the exact matched action. A cache miss
+can submit that same key; this is not a receipts-only switch. Runtime
+execution/attestation provenance remains the existing worker/receipt contract.
+
+### Fleet command demand vocabulary
+
+`pbrun` and manifests consumed by `pbcampaign` use the closed demand vocabulary
+`cpu`, `gpu`, and `mem_gb`. Validation occurs before a request is sealed; a
+manifest is validated as a whole before its first row is published. The live
+pool offers and SLURM translation both define only these resource kinds, so an
+unknown name would otherwise create an action no worker could admit. This does
+not narrow the generic `PoolQueue` resource ledger, whose direct producers may
+define resources outside the fleet-command client contract.
+
 ## Work decomposition boundary
 
 Rob's 2026-09-11 design decision is to partition logical requests into small,
@@ -482,10 +608,14 @@ ready and while running. Existing admission chooses where a child executes;
 retry preserves that child's identity and adopts verified durable results.
 
 The detailed [decomposer design](design_work_decomposition_2026-09-11.md) is a
-proposal for #517, not deployed support. The current ordinary campaign path
-still accepts complete independent action rows. Producers must expose their
+contract for #517. PR #518 implements synchronous immutable decomposition and
+exact-cover closure; durable queued parents and parent withdrawal remain
+proposed. This is source support, not deployed qualification. The ordinary
+campaign path still accepts complete independent action rows. Producers must expose their
 logical tasks and necessary calibration/residency boundaries; PB must not guess
 how to split an opaque command or modify a published execution unit.
+The ordinary row controller retains `--max-inflight`; logical requests refuse
+that option until bounded child publication is supported.
 
 ## Test fanout submission
 
@@ -508,6 +638,26 @@ are refused rather than overriding PB's reservations or file partitioning.
 Surface report names expand `{shard}` or receive `.shard-N` before the final
 suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
 identity through `pbrun`; no second dispatcher or placement policy is added.
+
+A checkout containing `tools/resolve_<module>_dev_pin.py` opts into reviewed
+Python dependency verification for every `pbtest` shard. The resolver runs
+under the target interpreter inside the admitted, sealed checkout and must
+print one full lowercase Git commit. The module must have one owning installed
+distribution, non-editable PEP 610 Git provenance at that commit, and intact
+hashed RECORD files. Python's selected module must be recorded by that
+distribution; unrecorded package files refuse. Missing/ambiguous provenance,
+local-directory installs without Git metadata, resolver errors, drift and
+import shadows refuse before pytest. Nothing installs into a shared venv.
+
+The standard-library guard is embedded in the shard command and therefore
+enters action identity; old unguarded receipts cannot satisfy guarded requests.
+Verified module, distribution, expected/installed commits and import origin
+travel in the action's stdout payload. Existing requests remain immutable and
+projects with no resolvers retain their previous commands. This trusts managed
+installation metadata; it is not a package signature or a sandbox against
+tests/resolvers changing imports. Environments must remain immutable while
+actions use them, including between verification and pytest execution. Generic
+`pbrun` commands do not opt into this `pbtest` convention automatically.
 
 ## Problem
 
@@ -1853,6 +2003,28 @@ containment, priority and admission are unchanged. Supervisors adopt the
 published configuration through the existing idle-worker transition; a live
 attempt retains the ceiling under which it started.
 
+## Campaign submission windows
+
+`pbcampaign --max-inflight N` is optional waiting-pool controller policy, outside
+sealed action identity and the resource ledger. One invocation retains at most
+N distinct unfinished action keys and publishes a replacement only after a
+successful `pbwait` observation and absence of that key's READY/CLAIMED leaves.
+A receipt or withdrawal outcome alone cannot free a slot while queue work or
+claim cleanup remains. Leaf read errors stop publication; they grant no capacity.
+Rows keep ordinary sealing, placement, admission, containment and receipts.
+The initial window is published before the shared monotonic wait budget starts;
+expiry leaves published work intact and reports the unsubmitted suffix.
+
+The controller stops refilling at any refusal, failed action or unreadable
+observation, preserving an ordered resumable prefix. Continuing beyond a failure
+would let a restart republish failed early rows before encountering later live
+work. Restart requires the previous controller to stop and the ordered manifest,
+source identity, options and limit to stay the same; existing pbrun cache/attach
+semantics recover that prefix. No durable parent or background dispatcher is
+introduced. Concurrent controllers and other producers do not share this count;
+there is no per-host or bandwidth guarantee. The option refuses detached and
+SLURM modes. Omitted policy retains the existing submit-all campaign behavior.
+
 ## Fleet durability and terminal publication (2026-09-05)
 
 The two NFS client exports on dl380g10 now use `sync`, with ZFS
@@ -1903,9 +2075,8 @@ The upgraded updater refuses candidates lacking either durable broker or
 durable updater support, and refuses missing running capability. That guard
 takes effect after the coupled updater/broker generation converges; the older
 updater executing the first transition may still restore its previous files.
-This is host-local hold
-recovery only: it neither enables a fleet barrier nor supplies epoch participation,
-quorum, or coordinated rollback.
+This host-local authority retains the fleet rollout hold across reboot; shared
+epoch decisions, described below, determine when that hold may be released.
 A loop that parks on a drain records that it parked, one file per process per
 drain under `/run/prismabuild/rollout/parked/`, named for the gate's
 `changed_unix` so a marker left by an earlier drain reads as the earlier drain.
@@ -1914,14 +2085,19 @@ so a loop that cannot record its park still parks and missing evidence cannot
 certify a drained host. The updater creates the directory for the unprivileged
 worker uid and reports whether every serving process has a marker for the
 current drain and the broker reports no active scopes. Processes count by argv
-basename, including a one-shot invoked through the symlink or a local checkout.
+basename: `worker_loop.py`, `worker.py` and `prewarm_loop.py`, including one-shot
+or storage invocations through the symlink, either published layout or a local
+checkout. A storage reader missing an exact current-drain PID/start-time marker
+prevents a positive observation even with zero broker scopes. Legacy storage
+readers without parking support remain unparked until they exit.
 Unreadable or malformed process evidence prevents a positive result and is
 reported explicitly; only a process directory proved gone may be omitted after
 a read failure. Process start identity is checked around the argv read. Missing
 gate identity or a gate change during the census also prevents certification.
 The drain identity comes from the gate file. This is an observation of the
 current processes, not an admission barrier or a guarantee against future
-process launches; it neither opens nor closes a drain.
+process launches; it neither opens nor closes a drain. Ordinary privileged-client
+convergence still gates on broker active scopes, not this reported observation.
 The updater also records, fleet-wide, which version of itself has run. It is
 installed by a copy step rather than by the runtime symlink, so no shared
 record answers for it: the loops' `runtime_commit` answers for the loops, a
@@ -1946,39 +2122,122 @@ source manifest, and `--activate-generation` preflight uses the existing
 generation's receipt. The publisher loads the updater's marker-name function
 and member key from its checkout. A marker counts only when its schema and
 body reproduce its filename through that function.
-These write-once markers establish history, not the currently installed
-version or current participation: they survive upgrades, downgrades and host
-loss. A successful preflight grants no activation authority. Without
-`--dry-run`, both barrier paths refuse before staging or changing the runtime
-symlink, even when all historical attestations match. Issue #458 must supply
-fresh participation tied to the rollout epoch, the drain and rotation quorums,
-and coordinated rollback before barrier activation can be enabled. The
-publisher defaults to `barrier`, so an ordinary publication or existing-generation
-activation refuses while that protocol is unavailable. Independent host
-convergence requires explicit `--rollout rolling --rollout-reason TEXT`, with a
-nonblank explanation of why the proposed transition tolerates mixed generations.
-New rolling generations record `rollout` and `rollout_reason` in their immutable
-receipt; dry-run and activation output also state the reason. Existing-generation
-activation requires its own explicit choice and reason, including for a legacy
-receipt without a rollout declaration. A reason is a reviewable compatibility
-claim, not proof or an override of the publication window. Historical attestations
-still grant no current participation, and there is no supported synchronized
-activation. Workers, including the one-shot entrypoint, refuse admission when
-the local `/run` gate is missing. After boot the updater initializes that gate
-through the broker's owned drain/release operations only after desired and
-installed clients match, the running broker's hashes and health agree, and no
-active scopes remain. An existing owned drain also waits for zero scopes on
-later current-client ticks; another holder's drain stays held. Unavailable gate
-reads are not absence, and `current` requires an explicit open gate readback.
-This fences the interval before the updater initializes admission. The broker's
-separate host-local authority now persists a named hold across reboot, while the
-volatile `/run` mirror remains the worker-facing v1 gate. Fresh epoch participation,
-both fleet quorums, and coordinated rollback remain required before durable host
-markers can authorize a coordinated rollout.
+These historical markers grant no activation authority. Public barrier mutation
+remains disabled by `FINAL_BARRIER_QUALIFICATION_GUARD` pending real host lifecycle
+qualification. The following describes the guarded protocol, exercised by private
+qualification actors. With the guard removed, the publisher defaults
+to `barrier`: it seals and verifies a candidate, then writes a fresh immutable
+intent under `rollout/epochs/<epoch>/intent.json`. The intent fixes the source
+and target generation, sorted host roster, participating updater SHA-256 and
+`wait` drain policy. The roster includes both generations' declared hosts;
+fresh offers resolve aliases and reject undeclared or ambiguous live identities.
+Offers do not count as participation. Both sealed generations must contain the
+same rollout-aware updater. A new updater therefore needs a reviewed rolling
+bridge and fleet-wide installed-hash verification before a barrier can use it.
+
+Each root updater persists the epoch and intent hash on local durable storage
+before participating. It reads bounded shared evidence through its root-owned
+export program running as the configured reader uid, independently validates
+that evidence, and keeps its owned durable maintenance hold closed. An unreadable
+or corrupt rollout tree, missing persisted epoch, another drain holder, incomplete
+process census or unhealthy broker cannot authorize release. Each host posts a
+fresh `drained` record only with zero active scopes and all worker, one-shot and
+prewarm processes parked on the current drain. Its executing and installed updater
+hashes must match the intent. Existing actions finish naturally; this protocol
+does not interrupt or requeue them.
+
+The epoch records and `repo` pointer publish atomically but are read separately.
+If a valid pointer move falls between an updater's desired-receipt read and its
+next epoch refresh, the updater keeps its durable drain and retries with a fresh
+view. It does not write `failed`: that marker is reserved for a verified local
+transaction, recovery, or service failure and would otherwise trigger an
+unwarranted coordinated rollback.
+
+Only the complete drain quorum permits the coordinator to atomically move `repo`
+and record `activated`. Each participant then verifies its desired and installed
+privileged bytes and healthy loaded broker, and observes exactly one supervisor
+and at least one worker loop running from the selected immutable generation.
+Workers, one-shot workers and the continuous prewarm loop must be parked on that
+host's current drain. The prewarm loop finishes its current cycle before parking
+and follows generation changes even while parked. Only the complete `rotated`
+quorum permits a shared `resume` decision. Every host rechecks local rotation and
+health before releasing its own gate and posting `resumed`; the complete resumed
+quorum permits a terminal `completed` record.
+
+Intent and phase records are write-once, published by fsync plus exclusive link.
+Every marker carries its epoch and canonical intent hash. Coordinator decisions
+bind the exact canonical SHA-256 of every required participant record; readers
+validate the complete dependency chain. Diagnostic wall-clock timestamps never
+establish ordering or replace quorum. A permanent POSIX publication lock with
+in-process exclusion serializes publishers across the NFS mount and its local
+server path. Never unlink this lock. An active or unreadable epoch blocks ordinary
+publication and explicit rolling activation too.
+
+Before a resume decision, a participant failure or explicit `--rollback-barrier`
+records rollback under the same drain quorum, restores the exact source pointer,
+and waits for every host's `rolled-back` proof before authorizing resume. A local
+transaction failure restores verified previous bytes while retaining the fleet
+hold. An interrupted coordinator can replay a pointer move that preceded its
+activation marker. `--resume-barrier` continues the same immutable intent;
+`--barrier-wait-s` bounds the coordinator's polling between completed reads,
+returns 75 on expiry and
+never releases admission. Rollback after resume is refused and requires a new
+epoch. No missing-host exclusion, quarantine or interrupt/requeue policy is
+implemented: an unavailable participant leaves the epoch pending until repaired.
+Direct coordinator filesystem reads can block past that polling deadline; they
+retain the publication lock and admission holds until the read or process ends.
+
+`--stage-only` seals and import-probes through PB without arming an epoch or moving
+`repo`. The subsequent activation/recovery coordinator performs control-plane
+work outside the live fleet's own admitted scope, which it must drain; it refuses
+to wait on its own scope. Historical `--dry-run` attestation checks remain bootstrap
+diagnostics, not a simulation of the epoch or permission to activate. Independent
+host convergence requires explicit `--rollout rolling --rollout-reason TEXT` with
+a nonblank compatibility explanation, recorded in a new generation receipt.
+Existing-generation rolling activation requires its own reason. A reason neither
+proves compatibility nor waives the publication window.
+
+The source delivery keeps `FINAL_BARRIER_QUALIFICATION_GUARD` enabled. Every
+public barrier mutation, including publication, activation, resume and rollback,
+therefore refuses before staging or stepping the epoch state machine.
+`--stage-only` remains available because it only seals and import-probes a
+candidate. The private qualifier disables the guard only after asserting that
+its root is below `/mnt/shared/pb-qualification`; its simulated broker, service
+and process census remain source evidence, not live-host qualification.
+An epoch also binds the exact SHA-256 of `publish_runtime.py`. Source and target
+generations must carry the same updater and coordinator bytes, and recovery
+rechecks its captured coordinator bytes plus the imported updater-marker
+semantics before every pointer move or decision publication. A coordinator
+change therefore needs a reviewed rolling bridge before it can drive a barrier.
+
+Workers, including the one-shot entrypoint, refuse admission when the local
+`/run` gate is missing. After boot the updater initializes the gate through the
+broker only after desired and installed clients match, loaded hashes and health
+agree, and no active scopes remain. An active epoch additionally requires its
+quorum-backed resume decision. An existing owned drain waits for zero scopes;
+another holder's drain stays held. Unavailable reads are not absence, and
+`current` requires an explicit open gate readback. The volatile worker-facing
+mirror and root-owned durable authority serve these same rules after reboot.
 Maintenance refusal before payload launch returns a claim to ready without
 burning an execution attempt. The published store is explicitly authorized to
 supply these privileged bytes; manifest hashes provide copy consistency, not
 an independent signature. See [client upgrades](client_upgrade.md).
+
+The storage prewarm role also checks the existing maintenance gate before each
+queue cycle. A closed, missing or unreadable gate parks the continuous process
+and records its PID/start-time marker through the worker's existing helper.
+`--once` returns 75 without starting a cycle under the same conditions, including
+with `--dry-run`. An in-progress cycle finishes before the process records a
+park; disk holds and filesystem waits can therefore delay parking. At the next
+boundary a changed runtime commit or generation makes the process exit for
+supervisor replacement, even while parked. One-cycle invocations return 75
+on that transition so an unperformed cycle is not reported as complete.
+The gate and runtime are rechecked after disk setup, immediately before the
+cycle, so topology-discovery delays do not preserve an earlier open decision.
+The updater includes this storage reader in its drain observation using that
+same marker. These checks establish no cross-host quorum and do not enable
+barrier activation. The #458 protocol still needs fresh epoch participation
+and a generation-uniform rotation proof that includes this reader.
 
 ## Physical and adaptive GPU admission
 
@@ -2014,6 +2273,76 @@ at most once per second so a fresh capacity decision can admit work promptly.
 When the queue is empty it uses the configured 10--20 second backoff, avoiding
 an NFS scan and telemetry read per loop per second. GPU telemetry itself is
 collected once by the broker and shared by all loops.
+
+### AMD devices, and a device with no saturation instrument (2026-09-12)
+
+`gpu_capacity.devices()` reads NVML first and, only when NVML found nothing and
+`rocminfo` is installed, an AMD reader that publishes one device from two
+runtime sources that agree on every quantity both can see: the HSA agent report
+for identity, architecture, CU count, wavefront, peak clock and the VRAM pool,
+and a short-lived HIP subprocess for device count, free/total VRAM and the
+integration attribute that states the memory domain. Disagreement publishes
+nothing. More than one AMD GPU agent publishes nothing, because one HIP ordinal
+is all the probe reads. The VRAM total is keyed on `Device Type: GPU`, never on
+pool order: the first `GLOBAL` pool in a `rocminfo` report is the CPU agent's
+host RAM. Both readers are refused unless they are root-owned and writable by
+nobody else, because the broker runs `rocminfo` and loads `libamdhip64.so` as
+root.
+
+Each device record declares its `telemetry_class`. `power_and_clocks` is the
+NVML contract. `memory_only` is a device whose runtime publishes identity and
+memory and no power, clock or throttle counter at all, which is the AMD/WSL2
+case. The adaptive controller admits a `memory_only` device on the evidence it
+carries — identity, memory domain, free VRAM against the declared budget,
+foreign holders, host memory and CPU pressure — and withholds the two
+permissions power exists to authorize: `low` is never true, so there is no
+concurrency probe and no `measurement` action, and the device runs one
+attributed job at a time. Absent power *without* the declaration remains
+invalid, so this narrows one declared class of device rather than weakening the
+contract for every sample.
+
+Attribution on such a host is a census of the GPU device node's open handles in
+`/proc`, routed through the same PID start-time and cgroup-identity checks as
+the NVML rows. It resolves ownership and reports no per-process bytes, which
+the sample declares as `gpu_process_bytes: false` and each scope as
+`gpu_budget_enforceable: false`: the Guard does not confirm a GPU-allowance
+violation it has no counter for. Ownership unknown still refuses; bytes unknown
+no longer does. A `shared_system` device without per-process bytes has no
+system-memory lower bound to state and stays incomplete.
+`foreign_inventory_scope` records how far the census could see —
+`gpu_compute_apps` for NVML, `host_gpu_handles` for the node census, which
+covers the processes this `/proc` lists and nothing outside it. A handle is
+identified by the character device's device number, not by the node's inode: a
+container runtime creates its own node for a passed-through device, so an inode
+comparison would report a containerized GPU user as holding nothing. An
+unreadable descriptor table refuses rather than reporting an empty foreign
+list. Measured
+evidence and the residual risks are in
+[amd_gpu_capacity_2026-09-12.md](amd_gpu_capacity_2026-09-12.md).
+
+### Memory-only GPU action windows
+
+For a contained GPU action on a `memory_only`, `discrete` device, the worker
+samples the existing root-owned GPU capacity snapshot during its running-scope
+telemetry ticks. It retains distinct fresh observations for that exact attempt
+and device in constant space. No extra HIP or NVML probe is launched per action.
+The resulting `resource_profile.box_window.gpu` group declares
+`source: broker_gpu_capacity`, `telemetry_class: memory_only`,
+`memory_domain: discrete`, device identity, sample count and first/last sample
+timestamps. `framebuffer_total_bytes`, `framebuffer_used_bytes_peak` and
+`framebuffer_free_bytes_min` describe the whole device during observed instants.
+They include other users' occupancy and are not per-process allocation or an
+enforceable per-attempt GPU budget. No power, utilization or unified-memory
+field is invented. This is diagnostic run metadata, with no admission or
+action-identity change.
+
+Repeated, stale, malformed or mismatched observations add no samples. A window
+with no accepted running-scope observation has no framebuffer group; a single
+finish-time driver reading cannot reconstruct a prior peak. Sampling can miss
+short-lived allocations and does not certify complete interval coverage. CPU
+windows remain sourced from Netdata and GB10 windows from their existing
+recorders. Status and metrics expose discrete VRAM peak/total separately from
+host cgroup memory and GPU power.
 
 ## Preferred, overflow and adaptive CPU admission
 
@@ -2463,6 +2792,30 @@ non-storage mode, never a storage fallback.  Sequential rows retain the
 shared pacing verdict and stat baseline, while their receipts reset only the
 row's accounting counters.
 
+Data-manifest inputs retain the v1 JSON contract and may be carried as one gzip
+member. Stored bytes remain capped at 64 MiB; gzip decoding is bounded at
+512 MiB before parsing, with at most 1,000,000 entries. The CAS input binds the
+wire bytes and compressed summaries declare `content_encoding: gzip`; plain
+summaries are unchanged. Header-based decoding works on extensionless CAS
+paths and refuses incomplete, corrupt, concatenated or trailing gzip data.
+Parsed objects require memory beyond the decoded-byte ceiling. See the input
+guide for producer and deployed-storage-role adoption requirements.
+
+Large manifests may declare entry-aligned cumulative phase boundaries.  The
+role may end a warm window at any entry boundary that fits its budget, including
+inside an oversized phase, but holds only the resident window ahead of an
+action's accepted read frontier.  Only the matching claim lease's
+`ProgressWatch` phase observation advances that frontier and releases reserve;
+the role never infers consumed bytes from arbitrary progress units. It keeps a
+declared action reserved when that observation is absent; claim grace is only
+the fallback for actions with no progress policy.
+The storage role never trusts the action-writable progress file directly,
+because only the worker has the per-launch token that authenticates it.  Cyclic
+progress does not establish an irreversible manifest frontier.  A disk hold
+also requires active NFS client reads and a read-await or backlog breach;
+unreadable disk telemetry remains a fail-closed hold and unreadable client
+telemetry is treated as active.
+
 ## Model-level Tessera dispatch
 
 The [full-model dispatcher](tessera_model_dispatch.md) owns decomposition into
@@ -2502,6 +2855,15 @@ census, so an error rendered as a note still makes the top-level read incomplete
 These completeness checks use explicit stat calls, preserving ENOENT as missing
 and permission/I/O errors as unavailable. Boolean pathlib predicates are not
 evidence of absence because Python 3.14 suppresses OSError in them.
+
+`pbstatus` also reports the local NFS readahead window in `host_storage`.
+This optional observation never changes admission, census completeness or exit
+status. Its generation helper is on NFS, so loading and observing run in the
+existing bounded child after required census reads, capped at 0.25 seconds of
+the remaining deadline plus cleanup grace. Failure retains unknown values and
+`read_status` under `host_storage`; unreaped child identity remains in
+`abandoned_children`. Explicit `--timeout-s 0` disables the bound. The helper
+loader creates no bytecode, and runtime publication installs no host unit.
 
 ### Structured status for agent consumers
 

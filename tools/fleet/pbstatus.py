@@ -38,6 +38,7 @@ not an atomic scheduler snapshot or a process-liveness proof.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import os
@@ -54,6 +55,7 @@ from collections.abc import Iterable, Mapping, Sequence
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
+import upgrade_client  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
@@ -66,6 +68,66 @@ from prismabuild.core import _sigterm_unwinds_this_process  # noqa: E402
 #: same spelling ``pbrun``, ``pool_reset`` and ``tessera_status`` use.
 SHARED_ROOT = Path("/mnt/shared/prismabuild-fleet")
 DEFAULT_QUEUE_ROOT = SHARED_ROOT / "pb-queue"
+
+
+def read_rollout_summary(repo_link: str | Path, epoch: str | None = None) -> dict:
+    """Read an active barrier, with no epoch as the normal idle state."""
+    runtime = Path(repo_link)
+    snapshot = upgrade_client.read_rollout({
+        "runtime": str(runtime),
+        "generation_store": str(runtime.parent / "runtime-generations"),
+        "rollout_root": str(runtime.parent / "rollout"),
+    }, epoch=epoch)
+    if snapshot is None:
+        return {"state": "idle", "epoch": None, "pending_phase": None,
+                "outstanding_hosts": [], "failed_hosts": []}
+    intent, markers = snapshot["intent"], snapshot["markers"]
+    roster = list(intent["roster"])
+    def missing(phase):
+        return [host for host in roster
+                if upgrade_client.marker_name(host, phase) not in markers]
+    def decision(phase):
+        return upgrade_client.marker_name(None, phase) in markers
+    failed = [host for host in roster
+              if upgrade_client.marker_name(host, "failed") in markers]
+    if decision("terminal"):
+        pending, outstanding = "terminal", []
+    elif decision("rollback"):
+        outstanding = missing("rolled-back")
+        if outstanding: pending = "rolled-back"
+        elif not decision("reverted"): pending = "reverted"
+        elif not decision("resume"): pending = "resume"
+        else:
+            outstanding = missing("resumed")
+            pending = "resumed" if outstanding else "terminal"
+    else:
+        outstanding = missing("drained")
+        if outstanding: pending = "drained"
+        elif not decision("activated"): pending = "activated"
+        else:
+            outstanding = missing("rotated")
+            if outstanding: pending = "rotated"
+            elif not decision("resume"): pending = "resume"
+            else:
+                outstanding = missing("resumed")
+                pending = "resumed" if outstanding else "terminal"
+    return {"state": "active", "epoch": intent["epoch"],
+            "from_generation": intent["from_generation"],
+            "to_generation": intent["to_generation"],
+            "live_generation": snapshot["live_generation"],
+            "intent_sha256": snapshot["intent_sha256"], "roster": roster,
+            "pending_phase": pending, "outstanding_hosts": outstanding,
+            "failed_hosts": failed}
+
+
+def rollout_lines(summary: Mapping[str, object] | None) -> list[str]:
+    if summary is None:
+        return ["rollout status unavailable"]
+    if summary.get("state") == "idle":
+        return ["no active rollout epoch"]
+    outstanding = ", ".join(summary.get("outstanding_hosts") or []) or ABSENT
+    return [f"epoch {summary.get('epoch')}  live {summary.get('live_generation')}",
+            f"pending {summary.get('pending_phase')}  outstanding {outstanding}"]
 
 #: How long any one scheduler command has to answer.  Shorter than the lane's
 #: own 60 s, deliberately: a ``pbrun`` waiting on a job is willing to wait for
@@ -103,6 +165,14 @@ EXIT_INCOMPLETE = 3
 #: child's next scheduling point, so an immediate ``WNOHANG`` says "still
 #: running" about a child that is already dying.
 KILL_GRACE_S = 0.25
+
+#: The host helper the NFS readahead reading is taken through, relative to the
+#: runtime generation this command was launched from.  It is a script rather
+#: than an importable module because an operator installs a copy of it as root
+#: on each client, so it is loaded by path.  Absent from a generation published
+#: before it travelled, which the reading reports rather than raising on.
+NFS_READAHEAD_HELPER = "fleet/storage/nfs_readahead.py"
+HOST_STORAGE_BUDGET_S = 0.25
 
 #: The slice of the budget the wedged-peer scan may spend.  Capped so that a
 #: scan which blocks cannot consume the census's budget: the peers this counts
@@ -953,6 +1023,19 @@ def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
             for n in nodes))
 
 
+def _token_shortage_text(denial: Mapping[str, object]) -> str:
+    evidence = denial.get('evidence')
+    shortage = evidence.get('token_shortage') if isinstance(evidence, dict) else None
+    if not isinstance(shortage, dict):
+        return ''
+    resource, requested, available = (shortage.get(k) for k in ('resource', 'requested', 'available'))
+    if (not isinstance(resource, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', resource)
+            or type(requested) is not int or type(available) is not int
+            or not 0 <= available < requested):
+        return ''
+    return f" [{resource}: requested {requested}, available {available}; waiting for release]"
+
+
 def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, object]) -> list[str]:
     if not jobs:
         return ["no jobs ready or claimed" if summary.get('empty') is True else "pool job state unavailable"]
@@ -964,6 +1047,7 @@ def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, o
          j.get('admission_passes'), None if not j.get('admission_denials') else '; '.join(
              f"{denial['host']}: {denial['reason']}"
              + (f"/{denial['decision_reason']}" if denial.get('decision_reason') else '')
+             + _token_shortage_text(denial)
              + f" ({denial['age_s']:.0f}s ago)"
              for denial in j['admission_denials']),
          j.get('unstarted_releases'), j.get('placeable_hosts'),
@@ -1492,6 +1576,119 @@ def _proc_stat_fields(pid: int, proc: Path) -> list[bytes] | None:
     return fields if len(fields) > 19 else None
 
 
+def _load_module(path: Path, name: str):
+    """Load a fleet helper that is a script rather than an importable module."""
+
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"{path} cannot be loaded as a module")
+    module = importlib.util.module_from_spec(spec)
+    # A status observation must not create __pycache__ in a mutable checkout.
+    exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+    return module
+
+
+def nfs_readahead_reading(*, helper_path: str | Path | None = None,
+                          mountinfo: str | Path | None = None,
+                          bdi_root: str | Path | None = None) -> dict:
+    """Report this box's /mnt/shared NFS readahead window. Never refuse on it.
+
+    Issue #523 measured both Spark clients at ``read_ahead_kb=1024`` with
+    ``rsize=1M``, which holds a serial reader to about one READ RPC in flight,
+    and proposes 16 MiB. Nothing in the fleet could say what the window is
+    now, so a box could sit at the low value indefinitely with no operator
+    seeing it. This says.
+
+    Three properties this must keep, and they are the whole design:
+
+    *   **Read-only.** Mount discovery is ``nfs_readahead.shared_mount`` and
+        the reading is ``nfs_readahead.observe``, which writes nothing. The
+        window is changed by an operator running the host unit, never here.
+    *   **Never a gate.** The result reaches ``--json`` and, when there is
+        something to act on, one stderr line. It reaches neither
+        ``timed_out_sections``, ``unavailable_sections``, ``complete`` nor the
+        exit status. A host setting that no admission decision depends on must
+        not become one by being reported.
+    *   **Quiet where there is nothing to say.** dl380g10 is the storage
+        server and has no NFS client mount at /mnt/shared, so ``shared_mount``
+        raises there every time. That is the box being what it is, not a
+        fault: it reads as ``not_nfs_client``, carries its reason, and warns
+        about nothing.
+
+    The attributes are local, but loading the helper reads the generation on
+    NFS. ``main`` bounds this entire call after the required census reads,
+    using their remaining deadline and a short optional-observation cap.
+
+    Scope: **this box only.** The reading is local sysfs, so a
+    ``pbstatus`` run reports the host it runs on and says nothing about any
+    other client in the fleet. Fleet-wide reporting would have to carry the
+    value in the worker offer (``pool_offer.v1``); that is a separate change
+    and is not made here.
+    """
+
+    reading = {"check": "nfs_readahead", "mount": "/mnt/shared",
+               "state": "unavailable", "read_ahead_kib": None,
+               "recommended_kib": None, "bdi": None, "source": None,
+               "warning": False, "note": ""}
+    path = (Path(helper_path) if helper_path is not None
+            else RUNTIME_ROOT / NFS_READAHEAD_HELPER)
+    try:
+        helper = _load_module(path, "pbstatus_nfs_readahead")
+        reading["recommended_kib"] = helper.RECOMMENDED_KIB
+        observe = helper.observe
+    except Exception as exc:                       # noqa: BLE001 - diagnostic
+        # A generation published before this helper travelled, or a checkout
+        # without it.  The check did not run; saying so is the honest answer
+        # and is not a fault of the box being looked at.
+        reading["note"] = (
+            f"host storage: the /mnt/shared readahead helper at {path} could "
+            f"not be loaded ({type(exc).__name__}); the window was not read")
+        return reading
+    overrides = {}
+    if mountinfo is not None:
+        overrides["mountinfo"] = Path(mountinfo)
+    if bdi_root is not None:
+        overrides["bdi_root"] = Path(bdi_root)
+    try:
+        observed = observe(**overrides)
+    except ValueError as exc:
+        reading["state"] = "not_nfs_client"
+        reading["note"] = (
+            f"host storage: /mnt/shared is not a single NFS client export on "
+            f"this box ({exc}); no readahead window to report")
+        return reading
+    except OSError as exc:
+        reading["state"] = "unreadable"
+        reading["note"] = (
+            f"host storage: /mnt/shared is an NFS client mount and its "
+            f"readahead window could not be read ({type(exc).__name__}: {exc})")
+        return reading
+    except Exception as exc:                       # noqa: BLE001 - diagnostic
+        reading["state"] = "unreadable"
+        reading["note"] = (
+            f"host storage: reading the /mnt/shared readahead window raised "
+            f"{type(exc).__name__}: {exc}")
+        return reading
+    for field in ("bdi", "source", "read_ahead_kib", "recommended_kib"):
+        reading[field] = observed[field]
+    kib, recommended = observed["read_ahead_kib"], observed["recommended_kib"]
+    if kib < recommended:
+        reading["state"] = "below_recommended"
+        reading["warning"] = True
+        reading["note"] = (
+            f"host storage: /mnt/shared read_ahead_kb={kib} on bdi "
+            f"{observed['bdi']} ({observed['source']}) is below the "
+            f"{recommended} KiB proposed in issue #523.  Reported only -- "
+            f"nothing is refused and no admission changes.  See "
+            f"docs/fleet_storage.md to install the host unit")
+    else:
+        reading["state"] = "ok"
+        reading["note"] = (
+            f"host storage: /mnt/shared read_ahead_kb={kib} on bdi "
+            f"{observed['bdi']} meets the {recommended} KiB recommendation")
+    return reading
+
+
 def wedged_peers(*, proc: Path = Path("/proc"), self_pid: int | None = None,
                  limit: int = PEER_SCAN_MAX_PIDS,
                  budget_s: float = PEER_SCAN_BUDGET_S) -> dict:
@@ -1847,7 +2044,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--queue-root", default=str(DEFAULT_QUEUE_ROOT),
         help=f"the queue root holding done/ and failed/ (default "
-             f"{DEFAULT_QUEUE_ROOT})")
+                        f"{DEFAULT_QUEUE_ROOT})")
+    parser.add_argument("--repo-link", default=str(SHARED_ROOT / "repo"),
+                        help="published runtime link used to read rollout status")
     parser.add_argument(
         "--timeout-s", type=float, default=DEFAULT_TIMEOUT_S,
         help=f"how long the whole run may spend reading the queue root "
@@ -2017,6 +2216,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         if empty_note:
             notes.append(empty_note)
 
+    # Required fleet reads go first. Loading this optional helper also reads
+    # NFS, so it must share the deadline and exact-child cleanup machinery.
+    # Its availability says nothing about census completeness or admission.
+    storage_read = bounded("host-storage", nfs_readahead_reading,
+                           deadline=deadline, abandoned=abandoned,
+                           cap_s=HOST_STORAGE_BUDGET_S)
+    if storage_read["status"] == "ok":
+        host_storage = storage_read["value"]
+    else:
+        host_storage = {
+            "check": "nfs_readahead", "mount": "/mnt/shared",
+            "state": "unavailable", "read_ahead_kib": None,
+            "recommended_kib": None, "bdi": None, "source": None,
+            "warning": False, "read_status": storage_read["status"],
+            "note": "host storage: readahead observation unavailable "
+                    f"({storage_read['status']}); the window was not read",
+        }
+        if storage_read["status"] == "error":
+            host_storage["error"] = storage_read["error"]
+        print(host_storage["note"], file=sys.stderr)
+    if host_storage["warning"] or host_storage["state"] == "unreadable":
+        print(host_storage["note"], file=sys.stderr)
+
+    rollout = None
+    read = bounded("rollout", lambda: read_rollout_summary(args.repo_link),
+                   deadline=deadline, abandoned=abandoned)
+    if read["status"] == "ok":
+        rollout = read["value"]
+    elif read["status"] == "error":
+        unavailable.append({"section": "rollout", "type": read["type"],
+                            "error": read["error"]})
+    else:
+        timed_out.append("rollout")
+
     # Whole means every required section read, and read entirely: the deadline
     # held, nothing raised, and the pool census came back with every record
     # legible.  Any one of those failing is a partial answer, and a partial
@@ -2047,10 +2280,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             # starttime)`` rather than a PID, because a PID is reusable and
             # therefore not an identity (#349).
             "abandoned_children": abandoned,
+            # This box's /mnt/shared NFS readahead window, read-only and
+            # scoped to the host this ran on (#523).  Deliberately not folded
+            # into ``scheduler``: that list is what the census could not read,
+            # and a wrapper acting on it would then act on a host setting that
+            # gates nothing.  It never changes ``complete`` or the exit status.
+            "host_storage": host_storage,
             "pool": pool_summary,
             "nodes": nodes,
             "jobs": jobs,
             "endings": endings,
+            "rollout": rollout,
             "scheduler": notes,
         }, sort_keys=True, indent=1))
         return _incomplete(timed_out, unavailable, pool_partial, args.timeout_s)
@@ -2073,6 +2313,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"== endings (newest {args.recent})")
     print("\n".join([ending_note] if ending_note
                      else ending_lines(endings, note=empty_note)))
+    print()
+    print("== rollout")
+    print("\n".join(rollout_lines(rollout)))
     return _incomplete(timed_out, unavailable, pool_partial, args.timeout_s)
 
 

@@ -73,3 +73,31 @@ def test_denial_read_error_preserves_job_but_reports_incomplete(ready_denial, mo
     assert result["queue"]["ready"] == 1
     assert result["queue"]["complete"] is False
     assert any("denial read denied" in note for note in result["notes"])
+
+
+def test_status_explains_the_observed_memory_shortage(ready_denial):
+    queue, key, path, denial, write = ready_denial
+    write({**denial, "reason": "reservation_unavailable", "evidence": {
+        "token_shortage": {"resource": "mem_gb", "requested": 8, "available": 3},
+    }})
+    result = pbstatus.read_pool(queue.root)
+    row = result["jobs"][0]
+    assert row["admission_denials"][0]["evidence"]["token_shortage"]["available"] == 3
+    text = "\n".join(pbstatus.pool_job_lines([row], result["queue"]))
+    assert "mem_gb: requested 8, available 3; waiting for release" in text
+    assert "ago" in text
+
+
+@pytest.mark.parametrize("shortage", [None, [], "broken", {},
+    {"resource": "mem_gb", "requested": True, "available": 0},
+    {"resource": "mem_gb", "requested": 8, "available": -1},
+    {"resource": "mem_gb", "requested": 8, "available": 8},
+    {"resource": [], "requested": 8, "available": 3},
+])
+def test_bad_shortage_detail_keeps_the_original_denial_readable(ready_denial, shortage):
+    queue, key, path, denial, write = ready_denial
+    write({**denial, "evidence": {"token_shortage": shortage}})
+    result = pbstatus.read_pool(queue.root)
+    text = "\n".join(pbstatus.pool_job_lines(result["jobs"], result["queue"]))
+    assert "box: adaptive_cpu_refused" in text
+    assert "waiting for release" not in text

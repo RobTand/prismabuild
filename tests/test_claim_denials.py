@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -136,3 +137,53 @@ def test_status_keeps_two_hosts_and_rejects_old_or_future_evidence(tmp_path):
             "reason": "fixture", "evidence": {}, "denied_unix": stamp}}}))
     row = next(row for row in pbstatus.read_pool(queue.root)["jobs"] if row["action_key"] == KEY_A)
     assert [record["host"] for record in row["admission_denials"]] == ["one", "two"]
+
+
+def memory_blocked_queue(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    capacity = {"cpu": 20, "gpu": 1, "mem_gb": 104}
+    ledger = queue.ledger()
+    ledger.ensure_capacity(capacity)
+    assert ledger.acquire(KEY_B, {"cpu": 6, "gpu": 1, "mem_gb": 101})
+    publish(queue, KEY_A, resources={"cpu": 4, "mem_gb": 8})
+    return queue, ledger, capacity
+
+
+def test_memory_shortage_names_observed_tokens_and_preserves_reservations(tmp_path):
+    queue, ledger, capacity = memory_blocked_queue(tmp_path)
+    assert queue.claim(capacity=capacity) is None
+    assert ledger.available() == {"cpu": 14, "mem_gb": 3}
+    denial = next(iter(local_records(queue).values()))
+    assert denial["reason"] == "reservation_unavailable"
+    assert denial["evidence"].get("token_shortage") == {
+        "resource": "mem_gb", "requested": 8, "available": 3,
+    }
+    assert queue.passes(KEY_A) == 1
+    ledger.release(KEY_B)
+    assert queue.claim(capacity=capacity)["action_key"] == KEY_A
+
+
+def test_cpu_only_shortage_does_not_quote_a_previous_gpu_decision(tmp_path):
+    queue, ledger, capacity = memory_blocked_queue(tmp_path)
+    gpu = SimpleNamespace(last_decision={"reason": "unrelated_gpu_refusal"})
+    assert queue._claim(capacity=capacity, gpu_controller=gpu) is None
+    denial = next(iter(local_records(queue).values()))
+    assert denial["evidence"].get("gpu_decision") is None
+
+
+@pytest.mark.parametrize("resource", ["cpu", "gpu", "mem_gb"])
+@pytest.mark.parametrize("free", [0, 3])
+def test_shortage_uses_acquired_tokens_and_resets_on_the_next_attempt(tmp_path, resource, free):
+    ledger = pool.ResourceLedger(tmp_path / "reservations")
+    ledger.ensure_capacity({resource: 4})
+    assert ledger.acquire(KEY_B, {resource: 4 - free})
+    assert ledger.begin_acquire(KEY_A, {resource: 4}) is None
+    assert ledger.last_token_shortage == {
+        "resource": resource, "requested": 4, "available": free,
+    }
+    assert ledger.available().get(resource, 0) == free
+    ledger.release(KEY_B)
+    handle = ledger.begin_acquire(KEY_A, {resource: 4})
+    assert handle is not None
+    assert ledger.last_token_shortage is None
+    ledger.abandon_acquire(handle)

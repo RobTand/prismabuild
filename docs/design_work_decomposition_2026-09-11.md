@@ -1,8 +1,9 @@
 # PB #517: decompose logical requests before execution
 
 Design agreed by Rob on 2026-09-11; implementation assigned to Claude.
-This document specifies proposed behavior. No decomposer or new worker
-capability is implemented by this documentation change.
+The synchronous pre-execution MVP is implemented by PR #518; its scope and
+remaining durable-parent work are listed below. Source implementation is not
+deployed runtime qualification.
 
 Issue: https://github.com/RobTand/prismabuild/issues/517.
 Source basis: `origin/main` at `508f4e3fef` (merged PR #516).

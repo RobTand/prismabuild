@@ -186,6 +186,13 @@ TOMBSTONE_SUFFIX = ".tombstone"
 LATE_FINISH_SUFFIX = ".late-finish"
 CONTAINER_OWNERS = "container-owners"
 CONTAINER_OWNER_LABEL = "prismabuild.action"
+#: The slice a container was created inside.  The owner label is the action's
+#: identity and spans its attempts; this one names a single attempt's scope.
+#: Both are reserved: the shim refuses a caller that tries to set either, and
+#: writes this one from the kernel cgroup it is running in, so a query on it is
+#: an identity match rather than a name match.
+CONTAINER_SCOPE_LABEL = "prismabuild.scope"
+
 #: The sealed environment variable whose value becomes that label, and the
 #: sealed path of the marker the shim writes on first container creation.  They
 #: live beside the label because they are one contract with it: a submitter
@@ -1073,17 +1080,17 @@ def find_launcher_pids(action_key: str) -> list[int]:
     return found
 
 
-def _docker_owned_container_ids(owner: str) -> list[str]:
-    """Container ids carrying this action's ownership label.
+def _docker_containers_with_label(label: str, value: str) -> list[str]:
+    """Every container id the local daemon holds under one exact label.
 
-    Docker payloads are children of ``containerd-shim``, not of the action
-    group, so the daemon's label index is the authoritative join back to the
-    action.  A failed query is an unknown answer and therefore an exception;
-    callers retain capacity on it.
+    ``-a``, so a created-but-never-started container is listed too: that is the
+    one form of leftover a running-process census cannot see, and the only one
+    left once an action's payload has stopped.  A failed query is an unknown
+    answer and therefore an exception; callers retain capacity on it.
     """
 
     result = subprocess.run(
-        [DOCKER, "ps", "-aq", "--filter", f"label={CONTAINER_OWNER_LABEL}={owner}"],
+        [DOCKER, "ps", "-aq", "--filter", f"label={label}={value}"],
         capture_output=True,
         text=True,
         timeout=15,
@@ -1094,6 +1101,17 @@ def _docker_owned_container_ids(owner: str) -> list[str]:
         raise PoolContractError(
             f"docker ownership query failed ({result.returncode}): {detail}")
     return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
+
+
+def _docker_owned_container_ids(owner: str) -> list[str]:
+    """Container ids carrying this action's ownership label.
+
+    Docker payloads are children of ``containerd-shim``, not of the action
+    group, so the daemon's label index is the authoritative join back to the
+    action.
+    """
+
+    return _docker_containers_with_label(CONTAINER_OWNER_LABEL, owner)
 
 
 def _docker_remove_containers(container_ids: list[str]) -> list[str]:
@@ -1208,7 +1226,8 @@ _CLAIM_IDENTITY = ("claimed_by", "claimed_unix", "published_unix", "attempts")
 #: absence of one, and "not measured" never renders as a measurement of zero.
 RESOURCE_SUMMARY_FIELDS = ("memory_peak_bytes", "io_read_bytes", "io_write_bytes",
                            "gpu_power_peak_w", "gpu_power_reference_w",
-                           "gpu_power_peak_fraction")
+                           "gpu_power_peak_fraction", "gpu_framebuffer_used_peak_bytes",
+                           "gpu_framebuffer_total_bytes")
 
 
 def _measured(value: object) -> float | int | None:
@@ -1249,6 +1268,10 @@ def resource_profile_summary(detail: Mapping[str, object]) -> dict[str, object]:
         summary["gpu_power_reference_w"] = _measured(gpu.get("power_reference_w"))
         summary["gpu_power_peak_fraction"] = _measured(
             gpu.get("power_peak_fraction_of_reference"))
+        summary["gpu_framebuffer_used_peak_bytes"] = _measured(
+            gpu.get("framebuffer_used_bytes_peak"))
+        summary["gpu_framebuffer_total_bytes"] = _measured(
+            gpu.get("framebuffer_total_bytes"))
     return summary
 
 
@@ -1290,6 +1313,10 @@ def describe_resource_profile(ending: Mapping[str, object]) -> str:
         if fraction is not None:
             cell += f"({float(fraction) * 100:.0f}%)"
         parts.append(cell)
+    used = ending.get("gpu_framebuffer_used_peak_bytes")
+    total = ending.get("gpu_framebuffer_total_bytes")
+    if used is not None:
+        parts.append(f"vram={_si_bytes(used)}/{_si_bytes(total)}")
     return " ".join(parts) if parts else "-"
 
 
@@ -1440,6 +1467,7 @@ class ResourceLedger:
     def __init__(self, root: str | Path, host: str | None = None) -> None:
         self.root = Path(root)
         self.host = host or socket.gethostname()
+        self.last_token_shortage: dict[str, object] | None = None
 
     @property
     def base(self) -> Path:
@@ -1772,6 +1800,7 @@ class ResourceLedger:
         return the tokens itself.
         """
 
+        self.last_token_shortage = None
         wanted = {k: int(v) for k, v in demand.items() if int(v) > 0}
         handle = (
             f"{ACQUIRING_PREFIX}{int(_now() * 1_000_000)}.{action_key}"
@@ -1798,6 +1827,12 @@ class ResourceLedger:
                                            and adaptive.get("borrowing"))
                                           or (kind == "gpu" and adaptive_gpu is not None
                                               and adaptive_gpu.get("probe"))):
+                    # Capture the tokens this acquisition could actually obtain,
+                    # before rollback. No extra shared scan, and no claim that a
+                    # later reader sees the same free capacity (issue #520).
+                    self.last_token_shortage = {
+                        "resource": kind, "requested": need, "available": taken,
+                    }
                     raise _Insufficient(kind)
             if adaptive_gpu:
                 metadata = dict(adaptive_gpu, borrowed_gpu=max(
@@ -3250,6 +3285,31 @@ class PoolQueue:
                 "container_owner must be a 64-character hex digest")
         return self.root / CONTAINER_OWNERS / f"{owner}.used"
 
+    def _container_settlement(self, owner: str, unit: str) -> dict[str, object]:
+        """What this holder can prove about its own Docker transaction.
+
+        Two label queries, not one.  The owner label is the action's identity
+        and spans its attempts; ``prismabuild.scope`` names this exact slice.
+        The marker is the third leg: ``_cleanup_action_containers`` unlinks it
+        only once its own re-query came back empty, so its absence is that
+        proof rather than a separate guess.
+
+        Whatever this returns is sent as-is.  The broker refuses an incomplete
+        settlement, which is the correct outcome: a scope that still has a
+        container is not settled, and nothing should pretend otherwise.
+        """
+
+        marker = self.container_marker(owner)
+        return {
+            "schema": resource_scope.CONTAINER_SETTLEMENT_SCHEMA,
+            "marker_absent": not marker.exists(),
+            "owner_container_ids": _docker_containers_with_label(
+                CONTAINER_OWNER_LABEL, owner),
+            "scope_container_ids": _docker_containers_with_label(
+                CONTAINER_SCOPE_LABEL, unit),
+            "checked_unix": _now(),
+        }
+
     def _scope_from_record(self, record: Mapping[str, object]) -> resource_scope.ResourceScope:
         control = record.get("resource_scope")
         if not isinstance(control, dict):
@@ -3327,6 +3387,18 @@ class PoolQueue:
     @staticmethod
     def _sample_resource_scope(scope: resource_scope.ResourceScope) -> dict:
         telemetry = scope.sample()
+        framebuffer = getattr(scope, "_framebuffer_window", None)
+        if isinstance(framebuffer, box_window.DiscreteFramebufferWindow):
+            # Read the broker's already-published public sample beside the
+            # existing exact-scope sampler.  This is deliberately a read, not
+            # a per-action HIP/NVML probe; the broker remains the producer.
+            try:
+                framebuffer.observe(gpu_admission.trusted_sample(), now=_now())
+            except Exception as exc:                             # noqa: BLE001
+                # GPU-window telemetry is descriptive. A broken public read
+                # must neither stop the payload nor discard prior samples.
+                telemetry["gpu_framebuffer_error"] = (
+                    f"broker GPU capacity snapshot unavailable: {type(exc).__name__}")
         try:
             status = scope._request("status")
             if status.get("stop_reason"):
@@ -3411,6 +3483,12 @@ class PoolQueue:
         # The broker may finish after a client timeout or worker crash. Both
         # claim and lease now retain the exact nonce needed for reconciliation.
         control = scope.create()
+        if demand.get("gpu"):
+            # Kept on the live scope only.  The broker has now validated the
+            # canonical scope identity; a reconstructed scope at finish
+            # cannot turn its one final snapshot into an action-time peak.
+            scope._framebuffer_window = box_window.DiscreteFramebufferWindow(
+                key, scope.nonce, scope.unit, start_unix=_now())
         control["started_monotonic"] = scope.started
         control["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         try:
@@ -3502,6 +3580,31 @@ class PoolQueue:
             if not containers["complete"]:
                 return containers
             telemetry = self._sample_resource_scope(scope)
+            settle_error: str | None = None
+            if not scope_only and record.get("container_owner"):
+                # Before release, because release is where the broker decides
+                # between removing this scope and retaining it frozen: a ticket
+                # the shim could not resolve -- an ordinary nonzero ``docker``
+                # exit is enough -- makes it keep an empty frozen parent for a
+                # container that might still arrive.  Settlement is the holder
+                # saying none can, and it is the only evidence that lets the
+                # broker's inventory pass ever take that parent away (#486).
+                #
+                # Its own handler, and deliberately not the outer one.  This is
+                # housekeeping for a payload that has already stopped: if the
+                # broker refuses or never hears it, the tombstone is retained
+                # exactly as it is today.  Letting it reach the outer handler
+                # would answer ``complete: False`` and pin a claim and its
+                # tokens on a failed cleanup of somebody's memory charge, which
+                # is the fail-OPEN trade the comments above refuse to make.
+                #
+                # ``Exception`` and not ``BaseException``: a KeyboardInterrupt
+                # or SystemExit still stops the process.
+                try:
+                    scope.settle_containers(self._container_settlement(
+                        str(record["container_owner"]), str(scope.unit)))
+                except Exception as exc:                             # noqa: BLE001
+                    settle_error = f"{type(exc).__name__}: {exc}"
             released = scope.release()
             if scope.authority_path is not None:
                 # The scope is empty: nothing will sample it again, and no
@@ -3510,6 +3613,8 @@ class PoolQueue:
                 scope.authority_path.unlink(missing_ok=True)
             cleanup = {"complete": True, "released": released, "telemetry": telemetry,
                        "checked_unix": _now(), "nonce": scope.nonce}
+            if settle_error is not None:
+                cleanup["settle_error"] = settle_error
             key = str(record["action_key"])
             path = self.item_path(CLAIMED, key)
             live = _read_json(path)
@@ -4527,14 +4632,17 @@ class PoolQueue:
                         # population when the mount was slow (#351).
                         refused = False
                         refusal_source = None
+                        cpu_decision = gpu_decision = token_shortage = None
                         with self._admission_lock(controller):
                             if controller is not None:
                                 adaptive = controller.decision(item, demand, identity=identity)
+                                cpu_decision = getattr(controller, "last_decision", None)
                                 refused = adaptive is None
                                 if refused:
                                     refusal_source = "adaptive_cpu_refused"
                             if not refused and gpu_controller is not None and demand.get("gpu"):
                                 adaptive_gpu = gpu_controller.decision(item, demand, contract=contract)
+                                gpu_decision = getattr(gpu_controller, "last_decision", None)
                                 refused = adaptive_gpu is None
                                 if refused:
                                     refusal_source = "adaptive_gpu_refused"
@@ -4549,6 +4657,7 @@ class PoolQueue:
                                               ledger.begin_acquire(key, demand, adaptive=adaptive,
                                                                    cpu_tiers=cpu_tiers))
                                     asked = demand
+                                token_shortage = ledger.last_token_shortage
                                 if handle is not None:
                                     # A funded reservation spends its probe and borrow
                                     # freshness under the same exclusion as its decision.
@@ -4563,9 +4672,9 @@ class PoolQueue:
                             # capacity authority. Keep its I/O outside host admission.
                             # The per-key transition lock still protects this item.
                             self.record_pass(key)
-                            decision = (getattr(gpu_controller, "last_decision", None)
+                            decision = (gpu_decision
                                         if refusal_source == "adaptive_gpu_refused"
-                                        else getattr(controller, "last_decision", None))
+                                        else cpu_decision)
                             self.record_denial(item, refusal_source or "adaptive_refused",
                                                {"decision": decision or {}})
                             continue
@@ -4587,10 +4696,11 @@ class PoolQueue:
                                                "reservation_unavailable_past_ceiling" if withholding else
                                                "reservation_unavailable", {
                                 "demand": demand, "reservation_demand": reservation_demand,
+                                "token_shortage": token_shortage,
                                 "capacity_total": total, "denials": denials,
                                 "withhold_age_s": age, "withhold_ceiling_s": WITHHOLD_CEILING_S,
-                                "cpu_decision": getattr(controller, "last_decision", None),
-                                "gpu_decision": getattr(gpu_controller, "last_decision", None),
+                                "cpu_decision": cpu_decision,
+                                "gpu_decision": gpu_decision,
                             })
                             if withholding and age <= WITHHOLD_CEILING_S:
                                 return None
@@ -7641,7 +7751,21 @@ class PoolQueue:
                     if key not in ("live", "retired", "members")
                 }
 
-        profile["box_window"] = self._box_window(start, finished_unix)
+        window = self._box_window(start, finished_unix)
+        framebuffer = outcome.pop("gpu_framebuffer_window", None)
+        if isinstance(framebuffer, Mapping):
+            # A memory-only discrete device has no power, clock or unified
+            # memory series.  Its broker-derived VRAM reading is therefore the
+            # GPU group for this action's box window, never a fabricated zero
+            # in the pqteld shape.
+            window["gpu"] = dict(framebuffer)
+            sources = {str(group.get("source")) for group in window.values()
+                       if isinstance(group, Mapping) and group.get("source")}
+            window["source"] = "+".join(sorted(sources))
+            reason = window.pop("reason", None)
+            if isinstance(reason, str) and reason:
+                window["errors"] = [*window.get("errors", []), reason]
+        profile["box_window"] = window
         return profile
 
     @staticmethod
@@ -7817,6 +7941,11 @@ class PoolQueue:
                 if watch is not None:
                     outcome["progress_observation"] = watch.as_record(
                         now=time.monotonic())
+                framebuffer = getattr(scope, "_framebuffer_window", None)
+                if isinstance(framebuffer, box_window.DiscreteFramebufferWindow):
+                    group = framebuffer.group()
+                    if group is not None:
+                        outcome["gpu_framebuffer_window"] = group
                 with suppress(OSError):
                     progress_path.unlink()
                 return self._merge_action_status(outcome, status_path)

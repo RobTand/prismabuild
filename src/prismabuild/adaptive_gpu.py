@@ -29,6 +29,11 @@ FEEDBACK_WINDOW = 6
 GIB = 1024 ** 3
 
 
+#: ``gpu_capacity.TELEMETRY_MEMORY_ONLY``. Spelled here rather than imported so
+#: the controller reads one published sample field and never a producer module.
+MEMORY_ONLY_TELEMETRY = 'memory_only'
+
+
 def memory_budget_bytes(value):
     """Convert GiB to kernel-representable positive bytes without float overflow."""
     # Comparing before multiplication also handles huge ints, infinities and NaN.
@@ -251,9 +256,17 @@ class Controller:
             # certification; CPU pressure and attribution remain independent.
             reference = (device.get('power_reference_w')
                          if device.get('power_reference_scope') == 'soc_tdp' else None)
-        valid = (valid and _number(device.get('power_w')) and _number(reference)
-                 and reference > 0 and isinstance(device.get('uuid'), str) and bool(device['uuid'])
-                 and device.get('memory_domain') in ('shared_system', 'discrete'))
+        # A device that declares it has no saturation instrument is admitted on
+        # the evidence it does carry -- identity, memory domain, free VRAM,
+        # foreign holders and host pressure -- and is never granted the two
+        # permissions that instrument exists to authorize. Absent power without
+        # that declaration stays invalid, so this narrows one declared class of
+        # device rather than weakening the contract for every sample.
+        memory_only = device.get('telemetry_class') == MEMORY_ONLY_TELEMETRY
+        valid = (valid and isinstance(device.get('uuid'), str) and bool(device['uuid'])
+                 and device.get('memory_domain') in ('shared_system', 'discrete')
+                 and (memory_only or (_number(device.get('power_w')) and _number(reference)
+                                      and reference > 0)))
         state = adaptive_cpu.read_json(self.base / 'gpu-state.json')
         low = False
         feedback_allowed = False
@@ -267,11 +280,18 @@ class Controller:
             # Idle clock gating (0x4) is normal. Thermal, power and external
             # slowdown are congestion even if the sampled power has fallen.
             limited = device.get('limited')
-            valid = valid and type(limited) is bool
-            congested = (pressure or bool(sample['foreign_processes'])
-                         or device['power_w'] >= .80 * reference or limited is True)
-            low = valid and not congested and device['power_w'] <= .65 * reference
-            feedback_allowed = observe_feedback(state, sample, members)
+            if memory_only:
+                # Without a power series there is no observable plateau, so
+                # ``low`` stays false: no sharing probe and no measurement
+                # action, and the device runs one attributed job at a time.
+                congested = pressure or bool(sample['foreign_processes'])
+                low = False
+            else:
+                valid = valid and type(limited) is bool
+                congested = (pressure or bool(sample['foreign_processes'])
+                             or device['power_w'] >= .80 * reference or limited is True)
+                low = valid and not congested and device['power_w'] <= .65 * reference
+                feedback_allowed = observe_feedback(state, sample, members)
             if sample['sample_id'] != state.get('sample_id'):
                 continuous = 0 < sample['sampled_unix'] - state.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
                 state.update(sample_id=sample['sample_id'], sampled_unix=sample['sampled_unix'],

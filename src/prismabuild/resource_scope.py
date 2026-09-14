@@ -18,6 +18,10 @@ import time
 from typing import Any
 
 BROKER_SOCKET = Path('/run/prismabuild/resources.sock')
+#: The schema of the container settlement a holder sends before ``release``.
+#: Mirrors ``resource_broker.SETTLEMENT_SCHEMA``; the broker refuses anything
+#: else, so the two spellings are one contract.
+CONTAINER_SETTLEMENT_SCHEMA = 'prismabuild.container-settlement.v1'
 SCOPE_RE = re.compile(r'prismabuild-job[a-f0-9]{32}\.slice')
 MAX_MESSAGE_BYTES = 65536
 
@@ -594,6 +598,22 @@ class ResourceScope:
         _atomic_json(self.telemetry_path.with_suffix('.termination.json'),
                      {'scope_unit': self.unit, 'reason': reason, 'result': result})
         return result
+
+    def settle_containers(self, evidence: dict) -> dict:
+        """Tell the broker this attempt's Docker transaction is closed.
+
+        Sent before ``release`` and carrying the same attempt token. When a
+        container ticket was never resolved -- an ordinary nonzero ``docker``
+        exit is enough -- ``release`` keeps an empty frozen parent so a late
+        container cannot land anywhere else. This is what lets the broker's
+        inventory pass eventually remove that parent instead of keeping it
+        until the host reboots (#486).
+
+        Housekeeping, and never worth losing an action over: a broker that
+        refuses or never hears this leaves exactly the behaviour that was here
+        before it, which is the tombstone retained.
+        """
+        return self._request('settle', evidence=evidence)
 
     def release(self) -> dict:
         """Release only after the broker proves the aggregate job scope empty."""

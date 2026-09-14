@@ -1,5 +1,10 @@
 """The reader holds while the pool's disks are loaded, and says what it saw.
 
+Whether a client is reading is the other half of the decision, and it lives in
+``test_the_prewarm_pacer_holds_only_when_a_client_is_reading``.  The pacers
+here are built without a client counter, which is the shape of a host that
+cannot see its clients: it paces as though they were always reading.
+
 A thread count fixes concurrency, not load.  The eight-reader warm of
 2026-09-11 (#499) drove a four-spindle raidz1 to 73-83% utilization and
 11-14 s of backlog, which reset every NFS-over-RDMA client on the box; the
@@ -159,7 +164,9 @@ def test_an_interval_with_no_completed_read_reports_no_await() -> None:
     report = pacer.report()
     assert report["max_read_await_ms"] == 0.0
     assert report["max_util_pct"] == 90.0
-    assert over is True, "utilization is over on its own"
+    assert over is False, (
+        "90 % busy with no read to serve is a disk doing somebody else's "
+        "work, and utilization does not hold the reader on its own")
 
 
 def test_the_reader_holds_while_the_pool_is_loaded_and_resumes_when_it_is_not(
@@ -274,7 +281,7 @@ def test_the_thresholds_the_pacer_used_are_in_its_report() -> None:
 
     assert report["thresholds"] == {
         "max_util_pct": 11.0, "max_read_await_ms": 15.0,
-        "max_backlog_ms": 4000.0}
+        "max_backlog_ms": 4000.0, "client_active_mb_s": 0.0}
 
 
 def test_a_zero_cap_is_off_rather_than_a_cap_of_zero() -> None:

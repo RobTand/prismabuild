@@ -78,6 +78,38 @@
           "20"
         ]
       }
+    },
+    "wsl-gpu": {
+      "_alias": "DESKTOP-P5UOGNJ",
+      "_alias_why": "WSL2 takes its hostname from the Windows machine name, so socket.gethostname() answers DESKTOP-P5UOGNJ while every submission spells this box wsl-gpu. One machine, one shape, the same mechanism gx10-6b77/sparklina already uses. The offer therefore lands at pb-queue/workers/DESKTOP-P5UOGNJ.json, and --tag wsl-gpu is what places work here.",
+      "_why": "A Ryzen 9800X3D under WSL2 with an RX 9070 XT (gfx1201, RDNA4). It offers its CPU and, since #529, its GPU. The AMD reader publishes that device from rocminfo and a HIP probe that must agree on VRAM total, wavefront, peak clock and threads per block; run on the box, the broker snapshot reads complete true, attributed true, one discrete 15.81 GiB device GPU-9c30c352a59e5b7a, and box_capacity.observe({\"gpu\": 1, \"mem_gb\": 16}) answered capacity {gpu 1, mem_gb 16} with gpu_capacity_trusted true. A foreign GPU process is named by pid and closes the offer to gpu 0, the same rule the GB10s use.",
+      "_gpu_why": "One GPU token, and it is a narrower offer than a GB10's. WSL2 has no amdgpu driver, so this device carries no power, clock or throttle counter and no per-process VRAM at all; its record declares telemetry_class memory_only and the adaptive controller withholds the two permissions power exists to authorize. It runs one attributed job at a time: no concurrency probe, no measurement action, and no enforceable per-scope GPU allowance -- a job that exceeds its GPU budget here fails its own allocation rather than being stopped on two confirming observations. Ownership still comes from a /dev/dxg open-handle census under the same PID-start and cgroup checks as the NVML rows, so an unattributed holder still refuses admission. A Windows-side GPU user is outside a Linux /proc census and will not appear as a foreign process; it cannot overcommit VRAM, because free VRAM is measured whoever holds the rest. --class stays x86: the class names the ABI the box runs and this is an x86-64 host with the fleet's x86 project environments, so a new class would break CPU placement while adding nothing -- the gfx1201/rocm/rdna4 tags already place AMD GPU work. See docs/amd_gpu_capacity_2026-09-12.md.",
+      "_capacity_why": "27.41 GiB physical. box_capacity.MEMORY_MARGIN_GB is 8 and the box read MemAvailable 24 GiB, so 16 GiB is the largest budget it can offer without eating the margin; observe() returned exactly mem_gb 16. 16 vCPU: cpu_topology.inherited_tiers() classifies the 8 physical cores [0,2,4,6,8,10,12,14] preferred and the 8 SMT siblings [1,3,5,7,9,11,13,15] fallback, so --all-cores retains all 16 and still reserves physical cores first. Three loops keeps roughly dl380g10's five-cores-per-loop ratio. --python is the interpreter that launches the pool worker, not a project environment: /usr/bin/python3 here is 3.14.4, the same version as dl380g10's pb-cpu, and all 19 prismabuild modules plus supervise/worker_loop/worker/pbrun import under it. The project environments PrismaQuant CPU shards pass with their own --python are provisioned at the same paths this fleet already uses, /home/rob/venvs/pb-cpu and /home/rob/venvs/pq-cpu312.",
+      "loops": 3,
+      "args": [
+        "--class",
+        "x86",
+        "--tag",
+        "wsl-gpu",
+        "--tag",
+        "gfx1201",
+        "--tag",
+        "rocm",
+        "--tag",
+        "rdna4",
+        "--gpu",
+        "--mem-gb",
+        "16",
+        "--all-cores",
+        "--timeout-s",
+        "3600",
+        "--max-idle",
+        "2000",
+        "--poll-s",
+        "10",
+        "--python",
+        "/usr/bin/python3"
+      ]
     }
   },
   "_measured_2026_09_04": "Both GB10 boxes are 121 GB unified. The historical gpu-slots values of two and three were concurrency guesses rather than hardware: each box has one physical GPU. They are retained here only as the measurement that exposed why fixed slots strand light jobs and stack heavy jobs; adaptive admission now consumes attributed broker telemetry instead. The RAM bounds remain 72 GiB on sparky and 80 GiB on sparklina because host-memory containment is a separate hard limit.",

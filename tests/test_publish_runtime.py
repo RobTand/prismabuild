@@ -358,6 +358,25 @@ def test_observability_runs_from_only_the_published_generation(tmp_path, monkeyp
     assert result.returncode == 0, result.stderr
 
 
+def test_the_storage_helper_travels_with_the_generation(tmp_path, monkeypatch):
+    """``pbstatus`` reads the NFS readahead window through it (#523).
+
+    A worker has no checkout, so a generation published without this file
+    makes the readiness reading permanently ``unavailable`` on every box in
+    the fleet -- the check would ship inert. Publishing it installs nothing:
+    it is stdlib-only, reads unless given ``--apply``, and the host unit
+    beside it is still an operator's to install.
+    """
+
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
+    manifest = publish_runtime._publication_manifest()
+    name = "fleet/storage/nfs_readahead.py"
+    assert name in manifest
+    source = publish_runtime._source_for(name)
+    assert source == ROOT / name and source.is_file()
+    assert manifest[name] == publish_runtime._sha256(source)
+
+
 def test_a_staging_tree_is_not_a_generation(tmp_path, monkeypatch) -> None:
     """An interrupted publish can leave one behind, receipt and all.
 
@@ -414,7 +433,7 @@ def test_a_generation_store_that_cannot_be_written_is_a_refusal(
                                         "--rollout-reason", "fixture publication"])
     fleet.chmod(0o555)
     try:
-        with pytest.raises(SystemExit, match="cannot write the generation store"):
+        with pytest.raises(SystemExit, match="cannot (write the generation store|open publication lock)"):
             publish_runtime.main()
     finally:
         fleet.chmod(0o755)

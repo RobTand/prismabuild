@@ -60,5 +60,5 @@ resident input preparation within useful units without hiding a long independent
 worklist in one opaque action. Report an unsupported decomposition explicitly.
 
 The agreed implementation design is
-[PB #517](docs/design_work_decomposition_2026-09-11.md); its new decomposer remains
-proposed until implemented and validated.
+[PB #517](docs/design_work_decomposition_2026-09-11.md); PR #518 implements its synchronous MVP. Durable queued parents and parent
+withdrawal remain proposed; source support does not establish deployed support.

@@ -90,7 +90,7 @@ def test_the_deadline_is_the_whole_run_not_each_section(
     assert code == EXIT_INCOMPLETE
     assert elapsed < 8, f"two blocked sections took {elapsed:.1f}s against a 2s budget"
     result = json.loads(capsys.readouterr().out)
-    assert result["timed_out_sections"] == ["pool", "endings"]
+    assert result["timed_out_sections"] == ["pool", "endings", "rollout"]
 
 
 def test_text_mode_marks_the_partial_output_rather_than_printing_an_empty_fleet(

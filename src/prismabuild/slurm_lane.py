@@ -2323,9 +2323,16 @@ def recorded_action(
 
 
 def recorded_submission(
-    action_key: str, *, root: str | Path | None = None
+    action_key: str, *, root: str | Path | None = None,
+    report_unavailable: bool = False,
 ) -> dict[str, object] | None:
-    """The newest submission recorded for this action key, if any."""
+    """The newest submission recorded for this action key, if any.
+
+    ``report_unavailable`` keeps the historical missing-or-unreadable-as-absent
+    behavior by default. A bounded prefix census uses it to distinguish a
+    missing record from a shared-filesystem failure before making an ambiguity
+    decision.
+    """
 
     try:
         directory = lane_directory(action_key, root=root)
@@ -2333,7 +2340,11 @@ def recorded_submission(
         return None
     try:
         raw = (directory / "latest.json").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
     except OSError:
+        if report_unavailable:
+            raise
         return None
     try:
         value = json.loads(raw)
@@ -2377,7 +2388,8 @@ def submitted_job(submission: Mapping[str, object]) -> SubmittedJob:
 
 
 def resolve_recorded(
-    prefix: str, *, root: str | Path | None = None
+    prefix: str, *, root: str | Path | None = None,
+    report_unavailable: bool = False,
 ) -> list[dict[str, object]]:
     """Every recorded submission whose action key starts with ``prefix``.
 
@@ -2393,12 +2405,17 @@ def resolve_recorded(
     found: list[dict[str, object]] = []
     try:
         names = sorted(os.listdir(base))
+    except FileNotFoundError:
+        return []
     except OSError:
+        if report_unavailable:
+            raise
         return []
     for name in names:
         if name == JOB_STATE_DIRNAME or not name.startswith(text):
             continue
-        record = recorded_submission(name, root=root)
+        record = recorded_submission(
+            name, root=root, report_unavailable=report_unavailable)
         if record is not None:
             found.append(record)
     return found

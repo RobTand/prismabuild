@@ -69,8 +69,10 @@ def test_an_earlier_runs_ending_does_not_answer_this_run(queue) -> None:
     """The old ending is evidence about the old request, and nothing else."""
 
     _file(queue, pool.FAILED, _outcome(100.0, status="failed", returncode=3))
+    # One immediate observation tests generation selection without racing a
+    # subsecond caller deadline against bounded-reader startup and IPC.
     assert pbrun.await_outcome(
-        queue, KEY, wait_s=0.05, generation=200.0
+        queue, KEY, wait_s=0, generation=200.0
     ) == 75
 
     _file(queue, pool.DONE, _outcome(200.0, status="executed", returncode=0))

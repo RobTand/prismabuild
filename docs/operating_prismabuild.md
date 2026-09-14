@@ -1,5 +1,10 @@
 # Operating PrismaBuild
 
+> **Barrier status:** the rollout-epoch source protocol is present, but
+> `FINAL_BARRIER_QUALIFICATION_GUARD` keeps every public barrier publication,
+> activation, resume and rollback disabled pending reviewed PB qualification
+> and live-host lifecycle evidence. `--stage-only` remains non-mutating.
+
 This guide is for the operator or agent who puts work on the fleet. It covers
 submitting a command, waiting for it, running a campaign, watching what the
 fleet is doing, stopping work, and reading a failure.
@@ -48,6 +53,35 @@ landed, including a hostname pin derived from a box-local executable, and seals
 them before computing the key. Flag order and duplicate tags do not move the
 key; a different admissible worker population does.
 
+The runtime-generation path of PB's Docker wrapper is also sealed. Publishing
+a new runtime can therefore change an ordinary re-run's key even when its
+code is unchanged. Retain the full action keys from the first submission. To
+reproduce an earlier key through the current client, pass:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd /path/to/original-checkout --as-sealed-by FULL_ACTION_KEY \
+  --detach -- <the original command and arguments>
+```
+
+Keep the original resource, environment, placement, input and execution
+options too. `--as-sealed-by` recovers the old immutable wrapper location,
+seals your current work and refuses unless its full key matches. An unchanged
+receipted action returns `cache_hit`; an active one attaches normally. Missing
+receipts can still submit the same key, so this is not a receipts-only mode.
+A changed checkout or sealing contract refuses with the expected and observed
+keys; it never silently submits different work. The original read-only CAS
+request and retained runtime generation must remain available. Publication
+does not rewrite those objects. Default unpinned resealing remains sensitive
+to runtime publication (#535).
+
+For a mixed-generation campaign, add `"as_sealed_by": "<original full key>"`
+to each corresponding manifest row. Each row uses its own original wrapper
+without changing the default for subsequent rows; no grouping by generation
+or invocation of historical submitters is needed. Keep this manifest outside
+the checkout being sealed, or in an already-ignored output directory: adding
+it as new source changes the checkout identity and correctly refuses.
+
 ### Storage prewarm pacing
 
 The storage role's data-manifest prewarm is controlled by
@@ -56,6 +90,34 @@ required: missing a configured vdev stat row holds the reader, and a later
 topology-discovery failure stops the role for supervisor retry.  Do not turn
 that failure into an unpaced warm.  An intentional no-disk fixture remains
 inactive only outside the storage role.
+
+With complete disk telemetry, a hold requires this host's NFS server to serve
+more than `--client-active-mb-s` and the pool to exceed its read-await or backlog
+cap. Unknown client activity is treated as active. `--max-util-pct` is recorded
+and no longer holds by itself. A pool busy with a scrub and no client reads can
+continue warming. Missing disk telemetry still holds reads regardless of client
+activity.
+
+### Restarting the storage role after a publication
+
+Current loops detect a new generation between cycles and exit for supervisor
+replacement. An active cycle can delay that boundary; older loops may lack
+the check. For a targeted restart, identify the storage child from its supervisor
+log and verify its PID/start time, parent supervisor, command line, service
+cgroup and old generation path. Recheck that identity immediately before
+sending `SIGTERM` to the exact child. A process-name match alone is insufficient.
+Keep the supervisor running. Verify the replacement's PID/start time, resolved
+script path and manifest hash, configured arguments, and a new cycle event.
+See the [storage-role restart procedure](data_manifest_prewarm.md#restarting-the-role-after-a-publication).
+
+The published storage loop honors the host maintenance gate before every
+cycle. Missing or unreadable gates keep it parked too. It finishes an active
+cycle before parking; a blocked disk read or pacing hold can delay that boundary.
+When the published generation changes, it exits and the supervisor starts its
+replacement from the new generation. `--once` honors both checks and exits 75
+when its cycle is deferred, also with `--dry-run`. Private fixtures must provide
+their own explicit open gate and stable runtime identity. This supplies storage
+participation hooks for #458; fleet barrier activation remains unavailable.
 
 ## Submit one command
 
@@ -90,6 +152,16 @@ checkout, so it is not part of the action's identity.
 
 These flags say what the action needs and where it may run.
 
+Before a pool submission, `pbrun` reads worker offers once in a separate
+process with a five-second read budget. A timeout or read error refuses the
+submission before publishing a runnable `ready/` item, naming any reader that
+survives cleanup by PID and start time. Placement, progress and execution-ceiling
+checks reuse that snapshot and re-evaluate its freshness in the caller.
+The budget covers discovery and IPC waits; runtime imports, process creation,
+reply decoding and cleanup grace can add time. Other shared I/O, including CAS
+staging, publication, waiting and worker claim/lease/token operations, retains
+its existing limits. This is not a whole-submission timeout.
+
 | Flag | What it means | What SLURM gets |
 |---|---|---|
 | `--gpu` | Defaults to `gpu=1,mem_gb=16`; explicit demand overrides the defaults. Pool generation actions permit adaptive sharing. | `--gres=shard:1`, partition `gpu`. |
@@ -103,6 +175,13 @@ These flags say what the action needs and where it may run.
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 | `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree; `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
+
+`pbrun` accepts only `cpu`, `gpu`, and `mem_gb` in `--demand`. It refuses an
+unknown resource before sealing, since the live pool offers and the SLURM lane
+can ledger only those names. `pbcampaign` performs the same client validation
+while loading the entire manifest, before it publishes even an earlier valid
+row. This is a command-client boundary: the generic `PoolQueue` API retains
+its producer-defined resource vocabulary.
 
 ### `--profile`: an opt-in profile, sealed into the key
 
@@ -553,6 +632,24 @@ By default `pbrun` waits. `--wait-s` bounds how long it waits and defaults to
 86400 seconds. It bounds only your patience: nothing is cancelled when it
 expires, and the job keeps running.
 
+For a synchronous pool submission, each read-only terminal observation runs in
+an isolated child with a five-second budget. The observation includes terminal
+rows, withdrawal/preemption lineage, and archived successor evidence; once an
+ending lands, immutable attempt and log verification gets one separate
+five-second budget before any result is printed. The parent retains the
+original `--wait-s` deadline across observations and does the polling sleep,
+so a repeated preemption follows its exact generation without granting a fresh
+wait. `--wait-s 0` still makes one immediate bounded observation. A timed-out,
+failed, or retained reader exits 74 and names the retained PID/start time when
+available; it neither withdraws work nor claims a failure, success, or timeout
+verdict. A published unreadable ending still reports exit 1, and immutable
+contract validation retains its existing error. The budget covers child read
+and IPC wait; process creation, completed reply decoding, cleanup grace,
+runtime imports, and output can add time. These are read-operation bounds, not
+a bound on the entire submission or syscall completion. They do not change
+`pbwait`, whose SLURM path can resume and file a job ending, and they do not
+qualify a real cross-host hard-NFS stall.
+
 To submit without waiting, use `--detach`:
 
     tools/fleet/pbrun.py --detach --gpu -- ./stage.sh --shard 3
@@ -565,6 +662,18 @@ run rather than starting a second copy of it. `--detach` refuses
 `--max-attempts` greater than 1, because a retry needs somebody alive to see
 the first attempt fail.
 
+Discovery of an existing submission for `--detach` uses a five-second isolated
+filesystem reader, including the attachment's displayed record path. If the
+reader times out, cannot start or cannot be reaped, `pbrun` reports unavailable
+attachment discovery and exits **74** before publishing runnable work. Any
+retained reader is named by PID and start time. This is neither an action
+failure nor expiry of `--wait-s`. SLURM controller queries remain in the parent
+with their existing timeouts. Existing tolerant record parsing is unchanged.
+The bound covers this attachment observation only: CAS lookup/staging, runtime
+imports, publication and post-publication generation reads can still stall.
+Process creation, reply decoding and cleanup have the same limits as the
+bounded pool waiter.
+
 Wait for detached keys later, in any number, with `pbwait`:
 
     tools/fleet/pbwait.py 8fc86da0e13f 4b19a02cc551
@@ -575,6 +684,32 @@ is the deadline for all the keys together, not for each. If the submission it
 recorded has since been superseded by a newer submission of the same key, it
 waits out `--wait-s` and exits 75 rather than file an ending for the wrong
 generation; run `pbwait` again and it reads the newer one.
+
+A full 64-hex key begins waiting without a recorded-key scan. A prefix first
+uses one isolated, five-second read of the recorded SLURM rows, pull-queue
+state directories, and withdrawal decisions. A scan that times out, fails, or
+leaves a retained reader exits 74 with any retained reader's identity; it is not reported
+as a missing or unique prefix and `pbwait` does not start another scan.
+
+Every later `pbwait` pass bounds its combined read-only submission, pool outcome,
+preemption-lineage, and any needed sealed-request/CAS receipt observation to
+five seconds; a landed immutable ending-summary read gets one separate
+five-second budget. A filed terminal or unreadable terminal is checked
+before any CAS lookup. A failed, timed-out, or retained reader produces that
+key's `record_error` row and exit 74 without another parent diagnostic read or
+record write. The parent keeps the exact generation selected by a preemption
+handoff and follows it immediately under the original `--wait-s` deadline.
+It defers request/CAS lookup until that successor is observed.
+SLURM resume and terminal filing stay in that parent, never in a disposable
+reader; a malformed SLURM terminal can therefore still be recovered by its
+recorded job. These are read-operation budgets, not a bound on controller work,
+process creation, cleanup, decoding, or an uninterruptible shared-filesystem
+syscall.
+
+Multi-key waits retain their thread-per-key concurrency. Their bounded readers
+fork from that multithreaded process: FD isolation prevents retained reader FDs
+from keeping caller resources alive, but cannot remove inherited-lock/startup
+hazards. A setup or reader failure is still reported per key as exit 74.
 
 Under SLURM, `pbwait` does more than watch. The waiting process files the
 terminal record, so a detached submission has nobody to file one. `pbwait`
@@ -1007,6 +1142,46 @@ Two rows, one wanting a GPU and one that must not have one:
       }
     ]
 
+### Limit a campaign's outstanding work
+
+For an I/O-bound row set, keep demand honest and give the waiting pool
+controller a submission window:
+
+    python3 /mnt/shared/prismabuild-fleet/repo/tools/pbcampaign.py \
+        --transport pool --max-inflight 4 manifest.json
+
+This invocation publishes at most four distinct unfinished actions at a time,
+including queued rows, attached rows and claims still cleaning up. It refills
+when any row completes successfully, so a slow first row does not hold up the
+rest of the window. Cached results do not consume a slot after any outstanding
+queue work has drained. The option does not change row identity, resource
+reservations, placement or sharding; omit it to retain submit-all behavior.
+
+The first window is submitted even with `--wait-s 0`. One monotonic wait budget
+then covers all refills and final waiting. At expiry, already submitted work
+continues and the suffix is reported as `not_submitted`, with each manifest row
+index. Exit 75 means there is still work to finish or submit, provided no row
+failed. Full action keys print to stderr as each submission returns, so retain
+that stream if the controller may be interrupted. Queue/CAS reads and sealing
+remain synchronous; the wait budget is not a bound on a blocked filesystem call.
+
+A refusal, failed action, unreadable outcome or slot read error stops further
+publication and reports the remaining suffix. Existing work is not cancelled.
+Stopping on failure preserves a resumable prefix: otherwise a restart could
+resubmit failed early rows before discovering a later full window. Correct the
+reported fault, stop the previous controller, and rerun the **same ordered
+manifest, checkout, options and limit**. Successful rows cache-hit and outstanding
+rows attach through ordinary `pbrun`; `as_sealed_by` remains necessary to retain
+keys across runtime publications. A changed manifest or limit cannot retroactively
+bound work already submitted.
+
+This is one controller's campaign-wide limit, not a shared admission group,
+per-host ceiling or I/O bandwidth reservation. Use one controller for the row
+set; concurrent controllers, other manifests and external work are outside its
+count. Do not combine it with the external pacer it replaces. `--detach` and
+SLURM refuse this option before loading or submitting the manifest: this mode
+needs a live pool controller and the pool's claim-cleanup evidence.
+
 ### Resume a campaign
 
 Run the same manifest again. A row that finished is a cache hit and costs
@@ -1021,7 +1196,7 @@ use `--detach`, then `pbwait` on the keys it printed.
 | --- | --- |
 | 0 | Every row's work is done. A cache hit counts as done. |
 | 1 | A row was refused before submission, a row's work failed, or the manifest did not load. |
-| 75 | Nothing failed, and at least one row was still running when `--wait-s` ran out. |
+| 75 | Nothing failed, and at least one row was still running or remained `not_submitted` when `--wait-s` ran out. |
 
 A refusal outranks a failure and a failure outranks a wait, so 75 means the
 work is still out there and the keys are still worth waiting on. Under
@@ -1140,6 +1315,33 @@ Do not replace the tag with `--anywhere`: this interpreter is not installed on
 the current GB10 workers, and `--anywhere` asserts that external dependencies
 are available throughout the eligible population. PB does not infer a project's
 Python imports from the checkout or install its packages at submission.
+
+`pbtest` checks reviewed development pins when the checkout contains
+`tools/resolve_<module>_dev_pin.py` (for example,
+`tools/resolve_tessera_dev_pin.py`). Each resolver must print one full lowercase
+Git commit. It runs on the admitted worker using the named test interpreter,
+before pytest imports or collects tests. The module name is mapped through
+installed package metadata: `tessera` is owned by `tessera-quant`.
+
+The installed distribution must record that exact Git commit in pip's
+`direct_url.json`, must not be editable, and must pass its RECORD hashes.
+Missing metadata, local-directory installs without a recorded commit, changed
+files, ambiguous ownership and a different copy on Python's import path refuse
+the shard. The diagnostic names the resolver and expected/installed commits;
+an unprovable installed commit is shown as `<unknown>`. A matching package
+prints `pbtest dependency pin` JSON into the action's retained stdout.
+Contract/package version equality alone does not prove the reviewed revision.
+
+Provision an environment with an immutable Git requirement, for example
+`python -m pip install --no-deps 'git+https://github.com/RobTand/tessera.git@<full-reviewed-commit>'`,
+then qualify it through PB. A local-directory `pip install` does not preserve
+the source Git commit and will be refused even if its directory name looks like
+one. Prefer a separate environment for a new pin. Re-provisioning a shared
+venv requires all users of that environment to be idle; never change it under
+a running shard. The guard performs no installation and does not make mutable
+environments safe. It verifies managed provenance, not a signature against
+tampered installation metadata. Generic `pbrun` commands retain their explicit
+dependency responsibilities; the automatic convention belongs to `pbtest`.
 
 The project environment has CPU PyTorch and the common PrismaQuant runtime and
 test dependencies, including `compressed_tensors`, which its autouse fixture
@@ -1277,6 +1479,16 @@ skip in `DENIAL` beside `PASSES`, with its age; `--json` includes
 submission timestamp. A displayed skip describes that earlier observation,
 not a current refusal or a prediction of the next claim. Successful claims
 retain this evidence until it is evicted from the bounded host snapshot.
+
+For token exhaustion, `DENIAL` also explains the observed shortage, for example
+`mem_gb: requested 8, available 3; waiting for release`. The JSON evidence's
+`token_shortage` names the resource and counts observed by that acquisition
+before its partial reservation was returned. The displayed age matters: this
+is not a fresh capacity check or a promise of immediate admission after a
+release. It names the first failing resource; CPU borrowing and GPU sharing
+retain their admission rules. Older workers may omit this optional detail.
+Use measured aggregate peak memory when sizing an action; reducing a reservation
+to force a claim can exhaust its enforced memory budget.
 
 `claim-denials.json` holds the latest 256 action generations per host in local
 admission state. The existing asynchronous publisher copies it to
@@ -1792,6 +2004,19 @@ idle" call for different responses.
     from the wrapped response's `view_update_every`, when valid. This is the
     bucket interval, not the database collection interval. Missing intervals
     are absent.
+    On a memory-only discrete GPU such as WSL's RX 9070 XT, the existing
+    broker capacity snapshot supplies `box_window.gpu` with
+    `source: broker_gpu_capacity`, `telemetry_class: memory_only` and
+    `memory_domain: discrete`. Its `framebuffer_total_bytes`,
+    `framebuffer_used_bytes_peak` and `framebuffer_free_bytes_min` are
+    whole-device readings sampled while the exact action scope was running,
+    with device identity, `samples`, `first_sampled_unix` and
+    `last_sampled_unix`. They include foreign device usage; they do not measure
+    the action's own allocations. Power and utilization fields remain absent,
+    as do `unified_*` memory fields. A missing or rejected snapshot adds no
+    samples, and allocations between ticks may be missed. The retained peak
+    survives allocation release; no finish-time HIP query is used to invent
+    history. This adds no device probe to the existing sampler.
     On GB10 the power reference is the SoC TDP and
     covers the CPU too, which `power_reference_scope` says; it is a reference,
     not a measured saturation point. Reading the window is bounded to about two
@@ -1799,7 +2024,8 @@ idle" call for different responses.
     `{"source": "unavailable", "reason": ...}` and the action still completes.
 
 `pbstatus` prints peak memory, the bytes moved and the GPU power peak against
-its reference in the endings table's `RESOURCE` column, and `pbrun` ends a run
+its reference (or `vram=peak/total` for a discrete framebuffer window) in the
+endings table's `RESOURCE` column, and `pbrun` ends a run
 with the same line. `pbmetrics` exports the live peaks as
 `prismabuild_attempt_peak_resources` and the endings' windows as
 `prismabuild_terminal_box_window`. Every one of them renders a field no record
@@ -2122,7 +2348,8 @@ republished.
 **Publishing a generation, and cutting the fleet over to a transport, need
 Rob's explicit word and an idle queue.** That is a standing constraint of the
 campaign freeze, not a suggestion, and it holds even when the change looks
-small. The install and the cutover are his to run
+small. Existing explicit authorization for maintenance publication satisfies the
+authorization requirement; it need not be requested again. The install and the cutover are his to run
 (`fleet/slurm/install.sh`, then `fleet/slurm/cutover.sh`); see the
 [README](../README.md) and the [SLURM install
 runbook](slurm_runbook_2026-09-04.md).
@@ -2134,21 +2361,80 @@ time and a nonce, then moves `repo` onto it in one namespace operation. A
 reader therefore sees one whole generation or the previous one, never a
 half-copied mixture.
 
+Public barrier activation, resume and rollback remain disabled by the source
+qualification guard. The barrier commands below describe the guarded protocol;
+private NFS actors simulate host services and cannot qualify real reboot or
+service lifecycle behavior. Ordinary maintenance publication still requires a
+reviewed rolling compatibility reason and an idle queue.
+
     tools/fleet/publish_runtime.py --rollout barrier --dry-run
 
 `--dry-run` checks the selected rollout policy, prints the commit and every
 file that would be published, and writes nothing when its preflight succeeds.
 
-`barrier` is the default. `--rollout barrier --dry-run` checks whether every roster host
-has posted a historical attestation for the target updater version. With
-`--activate-generation`, it checks the version in that generation's receipt.
-The preflight reports missing hosts and previously posted versions. A match
-does not establish current participation, a fleet drain or completed rotation;
-write-once markers survive later version changes. Actual barrier publication
-and activation are refused before staging or moving `repo` until the epoch
-protocol tracked in #458 is implemented. A successful preflight is not a
-barrier rollout or permission to bypass the publication window.
+`barrier` is the default. Its `--dry-run` checks historical updater attestations
+for the target bytes and reports missing hosts and previous versions. It does
+not prove current participation or simulate either quorum.
 
+For a barrier, first stage the committed generation through an admitted PB action:
+
+    tools/fleet/publish_runtime.py --stage-only
+
+This performs the import probe and seals the candidate, prints its generation
+name, and leaves `repo` unchanged. Then run the authorized control-plane step
+outside the live fleet's own PB action scope:
+
+    tools/fleet/publish_runtime.py --activate-generation <staged-name> --barrier-wait-s 300
+
+The coordinator must not be an action whose scope it waits to drain. Staging,
+import probes and qualification tests still require PB. Activation verifies sealed
+members and writes only rollout decisions and the runtime pointer.
+
+The source and target must contain the same rollout-aware updater. For the first
+adoption, or whenever that updater changes, publish a reviewed rolling bridge and
+verify the installed updater SHA-256 and healthy status on every roster host.
+Historical attestations alone are insufficient. The target roster and source
+roster both participate; fresh offers resolve their host aliases. An unavailable,
+ambiguous or undeclared host prevents arming.
+
+An armed epoch closes local durable admission gates, lets existing actions finish,
+and waits for all worker and prewarm processes to park. Every host must publish
+its epoch-bound `drained` record before `repo` moves. Every host must then prove
+its privileged clients are healthy and its supervisor, workers and prewarmer use
+the chosen immutable generation before the coordinator writes `resume`. Each
+host rechecks local proof before release. Inspect `pbstatus`'s `rollout` section,
+local updater status and `rollout/epochs/<epoch>/` for the pending phase and
+missing hosts. A terminal record appears only after every host acknowledges resume.
+
+A wait expiry returns 75 and retains the epoch and all unreleased holds. Continue
+that same epoch, without editing or deleting its evidence:
+
+This source delivery keeps public barrier mutation qualification-guarded. The
+following recovery commands document the protocol and are exercised only by
+the private qualifier; ordinary use refuses until reviewed PB qualification and
+live-host lifecycle evidence remove that guard.
+
+When the guard is eventually removed, source and target still must carry the
+same published updater and coordinator bytes. A coordinator change requires a
+reviewed rolling bridge before it can coordinate an epoch.
+
+    tools/fleet/publish_runtime.py --resume-barrier <epoch> --barrier-wait-s 300
+
+Before a resume decision, request a coordinated return to the exact source:
+
+    tools/fleet/publish_runtime.py --rollback-barrier <epoch> --rollback-reason '<observed failure>'
+
+A participant rotation failure also triggers this rollback. All hosts remain held
+until the complete rollback quorum permits resume. Completed rollback returns 1;
+completed forward rollout returns 0. After resume, a reverse transition requires
+a new barrier. A crashed coordinator may be restarted with `--resume-barrier`,
+including after the atomic pointer move but before its decision record.
+
+Publishers serialize through the permanent NFS POSIX `.publication.lock`; do not
+unlink it. An active or unreadable epoch blocks another publication, including an
+explicit rolling request. The supported drain policy is natural completion;
+there is no force-timeout release, missing-host exclusion, quarantine, or automatic
+interrupt/requeue. Repair an unavailable participant and continue its epoch.
 For a reviewed transition that tolerates independent host convergence, explicitly
 select `--rollout rolling --rollout-reason TEXT` for both the dry-run and the
 publication. The reason must be nonblank and explain why old and new processes
@@ -2203,7 +2489,8 @@ that has moved would not be the same thing. A name that is not a direct child
 of the generation store, a dot-name, or a directory with no receipt is refused
 before `repo` is touched. A dot-name matters: a staging tree left by an
 interrupted publish carries a receipt but was never sealed or probed.
-Existing-generation activation also defaults to the unavailable barrier path.
+Existing-generation activation also defaults to the barrier protocol and rehashes
+its sealed members before activation. Use a compatible source/target updater pair.
 Rolling activation needs its own explicit choice and reason; it does not infer
 reverse-transition compatibility from an old receipt, including one that records
 a forward rolling reason. The activation prints this reason without changing
@@ -2576,8 +2863,9 @@ installed clients, matching healthy broker bytes and zero active scopes. Check
 `/var/lib/prismabuild-client-upgrade/status.json` when a booted supervisor is
 running but its workers remain parked; do not remove a gate to resume work.
 Deploy the paired worker/updater change and verify both versions fleet-wide.
-The gate remains volatile, so this does not preserve a named drain across a
-host reboot or qualify a synchronized rollout; #458 still owns those requirements.
+The gate is a volatile mirror of the root-owned durable broker hold. An active
+fleet epoch retains that hold across reboot and requires its validated resume
+decision plus fresh local rotation proof before admission reopens.
 
 The service uses `KillMode=process` so systemd signals the supervisor rather
 than an action's process group. `TimeoutStopSec=infinity` and `SendSIGKILL=no`

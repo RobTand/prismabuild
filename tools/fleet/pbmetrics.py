@@ -369,6 +369,8 @@ def _terminal_metrics(
             ("gpu_power_peak_w", "gpu_power_peak_watts"),
             ("gpu_power_reference_w", "gpu_power_reference_watts"),
             ("gpu_power_peak_fraction", "gpu_power_peak_fraction"),
+            ("gpu_framebuffer_used_peak_bytes", "gpu_framebuffer_used_peak_bytes"),
+            ("gpu_framebuffer_total_bytes", "gpu_framebuffer_total_bytes"),
             ("memory_peak_bytes", "memory_peak_bytes"),
             ("io_write_bytes", "io_write_bytes"),
             ("io_read_bytes", "io_read_bytes"),

@@ -70,6 +70,26 @@ universal setting. Use `pbtest.py` for suite fanout and `pbcampaign.py` for a
 manifest of independent actions. Prefer portable placement; add a host tag only
 for a real dependency or a controlled measurement.
 
+When a test checkout has `tools/resolve_<module>_dev_pin.py`, `pbtest` runs
+each resolver inside the admitted shard and checks the target interpreter's
+installed dependency against its full Git commit before pytest starts. Missing
+or mismatched Git provenance, editable/local-directory installs, changed RECORD
+bytes and import shadows refuse; package/contract version equality is not a
+commit check. No shared venv is modified. Use a separately provisioned pinned
+environment, or wait until every user is idle before re-provisioning a shared
+one. See the operating guide's project test environment section for the
+installation/provenance contract. Generic `pbrun` commands remain caller-owned.
+
+For an I/O-bound campaign, `pbcampaign --transport pool --max-inflight N`
+keeps one waiting controller's outstanding row count bounded without inflating
+memory demand. It includes ready work and claim cleanup, refills after any
+success, and stops publication on failures or uncertain outcomes. Keep that
+controller alive; `--detach` and SLURM refuse this option. Stop it before
+resuming the same ordered manifest, checkout, options and limit. This is a
+campaign-wide window, not a per-host or shared I/O budget; other controllers
+are outside its count. Do not run an external pacer alongside it. At `--wait-s`
+expiry, retain the printed keys and rerun the manifest for `not_submitted` rows.
+
 A long action that can say when it commits work should be bounded by whether
 it is working rather than by how long it has run. Declare the phases it walks
 and the quiet each is allowed -- `--progress-phase startup=1800
@@ -305,6 +325,16 @@ action key and use published `pbwait.py`/`pbstatus.py` to inspect the terminal
 state. Check exit status, actual logs and the CAS receipt/payload. Record test
 counts, skips, devices and missing tooling; do not certify a wrapper's “done”.
 
+Runtime publication changes ordinary resealed action keys through the Docker
+wrapper's generation path. When collecting prior work across a publication,
+use `pbrun --as-sealed-by FULL_ACTION_KEY`, or `as_sealed_by` on each campaign
+row, with the original checkout and options. The current client recovers the
+retained wrapper path and refuses a differing complete key before submitting.
+It does not run a historical submitter. A verified receipt is a cache hit;
+missing receipts may still submit the same key. Missing retained requests or
+wrapper generations refuse. Keep receipt manifests outside the sealed source
+tree so they do not change its identity. See the operating guide for limits.
+
 Read status and your own actions as data, not as text. Register the read-only
 MCP server -- `claude mcp add --scope local prismabuild -- /usr/bin/python3
 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbmcp.py`, or the same command
@@ -329,7 +359,12 @@ launcher on a contained run), `scope` (the attempt's cgroup — `memory_peak_byt
 and the user/system CPU split), `process_io` (`rchar`/`wchar` and
 `read_bytes`/`write_bytes` over the processes in the scope) and `box_window`
 (GPU power against the device's own reference, unified memory, CPU busy and the
-pressure stalls, from `pqteld` and Netdata). It is always on and is not a profile mode: there is
+pressure stalls, from `pqteld` and Netdata; memory-only discrete GPU windows
+also retain whole-device VRAM total and sampled peak from the existing broker
+capacity snapshots). Discrete VRAM includes other device users, is separate
+from host RAM, and supplies no power or utilization reading. Sample counts and
+timestamps describe the observations; allocations between ticks can be missed.
+It is always on and is not a profile mode: there is
 no flag to choose. Its cost is bounded rather than absent — a shared two-second
 budget at finish to read the box window, including the GPU reference query
 (0.14–0.18 s measured before the query shared that budget), plus a sampler that
