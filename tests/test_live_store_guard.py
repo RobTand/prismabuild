@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -155,6 +157,49 @@ def test_xdist_workers_skip_the_full_history_census(monkeypatch) -> None:
     )
     conftest.pytest_sessionstart(session)
     assert config._pb_live_guard_worker is True
+
+
+@pytest.mark.parametrize("workers", [0, 2])
+def test_real_session_rejects_a_leak_from_its_test_worker(tmp_path: Path, workers: int) -> None:
+    """The controller's before/after observations must catch worker basetemps."""
+
+    live = _store(tmp_path / "scratch-live")
+    suite = tmp_path / "suite"
+    tests = suite / "tests"
+    tests.mkdir(parents=True)
+    (tests / "conftest.py").symlink_to(Path(conftest.__file__).resolve())
+    (tests / "test_writer.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "def test_write(tmp_path):\n"
+        "    root = Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT'])\n"
+        "    (root / 'pb-queue/done/leak.json').write_text(str(tmp_path))\n"
+    )
+    env = dict(os.environ, PRISMABUILD_TEST_LIVE_ROOT=str(live),
+               PRISMABUILD_TEST_LIVE_PROBE_TIMEOUT_S="5")
+    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly",
+               "--basetemp", str(tmp_path / "child-basetemp")]
+    if workers:
+        command += ["-n", str(workers)]
+    result = subprocess.run(command + ["tests"], cwd=suite, env=env,
+                            text=True, capture_output=True, timeout=45)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 passed" in result.stdout, result.stdout + result.stderr
+    assert "were written by this test session" in result.stdout
+    assert "did not certify" not in result.stdout
+
+
+def test_a_traversal_error_is_partial_evidence(tmp_path: Path, monkeypatch) -> None:
+    live = _store(tmp_path / "live")
+
+    def denied(_root, *, onerror):
+        onerror(PermissionError("injected unreadable directory"))
+        return iter(())
+
+    monkeypatch.setattr(conftest.os, "walk", denied)
+    observation = conftest.bounded_listing(live, timeout_s=1)
+    assert observation["status"] == "partial"
+    assert "injected unreadable directory" in observation["detail"]
+    assert "listing" not in observation
 
 
 def test_a_positive_leak_in_partial_finish_evidence_still_fails_session(
