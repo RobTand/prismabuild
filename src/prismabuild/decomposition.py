@@ -139,6 +139,9 @@ _RESIDENCY_KEYS = frozenset({"key", "setup_seconds", "setup_evidence"})
 _POLICY_KEYS = frozenset(
     {"schema", "residencies", "max_setup_fraction", "max_estimated_wall_seconds"}
 )
+_REQUIRED_COMMON_KEYS = frozenset({
+    "argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env",
+})
 _COMMON_KEYS = frozenset({
     "argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env",
     # Policies every child shares. Submission priority and --as-sealed-by are
@@ -405,7 +408,13 @@ def validate_common_spec(value: object) -> dict[str, Any]:
     missing children from these bytes, never from a checkout that has moved on.
     """
 
-    common = pb._exact_mapping(value, keys=_COMMON_KEYS, where="common spec")
+    # Exact validation still rejects unknown fields and missing base fields.
+    # Only optional policy keys actually supplied become required here.
+    present = set(value) if isinstance(value, Mapping) else set()
+    common = pb._exact_mapping(
+        value, keys=_REQUIRED_COMMON_KEYS | (present & _COMMON_KEYS),
+        where="common spec",
+    )
     argv = _validate_batch_argv(common["argv"], where="common spec argv")
     demand = pb._normalize_json_value(common["demand"], where="common spec demand")
     if not isinstance(demand, Mapping) or not demand:
