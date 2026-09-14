@@ -64,7 +64,14 @@ The pool's shared filesystem calls remain synchronous except for the bounded
 described below. `pbrun` runs its one pre-submission **worker-offer** record scan in
 an abandonable reader with a fixed five-second budget. It refuses loudly if
 that reader times out or fails, names any retained reader identity, and never
-publishes a runnable `ready/` item from an unavailable snapshot. The parent
+publishes a runnable `ready/` item from an unavailable snapshot. A timeout whose
+reader was reaped raises `OfferDiscoveryTimedOut`, a `SystemExit` subclass. Plain
+`pbrun` still exits 1 on it. A windowed campaign may retry it, because nothing
+was published and no reader survives. Within the scan, an offer read that
+returns nothing (`ENOENT`, `ESTALE` or empty) is read once more. Workers publish
+offers with `os.replace`, which never removes the name. A reader that opened the
+replaced file can get `ESTALE`, and the second read opens the name again
+(#560). An offer that fails both reads stays excluded, as #208 requires. The parent
 re-evaluates freshness and future skew only after the complete child scan, for
 each verdict; retained capability therefore still has its infinite-age rule.
 The five-second read budget includes child FD isolation and IPC waits. Parent
@@ -2031,7 +2038,11 @@ observation, preserving an ordered resumable prefix. Continuing beyond a failure
 would let a restart republish failed early rows before encountering later live
 work. Restart requires the previous controller to stop and the ordered manifest,
 source identity, options and limit to stay the same; existing pbrun cache/attach
-semantics recover that prefix. No durable parent or background dispatcher is
+semantics recover that prefix. The one refusal that does not stop refilling is
+`pbrun.OfferDiscoveryTimedOut`. It is raised before any runnable publication,
+and only after its reader was reaped, so the controller holds no slot and
+resubmits the same row each poll until the shared wait budget expires. The row
+is then `not_submitted` (#560). No durable parent or background dispatcher is
 introduced. Concurrent controllers and other producers do not share this count;
 there is no per-host or bandwidth guarantee. The option refuses detached and
 SLURM modes. Omitted policy retains the existing submit-all campaign behavior.

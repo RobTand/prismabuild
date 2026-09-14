@@ -155,7 +155,16 @@ These flags say what the action needs and where it may run.
 Before a pool submission, `pbrun` reads worker offers once in a separate
 process with a five-second read budget. A timeout or read error refuses the
 submission before publishing a runnable `ready/` item, naming any reader that
-survives cleanup by PID and start time. Placement, progress and execution-ceiling
+survives cleanup by PID and start time. Plain `pbrun` exits 1 in every one of
+these cases; rerun it. A timeout whose reader was killed and reaped is a distinct
+refusal, which `pbcampaign --max-inflight` retries (see below). A read error, an
+invalid reply or a reader that survived cleanup is never retried. During the scan,
+an offer read that fails with `ENOENT` or `ESTALE`, or returns an empty file, is
+read once more before that host is left out. A live worker replaces its offer
+file every poll, and on NFS one read can miss it (#560). An offer that fails both
+reads is left out, so a tag that no readable offer names still refuses at once
+with `no recorded worker can run this action`.
+Placement, progress and execution-ceiling
 checks reuse that snapshot and re-evaluate its freshness in the caller.
 The budget covers discovery and IPC waits; runtime imports, process creation,
 reply decoding and cleanup grace can add time. Other shared I/O, including CAS
@@ -1178,7 +1187,7 @@ remain synchronous; the wait budget is not a bound on a blocked filesystem call.
 
 A refusal, failed action, unreadable outcome or slot read error stops further
 publication and reports the remaining suffix. Existing work is not cancelled.
-The exception is an outcome read that timed out after its reader was reaped:
+One exception is an outcome read that timed out after its reader was reaped:
 that key keeps its slot, grants no new one, and is read again at each poll
 until the wait budget ends, where it is exit 74.
 Stopping on failure preserves a resumable prefix: otherwise a restart could
@@ -1188,6 +1197,15 @@ manifest, checkout, options and limit**. Successful rows cache-hit and outstandi
 rows attach through ordinary `pbrun`; `as_sealed_by` remains necessary to retain
 keys across runtime publications. A changed manifest or limit cannot retroactively
 bound work already submitted.
+
+A worker-offer discovery timeout whose reader was reaped does not stop the
+window. `pbrun` refuses it before publishing a runnable item, so no outcome is
+uncertain. The controller prints the refusal, holds no slot for the row, and
+submits the same row again at the next poll while `--wait-s` lasts. If the scan
+has not recovered when the budget runs out, that row and the rest of the suffix
+are `not_submitted`, and the campaign exits 75. Any other refusal still stops
+publication. Without `--max-inflight`, the timeout is an ordinary refused row
+(exit 1), and rerunning the same manifest resubmits it (#560).
 
 This is one controller's campaign-wide limit, not a shared admission group,
 per-host ceiling or I/O bandwidth reservation. Use one controller for the row
@@ -1210,7 +1228,7 @@ use `--detach`, then `pbwait` on the keys it printed.
 | --- | --- |
 | 0 | Every row's work is done. A cache hit counts as done. |
 | 1 | A row was refused before submission, a row's work failed, or the manifest did not load. |
-| 75 | Nothing failed, and at least one row was still running or remained `not_submitted` when `--wait-s` ran out. |
+| 75 | Nothing failed, and at least one row was still running or remained `not_submitted` when `--wait-s` ran out. Under `--max-inflight`, this includes a row whose worker-offer discovery was still timing out. |
 
 A refusal outranks a failure and a failure outranks a wait, so 75 means the
 work is still out there and the keys are still worth waiting on. Under

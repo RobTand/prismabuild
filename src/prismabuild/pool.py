@@ -2451,6 +2451,20 @@ class PoolQueue:
             # among several.  ``tolerate_stale`` is what makes that true on
             # the shared filesystem the pool actually lives on (#208).
             record = _read_json(path, tolerate_stale=True)
+            if record is None:
+                # ...but one failed read does not show that the box left.
+                # Every loop on a live box rewrites its offer each poll with
+                # ``_write_json_atomic``, whose ``os.replace`` never removes the
+                # name.  A reader that opened the old file can still get
+                # ``ESTALE`` once the server frees it, so one read can miss a
+                # live host.  A pbcampaign then refused "no recorded worker can
+                # run this action" for a tag only that host offered (#560).  A
+                # read-only probe of the live ``workers/`` directory saw it in
+                # 2 of 589 scans, and the immediate re-read returned the offer
+                # both times.  A second read opens the name again, so it gets
+                # the replacement.  An offer that is really gone fails both
+                # reads and is still left out.
+                record = _read_json(path, tolerate_stale=True)
             if record is not None:
                 records.append(record)
         return records
