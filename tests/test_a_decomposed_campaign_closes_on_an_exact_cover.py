@@ -151,6 +151,13 @@ def test_children_that_answered_their_own_batches_earn_one_group_receipt(
     assert receipt["plan_key"] == group["plan"]["plan_key"]
     assert receipt["task_count"] == 66
     assert receipt["child_count"] == len(group["children"])
+    assert receipt["children"] == [
+        {
+            "action_key": child["action_key"],
+            "receipt_sha256": dc.document_sha256(cas.lookup(child)),
+        }
+        for child in group["children"]
+    ], "the group receipt must name the exact child receipts it verified"
     # The merge is over every answer in plan order, so it is a statement about
     # the whole roster and not about whichever child finished last.
     assert receipt["merged_result_sha256"] == pb.canonical_sha256([
@@ -196,6 +203,34 @@ def test_a_child_without_a_receipt_is_never_a_group_success(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     assert pbcampaign.close_group(group, cas=cas) == 1
     assert "no group receipt" in capsys.readouterr().err
+    assert not _group_path(tmp_path, group).exists()
+
+
+def test_a_manifest_attached_to_another_child_receipt_fails_the_cover(
+    tmp_path: Path, fleet, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    work, queue = fleet
+    _, group = _decompose(_request(work))
+    assert len(group["children"]) >= 2
+    assert _serve(queue) == len(group["children"])
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    # Each manifest is valid for its declared ordinal. The defect is accepting
+    # one as the result of a different sealed child action and CAS receipt.
+    original = pbcampaign.child_result_manifest
+    manifests = [original(child, cas=cas) for child in group["children"]]
+    ordinal_by_key = {
+        child["action_key"]: ordinal
+        for ordinal, child in enumerate(group["children"])
+    }
+
+    def wrong_receipt_result(child, *, cas, receipt=None):
+        ordinal = ordinal_by_key[child["action_key"]]
+        return manifests[1 - ordinal] if ordinal < 2 else manifests[ordinal]
+
+    monkeypatch.setattr(pbcampaign, "child_result_manifest", wrong_receipt_result)
+    assert pbcampaign.close_group(group, cas=cas) == 1
+    assert "ordinal" in capsys.readouterr().err
     assert not _group_path(tmp_path, group).exists()
 
 

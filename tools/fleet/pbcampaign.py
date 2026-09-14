@@ -1042,7 +1042,7 @@ def decompose(
 # Closing a decomposed campaign
 # --------------------------------------------------------------------------
 
-def child_result_manifest(child, *, cas) -> dict | None:
+def child_result_manifest(child, *, cas, receipt=None) -> dict | None:
     """Read one finished child's result manifest, or ``None`` if it has none.
 
     Through the receipt rather than off the worker's filesystem: a child's
@@ -1053,7 +1053,8 @@ def child_result_manifest(child, *, cas) -> dict | None:
     the action fails where it ran.
     """
 
-    receipt = cas.lookup(child)
+    if receipt is None:
+        receipt = cas.lookup(child)
     if receipt is None:
         return None
     raw = cas.result_path(receipt, child).read_bytes()
@@ -1107,20 +1108,65 @@ def close_group(group, *, cas) -> int:
     happened answers the request.
     """
 
-    plan, children = group["plan"], group["children"]
+    request, plan, children = group["request"], group["plan"], group["children"]
     try:
+        if len(children) != len(plan["partitions"]):
+            raise ManifestError(
+                f"the plan names {len(plan['partitions'])} children, but "
+                f"the group carries {len(children)} sealed actions"
+            )
+        index_path = decomposition_dir(cas, plan["parent_key"]) / "publication.json"
+        index = _stored_document(index_path)
+        child_keys = [str(child["action_key"]) for child in children]
+        if (not isinstance(index, dict)
+                or index.get("parent_key") != plan["parent_key"]
+                or index.get("plan_key") != plan["plan_key"]
+                or index.get("child_action_keys") != child_keys):
+            raise ManifestError(
+                f"the group children do not match the frozen publication "
+                f"index at {index_path}"
+            )
         manifests = []
+        child_evidence = []
         for ordinal, child in enumerate(children):
-            manifest = child_result_manifest(child, cas=cas)
+            expected_batch = dc.logical_batch_param(
+                request, plan, child_ordinal=ordinal)
+            params = child.get("params")
+            if (not isinstance(params, dict)
+                    or params.get(dc.LOGICAL_BATCH_PARAM) != expected_batch):
+                raise ManifestError(
+                    f"child {ordinal} does not seal the plan's exact batch "
+                    f"membership and identity"
+                )
+            child_receipt = cas.lookup(child)
+            if child_receipt is None:
+                print(f"pbcampaign: no group receipt: child {ordinal} of "
+                      f"{len(children)} has no receipt", file=sys.stderr)
+                return 1
+            manifest = child_result_manifest(child, cas=cas,
+                                             receipt=child_receipt)
             if manifest is None:
                 print(f"pbcampaign: no group receipt: child {ordinal} of "
                       f"{len(children)} has no receipt", file=sys.stderr)
                 return 1
+            checked = dc.validate_child_result_manifest(manifest)
+            if checked["child_ordinal"] != ordinal:
+                raise ManifestError(
+                    f"child {ordinal}'s receipt carries a result manifest for "
+                    f"ordinal {checked['child_ordinal']}"
+                )
             manifests.append(manifest)
-        receipt = dc.verify_exact_cover(group["request"], plan, manifests)
+            child_evidence.append({
+                "action_key": child_keys[ordinal],
+                "receipt_sha256": dc.document_sha256(child_receipt),
+            })
+        receipt = {
+            **dc.verify_exact_cover(request, plan, manifests),
+            "children": child_evidence,
+        }
         path = publish_group_receipt(
             receipt, cas=cas, parent_key=plan["parent_key"])
-    except (ManifestError, pb.ActionContractError) as exc:
+    except (ManifestError, pb.ActionContractError, pb.CASTamperError) as exc:
         print(f"pbcampaign: {exc}", file=sys.stderr)
         return 1
     print(f"pbcampaign: group receipt "
