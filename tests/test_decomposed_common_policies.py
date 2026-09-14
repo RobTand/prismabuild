@@ -129,7 +129,7 @@ def test_decomposition_seals_shared_policies_on_every_child(
         "profile": "sample",
         "retry_safe": True,
         "max_attempts": 1,
-        "tags": ["x86"],
+        "tags": ["sparky", "x86"],
     })
     records, group = pbcampaign.decompose(
         dc.validate_logical_request(request), transport="pool", priority=0,
