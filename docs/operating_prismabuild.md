@@ -1178,6 +1178,9 @@ remain synchronous; the wait budget is not a bound on a blocked filesystem call.
 
 A refusal, failed action, unreadable outcome or slot read error stops further
 publication and reports the remaining suffix. Existing work is not cancelled.
+The exception is an outcome read that timed out after its reader was reaped:
+that key keeps its slot, grants no new one, and is read again at each poll
+until the wait budget ends, where it is exit 74.
 Stopping on failure preserves a resumable prefix: otherwise a restart could
 resubmit failed early rows before discovering a later full window. Correct the
 reported fault, stop the previous controller, and rerun the **same ordered

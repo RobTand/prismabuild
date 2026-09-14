@@ -2020,6 +2020,8 @@ N distinct unfinished action keys and publishes a replacement only after a
 successful `pbwait` observation and absence of that key's READY/CLAIMED leaves.
 A receipt or withdrawal outcome alone cannot free a slot while queue work or
 claim cleanup remains. Leaf read errors stop publication; they grant no capacity.
+An outcome read that timed out with its reader reaped keeps the key pending and
+its slot held until the shared deadline, then reports exit 74.
 Rows keep ordinary sealing, placement, admission, containment and receipts.
 The initial window is published before the shared monotonic wait budget starts;
 expiry leaves published work intact and reports the unsubmitted suffix.
