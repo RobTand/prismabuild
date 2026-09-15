@@ -30,7 +30,8 @@ OWNER = "1" * 64
 
 def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None,
           affinity: set[int] | None = None,
-          endpoint: str = "unix:///var/run/docker.sock", docker_env: dict | None = None):
+          endpoint: str = "unix:///var/run/docker.sock", docker_env: dict | None = None,
+          timeout: float | None = None):
     """Run the real shim against a recording fake CLI, under its testing gate."""
 
     real = tmp_path / "fake-docker"
@@ -103,7 +104,7 @@ def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None,
             (["taskset", "--cpu-list", ",".join(map(str, sorted(affinity)))]
              if affinity is not None else []) + [str(SHIM), *argv],
             env=environment, capture_output=True, text=True,
-            check=False,
+            check=False, timeout=timeout,
         )
     finally:
         if broker_thread is not None:

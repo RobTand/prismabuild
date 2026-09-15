@@ -5121,6 +5121,31 @@ PROFILE_SAMPLE_RATE_HZ = 100
 #: and ``/tmp`` has taken artifacts on this fleet before.
 PROFILE_SCRATCH_DIRNAME = ".prismabuild-profile"
 
+#: The guard and the route marker a sampled action shares with PB's Docker
+#: shim.  py-spy follows the action's own process tree, and a container the
+#: Docker daemon starts is a child of ``containerd-shim`` rather than of the
+#: action, so this descendant sampler does not see the workload it runs (#562).
+#: The worker *arms* the marker before the action starts and the shim replaces
+#: the armed record with a route record before it refuses, so a launcher that
+#: swallows the shim's ``125`` and exits zero is still settled against a
+#: marker that is missing, incomplete or malformed -- every one of which is
+#: unknown coverage, never a clean profile.  The marker lives and dies with
+#: the profile scratch directory.
+PROFILE_SAMPLE_GUARD_ENV = "PRISMABUILD_PROFILE_SAMPLE"
+PROFILE_SAMPLE_MARKER_ENV = "PRISMABUILD_PROFILE_SAMPLE_MARKER"
+PROFILE_SAMPLE_ROUTE_FILENAME = "container-route"
+PROFILE_ROUTE_SCHEMA = "prismabuild.profile_container_route.v1"
+PROFILE_ROUTE_ARMED = "armed"
+PROFILE_ROUTE_RECORDED = "route"
+PROFILE_ROUTE_UNKNOWN = "unrecorded"
+PROFILE_ROUTE_MAX_BYTES = 4096
+
+
+def profile_container_route_path(profile_path: Path) -> Path:
+    """The marker naming a Docker route attempted under ``--profile sample``."""
+
+    return Path(profile_path).parent / PROFILE_SAMPLE_ROUTE_FILENAME
+
 
 #: The relay's file format.  Named in the file it writes so a reader that
 #: finds one from another era refuses it instead of misreading it.
@@ -5282,6 +5307,11 @@ class PySpyProfileBackend:
     name = "py-spy"
     rate_hz = PROFILE_SAMPLE_RATE_HZ
     profile_suffix = "speedscope.json"
+    #: py-spy samples the action's descendants, and the Docker daemon's
+    #: children are not among them.  Declaring it makes the session consult
+    #: the route marker the shim writes, so an attempted container workload
+    #: is recorded as not covered rather than as a clean profile (#562).
+    container_routes_unsupported = True
 
     def __init__(self) -> None:
         self._path: str | None = None
@@ -5293,6 +5323,22 @@ class PySpyProfileBackend:
                 f"the sample mode takes no option, and was given {option!r}"
             )
         return self
+
+    def environment(self, *, profile_path: Path) -> dict[str, str]:
+        """The guard and marker path the action's Docker shim reads.
+
+        The shim refuses a container route under the guard and leaves the route
+        name at the marker path first, so an action whose launcher swallows
+        that refusal still cannot certify that its profile covered the
+        workload.
+        """
+
+        return {
+            PROFILE_SAMPLE_GUARD_ENV: "1",
+            PROFILE_SAMPLE_MARKER_ENV: str(
+                profile_container_route_path(profile_path)
+            ),
+        }
 
     def locate(self) -> str:
         """The py-spy this box will run, or a refusal naming where it looked.
@@ -5852,6 +5898,14 @@ def describe_profile(profile) -> str:
         return (f"profile {profile.get('mode')} ({profile.get('backend')}) "
                 "not produced: "
                 + str(profile.get("reason") or "no reason recorded"))
+    # A blob can be filed and still not be the evidence that was asked for:
+    # a sampled action that tried a Docker route leaves a host-only speedscope
+    # behind.  Printing its digest alone reads as coverage, so say what the
+    # profile does not cover (#562).
+    uncovered = ""
+    if profile.get("produced") is False:
+        uncovered = (", NOT covering the workload: "
+                     + str(profile.get("reason") or "reason not recorded"))
     partial = " (partial: the action was stopped)" if profile.get("partial") \
         else ""
     absent = ""
@@ -5865,7 +5919,7 @@ def describe_profile(profile) -> str:
     return (f"profile {profile.get('mode')} ({profile.get('backend')}) "
             f"{digest[:12]} {profile.get('bytes')}B at "
             f"{profile.get('blob_path') or '(path not recorded)'}"
-            f"{partial}{ignored}{absent}")
+            f"{uncovered}{partial}{ignored}{absent}")
 
 
 #: The sealed param that asks for a profile.  Absent on every action that
@@ -5895,6 +5949,7 @@ class _ProfileSession:
         suffix = getattr(backend, "profile_suffix", "profile")
         self.profile_path = directory / f"profile.{suffix}"
         self.exit_status_path = directory / "exit_status"
+        self.container_route_path = profile_container_route_path(self.profile_path)
         #: The profiler's own exit status, once it has one.  Reported rather
         #: than discarded: Tier 1 overwrote it with the action's.
         self.backend_returncode: int | None = None
@@ -5926,6 +5981,62 @@ class _ProfileSession:
                 f"{self.directory}: {exc}.  A profiled action needs somewhere "
                 "inside its own working directory to write the profile, so "
                 "this run failed before the action started."
+            ) from exc
+        if getattr(self.backend, "container_routes_unsupported", False):
+            self._arm_container_route()
+
+    def _write_container_route(self, document: Mapping[str, object]) -> None:
+        """Replace the route marker atomically, through a fresh staging inode.
+
+        ``mkstemp`` creates the staging file exclusively, so a symlink or FIFO
+        planted at a predictable staging name is neither followed, overwritten
+        nor blocked on; only the staging file this call created is removed on
+        failure.  ``os.replace`` replaces a symlink at the destination rather
+        than following it, so the record cannot be redirected through one.
+        This is bookkeeping in the action's own scratch directory, not a
+        security boundary: an action that tampers with its own scratch can
+        defeat it, and such a run is unsupported.
+        """
+
+        payload = (json.dumps(dict(document), sort_keys=True) + "\n").encode()
+        descriptor, staged = tempfile.mkstemp(
+            prefix=f".{self.container_route_path.name}.",
+            suffix=".tmp",
+            dir=self.container_route_path.parent,
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(staged, self.container_route_path)
+        except BaseException:
+            with suppress(OSError):
+                os.unlink(staged)
+            raise
+
+    def _arm_container_route(self) -> None:
+        """Pre-create the route marker in its armed state, or refuse the action.
+
+        The shim's route record is the action's evidence that it tried a
+        Docker route.  Arming the marker first makes its absence or its
+        incomplete state negative evidence at settlement, so an unwritable or
+        removed scratch path cannot silently stand in for "no container was
+        used" when a launcher swallows the shim's refusal.
+        """
+
+        try:
+            self._write_container_route({
+                "schema": PROFILE_ROUTE_SCHEMA,
+                "state": PROFILE_ROUTE_ARMED,
+            })
+        except OSError as exc:
+            raise LocalActionError(
+                "the sample profile could not arm its Docker route marker at "
+                f"{self.container_route_path}: {exc}.  A sampled action that "
+                "cannot record an attempted container route cannot say what "
+                "its profile covers, so this run failed before the action "
+                "started."
             ) from exc
 
     def close(self) -> None:
@@ -6194,6 +6305,48 @@ class _ProfileSession:
             record["backend_returncode"] = self.backend_returncode
         return record
 
+    def container_route(self) -> str | None:
+        """The Docker route this sampled action attempted, if any.
+
+        ``None`` means the marker is armed and untouched: no container route
+        was recorded, and the profile is a whole-action profile.  A route name
+        means the shim refused that route after recording it.  Anything else
+        -- a missing marker, a symlink, a nonregular file, an oversized or
+        malformed record, an unknown state, an empty route -- is
+        ``PROFILE_ROUTE_UNKNOWN``: unknown coverage must never read as none,
+        because the shim's ``125`` can be swallowed by a launcher (#562).
+
+        The read is bounded, no-follow and regular-file-only, so a FIFO or a
+        symlink at the marker path cannot block or redirect the worker, and a
+        marker that changes while it is read is negative rather than a partial
+        answer.
+        """
+
+        if not getattr(self.backend, "container_routes_unsupported", False):
+            return None
+        try:
+            raw = _read_regular_file_nofollow(
+                self.container_route_path,
+                where="the sample route marker",
+                max_bytes=PROFILE_ROUTE_MAX_BYTES,
+            )
+            document = _decode_strict_json(raw, where="the sample route marker")
+        except (PrismaBuildError, OSError):
+            return PROFILE_ROUTE_UNKNOWN
+        if not isinstance(document, dict):
+            return PROFILE_ROUTE_UNKNOWN
+        if document.get("schema") != PROFILE_ROUTE_SCHEMA:
+            return PROFILE_ROUTE_UNKNOWN
+        state = document.get("state")
+        if state == PROFILE_ROUTE_ARMED:
+            return None
+        if state == PROFILE_ROUTE_RECORDED:
+            route = document.get("route")
+            if (isinstance(route, str) and 0 < len(route) <= 128
+                    and route.strip() == route):
+                return route
+        return PROFILE_ROUTE_UNKNOWN
+
     def ingest(self, cas: "PrismaBuildCAS") -> dict[str, object]:
         """Read the profile back and publish it as a content-addressed blob.
 
@@ -6203,6 +6356,7 @@ class _ProfileSession:
         """
 
         read = self.backend.read_profile(self.profile_path)  # type: ignore[attr-defined]
+        route = self.container_route()
         entry, _won = cas.ingest_input(
             self.profile_path, input_id="prismabuild.profile"
         )
@@ -6214,6 +6368,38 @@ class _ProfileSession:
             "produced": True,
         })
         record.update(read)
+        if route is not None:
+            # The host-side blob is filed as evidence of what was sampled, but
+            # it is not the profile that was asked for: a container workload
+            # ran, or could not be ruled out, outside the sampler's reach.
+            # `produced` is the field a reader tests, so it is false even
+            # though a blob exists (#562).
+            if route == PROFILE_ROUTE_UNKNOWN:
+                coverage = "unknown"
+                attempted = (
+                    "the sample route marker was missing, unreadable or "
+                    "incomplete, so the action's Docker usage cannot be ruled "
+                    "out"
+                )
+            else:
+                coverage = "unsupported"
+                attempted = (
+                    f"the action attempted a Docker container route ({route})"
+                )
+            record.update({
+                "produced": False,
+                "workload_coverage": coverage,
+                "container_route": route,
+                "reason": (
+                    f"{attempted} under --profile sample. py-spy samples the "
+                    "action's own process tree, and a process the Docker daemon "
+                    "starts is not in it, so this profile covers no container "
+                    "workload. Run the workload as a native child, or omit the "
+                    "mode and instrument inside the admitted container (for "
+                    "PyTorch, --profile torch with PRISMABUILD_PROFILE_TORCH_OUT "
+                    "forwarded and mounted)."
+                ),
+            })
         # Optional summary extraction/ingest can outlive the pool deadline.
         # The broker then kills this scope without Python cleanup: preserve
         # the primary blob's reference before starting that supplemental work.
@@ -6357,6 +6543,11 @@ def _partial_profile_note(record: Mapping[str, object] | None) -> str:
                 f"{record.get('blob_sha256')} ({record.get('bytes')} bytes); "
                 "it covers only the part of the run that happened before the "
                 "action was stopped.")
+    if record.get("workload_coverage"):
+        return (f"  Its partial {record.get('mode')} profile is CAS blob "
+                f"{record.get('blob_sha256')} ({record.get('bytes')} bytes), "
+                "but it does not cover the action's workload: "
+                f"{record.get('reason')}")
     return (f"  No partial {record.get('mode')} profile survived the stop: "
             f"{record.get('reason')}")
 
@@ -7232,6 +7423,24 @@ def run_local_action(
                 # partial, for a report that is complete.  The message already
                 # names the blob; a reader should not have to scrape prose for
                 # a record this frame is holding.
+                profile=profile_record,
+            )
+        if profile_record is not None and profile_record.get("produced") is False:
+            # A profile that does not cover the action's workload is not the
+            # profile that was asked for, and the action's zero exit does not
+            # change that.  Publishing the result would file a receipt whose
+            # every later cache hit carries no profile at all, so the failure
+            # is the honest ending -- with the host-side blob, its digest and
+            # any negative-coverage metadata preserved on it and in the status
+            # sidecar that ``ingest`` already checkpointed (#562, #372).
+            raise LocalActionError(
+                f"the {profile_record.get('mode')} profile does not cover the "
+                "action's workload: "
+                + str(profile_record.get("reason") or "no reason recorded")
+                + ".  No receipt was published: a receipt filed for this key "
+                "would answer every later submission of it with a cache hit "
+                "that carries no profile."
+                + _ingested_result_note(cas, output),
                 profile=profile_record,
             )
         if not output.exists() and not output.is_symlink():
