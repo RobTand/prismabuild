@@ -94,6 +94,17 @@ phase switching. This requires workers offering ``progress-cycle-v1``.
 An unknown field is refused rather than ignored: a typo that is silently
 dropped seals an action nobody asked for.
 
+A row that names a path under the fleet's shared mount in ``argv`` or ``env``
+and declares no ``data_manifest`` is warned about when it is actually
+published: the storage prewarm can only warm the bytes a manifest names, so
+those reads may arrive cold.  The scan is best-effort -- it sees the declared
+``argv`` and ``env`` only, and a path the command only writes is a false
+positive; ``cwd`` is not scanned because ``pbrun`` snapshots the checkout and
+the action reads a box-local materialization of it.  ``--require-data-manifest``
+is the opt-in for reads this scan cannot see: it refuses the whole manifest
+before its first row is sealed unless every row carries a nonblank
+``data_manifest``.
+
 Unsupported rows are refused at load for the reason ``pbrun`` would refuse them at
 submit, so a campaign of measurements is refused before it spends the fleet on
 its first row rather than on its last:
@@ -200,6 +211,8 @@ import io
 import json
 import math
 from pathlib import Path
+import posixpath
+import re
 import sys
 import time
 
@@ -268,6 +281,112 @@ _INTEGER_FIELDS = (
 
 #: Fields whose value reaches ``pbrun`` as text.
 _TEXT_FIELDS = ("cwd", "host_class", "profile", "data_manifest", "as_sealed_by")
+
+#: An absolute path mention inside a command word or an environment value.  A
+#: mention starts where a path can start -- the beginning of the string, or a
+#: separator a command line or an environment value uses -- and ends at the
+#: next such separator, so a closing quote or bracket is not part of it.
+_ABSOLUTE_PATH_MENTION = re.compile(
+    r"(?<![^\s=,;:'\"(\[{|&])(/[^\s=,;:'\"()\[\]{}|&<>]+)"
+)
+
+
+def _names_a_shared_path(text: str) -> bool:
+    """Whether one declared string mentions a path on the shared mount."""
+
+    root = str(pbrun.SHARED_ROOT).rstrip("/")
+    if not root:
+        return False
+    for mention in _ABSOLUTE_PATH_MENTION.findall(text):
+        path = posixpath.normpath(mention)
+        if path == root or path.startswith(root + "/"):
+            return True
+    return False
+
+
+def shared_mount_read_evidence(row) -> list[str]:
+    """Which declared fields of a row name a path on the shared mount.
+
+    Best-effort by construction, and the reason the default policy is a
+    warning rather than a refusal.  This sees the row's ``argv`` and ``env``
+    values and nothing about what the command opens once it runs: a path built
+    from a variable, read out of a configuration file, reached through a
+    symlink or resolved from a relative name is invisible here.  ``cwd`` is
+    not scanned, because ``pbrun`` snapshots the checkout and the action reads
+    a box-local materialization of it.  A path the command only writes is a
+    false positive, which is why the warning says the row *may* read cold.
+    """
+
+    evidence = []
+    argv = row.get("argv")
+    if isinstance(argv, list):
+        for position, word in enumerate(argv):
+            if isinstance(word, str) and _names_a_shared_path(word):
+                evidence.append(f"argv[{position}]")
+    environment = row.get("env")
+    if isinstance(environment, dict):
+        for name, value in sorted(environment.items()):
+            if isinstance(value, str) and _names_a_shared_path(value):
+                evidence.append(f"env[{name!r}]")
+    return evidence
+
+
+def _declares_data_manifest(row) -> bool:
+    """Whether the row names a manifest file, ignoring blank spellings.
+
+    A whitespace-only string is not a path any submitter meant, so it is
+    treated as absent by both the warning and ``--require-data-manifest``.
+    """
+
+    value = row.get("data_manifest")
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _require_data_manifest(row, *, where: str) -> None:
+    """``--require-data-manifest``: every row declares the bytes it reads.
+
+    Deliberately independent of ``shared_mount_read_evidence``.  A producer
+    whose reads this tool cannot see -- a wrapper that builds paths at run
+    time, a script that reads a dataset list -- has no visible declaration to
+    match, so it opts into declaring every row's bytes instead.  Asked of the
+    whole manifest before its first row is sealed, because publishing the rows
+    before this one and then refusing cannot unwrite a read that already
+    happened cold.
+    """
+
+    if _declares_data_manifest(row):
+        return
+    raise ManifestError(
+        f"{where} has no data_manifest, and --require-data-manifest requires "
+        f"one from every row before anything is submitted.  Give it a "
+        f"data_manifest naming the shared-mount bytes it reads, or drop the "
+        f"flag to accept cold reads."
+    )
+
+
+def _warn_about_a_cold_shared_read(row, *, where: str) -> None:
+    """Warn about one row that declares shared-mount reads it does not name.
+
+    Printed only for a row that is actually being published: a cache hit
+    reads nothing and a refusal runs nothing, and the submission outcome
+    already says which this was.  It says *may* read, because the declaration
+    is all this sees.
+    """
+
+    if _declares_data_manifest(row):
+        return
+    evidence = shared_mount_read_evidence(row)
+    if not evidence:
+        return
+    print(
+        f"pbcampaign: WARNING {where} names the shared mount in "
+        f"{', '.join(evidence)} but has no data_manifest: it may read those "
+        f"paths cold, because the storage prewarm can only warm the bytes a "
+        f"manifest names.  A path it only writes is a false positive; argv "
+        f"and env are all this scan sees.  Add the row's data_manifest, or "
+        f"pass --require-data-manifest to require one from every row.",
+        file=sys.stderr, flush=True,
+    )
 
 
 def _refuse(index: int, field: str, wanted: str, value) -> ManifestError:
@@ -459,7 +578,9 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         )
 
 
-def load_manifest(path, *, transport: str = "slurm") -> list[dict] | dict:
+def load_manifest(
+    path, *, transport: str = "slurm", require_data_manifest: bool = False,
+) -> list[dict] | dict:
     """Read the manifest, and refuse anything it cannot mean.
 
     Refused at load time, before a single row is sealed: a campaign that
@@ -479,6 +600,12 @@ def load_manifest(path, *, transport: str = "slurm") -> list[dict] | dict:
     The default is the lane, where a class is honoured, so a caller checking a
     manifest without a fleet in mind is told about the row and not about the
     transport.
+
+    ``require_data_manifest`` is ``--require-data-manifest``: every row, and a
+    logical request's common half, must carry a nonblank ``data_manifest``.
+    It is asked here, beside every other whole-manifest refusal, so a campaign
+    of forty rows cannot publish thirty-nine of them before the fortieth is
+    found to be unnamed.
     """
 
     try:
@@ -496,6 +623,10 @@ def load_manifest(path, *, transport: str = "slurm") -> list[dict] | dict:
             request = dc.validate_logical_request(value)
             _require_row_shape(request["common"], index=0)
             _require_submittable_row(request["common"], index=0, transport=transport)
+            if require_data_manifest:
+                _require_data_manifest(
+                    request["common"],
+                    where="the common half of this logical request")
             return request
         except pb.ActionContractError as exc:
             raise ManifestError(f"this logical request is malformed: {exc}") from None
@@ -528,6 +659,8 @@ def load_manifest(path, *, transport: str = "slurm") -> list[dict] | dict:
             )
         _require_row_shape(row, index=index)
         _require_submittable_row(row, index=index, transport=transport)
+        if require_data_manifest:
+            _require_data_manifest(row, where=f"row {index}")
         rows.append(row)
     return rows
 
@@ -637,6 +770,10 @@ def _submit_record(row, *, index: int, transport: str) -> dict:
         published = {"status": "refused", "flags": [],
                      "error": f"row {index}: {type(exc).__name__}: {exc}"}
     key = str(published.get("action_key") or "")
+    if published.get("status") in {"submitted", "attached"}:
+        # Only a row that is actually going to run can read anything; the
+        # submission outcome already says whether this one will.
+        _warn_about_a_cold_shared_read(row, where=f"row {index}")
     label = str(published["status"])
     if published.get("retryable"):
         label += f" ({published['retryable']})"
@@ -1080,6 +1217,11 @@ def decompose(
               f"{str(published.get('action_key') or '')[:pbwait.KEY_WIDTH]}",
               file=sys.stderr, flush=True)
         records.append(published)
+    if any(record.get("status") in {"submitted", "attached"}
+           for record in records):
+        _warn_about_a_cold_shared_read(
+            request["common"],
+            where="the common half of this logical request")
     return records, {"request": request, "plan": plan, "children": children}
 
 
@@ -1245,6 +1387,13 @@ def main(argv=None) -> int:
     ap.add_argument("--detach", action="store_true",
                     help="print each row's submission line and return without "
                          "waiting; wait for them later with pbwait.py")
+    ap.add_argument(
+        "--require-data-manifest", action="store_true",
+        help="refuse the whole manifest, before any row is submitted, unless "
+             "every row (and a logical request's common half) carries a "
+             "nonblank data_manifest.  Use it when the shared-mount reads this "
+             "tool cannot see still need declaring; the default is only a "
+             "warning about paths a row visibly names under the shared mount")
     ap.add_argument("--max-inflight", type=int,
                     help="publish at most N unfinished distinct actions from "
                          "this controller at once; requires waiting pool mode")
@@ -1259,7 +1408,9 @@ def main(argv=None) -> int:
             ap.error("--max-inflight requires a finite nonnegative --wait-s")
 
     try:
-        rows = load_manifest(args.manifest, transport=args.transport)
+        rows = load_manifest(
+            args.manifest, transport=args.transport,
+            require_data_manifest=args.require_data_manifest)
     except ManifestError as exc:
         raise SystemExit(f"pbcampaign: {exc}")
     group = None

@@ -1086,6 +1086,7 @@ an omitted field is not passed at all.
 | `demand` | `--demand`, as an object: `{"gpu": 1, "cpu": 8, "mem_gb": 32}` |
 | `tags` | `--tag`, once per entry |
 | `env` | `--env K=V`, once per pair |
+| `data_manifest` | `--data-manifest`, a file naming the shared-mount bytes this row reads, so the storage role can make them resident first |
 | `timeout_s` | `--timeout-s` |
 | `progress_phases` | `--progress-phase`, once per `"name=seconds"` entry; pool only |
 | `progress_cycle` | `--progress-cycle`, boolean; requires `progress_phases` and a cyclic-capable worker |
@@ -1106,6 +1107,15 @@ an omitted field is not passed at all.
 
 An unknown field is refused when the manifest loads, before any row is sealed:
 a dropped typo would seal an action nobody asked for.
+
+A row that names a shared-mount path in its declared `argv` or `env` and
+carries no `data_manifest` is warned about when it is published. The scan is
+best-effort over the declaration: it says the row *may* read cold, a path the
+command only writes is a false positive, and a path the command builds at run
+time is not seen at all. `--require-data-manifest` is the strict form: the
+whole manifest is refused before any row is submitted unless every row (and a
+logical request's common half) carries a nonblank `data_manifest`. See the
+[data-manifest input guide](data_manifest_prewarm.md).
 
 Every field's value shape is refused at load too, and for the same reason: a
 value that cannot become its flag used to raise while a later row was being

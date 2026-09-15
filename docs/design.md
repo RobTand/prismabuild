@@ -2878,6 +2878,15 @@ progress does not establish an irreversible manifest frontier.  A disk hold
 also requires active NFS client reads and a read-await or backlog breach;
 unreadable disk telemetry remains a fail-closed hold and unreadable client
 telemetry is treated as active.
+`pbcampaign` warns when a row's declared `argv` or `env` names a path under the
+shared mount and the row carries no `data_manifest`.  That scan is best-effort
+over the declaration only, so the warning says the row may read cold and a
+write-only path is a false positive.  The campaign flag
+`--require-data-manifest` is the strict form and independent of the scan: it
+refuses the whole manifest before its first row is sealed unless every row and
+a logical request's common half carries a nonblank `data_manifest`, so a
+producer whose reads are not visible in the declaration can still require them
+to be declared.
 
 ## Model-level Tessera dispatch
 
