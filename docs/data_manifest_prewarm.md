@@ -176,6 +176,22 @@ Submitters:
 - `pbrun.py --data-manifest PATH`
 - `pbcampaign.py`: a per-row `data_manifest` field, which is just that flag.
 
+A campaign row that names a shared-mount path in its declared `argv` or `env`
+and carries no `data_manifest` is warned about when it is published, naming
+the field that matched: the bytes it reads cannot be warmed.  The scan sees
+only the row's declaration.  A path built inside the command, read out of a
+configuration file, reached through a symlink or resolved from a relative name
+is not detected; `cwd` is not scanned because the checkout is materialized
+box-local; and a path the command only writes is a false positive.  The
+warning therefore says the row *may* read cold rather than that it will.
+
+`--require-data-manifest` is the strict form and does not depend on that scan.
+`pbcampaign` then refuses the whole manifest before its first row is sealed
+unless every row -- and a logical request's common half -- carries a nonblank
+`data_manifest`.  A producer whose reads this tool cannot see, such as a
+script that assembles paths at run time, can therefore still require every row
+to declare its bytes.
+
 `pbrun` also seals a summary into `params.data_manifest`
 (`{input, mount_prefix, entry_count, total_bytes}`) so the prewarm loop's
 headroom arithmetic can read a byte count per claimed action without fetching
