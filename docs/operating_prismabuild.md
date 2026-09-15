@@ -202,7 +202,10 @@ samples, blob_path, produced}`, and both `pbrun` and `pbstatus` print the digest
 and the path, so a human opens the blob at <https://www.speedscope.app/>. The
 backend fields are there because "py-spy 0.4.2" is a claim about a box and not
 a fact about a file: an overhead number is comparable only against the binary
-it was measured on.
+it was measured on. When a sampled action attempted a Docker container route,
+or its armed route marker is missing or unreadable, the record also carries
+`workload_coverage` (`unsupported` or `unknown`), the `container_route`, and a
+`reason`, with `produced: false` -- see the container bullet below.
 
 `--profile` **is** part of the action's identity, and `--priority` is not. That
 is deliberate. A profiled run of a command somebody already ran must not be
@@ -276,6 +279,38 @@ What is worth knowing before using it:
     `83d2530f3eda`, sparky). It is invisible in the flamegraph because py-spy
     excludes idle threads and the relay blocks in `waitpid`; `--idle` shows it
     (49 samples) and is the control arm for that claim.
+*   **A container workload is outside the sampler, and is refused.** py-spy
+    follows the action's own process tree, and a process the Docker daemon
+    starts is a child of `containerd-shim`, not of the action. Under
+    `--profile sample` PB's Docker shim therefore refuses container
+    run/create/exec and start/compose-start before contacting the daemon,
+    exactly as `--profile nsys` does (#513). Run the workload as a native
+    child, or omit the mode and instrument inside the admitted container (for
+    PyTorch, `--profile torch` with `PRISMABUILD_PROFILE_TORCH_OUT` forwarded
+    and mounted). The worker arms the profile's route marker before the action
+    starts and the shim records the attempted route in it *before* it refuses,
+    so a launcher that swallows the `125` and exits zero still cannot certify
+    coverage: the record then carries `produced: false`, `workload_coverage`
+    (`unsupported` for a named route, `unknown` for a marker that is missing,
+    unreadable or malformed -- all of which are negative, never clean),
+    `container_route` and a `reason`, on the final record and on partial/status
+    checkpoints. An uncovered record **publishes no receipt**, even on
+    a zero exit: the host-side blob and its negative metadata are kept, the
+    action's own result is ingested as a CAS blob the failure message names,
+    and a nonzero action still reports its own `returncode`/`signal`. A
+    receipt would answer every later submission of the key with an uncovered
+    cache hit. `pbrun` and `pbstatus` print `NOT covering the workload` for
+    it. Metadata reads such as image inspection still work. This is an early
+    refusal of an unsupported route, not transparent container
+    instrumentation: py-spy's `--subprocesses` follows the action's
+    descendants, and a daemon-started process is not one. Attaching through
+    the container's PID namespace, or injecting the sampler inside the
+    container, is a separate route this change does not implement, and PB does
+    not widen ptrace or container privilege/seccomp settings for a diagnostic.
+    The marker is bookkeeping in the action's own scratch directory, not a
+    security boundary: an action that clears `PRISMABUILD_PROFILE_SAMPLE` or
+    tampers with that scratch is unsupported; keep PB's Docker shim and do not
+    call `/usr/bin/docker` directly (#562).
 *   **The profiler's own ending is reported, and judged by what it cost.**
     `backend_returncode` is on the record; Tier 1 assigned the action's status
     over it and lost it. A nonzero profiler is not by itself a failure, and
@@ -381,7 +416,9 @@ Keep PB's Docker shim so scope ownership and CPU affinity remain enforced;
 clearing `PRISMABUILD_PROFILE_NSYS` or bypassing the shim is unsupported.
 This refusal does not add container-aware Nsys capture. Existing negative
 reports still retain `kernel_summary_absent`; a nonempty report with that
-diagnostic is not proof of a successful CUDA profile.
+diagnostic is not proof of a successful CUDA profile. `--profile sample` has
+the same Docker limitation and its own guard, refusal and coverage record; see
+the sample bullet above.
 
 *   **A window is optional and sealed.** `--profile nsys:600` traces the first
     600 seconds and then stops tracing, with `--kill none` pinned so the action

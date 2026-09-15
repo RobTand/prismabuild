@@ -234,6 +234,18 @@ using PB's shim and preserve its `PRISMABUILD_PROFILE_NSYS` guard; metadata
 reads are allowed. A retained `kernel_summary_absent` remains negative CUDA
 profile evidence, even when the report file itself is nonempty.
 
+`--profile sample` has the same limitation one sampler over: py-spy follows the
+action's own process tree, and a process the Docker daemon starts is not in it.
+The worker arms the profile's route marker before the action starts; under that
+mode PB's Docker shim refuses the same container routes and records the
+attempted route before refusing. A marker that is missing, unreadable or
+malformed is unknown coverage, and an uncovered record -- `produced: false`,
+`workload_coverage` `unsupported` or `unknown`, `container_route` -- **publishes
+no receipt** even when the launcher exits zero; the host-side blob and a
+nonzero action's own status are retained. Run the workload natively or
+instrument inside the container; preserve the `PRISMABUILD_PROFILE_SAMPLE`
+guard and do not bypass the shim.
+
 After validation and CAS ingestion, the primary profile is checkpointed before
 optional summary extraction or supplemental blob ingestion. A deadline during
 that optional work retains the primary report on the ending, marked `partial`.

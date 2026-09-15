@@ -895,6 +895,37 @@ matters). Rules:
   shim is unsupported. Existing reports retain `kernel_summary_absent` when
   no completed kernel evidence was collected. Existing sealed requests and
   running old generations are not rewritten by publication.
+- **This descendant sampler does not see a Docker daemon's child** — `sample`
+  adds `PRISMABUILD_PROFILE_SAMPLE=1` and `PRISMABUILD_PROFILE_SAMPLE_MARKER` to
+  the launched environment; a sealed value for either refuses rather than being
+  overwritten. The worker arms the marker before the action starts and the
+  action's Docker shim replaces the armed record with the attempted route
+  before it refuses run/create/exec and start/compose-start, exactly as the
+  Nsys guard refuses them. Settlement treats a marker that is missing,
+  unreadable, malformed, nonregular, symlinked, oversized or in an unknown
+  state as unknown coverage -- absence after preinit and an unfinished write
+  are negative evidence, never a clean profile. Any such record carries
+  `produced: false`, `workload_coverage` (`unsupported` for a named route,
+  `unknown` otherwise), `container_route` and a reason, on the final record and
+  on every partial/status checkpoint, because a launcher can swallow the
+  shim's `125` and exit zero. An uncovered record refuses receipt publication
+  even on a zero exit: the host-side blob and its negative metadata are
+  retained on the error and the action's own result is ingested for reading,
+  while a receipt filed for the key would answer every later submission with a
+  cache hit that carries no profile. A nonzero action keeps its own
+  `returncode`/`signal` and the negative profile beside them. This is an early
+  refusal of an unsupported route, not transparent container instrumentation:
+  py-spy's `--subprocesses` follows the action's descendants, and a
+  daemon-started process is not one. Attaching through the container's PID
+  namespace, or injecting the sampler inside the container, is a separate
+  route this change does not implement, and PB does not widen ptrace or
+  container privilege/seccomp settings for a diagnostic. The marker is
+  bookkeeping in the action's own scratch directory, not a security boundary:
+  an action that clears the guard or tampers with that scratch is unsupported.
+  A native child or explicit in-container instrumentation is required (for
+  PyTorch, `--profile torch` with `PRISMABUILD_PROFILE_TORCH_OUT` forwarded
+  and mounted). Callers retain the shim and its resource scope/CPU affinity
+  contract (#562).
 - **An in-process profiler is a contract, not a monkeypatch** — `torch.profiler`
   cannot be started from outside the process it profiles, so `--profile torch`
   names a path in an environment variable and validates what the action wrote

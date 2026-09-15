@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 
 OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
@@ -35,6 +36,21 @@ SCOPE_RE = re.compile(r"prismabuild-job[a-f0-9]{32}\.slice")
 #: second label and nothing changes.
 JOB_LABEL = "prismabuild.job"
 CGROUP_JOB_RE = re.compile(r"(?:^|/)job_([1-9][0-9]*)(?:[./]|$)")
+
+#: The sample guard and its route marker (issue #562).  ``--profile sample``
+#: adds both to the action's environment, and this shim refuses a container
+#: route under the guard before contacting the daemon: py-spy follows the
+#: action's own process tree, and a workload the Docker daemon starts is a
+#: child of ``containerd-shim`` rather than of the action.  The route is
+#: recorded in the marker *before* the refusal, so a launcher that swallows
+#: the ``125`` cannot leave a host-only profile looking like a covered one.
+#: The worker arms the marker first; a marker that is missing, incomplete or
+#: unreadable is negative coverage, so a write that fails here falls back to
+#: leaving the marker absent rather than armed.
+SAMPLE_GUARD_ENV = "PRISMABUILD_PROFILE_SAMPLE"
+SAMPLE_MARKER_ENV = "PRISMABUILD_PROFILE_SAMPLE_MARKER"
+ROUTE_SCHEMA = "prismabuild.profile_container_route.v1"
+ROUTE_RECORDED = "route"
 
 
 def _slurm_job_id() -> str:
@@ -171,6 +187,80 @@ def _starts_unowned_container(argv: list[str]) -> bool:
                            what="compose")
         return verb is not None and argv[1 + verb] in COMPOSE_STARTS
     return False
+
+
+def _container_route(argv: list[str]) -> str | None:
+    """Name the route by which ``argv`` would run workload in a container.
+
+    The set is the one the Nsys refusal already uses: run/create, exec, and
+    the start/compose-start forms.  Named rather than boolean because the name
+    travels into the profile record, where a reader has only prose to say why
+    the sampler could not see the workload.
+    """
+
+    creation = _creation_index(argv)
+    if creation is not None:
+        return " ".join(["docker", *argv[:creation]])
+    if argv[:1] == ["exec"]:
+        return "docker exec"
+    if argv[:2] == ["container", "exec"]:
+        return "docker container exec"
+    if argv[:1] == ["start"]:
+        return "docker start"
+    if argv[:2] == ["container", "start"]:
+        return "docker container start"
+    if argv[:1] == ["compose"]:
+        verb = _verb_index(argv[1:], COMPOSE_VALUE_OPTIONS, COMPOSE_FLAGS,
+                           what="compose")
+        if verb is not None and argv[1 + verb] in COMPOSE_STARTS:
+            return "docker compose " + argv[1 + verb]
+    return None
+
+
+def _record_sample_route(marker: str, route: str) -> bool:
+    """Replace the armed marker with a route record before the refusal.
+
+    The worker arms the marker before the action starts.  A marker that is
+    missing, incomplete or unreadable is negative coverage at settlement, so
+    this never writes through the marker leaf: the staging inode is created
+    exclusively with ``mkstemp`` (a symlink or FIFO planted at a predictable
+    staging name is neither followed nor blocked on) and ``os.replace``
+    replaces the leaf rather than following it.  If the record cannot be
+    installed, the leaf is unlinked -- removing a symlink or FIFO without
+    following it -- so the marker ends up negative instead of armed.  Every
+    failure is silent; the refusal it belongs to is the caller's job, and the
+    return value only says how the record ended.  This is bookkeeping in the
+    action's own scratch directory, not a security boundary.
+    """
+
+    if not marker:
+        return False
+    payload = (json.dumps(
+        {"schema": ROUTE_SCHEMA, "state": ROUTE_RECORDED, "route": route},
+        sort_keys=True,
+    ) + "\n").encode()
+    path = Path(marker)
+    staged = None
+    try:
+        descriptor, staged = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staged, path)
+        return True
+    except (OSError, ValueError):
+        if staged is not None:
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return False
 
 
 def _label_values(argv: list[str]):
@@ -545,6 +635,26 @@ def main() -> int:
                 "admitted container (for PyTorch, use --profile torch and "
                 "forward/mount PRISMABUILD_PROFILE_TORCH_OUT). Keep using "
                 "PB's Docker shim for resource scope and CPU affinity.")
+        route = _container_route(sub)
+        if os.environ.get(SAMPLE_GUARD_ENV) == "1" and route is not None:
+            recorded = _record_sample_route(
+                os.environ.get(SAMPLE_MARKER_ENV, ""), route)
+            raise Refused(
+                f"--profile sample cannot cover a workload started by the "
+                f"Docker daemon ({route}); py-spy follows the action's own "
+                "process tree, and a process the daemon starts is not in it. "
+                "The container route was refused before contacting the daemon, "
+                "and the profile record will say it does not cover a container "
+                "workload."
+                + ("" if recorded else
+                   " The attempted route could not be written to the profile "
+                   "marker, which leaves the profile's coverage unknown rather "
+                   "than clean; treat this action as unprofiled.")
+                + " Run the workload as a native child under --profile sample, "
+                "or omit that mode and instrument inside the admitted container "
+                "(for PyTorch, use --profile torch and forward/mount "
+                "PRISMABUILD_PROFILE_TORCH_OUT). Keep using PB's Docker shim "
+                "for resource scope and CPU affinity.")
     except Refused as refusal:
         sys.stderr.write(f"docker shim: {refusal}\n")
         return 125
