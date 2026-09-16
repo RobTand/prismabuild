@@ -30,6 +30,7 @@ sys.path.insert(0, {str(REPOSITORY / "src")!r})
 sys.path.insert(0, {str(REPOSITORY / "tools" / "fleet")!r})
 import worker_loop as wl
 wl.SH = Path({str(tmp_path)!r})
+wl.PUBLICATION_LOCK_ROOT = Path({str(tmp_path / "publication-lock")!r})
 wl.loaded_runtime_commit = lambda: "test"
 wl.published_commit = lambda: "test"
 def execute(self, item, **kwargs):

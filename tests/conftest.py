@@ -96,6 +96,7 @@ LIVE_DEFAULTS = (
     ("pool_reset", "SH", "fleet"),
     ("fleet_submit", "SH", "fleet"),
     ("worker_loop", "SH", "fleet"),
+    ("worker_loop", "PUBLICATION_LOCK_ROOT", "offer-publication"),
     ("prewarm_loop", "SH", "fleet"),
     ("worker_loop", "RUNTIME_VERSION", "fleet/repo/RUNTIME_VERSION.json"),
     ("worker", "SH", "fleet"),
@@ -166,6 +167,18 @@ LIVE_ENV = (
 @pytest.fixture(autouse=True)
 def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     root = tmp_path / "live-guard"
+    root.mkdir(exist_ok=True)
+    # Worker tests also import private module names after this fixture starts.
+    # Keep their new host-local publication lock off the production lock inode.
+    import importlib.machinery
+    load = importlib.machinery.SourceFileLoader.exec_module
+    def isolated_worker_import(loader, module):
+        load(loader, module)
+        if (Path(getattr(module, "__file__", "")).name == "worker_loop.py"
+                and hasattr(module, "PUBLICATION_LOCK_ROOT")):
+            module.PUBLICATION_LOCK_ROOT = root / "offer-publication"
+    monkeypatch.setattr(importlib.machinery.SourceFileLoader, "exec_module",
+                        isolated_worker_import)
     for name, sub in LIVE_ENV:
         monkeypatch.setenv(name, str(root / sub))
     for module_name, attr, sub in LIVE_DEFAULTS:

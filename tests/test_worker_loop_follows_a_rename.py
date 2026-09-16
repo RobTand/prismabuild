@@ -34,6 +34,12 @@ def _worker_loop():
                                                   WORKER_LOOP)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # This unit observes the announced arguments in the parent. The actual
+    # child boundary has separate process/FIFO regression coverage.
+    def publish_inline(announce, **_kwargs):
+        announce()
+        return module.PublicationResult("published", 0, None, "")
+    module.publish_offer = publish_inline
     return module
 
 
