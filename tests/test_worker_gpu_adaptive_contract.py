@@ -171,6 +171,12 @@ def _worker():
     spec = importlib.util.spec_from_file_location("adaptive_gpu_worker", WORKER)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # These units inspect parent-owned mocks and the admission polling delay;
+    # process-level publication behavior is covered by the FIFO/lock fixtures.
+    def publish_inline(announce, **_kwargs):
+        announce()
+        return module.PublicationResult("published", 0, None, "")
+    module.publish_offer = publish_inline
     return module
 
 

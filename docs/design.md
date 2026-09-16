@@ -79,7 +79,44 @@ process creation, decoding the completed reply, cleanup grace and runtime
 imports are not themselves interruptible at that deadline.
 The offer boundary covers no CAS request/staging, publication, terminal wait,
 claim, lease, token, or other queue read/write, which remain synchronous and
-can still stall (issue #16).
+can still stall (issue #16), except for the worker publication below.
+
+The worker's own **offer publication** is the one queue *write* with a bound,
+because it is the one write that is purely advisory: it reserves nothing,
+claims nothing and starts nothing. A worker loop publishes its offer through
+the same isolated, abandonable child as the status reader
+(`pbstatus.bounded`), with a fixed five-second budget. A publication that does
+not finish in the budget skips admission for that poll -- the loop returns to
+its generation and maintenance checks after the normal poll delay and never
+calls `serve_once` from an unavailable advertisement. Process creation, helper setup, completed-reply decoding and cleanup grace
+can add time; this bounds waiting, not a kernel syscall or the whole poll.
+
+Inside the helper's child, acquired **after** the helper's file-descriptor
+isolation and before any shared operation, the publisher takes a host-local,
+per-uid, nonblocking `flock` under a private local directory
+(`/tmp/prismabuild-offer-publish-<uid>`; never the shared mount). The directory
+is verified as this uid's private 0700 non-symlink and the lock is opened
+through that directory's descriptor. The lock is held across the shared write
+and until the child exits, so a sibling loop, or a supervisor replacement,
+cannot pile another writer onto a box whose publisher the parent could not
+reap. Contention (`EAGAIN`/`EWOULDBLOCK`) is retried inside the same budget;
+any other lock failure fails the publication instead of serving.
+
+A timed-out publication is reported as an **unknown** outcome, not as "nothing
+was published": the write may already have landed, and the previous offer is
+left to expire on its own rather than unlinked. A publisher the parent could
+not reap is retained by `(pid, starttime)`, re-checked with nonblocking
+`waitpid` on later polls, and fences new launches while its identity survives;
+an unreadable `/proc` keeps it retained (fail closed). The budget, ordering
+and expiry are deliberately not configurable. This boundary does not order
+writers outside the mechanism: an older generation's loop publishes without
+the lock, so two generations can still interleave one offer file, a late write
+keeps its original `announced_unix`, and the claim, lease and token mutations
+that follow a claim decision remain synchronous and unbounded (#266).
+Offer timestamps, wire format and freshness rules are unchanged. Forked
+publishers retain their process identity and remain visible to worker/drain
+censuses; a surviving writer can conservatively prevent rotation proof. No
+process-title manipulation hides it from those checks.
 Detached attachment discovery has its own five-second isolated-reader budget.
 It reads recorded submissions, covering outcomes and leases using the existing
 liveness rules, and returns the display path with the selected generation so
@@ -106,7 +143,9 @@ empty scan returns without entering the shared capacity prelude or repeating
 discovery under admission, and clears absent-generation fallback pacing hints.
 Capacity reconciliation still precedes every nonempty candidate pass; active
 holders are unchanged by the empty-poll return. The worker's independent offer
-refresh and capacity clamp continue on their normal cadence. This removes scan
+refresh and capacity clamp continue on their normal cadence, with the refresh
+itself bounded as described above, and a refresh that does not complete skips
+that poll's admission rather than being served from. This removes scan
 stalls from the critical section but does not bound discovery or shared transition, lease and
 token I/O, which still need ownership-safe recovery qualification (#266).
 

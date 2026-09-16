@@ -49,14 +49,43 @@ are properties of the box rather than of the work:
   the inherited mask and the ledger assigns preferred CPUs first, fallback
   CPUs for overflow. Each action inherits only its reserved CPUs. See
   ``prismabuild.cpu_topology``.
+
+**Offer publication is advisory and bounded.**  The offer is what a box says
+it can take, not what it has taken: it reserves nothing, claims nothing and
+starts nothing.  So the loop publishes it through the same abandonable-child
+machinery the status reader already uses (``pbstatus.bounded``), with a fixed
+five-second budget (``OFFER_PUBLISH_TIMEOUT_S``), and a publication that does
+not complete skips this poll's admission rather than serving work behind an
+advertisement nobody can read.  This is the boundary issue #16 measures: a hard
+NFS mount need not return from an ``open``/``fsync``/``rename`` at any
+deadline, even after a signal, and this loop used to run that write in its own
+process -- one stall took the loop's whole poll cadence with it.
+
+The publisher child takes a host-local, per-uid, nonblocking ``flock`` under a
+private local path (never the shared mount) before its first shared operation
+and holds it until the process ends.  That lock is what keeps one box's loops
+from piling up writers: while a retained or sibling writer holds it, another
+publisher is refused and reported, not queued.  The lock releases only when its owning process exits; never remove
+the lock file while a writer may survive.  A timed-out publication's outcome is unknown rather than absent, so
+the loop says so; the previous offer is left to expire on its own, and a child
+the reader could not reap is retained by ``(pid, starttime)``.  The boundary
+covers the loop's own poll, not the persistence of the write: an older
+generation's loop publishes without this lock, so two generations can still
+interleave one offer file, a publisher that lands after its deadline keeps its
+original ``announced_unix``, and the claim, lease and token mutations that
+follow a claim decision remain synchronous and unbounded elsewhere.
 """
 import argparse
+import errno
+import fcntl
 import json
 import os
 import socket
 import signal
+import stat
 import sys
 import time
+from collections import namedtuple
 from pathlib import Path
 
 SH = Path("/mnt/shared/prismabuild-fleet")
@@ -66,6 +95,7 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import box_capacity, core as pb, cpu_topology, pool  # noqa: E402
+from pbstatus import Deadline, bounded  # noqa: E402
 
 #: Consecutive ``serve_once`` failures before the loop gives up and lets the
 #: supervisor replace it.  Survive the items; do not survive a broken box.
@@ -106,6 +136,34 @@ PARKED_ROOT = MAINTENANCE_GATE.parent / "rollout" / "parked"
 #: rather than trusted as one.
 _KEY_SAFE = frozenset("0123456789abcdefghijklmnopqrstuvwxyz"
                       "ABCDEFGHIJKLMNOPQRSTUVWXYZ._")
+
+#: How long one worker-loop offer publication may spend on the shared mount
+#: before the loop gives up on this poll.  An offer is advisory: the box is not
+#: claiming, holding or reserving anything by writing it, so refusing to serve
+#: for one poll is the safe reading of a publication that did not complete
+#: (issue #16).  The bound exists because a hard NFS mount need not return from
+#: an ``open``/``fsync``/``rename`` at any deadline, even after a signal; only a
+#: separate process can be abandoned, so the loop publishes through the
+#: existing isolated reader (``pbstatus.bounded``) and stops waiting at the
+#: deadline rather than joining a child that may still be blocked in the kernel.
+OFFER_PUBLISH_TIMEOUT_S = 5.0
+
+#: How often, inside that budget, a publisher refused by the host-local
+#: publication lock is retried.  Sibling loops on one box announce at the same
+#: cadence, so a single nonblocking refusal would otherwise let one sibling's
+#: publication consume another's whole poll and reduce a box to one offer per
+#: cycle per lock holder.  The retry is bounded by the same budget, so a lock
+#: that is genuinely stuck is still reported, not waited on.
+OFFER_PUBLISH_RETRY_S = 0.05
+
+#: Where the host-local publication lock lives.  Hardcoded to a private local
+#: tmpfs directory, never the shared mount and never a caller-influenced path:
+#: the lock's whole job is to keep one box's writers from piling up while the
+#: shared mount is what is stalled, so a lock kept there would be the defect it
+#: is meant to prevent.  ``/tmp`` is local to every host in this fleet and this
+#: path is private per uid.  A test may point this constant at its own private
+#: directory.
+PUBLICATION_LOCK_ROOT = Path(f"/tmp/prismabuild-offer-publish-{os.getuid()}")
 
 
 def read_maintenance_gate() -> dict | None:
@@ -217,6 +275,244 @@ def published_commit() -> str:
     """The commit at the live generation boundary, or "" if unknown."""
 
     return _commit_at(RUNTIME_VERSION)
+
+
+def publication_lock_path() -> Path:
+    """This uid's host-local writer lock, as a path only.
+
+    Created and taken in the publisher child, never the loop: a descriptor
+    this process opened would be shared with every fork it makes, and a
+    ``serve_once`` child would then hold a publication lock it knows nothing
+    about for its whole run.
+    """
+
+    return (Path(PUBLICATION_LOCK_ROOT)
+            / f"prismabuild-offer-{os.getuid()}.lock")
+
+
+class PublicationLockHeld(RuntimeError):
+    """Another writer on this box holds the publication lock."""
+
+
+def _open_publication_lock(path: Path) -> int:
+    """Open, verify, and nonblocking-flock this uid's publication lock.
+
+    The containing directory is as load-bearing as the file: a writable or
+    symlinked parent lets anyone replace the lock inode the checks below
+    validated.  So the parent is opened once as a real private directory
+    (``O_NOFOLLOW`` refuses a symlink, ``O_DIRECTORY`` a file, st_uid and mode
+    must be this uid's 0700) and the lock is opened through that descriptor
+    with ``dir_fd``, which pins the directory the checks describe.  The file
+    itself is then checked as a regular, this-uid, non-group/world-writable
+    file with a single link.
+
+    ``flock(LOCK_EX | LOCK_NB)`` is the exclusion.  ``EAGAIN``/``EWOULDBLOCK``
+    alone mean contention and raise ``PublicationLockHeld`` (retryable); any
+    other ``flock`` failure raises ``RuntimeError`` and fails the publication.
+    The returned descriptor is deliberately never closed by the publisher: the
+    child holds the lock across the write and until ``os._exit`` drops it, so
+    a writer the parent cannot reap still fences its siblings.
+    """
+
+    directory = path.parent
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY
+                         | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        try:
+            os.mkdir(directory, 0o700)
+        except FileExistsError:
+            pass
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY
+                         | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        raise RuntimeError(
+            f"publication lock directory cannot be opened: {exc}") from exc
+    descriptor = None
+    try:
+        info = os.fstat(dir_fd)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise RuntimeError(
+                "publication lock directory is not this uid's private 0700 "
+                "directory")
+        try:
+            descriptor = os.open(
+                path.name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+                | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
+        except OSError as exc:
+            raise RuntimeError(
+                f"publication lock cannot be opened: {exc}") from exc
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError("publication lock is not a regular file")
+        if info.st_uid != os.getuid():
+            raise RuntimeError("publication lock is not owned by this uid")
+        if info.st_mode & 0o077:
+            raise RuntimeError("publication lock is group- or world-writable")
+        if info.st_nlink != 1:
+            raise RuntimeError("publication lock has more than one link")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                raise PublicationLockHeld(
+                    f"publication lock is held: {exc}") from exc
+            raise RuntimeError(
+                f"publication lock could not be taken: {exc}") from exc
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    finally:
+        os.close(dir_fd)
+    return descriptor
+
+
+def _proc_starttime_or_none(pid: int) -> str | None:
+    """The pid's starttime, or ``None`` when ``/proc`` cannot answer.
+
+    ``_proc_starttime`` spells an unreadable ``/proc`` as ``"unknown"``, which
+    is right for a marker filename but wrong for an ownership decision: a
+    launch must not read "I could not ask" as "the writer is gone".
+    """
+
+    observed = _proc_starttime(pid)
+    return None if observed == "unknown" else observed
+
+
+def _publisher_child(announce, *, budget_s: float, retry_s: float) -> dict:
+    """Child-side publisher: lock, announce, return -- inside ``bounded``.
+
+    ``pbstatus.bounded`` calls this *after* it has isolated this child's file
+    descriptors, so the only descriptors here are the reply pipe and what this
+    function opens.  Contention is retried locally under the same budget --
+    one child, not one fork per retry -- so a busy sibling costs a delay
+    rather than this loop's whole poll.
+    """
+
+    deadline = time.monotonic() + budget_s
+    while True:
+        try:
+            # Held until ``os._exit``: intentionally never closed.
+            _open_publication_lock(publication_lock_path())
+            break
+        except PublicationLockHeld:
+            if time.monotonic() + retry_s >= deadline:
+                raise
+            time.sleep(retry_s)
+    announce()
+    return {"status": "published"}
+
+
+#: One offer publication's outcome.  ``status`` is the only field the loop
+#: branches on: ``published`` is the one value that admits work, and every
+#: other value means this poll does not reach ``serve_once``.  ``unavailable``
+#: is deliberately not "nothing was published": a timed-out publisher may have
+#: landed its rename before the deadline, so the outcome is unknown.
+PublicationResult = namedtuple("PublicationResult", (
+    "status",       # "published" | "unavailable" | "busy" | "failed"
+    "elapsed_s",
+    "retained",     # (pid, starttime) of a writer this loop could not reap
+    "error",        # a named failure reason, or ""
+))
+
+
+def _retained_publisher(abandoned: list) -> tuple[int, str] | None:
+    """The first publisher identity this loop cannot prove has exited.
+
+    ``pbstatus.bounded`` appends to ``abandoned`` only a child it could not
+    reap within ``KILL_GRACE_S``, and records ``(pid, starttime_ticks)`` for
+    it.  A child ``waitpid`` says has exited is reaped here (never a join) and
+    dropped.  An identity whose starttime cannot be read is kept: fail closed,
+    because the alternative hands the lock to a second writer.
+    """
+
+    live: list = []
+    retained = None
+    for child in abandoned:
+        pid = child.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        try:
+            reaped, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            continue
+        except OSError:
+            pass
+        else:
+            if reaped == pid:
+                continue
+        ticks = child.get("starttime_ticks")
+        if ticks is None:
+            identity = (pid, "unknown")
+        else:
+            observed = _proc_starttime_or_none(pid)
+            if observed is not None and observed != str(ticks):
+                continue          # the pid was reused; the child is gone
+            identity = (pid, str(ticks))
+        live.append(child)
+        if retained is None:
+            retained = identity
+    abandoned[:] = live
+    return retained
+
+
+def publish_offer(announce, *, budget_s: float,
+                  retry_s: float, abandoned: list) -> PublicationResult:
+    """Publish one advisory offer through an abandonable child under a deadline.
+
+    The child, its file-descriptor isolation, the deadline, the ``SIGKILL``
+    and the reaping are all ``pbstatus.bounded``'s, which is also what records
+    the exact ``(pid, starttime)`` of a child it could not reap.  This
+    function contributes only what is specific to an advisory *write*: the
+    host-local lock the child takes, the mapping from ``bounded``'s envelope
+    to a publication verdict, and the retained-writer fence.
+
+    Every non-``published`` outcome is a skip, never a serve: the offer
+    reserves nothing, so refusing to admit for one poll costs nothing that a
+    stale or unreadable advertisement would not cost anyway.
+    """
+
+    started = time.monotonic()
+    retained = _retained_publisher(abandoned)
+    if retained is not None:
+        return PublicationResult(
+            "busy", round(time.monotonic() - started, 3), retained,
+            "an earlier publisher is still unreaped")
+    result = bounded("worker-offer-publication",
+                     lambda: _publisher_child(
+                         announce, budget_s=budget_s, retry_s=retry_s),
+                     deadline=Deadline(budget_s), abandoned=abandoned,
+                     cap_s=budget_s)
+    elapsed = round(time.monotonic() - started, 3)
+
+    # A child the helper could not reap after SIGKILL may still hold the lock;
+    # it is dropped only when ``waitpid`` or its starttime proves it is gone.
+    retained = _retained_publisher(abandoned)
+    status = result.get("status")
+    if status == "ok":
+        if retained is not None or result.get("value") != {
+                "status": "published"}:
+            return PublicationResult(
+                "unavailable", elapsed, retained,
+                "publisher replied without a confirmed publication")
+        return PublicationResult("published", elapsed, None, "")
+    if status == "timed_out":
+        # The write may have landed before the deadline: unknown, not absent.
+        # The previous offer is left to expire on its own.
+        return PublicationResult(
+            "unavailable", elapsed, retained,
+            "publication timed out; the write may have landed")
+    if status == "error":
+        error = result.get("error") or ""
+        if result.get("type") == "PublicationLockHeld":
+            return PublicationResult("busy", elapsed, retained, str(error))
+        return PublicationResult(
+            "failed", elapsed, retained,
+            f"{result.get('type', 'Exception')}: {error}")
+    return PublicationResult(
+        "failed", elapsed, retained,
+        f"publication returned an unknown status: {status!r}")
 
 
 def loaded_runtime_commit() -> str:
@@ -430,9 +726,16 @@ def _run_loop(stop_requested):
     served = 0
     errors = 0
     announced: dict[str, int] | None = None
+    #: Publishers ``pbstatus.bounded`` could not reap after SIGKILL, as
+    #: ``(pid, starttime)`` identities.  While one survives, this loop does not
+    #: launch another writer: the survivor is what holds the publication lock.
+    abandoned_publishers: list = []
     loaded_commit = loaded_runtime_commit()
     loaded_generation = _generation_at(GENERATION_VERSION)
-    print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}", flush=True)
+    print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}",
+          flush=True)
+    print(f"[{host}] offer publication bounded to {OFFER_PUBLISH_TIMEOUT_S:g}s "
+          f"per poll (issue #16)", flush=True)
     while True:
         if stop_requested():
             print(f"[{host}] shutdown requested; current action drained", flush=True)
@@ -549,27 +852,70 @@ def _run_loop(stop_requested):
             loops = len(box_capacity.worker_loops())
         except OSError:
             loops = None
-        queue.announce(
-            host=host, tags=offered, has_gpu=gpu_capable,
-            capacity=declared, observed_capacity=capacity,
-            foreign=(observer.last.foreign if observer is not None
-                     and observer.last is not None else None),
-            observed_detail=(observer.last.detail if observer is not None
-                             and observer.last is not None else None),
-            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers, loops=loops,
-            # The ceiling this loop will actually kill an action at.  It is a
-            # CLI default nobody outside the loop could see, and
-            # ``_execution_timeout`` applies it as a silent ``min`` -- so a
-            # submitter asking for 13000 s was given 7200 s and told nothing,
-            # and the #275 campaign died at 7200 s believing it had 13000
-            # (#293).  Announcing it is what lets pbrun say so at submit.
-            timeout_ceiling_s=args.timeout_s,
-            # And what this loop's code can do with a progress-declaring
-            # action.  Announced beside the ceiling because they are two halves
-            # of one answer: the ceiling is what this box would cut a run at,
-            # and this is whether it would count committed work first (#480).
-            progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
-        )
+
+        def announce_offer(queue=queue, host=host, tags=offered,
+                           has_gpu=gpu_capable, declared=declared,
+                           capacity=capacity, observer=observer, loops=loops,
+                           runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
+                           timeout_s=args.timeout_s):
+            """The exact advisory record this poll offers the queue.
+
+            A closure, not a kwargs dict, so the publisher's child runs the
+            ordinary :meth:`PoolQueue.announce` with the same arguments the
+            loop always passed -- one publication path, not two.  Every value
+            is bound at definition, so the record a publisher writes is the
+            one this poll computed.
+            """
+
+            queue.announce(
+                host=host, tags=tags, has_gpu=has_gpu,
+                capacity=declared, observed_capacity=capacity,
+                foreign=(observer.last.foreign if observer is not None
+                         and observer.last is not None else None),
+                observed_detail=(observer.last.detail if observer is not None
+                                 and observer.last is not None else None),
+                runtime_commit=runtime_commit, cpu_tiers=cpu_tiers, loops=loops,
+                # The ceiling this loop will actually kill an action at.  It is a
+                # CLI default nobody outside the loop could see, and
+                # ``_execution_timeout`` applies it as a silent ``min`` -- so a
+                # submitter asking for 13000 s was given 7200 s and told nothing,
+                # and the #275 campaign died at 7200 s believing it had 13000
+                # (#293).  Announcing it is what lets pbrun say so at submit.
+                timeout_ceiling_s=timeout_s,
+                # And what this loop's code can do with a progress-declaring
+                # action.  Announced beside the ceiling because they are two halves
+                # of one answer: the ceiling is what this box would cut a run at,
+                # and this is whether it would count committed work first (#480).
+                progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
+            )
+
+        publication = publish_offer(
+            announce_offer, budget_s=OFFER_PUBLISH_TIMEOUT_S,
+            retry_s=OFFER_PUBLISH_RETRY_S, abandoned=abandoned_publishers)
+        if publication.status != "published":
+            # An offer is advisory: it reserves nothing, claims nothing and
+            # starts nothing.  So a publication that did not complete -- busy,
+            # failed, or past a deadline that may still have landed the write
+            # -- skips this poll's admission instead of admitting work from an
+            # advertisement nobody can read.  The loop stays alive, returns to
+            # the generation and maintenance checks above on its normal
+            # cadence, and the previous offer is left to expire rather than
+            # unlinked, exactly as a box that stopped offering must.  The
+            # write may already have landed; this reports that the outcome is
+            # unknown, never that nothing was published.
+            identity = (f" retained writer pid={publication.retained[0]}"
+                        f" starttime={publication.retained[1]}"
+                        if publication.retained else "")
+            print(f"[{host}] offer publication {publication.status} after "
+                  f"{publication.elapsed_s:g}s ({publication.error or 'no reason'}"
+                  f"; result unknown{identity}); "
+                  f"skipping admission this poll", flush=True)
+            idle += 1
+            if args.once:
+                return 1
+            time.sleep(args.poll_s)
+            continue
+
         # One bad item must not take the worker with it.  ``serve_once``
         # re-raises whatever ``execute`` raised, and this loop had no handler,
         # so a single unexecutable queue record -- a payload-less stub raising

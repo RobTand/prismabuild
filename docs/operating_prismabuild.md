@@ -2900,6 +2900,20 @@ live workers continue running. Publishing the fix lets the existing supervisor
 collect its backlog without a restart. Normal publication constraints still
 apply; a merge alone does not change the running supervisor.
 
+Worker offer publication uses a child with a five-second waiting budget. A
+failed, busy or timed-out publication skips admission for that poll and logs
+`offer publication <status> ...; skipping admission this poll`. Admission
+resumes only after a confirmed publication; the previous offer expires under
+its existing freshness rules. A timed-out write may already have landed.
+
+A host-local lock under `/tmp/prismabuild-offer-publish-<uid>` excludes other
+participating writers until the owning child exits. Never remove its directory
+or lock file while workers may be alive. Retained children remain visible to
+process censuses and can conservatively delay drain/rotation proof; they are
+not hidden or treated as parked. Investigate the logged failure and retained
+PID/start-time identity. Lock-path errors, resource failures and storage stalls
+have different causes; the log alone does not diagnose an NFS fault.
+
 ### Keeping a supervisor alive across a reboot
 
 Each box runs its supervisor as a systemd **user** unit,
