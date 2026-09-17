@@ -113,14 +113,24 @@ def counters(cpus):
                 return None
             total = sum(ticks)
             values[str(cpu)] = [total - ticks[3] - ticks[4], total]
-        psi = next(line for line in Path('/proc/pressure/cpu').read_text().splitlines()
-                   if line.startswith('some '))
-        pressure = int(dict(part.split('=') for part in psi.split()[1:])['total'])
+        # Both PSI lines are read: "some" counts any task on the box waiting for
+        # a CPU, "full" counts only the time every task was stalled.  On a host
+        # whose cores are handed out as affinities, "some" is dominated by the
+        # pinned jobs' own local cpuset contention -- measured 0.63 while 6.7 of
+        # 80 cores were busy -- so it is corroborated before it refuses.
+        totals = {}
+        for line in Path('/proc/pressure/cpu').read_text().splitlines():
+            fields = line.split()
+            if fields and fields[0] in ('some', 'full'):
+                totals[fields[0]] = int(dict(part.split('=') for part in fields[1:])['total'])
+        if set(totals) != {'some', 'full'}:
+            return None
     except (OSError, ValueError, StopIteration):
         return None
     if len(values) != len(cpus):
         return None
-    return {'cpus': values, 'psi_total': pressure, 'sampled_unix': time.time()}
+    return {'cpus': values, 'psi_total': totals['some'], 'psi_full_total': totals['full'],
+            'sampled_unix': time.time()}
 
 
 class AdmissionBusy(RuntimeError):
@@ -457,10 +467,14 @@ class Controller:
             deltas = [(value[0] - previous['cpus'][key][0],
                        value[1] - previous['cpus'][key][1]) for key, value in current['cpus'].items()]
             psi_delta = current['psi_total'] - previous.get('psi_total', current['psi_total'])
-            if all(0 <= busy <= total and total > 0 for busy, total in deltas) and psi_delta >= 0:
+            psi_full_delta = (current['psi_full_total']
+                              - previous.get('psi_full_total', current['psi_full_total']))
+            if (all(0 <= busy <= total and total > 0 for busy, total in deltas)
+                    and psi_delta >= 0 and psi_full_delta >= 0):
                 observation = {'sampled_unix': current['sampled_unix'],
                                'busy_cpus': sum(busy / total for busy, total in deltas),
                                'psi_some': min(1., psi_delta / (elapsed * 1e6)),
+                               'psi_full': min(1., psi_full_delta / (elapsed * 1e6)),
                                'cpu_count': len(self.cpus), 'interval_s': elapsed,
                                'per_cpu_busy': {key: busy / total for key, (busy, total)
                                                 in zip(current['cpus'], deltas)}}
@@ -483,8 +497,17 @@ class Controller:
         fresh = (0 <= now - sample.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
                  and sample.get('cpu_count') == len(self.cpus)
                  and all(isinstance(sample.get(key), (float, int)) and math.isfinite(sample[key])
-                         for key in ('busy_cpus', 'psi_some', 'interval_s')))
-        if fresh and (sample['psi_some'] >= .10 or sample['busy_cpus'] >= .95 * len(self.cpus)):
+                         for key in ('busy_cpus', 'psi_some', 'psi_full', 'interval_s')))
+        # Host-wide PSI "some" is not by itself evidence that this box is
+        # exhausted: it counts any task anywhere waiting for a CPU, including a
+        # job pinned to a few cores while the rest of the host is idle
+        # (measured: some 0.63 with 6.7 of 80 cores busy, full 0).  Occupancy is
+        # the host-wide measurement and keeps its gate unchanged; pressure
+        # refuses only when every task was also stalled, which no pinned
+        # neighbour can produce.  Unknown "full" telemetry is not fresh, so it
+        # refuses too rather than being read as zero.
+        saturated = sample['busy_cpus'] >= .95 * len(self.cpus)
+        if fresh and (saturated or (sample['psi_some'] >= .10 and sample['psi_full'] > 0)):
             return refuse("host_pressure", fresh=fresh)
         shape, measurement = action_identity(item) if identity is None else identity
         unbounded_cpu = not int(demand.get('cpu', 0))

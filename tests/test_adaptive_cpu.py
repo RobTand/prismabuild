@@ -18,7 +18,7 @@ def test_host_cpu_pressure_stops_even_physically_free_admissions(tmp_path, monke
     # There is a CPU token free, but unrelated work occupies that core.
     from prismabuild import adaptive_cpu
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
-        'sampled_unix': time.time(), 'busy_cpus': 2., 'psi_some': 0.8,
+        'sampled_unix': time.time(), 'busy_cpus': 2., 'psi_some': 0.8, 'psi_full': 0.02,
         'cpu_count': 2, 'interval_s': 1.})
     queue = pool.PoolQueue(tmp_path / 'queue')
     queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
@@ -35,7 +35,7 @@ def rig(tmp_path, monkeypatch):
     from prismabuild import adaptive_cpu
     clock = [100.]
     monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
-    state = {'busy_cpus': .1, 'psi_some': 0.}
+    state = {'busy_cpus': .1, 'psi_some': 0., 'psi_full': 0.}
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: dict(
         sampled_unix=clock[0], cpu_count=2, interval_s=1., **state))
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
@@ -85,7 +85,7 @@ def test_low_use_borrows_preferred_cpu_and_release_cannot_mint_tokens(rig):
     assert not queue.ledger().held_keys()
 
 
-@pytest.mark.parametrize('state_update', [{'busy_cpus': 1.95}, {'psi_some': .11}])
+@pytest.mark.parametrize('state_update', [{'busy_cpus': 1.95}, {'psi_some': .11, 'psi_full': .02}])
 def test_greedier_jobs_stop_new_admission_immediately(rig, state_update):
     queue, clock, state, key, first, publish, claim, telemetry = rig
     second = claim()
@@ -327,7 +327,7 @@ def test_proven_idle_preferred_is_borrowed_before_free_fallback(tmp_path, monkey
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
         'sampled_unix': clock[0], 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': .1, 'psi_some': 0.})
+        'busy_cpus': .1, 'psi_some': 0., 'psi_full': 0.})
     tiers = {'preferred': [0], 'fallback': [1]}
     def claim():
         return queue.claim(capacity={'cpu': 2, 'mem_gb': 4}, cpu_tiers=tiers,
@@ -369,7 +369,7 @@ def test_legacy_gpu_only_holder_cannot_overlap_cpu_work_or_measurement(tmp_path,
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', measurement))
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
         'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': 0., 'psi_some': 0.})
+        'busy_cpus': 0., 'psi_some': 0., 'psi_full': 0.})
     controller = adaptive_cpu.Controller(queue.ledger(), tiers)
     with controller.locked():
         assert controller.decision({'action_key': 'b' * 64, 'cas_root': str(tmp_path)},
@@ -385,7 +385,7 @@ def test_legacy_incoming_cpu_zero_is_charged_as_unknown_whole_host(tmp_path, mon
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
         'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': .05, 'psi_some': 0.})
+        'busy_cpus': .05, 'psi_some': 0., 'psi_full': 0.})
     controller = adaptive_cpu.Controller(queue.ledger(), tiers)
     with controller.locked():
         decision = controller.decision({'action_key': 'b' * 64, 'cas_root': str(tmp_path)},
@@ -403,7 +403,7 @@ def test_incoming_legacy_cpu_zero_cannot_overlap_claimed_cpu_work(tmp_path, monk
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', measurement))
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
         'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': 0., 'psi_some': 0.})
+        'busy_cpus': 0., 'psi_some': 0., 'psi_full': 0.})
     queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
                   checkout_root=str(tmp_path), worker_script='worker.py',
                   resources={'cpu': 1})
@@ -435,7 +435,7 @@ def test_full_width_job_starts_on_empty_host_with_incidental_idle_activity(tmp_p
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', measurement))
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
         'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': .05, 'psi_some': 0.})
+        'busy_cpus': .05, 'psi_some': 0., 'psi_full': 0.})
     queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
                   checkout_root=str(tmp_path), worker_script='worker.py',
                   resources={'cpu': 2})
@@ -444,14 +444,14 @@ def test_full_width_job_starts_on_empty_host_with_incidental_idle_activity(tmp_p
     assert item and item['cpu_allocation']['preferred'] == [0, 1]
 
 
-@pytest.mark.parametrize('busy,psi', [(.2, 0.), (.05, .10)])
-def test_full_width_exception_does_not_ignore_foreign_work_or_pressure(tmp_path, monkeypatch, busy, psi):
+@pytest.mark.parametrize('busy,psi,full', [(.2, 0., 0.), (.05, .10, .02)])
+def test_full_width_exception_does_not_ignore_foreign_work_or_pressure(tmp_path, monkeypatch, busy, psi, full):
     from prismabuild import adaptive_cpu
     queue = pool.PoolQueue(tmp_path / 'queue')
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
         'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': busy, 'psi_some': psi})
+        'busy_cpus': busy, 'psi_some': psi, 'psi_full': full})
     queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
                   checkout_root=str(tmp_path), worker_script='worker.py',
                   resources={'cpu': 2})
@@ -537,3 +537,30 @@ def test_returning_a_lost_claim_s_borrow_never_overwrites_a_newer_one(rig):
     controller.withdrew(newer, {'sampled_unix': spent['sampled_unix']})
     assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {
         'sampled_unix': spent['sampled_unix']}, 'a record still its own was not restored'
+
+@pytest.mark.parametrize('psi_full,expect_admission', [(0., True), (.02, False)])
+def test_pinned_neighbour_pressure_alone_does_not_refuse_a_mostly_idle_host(
+        tmp_path, monkeypatch, psi_full, expect_admission):
+    """The measured dl380g10 shape: PSI some 0.63, 6.7 of 80 cores busy, full 0.
+
+    Host-wide CPU PSI counts any task anywhere waiting for a CPU, so one job
+    pinned to four of eighty cores keeps "some" far above the gate while the
+    rest of the box is idle.  Occupancy is the host-wide measurement and still
+    refuses on its own; pressure adds a refusal only when every task was stalled
+    ("full"), which a pinned neighbour cannot produce.
+    """
+    from prismabuild import adaptive_cpu
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    host_cpus = 80
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+        'sampled_unix': time.time(), 'cpu_count': host_cpus, 'interval_s': 10.,
+        'busy_cpus': 6.73, 'psi_some': .633, 'psi_full': psi_full})
+    monkeypatch.setattr(adaptive_cpu.Controller, '_host_sample', None, raising=False)
+    queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 4, 'mem_gb': 4})
+    item = queue.claim(capacity={'cpu': host_cpus, 'mem_gb': 64},
+                       cpu_tiers={'preferred': list(range(host_cpus)), 'fallback': []},
+                       adaptive_cpu=True)
+    assert (item is not None) is expect_admission
