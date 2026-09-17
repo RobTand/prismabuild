@@ -21,6 +21,12 @@ import uuid
 
 from . import adaptive_snapshot
 
+#: A CPU is treated as idle for admission corroboration when it was busy for
+#: at most this fraction of the fresh sampling interval.  Small on purpose: a
+#: pinned neighbour sits at ~1.0, so this separates "nobody ran here" from
+#: "someone ran here", not "lightly used" from "heavily used".
+IDLE_BUSY_FRACTION = .05
+
 MAX_SAMPLE_AGE_S = 5.0
 MIN_INTERVAL_S = 1.0
 MAX_INTERVAL_S = 60.0
@@ -113,24 +119,24 @@ def counters(cpus):
                 return None
             total = sum(ticks)
             values[str(cpu)] = [total - ticks[3] - ticks[4], total]
-        # Both PSI lines are read: "some" counts any task on the box waiting for
-        # a CPU, "full" counts only the time every task was stalled.  On a host
-        # whose cores are handed out as affinities, "some" is dominated by the
-        # pinned jobs' own local cpuset contention -- measured 0.63 while 6.7 of
-        # 80 cores were busy -- so it is corroborated before it refuses.
-        totals = {}
-        for line in Path('/proc/pressure/cpu').read_text().splitlines():
-            fields = line.split()
-            if fields and fields[0] in ('some', 'full'):
-                totals[fields[0]] = int(dict(part.split('=') for part in fields[1:])['total'])
-        if set(totals) != {'some', 'full'}:
+        # Only "some" exists for the CPU resource at the system level: the
+        # kernel records FULL for CPU under a cgroup, never for psi_system
+        # (kernel/sched/psi.c -- "the FULL state doesn't exist for the CPU
+        # resource at the system level", and the state mask at the system
+        # root omits PSI_CPU_FULL).  Reading it here would compare a value the
+        # kernel never advances, so the pressure gate is corroborated with
+        # occupancy instead.
+        try:
+            psi = next(line for line in Path('/proc/pressure/cpu').read_text().splitlines()
+                       if line.startswith('some '))
+        except StopIteration:
             return None
+        pressure = int(dict(part.split('=') for part in psi.split()[1:])['total'])
     except (OSError, ValueError, StopIteration):
         return None
     if len(values) != len(cpus):
         return None
-    return {'cpus': values, 'psi_total': totals['some'], 'psi_full_total': totals['full'],
-            'sampled_unix': time.time()}
+    return {'cpus': values, 'psi_total': pressure, 'sampled_unix': time.time()}
 
 
 class AdmissionBusy(RuntimeError):
@@ -467,14 +473,10 @@ class Controller:
             deltas = [(value[0] - previous['cpus'][key][0],
                        value[1] - previous['cpus'][key][1]) for key, value in current['cpus'].items()]
             psi_delta = current['psi_total'] - previous.get('psi_total', current['psi_total'])
-            psi_full_delta = (current['psi_full_total']
-                              - previous.get('psi_full_total', current['psi_full_total']))
-            if (all(0 <= busy <= total and total > 0 for busy, total in deltas)
-                    and psi_delta >= 0 and psi_full_delta >= 0):
+            if all(0 <= busy <= total and total > 0 for busy, total in deltas) and psi_delta >= 0:
                 observation = {'sampled_unix': current['sampled_unix'],
                                'busy_cpus': sum(busy / total for busy, total in deltas),
                                'psi_some': min(1., psi_delta / (elapsed * 1e6)),
-                               'psi_full': min(1., psi_full_delta / (elapsed * 1e6)),
                                'cpu_count': len(self.cpus), 'interval_s': elapsed,
                                'per_cpu_busy': {key: busy / total for key, (busy, total)
                                                 in zip(current['cpus'], deltas)}}
@@ -497,26 +499,46 @@ class Controller:
         fresh = (0 <= now - sample.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
                  and sample.get('cpu_count') == len(self.cpus)
                  and all(isinstance(sample.get(key), (float, int)) and math.isfinite(sample[key])
-                         for key in ('busy_cpus', 'psi_some', 'psi_full', 'interval_s')))
-        # Host-wide PSI "some" is not by itself evidence that this box is
-        # exhausted: it counts any task anywhere waiting for a CPU, including a
-        # job pinned to a few cores while the rest of the host is idle
-        # (measured: some 0.63 with 6.7 of 80 cores busy, full 0).  Occupancy is
-        # the host-wide measurement and keeps its gate unchanged; pressure
-        # refuses only when every task was also stalled, which no pinned
-        # neighbour can produce.  Unknown "full" telemetry is not fresh, so it
-        # refuses too rather than being read as zero.
-        if fresh:
-            # Sample keys are only meaningful once the reading is fresh; an
-            # empty or stale observation has none of them.
-            if (sample['busy_cpus'] >= .95 * len(self.cpus)
-                    or (sample['psi_some'] >= .10 and sample['psi_full'] > 0)):
-                return refuse("host_pressure", fresh=fresh)
+                         for key in ('busy_cpus', 'psi_some', 'interval_s')))
+        # There is no system-wide CPU FULL to corroborate "some" with: the
+        # kernel records FULL for CPU only under a cgroup, never for
+        # psi_system (kernel/sched/psi.c: "the FULL state doesn't exist for the
+        # CPU resource at the system level"; the system root's state mask omits
+        # PSI_CPU_FULL).  So the corroboration is the occupancy the sampler
+        # already keeps per CPU.  The host-wide saturation gate is unchanged and
+        # stands alone; what follows only decides whether a high "some" reading
+        # is this action's problem or a pinned neighbour's local contention.
+        holders = [p for p in self.ledger.held_dir.iterdir() if p.is_dir()]
+        if fresh and sample['busy_cpus'] >= .95 * len(self.cpus):
+            return refuse("host_pressure", fresh=fresh)
+        if fresh and sample['psi_some'] >= .10:
+            # System-wide CPU PSI "some" counts any task anywhere waiting for a
+            # CPU, so one job pinned to a few cores with more runnable threads
+            # than cores holds it high while most of the box is idle (measured:
+            # 0.63 with 6.7 of 80 cores busy).  It is believed only when the
+            # fresh per-CPU occupancy agrees that this action has nowhere
+            # eligible and disjoint to run: the CPUs its own tiers offer, idle
+            # over the same interval, minus the ones a held action already
+            # owns.  Missing or incomplete per-CPU telemetry is unknown, and
+            # unknown refuses rather than being read as idle.
+            per_cpu = sample.get('per_cpu_busy')
+            if not isinstance(per_cpu, dict) or set(per_cpu) != {str(cpu) for cpu in self.cpus}:
+                return refuse("host_pressure_unproven", fresh=fresh)
+            assigned = set()
+            for holder in holders:
+                assigned.update(entry.name.split('-', 1)[1] for entry in holder.glob('cpu-*')
+                                if '-' in entry.name)
+            eligible = {str(cpu) for cpu in self.cpus}
+            idle = {cpu for cpu, busy in per_cpu.items()
+                    if isinstance(busy, (int, float)) and math.isfinite(busy)
+                    and busy <= IDLE_BUSY_FRACTION}
+            free = idle & eligible - assigned
+            if len(free) < int(demand.get('cpu', 0)):
+                return refuse("host_pressure", fresh=fresh, idle_eligible=len(free))
         shape, measurement = action_identity(item) if identity is None else identity
         unbounded_cpu = not int(demand.get('cpu', 0))
         if measurement and (not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
             return refuse("measurement_host_not_idle", fresh=fresh)
-        holders = [p for p in self.ledger.held_dir.iterdir() if p.is_dir()]
         if len(holders) >= MAX_ACTIONS:
             return refuse("max_actions", holders=len(holders))
         # Legacy producers sometimes reserved only GPU/memory. Their children
