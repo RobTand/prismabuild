@@ -194,6 +194,8 @@ def _run_worker(argv, *, ready, sample=None):
          mock.patch.object(worker, "maintenance_requested", return_value=False), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample", return_value=sample,
                            create=True), \
+         mock.patch.object(worker.box_capacity, "ipv4_addresses",
+                           return_value=["10.0.0.1"], create=True), \
          mock.patch.object(worker.time, "sleep", side_effect=lambda seconds: sleeps.append(seconds)), \
          mock.patch.object(sys, "argv", ["worker_loop.py", *argv]):
         assert worker.main() == 0
