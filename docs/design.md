@@ -2184,8 +2184,10 @@ prevents a positive observation even with zero broker scopes. Legacy storage
 readers without parking support remain unparked until they exit.
 Unreadable or malformed process evidence prevents a positive result and is
 reported explicitly; only a process directory proved gone may be omitted after
-a read failure. Process start identity is checked around the argv read. Missing
-gate identity or a gate change during the census also prevents certification.
+a read failure. Process start identity is checked around the argv read. The
+stat start tick is nonnegative, and 0 is valid -- PID 1 reports it on this
+kernel -- so only a malformed or negative tick refuses. Missing gate identity
+or a gate change during the census also prevents certification.
 The drain identity comes from the gate file. This is an observation of the
 current processes, not an admission barrier or a guarantee against future
 process launches; it neither opens nor closes a drain. Ordinary privileged-client

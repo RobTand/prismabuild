@@ -469,6 +469,10 @@ def proc_census(root='/proc'):
     markers for processes that have since exited, and a box does shed idle
     loops while it drains.
 
+    The start tick is nonnegative ticks since boot, and 0 is one of its valid
+    values: PID 1 reports 0 on some kernels. Only a malformed or negative tick
+    is refused.
+
     Only a process directory proved gone may be omitted after a failed read.
     Inaccessible or malformed evidence raises: an incomplete census must never
     become an empty list that certifies a stopped box.
@@ -482,7 +486,7 @@ def proc_census(root='/proc'):
         fields = rest.split()
         if (not separator or not prefix.startswith(f'{pid} (')
                 or len(fields) <= 19 or not fields[19].isdigit()
-                or int(fields[19]) <= 0):
+                or int(fields[19]) < 0):
             raise ValueError(f'invalid process identity for pid {pid}')
         return fields[19]
 
