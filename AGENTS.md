@@ -9,6 +9,11 @@ and verify terminal records, logs and CAS receipts. Already-admitted action
 children execute directly; do not submit recursively. Read-only inspection,
 source edits and Git operations may run on the coordinator. If the fleet is
 unavailable, repair it; do not silently fall back to local tests or GPU work.
+PrismaBuild owns placement, including its bounded best-effort preferences ---
+`deferred_for_preferred_cpu` and `deferred_for_cross_resource_placement`, which
+prefers not to spend a busy box's GPU power on work that can go elsewhere. A
+deferral expires by itself; do not read one as a refusal, and do not retag or
+resubmit to defeat it.
 
 Everything vLLM is exempt, universally (Rob, 2026-09-07): a serve, a census, a
 routing run, a benchmark against a live endpoint, its GPU containers. Run it

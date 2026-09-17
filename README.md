@@ -89,6 +89,13 @@ used only to say which boxes are live enough to claim now. A capable box between
 announcements therefore leaves the action to its declared `--wait-s`; it no
 longer turns a bounded wait into an immediate refusal.
 
+Within that, two placement preferences are soft by construction: a worker gives
+a compatible box with free preferred CPUs, or one materially freer on the
+resource the action does not want, up to 20 seconds to claim first, and then
+claims the action itself. They make placement a little better when a better box
+exists and cost a bounded wait when it does not. Neither refuses work, and
+neither claims a thermal or throughput result.
+
 The effective placement conjunction is semantic identity, not queue-only
 metadata. `pbrun` normalizes and sorts the tags that actually landed (including
 derived host pins) and seals them in action params before computing the action

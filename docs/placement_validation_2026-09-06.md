@@ -9,8 +9,8 @@
 >
 > - **The ordering below is not `main`'s.** This document says the new checks
 >   precede reservation. On `main` the fallback deferral runs *after*
->   allocation, with reservation and probe rollback
->   (`src/prismabuild/pool.py:4755-4767`).
+>   allocation, with reservation and probe rollback --- see
+>   `PoolQueue._defer_fallback` and its caller in `src/prismabuild/pool.py`.
 > - **The thermal-placement test named in the receipt table is not on `main`.**
 >   Against `main` its two `heavy_opposite_resource` cases fail (2 failed, 10
 >   passed); against the uncommitted tree they pass 12 of 12.
@@ -18,6 +18,15 @@
 > The 226-test total and its eight receipts are preserved as measured. They
 > qualify that snapshot and nothing else, and no part of this document is
 > current-`main` qualification.
+>
+> **Nor does it qualify the port.** RobTand/prismabuild#573 brings only the
+> cross-resource half onto `main`, keeps `main`'s fallback-deferral ordering,
+> and drops the CPU-borrowing half this document also measured --- so the
+> oversubscription rows above describe behaviour the port does not carry, and
+> the cross-resource rows describe a differently ordered implementation under
+> different names (`_defer_cross_resource_placement`,
+> `tests/test_pool_cross_resource_placement.py`). The port has its own
+> receipts, on its own pull request.
 
 The integrated change passed 226 tests in eight admitted CPU actions on dl380g10,
 with no skips or missing tools. GPU admission tests used simulated device evidence;

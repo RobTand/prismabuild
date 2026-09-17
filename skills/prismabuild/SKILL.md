@@ -312,6 +312,13 @@ fresh measured demand, and stop admitting work as host pressure rises. Declare
 honest peak CPU demand. Memory budgets remain fully reserved; CPU lending does
 not authorize GPU sharing.
 
+A box busy on one resource also prefers, best effort, not to take work for the
+other one: a CPU-only action arriving at a box drawing GPU power, or a GPU
+action arriving at a CPU-busy box, waits up to 20 seconds for a freer
+compatible box and is then claimed anyway. It never refuses or strands work,
+and a `deferred_for_cross_resource_placement` denial is that bounded wait, not
+starvation. Nothing here measures temperature or throughput.
+
 Use `--measurement` for measurements: the pool defaults to the submitting host,
 seals platform/toolchain identity, admits only against a fresh near-idle host, and
 keeps GPU measurements exclusive. Interleave the arms of a timing comparison and

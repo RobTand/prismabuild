@@ -143,6 +143,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
+from . import box_capacity
 from . import box_window
 from . import resource_scope
 from . import posix_lock
@@ -2150,6 +2151,7 @@ class PoolQueue:
         # after import gets the root it named rather than the live store.
         self.root = Path(DEFAULT_POOL_ROOT if root is None else root)
         self._cpu_deferrals: dict[tuple[str, str], float] = {}
+        self._cross_resource_deferrals: dict[tuple[str, str], float] = {}
         self._claim_denial_bases: dict[str, Path] = {}
         self._admission_busy_logged_at: float | None = None
         if not self.root.is_absolute():
@@ -2380,10 +2382,12 @@ class PoolQueue:
         that offer ``x86``, and would have waited a day.
 
         The offer is a *claim about this box, refreshed by this box*, and it
-        expires; a stale file is not evidence.  Nothing consumes it for
-        scheduling -- placement is still decided by the matching in
-        ``claim()`` -- so a wrong or missing offer costs a diagnostic, never a
-        misplacement.
+        expires; a stale file is not evidence.  Placement is still decided by
+        the matching in ``claim()``, and what a claimant reads from other
+        boxes' offers only ever makes it wait a bounded moment for a better
+        placement -- the preferred-CPU deferral and the cross-resource
+        preference -- so a wrong or missing offer costs a diagnostic or a
+        missed preference, never a misplacement.
 
         ``capacity`` is what this box is *configured* to offer and is the field
         ``placeable`` reads, because the question a submitter asks is "can any
@@ -3918,6 +3922,106 @@ class PoolQueue:
                         "observed_capacity": observed, "demand": dict(demand)}
         return None
 
+    @staticmethod
+    def _opposite_resource_load(offer: Mapping, *, gpu_job: bool) -> float | None:
+        """How busy this box is on the resource the item does NOT want.
+
+        A placement proxy and nothing more.  It is not a thermal measurement,
+        it certifies no throughput, and no admission decision reads it: the
+        only thing it can do is make a claimant wait a bounded moment.
+
+        ``None`` means "not known here", which the caller reads as no
+        preference.  A reading older than ``GPU_SAMPLE_MAX_AGE_S`` is not
+        known: an offer file is last-writer-wins per host and a claimant must
+        not prefer a box on a stale picture of either side.
+        """
+
+        detail = offer.get("observed_detail") or {}
+
+        def number(value: object) -> bool:
+            return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+        stamp = detail.get("observed_unix")
+        if not number(stamp) or not 0 <= _now() - stamp <= box_capacity.GPU_SAMPLE_MAX_AGE_S:
+            return None
+        if gpu_job:
+            # CPU load per preferred core, so boxes with different core counts
+            # compare.  Load is already what the CPU admission controller reads.
+            cores = len((offer.get("cpu_tiers") or {}).get("preferred", []))
+            load = detail.get("load1")
+            return load / cores if cores and number(load) else None
+        if not offer.get("has_gpu"):
+            return 0.0            # no GPU to take power from; nothing to prefer away
+        stamp = detail.get("gpu_power_sampled_unix")
+        load = detail.get("gpu_power_fraction")
+        if (number(stamp) and 0 <= _now() - stamp <= box_capacity.GPU_SAMPLE_MAX_AGE_S
+                and number(load)):
+            return load
+        return None
+
+    # The preference's two knobs.  Both are heuristic -- they are thresholds on
+    # a proxy, not quantities derived from an objective -- which is why they
+    # bound a wait and never a decision.  ``BUSY`` is where a box counts as
+    # working on the other resource; ``MARGIN`` is how much better an
+    # alternative must look before it is worth waiting for, so that two boxes
+    # reading nearly the same never take turns deferring to each other.
+    CROSS_RESOURCE_BUSY = 0.60
+    CROSS_RESOURCE_MARGIN = 0.20
+
+    def _defer_cross_resource_placement(
+        self, item: Mapping, demand: Mapping, *, live: Sequence,
+    ) -> dict[str, object] | None:
+        """Prefer not to spend a box's GPU power on work that can go elsewhere.
+
+        Best-effort and nothing more.  When this box is already working the
+        resource the item does *not* want -- GPU work arriving at a box busy
+        on CPU, CPU-only work arriving at a box busy on its GPU -- and a
+        compatible box looks materially freer on that axis and can fit the
+        whole demand, give that box up to 20 seconds to claim.  After that
+        this box claims it anyway.
+
+        So the work is never refused, never starved and never placed worse
+        than it would have been without this: the only outcome is a short wait
+        that a better placement may or may not win.  If no alternative exists,
+        or either reading is stale, there is no preference and the caller
+        proceeds unchanged.
+        """
+
+        host = socket.gethostname()
+        local = next((offer for offer in live if offer.get("host") == host), {})
+        gpu_job = bool(demand.get("gpu"))
+        load = self._opposite_resource_load(local, gpu_job=gpu_job)
+        if load is None or load < self.CROSS_RESOURCE_BUSY:
+            return None           # this box is not taking anything from anyone
+        identity = (str(item["action_key"]), repr(item.get("published_unix")))
+        started = self._cross_resource_deferrals.setdefault(identity, time.monotonic())
+        if time.monotonic() - started >= 20.0:
+            return None           # preference spent; place it here
+        # Only now, behind that local check, does this read other boxes'
+        # ledgers: at most one remote read per compatible offer, on the rare
+        # scans where this box is genuinely cross-loaded.
+        for offer in self._matching_offers(item, live=live):
+            remote_host = str(offer.get("host") or "")
+            if not remote_host or remote_host == host:
+                continue
+            remote_load = self._opposite_resource_load(offer, gpu_job=gpu_job)
+            if remote_load is None or remote_load > load - self.CROSS_RESOURCE_MARGIN:
+                continue
+            remote = self.ledger(remote_host)
+            tiers = offer.get("cpu_tiers") or {}
+            if _read_json(remote.base / "cpu-map.json") != tiers:
+                continue
+            free = remote.available()
+            observed = offer.get("observed_capacity") or {}
+            if (remote.free_preferred(tiers) >= demand.get("cpu", 0)
+                    and all(min(free.get(k, 0), observed.get(k, 0)) >= n
+                            for k, n in demand.items())):
+                return {"host": remote_host, "local_load": load,
+                        "remote_load": remote_load, "gpu_job": gpu_job,
+                        "available": free, "observed_capacity": observed,
+                        "demand": dict(demand)}
+        return None
+
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
         owner: str | None = None, capacity: Mapping[str, int] | None = None,
@@ -3951,6 +4055,7 @@ class PoolQueue:
                     # do not let an empty snapshot block a sibling's new work.
                     # Match _claim's retirement of absent-generation hints.
                     self._cpu_deferrals.clear()
+                    self._cross_resource_deferrals.clear()
                     return None
                 # ``_claim`` takes admission itself, once per candidate and only
                 # around the decision that has to be exclusive. Wrapping the
@@ -4544,6 +4649,18 @@ class PoolQueue:
         # work runs again -- which is the race the operator used to have to win
         # by hand.  Read once per scan, not once per item.
         withdrawn = self.withdrawn_keys()
+        # One offer snapshot per scan, read only if something asks for it.
+        # The cross-resource preference is the only caller and it asks on the
+        # rare scans where this box is working the other resource, so an
+        # ordinary scan still reads the worker registry not at all.
+        placement_offers: list[dict[str, object]] | None = None
+
+        def offer_snapshot() -> list[dict[str, object]]:
+            nonlocal placement_offers
+            if placement_offers is None:
+                placement_offers = self.offers()
+            return placement_offers
+
         ledger = None
         total: dict[str, int] = {}
         if capacity is not None:
@@ -4573,9 +4690,10 @@ class PoolQueue:
             ready = self.ready_items()
         live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
                             for item in ready}
-        for generation in list(self._cpu_deferrals):
-            if generation not in live_generations:
-                self._cpu_deferrals.pop(generation, None)
+        for deferrals in (self._cpu_deferrals, self._cross_resource_deferrals):
+            for generation in list(deferrals):
+                if generation not in live_generations:
+                    deferrals.pop(generation, None)
         preempted = False
         for item in ready:
             key = str(item.get("action_key", ""))
@@ -4656,6 +4774,22 @@ class PoolQueue:
                                 "reservation_demand": reservation_demand,
                             })
                             continue      # never fits this box; not this box's to hold
+                        # Soft placement preference, deliberately outside the
+                        # admission lock below: it reads the worker registry
+                        # and other boxes' ledgers over the shared mount, and
+                        # holding host admission across a mount stall is #351.
+                        cross_resource = self._defer_cross_resource_placement(
+                            item, reservation_demand, live=offer_snapshot())
+                        if cross_resource is not None:
+                            # Not a refusal and not starvation: no ``record_pass``,
+                            # for the same reason ``deferred_for_preferred_cpu``
+                            # records none.  The denial is what makes a bounded
+                            # wait visible instead of silent.
+                            self.record_denial(item, "deferred_for_cross_resource_placement", {
+                                "demand": demand, "reservation_demand": reservation_demand,
+                                "remote_offer": cross_resource,
+                            })
+                            continue
                         # These facts belong to the sealed action, not changing
                         # host capacity. A slow CAS request read must not hold
                         # admission. Retain this candidate's transition lock and
@@ -4944,7 +5078,9 @@ class PoolQueue:
                 claimed.pop("passes", None)
                 claimed.pop("cpu_allocation", None)
                 claimed.pop("gpu_admission", None)
-                self._cpu_deferrals.pop((key, repr(moved.get("published_unix"))), None)
+                generation = (key, repr(moved.get("published_unix")))
+                self._cpu_deferrals.pop(generation, None)
+                self._cross_resource_deferrals.pop(generation, None)
                 claimed["claimed_by"] = owner
                 claimed["claimed_unix"] = _now()
                 claimed["claimed_host"] = socket.gethostname()

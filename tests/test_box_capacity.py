@@ -52,6 +52,35 @@ def test_fresh_exact_gpu_evidence_reports_the_physical_device():
     assert seen.detail["gpu_memory_domains"] == ["shared_system"]
 
 
+@pytest.mark.parametrize('soc', [False, True])
+def test_placement_power_evidence_uses_device_or_soc_envelope(soc):
+    """Power against the envelope, from the device limit or the SoC scope."""
+
+    sample = gpu_sample()
+    sample['devices'][0].update(power_w=105., power_limit_w=None if soc else 140.,
+                                power_reference_w=140.,
+                                power_reference_scope='soc_tdp' if soc else 'gpu_power_limit')
+    seen = bc.observe(DECLARED, {}, gpu_sample=sample, mem_gb=100, load1=3)
+
+    assert seen.detail['gpu_power_fraction'] == .75
+    assert seen.detail['gpu_power_sampled_unix'] == sample['sampled_unix']
+    assert seen.detail['observed_unix'] >= sample['sampled_unix']
+
+
+@pytest.mark.parametrize('fault', ['missing', 'stale', 'nan', 'unscoped'])
+def test_unknown_gpu_power_cannot_be_advertised_as_idle(fault):
+    """A reading nobody took must not reach placement as a low one."""
+
+    sample = gpu_sample(age=10 if fault == 'stale' else 0)
+    if fault != 'missing':
+        sample['devices'][0].update(power_w=float('nan') if fault == 'nan' else 105.,
+                                    power_reference_w=140.,
+                                    power_reference_scope='unknown' if fault == 'unscoped' else 'soc_tdp')
+    seen = bc.observe(DECLARED, {}, gpu_sample=sample, mem_gb=100, load1=3)
+
+    assert 'gpu_power_fraction' not in seen.detail
+
+
 def test_gb10_shared_memory_accepts_unavailable_framebuffer_counters():
     """GB10 nvidia-smi reports N/A because its memory is host shared RAM."""
 

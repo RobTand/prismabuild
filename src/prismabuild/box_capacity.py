@@ -278,7 +278,11 @@ def observe(
     ours = _held_snapshot(held)
     capacity = dict(wanted)
     foreign: dict[str, int] = {}
-    detail: dict[str, object] = {}
+    # When this reading was taken.  A placement preference that compares two
+    # boxes needs to know each reading's age, and an offer file carries no
+    # age of its own beyond ``announced_unix`` -- which is when the record was
+    # written, not when the box was read.
+    detail: dict[str, object] = {"observed_unix": time.time() if now is None else float(now)}
 
     def clamp(kind: str, foreign_units: int) -> None:
         # One name for one quantity: ``foreign`` is what the announce record
@@ -313,6 +317,29 @@ def observe(
                 "gpu_attributed_jobs": len(jobs),
                 "foreign_gpu_processes": len(foreign_processes),
             })
+            # How loaded the GPU is, read as power against its envelope --
+            # never as ``gpu_utilization``, which on GB10 reports a resident
+            # kernel rather than working SMs and reads the same at 47 W and
+            # 140 W.  The reference is the device's own power limit, or the
+            # SoC envelope when the device declares that scope, which is the
+            # rule ``adaptive_gpu`` already admits on.  Published only when
+            # every device answers: an unreadable device must not average away
+            # as idle, so one gap withholds the whole field.
+            power_fractions = []
+            for device in devices:
+                power = _number(device.get("power_w"))
+                reference = _number(device.get("power_limit_w"), positive=True)
+                if reference is None and device.get("power_reference_scope") == "soc_tdp":
+                    reference = _number(device.get("power_reference_w"), positive=True)
+                if power is None or reference is None:
+                    break
+                # A throttled device is at its envelope whatever the sampled
+                # draw says, the same reading ``adaptive_gpu`` calls congested.
+                power_fractions.append(max(power / reference,
+                                           1.0 if device.get("limited") is True else 0.0))
+            if len(power_fractions) == len(devices):
+                detail["gpu_power_fraction"] = max(power_fractions)
+                detail["gpu_power_sampled_unix"] = gpu_sample["sampled_unix"]
             capacity["gpu"] = min(wanted["gpu"], len(devices))
             if foreign_processes:
                 # The public inventory is already the broker's exact

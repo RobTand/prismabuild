@@ -31,6 +31,14 @@ also why `pbtest` names no default tag when run from a worktree: the `x86`
 default is an explicit placement claim, and an explicit tag outranks the pin
 `pbrun` would otherwise derive (RobTand/prismabuild#292).
 
+Placement holds two bounded preferences you may see in a denial and must not
+read as a refusal: `deferred_for_preferred_cpu`, and
+`deferred_for_cross_resource_placement`, which keeps a box already working one
+resource from taking work for the other one when a freer compatible box
+exists. Each expires on its own after 20 seconds and the work is then claimed
+anyway. They are best effort, they measure nothing thermal, and they are not a
+reason to retag or resubmit.
+
 Every worker loop kills an action at its own safety ceiling, **7200 s by
 default**, and that ceiling is applied as a silent `min` against `--timeout-s`.
 Each box now announces its ceiling (`pbstatus` shows it as `KILL AT`), `pbrun`
