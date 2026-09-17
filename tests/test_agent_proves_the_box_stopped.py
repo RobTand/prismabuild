@@ -265,6 +265,42 @@ def test_the_census_reads_this_process(tmp_path):
     assert argv and Path(argv[0]).name
 
 
+def test_a_zero_start_tick_is_a_valid_process_identity(tmp_path):
+    """PID 1 reports start tick 0 on this kernel, so 0 cannot read as malformed."""
+
+    root, process = private_proc(tmp_path)
+    (process / 'stat').write_text('101 (worker (loop)) S ' + '0 ' * 18 + '0 0')
+
+    assert upgrade.proc_census(root) == [
+        (101, '0', ['python3', '/checkout/worker_loop.py'])]
+
+
+def test_a_replacement_after_tick_zero_is_still_a_reused_pid(tmp_path, monkeypatch):
+    """The second stat read is compared, not retrusted, when the first tick is 0."""
+
+    root, process = private_proc(tmp_path)
+    (process / 'stat').write_text('101 (worker (loop)) S ' + '0 ' * 18 + '0 0')
+    original = Path.read_bytes
+    def replaced(path):
+        result = original(path)
+        if path == process / 'cmdline':
+            (process / 'stat').write_text('101 (replacement) S ' + '0 ' * 18 + '901 0')
+        return result
+    monkeypatch.setattr(Path, 'read_bytes', replaced)
+
+    with pytest.raises(ValueError, match='identity changed for pid 101'):
+        upgrade.proc_census(root)
+
+
+@pytest.mark.parametrize('tick', ['-5', 'x', '0.0', '900x'])
+def test_a_malformed_or_negative_start_tick_is_refused(tmp_path, tick):
+    root, process = private_proc(tmp_path)
+    (process / 'stat').write_text('101 (worker (loop)) S ' + '0 ' * 18 + f'{tick} 0')
+
+    with pytest.raises(ValueError, match='invalid process identity for pid 101'):
+        upgrade.proc_census(root)
+
+
 @pytest.mark.parametrize('census,markers', [([], set()),
     (CENSUS[:1], {upgrade.park_marker_name(101, '900', None)})])
 def test_unknown_gate_never_proves_a_drain(census, markers):
