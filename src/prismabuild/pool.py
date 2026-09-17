@@ -2370,6 +2370,7 @@ class PoolQueue:
         loops: int | None = None,
         timeout_ceiling_s: float | None = None,
         progress_contracts: Sequence[str] | None = None,
+        addresses: Sequence[str] | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -2470,6 +2471,16 @@ class PoolQueue:
             # and a submitter must read that silence as "this box will apply
             # its ceiling to your total duration", not as support (#480).
             record["progress_contracts"] = sorted({str(c) for c in progress_contracts})
+        if addresses is not None:
+            # The IPv4 addresses this box's kernel holds, so the storage host
+            # can tell the NFS bytes it serves *to the box running an action
+            # it is warming for* from the bytes it serves to anyone else
+            # (#580).  Its ``export_stats`` counts per client address; the
+            # claim names a host; this is the only place the fleet joins the
+            # two.  Absent, not empty, when the box could not read them: a
+            # storage role that finds no addresses protects every client, as
+            # it did before the field existed.
+            record["addresses"] = sorted({str(a) for a in addresses})
         directory = self.root / WORKERS
         directory.mkdir(parents=True, exist_ok=True)
         _write_json_atomic(directory / f"{host}.json", record)

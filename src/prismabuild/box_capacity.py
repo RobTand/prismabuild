@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 import math
 import os
 from pathlib import Path
+import subprocess
 import time
 
 #: Memory the box keeps for itself rather than offering the queue its last
@@ -182,6 +183,50 @@ def run_queue() -> float | None:
         return os.getloadavg()[0]
     except OSError:
         return None
+
+
+def ipv4_addresses(
+    runner: Callable[[list[str]], str] | None = None,
+) -> list[str] | None:
+    """The global-scope IPv4 addresses this box's kernel holds, or ``None``.
+
+    Announced on the worker offer so the storage host can attribute the NFS
+    bytes it serves to the box that read them (#580): the server's
+    ``/proc/fs/nfsd/export_stats`` counts per *client address*, the queue
+    names the box that claimed an action by *hostname*, and nothing else on
+    the fleet joins the two -- dl380g10 resolves neither Spark by name, and
+    the fabric address a Spark mounts from (``10.100.98.1``) is not the LAN
+    address a resolver would return anyway.  The box's own kernel is the one
+    source that cannot be wrong about which addresses are its.
+
+    Every address, not the one that reaches the server: a box with two
+    mounts has two client rows, and both are its reads.  The set is read
+    from ``ip``, the same table the kernel routes from.  ``None`` means the
+    reading could not be taken -- no ``ip``, a timeout, an unparseable line
+    -- and is announced as an absent field, never as an empty list: a reader
+    must not turn "not measured" into "reads from nowhere".  This must never
+    raise: it runs on the offer path of every worker loop on the fleet.
+    """
+
+    def _run(argv: list[str]) -> str:
+        return subprocess.run(
+            argv, check=True, text=True, timeout=5,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+
+    try:
+        text = (runner or _run)(["ip", "-4", "-o", "addr", "show", "scope", "global"])
+    except Exception:                                            # noqa: BLE001
+        return None
+    found: list[str] = []
+    for line in text.splitlines():
+        fields = line.split()
+        try:
+            address = fields[fields.index("inet") + 1].partition("/")[0]
+        except (ValueError, IndexError):
+            continue
+        if address and address not in found:
+            found.append(address)
+    return sorted(found)
 
 
 def worker_loops(*, proc: Path = PROC) -> tuple[tuple[int, tuple[str, ...]], ...]:

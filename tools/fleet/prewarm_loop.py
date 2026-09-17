@@ -76,8 +76,23 @@ at 8-12% utilization and ~0 ms await cost nobody anything.
 
 So the reader is paced by the disks rather than by a thread count: it samples
 ``/sys/block/<dev>/stat`` for the pool's own members and holds before a block
-whenever a client is reading *and* the worst disk is over its service-time or
-backlog cap.  Both halves are required.  On 2026-09-13 a ``zpool scrub`` drove
+whenever a client *other than the action it is warming for* is reading *and*
+the worst disk is over its service-time or backlog cap.  Both halves are
+required, and the first half names its client.  On 2026-09-17 (#580) the
+GLM-5.3-Flash joint-AURA ``prepare`` was the only client on the box, reading
+at 160-280 MB/s through the very bytes this loop was fetching for it; the
+pacer counted that as a client to protect, held 11.03 h of 20.6 h -- 97.7 %
+of the last hour -- and the warm ran at 22.8 MB/s behind a reader it could
+never get ahead of, backing off from load that existed because it backed
+off.  The served action's reads are the same one-pass bytes read earlier and
+at depth, not extra I/O, so they are *self*: the claim names the box running
+the action, the box's worker offer names its client addresses, and the
+server's per-client ``export_stats`` says what each address read.  Nothing
+in that chain is guessed, and a missing link leaves every client protected
+as before, with the reason in the receipt.  Depth follows the same verdict:
+``--max-readers`` while nobody else is reading, ``--readers`` -- the depth
+#499 measured to pass -- while somebody is, and a hold only when that
+somebody is also hurt.  On 2026-09-13 a ``zpool scrub`` drove
 sdb to 88% utilization and 100% busy samples, the pacer held for 5709 s
 cumulative, and no NFS client read a byte for the whole window: the loop paid
 for a busy pool and protected nobody.  Utilization is still measured and still
@@ -164,6 +179,26 @@ SYSFS_BLOCK = "/sys/class/block"
 #: its own bytes never reach this counter and the measurement cannot chase
 #: itself.
 NFSD_IO = "/proc/net/rpc/nfsd"
+#: Where the same server counts what it served *per client*: one
+#: ``<export> <client-address> <start-time>`` block per pair, each carrying
+#: ``io_read`` and ``io_write``.  Measured on dl380g10 (7.0.0-31,
+#: 2026-09-17T21:57Z): over 10 s the two client rows moved 1 630 408 918 B
+#: and 5 744 B, and the aggregate ``io`` line moved 1 630 414 662 B -- the
+#: same counter, kept per client.  That split is what lets the pacer tell the
+#: action it is warming for from a client it must protect (#580).  A block is
+#: recreated when the export cache entry expires -- every 901 s on the live
+#: box, both rows -- and its counters restart from zero; ``ClientReadRate``
+#: carries a client's last rate across that one interval rather than reading
+#: the restart as either a negative rate or an idle client.
+EXPORT_STATS = "/proc/fs/nfsd/export_stats"
+#: Default for ``--max-readers``: the depth the loop reads at while the pool
+#: serves nobody but this warm and the action it is warming for.  The pool's
+#: measured cold-read curve on dl380g10's raidz1 (2026-09-17): 1 stream
+#: 28.6 MB/s, 2 -> 40.5, 4 -> 86.9, 8 -> 134.2, 16 -> 204.7 MB/s -- the same
+#: bytes, 7x the rate, from queue depth alone.  16 is the deepest point that
+#: curve was measured at, and it is a property of the pool, which is why it
+#: is an argument with a measured default and not a law in the loop.
+MAX_READERS = 16
 #: A hold ends at half the number that started it.  A disk sitting exactly on
 #: a cap otherwise flaps the reader once per sample, and those bursts are what
 #: the pacer exists to smooth.  This is a property of the control loop rather
@@ -395,6 +430,37 @@ def read_disk_stat(device: str, *, root: str = "/sys/block") -> list[int] | None
         return None
 
 
+def parse_export_stats(text: str) -> dict[str, int]:
+    """``io_read`` bytes per client address from ``/proc/fs/nfsd/export_stats``.
+
+    The file is ``# Version 1.1`` comment lines, then one unindented
+    ``<path> <client> <start-time>`` header per (export, client) block with
+    its ``<stat>: <value>`` rows indented beneath it.  A client mounting two
+    exports has two blocks; its bytes are one client's bytes, so they are
+    summed.  A malformed row is skipped, not raised: this is read four times
+    a second under the pacer's lock.
+    """
+
+    reads: dict[str, int] = {}
+    client: str | None = None
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        if line[0] in " \t":
+            if client is None:
+                continue
+            key, _, value = line.strip().partition(":")
+            if key.strip() == "io_read":
+                try:
+                    reads[client] = reads.get(client, 0) + int(value)
+                except ValueError:
+                    pass
+            continue
+        fields = line.split()
+        client = fields[1] if len(fields) >= 2 else None
+    return reads
+
+
 class ClientReadRate:
     """How fast this host's NFS server is feeding its clients, in MB/s.
 
@@ -406,10 +472,22 @@ class ClientReadRate:
     backlog while no client read a byte, so the loop warmed nothing for hours
     and protected nobody.
 
-    ``/proc/net/rpc/nfsd``'s ``io`` line counts bytes ``nfsd`` served.  This
-    loop reads the pool through the host's own local path, never through the
-    export, so its reads never appear in this counter and cannot make the
-    pacer believe a client is busy.
+    The second question is *which* client (#580).  The action this loop is
+    warming for reads the very bytes the warm is fetching, and on 2026-09-17
+    that consumer was the only client on the box: the loop held 11.03 h of
+    20.6 h against it, every hold record carrying the consumer's own
+    258-280 MB/s as the client it was protecting, and the warm never got
+    ahead of the reader it exists to feed.  So the counter is read per client
+    from ``export_stats`` and split three ways: ``total``, ``self`` -- the
+    addresses of the box running the served action -- and ``other``, which
+    is what a hold protects.  ``/proc/net/rpc/nfsd``'s aggregate ``io`` line
+    is the fallback when the per-client file is unreadable; then nothing can
+    be attributed, ``other`` is the total, and the pacer behaves exactly as it
+    did before the split existed.
+
+    This loop reads the pool through the host's own local path, never through
+    the export, so its reads never appear in either counter and cannot make
+    the pacer believe a client is busy.
 
     An unreadable counter is ``None``, and ``None`` means "clients may be
     reading": a host that cannot see its clients must behave like the host
@@ -418,17 +496,44 @@ class ClientReadRate:
 
     def __init__(self, path: str = NFSD_IO,
                  clock: Callable[[], float] = time.monotonic,
-                 reader: Callable[[], str | None] | None = None) -> None:
+                 reader: Callable[[], str | None] | None = None,
+                 export_stats: str = "",
+                 export_reader: Callable[[], str | None] | None = None) -> None:
         self.path = path
+        #: Where the per-client counter lives.  ``pacer_from_args`` names it;
+        #: a rate built without it reads only the aggregate line, which is
+        #: also what keeps a fixture's counter from being overruled by the
+        #: real file on a host that has one.
+        self.export_stats = export_stats
         self.clock = clock
         self.reader = reader if reader is not None else self._read_file
+        self.export_reader = (export_reader if export_reader is not None
+                              else self._read_export_stats)
         self._previous: int | None = None
         self._previous_at = 0.0
         self._rate: float | None = None
+        #: Per-client counters from the last sample, and the last rate each
+        #: client was given: the rate is what carries a client across the
+        #: interval in which its counter restarted.
+        self._previous_clients: dict[str, int] | None = None
+        self._client_rates: dict[str, float] = {}
+        #: Where the last sample's total came from, for the receipt.
+        self.source = ""
+        self.self_mb_s: float | None = None
+        self.other_mb_s: float | None = None
 
     def _read_file(self) -> str | None:
         try:
             with open(self.path) as handle:
+                return handle.read()
+        except OSError:
+            return None
+
+    def _read_export_stats(self) -> str | None:
+        if not self.export_stats:
+            return None
+        try:
+            with open(self.export_stats) as handle:
                 return handle.read()
         except OSError:
             return None
@@ -446,18 +551,40 @@ class ClientReadRate:
                     return None
         return None
 
-    def sample(self) -> float | None:
-        """MB/s served since the last sample, or ``None`` without an interval."""
+    def client_bytes(self) -> dict[str, int] | None:
+        """Per-client served bytes, or ``None`` where the file cannot be read."""
 
-        total = self.served_bytes()
+        text = self.export_reader()
+        if not text:
+            return None
+        return parse_export_stats(text)
+
+    def sample(self, self_addresses: "tuple[str, ...] | list[str]" = ()) -> float | None:
+        """MB/s served since the last sample, or ``None`` without an interval.
+
+        ``self_addresses`` are the client addresses whose reads are the served
+        action's own; after the call ``self_mb_s`` and ``other_mb_s`` carry
+        the split.  Both come from one read of ``export_stats`` so the two
+        halves are the same instant; the aggregate line is read only when
+        that file is not there to read.
+        """
+
+        clients = self.client_bytes()
         now = self.clock()
+        if clients is not None:
+            return self._sample_clients(clients, now, tuple(self_addresses))
+        self.source = self.path
+        self._previous_clients, self._client_rates = None, {}
+        total = self.served_bytes()
         if total is None:
             self._previous, self._previous_at, self._rate = None, now, None
+            self.self_mb_s = self.other_mb_s = None
             return None
         previous, previous_at = self._previous, self._previous_at
         elapsed = now - previous_at
         if previous is None:
             self._previous, self._previous_at = total, now
+            self.self_mb_s = self.other_mb_s = None
             return None
         if elapsed <= 0:
             # Two reads inside one instant are one read.  The last rate is
@@ -470,9 +597,56 @@ class ClientReadRate:
             # and neither is a rate.  Report unknown rather than a negative
             # one, and let the next interval answer.
             self._rate = None
+            self.self_mb_s = self.other_mb_s = None
             return None
         self._rate = (total - previous) / 1e6 / elapsed
+        # Nothing can be attributed from the aggregate: every byte is a
+        # client's, which is the verdict the pacer gave before #580.
+        self.self_mb_s = None
+        self.other_mb_s = self._rate
         return self._rate
+
+    def _sample_clients(self, clients: dict[str, int], now: float,
+                        self_addresses: tuple[str, ...]) -> float | None:
+        self.source = self.export_stats
+        self._previous = None
+        previous, previous_at = self._previous_clients, self._previous_at
+        elapsed = now - previous_at
+        if previous is None:
+            self._previous_clients, self._previous_at = clients, now
+            self._client_rates = {}
+            self._rate = None
+            self.self_mb_s = self.other_mb_s = None
+            return None
+        if elapsed <= 0:
+            return self._rate
+        rates: dict[str, float] = {}
+        for client, total in clients.items():
+            before = previous.get(client)
+            if before is not None and total >= before:
+                rates[client] = (total - before) / 1e6 / elapsed
+            elif client in self._client_rates:
+                # The block was recreated and its counter restarted inside
+                # this interval (every 901 s on the live box).  The bytes
+                # served before the restart are gone from the file, and
+                # reading the remainder as the whole interval would show a
+                # client that suddenly read almost nothing -- or, subtracted
+                # from a total, a phantom third party.  The last rate is the
+                # better estimate for one interval; the next one is exact.
+                rates[client] = self._client_rates[client]
+            else:
+                # A block this loop has never seen was created inside the
+                # interval, so its whole counter is bytes served since then.
+                rates[client] = total / 1e6 / elapsed
+        # A client with no block read nothing since its block expired.
+        self._previous_clients, self._previous_at = clients, now
+        self._client_rates = rates
+        total_rate = sum(rates.values())
+        own = sum(rate for client, rate in rates.items() if client in self_addresses)
+        self._rate = total_rate
+        self.self_mb_s = own
+        self.other_mb_s = max(0.0, total_rate - own)
+        return total_rate
 
 
 class HoldLedger:
@@ -572,11 +746,20 @@ class DiskPacer:
         client_rate: ClientReadRate | None = None,
         client_active_mb_s: float = 0.0,
         ledger: "HoldLedger | None" = None,
+        readers: int = 1,
+        max_readers: int = 0,
     ) -> None:
         # ``--disks`` is a comma-separated operator argument, so preserve the
         # first spelling/order but do not make a duplicate member look like a
         # second required stat row.
         self.devices = list(dict.fromkeys(devices))
+        #: The two read depths this pacer admits (#580): ``readers`` while a
+        #: client other than the served action is reading -- the depth #499
+        #: measured to pass on the live fleet -- and ``max_readers`` while the
+        #: pool serves nobody else, where depth is the only lever that gets
+        #: the warm ahead of the reader it feeds.  0 means one tier.
+        self.readers = max(1, int(readers))
+        self.max_readers = max(self.readers, int(max_readers)) if max_readers else self.readers
         self.max_util_pct = float(max_util_pct)
         self.max_read_await_ms = float(max_read_await_ms)
         self.max_backlog_ms = float(max_backlog_ms)
@@ -617,6 +800,22 @@ class DiskPacer:
         self._hold_started = 0.0
         self._clients_active = True
         self._client_mb_s: float | None = None
+        #: The split behind ``_clients_active``: what the served action's
+        #: own box read, and what everyone else did.  ``other`` is the number
+        #: the verdict reads.
+        self._self_mb_s: float | None = None
+        self._other_mb_s: float | None = None
+        self._self_total = 0.0
+        self._self_samples = 0
+        self._shared_samples = 0
+        self._client_samples = 0
+        #: Whose reads are self for the row being warmed: the host the claim
+        #: names, the client addresses its offer announced, and why the set
+        #: is what it is when it is empty.
+        self._served_host = ""
+        self._served_addresses: tuple[str, ...] = ()
+        self._served_reason = "no row"
+        self._offer_age_s: float | None = None
         #: Start of the stretch of hold time not yet charged to a bucket, and
         #: the client state it is charged to.
         self._slice_at = 0.0
@@ -661,7 +860,9 @@ class DiskPacer:
             return "awaiting_interval"
         return "complete"
 
-    def begin_row(self) -> None:
+    def begin_row(self, *, served_host: str = "",
+                  served_addresses: "tuple[str, ...] | list[str]" = (),
+                  served_reason: str = "", offer_age_s: float | None = None) -> None:
         """Start bounded per-row accounting without resetting the verdict.
 
         Rows are warmed sequentially, but share the same disk decision state:
@@ -670,6 +871,15 @@ class DiskPacer:
         shown on a row's receipt reset.  If a caller ever begins a row while a
         hold is active, that hold remains active and its future time belongs to
         the new row instead of being cleared.
+
+        ``served_host`` and ``served_addresses`` say whose reads are *self*
+        for this row (#580): the box that claimed the action whose window is
+        being warmed, and the client addresses its offer announced.  A row
+        nobody has claimed has no self -- its bytes are read for a future
+        claimant, and every client reading now is a client to protect, which
+        is #499's case exactly.  ``served_reason`` records why the set is
+        empty when it is, so a receipt showing the old behaviour says which
+        link of the identity chain was missing.
         """
 
         with self._lock:
@@ -683,6 +893,15 @@ class DiskPacer:
             for key in self._totals:
                 self._totals[key] = 0.0
                 self._maxima[key] = 0.0
+            self._self_total = 0.0
+            self._self_samples = 0
+            self._shared_samples = 0
+            self._client_samples = 0
+            self._served_host = str(served_host or "")
+            self._served_addresses = tuple(str(a) for a in served_addresses)
+            self._served_reason = str(served_reason or (
+                "attributed" if self._served_addresses else "no served action"))
+            self._offer_age_s = offer_age_s
 
     # -- sampling ---------------------------------------------------------
 
@@ -740,15 +959,38 @@ class DiskPacer:
         return worst
 
     def _sample_clients_locked(self) -> None:
+        self._client_samples += 1
         if self.client_rate is None:
             self._client_mb_s = None
+            self._self_mb_s = self._other_mb_s = None
             self._clients_active = True
+            self._shared_samples += 1
             return
-        rate = self.client_rate.sample()
+        rate = self.client_rate.sample(self._served_addresses)
         self._client_mb_s = rate
+        self._self_mb_s = self.client_rate.self_mb_s
+        other = self.client_rate.other_mb_s
+        self._other_mb_s = other
+        if self._self_mb_s is not None:
+            self._self_total += self._self_mb_s
+            self._self_samples += 1
         # Unknown is "active": an unreadable counter must not be the thing
-        # that authorizes an unpaced read while a client waits.
-        self._clients_active = rate is None or rate > self.client_active_mb_s
+        # that authorizes an unpaced read while a client waits.  Only the
+        # *other* clients' reads decide (#580): the served action's own reads
+        # are the bytes this warm is fetching, read by the box it is fetching
+        # them for.  The threshold has the hold's own hysteresis -- a client
+        # counts as reading above the cap and stops counting below half of
+        # it -- so a third party reading in bursts does not flip the read
+        # depth once per sample.
+        if other is None:
+            active = True
+        elif self._clients_active:
+            active = other > self.client_active_mb_s * HOLD_RELEASE_FRACTION
+        else:
+            active = other > self.client_active_mb_s
+        self._clients_active = active
+        if active:
+            self._shared_samples += 1
 
     def _pool_is_hurting(self, measured: dict[str, float]) -> bool:
         """Service time or backlog over the cap, with hysteresis on the way out.
@@ -797,6 +1039,21 @@ class DiskPacer:
 
     # -- the call the reader makes ----------------------------------------
 
+    def depth(self) -> int:
+        """How many block reads the reader may have outstanding right now.
+
+        ``max_readers`` while nobody but the served action is reading this
+        host's exports, ``readers`` while somebody else is (#580).  A pacer
+        with no disks configured has no client sampling either, and answers
+        with the shared depth: the inactive shape reads as it always did.
+        """
+
+        if not self.active or self.max_readers == self.readers:
+            return self.readers
+        self._verdict()
+        with self._lock:
+            return self.readers if self._clients_active else self.max_readers
+
     def wait(self, stop: threading.Event | None = None) -> None:
         """Block until the pool is under threshold, or ``stop`` is set."""
 
@@ -840,6 +1097,9 @@ class DiskPacer:
             last = {**self._last,
                     "clients_active": self._clients_active,
                     "client_read_mb_s": self._client_mb_s,
+                    "self_read_mb_s": self._self_mb_s,
+                    "other_read_mb_s": self._other_mb_s,
+                    "served_host": self._served_host,
                     "telemetry_state": self._telemetry_state_locked(),
                     "missing_devices": list(self._missing_devices)}
         if first and self.notify is not None:
@@ -881,6 +1141,12 @@ class DiskPacer:
             total = self.ledger.held_s
             idle = self.ledger.idle_s
             active = self.ledger.active_s
+            mean_self = (self._self_total / self._self_samples
+                         if self._self_samples else None)
+            shared = ((self._shared_samples / self._client_samples)
+                      if self._client_samples else None)
+            depth = (self.readers if (self._clients_active or not self.active)
+                     else self.max_readers)
             if self._holding:
                 now = self.clock()
                 held += now - self._hold_started
@@ -908,7 +1174,29 @@ class DiskPacer:
                 "clients_active": self._clients_active,
                 "client_read_mb_s": (None if self._client_mb_s is None
                                      else round(self._client_mb_s, 1)),
-                "client_rate_source": (self.client_rate.path
+                # The split behind the verdict (#580): the served action's
+                # own reads, everyone else's, and whose reads counted as
+                # self.  ``other_read_mb_s`` is the number a hold reads.
+                "self_read_mb_s": (None if self._self_mb_s is None
+                                   else round(self._self_mb_s, 1)),
+                "other_read_mb_s": (None if self._other_mb_s is None
+                                    else round(self._other_mb_s, 1)),
+                "mean_self_read_mb_s": (None if mean_self is None
+                                        else round(mean_self, 1)),
+                "served_host": self._served_host,
+                "served_client_addresses": list(self._served_addresses),
+                "served_attribution": self._served_reason,
+                "offer_age_s": (None if self._offer_age_s is None
+                                else round(self._offer_age_s, 1)),
+                "readers": self.readers,
+                "max_readers": self.max_readers,
+                "depth": depth,
+                # What share of the samples had another client reading, i.e.
+                # how long the reader was at the shared depth.
+                "shared_sample_fraction": (None if shared is None
+                                           else round(shared, 3)),
+                "client_rate_source": (self.client_rate.source
+                                       or self.client_rate.path
                                        if self.client_rate is not None else ""),
                 "max_util_pct": round(self._maxima["util_pct"], 1),
                 "mean_util_pct": round(mean["util_pct"], 1),
@@ -953,7 +1241,8 @@ def pacer_from_args(args) -> DiskPacer:
     client_rate = None
     path = getattr(args, "nfsd_io", "") or ""
     if path:
-        client_rate = ClientReadRate(path)
+        client_rate = ClientReadRate(
+            path, export_stats=getattr(args, "export_stats", EXPORT_STATS) or "")
     return DiskPacer(
         devices,
         max_util_pct=args.max_util_pct,
@@ -965,6 +1254,8 @@ def pacer_from_args(args) -> DiskPacer:
         client_rate=client_rate,
         client_active_mb_s=getattr(args, "client_active_mb_s",
                                    CLIENT_ACTIVE_MB_S),
+        readers=getattr(args, "readers", 1),
+        max_readers=getattr(args, "max_readers", 0) or 0,
     )
 
 
@@ -1000,6 +1291,54 @@ def inactive_pacing(reason: str = "no pacer") -> dict[str, object]:
 # ---------------------------------------------------------------- reading
 
 
+class Admission:
+    """How many block reads may be in flight at once, changeable under load.
+
+    The reader spawns its deepest thread count once and admits ``limit()``
+    of them to a read at a time (#580), so the depth can drop while a third
+    party reads and rise again when it stops without any thread being
+    spawned or joined for it.  A thread refused a slot re-asks every
+    ``wait_s``: the limit moves inside the pacer, which does not know who is
+    waiting on it.  ``reader_seconds`` integrates the admitted count over
+    time, which is what turns a row's bytes into a per-reader rate.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._cv = threading.Condition()
+        self.clock = clock
+        self.active = 0
+        self.peak = 0
+        self.reader_seconds = 0.0
+        self._since = clock()
+
+    def _advance_locked(self) -> None:
+        now = self.clock()
+        self.reader_seconds += self.active * max(0.0, now - self._since)
+        self._since = now
+
+    def acquire(self, limit: Callable[[], int], stop: threading.Event,
+                wait_s: float) -> bool:
+        with self._cv:
+            while self.active >= max(1, int(limit())):
+                if stop.is_set():
+                    return False
+                self._cv.wait(wait_s)
+            self._advance_locked()
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            return True
+
+    def release(self) -> None:
+        with self._cv:
+            self._advance_locked()
+            self.active -= 1
+            self._cv.notify()
+
+    def close(self) -> None:
+        with self._cv:
+            self._advance_locked()
+
+
 class Reader:
     """Bounded parallel sequential reads, in the order the manifest lists them.
 
@@ -1007,11 +1346,17 @@ class Reader:
     bytes, so a partial warm is a useful prefix rather than a random subset,
     and it is the order the files were written, so the disks see something
     close to a sequential sweep.
+
+    ``readers`` is the depth while another client is reading, ``max_readers``
+    the depth while the pool serves nobody but this warm and the action it
+    is warming for; the pacer says which applies before every block (#580).
+    Without a pacer every thread reads, as before.
     """
 
     def __init__(self, readers: int, mounts: MountMap, block: int = BLOCK,
-                 pacer: DiskPacer | None = None) -> None:
+                 pacer: DiskPacer | None = None, max_readers: int = 0) -> None:
         self.readers = max(1, readers)
+        self.max_readers = max(self.readers, int(max_readers or 0))
         self.mounts = mounts
         self.block = block
         #: Consulted before every block.  Concurrency bounds how many reads are
@@ -1025,13 +1370,18 @@ class Reader:
         budget_bytes: int,
         stop: threading.Event,
         recheck: Callable[[], int] | None = None,
+        served: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         if self.pacer is not None:
-            self.pacer.begin_row()
+            self.pacer.begin_row(**dict(served or {}))
+        admission = Admission()
+        limit = (self.pacer.depth if self.pacer is not None
+                 else (lambda: self.max_readers))
+        wait_s = self.pacer.hold_s if self.pacer is not None else 0.25
         work: "queuelib.Queue[tuple[int, dict[str, object]] | None]" = queuelib.Queue()
         for index, entry in enumerate(entries):
             work.put((index, entry))
-        for _ in range(self.readers):
+        for _ in range(self.max_readers):
             work.put(None)
         lock = threading.Lock()
         state = {"bytes": 0, "entries": 0, "budget": int(budget_bytes),
@@ -1072,23 +1422,32 @@ class Reader:
                         os.lseek(fd, offset, os.SEEK_SET)
                     remaining = want_total
                     while remaining > 0 and not stop.is_set():
-                        if self.pacer is not None:
-                            self.pacer.wait(stop)
-                            if stop.is_set():
-                                break
-                        with lock:
-                            allowance = max(0, state["budget"] - state["bytes"]
-                                            - state["reserved"])
-                            if not allowance:
-                                break
-                            allowance = min(allowance, self.block, remaining)
-                            state["reserved"] += allowance
+                        # A slot first, then the hold: a thread that is not
+                        # admitted does not wait on the pool, so the count
+                        # waiting on a hold is the depth, never the thread
+                        # count.
+                        if not admission.acquire(limit, stop, wait_s):
+                            break
                         try:
-                            chunk = os.readv(fd, [view[:allowance]])
-                        except OSError:
+                            if self.pacer is not None:
+                                self.pacer.wait(stop)
+                                if stop.is_set():
+                                    break
                             with lock:
-                                state["reserved"] -= allowance
-                            raise
+                                allowance = max(0, state["budget"] - state["bytes"]
+                                                - state["reserved"])
+                                if not allowance:
+                                    break
+                                allowance = min(allowance, self.block, remaining)
+                                state["reserved"] += allowance
+                            try:
+                                chunk = os.readv(fd, [view[:allowance]])
+                            except OSError:
+                                with lock:
+                                    state["reserved"] -= allowance
+                                raise
+                        finally:
+                            admission.release()
                         with lock:
                             # Return the reservation and commit its actual
                             # bytes as one transition, so another reader
@@ -1125,12 +1484,27 @@ class Reader:
 
         started = time.time()
         threads = [threading.Thread(target=worker, daemon=True)
-                   for _ in range(self.readers)]
+                   for _ in range(self.max_readers)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
+        admission.close()
         elapsed = max(1e-9, time.time() - started)
+        pacing = (self.pacer.report() if self.pacer is not None
+                  else inactive_pacing())
+        # Bytes per admitted reader-second: the per-stream rate this row
+        # actually got from the pool, and beside it the depth that rate would
+        # need to keep pace with the served action's own read rate.  Both are
+        # derived from what the row sampled, so an operator can see whether
+        # ``--max-readers`` binds -- a keep-pace depth above it says the pool
+        # cannot feed this consumer at the depth it was allowed.
+        per_reader = (state["bytes"] / 1e6 / admission.reader_seconds
+                      if admission.reader_seconds > 0 else 0.0)
+        mean_self = pacing.get("mean_self_read_mb_s")
+        keep_pace = (int(-(-float(mean_self) // per_reader))
+                     if isinstance(mean_self, (int, float)) and per_reader > 0
+                     else None)
         contiguous = 0
         for entry, got in zip(entries, completed):
             want = int(entry["bytes"])
@@ -1143,12 +1517,17 @@ class Reader:
             "entries_warmed": state["entries"],
             "seconds": round(elapsed, 3),
             "mb_per_s": round(state["bytes"] / 1e6 / elapsed, 1),
-            "readers": self.readers,
+            "readers": self.max_readers,
+            # How deep the read actually went, and what one admitted reader
+            # got out of the pool (#580).
+            "readers_peak": admission.peak,
+            "reader_seconds": round(admission.reader_seconds, 3),
+            "per_reader_mb_s": round(per_reader, 1),
+            "keep_pace_depth": keep_pace,
             # Beside ``mb_per_s`` on purpose: a rate alone hid the cost that
             # made #499, and a receipt that reports only how fast the warm was
             # cannot answer whether it was worth what the fleet paid for it.
-            "disk_pacing": (self.pacer.report() if self.pacer is not None
-                            else inactive_pacing()),
+            "disk_pacing": pacing,
             "errors": errors,
         }
 
@@ -1534,6 +1913,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
                     "manifest_bytes": size, "warmed_bytes": 0,
                     "consumed_bytes": consumed, "resident_ahead": 0,
                     "phase": reported["phase"] if reported else "",
+                    "claimed_host": claimed_host_of(record),
                 })
                 continue
             if now - float(claimed_unix) > grace_s and not declared:
@@ -1580,10 +1960,58 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
             "consumed_bytes": consumed,
             "resident_ahead": ahead,
             "phase": reported["phase"] if reported else "",
+            "claimed_host": claimed_host_of(record),
         })
     return {"claimed_reserved_bytes": reserved, "claimed_reserved_keys": keys,
             "claimed_released_bytes": released_total,
             "progress_triggers": triggers, "claimed_windows": windows}
+
+
+def claimed_host_of(record: Mapping[str, object]) -> str:
+    """The box a claim record says is running the action, as the pool spells it."""
+
+    return str(record.get("claimed_host") or record.get("host") or "")
+
+
+def served_addresses(queue: pool.PoolQueue, host: str) -> dict[str, object]:
+    """Whose reads are the served action's own: the claimant box's addresses.
+
+    The identity chain (#580) is the claim record's ``claimed_host``, joined
+    to the client addresses that box announced on its worker offer
+    (``workers/<host>.json``, ``addresses``), which are what the server's
+    per-client counter is keyed by.  Every link is a record the fleet already
+    writes; nothing here guesses.  A broken link -- no host on the claim, no
+    offer, an offer from a runtime that announced no addresses -- leaves the
+    set empty and the pacer protecting every client as it did before, and
+    the reason travels into the receipt so the old behaviour is never silent.
+
+    The offer's age is reported, not enforced: an offer is refreshed by the
+    box's idle loops, so a box whose every loop is busy stops refreshing it,
+    and its addresses are the same addresses.  Staleness is a fact about
+    whether the box is *offering*, which is not the question asked here.
+    """
+
+    if not host:
+        return {"served_host": "", "served_addresses": (),
+                "served_reason": "claim names no host", "offer_age_s": None}
+    path = queue.root / pool.WORKERS / f"{host}.json"
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {"served_host": host, "served_addresses": (),
+                "served_reason": f"no offer for {host}", "offer_age_s": None}
+    announced = record.get("announced_unix") if isinstance(record, dict) else None
+    age = (time.time() - float(announced)
+           if isinstance(announced, (int, float)) and not isinstance(announced, bool)
+           else None)
+    addresses = record.get("addresses") if isinstance(record, dict) else None
+    if not isinstance(addresses, list) or not addresses \
+            or not all(isinstance(a, str) and a for a in addresses):
+        return {"served_host": host, "served_addresses": (),
+                "served_reason": f"offer for {host} announces no addresses",
+                "offer_age_s": age}
+    return {"served_host": host, "served_addresses": tuple(addresses),
+            "served_reason": "attributed", "offer_age_s": age}
 
 
 def warm_record(queue: pool.PoolQueue, action_key: str,
@@ -1679,23 +2107,35 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
 
     def warm(*, key: str, manifest: dict, digest: str, entries: list,
              start_bytes: int, target: int, phase: str, phased: bool,
-             trigger: str) -> dict:
-        """Read one window of one manifest and file what is now resident."""
+             trigger: str, served_host: str | None = None) -> dict:
+        """Read one window of one manifest and file what is now resident.
+
+        ``served_host`` is the box running this action, for a claimed row;
+        its reads are the pacer's *self* while this window is read (#580).
+        ``None`` is a ready row: nobody runs it yet, so it has no self and
+        every client reading now is one to protect.
+        """
 
         nonlocal budget, budget_before_progress, cycle_spent
         total = manifest_read_bytes(manifest)
         want = max(0, target - start_bytes)
+        served = (served_addresses(queue, served_host) if served_host is not None
+                  else {"served_host": "", "served_addresses": (),
+                        "served_reason": "row not claimed", "offer_age_s": None})
         started = time.time()
         if args.dry_run:
+            pacer.begin_row(**served)
             result = {"bytes_warmed": 0, "entries_warmed": 0, "seconds": 0.0,
-                      "mb_per_s": 0.0, "readers": args.readers,
+                      "mb_per_s": 0.0, "readers": args.readers, "readers_peak": 0,
                       "disk_pacing": pacer.report(), "errors": []}
         else:
-            reader = Reader(args.readers, mounts, pacer=pacer)
+            reader = Reader(args.readers, mounts, pacer=pacer,
+                            max_readers=getattr(args, "max_readers", 0) or 0)
             result = reader.read(
                 entries,
                 budget_bytes=want,
                 stop=stop,
+                served=served,
                 # Re-read rather than trust the cycle's opening number: the
                 # ceiling can be lowered under a running warm, and a row that
                 # started inside its budget must stop when it leaves it.
@@ -1798,6 +2238,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             entries=entries_between(read_entries, start, target),
             start_bytes=start, target=target, phase=phase, phased=True,
             trigger="progress" if window["phase"] else "claim",
+            served_host=str(window.get("claimed_host") or ""),
         )
         event["advanced"].append({
             k: record[k] for k in
@@ -1915,18 +2356,38 @@ def main(argv: list[str] | None = None) -> int:
                              "box serves is host configuration, and a wrong "
                              "guess reads the network instead of the disks")
     parser.add_argument("--readers", type=int, default=1,
-                        help="parallel readers.  8 measured 391.9 MB/s against "
-                             "1's 298.9 on the GLM census pool, and cost the "
-                             "fleet 100-130 s of both Sparks' GPU time per row "
-                             "(#499): 30%% more read rate for a transport "
-                             "reset on every client.  1 is what was measured "
-                             "to pass on the live fleet -- 63.8 GB at "
-                             "146.5 MB/s while both Sparks kept encoding, "
-                             "disks at 23%% mean and 41.7%% peak.  One reader "
-                             "is already enough to saturate the pool: ZFS "
-                             "prefetch issued 98%% of the run's disk reads, "
-                             "so a second reader adds queue depth the pacer "
-                             "then has to take back")
+                        help="read depth while a client other than the action "
+                             "being warmed for is reading this host's exports. "
+                             "8 measured 391.9 MB/s against 1's 298.9 on the "
+                             "GLM census pool, and cost the fleet 100-130 s of "
+                             "both Sparks' GPU time per row (#499): 30%% more "
+                             "read rate for a transport reset on every client. "
+                             "1 is what was measured to pass on the live fleet "
+                             "-- 63.8 GB at 146.5 MB/s while both Sparks kept "
+                             "encoding, disks at 23%% mean and 41.7%% peak.  "
+                             "That is the depth a third party's reads still "
+                             "get; --max-readers is the depth when there is "
+                             "no third party (#580)")
+    parser.add_argument("--max-readers", type=int, default=MAX_READERS,
+                        help="read depth while nobody but this warm and the "
+                             "action it is warming for is reading the pool.  "
+                             "The depth is the pacer's decision, made from the "
+                             "per-client counter every sample; this is its "
+                             "ceiling, and a ceiling is a property of the pool: "
+                             "dl380g10's raidz1 serves the same cold bytes at "
+                             "28.6 MB/s to one stream and 204.7 MB/s to "
+                             "sixteen, and the default is the deepest point on "
+                             "that measured curve.  Depth is the only lever "
+                             "that gets the warm ahead of the reader it feeds: "
+                             "a consumer reading cold at 160 MB/s gets that "
+                             "rate from single-depth demand reads, so matching "
+                             "it cannot gain on it, and once ahead the window "
+                             "budget bounds the lead so depth costs nothing.  "
+                             "The receipt's keep_pace_depth says what depth "
+                             "the served action's own rate would need at the "
+                             "per-reader rate the row got, so an operator can "
+                             "see when this ceiling binds.  Equal to --readers "
+                             "disables the second tier")
     parser.add_argument("--lookahead", type=int, default=1,
                         help="how many ready actions ahead to warm.  The ARC "
                              "must hold the running rows as well: on dl380g10 "
@@ -1972,6 +2433,15 @@ def main(argv: list[str] | None = None) -> int:
                              "kB/s an idle mount's attribute traffic makes.  "
                              "0 holds whenever the disks are over, whoever is "
                              "reading")
+    parser.add_argument("--export-stats", default=EXPORT_STATS,
+                        help="where this host's NFS server counts the bytes "
+                             "it served per client address.  The pacer "
+                             "attributes the rows whose address the served "
+                             "action's box announced on its worker offer to "
+                             "that action, and holds only for the rest "
+                             "(#580).  A host without the file falls back "
+                             "to --nfsd-io, attributes nothing, and protects "
+                             "every client as before")
     parser.add_argument("--nfsd-io", default=NFSD_IO,
                         help="where this host's NFS server counts the bytes "
                              "it has served (the 'io' line).  A host without "

@@ -335,7 +335,7 @@ it released:
 fits the budget with the release and would not have fit without it. An action
 that declares no progress policy keeps claim-plus-`--claim-grace-min` accounting.
 
-### Pacing, and why the reader count is 1
+### Pacing, and the two read depths
 
 The first deployment read with `--readers 8`, and the read rate was the only
 thing it measured.  Measured against the rest of the fleet on 2026-09-11
@@ -357,12 +357,37 @@ disk is over a cap:
 
 | argument | default | harmless (measured) | stalling (measured) | holds |
 |---|---|---|---|---|
-| `--client-active-mb-s` | 2.6 | 0 MB/s (nobody reading) | 26 MB/s and up | required |
+| `--client-active-mb-s` | 2.6 | 0 MB/s (nobody else reading) | 26 MB/s and up | required |
 | `--max-read-await-ms` | 10 | 0-2 ms | 38-54 ms | yes |
 | `--max-backlog-ms` | 2000 | 300-450 ms | 11 000-14 400 ms | yes |
 | `--max-util-pct` | 25 | 8-12 % | 73-83 % | no, recorded only |
 
-### A hold needs a client to protect
+The depth follows the same verdict (#580).  While a client other than the
+action being warmed for is reading, the reader is admitted `--readers` blocks
+at a time -- 1, the depth #499 measured to pass on the live fleet.  While
+nobody else is, it is admitted `--max-readers` at a time.  The ceiling is a
+property of the pool, and its default is the deepest point of the measured
+cold-read curve on dl380g10's raidz1 (2026-09-17): 1 stream 28.6 MB/s,
+2 -> 40.5, 4 -> 86.9, 8 -> 134.2, 16 -> 204.7 MB/s -- the same bytes, seven
+times the rate, from queue depth alone.  Depth is the only lever that gets
+the warm ahead of the reader it feeds: a consumer reading cold at 160 MB/s is
+getting that rate from single-depth demand reads, so a warm that matches it
+cannot gain on it, and once the warm is ahead the window budget bounds the
+lead, so depth costs nothing.  The reader spawns the ceiling once and the
+pacer admits the tier that applies before every block, so a third party
+arriving drops the depth without a thread being spawned or joined, and
+leaving raises it back with the hold's own hysteresis: a client counts as
+reading above `--client-active-mb-s` and stops counting below half of it.
+The receipt carries `readers_peak`, `per_reader_mb_s` (bytes per admitted
+reader-second, the per-stream rate the row actually got) and
+`keep_pace_depth`, the depth that rate would need to keep pace with the
+served action's own mean read rate -- a keep-pace depth above the ceiling
+says the pool could not feed this consumer at the depth it was allowed.
+
+`--lookahead` is unchanged: it counts *ready rows* warmed ahead of the claim
+frontier, and the running action's window advances outside it.
+
+### A hold needs a client to protect -- and it is never the one being served
 
 The pacer exists to protect NFS clients, so the first question a hold answers
 is whether anybody is reading.  Measured on dl380g10 at 2026-09-13 04:05Z: a
@@ -373,16 +398,54 @@ up to 26 s; and no NFS client read a byte for the whole window.  The loop
 warmed nothing for hours and protected nobody.  Utilization answered "is the
 disk busy"; nobody had asked that question.
 
-So the verdict is an AND: hold while clients are reading **and** the pool is
-over its service-time or backlog cap.  Client activity is read from this
-host's own NFS server counters (`--nfsd-io`, the `io` line of
-`/proc/net/rpc/nfsd`), which count bytes `nfsd` served; the loop reads the pool
-through the host's local path, so its own reads never appear there and the
-measurement cannot chase itself.  The threshold has to sit *below* the slowest
-read worth protecting -- a client already slowed by the warm would otherwise
-read as idle and release the hold that would give it the disks back -- so the
-default is a tenth of the 26 MB/s cold-start client read #523 measured, an
-order of magnitude above an idle mount's attribute traffic.
+The second question is *which* client (#580).  Measured on the GLM-5.3-Flash
+joint-AURA `prepare` (PB action `8b53c37c`, 2026-09-17): the prepare was the
+only NFS client on the box, reading cold at 160-280 MB/s through the very
+bytes the storage role was fetching for it.  The pacer counted that as a
+client to protect, held 39 714.9 s of 20.6 h -- 3 516 s of the last hour --
+with `in_flight` 0 on every hold record, and the warm advanced at 22.8 MB/s
+behind a reader it could never get ahead of: the prefetcher backed off from
+load that existed because it backed off.  Prefetching bytes the served action
+is about to demand-read is not extra I/O.  It is the same one-pass bytes read
+earlier and at depth, so those reads are *self*, not a client.
+
+So the verdict is an AND: hold while clients **other than the served action**
+are reading **and** the pool is over its service-time or backlog cap.  Client
+activity is read per client from this host's own NFS server
+(`--export-stats`, `/proc/fs/nfsd/export_stats`, one `io_read` counter per
+export and client address; the aggregate `io` line of `--nfsd-io` is the
+fallback where that file does not exist).  Measured 2026-09-17T21:57Z: over
+10 s the two client rows moved 1 630 408 918 B and 5 744 B and the aggregate
+line moved 1 630 414 662 B -- one counter, kept per client.  The loop reads
+the pool through the host's local path, so its own reads never appear there
+and the measurement cannot chase itself.  The server recreates a client's
+block when its export cache entry expires -- every 901 s on the live box --
+and the counter restarts from zero; the loop carries that client's last rate
+across the one interval rather than reading the restart as an idle client or
+as a phantom third party.
+
+Whose reads are self is derived, not guessed, from records the fleet already
+writes.  The claim record names the box running the action (`claimed_host`);
+that box's worker offer (`workers/<host>.json`) names the IPv4 addresses its
+kernel holds (`addresses`, read from `ip -4 -o addr show scope global` and
+announced by every loop on the box); the per-client counter is keyed by those
+addresses.  The set is scoped to the window being read: a claimed row's
+window is warmed with its claimant's addresses as self, and a ready row --
+warmed for a claimant that does not exist yet -- has no self at all, so every
+client reading during that warm is one to protect, which is #499's case
+exactly.  A missing link -- a claim naming no host, a box with no offer, an
+offer from a runtime that announced no addresses, a host without
+`export_stats` -- leaves the set empty and the pacer protecting every client
+as it did before, and `served_attribution` in the receipt says which link was
+missing, so the old behaviour is never silent.  The offer's age is reported,
+not enforced: a box whose every loop is busy stops refreshing its offer, and
+its addresses are the same addresses.
+
+The threshold has to sit *below* the slowest read worth protecting -- a
+client already slowed by the warm would otherwise read as idle and release
+the hold that would give it the disks back -- so the default is a tenth of
+the 26 MB/s cold-start client read #523 measured, an order of magnitude above
+an idle mount's attribute traffic.
 
 A host that cannot read the counter paces as though clients were always
 reading: blind is not idle, and one missing file must not turn the pacer off
@@ -404,8 +467,14 @@ what pacing cost, and what it cost for nothing:
 {"held_seconds": 41.2, "held_seconds_total": 5709.0,
  "held_while_clients_active_s": 0.0, "held_while_clients_idle_s": 5709.0,
  "samples": 88, "samples_total": 21714,
- "clients_active": false, "client_read_mb_s": 0.0}
+ "clients_active": false, "client_read_mb_s": 260.0,
+ "self_read_mb_s": 260.0, "other_read_mb_s": 0.0,
+ "served_host": "sparky", "served_client_addresses": ["10.100.98.1"],
+ "served_attribution": "attributed", "depth": 16}
 ```
+
+`client_read_mb_s` is still every client's bytes; `other_read_mb_s` is the
+number the verdict read.
 
 `held_seconds` prices one row and resets with it; the totals belong to the
 role and outlive the pacer each cycle rebuilds.

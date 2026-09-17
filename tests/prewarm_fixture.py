@@ -124,8 +124,14 @@ class Fleet:
             checkout_root=str(self.root), priority=priority)
         return action_key
 
-    def claim(self, action_key: str, *, age_s: float = 0.0) -> Path:
-        """Move a ready item into ``claimed/`` the way a claim moves it."""
+    def claim(self, action_key: str, *, age_s: float = 0.0,
+              host: str | None = None) -> Path:
+        """Move a ready item into ``claimed/`` the way a claim moves it.
+
+        ``host`` is written as ``claimed_host``, the field the pool's own
+        claim writes: it is the first link of the identity chain the pacer
+        follows to the served action's reads (#580).
+        """
 
         source = self.queue.root / "ready" / f"{action_key}.json"
         item = json.loads(source.read_text())
@@ -133,6 +139,8 @@ class Fleet:
         item.update({"action_key": action_key,
                      "claimed_unix": time.time() - age_s,
                      "claimed_by": "prewarm-fixture"})
+        if host is not None:
+            item["claimed_host"] = host
         target = self.queue.root / "claimed" / f"{action_key}.json"
         target.write_text(json.dumps(item))
         return target
@@ -155,6 +163,29 @@ class Fleet:
             progress_observation=observation)
         return self.queue.lease_path(action_key)
 
+    def offer(self, host: str, *, addresses: list[str] | None = None,
+              announced_unix: float | None = None) -> Path:
+        """A worker offer for ``host``, written the way a box's loops write it.
+
+        Written as a file rather than through ``PoolQueue.announce`` on
+        purpose: a test about what the storage role does with the record must
+        be able to state the record exactly, including the shape a runtime
+        that announced no ``addresses`` leaves behind.
+        """
+
+        directory = self.queue.root / pool.WORKERS
+        directory.mkdir(parents=True, exist_ok=True)
+        record: dict = {
+            "schema": pool.POOL_OFFER_SCHEMA_V1, "host": host, "tags": [host],
+            "has_gpu": True, "capacity": {"cpu": 1, "gpu": 1, "mem_gb": 1},
+            "announced_unix": time.time() if announced_unix is None else announced_unix,
+        }
+        if addresses is not None:
+            record["addresses"] = list(addresses)
+        path = directory / f"{host}.json"
+        path.write_text(json.dumps(record))
+        return path
+
     def arcstats(self, *, size: int, c: int, c_max: int) -> str:
         # One file per set of counters, never one file rewritten: a fixture
         # that clobbers the counters a test already installed reads as the
@@ -169,6 +200,10 @@ class Fleet:
         base = dict(
             pool_root=str(self.queue.root), cas_root=str(self.cas_root),
             mount_map=[f"{self.mount}={self.mount}"], readers=2, lookahead=2,
+            # One depth tier: ``max_readers`` at 0 makes the pacer answer
+            # ``readers`` whoever is reading, which is every pre-#580 test's
+            # shape.  A test about depth sets both.
+            max_readers=0,
             poll_s=0.0, arc_reserve_fraction=1.0,
             arcstats=self.arcstats(size=0, c=1 << 40, c_max=1 << 40),
             claim_grace_min=20.0, once=True, dry_run=False, log=None,
@@ -182,7 +217,8 @@ class Fleet:
             # No client counter either: these fixtures build no pacer that
             # reads one, and a pacer that cannot see clients treats them as
             # reading, which is the shape every non-pacing test wants.
-            nfsd_io="", client_active_mb_s=prewarm_loop.CLIENT_ACTIVE_MB_S)
+            nfsd_io="", export_stats="",
+            client_active_mb_s=prewarm_loop.CLIENT_ACTIVE_MB_S)
         base.update(overrides)
         return argparse.Namespace(**base)
 
