@@ -381,6 +381,33 @@ class Controller:
     def write_state(self, name, value):
         write_json(self.base / name, value)
 
+    def _predicted_cpus(self, need: int) -> list[int] | None:
+        """The CPUs this claim's tokens would represent, by the ledger's rule.
+
+        ``PoolQueue.begin_acquire`` takes the first ``need`` free ``cpu-*``
+        tokens in sorted-name order, and ``PoolQueue.cpu_allocation`` maps a
+        token ordinal to ``(preferred + fallback)[ordinal]``.  The ordinal is a
+        token index, never a CPU ID, so this asks the same mapping the holder
+        metadata is built from rather than reading the suffix as an address.
+        ``None`` means the question cannot be answered -- fewer free tokens
+        than the demand, or an ordinal outside the configured topology -- and
+        the caller treats that as unknown rather than as idle.
+        """
+        ordered = list(self.tiers['preferred']) + list(self.tiers['fallback'])
+        try:
+            tokens = sorted(self.ledger.free_dir.glob('cpu-*'))
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        if len(tokens) < need:
+            return None
+        predicted = []
+        for token in tokens[:need]:
+            index = int(token.name.split('-')[-1])
+            if index >= len(ordered):
+                return None
+            predicted.append(ordered[index])
+        return predicted
+
     @contextmanager
     def locked(self):
         """Hold box admission for the block, or raise ``AdmissionBusy`` at once.
@@ -516,25 +543,36 @@ class Controller:
             # CPU, so one job pinned to a few cores with more runnable threads
             # than cores holds it high while most of the box is idle (measured:
             # 0.63 with 6.7 of 80 cores busy).  It is believed only when the
-            # fresh per-CPU occupancy agrees that this action has nowhere
-            # eligible and disjoint to run: the CPUs its own tiers offer, idle
-            # over the same interval, minus the ones a held action already
-            # owns.  Missing or incomplete per-CPU telemetry is unknown, and
-            # unknown refuses rather than being read as idle.
+            # CPUs this claim would actually be given are not idle.
+            #
+            # "Would actually be given" is the ledger's own rule, not a count:
+            # ``begin_acquire`` takes the first ``need`` free ``cpu-*`` tokens
+            # in ``_glob`` (sorted) order, and ``cpu_allocation`` maps a token
+            # ordinal through ``preferred + fallback`` -- the ordinal is NOT a
+            # CPU ID, so tiers such as preferred [8, 10] / fallback [2, 4] make
+            # token 0 CPU 8.  Held CPUs come from ``cpu_allocation`` as well,
+            # which is what carries a borrowed allocation recorded in the
+            # holder's metadata.  Anything unreadable or out of range is
+            # unknown, and unknown refuses rather than being read as idle.
             per_cpu = sample.get('per_cpu_busy')
-            if not isinstance(per_cpu, dict) or set(per_cpu) != {str(cpu) for cpu in self.cpus}:
+            if (not isinstance(per_cpu, dict)
+                    or set(per_cpu) != {str(cpu) for cpu in self.cpus}
+                    or any(type(busy) not in (int, float) or not math.isfinite(busy)
+                           or busy < 0 or busy > 1 for busy in per_cpu.values())):
                 return refuse("host_pressure_unproven", fresh=fresh)
-            assigned = set()
+            held = set()
             for holder in holders:
-                assigned.update(entry.name.split('-', 1)[1] for entry in holder.glob('cpu-*')
-                                if '-' in entry.name)
-            eligible = {str(cpu) for cpu in self.cpus}
-            idle = {cpu for cpu, busy in per_cpu.items()
-                    if isinstance(busy, (int, float)) and math.isfinite(busy)
-                    and busy <= IDLE_BUSY_FRACTION}
-            free = idle & eligible - assigned
-            if len(free) < int(demand.get('cpu', 0)):
-                return refuse("host_pressure", fresh=fresh, idle_eligible=len(free))
+                allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
+                held.update(allocation['preferred'] + allocation['fallback'])
+            declared = int(demand.get('cpu', 0))
+            if declared:
+                predicted = self._predicted_cpus(declared)
+                if predicted is None:
+                    return refuse("host_pressure_unproven", fresh=fresh)
+                busy = [cpu for cpu in predicted
+                        if cpu in held or per_cpu[str(cpu)] > IDLE_BUSY_FRACTION]
+                if busy:
+                    return refuse("host_pressure", fresh=fresh, cpus=sorted(busy)[:8])
         shape, measurement = action_identity(item) if identity is None else identity
         unbounded_cpu = not int(demand.get('cpu', 0))
         if measurement and (not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):

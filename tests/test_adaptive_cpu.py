@@ -595,3 +595,104 @@ def test_pressure_without_per_cpu_telemetry_refuses_as_unknown(tmp_path, monkeyp
     assert queue.claim(capacity={'cpu': 2, 'mem_gb': 2},
                        cpu_tiers={'preferred': [0], 'fallback': [1]},
                        adaptive_cpu=True) is None
+
+
+def _seed_queue(queue, tiers, *, held_ordinals=(), allocation=None):
+    """A configured box with the given tokens already held by one action.
+
+    Tokens are ``cpu-<ordinal>``; the ordinal is a token index into
+    ``preferred + fallback``, never a CPU ID (pool.py: begin_acquire takes the
+    first free tokens in sorted order, cpu_allocation maps the ordinal through
+    the tiers).
+    """
+    from prismabuild import adaptive_cpu
+    ledger = queue.ledger()
+    # Bind tokens to CPUs before any reservation exists: the map is immutable
+    # once a holder is present (pool.py configure_cpu_tiers).
+    ledger.configure_cpu_tiers(tiers)
+    ledger.ensure_capacity({'cpu': len(tiers['preferred']) + len(tiers['fallback']), 'mem_gb': 1})
+    if held_ordinals:
+        holder = ledger.held_dir / 'held-action'
+        holder.mkdir(parents=True, exist_ok=True)
+        for ordinal in held_ordinals:
+            name = next(path.name for path in sorted(ledger.free_dir.glob('cpu-*'))
+                        if int(path.name.split('-')[-1]) == ordinal)
+            (ledger.free_dir / name).rename(holder / name)
+        metadata = {'declared_cpu': len(held_ordinals), 'admitted_unix': 0}
+        if allocation is not None:
+            metadata['allocation'] = allocation
+        (holder / adaptive_cpu.METADATA).write_text(json.dumps(metadata))
+
+
+NONCONTIGUOUS = {'preferred': [8, 10], 'fallback': [2, 4]}
+
+
+def test_disjoint_proof_maps_token_ordinals_through_the_tiers(tmp_path, monkeypatch):
+    """Held token ordinal 1 is CPU 10, not CPU 1; the claim would take 8 and 10."""
+    from prismabuild import adaptive_cpu
+    tiers = dict(NONCONTIGUOUS)
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    _seed_queue(queue, tiers, held_ordinals=(1,))
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    busy = {cpu: (1. if cpu == 10 else 0.) for cpu in (8, 10, 2, 4)}
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
+                        lambda self: _host_sample([8, 10, 2, 4], busy, .633))
+    queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 2, 'mem_gb': 1})
+    # demand 2 would take tokens 0 and 2 -> CPUs 8 and 2, both idle: admitted.
+    assert queue.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
+                       adaptive_cpu=True) is not None
+
+    queue2 = pool.PoolQueue(tmp_path / 'queue2')
+    _seed_queue(queue2, tiers, held_ordinals=(0,))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
+                        lambda self: _host_sample([8, 10, 2, 4], busy, .633))
+    queue2.publish(action_key='b' * 64, cas_root=str(tmp_path / 'cas'),
+                   checkout_root=str(tmp_path), worker_script='worker.py',
+                   resources={'cpu': 1, 'mem_gb': 1})
+    # The first free token is ordinal 1 -> CPU 10, which the held action owns.
+    assert queue2.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
+                        adaptive_cpu=True) is None
+
+
+def test_disjoint_proof_honours_a_borrowed_allocation_in_metadata(tmp_path, monkeypatch):
+    """A borrowed CPU lives in the holder's metadata, not in its token ordinal."""
+    from prismabuild import adaptive_cpu
+    tiers = dict(NONCONTIGUOUS)
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    _seed_queue(queue, tiers, held_ordinals=(2,),
+                allocation={'preferred': [8], 'fallback': []})
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    busy = {cpu: 0. for cpu in (8, 10, 2, 4)}
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
+                        lambda self: _host_sample([8, 10, 2, 4], busy, .633))
+    queue.publish(action_key='c' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 1, 'mem_gb': 1})
+    # Token ordinal 2 is CPU 2, but the metadata says the holder holds CPU 8 --
+    # and 8 is the CPU this claim's first free token would be given.
+    assert queue.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
+                       adaptive_cpu=True) is None
+
+
+@pytest.mark.parametrize('bad', [float('nan'), -0.1, 1.5, None])
+def test_impossible_per_cpu_evidence_refuses_instead_of_being_ignored(tmp_path, monkeypatch, bad):
+    """One unknown CPU is unknown evidence, never a CPU that is quietly idle."""
+    from prismabuild import adaptive_cpu
+    tiers = dict(NONCONTIGUOUS)
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    _seed_queue(queue, tiers)
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+
+    def sample(self):
+        value = _host_sample([8, 10, 2, 4], {cpu: 0. for cpu in (8, 10, 2, 4)}, .633)
+        value['per_cpu_busy']['4'] = bad
+        return value
+
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', sample)
+    queue.publish(action_key='d' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 1, 'mem_gb': 1})
+    assert queue.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
+                       adaptive_cpu=True) is None
