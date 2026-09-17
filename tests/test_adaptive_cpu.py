@@ -171,14 +171,18 @@ def test_cpu_samples_measure_busy_time_in_allowed_affinity_and_psi(tmp_path, mon
     queue = pool.PoolQueue(tmp_path / 'queue')
     controller = adaptive_cpu.Controller(queue.ledger(), {'preferred': [4], 'fallback': [8]})
     samples = iter([
-        {'sampled_unix': 10., 'cpus': {'4': [10, 100], '8': [20, 100]}, 'psi_total': 0},
-        {'sampled_unix': 20., 'cpus': {'4': [20, 200], '8': [70, 200]}, 'psi_total': 2000000},
+        {'sampled_unix': 10., 'cpus': {'4': [10, 100], '8': [20, 100]},
+         'psi_total': 0, 'psi_full_total': 0},
+        {'sampled_unix': 20., 'cpus': {'4': [20, 200], '8': [70, 200]},
+         'psi_total': 2000000, 'psi_full_total': 500000},
     ])
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: next(samples))
     assert controller.sample() == {}
     seen = controller.sample()
     assert seen['busy_cpus'] == pytest.approx(.6)
     assert seen['psi_some'] == pytest.approx(.2)
+    # full is measured beside some, from its own counter, never inferred from it
+    assert seen['psi_full'] == pytest.approx(.05)
     assert seen['interval_s'] == 10
 
 
@@ -233,12 +237,14 @@ def test_proc_stat_excludes_guest_double_count_and_iowait(tmp_path, monkeypatch)
         if str(path) == '/proc/stat':
             return 'cpu 100 0 100 100 0 0 0 0\ncpu4 10 0 10 70 10 0 0 0 10 0\ncpu8 900 0 100 0 0 0 0 0\n'
         if str(path) == '/proc/pressure/cpu':
-            return 'some avg10=0.00 avg60=0.00 avg300=0.00 total=123\n'
+            return ('some avg10=0.00 avg60=0.00 avg300=0.00 total=123\n'
+                    'full avg10=0.00 avg60=0.00 avg300=0.00 total=7\n')
         return original(path, *args, **kwargs)
     monkeypatch.setattr(Path, 'read_text', read)
     sample = adaptive_cpu.counters({4})
     assert sample['cpus'] == {'4': [20, 100]}
     assert sample['psi_total'] == 123
+    assert sample['psi_full_total'] == 7
 
 
 def test_shape_is_bound_to_code_inputs_environment_and_command(tmp_path):
