@@ -508,21 +508,22 @@ def test_the_local_log_is_bounded_so_leaving_it_on_is_safe(tmp_path,
     """
 
     cap = 400
+    record_dir = tmp_path / "records"
     record = {"host": "boxa", "probe": {"status": "ok"}}
     monkeypatch.setattr(mount_latency, "RECORD_MAX_BYTES", cap)
     for _ in range(40):
-        mount_latency.append_record(record, tmp_path)
+        mount_latency.append_record(record, record_dir)
 
-    current = tmp_path / "pb-mount-latency-boxa.jsonl"
-    rotated = tmp_path / "pb-mount-latency-boxa.jsonl.1"
+    current = record_dir / "pb-mount-latency-boxa.jsonl"
+    rotated = record_dir / "pb-mount-latency-boxa.jsonl.1"
     # The size is checked before the append, so one record may cross the cap.
     # The guarantee is a bound, and the test states the bound the code makes
     # rather than the tidier one it does not.
     one_record = len(json.dumps(record, sort_keys=True)) + 1
     assert current.stat().st_size <= cap + one_record
     assert rotated.is_file(), "one previous generation is kept"
-    assert len(list(tmp_path.iterdir())) == 2, "and only one"
-    assert sum(f.stat().st_size for f in tmp_path.iterdir()) <= 2 * (
+    assert len(list(record_dir.iterdir())) == 2, "and only one"
+    assert sum(f.stat().st_size for f in record_dir.iterdir()) <= 2 * (
         cap + one_record)
 
 

@@ -506,11 +506,15 @@ def emit_manifest(path, root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--role", choices=("coordinator", "peer"))
-    parser.add_argument("--scenario", choices=SCENARIOS)
-    parser.add_argument("--root")
-    parser.add_argument("--emit-manifest")
-    parser.add_argument("--run-root")
+    parser.add_argument("--role", choices=("coordinator", "peer"),
+                        help="qualification actor to execute")
+    parser.add_argument("--scenario", choices=SCENARIOS,
+                        help="rollout scenario for this actor")
+    parser.add_argument("--root", help="shared private directory for this scenario")
+    parser.add_argument("--emit-manifest", help="write the PB campaign manifest here")
+    parser.add_argument("--run-root",
+                        help="fresh direct child of /mnt/shared/pb-qualification "
+                             "for the generated campaign")
     args = parser.parse_args()
     if args.emit_manifest:
         if args.role or args.scenario or args.root or not args.run_root:

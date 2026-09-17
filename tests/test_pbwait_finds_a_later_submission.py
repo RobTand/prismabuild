@@ -43,7 +43,7 @@ from test_slurm_lane import fleet, _runnable_action  # noqa: E402,F401
 
 def _submits_on_the_first_lookup(
     monkeypatch: pytest.MonkeyPatch, *, action, cas, queue
-) -> list[int]:
+) -> Path:
     """Make the detached submission land between the first pass and the second.
 
     ``recorded_action`` is the hook because of where it sits in one pass: the
@@ -55,13 +55,18 @@ def _submits_on_the_first_lookup(
     terminal record and is not what a detached lane submission means.
     """
 
-    passes: list[int] = []
+    # Each bounded observation forks a fresh reader. Keep the ordering witness
+    # on disk so later readers and the asserting parent see the same history.
+    passes = queue.root / "lookup-passes.jsonl"
     original = pbwait.recorded_action
 
     def _also_submit(*args, **kwargs):
         answer = original(*args, **kwargs)
-        passes.append(len(passes) + 1)
-        if len(passes) == 1:
+        first = not passes.exists()
+        with passes.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"action_present": answer is not None}) + "\n")
+        if first:
+            assert answer is None
             request = cas.publish_action_request(action)
             fleet_submit.submit(
                 action, cas=cas, request_path=request, transport="slurm",
@@ -92,7 +97,10 @@ def _wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str):
         queue, [key], cas=cas, wait_s=30.0, queue_root=queue.root, poll_s=0.0)
 
     assert slurm_lane.recorded_submission(key) is not None
-    return key, queue, rows, passes
+    observations = [json.loads(line) for line in passes.read_text().splitlines()]
+    assert observations[0] == {"action_present": False}
+    assert all(row == {"action_present": True} for row in observations[1:])
+    return key, queue, rows, observations
 
 
 def test_a_later_detached_submission_that_failed_is_found_and_filed(
