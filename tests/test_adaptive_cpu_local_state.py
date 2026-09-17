@@ -43,8 +43,8 @@ def test_cpu_intervals_are_shared_by_new_controllers_but_not_other_ledgers(tmp_p
     tiers = {'preferred': [0], 'fallback': []}
     samples = iter([
         {'sampled_unix': 10., 'cpus': {'0': [10, 100]}, 'psi_total': 0, 'psi_full_total': 0},
-        {'sampled_unix': 12., 'cpus': {'0': [30, 200]}, 'psi_total': 200000},
-        {'sampled_unix': 12., 'cpus': {'0': [30, 200]}, 'psi_total': 200000},
+        {'sampled_unix': 12., 'cpus': {'0': [30, 200]}, 'psi_total': 200000, 'psi_full_total': 100000},
+        {'sampled_unix': 12., 'cpus': {'0': [30, 200]}, 'psi_total': 200000, 'psi_full_total': 100000},
     ])
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: next(samples))
     first = adaptive_cpu.Controller(queue.ledger(), tiers)
