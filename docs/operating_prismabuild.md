@@ -1575,6 +1575,9 @@ before its partial reservation was returned. The displayed age matters: this
 is not a fresh capacity check or a promise of immediate admission after a
 release. It names the first failing resource; CPU borrowing and GPU sharing
 retain their admission rules. Older workers may omit this optional detail.
+`deferred_for_preferred_cpu` and `deferred_for_cross_resource_placement` are
+bounded placement preferences, not refusals: they age nothing and expire on
+their own after 20 seconds, so treat neither as starvation.
 Use measured aggregate peak memory when sizing an action; reducing a reservation
 to force a claim can exhaust its enforced memory budget.
 
@@ -2733,6 +2736,14 @@ not a core-class preference. Small jobs use free preferred CPUs; wide jobs and
 concurrent overflow can use the lower tier. Compatible free preferred capacity
 on another host gets a bounded opportunity to claim work first. Constraints
 still determine eligibility. Do not overdeclare CPU demand to force overflow.
+
+A box that is busy on one resource also prefers not to take work for the other
+one. When a compatible box reads materially freer on the resource your action
+does *not* want --- GPU power for a CPU-only action, CPU load for a GPU action
+--- and can fit the whole demand, the busy box waits up to 20 seconds and then
+claims the action anyway. It is best effort: with no alternative, or with a
+stale reading on either side, nothing changes. It never refuses or strands
+work, and it measures no temperature and no throughput.
 
 Worker offers expose `cpu_tiers`; a claimed or terminal record's
 `cpu_allocation` names its preferred and fallback CPU IDs. Children inherit the

@@ -2557,6 +2557,39 @@ an atomic global scheduling order. An incompatible host, an undersized host,
 or a stale offer does not strand host-specific or wide work. Local ordered
 allocation remains effective after the deferral expires.
 
+### Cross-resource placement preference
+
+A box that is already working one resource prefers not to take work for the
+other one, when another box can have it. Before reserving, a worker compares
+its own load on the resource the action does *not* want against every
+compatible offer's: GPU work arriving at a CPU-busy box, or CPU-only work
+arriving at a box drawing GPU power. If a compatible box reads materially
+freer on that axis and can fit the whole demand, this worker gives it up to 20
+seconds to claim, records `deferred_for_cross_resource_placement`, and then
+claims the action itself.
+
+This is a preference, not a requirement, and it is best effort in both
+directions. The work is never refused, never starved and never placed where it
+could not run; the only effect is a bounded wait that a better placement may
+or may not win. With no alternative, a stale reading on either side, or no
+GPU-power evidence, there is no preference at all.
+
+It is not a thermal control and nothing here measures temperature or
+throughput. The GPU side reads power against the device's own envelope, which
+is what `adaptive_gpu` already admits on, because `gpu_utilization` reports a
+resident kernel rather than working SMs. The CPU side reads `load1` per
+preferred core. Both come from the offer's `observed_detail`
+(`gpu_power_fraction`, `gpu_power_sampled_unix`, `observed_unix`, `load1`) and
+both must be fresher than `GPU_SAMPLE_MAX_AGE_S`. The two thresholds --- when a
+box counts as busy, and how much better an alternative must look --- are
+`PoolQueue.CROSS_RESOURCE_BUSY` and `PoolQueue.CROSS_RESOURCE_MARGIN`. They are
+heuristic, which is why they bound a wait and never a decision. The margin is
+what keeps two similarly loaded boxes from deferring to each other.
+
+Worker loops poll on a longer cadence than the freshness window, so on many
+scans neither reading qualifies and the preference does not apply. That is
+consistent with its being best effort; it is not a defect to tune away.
+
 Physical CPU tokens are the conservative baseline, not a fixed concurrency
 gate. The adaptive controller samples busy time for every CPU in the worker's
 inherited mask and host CPU pressure. That host-level view includes processes
