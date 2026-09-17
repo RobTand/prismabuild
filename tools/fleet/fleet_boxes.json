@@ -76,6 +76,12 @@
           "20",
           "--claim-grace-min",
           "20"
+        ],
+        "tiers": [
+          "--source-pool",
+          "storage_pool",
+          "--interval-s",
+          "60"
         ]
       }
     },
