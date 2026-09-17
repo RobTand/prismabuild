@@ -525,6 +525,13 @@ class Controller:
         holders = [p for p in self.ledger.held_dir.iterdir() if p.is_dir()]
         if fresh and sample['busy_cpus'] >= .95 * len(self.cpus):
             return refuse("host_pressure", fresh=fresh)
+        # Resolved once, before the pressure decision reads the demand.  The
+        # caller may have pre-read the sealed identity, and the measurement and
+        # ownership paths below all need the same answer rather than a second
+        # read of the same CAS record.
+        shape, measurement = action_identity(item) if identity is None else identity
+        declared = int(demand.get('cpu', 0))
+        unbounded_cpu = not declared
         # True only when a high "some" was believed because the CPUs this
         # claim would actually be given are idle.  It keeps the proof and the
         # claim's real selection in step: the lending path below can hand a
@@ -552,22 +559,26 @@ class Controller:
                     or any(type(busy) not in (int, float) or not math.isfinite(busy)
                            or busy < 0 or busy > 1 for busy in per_cpu.values())):
                 return refuse("host_pressure_unproven", fresh=fresh)
+            # Fresh high pressure refuses these paths whatever the per-CPU
+            # reading says.  A measurement needs a host it can trust as idle,
+            # unbounded demand has no CPU set the proof could cover, and a
+            # full-width reservation would take the whole box for one action.
+            # A learned cheap cost and an all-zero reading are not evidence of
+            # ownership, so neither reopens this refusal.
+            if measurement or unbounded_cpu or declared == len(self.cpus):
+                return refuse("host_pressure", fresh=fresh)
             held = set()
             for holder in holders:
                 allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
                 held.update(allocation['preferred'] + allocation['fallback'])
-            declared = int(demand.get('cpu', 0))
-            if declared:
-                predicted = self._predicted_cpus(declared)
-                if predicted is None:
-                    return refuse("host_pressure_unproven", fresh=fresh)
-                busy = [cpu for cpu in predicted
-                        if cpu in held or per_cpu[str(cpu)] > IDLE_BUSY_FRACTION]
-                if busy:
-                    return refuse("host_pressure", fresh=fresh, cpus=sorted(busy)[:8])
+            predicted = self._predicted_cpus(declared)
+            if predicted is None:
+                return refuse("host_pressure_unproven", fresh=fresh)
+            busy = [cpu for cpu in predicted
+                    if cpu in held or per_cpu[str(cpu)] > IDLE_BUSY_FRACTION]
+            if busy:
+                return refuse("host_pressure", fresh=fresh, cpus=sorted(busy)[:8])
             pressure_override = True
-        shape, measurement = action_identity(item) if identity is None else identity
-        unbounded_cpu = not int(demand.get('cpu', 0))
         if measurement and (not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
             return refuse("measurement_host_not_idle", fresh=fresh)
         if len(holders) >= MAX_ACTIONS:
@@ -654,7 +665,6 @@ class Controller:
         self.write_state('jobs.json', next_recent)
         profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
         self.write_state('profiles.json', profiles)
-        declared = int(demand.get('cpu', 0))
         learned = profiles.get(shape, {}) if shape else {}
         learned_valid = (learned.get('samples', 0) >= 3
                          and 0 <= now - learned.get('sampled_unix', 0) < 86400)

@@ -2561,9 +2561,26 @@ Physical CPU tokens are the conservative baseline, not a fixed concurrency
 gate. The adaptive controller samples busy time for every CPU in the worker's
 inherited mask and host CPU pressure. That host-level view includes processes
 outside PrismaBuild, so unrelated load can close admission even when the pool
-ledger appears free. Samples are short-lived; pressure or near-saturation stops
-new CPU claims. A local lock serializes each host's adaptive decisions, while
-the shared queue's rename still decides ownership.
+ledger appears free. Samples are short-lived. A fresh sample at or above 95%
+occupancy refuses new CPU claims outright, and a fresh PSI `some` at or above
+.10 ordinarily refuses as well. One exception exists for ordinary bounded
+generation claims narrower than the host: the reading is treated as a pinned
+neighbour's local contention only when the CPUs this claim's own free tokens
+would map to are all idle (`per_cpu_busy <= .05`) and none is held by another
+action, in which case the claim proceeds on those disjoint free tokens and
+borrowing is disabled for that decision. Measurements, unbounded demand that
+declares no CPU count, and full-width reservations keep the pressure refusal
+whatever their per-CPU reading says; a learned cheap cost and an all-zero
+reading do not reopen it. Missing, malformed or out-of-range per-CPU evidence
+under fresh high pressure is unknown, and unknown refuses. CPU tokens are
+ordinals mapped through the preferred and fallback tiers, so "the CPUs this
+claim would be given" is exactly that mapping; processes outside PrismaBuild
+are not part of the token ledger, and this is admission accounting, not
+per-core OS isolation. An absent or stale overall sample keeps its existing
+meaning: the current gates do not run, and an ordinary bounded claim on free
+tokens can still be placed, while borrowing and measurement need fresh
+evidence. A local lock serializes each host's adaptive decisions, while the
+shared queue's rename still decides ownership.
 
 Every held action begins at its full declared CPU cost. A complete, fresh
 aggregate telemetry interval may lower the estimated cost of a generation

@@ -1,9 +1,8 @@
 """Independent acceptance tests for the issue #569 pressure corroboration.
 
-These tests belong to review, not to the implementation: the PR author owns
-``src/``.  Every telemetry fixture is complete and internally consistent --
-``busy_cpus`` is exactly the sum of the per-CPU fractions -- so a refusal or an
-admission here is the behavior under test, never a missing-telemetry accident.
+Every telemetry fixture is complete and internally consistent -- ``busy_cpus``
+is exactly the sum of the per-CPU fractions -- so a refusal or an admission
+here is the behavior under test, never a missing-telemetry accident.
 """
 from __future__ import annotations
 
@@ -119,11 +118,11 @@ def test_pressure_refuses_unbounded_demand_with_complete_healthy_telemetry(
     (0., .03, True), (0., 0., True), (.11, .03, False), (.11, 0., False)])
 def test_pressure_refuses_full_width_even_with_a_learned_cheap_profile(
         tmp_path, monkeypatch, psi_some, per_cpu, expect_admission):
-    """An exclusive full-width reservation needs an exclusive host.
+    """A full-width reservation is refused under fresh pressure.
 
-    A learned cheap profile shrinks the projected cost, and a low zero busy
-    reading satisfies the incidental-activity tolerance, but neither is
-    evidence that the host is this action's to take while "some" is high.
+    It would take every CPU token, so it is not an ordinary bounded claim the
+    free-token exception can place; a learned cheap profile and an all-zero
+    reading change neither the demand nor the pressure.
     """
     from prismabuild import adaptive_cpu
     cpus = [0, 1]
@@ -219,14 +218,20 @@ def test_pinned_neighbour_outside_the_claim_still_admits(tmp_path, monkeypatch):
 
 
 def test_full_host_saturation_refuses_on_occupancy_alone(tmp_path, monkeypatch):
+    """At .95 occupancy a claim the projection would fit must still refuse.
+
+    The learned cheap profile makes projected cost admit this claim and the
+    pressure reading is zero, so the occupancy gate is the only refusal left.
+    """
     from prismabuild import adaptive_cpu
     cpus = list(range(8))
     tiers = {'preferred': cpus, 'fallback': []}
     queue, capacity = box(tmp_path, tiers)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda self: host_sample(cpus, uniform(cpus, 1.), .633))
-    publish(queue, tmp_path, resources={'cpu': 4, 'mem_gb': 1})
+                        lambda self: host_sample(cpus, uniform(cpus, .95), 0.))
+    seed_cheap_profile(queue, cpu=.05)
+    publish(queue, tmp_path, resources={'cpu': 1, 'mem_gb': 1})
     assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True) is None
 
 
