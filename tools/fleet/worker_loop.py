@@ -852,12 +852,17 @@ def _run_loop(stop_requested):
             loops = len(box_capacity.worker_loops())
         except OSError:
             loops = None
+        # Which client addresses this box's NFS reads arrive from, so the
+        # storage host's pacer can tell an action it is warming for from a
+        # client it must protect (#580).  ``None`` on any failure, and the
+        # helper cannot raise: this is the offer path of every loop.
+        addresses = box_capacity.ipv4_addresses()
 
         def announce_offer(queue=queue, host=host, tags=offered,
                            has_gpu=gpu_capable, declared=declared,
                            capacity=capacity, observer=observer, loops=loops,
                            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
-                           timeout_s=args.timeout_s):
+                           timeout_s=args.timeout_s, addresses=addresses):
             """The exact advisory record this poll offers the queue.
 
             A closure, not a kwargs dict, so the publisher's child runs the
@@ -887,6 +892,7 @@ def _run_loop(stop_requested):
                 # of one answer: the ceiling is what this box would cut a run at,
                 # and this is whether it would count committed work first (#480).
                 progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
+                addresses=addresses,
             )
 
         publication = publish_offer(

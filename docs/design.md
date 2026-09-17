@@ -2047,6 +2047,16 @@ that does not understand the policy would apply its whole-run ceiling to an
 action submitted without one, which is the defect (#480) rather than a
 degraded form of the fix.
 
+Workers also announce `addresses` on their offer: the global-scope IPv4
+addresses the box's kernel holds, read from `ip -4 -o addr show scope global`
+(`box_capacity.ipv4_addresses`), absent when the reading could not be taken.
+The storage host's prewarm pacer follows a claim's `claimed_host` to this
+field and joins it to the per-client counter in `/proc/fs/nfsd/export_stats`,
+which is how it tells the action it is warming for from a client it must
+protect (#580; see [data_manifest_prewarm.md](data_manifest_prewarm.md)).
+A box whose offer carries no addresses is protected as every client was
+before the field existed.
+
 The announcement reports; the placement tag enforces. A worker that can run
 the watchdog offers `progress-v1` (`core.PROGRESS_TAG`) alongside its class
 and hostname. A worker that also exports the helper path and phase list offers
