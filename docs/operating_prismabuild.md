@@ -98,6 +98,15 @@ and no longer holds by itself. A pool busy with a scrub and no client reads can
 continue warming. Missing disk telemetry still holds reads regardless of client
 activity.
 
+The warm is bounded by the ARC budget, never by the manifest. A manifest
+larger than the budget is warmed as the longest entry-aligned prefix that
+fits, in the order the action reads it, whether or not it declares
+`annotations.phases`; a claimed row with a partial prefix resident reserves
+that prefix and not its manifest. Only a phased manifest's window advances
+while its action runs, because only a phase observation maps a worker report
+to a byte count. A row is refused for headroom only when its first entry
+alone is larger than the budget.
+
 ### Restarting the storage role after a publication
 
 Current loops detect a new generation between cycles and exit for supervisor

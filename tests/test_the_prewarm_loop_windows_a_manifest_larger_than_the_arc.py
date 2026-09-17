@@ -158,23 +158,41 @@ def test_a_phase_table_that_does_not_describe_this_manifest_is_ignored(
         tmp_path: Path) -> None:
     """A window on the wrong boundaries reads the wrong bytes confidently.
 
-    So a table whose last boundary is not the manifest's own total is treated
-    as absent, and the row falls back to the whole-manifest rule -- which
-    refuses it, loudly, instead of recording a window nobody can trust.
+    A table whose last boundary is not the manifest's own total is treated as
+    absent.  The row is then warmed the way any manifest without a table is
+    warmed -- an entry-aligned prefix of what the budget allows, cut from
+    ``entries`` and not from anything the table said (#499).  What the bad
+    table must never become is a frontier: advancing a window on a boundary
+    that does not describe this manifest would release reserve for bytes the
+    action has not read.
     """
 
     fleet = Fleet(tmp_path)
     key = fleet.action(
         "mislabelled",
         [fleet.file(f"{name}.pt", size) for name, size in LAYERS],
-        annotations={"phases": phase_table(LAYERS[:2])})
+        annotations={"phases": phase_table(LAYERS[:2])},
+        progress_phases=[name for name, _ in LAYERS[:2]])
     stats = fleet.arcstats(size=0, c=CACHE, c_max=CACHE)
 
     event = fleet.cycle(fleet.args(arcstats=stats))
 
-    assert [s["reason"] for s in event["skipped"]] == ["headroom"]
-    assert event["skipped"][0]["phased"] is False
-    assert fleet.queue.prewarm(key) is None
+    assert event["skipped"] == []
+    record = fleet.queue.prewarm(key)
+    assert record["phased"] is False, "the table is absent, not repaired"
+    assert record["warmed_through_phase"] == ""
+    assert record["warmed_bytes"] == CACHE, "an entry boundary, not a phase one"
+
+    # The action now reports a phase the bad table names.  Nothing moves: the
+    # window has no frontier to advance and releases no reserve.
+    fleet.claim(key)
+    fleet.report_progress(key, "layer-0")
+
+    event = fleet.cycle(fleet.args(arcstats=stats))
+
+    assert event["advanced"] == []
+    assert event["claimed_released_bytes"] == 0
+    assert event["claimed_reserved_bytes"] == CACHE
 
 
 def test_a_phase_boundary_inside_an_entry_is_not_a_resident_window(
