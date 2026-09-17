@@ -1,5 +1,24 @@
 # CPU oversubscription and cross-resource placement validation — 2026-09-06
 
+> **Historical record. It does not describe `main`.** This measures a source
+> state that was never committed: the implementation it validates lives
+> uncommitted in the `/home/rob/prismabuild` working tree on branch
+> `fix/cpu-placement-policy`, which is why no commit, `git log -S` or pull
+> request carries it (RobTand/prismabuild#573). Two specific divergences from
+> `main` as of 2026-09-17:
+>
+> - **The ordering below is not `main`'s.** This document says the new checks
+>   precede reservation. On `main` the fallback deferral runs *after*
+>   allocation, with reservation and probe rollback
+>   (`src/prismabuild/pool.py:4755-4767`).
+> - **The thermal-placement test named in the receipt table is not on `main`.**
+>   Against `main` its two `heavy_opposite_resource` cases fail (2 failed, 10
+>   passed); against the uncommitted tree they pass 12 of 12.
+>
+> The 226-test total and its eight receipts are preserved as measured. They
+> qualify that snapshot and nothing else, and no part of this document is
+> current-`main` qualification.
+
 The integrated change passed 226 tests in eight admitted CPU actions on dl380g10,
 with no skips or missing tools. GPU admission tests used simulated device evidence;
 no GPU kernels or thermal/performance measurements were run.
