@@ -188,11 +188,29 @@ PUBLISHED_FILE_MODE = 0o444
 FINAL_BARRIER_QUALIFICATION_GUARD = True
 PUBLISHED_DIRECTORY_MODE = 0o555
 
-# Capture the coordinator bytes before loading any epoch.  Recovery may run
-# from a mutable checkout, so later mutation of this pathname is a refusal,
-# never permission for different code to publish a retained decision.
+# Retain the loaded code without reading source at import. At first use, bind
+# source bytes only if they compile to this code; a mutable checkout must not
+# let a later pathname revision impersonate the coordinator already loaded.
 COORDINATOR_SOURCE = Path(__file__).resolve()
-COORDINATOR_SHA256 = hashlib.sha256(COORDINATOR_SOURCE.read_bytes()).hexdigest()
+COORDINATOR_CODE = sys._getframe().f_code
+COORDINATOR_SHA256 = None
+
+
+def _coordinator_sha256() -> str:
+    global COORDINATOR_SHA256
+    try:
+        raw = COORDINATOR_SOURCE.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if COORDINATOR_SHA256 is None:
+            code = compile(raw, COORDINATOR_CODE.co_filename, "exec", dont_inherit=True)
+            if code != COORDINATOR_CODE:
+                raise SystemExit("rollout coordinator source changed after it was loaded")
+            COORDINATOR_SHA256 = digest
+        elif digest != COORDINATOR_SHA256:
+            raise SystemExit("rollout coordinator source changed after it was loaded")
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise SystemExit(f"rollout coordinator identity cannot be read: {exc}") from exc
+    return COORDINATOR_SHA256
 
 
 def _sha256(path: Path) -> str:
@@ -609,6 +627,7 @@ def _require_barrier_qualification() -> None:
 
 
 def _rollout_view(epoch=None):
+    _coordinator_sha256()
     try:
         agent = _agent_definitions()
         view = agent.read_rollout(_rollout_config(), epoch)
@@ -622,11 +641,9 @@ def _rollout_view(epoch=None):
 def _assert_coordinator_identity(view, *, agent=None):
     """Bind retained decisions to the exact coordinator and marker semantics."""
     expected = view["intent"].get("coordinator_sha256")
-    if expected != COORDINATOR_SHA256:
+    if expected != _coordinator_sha256():
         raise SystemExit("rollout coordinator identity differs from the armed epoch")
     try:
-        if _sha256(COORDINATOR_SOURCE) != COORDINATOR_SHA256:
-            raise SystemExit("rollout coordinator source changed after it was loaded")
         expected_agent = view["intent"]["agent_sha256"]
         if agent is None:
             agent = _agent_definitions(expected_sha=expected_agent)
@@ -881,7 +898,7 @@ def _arm_barrier(name, *, wait_s=300):
     coordinator_sha = target[1]["files"].get(coordinator_member)
     if (not isinstance(coordinator_sha, str)
             or source[1]["files"].get(coordinator_member) != coordinator_sha
-            or coordinator_sha != COORDINATOR_SHA256):
+            or coordinator_sha != _coordinator_sha256()):
         raise SystemExit("barrier requires the same executing coordinator in source and target; "
                          "converge a reviewed rolling bridge first")
     if source[1]["files"][member] != sha:

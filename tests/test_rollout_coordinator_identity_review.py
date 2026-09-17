@@ -30,6 +30,31 @@ def _load_revision_b(tmp_path: Path):
     return module, path
 
 
+def test_import_does_not_read_coordinator_source(tmp_path, monkeypatch):
+    original = Path.read_bytes
+
+    def refuse_source_read(path):
+        if path.name == "publish_runtime.py":
+            raise AssertionError("coordinator source read during import")
+        return original(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", refuse_source_read)
+        module, path = _load_revision_b(tmp_path)
+    assert module.COORDINATOR_SHA256 is None
+    assert module._coordinator_sha256() == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("capture_first", [False, True])
+def test_coordinator_refuses_source_mutation_since_import(tmp_path, capture_first):
+    module, path = _load_revision_b(tmp_path)
+    if capture_first:
+        module._coordinator_sha256()
+    path.write_bytes((ROOT / "tools/fleet/publish_runtime.py").read_bytes())
+    with pytest.raises(SystemExit, match="coordinator source changed"):
+        module._coordinator_sha256()
+
+
 def test_resume_refuses_a_coordinator_revision_not_bound_by_the_intent(
     fleet, tmp_path, monkeypatch
 ):
