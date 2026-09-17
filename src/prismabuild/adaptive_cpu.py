@@ -384,29 +384,16 @@ class Controller:
     def _predicted_cpus(self, need: int) -> list[int] | None:
         """The CPUs this claim's tokens would represent, by the ledger's rule.
 
-        ``PoolQueue.begin_acquire`` takes the first ``need`` free ``cpu-*``
-        tokens in sorted-name order, and ``PoolQueue.cpu_allocation`` maps a
-        token ordinal to ``(preferred + fallback)[ordinal]``.  The ordinal is a
-        token index, never a CPU ID, so this asks the same mapping the holder
-        metadata is built from rather than reading the suffix as an address.
-        ``None`` means the question cannot be answered -- fewer free tokens
-        than the demand, or an ordinal outside the configured topology -- and
-        the caller treats that as unknown rather than as idle.
+        ``ResourceLedger.begin_acquire`` takes the first ``need`` free
+        ``cpu-*`` tokens in sorted-name order and maps each token ordinal to
+        ``(preferred + fallback)[ordinal]``.  The ordinal is a token index,
+        never a CPU ID, so this asks the ledger for that same answer instead of
+        keeping a second copy of the selection rule here.  ``None`` means the
+        question cannot be answered -- fewer free tokens than the demand, or an
+        ordinal outside the configured topology -- and the caller treats that
+        as unknown rather than as idle.
         """
-        ordered = list(self.tiers['preferred']) + list(self.tiers['fallback'])
-        try:
-            tokens = sorted(self.ledger.free_dir.glob('cpu-*'))
-        except (FileNotFoundError, NotADirectoryError):
-            return None
-        if len(tokens) < need:
-            return None
-        predicted = []
-        for token in tokens[:need]:
-            index = int(token.name.split('-')[-1])
-            if index >= len(ordered):
-                return None
-            predicted.append(ordered[index])
-        return predicted
+        return self.ledger.free_cpu_allocation(need, self.tiers)
 
     @contextmanager
     def locked(self):
@@ -538,6 +525,11 @@ class Controller:
         holders = [p for p in self.ledger.held_dir.iterdir() if p.is_dir()]
         if fresh and sample['busy_cpus'] >= .95 * len(self.cpus):
             return refuse("host_pressure", fresh=fresh)
+        # True only when a high "some" was believed because the CPUs this
+        # claim would actually be given are idle.  It keeps the proof and the
+        # claim's real selection in step: the lending path below can hand a
+        # claim a *held* CPU, which that proof never saw.
+        pressure_override = False
         if fresh and sample['psi_some'] >= .10:
             # System-wide CPU PSI "some" counts any task anywhere waiting for a
             # CPU, so one job pinned to a few cores with more runnable threads
@@ -573,6 +565,7 @@ class Controller:
                         if cpu in held or per_cpu[str(cpu)] > IDLE_BUSY_FRACTION]
                 if busy:
                     return refuse("host_pressure", fresh=fresh, cpus=sorted(busy)[:8])
+            pressure_override = True
         shape, measurement = action_identity(item) if identity is None else identity
         unbounded_cpu = not int(demand.get('cpu', 0))
         if measurement and (not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
@@ -685,6 +678,23 @@ class Controller:
                                 len(borrowable & set(self.tiers['preferred'])))
                             if can_borrow else 0)
         borrowing = available < declared or preferred_borrow > 0
+        if pressure_override:
+            # The override above was earned by the CPUs this claim's own free
+            # tokens map to.  A borrowed CPU is different evidence: it is a
+            # *held* reservation judged idle from its holder's telemetry, not
+            # from the fresh sample that proof read, so the proof does not
+            # cover it -- and a borrowed CPU can be busy right now while its
+            # holder's average still reads cheap.  Rather than extend the proof
+            # to a CPU it never saw, the lending path is closed for this one
+            # decision: the claim is still admitted when ordinary free tokens
+            # cover its demand.  Ordinary borrowing, taken when no pressure
+            # override is in play, is unchanged.
+            if available < declared:
+                return refuse("pressure_override_no_borrow",
+                              available_cpu=available, declared_cpu=declared)
+            can_borrow, preferred_borrow = False, 0
+            borrowable = set()
+            borrowing = False
         if borrowing:
             last = read_json(self.base / 'last-borrow.json').get('sampled_unix', 0)
             if (not fresh or not shape or measurement or not lendable
