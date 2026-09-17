@@ -506,9 +506,12 @@ class Controller:
         # refuses only when every task was also stalled, which no pinned
         # neighbour can produce.  Unknown "full" telemetry is not fresh, so it
         # refuses too rather than being read as zero.
-        saturated = sample['busy_cpus'] >= .95 * len(self.cpus)
-        if fresh and (saturated or (sample['psi_some'] >= .10 and sample['psi_full'] > 0)):
-            return refuse("host_pressure", fresh=fresh)
+        if fresh:
+            # Sample keys are only meaningful once the reading is fresh; an
+            # empty or stale observation has none of them.
+            if (sample['busy_cpus'] >= .95 * len(self.cpus)
+                    or (sample['psi_some'] >= .10 and sample['psi_full'] > 0)):
+                return refuse("host_pressure", fresh=fresh)
         shape, measurement = action_identity(item) if identity is None else identity
         unbounded_cpu = not int(demand.get('cpu', 0))
         if measurement and (not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
