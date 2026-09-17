@@ -354,23 +354,30 @@ def split_demand(
 
 
 def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | None:
-    """The best sustained MB/s any recorded move off a tier achieved, or ``None``.
+    """The best sustained pool-side MB/s any recorded move off a tier drew, or ``None``.
 
-    Each record prices one whole window read at one depth, so its mean is a
-    sustained rate over that window rather than a burst.  The maximum is the
-    tier's demonstrated fill capacity; a later record that beats it raises
-    the mint on the next cycle, which is how a deeper reader or a quieter
-    pool shows up as tokens without anybody editing a number.  Records with
-    no read, or with ``mb_per_s`` that is not a number, say nothing.
+    The number is ``disk_pacing.mean_self_read_mb_s``: what the pool's own
+    members delivered to this reader over the whole window, attributed by the
+    pacer (#580).  It is deliberately **not** the record's file-side
+    ``mb_per_s``.  A warm that finds its bytes already in the ARC reports
+    file-side rates the disks never produced -- one live receipt on
+    dl380g10 says 1141 MB/s for 206 GB off a four-spindle raidz1 -- and a
+    fill capacity minted from that would admit movers the disks cannot feed.
+    A record without pool-side attribution therefore says nothing about the
+    pool, and a tier with no attributed record has no fill tokens, which is
+    the probe rule.  The maximum over records is the demonstrated capacity;
+    a later record that beats it raises the mint on the next cycle, so a
+    deeper reader or a quieter pool shows up as tokens without anybody
+    editing a number.
     """
 
     best: float | None = None
     for record in records:
-        rate = record.get("mb_per_s")
-        moved = record.get("bytes_warmed", record.get("bytes_moved", 0))
-        if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+        pacing = record.get("disk_pacing")
+        if not isinstance(pacing, Mapping):
             continue
-        if not isinstance(moved, int) or isinstance(moved, bool) or moved <= 0:
+        rate = pacing.get("mean_self_read_mb_s")
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)):
             continue
         if rate > 0 and (best is None or rate > best):
             best = float(rate)
