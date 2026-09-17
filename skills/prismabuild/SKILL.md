@@ -97,6 +97,16 @@ campaign-wide window, not a per-host or shared I/O budget; other controllers
 are outside its count. Do not run an external pacer alongside it. At `--wait-s`
 expiry, retain the printed keys and rerun the manifest for `not_submitted` rows.
 
+A submission that carries a `pbcampaign.data-manifest` input is prewarmed by
+the storage role before it is claimed. The warm is bounded by the file
+server's ARC budget, never by the manifest: a manifest larger than the budget
+is warmed as the longest entry-aligned prefix that fits, in the order the
+entries list it, so write `entries` in the order the action actually reads
+them. Declaring `annotations.phases` -- a running byte sum over those entries
+-- is what lets the window keep advancing while the action runs; without it
+the prefix stops growing when the row is claimed. Nothing is warmed
+for a row whose first entry alone is larger than the budget.
+
 A long action that can say when it commits work should be bounded by whether
 it is working rather than by how long it has run. Declare the phases it walks
 and the quiet each is allowed -- `--progress-phase startup=1800

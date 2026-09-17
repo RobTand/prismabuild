@@ -39,6 +39,22 @@ later polls.  Phases remain the accepted-progress frontiers that release
 reserve.  What has to fit in the cache is the distance between what the action
 has read and what the loop has made resident, never the manifest.
 
+A manifest with no phase table is windowed the same way, because ``entries``
+*is* the consumption order and the phase table is only a running sum over it:
+the loop warms the longest entry-aligned prefix the budget allows, in the
+order the action reads it, and reserves that prefix rather than the manifest.
+Only one thing needs the phases, and it is the advance: without them no worker
+report maps to a byte count, so an unphased window stops following the reader
+the moment its row is claimed.  While the row is still in ``ready`` a later
+poll can extend the prefix as the budget grows; after the claim it stays where
+the budget left it.  Before #499 the unphased case kept the original
+all-or-nothing rule and warmed nothing at all; the 2026-09-17 GLM-5.3-Flash
+joint-AURA ``prepare`` declares 469 008 entries and 6.84 TB against a 257.7 GB
+ceiling, and a sibling manifest without phases was refused on every poll for
+as long as it was queued.  The refusal that remains is narrower and still
+right: a single entry larger than the whole budget has no prefix inside it,
+because a warm reads files and not byte ranges.
+
 Where the action reports it, the loop reads that distance rather than guessing
 it.  An action declaring ``params.progress`` writes ``progress-v1`` records to
 ``claimed/<key>.progress``; the phases it has finished are read, so they leave
@@ -1428,6 +1444,25 @@ def resident_bytes(record: Mapping[str, object] | None) -> int:
     return 0
 
 
+def warmed_window(record: Mapping[str, object] | None, manifest_bytes: int) -> bool:
+    """Does this record describe a window rather than a whole manifest?
+
+    A phased record always does.  So does an unphased record whose resident
+    prefix stops short of the manifest, which is what a budget-bounded warm
+    of a manifest with no phase table leaves behind.  The distinction matters
+    only to the reserve: a row with 8 KB of a 16 KB manifest resident can have
+    8 KB displaced, and reserving the manifest would take the whole cache from
+    every row behind it for one claim (#499).
+    """
+
+    if not record:
+        return False
+    if record.get("phased"):
+        return True
+    resident = resident_bytes(record)
+    return 0 < resident < manifest_bytes
+
+
 def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> dict:
     """Bytes a claimed action may still be reading, and must not be displaced.
 
@@ -1447,6 +1482,8 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
     A row this loop warmed a window of reserves that window, not its manifest:
     a 4.75 TB joint pass never had 4.75 TB resident, and reserving bytes that
     were never warmed would take the whole budget away from every other row.
+    That is a property of the window, not of the phase table that named its
+    boundary, so an unphased prefix reserves its prefix too (#499).
     """
 
     now = time.time()
@@ -1473,7 +1510,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
             continue
         warmed = queue.prewarm(key)
         declared = declares_progress(request)
-        if not (warmed and warmed.get("phased")):
+        if not warmed_window(warmed, size):
             # A worker can claim between the storage role's ready-list polls.
             # For a phased manifest that must not turn the first missed warm
             # into a whole-manifest reserve: initialize an empty window at the
@@ -1809,11 +1846,12 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # ceiling it is itself holding down, and a window could never extend.
         row_budget = budget + resident
         row_budget_before_progress = budget_before_progress + resident
-        if phases:
-            target, phase = window_target(phases, read_entries,
-                                          consumed=0, budget=row_budget)
-        else:
-            target, phase = (total if total <= row_budget else 0), ""
+        # ``entries`` is the consumption order whether or not a phase table
+        # names boundaries in it, so the window is cut the same way either
+        # way.  Without phases the loop simply cannot *advance* the window
+        # later: no worker report maps to a byte count (#499).
+        target, phase = window_target(phases, read_entries,
+                                      consumed=0, budget=row_budget)
         if (prior and prior.get("status") == "complete") or (
                 target and target <= resident):
             # A row that is already resident needs nothing from this window,
@@ -1834,7 +1872,10 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             # that does not fit would evict the row that is running to make
             # room for one that is not.  It does not spend the lookahead
             # either -- a row too big for today's budget must not disable
-            # prewarm for the rows behind it that do fit.
+            # prewarm for the rows behind it that do fit.  What does not fit
+            # here is the row's *first entry*, not its manifest: a warm reads
+            # files, so there is no entry-aligned prefix inside one oversized
+            # entry to make resident.
             event["skipped"].append({
                 "action_key": key, "reason": "headroom",
                 "manifest_bytes": total, "budget": budget,
@@ -1844,9 +1885,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         taken += 1
         record = warm(
             key=key, manifest=manifest, digest=digest,
-            entries=(entries_between(read_entries, resident, target)
-                     if phases else read_entries),
-            start_bytes=resident if phases else 0,
+            entries=entries_between(read_entries, resident, target),
+            start_bytes=resident,
             target=target, phase=phase, phased=bool(phases),
             trigger=("progress" if target > row_budget_before_progress
                      else "claim"),

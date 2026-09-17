@@ -224,8 +224,10 @@ the `storage` role in `fleet_boxes.json`.  Every poll:
    its warmed window ahead of the accepted read frontier. A declared progress
    policy keeps that reservation past `--claim-grace-min`; missing observations
    release no bytes. Claims without a progress policy use the grace fallback.
-   Unphased manifests retain whole-manifest accounting. A manifest that fits
-   no window is skipped without a new prewarm record.
+   An unphased claim whose prefix is resident reserves that prefix, on the same
+   rule; a claim with nothing warmed, or one warmed whole, reserves its
+   manifest. A manifest that fits no window is skipped without a new prewarm
+   record.
 5. Reads the window's entries, in manifest order, through the host's local
    pool path (`--mount-map SHARED=LOCAL`), `--readers` at a time,
    `O_NOFOLLOW`, regular files only, paced by the pool's disks and by whether
@@ -274,7 +276,24 @@ describe reads and budgeting, not proof that ZFS still retains every page.
 
 For a windowed row, "already warm" means *everything the budget allows is
 resident*, which is the honest claim about a manifest that will never fit
-whole.  A manifest without phases keeps the whole-manifest rule, unchanged.
+whole.
+
+A manifest with no phase table is windowed the same way (#499).  `entries` is
+already the consumption order -- the phase table is a running sum over it --
+so the loop warms the longest entry-aligned prefix the budget allows, in
+manifest order, and records it with `"phased": false` and an empty
+`warmed_through_phase`.  What the phases buy is the *advance*, not the cut:
+without them no worker report maps to a byte count, so an unphased window
+stops following the reader the moment its row is claimed.  While the row is
+still ready a later poll extends its prefix as the budget grows; after the
+claim it stays where the budget left it.  Declare `annotations.phases` when
+you want the window to follow the reader.
+
+Before this, an unphased manifest larger than the budget was refused on every
+poll for as long as it was queued and its action read every byte off the
+spindles.  One refusal remains, and it is narrower: a single entry larger than
+the whole budget has no entry-aligned prefix inside it, because a warm reads
+files and not byte ranges.
 
 ### Following the running action, instead of its claim
 
