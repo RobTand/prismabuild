@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import pool  # noqa: E402
+from prismabuild import adaptive_cpu, pool  # noqa: E402
 
 KEY_A = "a" * 64
 KEY_B = "b" * 64
@@ -46,12 +46,11 @@ def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: objec
 
 
 def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    """This box's newest claim verdict for ``key``, from the published diagnostic copy."""
+    """This box's newest claim verdict for ``key``, from its host-local denial log."""
 
-    record = pool._read_json(q.ledger().base / "adaptive" / pool.CLAIM_DENIALS)
-    if not isinstance(record, dict):
-        return None
-    matching = [entry for entry in record.get("records", {}).values()
+    path = adaptive_cpu.local_state_base(q.ledger().base) / pool.CLAIM_DENIALS
+    records = adaptive_cpu.read_json(path).get("records", {})
+    matching = [entry for entry in records.values()
                 if isinstance(entry, dict) and entry.get("action_key") == key]
     if not matching:
         return None
@@ -209,14 +208,21 @@ def test_reap_stale_returns_tier_tokens_with_the_host_tokens(queue: pool.PoolQue
     assert requeued is not None and "tier_reservations" not in requeued
 
 
-def test_withdrawing_a_claimed_action_returns_tier_tokens(queue: pool.PoolQueue) -> None:
+def test_withdrawing_a_claimed_action_returns_tier_tokens_when_its_owner_concludes(
+    queue: pool.PoolQueue,
+) -> None:
     queue.mint_tier_capacity(TIER, {"stage_gib": 1})
     _publish(queue, KEY_A, {"cpu": 1, STAGE: 1})
     claimed = queue.claim(owner="mover", capacity={"cpu": 1})
     assert claimed is not None
     queue.withdraw(KEY_A)
+    # A withdrawal marks; the owner concludes the claimed attempt and that
+    # conclusion, filed under withdrawn, is what returns both ledgers.
+    assert queue.tier_holdings(KEY_A) == {TIER: {"stage_gib": 1}}
+    queue.finish(KEY_A, status="failed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
     assert queue.tier_holdings(KEY_A) == {}
+    assert queue.item_path(pool.WITHDRAWN, KEY_A).exists()
 
 
 def test_stale_tier_acquisition_is_swept_from_the_tier_root(queue: pool.PoolQueue) -> None:
