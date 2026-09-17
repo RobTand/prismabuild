@@ -236,7 +236,7 @@ def test_proc_stat_excludes_guest_double_count_and_iowait(tmp_path, monkeypatch)
             return 'cpu 100 0 100 100 0 0 0 0\ncpu4 10 0 10 70 10 0 0 0 10 0\ncpu8 900 0 100 0 0 0 0 0\n'
         if str(path) == '/proc/pressure/cpu':
             return ('some avg10=0.00 avg60=0.00 avg300=0.00 total=123\n'
-                    'full avg10=0.00 avg60=0.00 avg300=0.00 total=7\n')
+                    'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n')
         return original(path, *args, **kwargs)
     monkeypatch.setattr(Path, 'read_text', read)
     sample = adaptive_cpu.counters({4})
@@ -674,6 +674,64 @@ def test_disjoint_proof_honours_a_borrowed_allocation_in_metadata(tmp_path, monk
     # and 8 is the CPU this claim's first free token would be given.
     assert queue.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
                        adaptive_cpu=True) is None
+
+
+def test_pressure_override_never_borrows_a_busy_lender(tmp_path, monkeypatch):
+    """A high "some" believed because *this claim's* cores are idle must not
+    then hand it a held core that the same sample shows busy.
+
+    Ordinary admission lends a proven-cheap holder's preferred CPU to a claim
+    whose demand exceeds the free *preferred* tokens; that CPU is idle by the
+    holder's telemetry, not by the fresh sample.  Under the pressure override
+    the claim was admitted on the strength of the CPUs its own free tokens map
+    to, so borrowing must stay closed for that decision -- while the free
+    fallback tokens still admit it.
+    """
+    from prismabuild import adaptive_cpu
+    clock = [100.]
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    state = {'psi': 0., 'busy': {'0': 0., '1': 0., '2': 0.}}
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
+                        lambda self: _host_sample([0, 1, 2], state['busy'], state['psi']))
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    tiers = {'preferred': [0], 'fallback': [1, 2]}
+    capacity = {'cpu': 3, 'mem_gb': 4}
+
+    def publish(key):
+        queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
+                      checkout_root=str(tmp_path), worker_script='worker.py',
+                      resources={'cpu': 1, 'mem_gb': 1})
+
+    publish('a' * 64)
+    holder = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    assert holder and holder['cpu_allocation'] == {'preferred': [0], 'fallback': []}
+
+    # The holder proves cheap -- a fraction of a core over a two-second
+    # interval, against the reading a previous decision recorded -- which is
+    # exactly what makes its preferred CPU lendable.  One cumulative reading
+    # cannot establish a rate, so the earlier record is part of the setup.
+    base = adaptive_cpu.local_state_base(queue.ledger().base)
+    holder_name = next(path.name for path in queue.ledger().held_dir.iterdir()
+                       if path.is_dir())
+    key = holder['action_key']
+    adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
+        'action_key': key, 'sampled_unix': clock[0] + 1, 'cpu_seconds': .1,
+        'wall_seconds': 2., 'memory_current_bytes': 100, 'memory_peak_bytes': 100,
+        'complete': True})
+    adaptive_cpu.write_json(base / 'jobs.json', {
+        holder_name: {'sampled_unix': clock[0], 'wall_seconds': 1., 'cpu_seconds': 0.}})
+    clock[0] += 1
+
+    # The fresh sample: the holder's preferred core is at 1.0 and psi "some"
+    # is over the gate, while both free fallback cores are idle.
+    state['psi'] = .633
+    state['busy'] = {'0': 1., '1': 0., '2': 0.}
+    publish('b' * 64)
+    second = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    assert second, 'the idle free fallback token still admits under the override'
+    assert second['cpu_allocation'] == {'preferred': [], 'fallback': [1]}, \
+        'the busy borrowed preferred core must not be selected'
 
 
 @pytest.mark.parametrize('bad', [float('nan'), -0.1, 1.5, None])
