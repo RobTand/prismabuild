@@ -18,7 +18,7 @@ def test_host_cpu_pressure_stops_even_physically_free_admissions(tmp_path, monke
     # There is a CPU token free, but unrelated work occupies that core.
     from prismabuild import adaptive_cpu
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
-        'sampled_unix': time.time(), 'busy_cpus': 2., 'psi_some': 0.8,
+        'sampled_unix': time.time(), 'busy_cpus': 2., 'psi_some': 0.802,
         'cpu_count': 2, 'interval_s': 1.})
     queue = pool.PoolQueue(tmp_path / 'queue')
     queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
@@ -171,8 +171,10 @@ def test_cpu_samples_measure_busy_time_in_allowed_affinity_and_psi(tmp_path, mon
     queue = pool.PoolQueue(tmp_path / 'queue')
     controller = adaptive_cpu.Controller(queue.ledger(), {'preferred': [4], 'fallback': [8]})
     samples = iter([
-        {'sampled_unix': 10., 'cpus': {'4': [10, 100], '8': [20, 100]}, 'psi_total': 0},
-        {'sampled_unix': 20., 'cpus': {'4': [20, 200], '8': [70, 200]}, 'psi_total': 2000000},
+        {'sampled_unix': 10., 'cpus': {'4': [10, 100], '8': [20, 100]},
+         'psi_total': 0, },
+        {'sampled_unix': 20., 'cpus': {'4': [20, 200], '8': [70, 200]},
+         'psi_total': 2000000},
     ])
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: next(samples))
     assert controller.sample() == {}
@@ -233,7 +235,8 @@ def test_proc_stat_excludes_guest_double_count_and_iowait(tmp_path, monkeypatch)
         if str(path) == '/proc/stat':
             return 'cpu 100 0 100 100 0 0 0 0\ncpu4 10 0 10 70 10 0 0 0 10 0\ncpu8 900 0 100 0 0 0 0 0\n'
         if str(path) == '/proc/pressure/cpu':
-            return 'some avg10=0.00 avg60=0.00 avg300=0.00 total=123\n'
+            return ('some avg10=0.00 avg60=0.00 avg300=0.00 total=123\n'
+                    'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n')
         return original(path, *args, **kwargs)
     monkeypatch.setattr(Path, 'read_text', read)
     sample = adaptive_cpu.counters({4})
@@ -537,3 +540,217 @@ def test_returning_a_lost_claim_s_borrow_never_overwrites_a_newer_one(rig):
     controller.withdrew(newer, {'sampled_unix': spent['sampled_unix']})
     assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {
         'sampled_unix': spent['sampled_unix']}, 'a record still its own was not restored'
+
+def _host_sample(cpus, busy_by_cpu, psi_some, *, interval=10.):
+    """A fresh host sample with per-CPU occupancy, as the real sampler files it.
+
+    CPU PSI has no system-wide FULL state (kernel/sched/psi.c: "the FULL state
+    doesn't exist for the CPU resource at the system level", and the system
+    root's state mask omits PSI_CPU_FULL), so every sample here is the shape the
+    kernel can actually produce: some only, beside per-CPU busy fractions.
+    """
+    busy = sum(busy_by_cpu.get(cpu, 0.) for cpu in cpus)
+    return {'sampled_unix': time.time(), 'cpu_count': len(cpus), 'interval_s': interval,
+            'busy_cpus': busy, 'psi_some': psi_some,
+            'per_cpu_busy': {str(cpu): busy_by_cpu.get(cpu, 0.) for cpu in cpus}}
+
+
+@pytest.mark.parametrize('label,busy_by_cpu,psi,expect_admission', [
+    # A pinned neighbour: four of eighty cores at ~1.0, the rest idle.  PSI
+    # some is high because those four threads contend with each other, not
+    # because the host has nowhere left to run.
+    ('pinned_neighbour',
+     {cpu: (1. if cpu in (8, 9, 10, 11) else 0.) for cpu in range(80)}, .633, True),
+    # Real saturation: every core busy, PSI some high, still no FULL anywhere.
+    ('saturated', {cpu: 1. for cpu in range(80)}, .633, False),
+])
+def test_pressure_is_corroborated_by_fresh_per_cpu_idle_capacity(
+        tmp_path, monkeypatch, label, busy_by_cpu, psi, expect_admission):
+    from prismabuild import adaptive_cpu
+    cpus = list(range(80))
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
+                        lambda self: _host_sample(cpus, busy_by_cpu, psi))
+    queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 4, 'mem_gb': 4})
+    item = queue.claim(capacity={'cpu': 80, 'mem_gb': 64},
+                       cpu_tiers={'preferred': cpus, 'fallback': []},
+                       adaptive_cpu=True)
+    assert (item is not None) is expect_admission, label
+
+
+def test_pressure_without_per_cpu_telemetry_refuses_as_unknown(tmp_path, monkeypatch):
+    """Some-pressure with no per-CPU evidence is unknown, and unknown refuses."""
+    from prismabuild import adaptive_cpu
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+        'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 10.,
+        'busy_cpus': .1, 'psi_some': .2})
+    queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 1, 'mem_gb': 1})
+    assert queue.claim(capacity={'cpu': 2, 'mem_gb': 2},
+                       cpu_tiers={'preferred': [0], 'fallback': [1]},
+                       adaptive_cpu=True) is None
+
+
+def _seed_queue(queue, tiers, *, held_ordinals=(), allocation=None):
+    """A configured box with the given tokens already held by one action.
+
+    Tokens are ``cpu-<ordinal>``; the ordinal is a token index into
+    ``preferred + fallback``, never a CPU ID (pool.py: begin_acquire takes the
+    first free tokens in sorted order, cpu_allocation maps the ordinal through
+    the tiers).
+    """
+    from prismabuild import adaptive_cpu
+    ledger = queue.ledger()
+    # Bind tokens to CPUs before any reservation exists: the map is immutable
+    # once a holder is present (pool.py configure_cpu_tiers).
+    ledger.configure_cpu_tiers(tiers)
+    ledger.ensure_capacity({'cpu': len(tiers['preferred']) + len(tiers['fallback']), 'mem_gb': 1})
+    if held_ordinals:
+        holder = ledger.held_dir / 'held-action'
+        holder.mkdir(parents=True, exist_ok=True)
+        for ordinal in held_ordinals:
+            name = next(path.name for path in sorted(ledger.free_dir.glob('cpu-*'))
+                        if int(path.name.split('-')[-1]) == ordinal)
+            (ledger.free_dir / name).rename(holder / name)
+        metadata = {'declared_cpu': len(held_ordinals), 'admitted_unix': 0}
+        if allocation is not None:
+            metadata['allocation'] = allocation
+        (holder / adaptive_cpu.METADATA).write_text(json.dumps(metadata))
+
+
+NONCONTIGUOUS = {'preferred': [8, 10], 'fallback': [2, 4]}
+
+
+def test_disjoint_proof_maps_token_ordinals_through_the_tiers(tmp_path, monkeypatch):
+    """Held token ordinal 1 is CPU 10, not CPU 1; the claim would take 8 and 10."""
+    from prismabuild import adaptive_cpu
+    tiers = dict(NONCONTIGUOUS)
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    _seed_queue(queue, tiers, held_ordinals=(1,))
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    busy = {cpu: (1. if cpu == 10 else 0.) for cpu in (8, 10, 2, 4)}
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
+                        lambda self: _host_sample([8, 10, 2, 4], busy, .633))
+    queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 2, 'mem_gb': 1})
+    # demand 2 would take tokens 0 and 2 -> CPUs 8 and 2, both idle: admitted.
+    assert queue.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
+                       adaptive_cpu=True) is not None
+
+    queue2 = pool.PoolQueue(tmp_path / 'queue2')
+    _seed_queue(queue2, tiers, held_ordinals=(0,))
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
+                        lambda self: _host_sample([8, 10, 2, 4], busy, .633))
+    queue2.publish(action_key='b' * 64, cas_root=str(tmp_path / 'cas'),
+                   checkout_root=str(tmp_path), worker_script='worker.py',
+                   resources={'cpu': 1, 'mem_gb': 1})
+    # The first free token is ordinal 1 -> CPU 10, which the held action owns.
+    assert queue2.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
+                        adaptive_cpu=True) is None
+
+
+def test_disjoint_proof_honours_a_borrowed_allocation_in_metadata(tmp_path, monkeypatch):
+    """A borrowed CPU lives in the holder's metadata, not in its token ordinal."""
+    from prismabuild import adaptive_cpu
+    tiers = dict(NONCONTIGUOUS)
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    _seed_queue(queue, tiers, held_ordinals=(2,),
+                allocation={'preferred': [8], 'fallback': []})
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    busy = {cpu: 0. for cpu in (8, 10, 2, 4)}
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
+                        lambda self: _host_sample([8, 10, 2, 4], busy, .633))
+    queue.publish(action_key='c' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 1, 'mem_gb': 1})
+    # Token ordinal 2 is CPU 2, but the metadata says the holder holds CPU 8 --
+    # and 8 is the CPU this claim's first free token would be given.
+    assert queue.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
+                       adaptive_cpu=True) is None
+
+
+def test_pressure_override_never_borrows_a_busy_lender(tmp_path, monkeypatch):
+    """A high "some" believed because *this claim's* cores are idle must not
+    then hand it a held core that the same sample shows busy.
+
+    Ordinary admission lends a proven-cheap holder's preferred CPU to a claim
+    whose demand exceeds the free *preferred* tokens; that CPU is idle by the
+    holder's telemetry, not by the fresh sample.  Under the pressure override
+    the claim was admitted on the strength of the CPUs its own free tokens map
+    to, so borrowing must stay closed for that decision -- while the free
+    fallback tokens still admit it.
+    """
+    from prismabuild import adaptive_cpu
+    clock = [100.]
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    state = {'psi': 0., 'busy': {'0': 0., '1': 0., '2': 0.}}
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
+                        lambda self: _host_sample([0, 1, 2], state['busy'], state['psi']))
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    tiers = {'preferred': [0], 'fallback': [1, 2]}
+    capacity = {'cpu': 3, 'mem_gb': 4}
+
+    def publish(key):
+        queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
+                      checkout_root=str(tmp_path), worker_script='worker.py',
+                      resources={'cpu': 1, 'mem_gb': 1})
+
+    publish('a' * 64)
+    holder = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    assert holder and holder['cpu_allocation'] == {'preferred': [0], 'fallback': []}
+
+    # The holder proves cheap -- a fraction of a core over a two-second
+    # interval, against the reading a previous decision recorded -- which is
+    # exactly what makes its preferred CPU lendable.  One cumulative reading
+    # cannot establish a rate, so the earlier record is part of the setup.
+    base = adaptive_cpu.local_state_base(queue.ledger().base)
+    holder_name = next(path.name for path in queue.ledger().held_dir.iterdir()
+                       if path.is_dir())
+    key = holder['action_key']
+    adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
+        'action_key': key, 'sampled_unix': clock[0] + 1, 'cpu_seconds': .1,
+        'wall_seconds': 2., 'memory_current_bytes': 100, 'memory_peak_bytes': 100,
+        'complete': True})
+    adaptive_cpu.write_json(base / 'jobs.json', {
+        holder_name: {'sampled_unix': clock[0], 'wall_seconds': 1., 'cpu_seconds': 0.}})
+    clock[0] += 1
+
+    # The fresh sample: the holder's preferred core is at 1.0 and psi "some"
+    # is over the gate, while both free fallback cores are idle.
+    state['psi'] = .633
+    state['busy'] = {'0': 1., '1': 0., '2': 0.}
+    publish('b' * 64)
+    second = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    assert second, 'the idle free fallback token still admits under the override'
+    assert second['cpu_allocation'] == {'preferred': [], 'fallback': [1]}, \
+        'the busy borrowed preferred core must not be selected'
+
+
+@pytest.mark.parametrize('bad', [float('nan'), -0.1, 1.5, None])
+def test_impossible_per_cpu_evidence_refuses_instead_of_being_ignored(tmp_path, monkeypatch, bad):
+    """One unknown CPU is unknown evidence, never a CPU that is quietly idle."""
+    from prismabuild import adaptive_cpu
+    tiers = dict(NONCONTIGUOUS)
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    _seed_queue(queue, tiers)
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+
+    def sample(self):
+        value = _host_sample([8, 10, 2, 4], {cpu: 0. for cpu in (8, 10, 2, 4)}, .633)
+        value['per_cpu_busy']['4'] = bad
+        return value
+
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', sample)
+    queue.publish(action_key='d' * 64, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 1, 'mem_gb': 1})
+    assert queue.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
+                       adaptive_cpu=True) is None

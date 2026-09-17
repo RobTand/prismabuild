@@ -1538,15 +1538,47 @@ class ResourceLedger:
             metadata = _read_json(self.held_dir / holder / cpu_admission.METADATA)
         if metadata is not None and "allocation" in metadata:
             return metadata["allocation"]
+        cpus = self.cpu_ids(_glob(self.held_dir / holder, "cpu-*"), tiers)
+        return {kind: [c for c in tiers[kind] if c in cpus]
+                for kind in ("preferred", "fallback")}
+
+    def cpu_ids(self, tokens, tiers: Mapping) -> list[int]:
+        """The CPUs a sequence of ``cpu-<ordinal>`` tokens represents.
+
+        One home for the rule that ``begin_acquire`` selects by and
+        ``cpu_allocation`` reports: the suffix is a *token ordinal* into
+        ``preferred + fallback``, never a CPU id.  An ordinal outside the
+        configured topology is a contract error, because the token map is
+        fixed for the life of a holder while the topology must not shrink
+        underneath it.
+        """
         ordered = list(tiers["preferred"]) + list(tiers["fallback"])
         cpus = []
-        for token in _glob(self.held_dir / holder, "cpu-*"):
+        for token in tokens:
             index = int(token.name.split("-")[-1])
             if index >= len(ordered):
                 raise PoolContractError("CPU token exceeds configured topology")
             cpus.append(ordered[index])
-        return {kind: [c for c in tiers[kind] if c in cpus]
-                for kind in ("preferred", "fallback")}
+        return cpus
+
+    def free_cpu_allocation(self, need: int, tiers: Mapping) -> list[int] | None:
+        """The CPUs the next ``need`` free ``cpu-*`` tokens would be given.
+
+        ``begin_acquire`` takes the first ``need`` free tokens in ``_glob``
+        (sorted) order and maps them through the same ordinal rule, so a caller
+        asking "which CPUs is this claim about to get?" reads one rule rather
+        than keeping a second copy of the selection policy in step with it.
+        ``None`` is the honest answer when the question cannot be answered --
+        fewer free tokens than the demand, or an ordinal the topology no longer
+        covers -- and callers treat it as unknown, never as idle.
+        """
+        tokens = _glob(self.free_dir, "cpu-*")[:need]
+        if len(tokens) < need:
+            return None
+        try:
+            return self.cpu_ids(tokens, tiers)
+        except PoolContractError:
+            return None
 
     def free_preferred(self, tiers: Mapping) -> int:
         return sum(int(token.name.split("-")[-1]) < len(tiers["preferred"])

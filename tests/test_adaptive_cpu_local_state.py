@@ -33,7 +33,7 @@ def test_cpu_sample_does_not_write_shared_bookkeeping_under_admission(tmp_path, 
 
     monkeypatch.setattr(adaptive_cpu, 'write_json', reject_remote)
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: {
-        'sampled_unix': 10., 'cpus': {'0': [10, 100]}, 'psi_total': 0})
+        'sampled_unix': 10., 'cpus': {'0': [10, 100]}, 'psi_total': 0, })
     with controller.locked():
         assert controller.sample() == {}
 
@@ -42,7 +42,7 @@ def test_cpu_intervals_are_shared_by_new_controllers_but_not_other_ledgers(tmp_p
     queue = pool.PoolQueue(tmp_path / 'queue')
     tiers = {'preferred': [0], 'fallback': []}
     samples = iter([
-        {'sampled_unix': 10., 'cpus': {'0': [10, 100]}, 'psi_total': 0},
+        {'sampled_unix': 10., 'cpus': {'0': [10, 100]}, 'psi_total': 0, },
         {'sampled_unix': 12., 'cpus': {'0': [30, 200]}, 'psi_total': 200000},
         {'sampled_unix': 12., 'cpus': {'0': [30, 200]}, 'psi_total': 200000},
     ])
@@ -96,7 +96,7 @@ raise SystemExit(snap.main(sys.argv[1:]))
     monkeypatch.setattr(adaptive_snapshot.subprocess, 'Popen', launch)
     monkeypatch.setattr(adaptive_snapshot, 'MIN_PUBLISH_INTERVAL_S', 0.)
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: {
-        'sampled_unix': 10., 'cpus': {'0': [10, 100]}, 'psi_total': 0})
+        'sampled_unix': 10., 'cpus': {'0': [10, 100]}, 'psi_total': 0, })
     with controller.locked():
         controller.sample()
     child = adaptive_snapshot._children[-1]
@@ -142,14 +142,14 @@ def test_snapshot_preserves_source_age_and_is_never_read_back(tmp_path, monkeypa
     controller = adaptive_cpu.Controller(queue.ledger(), {'preferred': [0], 'fallback': []})
     shared = queue.ledger().base / 'adaptive'
     adaptive_cpu.write_json(controller.base / 'cpu-sample.json', {
-        'sampled_unix': 10., 'cpus': {'0': [10, 100]}, 'psi_total': 0})
+        'sampled_unix': 10., 'cpus': {'0': [10, 100]}, 'psi_total': 0, })
     assert adaptive_snapshot.copy_snapshot(controller.base, shared) == ['cpu-sample.json']
     record = adaptive_cpu.read_json(shared / 'cpu-sample.json')
     assert record['_snapshot']['copied_unix'] > 10.
     assert pbstatus._admission_sample(record, now=20., max_age_s=5.)['state'] == 'stale'
     (controller.base / 'cpu-sample.json').unlink()
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: {
-        'sampled_unix': 11., 'cpus': {'0': [20, 200]}, 'psi_total': 0})
+        'sampled_unix': 11., 'cpus': {'0': [20, 200]}, 'psi_total': 0, })
     with controller.locked():
         assert controller.sample() == {}
 
@@ -190,7 +190,7 @@ def test_shared_cpu_sample_is_not_an_authoritative_input(tmp_path, monkeypatch):
         'sampled_unix': 10., 'cpus': {'0': [10, 100]}, 'psi_total': 0,
         'observation': {'busy_cpus': 0., 'sampled_unix': 10.}})
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: {
-        'sampled_unix': 10.5, 'cpus': {'0': [20, 200]}, 'psi_total': 0})
+        'sampled_unix': 10.5, 'cpus': {'0': [20, 200]}, 'psi_total': 0, })
     # A cold local sampler needs its own interval. A retained shared copy may
     # belong to an earlier boot/generation and must not supply lending credit.
     with controller.locked():

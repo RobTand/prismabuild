@@ -21,6 +21,12 @@ import uuid
 
 from . import adaptive_snapshot
 
+#: A CPU is treated as idle for admission corroboration when it was busy for
+#: at most this fraction of the fresh sampling interval.  Small on purpose: a
+#: pinned neighbour sits at ~1.0, so this separates "nobody ran here" from
+#: "someone ran here", not "lightly used" from "heavily used".
+IDLE_BUSY_FRACTION = .05
+
 MAX_SAMPLE_AGE_S = 5.0
 MIN_INTERVAL_S = 1.0
 MAX_INTERVAL_S = 60.0
@@ -113,8 +119,18 @@ def counters(cpus):
                 return None
             total = sum(ticks)
             values[str(cpu)] = [total - ticks[3] - ticks[4], total]
-        psi = next(line for line in Path('/proc/pressure/cpu').read_text().splitlines()
-                   if line.startswith('some '))
+        # Only "some" exists for the CPU resource at the system level: the
+        # kernel records FULL for CPU under a cgroup, never for psi_system
+        # (kernel/sched/psi.c -- "the FULL state doesn't exist for the CPU
+        # resource at the system level", and the state mask at the system
+        # root omits PSI_CPU_FULL).  Reading it here would compare a value the
+        # kernel never advances, so the pressure gate is corroborated with
+        # occupancy instead.
+        try:
+            psi = next(line for line in Path('/proc/pressure/cpu').read_text().splitlines()
+                       if line.startswith('some '))
+        except StopIteration:
+            return None
         pressure = int(dict(part.split('=') for part in psi.split()[1:])['total'])
     except (OSError, ValueError, StopIteration):
         return None
@@ -365,6 +381,20 @@ class Controller:
     def write_state(self, name, value):
         write_json(self.base / name, value)
 
+    def _predicted_cpus(self, need: int) -> list[int] | None:
+        """The CPUs this claim's tokens would represent, by the ledger's rule.
+
+        ``ResourceLedger.begin_acquire`` takes the first ``need`` free
+        ``cpu-*`` tokens in sorted-name order and maps each token ordinal to
+        ``(preferred + fallback)[ordinal]``.  The ordinal is a token index,
+        never a CPU ID, so this asks the ledger for that same answer instead of
+        keeping a second copy of the selection rule here.  ``None`` means the
+        question cannot be answered -- fewer free tokens than the demand, or an
+        ordinal outside the configured topology -- and the caller treats that
+        as unknown rather than as idle.
+        """
+        return self.ledger.free_cpu_allocation(need, self.tiers)
+
     @contextmanager
     def locked(self):
         """Hold box admission for the block, or raise ``AdmissionBusy`` at once.
@@ -484,13 +514,73 @@ class Controller:
                  and sample.get('cpu_count') == len(self.cpus)
                  and all(isinstance(sample.get(key), (float, int)) and math.isfinite(sample[key])
                          for key in ('busy_cpus', 'psi_some', 'interval_s')))
-        if fresh and (sample['psi_some'] >= .10 or sample['busy_cpus'] >= .95 * len(self.cpus)):
+        # There is no system-wide CPU FULL to corroborate "some" with: the
+        # kernel records FULL for CPU only under a cgroup, never for
+        # psi_system (kernel/sched/psi.c: "the FULL state doesn't exist for the
+        # CPU resource at the system level"; the system root's state mask omits
+        # PSI_CPU_FULL).  So the corroboration is the occupancy the sampler
+        # already keeps per CPU.  The host-wide saturation gate is unchanged and
+        # stands alone; what follows only decides whether a high "some" reading
+        # is this action's problem or a pinned neighbour's local contention.
+        holders = [p for p in self.ledger.held_dir.iterdir() if p.is_dir()]
+        if fresh and sample['busy_cpus'] >= .95 * len(self.cpus):
             return refuse("host_pressure", fresh=fresh)
+        # Resolved once, before the pressure decision reads the demand.  The
+        # caller may have pre-read the sealed identity, and the measurement and
+        # ownership paths below all need the same answer rather than a second
+        # read of the same CAS record.
         shape, measurement = action_identity(item) if identity is None else identity
-        unbounded_cpu = not int(demand.get('cpu', 0))
+        declared = int(demand.get('cpu', 0))
+        unbounded_cpu = not declared
+        # True only when a high "some" was believed because the CPUs this
+        # claim would actually be given are idle.  It keeps the proof and the
+        # claim's real selection in step: the lending path below can hand a
+        # claim a *held* CPU, which that proof never saw.
+        pressure_override = False
+        if fresh and sample['psi_some'] >= .10:
+            # System-wide CPU PSI "some" counts any task anywhere waiting for a
+            # CPU, so one job pinned to a few cores with more runnable threads
+            # than cores holds it high while most of the box is idle (measured:
+            # 0.63 with 6.7 of 80 cores busy).  It is believed only when the
+            # CPUs this claim would actually be given are not idle.
+            #
+            # "Would actually be given" is the ledger's own rule, not a count:
+            # ``begin_acquire`` takes the first ``need`` free ``cpu-*`` tokens
+            # in ``_glob`` (sorted) order, and ``cpu_allocation`` maps a token
+            # ordinal through ``preferred + fallback`` -- the ordinal is NOT a
+            # CPU ID, so tiers such as preferred [8, 10] / fallback [2, 4] make
+            # token 0 CPU 8.  Held CPUs come from ``cpu_allocation`` as well,
+            # which is what carries a borrowed allocation recorded in the
+            # holder's metadata.  Anything unreadable or out of range is
+            # unknown, and unknown refuses rather than being read as idle.
+            per_cpu = sample.get('per_cpu_busy')
+            if (not isinstance(per_cpu, dict)
+                    or set(per_cpu) != {str(cpu) for cpu in self.cpus}
+                    or any(type(busy) not in (int, float) or not math.isfinite(busy)
+                           or busy < 0 or busy > 1 for busy in per_cpu.values())):
+                return refuse("host_pressure_unproven", fresh=fresh)
+            # Fresh high pressure refuses these paths whatever the per-CPU
+            # reading says.  A measurement needs a host it can trust as idle,
+            # unbounded demand has no CPU set the proof could cover, and a
+            # full-width reservation would take the whole box for one action.
+            # A learned cheap cost and an all-zero reading are not evidence of
+            # ownership, so neither reopens this refusal.
+            if measurement or unbounded_cpu or declared == len(self.cpus):
+                return refuse("host_pressure", fresh=fresh)
+            held = set()
+            for holder in holders:
+                allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
+                held.update(allocation['preferred'] + allocation['fallback'])
+            predicted = self._predicted_cpus(declared)
+            if predicted is None:
+                return refuse("host_pressure_unproven", fresh=fresh)
+            busy = [cpu for cpu in predicted
+                    if cpu in held or per_cpu[str(cpu)] > IDLE_BUSY_FRACTION]
+            if busy:
+                return refuse("host_pressure", fresh=fresh, cpus=sorted(busy)[:8])
+            pressure_override = True
         if measurement and (not fresh or sample['busy_cpus'] > .05 * len(self.cpus)):
             return refuse("measurement_host_not_idle", fresh=fresh)
-        holders = [p for p in self.ledger.held_dir.iterdir() if p.is_dir()]
         if len(holders) >= MAX_ACTIONS:
             return refuse("max_actions", holders=len(holders))
         # Legacy producers sometimes reserved only GPU/memory. Their children
@@ -575,7 +665,6 @@ class Controller:
         self.write_state('jobs.json', next_recent)
         profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
         self.write_state('profiles.json', profiles)
-        declared = int(demand.get('cpu', 0))
         learned = profiles.get(shape, {}) if shape else {}
         learned_valid = (learned.get('samples', 0) >= 3
                          and 0 <= now - learned.get('sampled_unix', 0) < 86400)
@@ -599,6 +688,23 @@ class Controller:
                                 len(borrowable & set(self.tiers['preferred'])))
                             if can_borrow else 0)
         borrowing = available < declared or preferred_borrow > 0
+        if pressure_override:
+            # The override above was earned by the CPUs this claim's own free
+            # tokens map to.  A borrowed CPU is different evidence: it is a
+            # *held* reservation judged idle from its holder's telemetry, not
+            # from the fresh sample that proof read, so the proof does not
+            # cover it -- and a borrowed CPU can be busy right now while its
+            # holder's average still reads cheap.  Rather than extend the proof
+            # to a CPU it never saw, the lending path is closed for this one
+            # decision: the claim is still admitted when ordinary free tokens
+            # cover its demand.  Ordinary borrowing, taken when no pressure
+            # override is in play, is unchanged.
+            if available < declared:
+                return refuse("pressure_override_no_borrow",
+                              available_cpu=available, declared_cpu=declared)
+            can_borrow, preferred_borrow = False, 0
+            borrowable = set()
+            borrowing = False
         if borrowing:
             last = read_json(self.base / 'last-borrow.json').get('sampled_unix', 0)
             if (not fresh or not shape or measurement or not lendable

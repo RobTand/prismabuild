@@ -191,7 +191,13 @@ pool uses free preferred cores first. Before it uses fallback cores, it may lend
 freshly attributed, lightly used preferred capacity from another generation
 action; it may also admit beyond the physical token count when the same evidence
 and current host headroom support it. Host CPU use and pressure include work
-outside PrismaBuild and can stop further admission. Missing, stale or incomplete
+outside PrismaBuild. Fresh pressure ordinarily refuses a new CPU claim, and it
+refuses measurements, unbounded demand that declares no CPU count, and
+full-width reservations outright; only an ordinary bounded generation claim
+narrower than the host may proceed under `some >= .10`, and only when the CPUs
+its own free tokens would map to are all idle (`per_cpu_busy <= .05`) and
+unheld, with borrowing disabled for that decision. Missing, malformed or
+out-of-range per-CPU evidence under fresh high pressure refuses as unknown. Missing, stale or incomplete
 attempt telemetry grants no lending credit. Memory demand is never discounted. GPU concurrency uses its own trusted device
 admission policy rather than CPU lending; measurements do not borrow CPU
 capacity or overlap another

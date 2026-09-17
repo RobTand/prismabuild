@@ -2794,6 +2794,20 @@ authorizes GPU sharing. GPU admission uses its own broker evidence below.
 An ordinary action may still acquire physically free tokens when per-attempt
 telemetry cannot be read, but it receives no borrowing credit.
 
+Fresh host pressure is a refusal, not a hint. At or above 95% occupancy a new
+CPU claim is refused; so is a fresh PSI `some >= .10`, unless the claim is an
+ordinary bounded generation claim narrower than the host and the CPUs its own
+free tokens would map to are all idle (`per_cpu_busy <= .05`) and none is held
+by another action. That exception places the claim on those disjoint free
+tokens and disables borrowing for the decision, so a proven-idle held CPU is
+never shared under pressure. Measurements, unbounded demand that declares no
+CPU count, and full-width reservations keep the pressure refusal whatever
+their per-CPU reading says; a learned cheap cost or an all-zero reading does
+not reopen it. Missing, malformed or out-of-range per-CPU evidence under fresh
+high pressure is unknown and refuses. An absent or stale overall sample keeps
+its existing behavior: an ordinary bounded claim on free tokens can still be
+placed, while borrowing and measurement need fresh evidence.
+
 Measurements are stricter. They require a fresh nearly idle CPU observation,
 do not share CPU reservations, and wait while another CPU action is held on the
 host. Use the pool's platform-keyed default or explicit class placement, or SLURM's
