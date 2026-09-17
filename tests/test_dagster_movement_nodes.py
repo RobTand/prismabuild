@@ -130,7 +130,7 @@ def test_residency_descriptor_is_canonical_and_bounded() -> None:
 def test_valid_mover_and_consumer_form_a_graph(tmp_path: Path) -> None:
     mover, consumer = _graph(tmp_path)
     graph = pd.ActionGraph([consumer, mover])
-    ordered = [spec.action_key for spec in graph.ordered_specs()]
+    ordered = [spec.action_key for spec in graph.ordered_specs]
     assert ordered.index(mover.action_key) < ordered.index(consumer.action_key)
     assert mover.movement is not None
     assert mover.movement.consumer_action_key == consumer.action_key
@@ -212,7 +212,7 @@ def test_action_spec_config_round_trips_v1_and_v2(tmp_path: Path) -> None:
     v1 = dict(plain, schema=pd.DAGSTER_ACTION_SPEC_SCHEMA_V1)
     assert pd.ActionSpec.from_config(consumer.action, v1).movement is None
     # A v2 record with an explicit null movement is a plain node.
-    v2_null = dict(plain, movement=None)
+    v2_null = dict(plain, schema=pd.DAGSTER_ACTION_SPEC_SCHEMA_V2, movement=None)
     assert pd.ActionSpec.from_config(consumer.action, v2_null).movement is None
     # A v1 record must not carry a movement it has no schema for.
     with pytest.raises(pd.DagsterGraphError):
