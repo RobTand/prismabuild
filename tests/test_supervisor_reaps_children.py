@@ -58,7 +58,10 @@ def test_tick_reaps_children_from_previous_process_image(tmp_path, exit_before_e
             str(live_read),
         ], pass_fds=(live_read,))
         os.close(live_read)
+        # The exec'd interpreter does not inherit pytest's module repointing.
         supervise.CLAIM = Path({str(tmp_path / 'claim')!r})
+        supervise.SYSTEMD_UNIT = Path({str(tmp_path / 'absent.service')!r})
+        supervise.ensure_roles = lambda *a, **k: []
         supervise.declared_shape = lambda *a, **k: (0, [])
         supervise._loaded_published_generation = lambda: None
         supervise._next_log_index = lambda: 0

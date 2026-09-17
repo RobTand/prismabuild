@@ -2301,7 +2301,11 @@ and process census remain source evidence, not live-host qualification.
 An epoch also binds the exact SHA-256 of `publish_runtime.py`. Source and target
 generations must carry the same updater and coordinator bytes, and recovery
 rechecks its captured coordinator bytes plus the imported updater-marker
-semantics before every pointer move or decision publication. A coordinator
+semantics before every pointer move or decision publication. Import retains
+only the loaded module code object; the first operational identity read hashes
+source bytes after confirming they compile to that code, before reading an
+epoch. Subsequent reads require the captured byte hash, so source changes cannot
+silently replace an already loaded coordinator. A coordinator
 change therefore needs a reviewed rolling bridge before it can drive a barrier.
 
 Workers, including the one-shot entrypoint, refuse admission when the local

@@ -114,6 +114,7 @@ LIVE_DEFAULTS = (
     # it was the thing being diagnosed.
     ("mount_latency", "DEFAULT_MOUNT", "fleet"),
     ("publish_runtime", "MIRROR", "fleet/repo"),
+    ("qualify_rollout", "QUALIFICATION_ROOT", "qualification"),
     ("seal_and_publish", "SH", "fleet"),
     ("pbtest", "SHARED", "mount"),
     ("tessera_status", "SH", "fleet"),

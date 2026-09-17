@@ -14,10 +14,14 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 import pbrun  # noqa: E402
 
 
+@pytest.mark.parametrize("use_defaults", [False, True])
 def test_v2_requires_published_and_verified_core_and_storage_reader(
-        tmp_path: Path) -> None:
+        tmp_path: Path, monkeypatch, use_defaults) -> None:
     source = tmp_path / "source"
-    published = tmp_path / "published"
+    published = tmp_path / "fleet" / "repo"
+    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", source)
+    monkeypatch.setattr(pbrun, "SH", published.parent)
+    roots = {} if use_defaults else {"source_root": source, "published_root": published}
     members = ("src/prismabuild/core.py", "tools/fleet/prewarm_loop.py")
     files = {}
     for member in members:
@@ -29,18 +33,15 @@ def test_v2_requires_published_and_verified_core_and_storage_reader(
         deployed.write_bytes(original.read_bytes())
         files[member] = hashlib.sha256(original.read_bytes()).hexdigest()
     (published / "RUNTIME_VERSION.json").write_text(json.dumps({"files": files}))
-    pbrun.require_deployed_read_plan_storage(source_root=source,
-                                               published_root=published)
+    pbrun.require_deployed_read_plan_storage(**roots)
     (published / members[1]).write_text("old prewarmer")
     with pytest.raises(SystemExit, match="compatible published storage"):
-        pbrun.require_deployed_read_plan_storage(source_root=source,
-                                                   published_root=published)
+        pbrun.require_deployed_read_plan_storage(**roots)
     (published / members[1]).write_bytes((source / members[1]).read_bytes())
     files[members[1]] = "0" * 64
     (published / "RUNTIME_VERSION.json").write_text(json.dumps({"files": files}))
     with pytest.raises(SystemExit, match="compatible published storage"):
-        pbrun.require_deployed_read_plan_storage(source_root=source,
-                                                   published_root=published)
+        pbrun.require_deployed_read_plan_storage(**roots)
 
 
 def test_v2_progress_phases_must_follow_the_read_timeline() -> None:

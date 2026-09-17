@@ -1867,8 +1867,8 @@ def progress_required_tags(policy: Mapping[str, object]) -> list[str]:
         [pb.PROGRESS_CYCLE_TAG] if policy.get("cycle") else [])
 
 
-def require_deployed_read_plan_storage(*, source_root: Path = RUNTIME_ROOT,
-                                       published_root: Path = SH / "repo") -> None:
+def require_deployed_read_plan_storage(*, source_root: Path | None = None,
+                                       published_root: Path | None = None) -> None:
     """Refuse a v2 row until the published storage reader has the same bytes.
 
     A source checkout can seal v2 before the fleet's storage role knows it.
@@ -1877,6 +1877,8 @@ def require_deployed_read_plan_storage(*, source_root: Path = RUNTIME_ROOT,
     The operator also verifies the DL380 role has reloaded that generation.
     """
 
+    source_root = RUNTIME_ROOT if source_root is None else source_root
+    published_root = SH / "repo" if published_root is None else published_root
     try:
         receipt = json.loads((published_root / "RUNTIME_VERSION.json").read_text())
         files = receipt["files"]

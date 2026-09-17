@@ -39,6 +39,10 @@ LIVE_MOUNT = "/mnt/shared"
 #: "is this on shared storage?", and repointing it does no I/O either way
 #: while silently changing the answer the test is checking.
 EXEMPT: dict[tuple[str, str], str] = {
+    ("supervise", "SYSTEMD_EXEC"): (
+        "classifier: compared to lines read from SYSTEMD_UNIT to recognize "
+        "the managed service; never executed or opened as a path"
+    ),
     ("pbrun", "SHARED_ROOT"): (
         "classifier: reached only by relative_to() in the placement rules and "
         "by the text of two operator messages, never opened"
@@ -76,6 +80,14 @@ ENV_BACKED: dict[tuple[str, str], str] = {
 }
 
 HOST_LOCAL: dict[tuple[str, str], str] = {
+    ("supervise", "SYSTEMD_UNIT"): (
+        "user service file under the home directory; repointed so tests do not "
+        "depend on or modify the installed supervisor service"
+    ),
+    ("worker_loop", "PUBLICATION_LOCK_ROOT"): (
+        "host-local publication fence owned by live workers; repointed so "
+        "tests never contend on their lock inode"
+    ),
     ("prismabuild.adaptive_cpu", "BOX_STATE_ROOT"): (
         "under /tmp, so not the live store -- but live *state* owned by the "
         "loops running on this box, and the suite was minting a permanent lock "
