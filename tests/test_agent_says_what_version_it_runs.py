@@ -352,7 +352,8 @@ def test_the_parent_hands_the_child_a_dropped_credential_invocation(tmp_path, mo
         # The parent hands over a temporary file it closes on return, so the
         # content is read here, where the child would read it.
         seen['content'] = kwargs['stdin'].read()
-        return type('R', (), {'returncode': 0, 'stderr': b''})()
+        return type('R', (), {'returncode': 0, 'stderr': b'',
+                              'stdout': b'{"created": true}\n'})()
 
     config_path = tmp_path / 'client-upgrade.json'
     config = {'generation_store': str(tmp_path / 'fleet' / 'runtime-generations'),
