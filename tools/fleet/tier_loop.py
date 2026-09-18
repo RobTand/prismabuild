@@ -720,6 +720,17 @@ def cycle(
         # otherwise have to guess.
         record["mover_python"] = MOVER_PYTHON
         record["mover_tools_root"] = MOVER_TOOLS_ROOT
+        if (record.get("tier") == "stage" and record.get("mountpoint")
+                and str(record.get("host") or "") == host):
+            # This box's own stage is marked as this queue's before the tier
+            # is announced, so the sweep below and every egress row sealed
+            # against the announcement find the root owned (#628).  A stage
+            # another box announces is that box's loop's to mark; a root that
+            # is read-only here or already another queue's is announced with
+            # the refusal on the record, and the sweep refuses on the same
+            # fact rather than deleting under it.
+            record["stage_root_owner"] = stage_release.register_stage_root(
+                queue, tier_id=tier_id, stage_root=str(record["mountpoint"]))
         record["ledger"] = queue.mint_tier_capacity(tier_id, tokens)
         queue.announce_tier(record)
         announced.append(record)

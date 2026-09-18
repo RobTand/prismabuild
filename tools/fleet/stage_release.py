@@ -40,6 +40,17 @@ bytes no key holds are invisible to either for the life of the fleet.  That is
 what a withdrawn mid-copy mover leaves --- the shards it verified and renamed
 into place, and its ``.partial`` temporaries --- and its tokens have already
 gone back by then, so nothing keyed can find it.
+
+**A stage root belongs to one queue, and says so (#628).**  Every rule above
+decides *what* to delete; none of them asked *whose* stage was being walked.
+On 2026-09-18 a test announced ``/stage/prewarm`` to a queue under
+``tmp_path`` on the storage box, that queue's fragments attributed nothing,
+and :func:`reconcile` deleted 671 GB of staged shards in one walk while the
+run they were staged for was reading them.  So the tier loop writes
+:data:`STAGE_ROOT_MARKER` beside the staged bytes when it announces the tier
+(:func:`register_stage_root`), and :func:`sweep`, :func:`reconcile` and
+:func:`evict` delete nothing under a root whose marker is missing, unreadable
+or names another queue --- they say why in the receipt and keep the tokens.
 """
 
 from __future__ import annotations
@@ -85,6 +96,138 @@ PARTIAL_SUFFIX = ".partial"
 #: The event a reconciled eviction publishes, so an operator can tell bytes a
 #: mover's own fragment named from bytes nothing named at all.
 UNATTRIBUTED_EVENT = "stage-unattributed-evicted"
+
+#: The file a stage root carries to say which queue it belongs to (#628), and
+#: the event a sweep publishes when a root does not belong to it.
+STAGE_ROOT_MARKER = ".prismabuild-stage.json"
+STAGE_ROOT_MARKER_SCHEMA_V1 = "prismabuild.stage-root.v1"
+STAGE_ROOT_REFUSED_EVENT = "stage-root-refused"
+
+
+def queue_identity(queue: pool.PoolQueue) -> str:
+    """The string a marker names a queue by: its root's real path.
+
+    The tier loop, the worker loops and the egress CLI on the storage box all
+    spell the queue as ``/mnt/shared/prismabuild-fleet/pb-queue``, and the real
+    path is what they agree on even where one of them is handed a symlink.
+    """
+
+    return os.path.realpath(str(queue.root))
+
+
+def read_stage_root_marker(stage_root: str | Path) -> dict[str, object] | None:
+    """The marker under ``stage_root``, or ``None`` when there is none.
+
+    Raises ``OSError`` for anything but absence and ``ValueError`` for a file
+    that is not the object this module writes; both are "cannot answer", which
+    every caller reads as "not mine".
+    """
+
+    path = Path(stage_root) / STAGE_ROOT_MARKER
+    try:
+        with open(path) as stream:
+            marker = json.load(stream)
+    except FileNotFoundError:
+        return None
+    if (not isinstance(marker, dict)
+            or marker.get("schema") != STAGE_ROOT_MARKER_SCHEMA_V1):
+        raise ValueError(f"{path}: not a stage-root marker")
+    return marker
+
+
+def stage_root_refusal(queue: pool.PoolQueue, stage_root: str | Path) -> str | None:
+    """Why this queue may not delete under ``stage_root``; ``None`` when it may.
+
+    Owned means a marker is there and names this queue.  Missing, unreadable,
+    malformed and another queue's marker all refuse: the failure this guards
+    is deleting what is not one's own, so every answer short of "yes, mine" is
+    "no".  Nothing here is a policy about *when* a root is claimable --- an
+    unregistered root refuses too, and only :func:`register_stage_root` turns
+    it into an owned one.
+    """
+
+    try:
+        marker = read_stage_root_marker(stage_root)
+    except OSError as exc:
+        return f"stage_root_marker_unreadable: {exc}"
+    except ValueError as exc:
+        return f"stage_root_marker_invalid: {exc}"
+    if marker is None:
+        return "stage_root_unregistered"
+    owner = str(marker.get("queue_root") or "")
+    if owner != queue_identity(queue):
+        return f"stage_root_belongs_to_another_queue: {owner}"
+    return None
+
+
+def register_stage_root(queue: pool.PoolQueue, *, tier_id: str,
+                        stage_root: str | Path) -> str:
+    """Mark ``stage_root`` as this queue's, or say why it could not be.
+
+    Returns ``"registered"`` --- written now, or already naming this queue ---
+    or the refusal.  A marker naming another queue is never overwritten: the
+    box's loop claiming a root a test's queue registered, or the reverse, is
+    the two-owners state this exists to refuse, and the operator removes the
+    marker by hand when the queue really has moved.  A root this queue cannot
+    write (the Sparks mount the stage read-only) is reported, not raised: the
+    tier is still announced, and the sweep refuses it on the same fact.
+    Written by temporary and ``os.replace`` so a reader never sees half of it.
+    """
+
+    refusal = stage_root_refusal(queue, stage_root)
+    if refusal is None:
+        return "registered"
+    if refusal != "stage_root_unregistered":
+        return refusal
+    path = Path(stage_root) / STAGE_ROOT_MARKER
+    marker = {
+        "schema": STAGE_ROOT_MARKER_SCHEMA_V1,
+        "queue_root": queue_identity(queue),
+        "queue_root_given": str(queue.root),
+        "tier_id": str(tier_id),
+        "host": socket.gethostname(),
+        "unix": time.time(),
+    }
+    temporary = path.with_name(f".{STAGE_ROOT_MARKER}.{os.getpid()}.tmp")
+    try:
+        with open(temporary, "w") as stream:
+            json.dump(marker, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        os.replace(temporary, path)
+    except OSError as exc:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        return f"stage_root_marker_unwritable: {exc}"
+    return "registered"
+
+
+def _refused_receipt(*, tier_id: str, stage_root: str | Path, refusal: str,
+                     mover_action_key: str = "", consumer_action_key: str = "",
+                     reason: str = "orphan-sweep") -> dict[str, object]:
+    """The receipt a refused deletion leaves: nothing deleted, nothing released."""
+
+    return {
+        "schema": pool.POOL_EGRESS_SCHEMA_V1,
+        "event": STAGE_ROOT_REFUSED_EVENT,
+        "action_key": mover_action_key,
+        "consumer_action_key": consumer_action_key,
+        "tier_id": tier_id,
+        "stage_root": str(stage_root),
+        "reason": reason,
+        "entries_deleted": 0,
+        "entries_already_gone": 0,
+        "bytes_deleted": 0,
+        "tokens_released": 0,
+        "skipped": refusal,
+        # Not complete: whatever this key's bytes are, they are still where
+        # they were, and the tokens that stand for them stay held.
+        "complete": False,
+        "errors": [refusal],
+        "host": socket.gethostname(),
+        "unix": time.time(),
+    }
 
 
 def _prune_empty(directory: Path, stop: Path) -> None:
@@ -137,6 +280,16 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                   reason: str = "egress") -> dict[str, object]:
     """:func:`evict`'s body, with the mover's transition lock already held."""
 
+    refusal = stage_root_refusal(queue, stage_root)
+    if refusal is not None:
+        # Not this queue's stage (#628).  The fragment is not even read: a
+        # fragment is authority over which files are this mover's, never over
+        # whose stage they sit on.
+        return _refused_receipt(tier_id="", stage_root=stage_root,
+                                refusal=refusal,
+                                mover_action_key=mover_action_key,
+                                consumer_action_key=consumer_action_key,
+                                reason=reason)
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.RESIDENCY)
     fragment_path = residency_map.fragment_path(
@@ -282,6 +435,15 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     wanted, owners = live_claims(queue)
     swept: list[dict[str, object]] = []
     for tier_id, stage_root in stage_roots.items():
+        refusal = stage_root_refusal(queue, stage_root)
+        if refusal is not None:
+            # One receipt per tier per cycle, and neither the held-key
+            # evictions nor the reconciliation run: the root is not this
+            # queue's to delete under (#628).  ``evict`` and ``reconcile``
+            # refuse on the same fact for the callers that reach them directly.
+            swept.append(_refused_receipt(tier_id=tier_id, stage_root=stage_root,
+                                          refusal=refusal))
+            continue
         try:
             held = queue.tier_ledger(tier_id).held_keys()
         except (OSError, pool.PoolContractError):
@@ -449,6 +611,14 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         "host": socket.gethostname(),
         "unix": time.time(),
     }
+    refusal = stage_root_refusal(queue, stage)
+    if refusal is not None:
+        # Whose stage this is comes before what is on it (#628).
+        receipt["event"] = STAGE_ROOT_REFUSED_EVENT
+        receipt["skipped"] = refusal
+        receipt["complete"] = False
+        receipt["errors"] = [refusal]
+        return receipt
     in_flight = movers_in_flight(queue, tier_id=tier_id)
     if in_flight:
         receipt["skipped"] = "movers_in_flight"
@@ -467,6 +637,11 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
     for base, _directories, names in os.walk(stage):
         for name in sorted(names):
             path = Path(base) / name
+            if name == STAGE_ROOT_MARKER and Path(base) == stage:
+                # The root's own ownership marker: unmarked by the prewarm
+                # stage and named by no fragment, so without this line the
+                # sweep would delete the fact that lets it sweep.
+                continue
             try:
                 if path.is_symlink() or not path.is_file():
                     continue
