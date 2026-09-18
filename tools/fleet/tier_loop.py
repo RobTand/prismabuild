@@ -612,6 +612,23 @@ def cycle(
     announced: list[dict[str, object]] = []
     for tier_id, record in sorted(tiers.items()):
         tokens = storage_tiers.tier_tokens(record)
+        kind = storage_tiers.capacity_kind_of(tier_id)
+        if (record.get("tier") == "stage" and kind in tokens
+                and record.get("capacity_source") == storage_tiers.WRITABLE_CAPACITY_SOURCE):
+            # ``capacity_bytes`` is what ZFS will still let a writer write,
+            # net of the bytes already on the dataset -- and those bytes are
+            # exactly the tokens the movers that staged them still hold.
+            # Minting from ``available`` alone counted every staged GiB twice:
+            # the ledger retired free tokens as the dataset filled, free was
+            # ``available - held``, and the window starved at half the pool
+            # (2026-09-18: 433 GiB held, 275 GiB writable, zero free tokens,
+            # an 11 GiB head phase never republished; #621).  The supply is
+            # what is writable plus what is staged, so free tracks ``available``.
+            held = int(queue.tier_ledger(tier_id).held().get(kind, 0))
+            record["writable_gib"] = tokens[kind]
+            record["held_gib"] = held
+            record["capacity_basis"] = "zfs available + held"
+            tokens[kind] = tokens[kind] + held
         record["fill_source"] = "measured" if storage_tiers.FILL_KIND in tokens else "none"
         record["fill_records"] = len(fill_records)
         # The probe rule, generalised from "nothing measured yet" to "nothing
