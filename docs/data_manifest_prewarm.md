@@ -624,7 +624,7 @@ exported, filled or lost between two polls changes the answer.
   stage device and `nvme1n1` is the root disk. A record naming a device number
   would hand an operator the wrong disk.
 
-### The four states
+### The five states
 
 Every cycle records one of them, with its reason, whether or not anything was
 staged -- including a cycle with an empty queue. A correct non-action that
@@ -636,6 +636,7 @@ nobody wrote down is what cost the diagnosis in pb#585.
 | `absent` | No imported pool carries the prefix. The state on every box but the file server. |
 | `full` | The discovered capacity leaves nothing above the floor, or the budget ran out during the cycle. |
 | `unreadable` | No `zpool`, no mounted directory, an unwritable one, or a health that is neither ONLINE nor DEGRADED. |
+| `faulted` | A write failed for something other than exhaustion -- EIO under `failmode=continue`, ESTALE, EROFS. Reached during a cycle, never by discovery. The tier stops being written to for the rest of it, and the next cycle rediscovers it. |
 
 A tier that fills or faults stops being written to and the warm carries on.
 Losing the second destination never costs the first.

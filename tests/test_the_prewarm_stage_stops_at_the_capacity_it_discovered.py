@@ -171,3 +171,53 @@ def test_a_stated_floor_outranks_the_derived_one(
 
     assert event["stage"]["free_floor_bytes"] == (1 << 30) - 4096
     assert event["stage"]["budget_bytes"] == 4096
+
+
+class Faulted:
+    """The real ``os``, except that every stage write is EIO.
+
+    A stage pool set ``failmode=continue`` answers a lost device this way
+    rather than blocking, so this is what a fault looks like from inside the
+    loop: not exhaustion, and not an exception the loop can call full.
+    """
+
+    def __init__(self, real) -> None:
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def write(self, handle, data):  # noqa: ARG002
+        raise OSError(errno.EIO, "Input/output error")
+
+
+def test_a_fault_is_a_state_and_it_stops_the_retry(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tier that is there and not working must not read as healthy.
+
+    Exhaustion was the only failure with a state.  Anything else -- EIO under
+    ``failmode=continue``, ESTALE, EROFS -- was noted into a list that stops
+    at twenty entries while every receipt in the cycle went on saying
+    ``present``, ``stage pool discovered``, ``staged_bytes: 0``: a healthy
+    tier that staged nothing.  And the loop kept opening one object per
+    manifest entry for the rest of the cycle, each one failing the same way.
+    """
+
+    fleet = Fleet(tmp_path)
+    key = fleet.action("row", [fleet.file("a.pt", 4096),
+                               fleet.file("b.pt", 4096)])
+    stage = StagePool(tmp_path)
+    stage.install(monkeypatch)
+    monkeypatch.setattr(prewarm_loop, "os", Faulted(os))
+
+    event = fleet.cycle(fleet.args(stage=True, readers=1, max_readers=1))
+
+    assert event["stage"]["state"] == "faulted"
+    assert "fault" in event["stage"]["reason"]
+    assert event["stage"]["staged_bytes"] == 0
+    # The first entry failed; the second was never opened, because a faulted
+    # tier is not usable for the rest of the cycle.
+    assert len(event["stage"]["errors"]) == 1
+    assert list(stage.mount.rglob("*")) == []
+    # And the warm is untouched, as it is for every other stage failure.
+    assert fleet.queue.prewarm(key)["status"] == "complete"

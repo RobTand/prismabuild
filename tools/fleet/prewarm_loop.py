@@ -117,13 +117,16 @@ the same ``Reader``, the same ``DiskPacer``, the same window arithmetic, the
 same ARC budget -- and without the flag nothing here runs at all, down to the
 fields in the receipts.
 
-The tier is rediscovered every cycle and reported in four states, one of
+The tier is rediscovered every cycle and reported in five states, one of
 which is always written even when the loop stages nothing: ``present``,
-``absent`` (no pool carries the name), ``full`` (the pool's own ``free``
-leaves nothing above the floor, or the budget ran out mid-cycle), and
+``absent`` (no pool carries the name), ``full`` (the discovered capacity
+leaves nothing above the floor, or the budget ran out mid-cycle),
 ``unreadable`` (no ``zpool``, no mounted directory, an unwritable one, or a
-health that is neither ONLINE nor DEGRADED).  Capacity comes from the pool's
-arithmetic and members reach a record only as ``/dev/disk/by-id`` names: the
+health that is neither ONLINE nor DEGRADED), and ``faulted`` (a write failed
+for something other than exhaustion).  Capacity is the ``prewarm`` dataset's
+own ``available`` -- ZFS's arithmetic, which has already withheld the pool's
+slop and this dataset's quota -- and members reach a record only as
+``/dev/disk/by-id`` names: the
 ``nvmeXn1`` numbers on this fleet's file server are the reverse of what the
 model names suggest, and a record naming one would name the box's root
 device.
@@ -814,6 +817,23 @@ class StageTier:
             if len(self.errors) < 20:
                 self.errors.append(message)
 
+    def mark_faulted(self, reason: str) -> None:
+        """The tier answered with something other than "no room".
+
+        EIO under ``failmode=continue``, ESTALE, EROFS: the device is there
+        and is not working.  Without a state for it every receipt in the
+        cycle still said ``present``, ``staged_bytes: 0`` and a reason that
+        described a healthy tier, while the loop reopened and refailed once
+        per manifest entry -- 469 008 times on a window of that size, into an
+        error list that stops at twenty.  The state is the fact, and it also
+        ends the retry: ``usable`` is false, so the reader stops asking.
+        """
+
+        with self.lock:
+            if self.state == "present":
+                self.state = "faulted"
+                self.reason = reason
+
     def mark_full(self, reason: str) -> None:
         """The tier ran out mid-cycle.  The warm continues; the stage stops.
 
@@ -884,8 +904,10 @@ class StageTier:
                 0o644)
         except OSError as exc:
             self.note(f"{key}: {exc}")
-            if isinstance(exc, OSError) and exc.errno in _STAGE_FULL_ERRNOS:
+            if exc.errno in _STAGE_FULL_ERRNOS:
                 self.mark_full(f"stage pool out of space: {exc}")
+            else:
+                self.mark_faulted(f"stage pool fault: {exc}")
             return None
         return StageObject(self, key, handle, temporary, target,
                            declared=int(declared))
@@ -1010,6 +1032,8 @@ class StageObject:
             self.tier.note(f"{self.key}: {exc}")
             if exc.errno in _STAGE_FULL_ERRNOS:
                 self.tier.mark_full(f"stage pool out of space: {exc}")
+            else:
+                self.tier.mark_faulted(f"stage pool fault: {exc}")
             self.abort()
             return False
         self.tier.add_write_seconds(time.perf_counter() - started)
@@ -1076,8 +1100,10 @@ def discover_stage(prefix: str, *,
     or lost between two polls changes the answer, and a tier remembered from
     an earlier cycle is a claim about the box that stopped being checked.
 
-    The four states are the whole vocabulary, and one of them is always
-    recorded:
+    The five states are the whole vocabulary, and one of them is always
+    recorded.  Discovery can return four of them; ``faulted`` is reached only
+    during a cycle, by a tier that was discovered ``present`` and then
+    answered a write with something other than "no room":
 
     ``absent``
         No imported pool carries the prefix.  This is the answer on every box
@@ -1094,6 +1120,10 @@ def discover_stage(prefix: str, *,
         answer.  Never a configured size.
     ``present``
         Usable, with budget.  It does not mean anything was staged.
+    ``faulted``
+        A write failed for a reason that is not exhaustion -- EIO under
+        ``failmode=continue``, ESTALE, EROFS.  The tier stops being written
+        to for the rest of the cycle and the next cycle rediscovers it.
     """
 
     #: ``None`` means derived below, from whichever capacity number answers.
