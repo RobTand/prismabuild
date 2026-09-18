@@ -318,11 +318,7 @@ MOVERS = "movers"
 #: Tier resources that price a transfer *rate* rather than occupancy, and so
 #: are returned the moment a copy ends even when its bytes stay on the device.
 #: Occupancy kinds are absent on purpose -- see
-#: :meth:`PoolQueue.release_tier_rate_reservations` (#636).  Both capacity
-#: kinds are occupancy: ``stage_gib`` because the bytes are on the SSD until an
-#: egress deletes them, and ``arc_gib`` because the warmed copy of those same
-#: bytes is in the file server's RAM for exactly as long (#638).  Returning
-#: either at ``finish`` would let the tier loop read capacity that is spent.
+#: :meth:`PoolQueue.release_tier_rate_reservations` (#636).
 TIER_RATE_KINDS = frozenset({storage_tiers.FILL_KIND})
 
 #: Where movers file their residency-map fragments, one directory per consumer

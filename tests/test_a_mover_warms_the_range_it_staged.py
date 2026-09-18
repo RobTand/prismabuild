@@ -6,11 +6,12 @@ to 7423 MiB/s as other shards evicted them.  The warm step closes that: after
 the range is copied and verified, the mover reads it back on the box that owns
 the stage, which is the one place a read puts those blocks in that ARC.
 
-Three claims, and they are separate: the warm happened (bytes really passed
+Two claims, and they are separate: the warm happened (bytes really passed
 through ``read(2)``, counted here off this process's own ``/proc/self/io``
-rather than off a log line); it is refused when the dataset's ``primarycache``
-says the ARC may not hold the data anyway; and it is refused when this mover
-reserved no ARC capacity, because what was reserved is what may be warmed.
+rather than off a log line); and it is refused when the dataset's
+``primarycache`` says the ARC may not hold the data anyway.  No mover reserves
+ARC capacity for the warm -- bounding the SSD window by min(stage, ARC) was
+part 3, withdrawn in favour of the RAM tier's own occupancy budget.
 """
 from __future__ import annotations
 
@@ -29,7 +30,6 @@ CONSUMER = "c" * 64
 MOVER = "a" * 64
 MANIFEST_SHA = "9" * 64
 TIER = "prismabuild-stage:dl380g10"
-ARC = "arc:dl380g10"
 #: Big enough that the read is visible against the fixture's own file traffic.
 CHUNK = 1 << 20
 
@@ -53,14 +53,8 @@ def _manifest(mount: Path, entries: list[dict[str, object]]) -> dict[str, object
     }
 
 
-def _fleet(tmp_path: Path, primarycache: str, *,
-           arc_gib_held: int = 1) -> pool.PoolQueue:
-    """A queue whose stage tier announces what ZFS said about its dataset.
-
-    ``arc_gib_held`` is what this mover reserved on the box's ARC tier, filed
-    the way a claim files it: permission to warm and budget to warm are two
-    questions, and the mover asks both.
-    """
+def _fleet(tmp_path: Path, primarycache: str) -> pool.PoolQueue:
+    """A queue whose stage tier announces what ZFS said about its dataset."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ensure_layout()
@@ -73,13 +67,6 @@ def _fleet(tmp_path: Path, primarycache: str, *,
         "arc_warm": dict(storage_tiers.stage_arc_eligibility(
             {"primarycache": primarycache})),
     })
-    if arc_gib_held:
-        ledger = queue.tier_ledger(ARC)
-        ledger.ensure_capacity({storage_tiers.ARC_CAPACITY_KIND: arc_gib_held})
-        handle = ledger.begin_acquire(
-            MOVER, {storage_tiers.ARC_CAPACITY_KIND: arc_gib_held})
-        assert handle is not None
-        ledger.commit_acquire(MOVER, handle)
     return queue
 
 
@@ -169,17 +156,20 @@ def test_the_warm_reports_what_it_could_not_read(tmp_path: Path) -> None:
     assert "missing.bin" in outcome["errors"][0]
 
 
-def test_a_mover_that_reserved_no_arc_warms_nothing(tmp_path: Path) -> None:
-    """Permission is not budget.
+def test_the_warm_reads_back_only_what_this_mover_staged(tmp_path: Path) -> None:
+    """The warm's bound, with no ARC budget on movers, is the mover's own range.
 
-    A phase larger than the whole cache seals no ARC leg, so it holds no
-    tokens; reading it back anyway would evict every other phase's warm to
-    make room for one that was never admitted -- the eviction this whole
-    change is about, arriving through its own fix.
+    A third file sits on the stage root that no map names and this mover did
+    not stage.  The warm's byte count is exactly the two files the mover
+    copied -- a warm that walked the stage root would read it, and a warm
+    that read nothing would fail the ``rchar`` floor.
     """
 
     mount, entries = _two_files(tmp_path)
-    _fleet(tmp_path, "all", arc_gib_held=0)
+    _fleet(tmp_path, "all")
+    stray = tmp_path / "stage" / "not-staged-by-anyone.bin"
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_bytes(b"c" * (4 * CHUNK))
     args = _args(tmp_path, _manifest(mount, entries), start=0, end=2 * CHUNK)
 
     before = stage_move.proc_io()
@@ -187,7 +177,11 @@ def test_a_mover_that_reserved_no_arc_warms_nothing(tmp_path: Path) -> None:
     after = stage_move.proc_io()
 
     assert receipt["complete"] is True
-    assert receipt["arc_warm"]["state"] == "refused"
-    assert receipt["arc_warm"]["bytes"] == 0
-    assert "arc_gib" in receipt["arc_warm"]["reason"]
-    assert after["rchar"] - before["rchar"] < 4 * CHUNK
+    assert receipt["arc_warm"]["state"] == "warmed"
+    assert receipt["arc_warm"]["bytes"] == 2 * CHUNK
+    assert receipt["arc_warm"]["errors"] == []
+    # The copy reads the source once and the warm reads the stage once.
+    assert after["rchar"] - before["rchar"] >= 4 * CHUNK
+    # The 4 MiB stray file is still unread: nothing on the stage beyond
+    # this mover's own range entered the process.
+    assert after["rchar"] - before["rchar"] < 8 * CHUNK

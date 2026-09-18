@@ -4838,49 +4838,6 @@ def resolve_stage_tier(queue, declared: str | None) -> dict[str, object]:
     return stages[0]
 
 
-def resolve_arc_leg(queue, tier: Mapping[str, object]) -> dict[str, object]:
-    """The ARC tier a mover onto this stage also reserves, or why it does not.
-
-    Layer 2 of the cache is the storage box's own RAM holding the staged
-    blocks a Spark reads back over NFS, and it is worth 4.18x on the link
-    (2402 -> 10045 MB/s, dl380g10, 2026-09-18).  A mover that warms its range
-    into that ARC occupies the RAM, so it reserves it: the warm set is then
-    bounded by what the cache can hold and successive phases stop evicting
-    each other.
-
-    Three reasons to seal no leg, and each of them is recorded rather than
-    silent, because a token demand nothing can satisfy is a mover that never
-    runs at all:
-
-    * the box announces no ARC tier, or announces one with no capacity;
-    * the stage dataset's ``primarycache`` says the ARC may not hold its file
-      data, so there would be nothing to occupy;
-    * the phase is larger than the whole cache, which no waiting will fix.
-
-    The last one is judged per phase by the caller, which is the only place
-    the range is known.
-    """
-
-    host = str(tier.get("host") or "")
-    identity = storage_tiers.tier_id("arc", host)
-    verdict = storage_tiers.stage_arc_eligibility(tier)
-    if not verdict["eligible"]:
-        return {"arc_tier_id": None, "arc_capacity_gib": 0,
-                "arc": f"refused: {verdict['reason']}"}
-    for record in queue.tiers():
-        if str(record.get("tier_id")) != identity or record.get("retired"):
-            continue
-        capacity = int(storage_tiers.tier_tokens(record).get(
-            storage_tiers.ARC_CAPACITY_KIND, 0))
-        if capacity <= 0:
-            return {"arc_tier_id": None, "arc_capacity_gib": 0,
-                    "arc": f"refused: {identity} announces no arc_gib"}
-        return {"arc_tier_id": identity, "arc_capacity_gib": capacity,
-                "arc": "announced"}
-    return {"arc_tier_id": None, "arc_capacity_gib": 0,
-            "arc": f"refused: no box announces {identity}"}
-
-
 def movement_tools(tier: Mapping[str, object]) -> tuple[str, str, str]:
     """The interpreter and the two movement scripts, as the tier announces them.
 
@@ -4999,9 +4956,6 @@ def residency_stage_rows(
     # habit this replaces.
     fill = storage_tiers.mover_fill_demand_from_receipts(
         receipts, tier_id=tier_id)
-    # The ARC leg, resolved once for the same reason the fill ask is: every
-    # mover in this window reserves the same cache on the same box.
-    arc = resolve_arc_leg(queue, tier)
     mover_retry_policy = {
         "max_attempts": int(args.residency_mover_max_attempts),
         # True by construction, not by the operator's say-so: ``stage_move``
@@ -5012,16 +4966,9 @@ def residency_stage_rows(
     phases: list[dict[str, object]] = []
     for ordinal, span in enumerate(ranges):
         start, end = int(span["start_bytes"]), int(span["end_bytes"])
-        # A phase larger than the whole ARC cannot be held in it, so it is
-        # staged and read off the SSD rather than sealed against a token that
-        # will never exist.  Judged here because here is where the range is.
-        fits = (arc["arc_tier_id"] is not None
-                and storage_tiers.stage_tokens_for_bytes(end - start)
-                <= int(arc["arc_capacity_gib"]))
         demand = storage_tiers.residency_demand(
             tier_id=tier_id, range_start_bytes=start, range_end_bytes=end,
-            fill_mb_s_pool_side=fill,
-            arc_tier_id=str(arc["arc_tier_id"]) if fits else None)
+            fill_mb_s_pool_side=fill)
         # Measured, not habitual, and above all *present*: a row without a
         # ``cpu`` key is read by ``adaptive_cpu`` as unknown CPU use and
         # refused whenever the box already holds anything
@@ -5112,13 +5059,7 @@ def residency_stage_rows(
         demand_source={**priced["demand_source"],
                        "fill_mb_s_pool_side": fill,
                        "fill": ("receipts" if fill is not None
-                                else "unmeasured"),
-                       # Whether these movers also reserve the file server's
-                       # cache, and when they do not, which of the three
-                       # reasons it was.  On the plan beside the other demand
-                       # answers, because a row key ``publish`` has no
-                       # parameter for would take the whole window down.
-                       **arc})
+                                else "unmeasured")})
     return {
         "plan": plan,
         "residency": {

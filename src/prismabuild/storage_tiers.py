@@ -928,7 +928,6 @@ def residency_demand(
     range_end_bytes: int,
     tier: str | None = None,
     fill_mb_s_pool_side: int | None = None,
-    arc_tier_id: str | None = None,
 ) -> dict[str, int]:
     """The tier demand one movement node's range implies, derived not guessed.
 
@@ -941,16 +940,14 @@ def residency_demand(
     when given it is **pool-side**, the only side a shared four-spindle pool
     can be rationed on.
 
-    ``arc_tier_id`` adds the second cache layer's leg: the same GiB, on the
-    ARC tier of the box that owns the stage, because a range warmed into that
-    ARC occupies exactly the RAM it occupies on the SSD.  Optional for the
-    reason the fill ask is optional -- a box with no ARC tier, a dataset the
-    ARC may not cache, or a range larger than the whole cache all mean there
-    is nothing to reserve, and a demand nothing can satisfy is a mover that
-    never runs.  It is a **budget**: ZFS exposes no pin and the ARC target
-    ``c`` is volatile (it fell 99 GB inside one five-minute window on
-    2026-09-11), which is why ``residency_verdict`` gates on stage residency
-    alone and this leg only bounds how much is warmed at once (#638).
+    The demand names the range's **durable** tier -- the SSD it lands on --
+    and nothing else.  The second cache layer's RAM budget is deliberately
+    not a leg here: a mover co-demanding the ARC's GiB would bound the
+    published SSD window by min(stage, ARC) and then, once the ARC shrinks
+    for an explicit RAM tier, throttle layer 1's read-ahead with it (#638's
+    part 3, withdrawn for that reason).  RAM occupancy is spent by the RAM
+    tier's own movement nodes when that tier exists; a warm read-back
+    authorises itself against the dataset's ``primarycache`` instead.
     """
 
     if range_end_bytes <= range_start_bytes:
@@ -970,13 +967,6 @@ def residency_demand(
                 or fill_mb_s_pool_side <= 0:
             raise ValueError("fill_mb_s_pool_side must be a positive whole MB/s")
         demand[f"{FILL_KIND}{TIER_DEMAND_SEPARATOR}{tier_id}"] = fill_mb_s_pool_side
-    if arc_tier_id is not None:
-        if TIER_DEMAND_SEPARATOR in str(arc_tier_id) or not arc_tier_id:
-            raise ValueError(f"malformed tier id {arc_tier_id!r}")
-        if tier_kind_of(str(arc_tier_id)) != "arc":
-            raise ValueError(f"{arc_tier_id!r} is not an ARC tier")
-        demand[f"{ARC_CAPACITY_KIND}{TIER_DEMAND_SEPARATOR}{arc_tier_id}"] = (
-            stage_tokens_for_bytes(range_end_bytes - range_start_bytes))
     return demand
 
 

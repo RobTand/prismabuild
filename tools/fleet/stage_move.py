@@ -425,34 +425,18 @@ def arc_warm_verdict(args) -> dict[str, object]:
             return {"warm": False, "state": "refused",
                     "primarycache": verdict["primarycache"],
                     "reason": str(verdict["reason"])}
-        # And a second question, because permission is not budget: does this
-        # mover hold the ARC tokens its range would occupy?  A phase sealed
-        # without an ARC leg -- one larger than the whole cache is the case
-        # that exists -- would otherwise read 134 GiB back into a 177 GiB
-        # target and evict every other phase's warm to do it, which is the
-        # eviction #638 opens on, reintroduced by its own fix.  What was
-        # reserved is what is warmed.
-        arc_tier = storage_tiers.tier_id("arc", str(record.get("host") or ""))
-        try:
-            holdings = queue.tier_holdings(str(args.action_key))
-        except (OSError, pool.PoolContractError) as exc:
-            return {"warm": False, "state": "refused",
-                    "primarycache": verdict["primarycache"],
-                    "reason": f"the tier ledger could not be read: {exc}"}
-        held = int(dict(holdings.get(arc_tier) or {}).get(
-            storage_tiers.ARC_CAPACITY_KIND, 0))
-        if held <= 0:
-            return {"warm": False, "state": "refused",
-                    "primarycache": verdict["primarycache"],
-                    "reason": (f"this mover holds no "
-                               f"{storage_tiers.ARC_CAPACITY_KIND} on {arc_tier}, "
-                               f"so its range is staged and read off the device "
-                               f"rather than warmed past what was reserved")}
+        # No budget question here, and that is a decision rather than an
+        # omission: a mover co-demanding the ARC's GiB would bound the
+        # published SSD window by min(stage, ARC) and throttle layer 1's
+        # read-ahead once the ARC shrinks for an explicit RAM tier (#638's
+        # part 3, withdrawn).  The warm is therefore bounded by this mover's
+        # own range and by nothing across movers -- successive phases may
+        # evict each other's warm, which costs the *pre*-warm and never the
+        # residency the verdict gates on.  The RAM tier's movement nodes
+        # bring the occupancy budget back, pointed at ``ram_gib``.
         return {"warm": True, "state": "warmed",
                 "primarycache": verdict["primarycache"],
-                "reason": (f"{verdict['reason']}; this mover holds {held} "
-                           f"{storage_tiers.ARC_CAPACITY_KIND} on {arc_tier}"),
-                "arc_gib_held": held}
+                "reason": str(verdict["reason"])}
     return {"warm": False, "state": "refused", "primarycache": None,
             "reason": f"no box announces the tier {args.tier_id!r}"}
 

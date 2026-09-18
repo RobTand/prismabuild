@@ -3074,7 +3074,7 @@ it, and PB had no representation of either.
 
 | Tier | Token | Capacity, read every cycle | Residency it guarantees |
 |---|---|---|---|
-| `arc` | `arc_gib` | `c_max` less `arc_meta_used` from `arcstats` | budgetary; ZFS exposes no pin. Spent by a mover that warms its staged range, so the warm set is bounded by the cache (#638) |
+| `arc` | `arc_gib` | `c_max` less `arc_meta_used` from `arcstats` | budgetary; ZFS exposes no pin |
 | `prismabuild-stage*` | `stage_gib` | the stage pool's own `size` from `zpool list -Hp` | pinned while a key holds the tokens |
 | source pool | `fill_mb_s_pool_side` | the best `disk_pacing.mean_self_read_mb_s` any move off it recorded | none; it is the source |
 
@@ -3137,32 +3137,29 @@ discovered or measured rather than configured here:
   range is copied and verified, `stage_move.warm_staged` reads it back on the
   box that owns the stage, which is the one place a read fills that ARC. It
   runs after every measurement of the copy is taken, in its own `arc_warm`
-  receipt block, so a warm never prices a copy. It reads back only what the
-  mover *reserved*: a phase that sealed no ARC leg warms nothing, because
-  reading 134 GiB back into a 177 GiB target would evict every other phase's
-  warm to hold one that was never admitted.
-* **`arc_gib` spent on the warmed bytes.** The ARC tier announced 233 GiB every
-  cycle and nothing ever asked for a byte of it. A mover now reserves one
-  `arc_gib` token per GiB of its range on the `arc:<host>` tier of the same
-  box, so the admitted warm set is bounded by what the cache can hold and
-  successive phases stop evicting each other. No leg is sealed when the box
-  announces no ARC tier, when the dataset may not cache data, or when the
-  phase is larger than the whole cache -- a demand nothing can satisfy is a
-  mover that never runs, and the plan's `demand_source` records which of the
-  three it was.
+  receipt block, so a warm never prices a copy. Its bound is the mover's own
+  range: it reads back exactly the files it staged and nothing else on the
+  stage, and it is refused by the dataset's `primarycache` rather than by any
+  token it holds.
+* **No mover reserves `arc_gib` for the warm.** The ARC tier announced 233 GiB
+  every cycle and nothing spends it -- that is deliberate now, not the
+  accident #638 opened on. A mover co-demanding the ARC's GiB would bound the
+  published SSD window by min(stage, ARC) -- 233 GiB against 721 on dl380g10
+  -- and once the ARC shrinks to make room for an explicit RAM tier, that
+  bound would throttle layer 1's read-ahead with it. So the warm set is
+  bounded per mover by its range and unbounded across movers: successive
+  phases may evict each other's warm, which costs the *pre*-warm and never
+  the stage residency a verdict gates on. The RAM occupancy budget returns
+  with the RAM tier's own movement nodes, holding `ram_gib` the way movers
+  hold `stage_gib` today.
 
 **ARC residency is a performance tier, never a correctness gate.** ZFS exposes
 no pin and the ARC target `c` is volatile on a shared box -- it fell 99 GB
 inside one five-minute window on 2026-09-11 with no tenant asking for the
-memory. So `arc_gib` is a *budget*: it bounds how much is warmed at once and
-promises nothing about what is still there later. `PoolQueue.residency_verdict`
-keeps gating on stage residency alone, which is durable and checkable -- a file
-exists and the composed map names its mover -- and no ARC leg was added to it.
-
-`arc_gib` is **occupancy**, not a rate. The bytes sit in RAM for as long as the
-range is staged, so the tokens are held past `finish` exactly as `stage_gib` is
-and are returned when the egress deletes the range. `TIER_RATE_KINDS` holds
-`fill_mb_s_pool_side` alone for that reason (#636).
+memory. The warm fills it and promises nothing about what is still there
+later. `PoolQueue.residency_verdict` keeps gating on stage residency alone,
+which is durable and checkable -- a file exists and the composed map names its
+mover -- and no ARC leg was added to it.
 
 **What the claim-time prewarm stopped doing.** The prewarm role warms the
 *pool* path, which is the path a consumer opened before PrismaBuild published a
