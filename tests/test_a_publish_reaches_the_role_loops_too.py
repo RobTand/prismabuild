@@ -34,6 +34,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,9 +75,9 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(supervise, "LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr(supervise, "CONFIG", tmp_path / "fleet_boxes.json")
     monkeypatch.setattr(supervise.socket, "gethostname", lambda: HOST)
-    (tmp_path / "fleet_boxes.json").write_text(json.dumps({
+    (tmp_path / "fleet_boxes.json").write_text(json.dumps({"boxes": {
         HOST: {"loops": 1, "args": ["--class", "x86"],
-               "roles": {"tiers": ["--source-pool", "storage_pool"]}}}))
+               "roles": {"tiers": ["--source-pool", "storage_pool"]}}}}))
     return mirror, store, proc
 
 
@@ -117,16 +118,25 @@ def candidates(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture()
 def signals(monkeypatch: pytest.MonkeyPatch):
-    """Every signal the supervisor would have sent, sent to nothing."""
+    """Every signal the supervisor would have sent, sent to nothing.
 
-    sent: list[tuple[int, int]] = []
+    ``_is_idle`` is faked the way the rest of the supervisor suite fakes it:
+    it reads ``/proc/<pid>/task/*/children`` at the real ``/proc``, which a
+    fake tree cannot answer.  What these tests are for is which pids reach
+    that question, not what it answers -- ``busy`` is how a test says the
+    answer is "no" for one of them.
+    """
+
+    box = SimpleNamespace(sent=[], busy=set())
     monkeypatch.setattr(supervise.os, "kill",
-                        lambda pid, sig: sent.append((pid, int(sig))))
-    # The queue is not on this box, so nothing can be read from it.  An empty
-    # holder set rather than ``None``: ``None`` means "unknown", which is the
-    # answer that licenses no signal at all and would hide the defect.
+                        lambda pid, sig: box.sent.append((pid, int(sig))))
+    monkeypatch.setattr(supervise, "_is_idle",
+                        lambda pid, *_a: pid not in box.busy)
+    # An empty holder set rather than ``None``: ``None`` means "the queue
+    # could not be read", which licenses no signal at all and would hide the
+    # defect behind a refusal that is right for another reason.
     monkeypatch.setattr(supervise, "_claim_holders", lambda: frozenset())
-    return sent
+    return box
 
 
 # -- the loop that moves itself ---------------------------------------------
@@ -191,7 +201,7 @@ def test_a_stale_role_loop_is_cycled_so_ensure_roles_respawns_it(
     running bytes two publishes old for as long as the box was up.
     """
 
-    mirror, store, proc = fleet
+    _mirror, store, proc = fleet
     role = _process(proc, STALE_ROLE, [
         "/usr/bin/python3", str(store / "gen-old" / "tools" / "tier_loop.py"),
         "--source-pool", "storage_pool"])
@@ -200,7 +210,7 @@ def test_a_stale_role_loop_is_cycled_so_ensure_roles_respawns_it(
     stopped = supervise.cycle_stale("gen-live")
 
     assert stopped == [role], "the stale tiers role survived the publish"
-    assert signals == [(role, 15)]
+    assert signals.sent == [(role, 15)]
 
     # ...and the supervisor's next tick puts one back, on the live generation.
     spawned: list[list[str]] = []
@@ -213,8 +223,10 @@ def test_a_stale_role_loop_is_cycled_so_ensure_roles_respawns_it(
     candidates["tier_loop.py"] = []           # the stale one has now exited
 
     assert supervise.ensure_roles(HOST) == [("tiers", 4242)]
+    # Resolved through the live link, so the replacement's imports are pinned
+    # to one immutable root even if a later publish moves ``repo`` again.
     assert spawned and spawned[0][1] == str(
-        mirror / "repo" / "tools" / "tier_loop.py")
+        store / "gen-live" / "tools" / "tier_loop.py")
 
 
 def test_a_role_already_on_the_published_generation_is_left_running(
@@ -229,7 +241,7 @@ def test_a_role_already_on_the_published_generation_is_left_running(
     candidates["tier_loop.py"] = [role]
 
     assert supervise.cycle_stale("gen-live") == []
-    assert signals == []
+    assert signals.sent == []
 
 
 def test_a_stale_role_holding_a_child_is_left_for_the_next_cycle(
@@ -246,9 +258,10 @@ def test_a_stale_role_holding_a_child_is_left_for_the_next_cycle(
         "/usr/bin/python3", str(store / "gen-old" / "tools" / "tier_loop.py")],
         children=[BUSY_ROLE + 1])
     candidates["tier_loop.py"] = [role]
+    signals.busy.add(role)
 
     assert supervise.cycle_stale("gen-live") == []
-    assert signals == []
+    assert signals.sent == []
 
 
 def test_the_worker_loops_are_still_cycled_beside_the_roles(
@@ -266,7 +279,7 @@ def test_the_worker_loops_are_still_cycled_beside_the_roles(
     candidates["tier_loop.py"] = [role]
 
     assert sorted(supervise.cycle_stale("gen-live")) == sorted([worker, role])
-    assert sorted(signals) == sorted([(worker, 15), (role, 15)])
+    assert sorted(signals.sent) == sorted([(worker, 15), (role, 15)])
 
 
 def test_a_role_script_outside_this_fleet_is_never_signalled(
@@ -279,4 +292,4 @@ def test_a_role_script_outside_this_fleet_is_never_signalled(
         "/usr/bin/python3", "/another-project/tier_loop.py"])]
 
     assert supervise.cycle_stale("gen-live") == []
-    assert signals == []
+    assert signals.sent == []

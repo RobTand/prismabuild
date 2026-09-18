@@ -2361,6 +2361,24 @@ supervisor replacement, even while parked. One-cycle invocations return 75
 on that transition so an unperformed cycle is not reported as complete.
 The gate and runtime are rechecked after disk setup, immediately before the
 cycle, so topology-discovery delays do not preserve an earlier open decision.
+
+The `tiers` role reads the same runtime gate at the top of every cycle, and
+`--once` returns 75 on a moved generation for the same reason. It did not, and
+nothing else reached it either: the installed unit runs `supervise.py --ensure
+--systemd`, so `cycle_stale` is an operator verb rather than part of a publish,
+and it walked worker loops only — `_stop_idle_loops` re-proved ownership
+against the worker script, which drops a role pid a second time. A tier loop
+therefore served bytes two publishes old while every worker on the box had
+moved. The cycle boundary is the safe place to exit: every mutation the loop
+makes is one atomic rename, and the map, its only composite, is recomposed from
+the fragments on disk each cycle rather than accumulated in the process.
+
+`cycle_stale` now covers roles too, on a narrower rule than a worker: a role is
+cycled only when the generation it is running differs from the published one. A
+worker respawns in a poll interval and the box has others; a role is a
+singleton, so stopping a live-generation one costs a cycle of a service nothing
+else provides. The idle rule is unchanged — only `SIGTERM`, only a loop holding
+no action.
 The updater includes this storage reader in its drain observation using that
 same marker. These checks establish no cross-host quorum and do not enable
 barrier activation. The #458 protocol still needs fresh epoch participation
@@ -3262,6 +3280,30 @@ this whole change exists to remove and the one nothing downstream can see, so
 the verdict denies `map_not_composed`, which leaves the item ready, ages
 nothing and takes no token; the next cycle composes and it is admitted then,
 unchanged.
+
+### A plan the coordinator cannot read
+
+`residency_plan.read` answers `None` both when no plan was filed and when the
+filed one does not validate, and only the second is a denial. `residency_window`
+used to `continue` on either, so a plan written by a generation that knows one
+more key than the reader — #609 added `demand_source` — silently removed its
+consumer from every cycle: the GLM run stage sat ready for 25 minutes behind a
+staged head window, over an idle GPU, with a log that said only `tier-cycle`.
+
+`read` now takes an `on_unreadable` callback, still answering `None` so no
+caller grows a branch to stay safe. The loop reports a refusal twice, because
+two different people read them: a `plan-unreadable` event naming the consumer
+and the refusal, and a `residency_plan_unreadable` claim denial, which
+`pbstatus` aggregates from any box. The consumer's own verdict distinguishes
+them too: `map_not_composed` means "the next cycle composes it", while
+`plan_unreadable` means no cycle ever will, so the item names the refusal
+instead of waiting out a cycle that is not coming.
+
+Which reader refuses is what decides where the answer comes from. A plan that
+is corrupt for everybody is caught on the claiming box as well; the incident's
+plan was refused only by the *coordinator*, two generations behind a claimant
+that read it fine, and the event and the denial are what make that visible.
+The other half of that case is the generation gate below.
 
 ### What runs a mover
 
