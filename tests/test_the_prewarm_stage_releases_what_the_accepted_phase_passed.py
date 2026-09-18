@@ -315,3 +315,56 @@ def test_a_claimed_row_with_no_window_still_holds_the_bytes_it_shares(
     assert by_key[key]["released_entries"] == 0
     assert stage.objects() == ["a.pt.pbstage@0+4096", "b.pt.pbstage@0+4096",
                                "c.pt.pbstage@0+4096"]
+
+
+#: The v2 read timeline the design doc names: a forward pass, a compute phase
+#: that reads nothing, and a reverse pass over the same two ranges.
+REVISIT_PLAN = {"phases": [
+    {"name": "forward-0", "entry_indices": [0], "bytes": 4,
+     "cumulative_bytes": 4},
+    {"name": "forward-1", "entry_indices": [1], "bytes": 4,
+     "cumulative_bytes": 8},
+    {"name": "compute", "entry_indices": [], "bytes": 0,
+     "cumulative_bytes": 8},
+    {"name": "reverse-1", "entry_indices": [1], "bytes": 4,
+     "cumulative_bytes": 12},
+    {"name": "reverse-0", "entry_indices": [0], "bytes": 4,
+     "cumulative_bytes": 16},
+], "read_bytes": 16}
+
+
+def test_a_range_a_later_phase_reads_again_is_not_released_behind_it(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delete-behind asks the releasing row about its own band first.
+
+    A v2 read plan may name the same range in two phases, which is a
+    supported and documented shape.  The band behind the accepted phase then
+    holds objects the *next* phase reads, and a retain predicate that asked
+    only the other rows would delete the revisit at the moment it begins --
+    an SSD write repeated immediately today, and a residency map that loses
+    the range at the phase that re-reads it once a consumer exists.
+    """
+
+    fleet = Fleet(tmp_path)
+    files = [fleet.file("a.pt", 4), fleet.file("b.pt", 4)]
+    key = fleet.action(
+        "revisit", files, read_plan=REVISIT_PLAN,
+        progress_phases=[phase["name"] for phase in REVISIT_PLAN["phases"]])
+    stage = StagePool(tmp_path)
+    stage.install(monkeypatch)
+
+    fleet.cycle(args(fleet))
+    assert stage.objects() == ["a.pt.pbstage@0+4", "b.pt.pbstage@0+4"]
+
+    # The forward pass is done and the reverse pass is starting: both ranges
+    # are behind the frontier, and both are about to be read again.
+    fleet.claim(key)
+    fleet.report_progress(key, "reverse-1")
+    event = fleet.cycle(args(fleet))
+
+    released = event["stage"]["released"][0]
+    assert released["consumed_bytes"] == 8
+    assert released["candidate_entries"] == 2
+    assert released["retained_entries"] == released["candidate_entries"]
+    assert released["released_entries"] == 0
+    assert stage.objects() == ["a.pt.pbstage@0+4", "b.pt.pbstage@0+4"]

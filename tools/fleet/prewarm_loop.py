@@ -1166,6 +1166,10 @@ def stage_keys_wanted(entries: "list[dict[str, object]]", mount_prefix: str,
                       consumed: int, candidates: "set[str]") -> set[str]:
     """Which of ``candidates`` this row has *not* read yet.
 
+    Asked of every live row, including the row doing the releasing: a read
+    timeline may name the same range in two phases, and the later one is a
+    read that has not happened.
+
     The stage tree is a mirror keyed by path and range, so two rows over the
     same bytes -- which is the shape measured here: 469 007 of 469 008 entries
     identical across three prepare manifests -- name the same objects.  A
@@ -1210,7 +1214,15 @@ def release_stage_band(tier: StageTier, entries: "list[dict[str, object]]",
     if not candidates:
         return result
     pending = set(candidates)
-    for other_entries, other_prefix, other_consumed in others():
+    # The releasing row is asked first, about its own band.  A v2 read plan
+    # may read a range again in a later phase -- forward [0, 1], compute,
+    # reverse [1, 0] is the documented shape -- and an object the current
+    # phase has passed is then an object the next phase reads.  Excluding the
+    # row that is releasing would delete its own revisit at the moment the
+    # revisit begins.
+    pending -= stage_keys_wanted(entries, mount_prefix, end, pending)
+    for other_entries, other_prefix, other_consumed in (
+            others() if pending else ()):
         pending -= stage_keys_wanted(other_entries, other_prefix,
                                      other_consumed, pending)
         if not pending:
