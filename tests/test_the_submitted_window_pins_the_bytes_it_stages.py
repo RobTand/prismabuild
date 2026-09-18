@@ -156,6 +156,24 @@ def _lead(fleet) -> str:
     return str(fleet.staged["plan"]["phases"][0]["mover_row"]["action_key"])
 
 
+def _stage_the_lead(fleet) -> dict[str, object]:
+    """Publish the window, claim the lead mover, finish it with a full receipt."""
+
+    queue, mover = fleet.queue, _lead(fleet)
+    _cycle(fleet)
+    claim = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    assert claim is not None and claim["action_key"] == mover
+    queue.record_move(mover, {
+        "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
+        "bytes_staged": PHASE_BYTES, "entries_staged": 1,
+        "range_start_bytes": 0, "range_end_bytes": PHASE_BYTES,
+        "stage_root": str(fleet.stage),
+        "disk_pacing": {"mean_self_read_mb_s": 0.0}})
+    queue.finish(mover, status="executed", claim_snapshot=claim)
+    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
+    return claim
+
+
 def test_a_mover_the_loop_published_keeps_its_tokens_when_it_finishes(fleet) -> None:
     """The defect, from the submitter's own rows to the ledger.
 
@@ -250,3 +268,97 @@ def test_the_frozen_plan_refuses_a_mover_row_that_carries_no_pin(fleet) -> None:
     plan["phases"][0]["mover_row"]["residency"]["range_end_bytes"] = PHASE_BYTES // 2
     with pytest.raises(residency_plan.ResidencyPlanError, match="its mover row pins"):
         residency_plan.validate_plan(plan)
+
+
+# -- the cleanup paths that run *after* a pin was kept ----------------------
+
+
+def test_a_stale_claim_copy_does_not_hand_back_a_completed_pin(fleet) -> None:
+    """``reap_stale`` concludes what ``finish`` already concluded, correctly.
+
+    A stale directory view of ``claimed/`` is this fleet's documented reality,
+    and the reaper's terminal-claim branch is written for exactly it: the
+    worker filed ``done/``, a leftover copy of the claim is still visible, and
+    the copy is cleanup rather than a retry.  What it must not do is return the
+    tier tokens that ``finish`` deliberately kept -- the bytes are on the stage,
+    and every path that reclaims them (an egress, the orphan sweep) walks the
+    tier's *held* keys, so a release here leaves occupancy nothing can ever
+    charge to anyone: the ledger reads it free and the next mover is admitted
+    against capacity already spent.
+    """
+
+    queue, mover = fleet.queue, _lead(fleet)
+    claim = _stage_the_lead(fleet)
+
+    # The exact shape the reaper sees: the concluded claim record back in
+    # ``claimed/``, its lease beside it, both aged past the lease timeout.
+    stale = dict(claim)
+    pool._write_json_atomic(queue.item_path(pool.CLAIMED, mover), stale)
+    pool._write_json_atomic(queue.lease_path(mover), {
+        "owner": stale.get("claimed_by"), "action_key": mover,
+        "attempt": stale.get("attempt", 1),
+        "heartbeat_unix": pool._now() - 10 * pool.LEASE_TIMEOUT_S})
+
+    reaped = queue.reap_stale(timeout_s=1.0)
+
+    # It did conclude the stale copy...
+    assert not queue.item_path(pool.CLAIMED, mover).exists()
+    assert mover not in reaped, "a filed ending is cleanup, not work to retry"
+    # ...and the pin survived it.
+    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
+    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
+    assert queue.residency_pin_holds(
+        pool._read_json(queue.item_path(pool.DONE, mover)), mover) is True
+    assert queue._lead_is_pinned(fleet.staged["residency"], mover) is True
+
+
+def test_a_widowed_lease_does_not_hand_back_a_completed_pin(fleet) -> None:
+    """The same question where there is no claim record left to judge.
+
+    ``sweep_widowed_leases`` says "any tokens still held under the key go
+    back", which is right for a host ledger and wrong for a tier: a mover's
+    tier tokens are *meant* to outlive its claim, from ``finish`` until an
+    egress deletes the bytes.
+    """
+
+    queue, mover = fleet.queue, _lead(fleet)
+    claim = _stage_the_lead(fleet)
+    pool._write_json_atomic(queue.lease_path(mover), {
+        "owner": claim.get("claimed_by"), "action_key": mover,
+        "heartbeat_unix": pool._now() - 10 * pool.LEASE_TIMEOUT_S})
+
+    queue.sweep_widowed_leases(timeout_s=1.0)
+
+    assert not queue.lease_path(mover).exists()
+    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
+
+
+def test_an_unpinned_mover_still_gets_its_tokens_back(fleet) -> None:
+    """The other direction, so the fix is a judgement and not a blanket keep.
+
+    A mover that moved nothing ends ``executed`` exactly like one that staged
+    its range, and its host *and* tier tokens must both come back.
+    """
+
+    queue, mover = fleet.queue, _lead(fleet)
+    _cycle(fleet)
+    claim = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    assert claim is not None and claim["action_key"] == mover
+    queue.record_move(mover, {
+        "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": False,
+        "bytes_staged": 0, "entries_staged": 0,
+        "range_start_bytes": 0, "range_end_bytes": PHASE_BYTES,
+        "stage_root": str(fleet.stage),
+        "disk_pacing": {"mean_self_read_mb_s": 0.0}})
+    queue.finish(mover, status="executed", claim_snapshot=claim)
+    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
+
+    pool._write_json_atomic(queue.item_path(pool.CLAIMED, mover), dict(claim))
+    pool._write_json_atomic(queue.lease_path(mover), {
+        "owner": claim.get("claimed_by"), "action_key": mover,
+        "attempt": claim.get("attempt", 1),
+        "heartbeat_unix": pool._now() - 10 * pool.LEASE_TIMEOUT_S})
+    queue.reap_stale(timeout_s=1.0)
+
+    assert queue._filed_pin_holds(mover) is False
+    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 2

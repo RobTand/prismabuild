@@ -3211,6 +3211,22 @@ for a lead that can never read as pinned. Nothing but the ledger can see it.
 different range — the last point at which it is cheap, because after it the row
 is in the queue.
 
+**Keeping the pin is not only `finish`'s job.** `_release_reservation` takes
+`keep_tier`, and three cleanup paths run *after* an ending that already kept its
+tokens: `reap_stale`'s terminal-claim branch (a stale `claimed/` view of a
+concluded mover — this mount's documented reality), `sweep_finish_tombstones`
+(an interrupted finisher), and `sweep_widowed_leases` (a lease whose record is
+gone). Each judges `keep_tier` on the *filed* terminal record, not on the copy
+it is cleaning up. Releasing there does not lose a token, it loses the
+attribution: every path that reclaims stage capacity — an egress node, the
+orphan sweep — walks the tier ledger's held keys, so a key released while its
+files remain is occupancy nothing can charge to anyone. The ledger reads it
+free, the next mover is admitted against capacity already spent, and the stage
+ENOSPCs. The window does republish that mover eventually, because
+`_mover_state` reads an unpinned, unqueued mover as unpublished, so the
+consumer is not stuck for ever — it pays a second full copy of the range, and
+the over-admission happens first.
+
 ### How the map reaches the consumer
 
 `tier_loop` is the map's **single writer**: movers write one fragment each into a

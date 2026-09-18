@@ -3618,6 +3618,27 @@ class PoolQueue:
         staged = receipt.get("bytes_staged")
         return isinstance(staged, int) and staged == end - start
 
+    def _filed_pin_holds(self, action_key: str) -> bool:
+        """Does this key's already-filed ending still pin bytes on the stage?
+
+        For the cleanup paths that have no claim record to judge -- a finish
+        tombstone whose finisher died, a lease widowed by a record that is
+        gone.  They conclude a claim whose ending is already filed, so the
+        question is not "did this claim stage anything" but "does the ending
+        that *was* filed hold tokens for bytes that are there".  Contained:
+        a read failure answers ``True``, because a cleanup that cannot see the
+        ending must not be the thing that releases its capacity.
+        """
+
+        for state in (DONE, FAILED):
+            try:
+                record = _read_json(self.item_path(state, str(action_key)))
+            except (OSError, PoolContractError):
+                return True
+            if isinstance(record, Mapping) and self.residency_pin_holds(record, str(action_key)):
+                return True
+        return False
+
     def _release_reservation(self, action_key: str, *, host: str | None,
                              keep_tier: bool = False) -> int:
         """Give a concluded claim's capacity back: host tokens, then tier tokens.
@@ -3628,6 +3649,29 @@ class PoolQueue:
         forgotten on the other.  ``host`` is the box whose ledger holds the
         claim's host tokens, or ``None`` when no box is named and there is
         nothing to release there; the tier release needs no host.
+
+        **One default is not safe for every caller, and this docstring used to
+        imply it was.**  ``keep_tier`` is off by default because a claim that
+        is *being* concluded has released nothing yet, and almost every caller
+        here is concluding one.  Three are not: they clean up after an ending
+        that already concluded, and that ending may have kept its tier tokens
+        on purpose because its bytes are on the stage.
+
+        * ``reap_stale``'s terminal-claim branch judges ``keep_tier`` on the
+          filed ``done``/``failed`` record its generation match returned.
+        * ``sweep_finish_tombstones`` and ``sweep_widowed_leases`` have no
+          claim record to judge, so they ask ``_filed_pin_holds``.
+
+        Getting this wrong does not lose a token; it loses the *attribution*.
+        Every path that reclaims stage capacity -- an egress node, the tier
+        loop's orphan sweep -- walks the tier ledger's held keys, so a key
+        released while its files are still there leaves occupancy that nothing
+        can ever charge to anyone: the ledger reads it free, the next mover is
+        admitted against capacity already spent, and the stage ENOSPCs.  The
+        window does eventually republish that mover -- ``_mover_state`` reads an
+        unpinned, unqueued mover as unpublished -- so the consumer's gate is
+        not stuck forever, but it pays a second full copy of the range and the
+        over-admission happens first.
         """
 
         released = self.ledger(host).release(action_key) if host is not None else 0
@@ -6333,7 +6377,16 @@ class PoolQueue:
                         terminal_status=outcome.get("status"),
                     )
                     self._release_reservation(
-                        key, host=holder if isinstance(holder, str) else socket.gethostname())
+                        key, host=holder if isinstance(holder, str) else socket.gethostname(),
+                        # Judged on the record that was *filed*, not on this
+                        # stale copy: the ending already concluded, and if it
+                        # kept its tier tokens the bytes are on the stage.
+                        # Releasing them here would leave occupancy nothing can
+                        # attribute -- every reclaim path (an egress, the orphan
+                        # sweep) walks the tier's held keys, so a key released
+                        # while its files remain is capacity no mechanism can
+                        # ever take back.
+                        keep_tier=self.residency_pin_holds(outcome, key))
                     path.unlink(missing_ok=True)
                     self.lease_path(key).unlink(missing_ok=True)
                     continue
@@ -6711,7 +6764,14 @@ class PoolQueue:
                             if not cleanup["complete"]:
                                 continue
                         if holders:
-                            self._release_reservation(key, host=holders[0])
+                            # The ending is already filed -- that is what made
+                            # this tombstone unrestorable -- so if it pinned a
+                            # staged range, its tier tokens are not this
+                            # cleanup's to return.  Releasing them would leave
+                            # the files on the stage with nothing holding them.
+                            self._release_reservation(
+                                key, host=holders[0],
+                                keep_tier=self._filed_pin_holds(key))
                             if self.claim_reservation_hosts(key):
                                 continue  # a partial return still needs this owner
                         lease = _read_json(self.lease_path(key))
@@ -6788,9 +6848,11 @@ class PoolQueue:
         Aged past ``timeout_s`` before removal, for the same reason
         ``reap_stale`` waits: ``claim()`` writes the lease *after* the rename,
         so a lease that briefly has no record beside it may simply be a claim
-        mid-flight in the other direction.  Any tokens still held under the key
-        go back, because a reservation outliving its holder is the starvation
-        bug's shape.
+        mid-flight in the other direction.  Host tokens still held under the
+        key go back, because a reservation outliving its holder is the
+        starvation bug's shape -- but tier tokens do not, when the key's filed
+        ending pins a staged range: those are meant to outlive the claim, and
+        releasing them leaves occupancy nothing can attribute.
         """
 
         swept: list[str] = []
@@ -6826,7 +6888,14 @@ class PoolQueue:
                 container_cleanup = self.cleanup_action_containers(record)
                 if not container_cleanup["complete"]:
                     continue
-                self._release_reservation(key, host=host)
+                # "Any tokens still held under the key go back" is right for a
+                # host ledger, where a reservation outliving its holder is the
+                # starvation bug.  It is wrong for a tier: a mover's tier
+                # tokens are *meant* to outlive its claim, from ``finish``
+                # until an egress deletes the bytes, so a widowed lease beside
+                # a filed ending that pins must leave them alone.
+                self._release_reservation(key, host=host,
+                                         keep_tier=self._filed_pin_holds(key))
                 lease.unlink(missing_ok=True)
                 swept.append(key)
         return swept
