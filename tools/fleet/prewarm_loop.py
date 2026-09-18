@@ -727,6 +727,74 @@ def by_id_names(paths: "list[str] | tuple[str, ...]", *,
     return names
 
 
+def stage_prefix_head(mount_prefix: str) -> str:
+    """``mount_prefix`` normalised once, with its separator, for a whole pass.
+
+    Every entry of a manifest shares one prefix, and normalising it per entry
+    is most of what made a release cost a core: these are 469 008-entry
+    manifests and a cycle asks about every entry of every live row.
+    """
+
+    prefix = os.path.normpath(str(mount_prefix or ""))
+    if not prefix or prefix == ".":
+        return ""
+    return prefix if prefix.endswith(os.sep) else prefix + os.sep
+
+
+def stage_entry_id(entry: Mapping[str, object],
+                   head: str) -> "tuple[str, int, int] | None":
+    """One entry's stage object as ``(relative path, offset, bytes)``.
+
+    The identity a release compares by.  It is the key's own three parts,
+    unformatted: building the string cost ``os.path.relpath``, which calls
+    ``os.getcwd`` for every entry it is given, and the comparison never
+    needed the string.  Relative to the manifest's prefix rather than
+    absolute, because two rows with different mount prefixes still meet on
+    the same object in the stage tree.
+
+    ``head`` is :func:`stage_prefix_head`'s answer, so the prefix is
+    normalised once per pass rather than once per entry.
+    """
+
+    path = str(entry.get("path", ""))
+    if not path or not head:
+        return None
+    relative: "str | None" = None
+    if path.startswith(head):
+        candidate = path[len(head):]
+        parts = candidate.split(os.sep)
+        # An already-normalised remainder is its own relative form.  Anything
+        # else -- an empty component, a ``.``, a ``..`` -- falls through to
+        # the exact arithmetic below rather than being guessed at.
+        if candidate and all(parts) and not any(
+                part in (os.curdir, os.pardir) for part in parts):
+            relative = candidate
+    if relative is None:
+        try:
+            relative = os.path.relpath(os.path.normpath(path),
+                                       os.path.normpath(head))
+        except ValueError:
+            return None
+        if (relative.startswith("..") or os.path.isabs(relative)
+                or relative == "."):
+            return None
+        if any(part == ".." for part in relative.split(os.sep)):
+            return None
+    return (relative, int(entry.get("offset", 0) or 0),
+            int(entry.get("bytes", 0) or 0))
+
+
+def stage_object_name(identity: "tuple[str, int, int]") -> str:
+    """A stage object's name, formatted from its identity.
+
+    Formatted only for an object that is about to be unlinked: a cycle that
+    compared by name paid for 469 008 strings it never used.
+    """
+
+    relative, offset, size = identity
+    return f"{relative}{STAGE_OBJECT_MARK}{offset}+{size}"
+
+
 def stage_object_key(entry: Mapping[str, object], mount_prefix: str) -> str | None:
     """The stage's name for one manifest entry, or ``None`` if it has none.
 
@@ -745,21 +813,8 @@ def stage_object_key(entry: Mapping[str, object], mount_prefix: str) -> str | No
     path outside the stage root.
     """
 
-    path = str(entry.get("path", ""))
-    prefix = str(mount_prefix or "")
-    if not path or not prefix:
-        return None
-    try:
-        relative = os.path.relpath(os.path.normpath(path), os.path.normpath(prefix))
-    except ValueError:
-        return None
-    if relative.startswith("..") or os.path.isabs(relative) or relative == ".":
-        return None
-    if any(part == ".." for part in relative.split(os.sep)):
-        return None
-    offset = int(entry.get("offset", 0) or 0)
-    size = int(entry.get("bytes", 0) or 0)
-    return f"{relative}{STAGE_OBJECT_MARK}{offset}+{size}"
+    identity = stage_entry_id(entry, stage_prefix_head(mount_prefix))
+    return None if identity is None else stage_object_name(identity)
 
 
 class StageTier:
@@ -1283,16 +1338,24 @@ def discover_stage(prefix: str, *,
     return tier
 
 
-def stage_keys_between(entries: "list[dict[str, object]]", mount_prefix: str,
-                       start: int, end: int) -> list[str]:
-    """Stage keys for the entries the reader has finished with in ``[start, end)``.
+def stage_ids_between(entries: "list[dict[str, object]]", head: str,
+                      start: int, end: int) -> "list[tuple[str, int, int]]":
+    """The objects the reader has finished with in ``(start, end]``.
 
     An entry counts as passed when its *last* byte is behind ``end``: an entry
     straddling either edge was staged whole, because a warm reads files and
     not byte ranges, and half of one is not releasable.
+
+    An empty band returns without walking the manifest.  This runs for every
+    window of every cycle whether or not a frontier moved, so a walk up to
+    ``end`` on a row with nothing to release was most of the cost of a poll.
+    A repeated range -- a v2 read plan may name one twice -- is one object,
+    so the band is deduplicated in read order.
     """
 
-    keys: list[str] = []
+    if end <= start:
+        return []
+    ids: "dict[tuple[str, int, int], None]" = {}
     position = 0
     for entry in entries:
         position += int(entry.get("bytes", 0) or 0)
@@ -1300,14 +1363,16 @@ def stage_keys_between(entries: "list[dict[str, object]]", mount_prefix: str,
             break
         if position <= start:
             continue
-        key = stage_object_key(entry, mount_prefix)
-        if key:
-            keys.append(key)
-    return keys
+        identity = stage_entry_id(entry, head)
+        if identity:
+            ids[identity] = None
+    return list(ids)
 
 
-def stage_keys_wanted(entries: "list[dict[str, object]]", mount_prefix: str,
-                      consumed: int, candidates: "set[str]") -> set[str]:
+def stage_ids_wanted(entries: "list[dict[str, object]]", head: str,
+                     consumed: int,
+                     candidates: "set[tuple[str, int, int]]",
+                     ) -> "set[tuple[str, int, int]]":
     """Which of ``candidates`` this row has *not* read yet.
 
     Asked of every live row, including the row doing the releasing: a read
@@ -1323,15 +1388,19 @@ def stage_keys_wanted(entries: "list[dict[str, object]]", mount_prefix: str,
     on the day a consumer arrives.
     """
 
-    wanted: set[str] = set()
+    wanted: "set[tuple[str, int, int]]" = set()
     position = 0
     for entry in entries:
         position += int(entry.get("bytes", 0) or 0)
         if position <= consumed:
             continue
-        key = stage_object_key(entry, mount_prefix)
-        if key in candidates:
-            wanted.add(key)
+        identity = stage_entry_id(entry, head)
+        if identity in candidates:
+            wanted.add(identity)
+            if len(wanted) == len(candidates):
+                # Nothing of this band can survive being wanted twice, so
+                # the rest of this manifest cannot change the answer.
+                break
     return wanted
 
 
@@ -1350,7 +1419,8 @@ def release_stage_band(tier: StageTier, entries: "list[dict[str, object]]",
     a staged object is a write however little it looks like one.
     """
 
-    candidates = stage_keys_between(entries, mount_prefix, start, end)
+    head = stage_prefix_head(mount_prefix)
+    candidates = stage_ids_between(entries, head, start, end)
     result: dict[str, object] = {
         "candidate_entries": len(candidates), "retained_entries": 0,
         "deletable_entries": 0, "released_entries": 0, "released_bytes": 0,
@@ -1365,11 +1435,12 @@ def release_stage_band(tier: StageTier, entries: "list[dict[str, object]]",
     # phase has passed is then an object the next phase reads.  Excluding the
     # row that is releasing would delete its own revisit at the moment the
     # revisit begins.
-    pending -= stage_keys_wanted(entries, mount_prefix, end, pending)
+    pending -= stage_ids_wanted(entries, head, end, pending)
     for other_entries, other_prefix, other_consumed in (
             others() if pending else ()):
-        pending -= stage_keys_wanted(other_entries, other_prefix,
-                                     other_consumed, pending)
+        pending -= stage_ids_wanted(other_entries,
+                                    stage_prefix_head(other_prefix),
+                                    other_consumed, pending)
         if not pending:
             break
     result["retained_entries"] = len(candidates) - len(pending)
@@ -1378,7 +1449,9 @@ def release_stage_band(tier: StageTier, entries: "list[dict[str, object]]",
         return result
     before_entries, before_bytes = tier.released_entries, tier.released_bytes
     before_failures = tier.release_failures
-    tier.release(sorted(pending))
+    # Formatted here and nowhere earlier: only the objects being unlinked
+    # ever need their names.
+    tier.release(sorted(stage_object_name(identity) for identity in pending))
     result["released_entries"] = tier.released_entries - before_entries
     result["released_bytes"] = tier.released_bytes - before_bytes
     result["failed_entries"] = tier.release_failures - before_failures

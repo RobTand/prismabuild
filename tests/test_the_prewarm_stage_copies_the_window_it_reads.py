@@ -118,3 +118,65 @@ def test_a_dry_run_reads_the_tier_and_writes_nothing(
     assert event["stage"]["state"] == "present"
     assert event["stage"]["staged_bytes"] == 0
     assert list(stage.mount.iterdir()) == []
+
+
+def _key_the_slow_way(entry: dict, mount_prefix: str) -> "str | None":
+    """``stage_object_key``'s arithmetic before #589 made it cheap.
+
+    Copied verbatim so the fast path is pinned against the exact rules it
+    replaced rather than against a paraphrase of them: what a stage object is
+    called is the consumer contract, and a name that drifted would point a
+    residency map at a file that is not there.
+    """
+
+    import os
+
+    path = str(entry.get("path", ""))
+    prefix = str(mount_prefix or "")
+    if not path or not prefix:
+        return None
+    try:
+        relative = os.path.relpath(os.path.normpath(path),
+                                   os.path.normpath(prefix))
+    except ValueError:
+        return None
+    if relative.startswith("..") or os.path.isabs(relative) or relative == ".":
+        return None
+    if any(part == ".." for part in relative.split(os.sep)):
+        return None
+    offset = int(entry.get("offset", 0) or 0)
+    size = int(entry.get("bytes", 0) or 0)
+    return f"{relative}.pbstage@{offset}+{size}"
+
+
+@pytest.mark.parametrize("path", [
+    "/mnt/shared/a/b.pt",          # the ordinary shape: a normalised path
+    "/mnt/shared//a//b.pt",        # doubled separators
+    "/mnt/shared/./a/b.pt",        # a curdir component
+    "/mnt/shared/a/../a/b.pt",     # a pardir that stays inside
+    "/mnt/shared/../shared/b.pt",  # a pardir through the prefix itself
+    "/mnt/shared/../etc/shadow",   # and one that leaves it
+    "/mnt/shared",                 # the prefix itself
+    "/mnt/sharedish/b.pt",         # a sibling whose name starts the same way
+    "/etc/shadow",                 # outside altogether
+    "relative/b.pt",               # not absolute at all
+    "",                            # nothing
+])
+@pytest.mark.parametrize("prefix", ["/mnt/shared", "/mnt/shared/", "/"])
+def test_the_fast_path_names_an_object_exactly_as_the_slow_one_did(
+        path: str, prefix: str) -> None:
+    """A cheaper name must be the same name.
+
+    ``os.path.relpath`` calls ``os.getcwd`` for every entry it is given, and
+    a cycle asks about every entry of every live row -- 469,008 of them per
+    manifest on this campaign.  The prefix is now normalised once per pass
+    and an already-normalised path is stripped rather than recomputed, with
+    everything else falling through to the original arithmetic.
+    """
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+    import prewarm_loop
+
+    entry = {"path": path, "offset": 4096, "bytes": 8192}
+    assert (prewarm_loop.stage_object_key(entry, prefix)
+            == _key_the_slow_way(entry, prefix))
