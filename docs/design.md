@@ -3088,14 +3088,87 @@ and does not satisfy the gate — the residency descriptor is deterministic on
 purpose, so that a consumer can bind it as a CAS dependency before the mover
 runs, which is exactly what makes a cached mover look finished.
 
+### The movement node
+
+`tools/fleet/stage_move.py` is the mover: an ordinary PB action, placed by tag
+on the box that serves the pool, that copies one declared byte range of a data
+manifest's read order onto a stage tier. It reads through the prewarm loop's
+own mount map, pacer and admission gate — imported, never copied — because a
+mover that paced differently would not be measuring the same pool. What it adds
+is a sink: the ARC is keyed by on-pool block pointer, so reading a block warms
+the path a consumer will open, while a copy onto another device does not, and
+nothing about reading a file makes a copy of it.
+
+Each entry is written beside its final name and renamed into place, so a partial
+file is never visible under the name a consumer reads, and its digest is
+computed on the way through. A staged range that the manifest gave a digest for
+and does not match is deleted and left out of the map: publishing it would make
+the map a lie a consumer trusts in preference to the pool. Entries a manifest
+names once, at offset zero, keep their relative name; every other range gets a
+name of its own under a `.pbrange/` suffix, because two movers holding two
+ranges of one shard cannot both rename-publish into one file, and the staged
+object's length has to be the range's length.
+
+A range whose entries total more bytes than the range reserved is
+`residency_overran_reservation`, refused before the copy rather than after it:
+the tokens bound what the tier can hold, so staging past them breaks the
+accounting that keeps the stage from overfilling.
+
+The receipt is filed with `record_move` into `movers/`, a sidecar beside
+`prewarm/` for the same reason that one is, and the `tiers` role reads both for
+the fill measurement. It carries the pacer's pool-side attribution, the
+file-side rate under a name that says which side it is
+(`mb_per_s_file_side`), the `/proc/PID/io` delta, and the range it was asked
+for beside the bytes it staged.
+
+### The residency map
+
+`prismabuild.residency_map` is what a consumer reads to find its staged bytes;
+its path arrives as `PRISMABUILD_RESIDENCY_MAP`. Entries are keyed by
+`(path, offset)` spelled `"<offset>:<path>"`, because a data manifest refuses a
+repeated `(path, offset)` and therefore permits one path at several offsets — a
+map keyed by path alone would be ambiguous exactly where a partial copy is most
+dangerous. `sha256` is required on a map entry although a manifest may carry
+null on its own: the map's whole claim is that these are those bytes on another
+device, and a copy nobody hashed cannot make it. A path the map does not name
+falls back to the pool.
+
+Movers write fragments, one file per mover under the consumer's directory, and
+the map is composed from them. One file that every mover read-modify-wrote would
+lose entries the moment two of a consumer's movers finished together, and rename
+is the only concurrency primitive this fleet trusts on NFS — a rename cannot
+merge. Fragments that disagree about the consumer, tier, stage root or manifest
+refuse rather than merge, and so do two movers that staged one range
+differently.
+
+### Where stage capacity comes from
+
+A stage tier's capacity is `available` on its dataset (`<pool>/prewarm`, or the
+pool's root dataset when that does not exist), never `zpool list` `size`. They
+are different numbers and only one is a promise: `size` is the raw geometry,
+while `available` is what the dataset may actually write after parity, the slop
+reservation, quotas and whatever its siblings hold. Minting from `size` puts the
+slop reserve inside the accounting as an overfill margin — tokens for bytes the
+pool refuses at ENOSPC, discovered by a mover that has already read them off the
+disks. The record carries `capacity_source` so the fallback announces itself.
+
 ### Not built here
 
 Pin lifetime beyond the claim, the egress node that unpins, the orphan sweep for
-a mover whose consumer was withdrawn, the mover and egress tools themselves, the
-residency map a consumer reads, and the submitter flag that publishes a mover
-plan. This change is the contract, the ledger, the derivation and the gate. No
-end-to-end campaign speedup is claimed by it, and none is measurable until a
-stage device exists and a consumer reads it.
+a mover whose consumer was withdrawn, the windowed publication that keeps a
+rolling stage ahead of a consumer, and the submitter flag that publishes a mover
+plan. No end-to-end campaign speedup is claimed, and none is measurable until a
+consumer reads the stage.
+
+Also deferred deliberately: reuse of a resident prefix *across artifacts*, where
+a later artifact's mover would adopt bytes another artifact already staged
+instead of re-copying them. The residency descriptor is deterministic, so the
+identity that would make it safe already exists; what it needs is an eviction
+policy that can tell "resident for a consumer that is still running" from
+"resident for one that finished", and a correct ledger is worth more than the
+saving. Until then, retained means held: held tier tokens equal bytes on the
+stage at every instant, and egress is one operation that deletes the files and
+releases the key.
 
 ## Model-level Tessera dispatch
 

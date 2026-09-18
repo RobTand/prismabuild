@@ -68,6 +68,10 @@ FLEET_SCRIPTS = (
     # mints and announces the box's discovered storage tiers, and a role
     # script that does not travel cannot be spawned.
     "tier_loop.py",
+    # ...and stage_move.py, which is not a role script at all: it is the
+    # movement node itself, exec'd by an admitted action on the storage box
+    # (#583).  A generation without it publishes movers nothing can run.
+    "stage_move.py",
     # The SLURM lane's two halves: the shared submit every producer routes
     # through, and the job entry it names.  A runtime published without them
     # has producers importing a module that is not there and a batch script

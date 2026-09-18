@@ -43,7 +43,9 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import pool  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
-MOVER_RECEIPTS = "movers"
+#: One definition, in the pool: ``stage_move.py`` writes these through
+#: ``record_move`` and this loop reads them for the fill measurement.
+MOVER_RECEIPTS = pool.MOVERS
 
 
 class ReceiptCache:
