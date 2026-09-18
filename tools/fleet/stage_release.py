@@ -11,9 +11,14 @@ free at every step --- so a mover keeps its tokens from ``finish`` until an
 egress deletes its files.
 
 There is no retained-but-unpinned state.  Bytes the ledger cannot see are the
-overfill the reservation exists to prevent, arriving by another road, so
-"retain the read-order prefix for a later artifact" is deferred (#598) rather
-than approximated.  Evicting is deleting.
+overfill the reservation exists to prevent, arriving by another road.  Evicting
+is still deleting --- what #598 changed is *when* and *whether*.  A range a live
+consumer's window names is **adopted** instead: the tokens move from the
+finished mover's key to the successor's and nothing is copied
+(``tier_loop.adopt``).  What no window names stays resident, held and counted,
+until a window cannot be placed without the room --- the ``pressure`` argument
+to :func:`sweep`.  Both are the same rule stated twice: an orphan is evicted
+when the tier needs its tokens, never because a clock said so.
 
 **Delete, then release, then drop the fragment.**  Each order is wrong in one
 direction and this one is wrong in none that matters: a crash after the deletes
@@ -40,6 +45,7 @@ gone back by then, so nothing keyed can find it.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import errno
 import json
 import os
@@ -57,6 +63,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
+from prismabuild import storage_tiers  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 
@@ -105,7 +112,30 @@ def evict(queue: pool.PoolQueue, mover_action_key: str, *,
     twice.  A second egress of the same range is therefore a no-op receipt, not
     a failure --- which matters, because the tier loop may publish one while a
     sweep is doing the same work.
+
+    Held under the mover's transition lock since #598, because a second party
+    can now decide the same range's ownership: an adoption hands these tokens
+    to a successor's mover and re-issues the fragment under it.  Read-delete-
+    release and transfer-then-drop-the-fragment are each safe alone, and
+    interleaved either way one of them acts on half the other's decision --- so
+    they exclude each other rather than being ordered.  After the lock this
+    sees one of two settled states: the fragment is here and the tokens are
+    this key's, or the fragment is gone and so are the tokens, which is the
+    no-op above.
     """
+
+    with queue.mover_transition_lock(str(mover_action_key)):
+        return _evict_locked(queue, mover_action_key,
+                             consumer_action_key=consumer_action_key,
+                             stage_root=stage_root,
+                             residency_root=residency_root, reason=reason)
+
+
+def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
+                  consumer_action_key: str, stage_root: str,
+                  residency_root: str | Path | None = None,
+                  reason: str = "egress") -> dict[str, object]:
+    """:func:`evict`'s body, with the mover's transition lock already held."""
 
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.RESIDENCY)
@@ -178,8 +208,43 @@ def evict(queue: pool.PoolQueue, mover_action_key: str, *,
     }
 
 
+def live_claims(queue: pool.PoolQueue) -> tuple[set[str], dict[str, str]]:
+    """Every mover key a ready or claimed item still wants, and those items.
+
+    Two answers because they mean different things.  ``wanted`` is the movers:
+    a live consumer's declared leads *and* every mover of its frozen plan, so a
+    range staged three phases ahead of where it is reading is not an orphan.
+    ``owners`` is the live items themselves, keyed by their own action key,
+    which is how a consumer that holds tier tokens of its own is told apart
+    from a mover.
+
+    Read once by whoever needs it: the orphan sweep asks "which held keys are
+    nobody's", and the adoption asks the same question the other way round --
+    a range only a *finished* consumer still names is one a successor may take
+    over (#598).  One walk of ``ready/`` and ``claimed/`` answers both.
+    """
+
+    wanted: set[str] = set()
+    owners: dict[str, str] = {}
+    for state in (pool.READY, pool.CLAIMED):
+        for path in pool._scan(queue.dir(state)):
+            item = pool._read_json(path)
+            residency = item.get("residency") if isinstance(item, dict) else None
+            if not isinstance(residency, dict):
+                continue
+            for lead in residency.get("leads") or []:
+                wanted.add(str(lead))
+            key = path.name[:-len(".json")] if path.name.endswith(".json") else path.name
+            owners[key] = key
+            plan = residency_plan.read(queue, key)
+            if plan is not None:
+                wanted.update(residency_plan.mover_keys(plan))
+    return wanted, owners
+
+
 def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
-          residency_root: str | Path | None = None) -> list[dict[str, object]]:
+          residency_root: str | Path | None = None,
+          pressure: Mapping[str, int] | None = None) -> list[dict[str, object]]:
     """Evict every pinned mover no live item still names as a lead.
 
     A consumer withdrawn between its movers finishing and its own claim would
@@ -198,29 +263,30 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     ahead of it is named by nothing in the queue: testing ``leads`` alone would
     make this sweep delete the window it exists to protect, on the cycle after
     it was staged.  The frozen plan is what says a mover is still wanted.
+
+    **``pressure`` is what makes an orphan's eviction a decision rather than a
+    reflex (#598).**  Given, it is the GiB each tier's own window cannot place,
+    and orphans are evicted on that tier only until the tier has that much
+    free.  Not given -- a direct call, an operator, a test of this primitive --
+    every orphan goes, which is the behaviour this had before.  Deferring is
+    safe because an orphan's tokens are still held the whole time: the ledger
+    counts every resident byte, so nothing is admitted onto capacity that is
+    not there.  What it buys is that a consumer's failure no longer deletes
+    731 GB before its retry is submitted, which is the measured cost this
+    exists to remove; Rob, 2026-09-18: *"We should not be rerunning anything in
+    bulk if avoidable."*  Oldest receipt first, so a tier under repeated
+    pressure takes the same range back twice rather than alternating between
+    two -- a deterministic order, not a ranking of what is worth keeping.
     """
 
-    wanted: set[str] = set()
-    owners: dict[str, str] = {}
-    for state in (pool.READY, pool.CLAIMED):
-        for path in pool._scan(queue.dir(state)):
-            item = pool._read_json(path)
-            residency = item.get("residency") if isinstance(item, dict) else None
-            if not isinstance(residency, dict):
-                continue
-            for lead in residency.get("leads") or []:
-                wanted.add(str(lead))
-            key = path.name[:-len(".json")] if path.name.endswith(".json") else path.name
-            owners[key] = key
-            plan = residency_plan.read(queue, key)
-            if plan is not None:
-                wanted.update(residency_plan.mover_keys(plan))
+    wanted, owners = live_claims(queue)
     swept: list[dict[str, object]] = []
     for tier_id, stage_root in stage_roots.items():
         try:
             held = queue.tier_ledger(tier_id).held_keys()
         except (OSError, pool.PoolContractError):
             continue
+        orphans: list[tuple[float, str, str]] = []
         for key in held:
             if key in wanted or key in owners:
                 continue
@@ -229,6 +295,26 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                         else "")
             if not consumer:
                 continue
+            staged_unix = 0.0
+            if isinstance(receipt, dict):
+                try:
+                    staged_unix = float(receipt.get("unix", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    staged_unix = 0.0
+            orphans.append((staged_unix, key, consumer))
+        orphans.sort()
+        needed = None if pressure is None else int(pressure.get(tier_id, 0))
+        kind = storage_tiers.capacity_kind_of(tier_id)
+        for _, key, consumer in orphans:
+            if needed is not None:
+                if needed <= 0:
+                    break      # nothing on this tier is waiting for the room
+                try:
+                    free = int(queue.tier_ledger(tier_id).available().get(kind, 0))
+                except (OSError, pool.PoolContractError):
+                    break
+                if free >= needed:
+                    break      # the window fits now; the rest stays resident
             swept.append(evict(queue, key, consumer_action_key=consumer,
                                stage_root=stage_root,
                                residency_root=residency_root, reason="orphan-sweep"))

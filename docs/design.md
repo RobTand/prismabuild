@@ -3222,6 +3222,16 @@ A consumer is admitted only when every lead has moved its bytes **and still
 holds them**; the second half is `residency_lead_unpinned`, and a missing mover
 receipt fails it, so "no receipt" can never read as "staged".
 
+There is one other way a mover's tokens may change hands, and it is a hand-over
+rather than a return: `ResourceLedger.transfer` renames each token between two
+holder directories under `held/`, so a range that is already on the stage can
+change owner without any instant in which the ledger reads capacity it does not
+have. Release-then-reacquire has exactly that instant, and whatever is admitted
+inside it lands on a stage that is full. A transfer interrupted part-way splits
+the reservation across two holders: the sum is unchanged, nothing is lost and
+nothing is over-admitted, and calling it again finishes the move. That is the
+whole ledger half of adoption, below.
+
 ### The window
 
 A campaign stage reads several times the size of the stage, so "admitted when
@@ -3274,6 +3284,70 @@ ENOSPCs. The window does republish that mover eventually, because
 `_mover_state` reads an unpinned, unqueued mover as unpublished, so the
 consumer is not stuck for ever — it pays a second full copy of the range, and
 the over-admission happens first.
+
+### Adopting a resident range, and when an orphan is evicted
+
+The campaign is one probe and many artifacts of one model, so every artifact
+reads the same shards. Measured on 2026-09-18: a run stage filled 731.5 GB
+across 11 movers, its consumer failed on an application defect at 13:50Z, the
+orphan sweep had deleted all of it by 14:17Z, and the resubmission of the same
+manifest had to copy every byte again. Rob: *"We should not be rerunning
+anything in bulk if avoidable."*
+
+**The invariant does not move.** Held tier tokens equal bytes on the stage at
+every instant, before this and after it. #598 refused retained-but-unpinned
+bytes for that reason and nothing here reintroduces them: every resident byte
+is held by some key throughout, and the two changes below are about *which* key
+and *when* the bytes go, never about whether they are counted.
+
+**Adoption.** A mover's action key hashes an argv carrying
+`--consumer-action-key`, so two consumers of one manifest seal two different
+keys for the same bytes; the residency descriptor —
+`(manifest_sha256, tier, range_start_bytes, range_end_bytes)` — is the identity
+they share, and it is deterministic. When a live consumer's plan names a phase
+whose descriptor is already resident under a key **no live item still names**,
+the `tiers` loop hands the range over instead of staging it again: the
+successor's fragment is written first, the tokens are transferred, and only then
+does the old fragment stop accounting for the bytes. Dropping the old fragment
+first would leave an egress able to release tokens for bytes that are still
+there; dropping it last means the worst an interrupted adoption leaves is a
+range named twice, which every reader already tolerates.
+
+An adopted mover never runs, so it files no terminal record. What it files is a
+move receipt carrying `adopted_from` and `bytes_copied: 0`, and what it holds is
+the range's tokens — the same two facts the gate's `executed` branch is really
+checking, so `residency_verdict` reads them directly rather than looking for a
+`done/` record that will never exist.
+
+**The egress is the other party, and they exclude each other rather than being
+ordered.** An egress that reads the fragment before an adoption and unlinks
+after it deletes bytes a live consumer now holds tokens for; one that reads it
+after would release tokens for bytes that are still on the device. Neither
+ordering is safe, so both take the *mover's* transition lock — the egress row's
+own key is a different action, so it is not the lock `_claim` already takes.
+The egress waits; an adoption that cannot take the lock declines and the range
+is copied, which costs time and never correctness.
+
+**When an orphan is evicted.** An orphan is a range whose consumer finished,
+failed or was withdrawn, still pinned because its bytes are still there. It is
+now evicted when the tier needs its tokens: `window_pressure` reads the first
+phase a live consumer has not made resident, and the sweep takes orphans back —
+oldest receipt first, a deterministic order rather than a ranking — only until
+that much is free. A tier no window is waiting on keeps its orphans, held and
+counted, for the next artifact that names them.
+
+The grace is therefore not a timer and there is no constant anywhere in it. The
+deferral is safe for the same reason adoption is: the tokens are held the whole
+time, so the ledger still counts every resident byte and nothing can be admitted
+onto capacity that is not there. What is *not* deferred is the reconciliation
+inside the sweep — bytes no key holds are not a cache, they are the accounting
+hole #608 closed, and they are taken back every cycle.
+
+Two limits, stated rather than hidden. A direct call to the sweep with no
+pressure named still takes every orphan, which is what an operator means. And
+`reclaim_terminal_reservation` refuses an adopted mover, because it demands
+exactly one terminal record and an adopted mover has none; the supported way to
+return that range is its egress, which is the path the sweep already uses.
 
 ### How the map reaches the consumer
 
@@ -3342,15 +3416,17 @@ latter, so the loop's own directory holds `stage_move.py` in either layout.
 No end-to-end campaign speedup is claimed, and none is measurable until a
 consumer reads the stage.
 
-Also deferred deliberately: reuse of a resident prefix *across artifacts*, where
-a later artifact's mover would adopt bytes another artifact already staged
-instead of re-copying them. The residency descriptor is deterministic, so the
-identity that would make it safe already exists; what it needs is an eviction
-policy that can tell "resident for a consumer that is still running" from
-"resident for one that finished", and a correct ledger is worth more than the
-saving. Until then, retained means held: held tier tokens equal bytes on the
-stage at every instant, and egress is one operation that deletes the files and
-releases the key.
+Reuse of a resident prefix *across artifacts* is built (#598) and described
+above; what is still not claimed is a measured saving. No end-to-end campaign
+number is available until a second artifact of one model runs against a stage
+the first one filled, and the 731.5 GB figure is the cost of the copy that was
+repeated, not evidence that the adoption avoided it.
+
+Still not built: nothing decides *which* orphan is worth keeping when several
+could be evicted. The order is the oldest receipt first, which is deterministic
+and is not a ranking — there is no read-ahead model saying a later artifact is
+more likely to want one range than another, and inventing one would be a
+heuristic where no measurement exists.
 
 ## Model-level Tessera dispatch
 

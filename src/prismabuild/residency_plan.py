@@ -338,6 +338,22 @@ def mover_keys(plan: Mapping[str, object]) -> list[str]:
     return [str(phase["mover_row"]["action_key"]) for phase in phases]
 
 
+def remaining(plan: Mapping[str, object],
+              accepted_phase: str | None) -> list[dict[str, object]]:
+    """The phases the consumer is reading now or has not reached yet.
+
+    The phase its progress names is *included*: counting it as finished would
+    take back a window the consumer is still inside, which is the rule
+    ``prewarm_loop.consumed_through`` keeps.  A name the plan does not carry --
+    no progress yet, or a phase from another plan -- reads as the beginning,
+    because a consumer that has not said where it is has not passed anything.
+    """
+
+    phases = list(plan["phases"])                                # type: ignore[arg-type]
+    names = [str(phase["name"]) for phase in phases]
+    return phases[names.index(accepted_phase) if accepted_phase in names else 0:]
+
+
 def window(plan: Mapping[str, object], *, accepted_phase: str | None,
            free_gib: int, published: Sequence[str] = (),
            staged: Sequence[str] = ()) -> dict[str, list[dict[str, object]]]:
@@ -362,8 +378,8 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     """
 
     phases = list(plan["phases"])                                # type: ignore[arg-type]
-    names = [str(phase["name"]) for phase in phases]
-    current = names.index(accepted_phase) if accepted_phase in names else 0
+    ahead = remaining(plan, accepted_phase)
+    current = len(phases) - len(ahead)
     already = set(published)
     resident = set(staged)
 
@@ -378,7 +394,7 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
 
     publish: list[dict[str, object]] = []
     room = int(free_gib)
-    for phase in phases[current:]:
+    for phase in ahead:
         key = str(phase["mover_row"]["action_key"])
         if key in already:
             continue
@@ -402,6 +418,7 @@ __all__ = [
     "leads_for",
     "mover_keys",
     "read",
+    "remaining",
     "validate_plan",
     "window",
 ]
