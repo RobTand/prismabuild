@@ -53,34 +53,41 @@ def _manifest(mount: Path, entries: list[dict[str, object]]) -> dict[str, object
 
 
 def _args(tmp_path: Path, manifest: dict, *, start: int, end: int, **overrides):
+    """The tool's own parsed arguments, then this case's differences.
+
+    Built from ``stage_move.build_parser`` rather than re-listed here, because
+    a hand-written copy of the defaults goes stale silently: when the pacer's
+    ``--served-host`` was added to the tool, every test that drove ``move``
+    began failing on an attribute the real tool always supplies, and the
+    fixture was the only thing that did not have it.
+
+    ``--unpaced`` is the one concession: the pacer needs a live ZFS pool's
+    member devices, and refusing to run without one is the storage role's
+    correct behaviour rather than something to fake.
+    """
+
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest))
-    defaults = dict(
-        pool_root=str(tmp_path / "queue"),
-        cas_root=str(tmp_path / "cas"),
-        action_key=MOVER,
-        consumer_action_key=CONSUMER,
-        tier_id="prismabuild-stage:dl380g10",
-        stage_root=str(tmp_path / "stage"),
-        manifest_sha256=MANIFEST_SHA,
-        range_start_bytes=start,
-        range_end_bytes=end,
-        manifest=str(manifest_path),
-        residency_root=str(tmp_path / "queue" / pool.RESIDENCY),
-        mount=[],
-        block=1 << 16,
-        readers=2,
-        max_readers=2,
-        no_incremental_fragment=False,
-        receipt=None,
-        unpaced=True,
-        # The pacer's own arguments, as the tool's parser defaults them.
-        pace_pool="", disks="", client_active_mb_s=0.0, export_stats="",
-        nfsd_io="", max_util_pct=25.0, max_read_await_ms=10.0,
-        max_backlog_ms=2000.0, pace_sample_s=0.25, pace_hold_s=0.25,
-    )
-    defaults.update(overrides)
-    return SimpleNamespace(**defaults)
+    args = stage_move.build_parser().parse_args([
+        "--pool-root", str(tmp_path / "queue"),
+        "--cas-root", str(tmp_path / "cas"),
+        "--action-key", MOVER,
+        "--consumer-action-key", CONSUMER,
+        "--tier-id", "prismabuild-stage:dl380g10",
+        "--stage-root", str(tmp_path / "stage"),
+        "--manifest-sha256", MANIFEST_SHA,
+        "--range-start-bytes", str(start),
+        "--range-end-bytes", str(end),
+        "--manifest", str(manifest_path),
+        "--residency-root", str(tmp_path / "queue" / pool.RESIDENCY),
+        "--block", str(1 << 16),
+        "--readers", "2",
+        "--max-readers", "2",
+        "--unpaced",
+    ])
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    return args
 
 
 def _three_files(tmp_path: Path) -> tuple[Path, list[dict[str, object]]]:
@@ -273,3 +280,140 @@ def test_a_mover_receipt_prices_the_tier_the_same_way_a_prewarm_record_does(
     # A receipt with no pool-side attribution says nothing about the pool.
     assert storage_tiers.fill_rate_from_records(
         [{"mb_per_s_file_side": 1141.0}]) is None
+
+
+def test_a_failed_fragment_publication_is_recorded_and_the_copy_goes_on(
+        tmp_path: Path, monkeypatch) -> None:
+    """A dead worker that reports ``errors: []`` is worse than a slow one.
+
+    The publish ran inside the copier's lock with no ``try``: one ESTALE on
+    the queue directory killed the thread holding it, then every other worker
+    in turn on its next landed entry, and ``run`` joined the corpses and
+    returned normally.  The receipt said ``complete: False``, ``errors: []``,
+    exit 0 -- a degradation with no cause anywhere in the record.
+    """
+
+    mount, entries = _three_files(tmp_path)
+    args = _args(tmp_path, _manifest(mount, entries),
+                 start=0, end=4096 + 8192 + 2048)
+    calls = {"n": 0}
+    real = rm.write_fragment
+
+    def flaky(root, fragment):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("ESTALE: stale file handle")
+        return real(root, fragment)
+
+    monkeypatch.setattr(rm, "write_fragment", flaky)
+
+    receipt = stage_move.move(args)
+
+    assert any("fragment publication" in error for error in receipt["errors"])
+    # Every entry still copied: a fragment that will not write is not a reason
+    # to stop staging bytes.
+    assert receipt["entries_staged"] == 3
+    assert receipt["bytes_staged"] == 4096 + 8192 + 2048
+    stage = Path(args.stage_root)
+    assert (stage / "shard-1.bin").exists() and (stage / "shard-3.bin").exists()
+    # And the final publish repaired the fragment, so the map is whole.
+    assert len(rm.read_fragments(args.residency_root, CONSUMER)[0]["entries"]) == 3
+
+
+def test_a_second_movers_bad_copy_never_destroys_the_first_ones_good_one(
+        tmp_path: Path) -> None:
+    """Verify before the rename, because the rename *is* the publication.
+
+    Two movers cover one entry whenever a consumer is re-dispatched under a
+    new action key, or whenever an entry straddles two adjacent windows.  With
+    the digest checked after ``os.replace``, mover B's changed bytes landed on
+    mover A's good copy and were then unlinked -- leaving A's fragment, a file
+    under A's own key, naming a stage path with nothing behind it.  The map
+    would have vouched for bytes that are gone.
+    """
+
+    mount = tmp_path / "mnt"
+    entry = _write(mount / "shard.bin", b"a" * 4096)
+    manifest = _manifest(mount, [entry])
+
+    first = stage_move.move(_args(tmp_path, manifest, start=0, end=4096))
+    assert first["complete"] is True
+    staged = Path(_args(tmp_path, manifest, start=0, end=4096).stage_root) / "shard.bin"
+    assert staged.read_bytes() == b"a" * 4096
+
+    # The source changes under us -- a rewritten shard, or bit rot.  That is
+    # the case the manifest digest exists for.
+    (mount / "shard.bin").write_bytes(b"z" * 4096)
+    second = stage_move.move(
+        _args(tmp_path, manifest, start=0, end=4096, action_key="b" * 64))
+
+    assert second["complete"] is False
+    assert any("digest mismatch" in error for error in second["errors"])
+    # A's copy is untouched, and A's fragment still resolves to it.
+    assert staged.read_bytes() == b"a" * 4096
+    composed = rm.compose([rm.read_fragments(
+        tmp_path / "queue" / pool.RESIDENCY, CONSUMER)[0]])
+    resolved = rm.lookup(composed, str(mount / "shard.bin"), 0)
+    assert resolved is not None and Path(resolved["stage_path"]).exists()
+
+
+def test_the_fragment_is_written_a_bounded_number_of_times(
+        tmp_path: Path, monkeypatch) -> None:
+    """Once per entry is quadratic in bytes; measured, it was 75 KB/s."""
+
+    mount = tmp_path / "mnt"
+    entries = [_write(mount / f"shard-{n:03d}.bin", bytes([n % 251]) * 1024)
+               for n in range(60)]
+    args = _args(tmp_path, _manifest(mount, entries), start=0, end=60 * 1024)
+    calls = {"n": 0}
+    real = rm.write_fragment
+
+    def counted(root, fragment):
+        calls["n"] += 1
+        return real(root, fragment)
+
+    monkeypatch.setattr(rm, "write_fragment", counted)
+
+    receipt = stage_move.move(args)
+
+    assert receipt["entries_staged"] == 60
+    # The cadence is wall-clock, so a fast window publishes once on the way
+    # through and once at the end.  What must never hold again is one write
+    # per entry.
+    assert calls["n"] <= 4, f"{calls['n']} publications for 60 entries"
+
+
+def test_the_one_off_manifest_door_refuses_what_core_refuses(
+        tmp_path: Path) -> None:
+    """Everything downstream assumes core already said no to these shapes."""
+
+    mount = tmp_path / "mnt"
+    entry = _write(mount / "shard.bin", b"a" * 4096)
+    manifest = _manifest(mount, [dict(entry, bytes=0)])
+    manifest["total_bytes"] = 0
+
+    with pytest.raises(SystemExit):
+        stage_move.move(_args(tmp_path, manifest, start=0, end=4096))
+
+
+def test_two_entries_may_not_stage_as_one_file(tmp_path: Path) -> None:
+    """Derived range names and declared paths share one namespace."""
+
+    mount = tmp_path / "mnt"
+    payload = b"a" * 4096
+    _write(mount / "shard.bin", payload)
+    # Two entries make it a split file, so its first range derives the name
+    # ``shard.bin.pbrange/0-2048`` -- which is also a legal declared path, and
+    # this manifest declares it.
+    head = {"path": str(mount / "shard.bin"), "offset": 0, "bytes": 2048,
+            "sha256": hashlib.sha256(payload[:2048]).hexdigest()}
+    tail = {"path": str(mount / "shard.bin"), "offset": 2048, "bytes": 2048,
+            "sha256": hashlib.sha256(payload[2048:]).hexdigest()}
+    collider = _write(mount / "shard.bin.pbrange" / "0-2048", b"b" * 2048)
+    manifest = _manifest(mount, [head, tail, collider])
+
+    with pytest.raises(SystemExit, match="residency_destination_collision"):
+        stage_move.move(_args(tmp_path, manifest, start=0, end=3 * 2048))
+
+    stage = Path(tmp_path / "stage")
+    assert not stage.exists() or not list(stage.rglob("*"))

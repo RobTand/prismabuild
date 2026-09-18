@@ -647,10 +647,15 @@ def discover_tiers(
         names = by_id_names(leaves, by_id=by_id)
         identity = tier_id("stage", host, str(pool["name"]))
         dataset = stage_dataset(str(pool["name"]), runner=runner)
-        # ``available`` on the dataset, and the record says so: a capacity a
-        # reader cannot attribute to a source is a number, not a measurement.
-        capacity = (int(dataset["available_bytes"]) if dataset is not None
-                    else int(pool["size_bytes"]))
+        # ``available`` on the dataset, and nothing else.  ``zpool size`` is
+        # the raw geometry: parity, the slop reservation and whatever the
+        # pool's other datasets hold are all still inside it, so minting from
+        # it hands out tokens for bytes ZFS refuses at ENOSPC -- to a mover
+        # that has already read them off the disks.  An unreadable dataset
+        # therefore offers **nothing** for that cycle, the way a box with no
+        # zpool offers nothing, rather than falling back to a number that is
+        # wrong in the one direction that costs an artifact.  The next cycle
+        # is 60 s away and the record says why this one is empty.
         tiers[identity] = {
             "schema": TIER_RECORD_SCHEMA_V1,
             "tier": "stage",
@@ -658,9 +663,10 @@ def discover_tiers(
             "host": host,
             "pool": pool["name"],
             "health": pool["health"],
-            "capacity_bytes": capacity,
+            "capacity_bytes": (int(dataset["available_bytes"])
+                               if dataset is not None else 0),
             "capacity_source": ("zfs available" if dataset is not None
-                                else "zpool size (no dataset readable)"),
+                                else "none (no dataset readable)"),
             "dataset": None if dataset is None else dataset["dataset"],
             "pool_size_bytes": pool["size_bytes"],
             "allocated_bytes": pool["allocated_bytes"],

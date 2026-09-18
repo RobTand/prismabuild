@@ -61,6 +61,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prewarm_loop  # noqa: E402
+from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
@@ -146,6 +147,10 @@ class _Copier:
         self.staged: dict[str, dict[str, object]] = {}
         self.bytes_staged = 0
         self.errors: list[str] = []
+        #: Bumped under the lock on every landed entry, so a fragment written
+        #: outside the lock can say which snapshot it is and an older one can
+        #: be discarded rather than written over a newer one.
+        self.generation = 0
 
     def _copy_one(self, entry: dict[str, object], destination: Path,
                   admission, stop: threading.Event) -> tuple[int, str]:
@@ -204,8 +209,21 @@ class _Copier:
         if written != want:
             temporary.unlink(missing_ok=True)
             raise OSError(f"short read on {source}: {written} of {want} bytes")
+        computed = digest.hexdigest()
+        declared = entry.get("sha256")
+        if isinstance(declared, str) and declared != computed:
+            # Before the rename, not after.  These bytes are not the manifest's
+            # bytes, and the rename is the publish: checking afterwards means
+            # unlinking a destination another mover may have staged correctly
+            # -- two movers cover one entry whenever a consumer is re-dispatched
+            # under a new key, or whenever an entry straddles two adjacent
+            # windows -- which leaves that mover's fragment naming bytes that
+            # are gone.  Nothing outside this temporary is touched.
+            temporary.unlink(missing_ok=True)
+            raise OSError(f"digest mismatch on {source}: manifest says "
+                          f"{declared[:12]}, the copy is {computed[:12]}")
         os.replace(temporary, destination)
-        return written, digest.hexdigest()
+        return written, computed
 
     def run(self, entries: list[dict[str, object]], *, whole: set[str],
             stop: threading.Event, on_entry=None) -> None:
@@ -236,17 +254,6 @@ class _Copier:
                         if len(self.errors) < 20:
                             self.errors.append(f"{os.path.basename(path)}: {exc}")
                     continue
-                declared = entry.get("sha256")
-                if isinstance(declared, str) and declared != digest:
-                    # The manifest said what these bytes are and the copy is
-                    # not them.  Publishing the entry would make the map a lie
-                    # the consumer trusts in preference to the pool.
-                    destination.unlink(missing_ok=True)
-                    with self.lock:
-                        if len(self.errors) < 20:
-                            self.errors.append(
-                                f"{os.path.basename(path)}: digest mismatch")
-                    continue
                 record = {
                     "stage_path": str(destination),
                     "bytes": written,
@@ -256,10 +263,27 @@ class _Copier:
                 with self.lock:
                     self.staged[residency_map.residency_map_key(path, offset)] = record
                     self.bytes_staged += written
-                    # Finished, so forget it: the window is what is in flight,
-                    # never the range.
-                    if on_entry is not None:
-                        on_entry(dict(self.staged))
+                    self.generation += 1
+                    # Snapshot under the lock, write outside it.  Holding the
+                    # lock across an NFS fsync serializes every other worker
+                    # behind one round trip; the generation is what keeps an
+                    # older snapshot from landing on top of a newer one once
+                    # they are no longer ordered by the lock.
+                    snapshot = (dict(self.staged), self.generation) if on_entry else None
+                if snapshot is not None:
+                    try:
+                        on_entry(*snapshot)
+                    except (OSError, ValueError) as exc:
+                        # A fragment that will not write is a degradation, not
+                        # a reason to stop copying, and least of all a reason
+                        # to let this thread die inside the lock: that killed
+                        # every worker in turn on its next landed entry and
+                        # still reported ``errors: []``.  The entry stays in
+                        # ``staged`` -- it is on the stage -- so the final
+                        # publish names it or fails loudly.
+                        with self.lock:
+                            if len(self.errors) < 20:
+                                self.errors.append(f"fragment publication: {exc}")
 
         threads = [threading.Thread(target=worker, daemon=True)
                    for _ in range(self.workers)]
@@ -275,8 +299,16 @@ def load_manifest(cas_root: Path, action_key: str,
     """The manifest this mover moves, from its own sealed request or a file."""
 
     if manifest_path:
-        with open(manifest_path) as stream:
-            return json.load(stream)
+        # The same reader the sealed path gets, not a bare ``json.load``:
+        # everything downstream assumes core already refused these shapes, so
+        # a zero-byte entry reaches the map's ``_positive`` check and a
+        # repeated (path, offset) pair stages two copies under one key.
+        # "Testing and one-off moves" is exactly where a hand-written manifest
+        # enters, and it reads gzip for free.
+        try:
+            return pb.load_data_manifest(manifest_path)
+        except (pb.ActionContractError, pb.CASTamperError) as exc:
+            raise SystemExit(f"{manifest_path}: {exc}") from None
     request = prewarm_loop.sealed_request(cas_root, action_key)
     entry = prewarm_loop.manifest_input_of(request)
     if entry is None:
@@ -344,6 +376,25 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
             f"[{args.range_start_bytes}, {args.range_end_bytes}) are "
             f"{window_bytes} bytes, past the {declared} this range reserved")
 
+    # Two entries that derive one staged name would let the later copy
+    # overwrite the earlier while both fragments vouch for it, and compose
+    # cannot see it: the two map keys differ, so the same-key conflict never
+    # fires.  Derived range names and declared paths share one namespace under
+    # the stage root, so a manifest alone can reach the collision.
+    whole = whole_file_paths(entries)
+    destinations: dict[str, str] = {}
+    for entry in window:
+        path, offset = str(entry["path"]), int(entry["offset"])
+        relative = stage_relative(path, offset, int(entry["bytes"]),
+                                  mount_prefix=mount_prefix,
+                                  whole_file=path in whole)
+        claimed = destinations.get(relative)
+        if claimed is not None:
+            raise SystemExit(
+                f"residency_destination_collision: {claimed!r} and {path!r} "
+                f"both stage as {relative!r}; nothing was copied")
+        destinations[relative] = path
+
     pacer = prewarm_loop.pacer_from_args(args)
     if not getattr(args, "unpaced", False):
         prewarm_loop.require_storage_pacing(pacer)
@@ -351,14 +402,16 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     copier = _Copier(
         mounts=mounts, pacer=pacer, stage_root=Path(args.stage_root),
         mount_prefix=mount_prefix, block=args.block, workers=args.max_readers)
-    whole = whole_file_paths(entries)
 
     residency_root = Path(args.residency_root)
     manifest_sha256 = args.manifest_sha256
 
     last_published = [0.0]
+    last_generation = [0]
+    publish_lock = threading.Lock()
 
-    def publish(staged: dict[str, dict[str, object]], *, force: bool = False) -> None:
+    def publish(staged: dict[str, dict[str, object]], generation: int = 0,
+                *, force: bool = False) -> None:
         """Republish the fragment as entries land, so a crash leaves a prefix.
 
         Rate-limited, and that limit is the difference between a mover that
@@ -374,19 +427,26 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         entries it omits are re-staged by the rerun.
         """
 
-        now = time.monotonic()
-        if not force and now - last_published[0] < FRAGMENT_PUBLISH_S:
-            return
-        last_published[0] = now
-        residency_map.write_fragment(residency_root, {
-            "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
-            "consumer_action_key": args.consumer_action_key,
-            "mover_action_key": args.action_key,
-            "tier_id": args.tier_id,
-            "stage_root": str(args.stage_root),
-            "manifest_sha256": manifest_sha256,
-            "entries": staged,
-        })
+        with publish_lock:
+            now = time.monotonic()
+            if generation and generation <= last_generation[0]:
+                # A snapshot older than the one already on disk.  Writing it
+                # would take entries back out of a published fragment, which
+                # is the one thing a fragment may never do.
+                return
+            if not force and now - last_published[0] < FRAGMENT_PUBLISH_S:
+                return
+            last_published[0] = now
+            last_generation[0] = max(last_generation[0], generation)
+            residency_map.write_fragment(residency_root, {
+                "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+                "consumer_action_key": args.consumer_action_key,
+                "mover_action_key": args.action_key,
+                "tier_id": args.tier_id,
+                "stage_root": str(args.stage_root),
+                "manifest_sha256": manifest_sha256,
+                "entries": staged,
+            })
 
     served = served_for(args)
     if pacer is not None:
@@ -453,7 +513,16 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     return receipt
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Every flag this tool takes, in one place a test can also ask.
+
+    Extracted from ``main`` because the alternative was a test fixture that
+    re-listed the defaults by hand: when the pacer's ``--served-host`` was
+    added here and not there, every test that drives ``move`` started failing
+    on an attribute the real tool always supplies.  A fixture built from this
+    parser cannot drift from it.
+    """
+
     parser = argparse.ArgumentParser(
         description="copy one byte range of a data manifest's read order onto a stage tier")
     parser.add_argument("--pool-root", required=True,
@@ -540,7 +609,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--unpaced", action="store_true",
                         help="run with no pacer at all; for a fixture or a box "
                              "that serves nothing, never for the storage role")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     if args.residency_root is None:
         args.residency_root = str(Path(args.pool_root) / pool.RESIDENCY)
 
@@ -548,9 +621,9 @@ def main(argv: list[str] | None = None) -> int:
     queue = pool.PoolQueue(Path(args.pool_root))
     queue.record_move(args.action_key, receipt)
     if args.receipt:
-        with open(args.receipt, "w") as stream:
-            json.dump(receipt, stream, indent=1, sort_keys=True)
-            stream.write("\n")
+        # The atomic writer every other fleet record uses: a reader of this
+        # path must never be able to observe half a document.
+        pool._write_json_atomic(Path(args.receipt), receipt)
     print(json.dumps(receipt, indent=1, sort_keys=True, default=str))
     return 1 if receipt.get("refusal") else 0
 

@@ -78,14 +78,25 @@ def test_a_pool_without_the_staging_dataset_falls_back_to_its_root() -> None:
     assert tier["mountpoint"] == f"/{POOL}"
 
 
-def test_an_unreadable_dataset_is_priced_from_the_pool_and_says_so() -> None:
-    """A fallback that did not announce itself would be indistinguishable."""
+def test_an_unreadable_dataset_offers_nothing_rather_than_the_raw_geometry() -> None:
+    """The fallback was the defect: announcing it does not make it safe.
+
+    A pool being imported or exported makes ``zfs list`` fail for a cycle.
+    Pricing that cycle from ``zpool size`` hands out tokens for parity, slop
+    and every other dataset's bytes -- to a mover that discovers the truth at
+    ENOSPC, after reading its range off the disks.  Offering nothing is what a
+    box with no zpool already does, and the next cycle is 60 s away.
+    """
 
     tier = _stage_tier(fail=("list -Hp -r",))
 
-    assert tier["capacity_bytes"] == SIZE
-    assert tier["capacity_source"] == "zpool size (no dataset readable)"
+    assert tier["capacity_bytes"] == 0
+    assert tier["capacity_source"] == "none (no dataset readable)"
     assert tier["dataset"] is None
+    # And nothing is minted from it, which is the part that matters.
+    assert storage_tiers.tier_tokens(tier) == {}
+    # The geometry is still recorded, so an operator can see what was refused.
+    assert tier["pool_size_bytes"] == SIZE
 
 
 def test_tokens_follow_the_capacity_that_was_minted() -> None:
