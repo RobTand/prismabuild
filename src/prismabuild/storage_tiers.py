@@ -491,6 +491,12 @@ def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | N
 #: question that distinguishes "the supply can grow" from "this is the ceiling".
 MOVER_FILL_DEMAND_FIELD = "fill_demand_mb_s_pool_side"
 
+#: How many movers were reading this tier when a copy began, that copy
+#: included.  ``mean_pool_read_mb_s`` is the *pool's* delivery, so one copy's
+#: share of it is unreadable without this count, and a demand priced off the
+#: aggregate would reserve the whole pool per mover.
+MOVER_CONCURRENCY_FIELD = "movers_claimed_on_tier"
+
 
 def _delivered(record: Mapping[str, object]) -> float | None:
     pacing = record.get("disk_pacing")
@@ -541,29 +547,42 @@ def mover_fill_demand_from_receipts(
 ) -> int | None:
     """The pool bandwidth a next mover reserves, or ``None`` with nothing measured.
 
-    Two measurements bound it, and the smaller wins.  Its own file-side rate is
-    what a copy of this shape achieved, but a warm one achieved it out of the
-    ARC and the disks never produced it (a live receipt: 1478 MB/s for 3.3 GB
-    off four spindles).  The pool's own delivery over that same window bounds
-    any single reader's draw from above, because a reader cannot have taken
-    more of the pool than the pool gave.  So the demand is
-    ``min(best file-side, best delivered)``, in whole MB/s, and it is ``None``
-    when either side has never been measured -- a mover that guessed a
-    bandwidth would be reserving a number, which is the habit this replaces.
+    Priced per receipt and maximised across them, never mixed: each receipt
+    bounds *one* mover's draw two ways, and the smaller bound is that receipt's
+    answer.
+
+    * Its own file-side rate is what a copy of this shape achieved -- but a warm
+      one achieved it out of the ARC and the disks never produced it (a live
+      receipt: 1478 MB/s for 3.3 GB off four spindles).
+    * Its window's pool delivery over the movers that shared that window is what
+      one of them can have drawn on average.  The division is the point.
+      ``mean_pool_read_mb_s`` is the *pool's* number: a window shared by three
+      copies reports three copies' worth, and reading it as one mover's rate
+      would reserve the whole pool for each of them -- which re-serializes
+      movers through the fill token, the same failure the CPU demand fixes,
+      arriving by another resource kind.
+
+    A receipt missing either side, or missing its concurrency count, prices
+    nothing; with no receipt priced the answer is ``None`` and the mover
+    reserves no fill, because a guessed bandwidth is the habit this replaces.
     """
 
-    best_file: float | None = None
-    best_pool: float | None = None
+    best: float | None = None
     for record in usable_mover_receipts(records, tier_id=tier_id):
         rate = record.get("mb_per_s_file_side")
-        if not isinstance(rate, bool) and isinstance(rate, (int, float)) and rate > 0:
-            best_file = float(rate) if best_file is None else max(best_file, float(rate))
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
+            continue
         delivered = _delivered(record)
-        if delivered is not None:
-            best_pool = delivered if best_pool is None else max(best_pool, delivered)
-    if best_file is None or best_pool is None:
+        if delivered is None:
+            continue
+        sharers = record.get(MOVER_CONCURRENCY_FIELD)
+        if isinstance(sharers, bool) or not isinstance(sharers, int) or sharers < 1:
+            continue
+        share = min(float(rate), delivered / sharers)
+        best = share if best is None else max(best, share)
+    if best is None:
         return None
-    demand = int(min(best_file, best_pool))
+    demand = int(best)
     return demand if demand > 0 else None
 
 
@@ -984,6 +1003,7 @@ __all__ = [
     "FILL_RECORD_FIELD",
     "POOL_FILL_FIELD",
     "MOVER_FILL_DEMAND_FIELD",
+    "MOVER_CONCURRENCY_FIELD",
     "fill_supply_from_records",
     "mover_fill_demand_from_receipts",
     "manifest_phase_ranges",

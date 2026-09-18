@@ -479,6 +479,18 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         pacer.begin_row(served_host=str(served["served_host"]),
                         served_addresses=tuple(served["served_addresses"]),
                         served_reason=str(served["served_reason"]))
+    # How many movers were reading this tier when the copy began, this one
+    # included.  Without it ``mean_pool_read_mb_s`` cannot price a single
+    # mover: it is what the whole pool delivered, so a window shared by three
+    # copies reports three copies' worth, and a next submission that read it as
+    # one mover's rate would reserve the entire pool for each of them -- which
+    # re-serializes movers through the fill token, the same failure this whole
+    # change is about, arriving by another resource kind.
+    try:
+        concurrent = len(pool.PoolQueue(Path(args.pool_root)).movers_claimed_on_tier(
+            str(args.tier_id))) or 1
+    except (OSError, pool.PoolContractError):
+        concurrent = 0          # unknown, and unknown prices nothing
     before = proc_io()
     cpu_before = cpu_seconds()
     started = time.time()
@@ -533,6 +545,8 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         # the number a next submission can declare and the controller can
         # learn down from.
         "cpu_seconds": round(cpu_used, 3),
+        # 0 means "could not be read", which prices nothing, rather than 1.
+        storage_tiers.MOVER_CONCURRENCY_FIELD: int(concurrent),
         # What the ledger promised this copy of the pool, beside what the pool
         # actually delivered (``disk_pacing.mean_pool_read_mb_s``) and what
         # this copy achieved.  The three together are what says whether the

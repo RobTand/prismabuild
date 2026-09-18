@@ -199,26 +199,45 @@ def test_with_nothing_measured_and_nothing_asking_the_tier_offers_no_fill(tmp_pa
     assert FILL not in record["tokens"]
 
 
-@pytest.mark.parametrize("file_side,delivered,expected", [
-    (229.4, 166.0, 166),     # a cold copy: the pool bounds it
-    (1477.9, 166.0, 166),    # an ARC-warm copy: the disks never produced 1478
-    (120.0, 500.0, 120),     # a slow copy on a fast pool: itself bounds it
+@pytest.mark.parametrize("file_side,delivered,sharers,expected", [
+    (229.4, 166.0, 1, 166),     # a solo cold copy: the pool bounds it
+    (1477.9, 166.0, 1, 166),    # ARC-warm: the disks never produced 1478
+    (120.0, 500.0, 1, 120),     # a slow copy on a fast pool: itself bounds it
+    (300.0, 498.0, 3, 166),     # three at once: the pool's number is all three
+    (300.0, 522.0, 4, 130),     # four at once, and the share falls with them
 ])
-def test_a_movers_own_fill_demand_is_the_lower_of_two_measurements(
-        file_side, delivered, expected):
+def test_a_movers_own_fill_demand_is_one_receipts_own_share(
+        file_side, delivered, sharers, expected):
+    """Each receipt bounds one mover twice over; the smaller bound is its answer.
+
+    The division by ``movers_claimed_on_tier`` is the point.
+    ``mean_pool_read_mb_s`` is the *pool's* delivery, so a window shared by
+    three copies reports three copies' worth; reading it as one mover's rate
+    would reserve the whole pool for each of them, which re-serializes movers
+    through the fill token -- the same failure the cpu demand fixes, arriving
+    by another resource kind.
+    """
+
     record = {"action_key": "1" * 64, "tier_id": TIER, "seconds": 44.5,
               "mb_per_s_file_side": file_side,
+              storage_tiers.MOVER_CONCURRENCY_FIELD: sharers,
               "disk_pacing": {storage_tiers.POOL_FILL_FIELD: delivered}}
     assert storage_tiers.mover_fill_demand_from_receipts(
         [record], tier_id=TIER) == expected
 
 
-def test_without_both_measurements_a_mover_reserves_no_fill_at_all():
+def test_without_all_three_measurements_a_mover_reserves_no_fill_at_all():
     """A guessed bandwidth is the habit this replaces, so there is no default."""
 
     only_file = {"action_key": "1" * 64, "tier_id": TIER, "seconds": 44.5,
-                 "mb_per_s_file_side": 244.7, "disk_pacing": {}}
+                 "mb_per_s_file_side": 244.7,
+                 storage_tiers.MOVER_CONCURRENCY_FIELD: 1, "disk_pacing": {}}
     assert storage_tiers.mover_fill_demand_from_receipts(
         [only_file], tier_id=TIER) is None
+    no_count = {"action_key": "1" * 64, "tier_id": TIER, "seconds": 44.5,
+                "mb_per_s_file_side": 244.7,
+                "disk_pacing": {storage_tiers.POOL_FILL_FIELD: 498.0}}
+    assert storage_tiers.mover_fill_demand_from_receipts(
+        [no_count], tier_id=TIER) is None
     assert storage_tiers.mover_fill_demand_from_receipts(
         [], tier_id=TIER) is None

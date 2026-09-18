@@ -311,3 +311,72 @@ def test_a_fallback_that_is_not_a_positive_bound_is_refused(readers, mem):
     with pytest.raises(ValueError):
         storage_tiers.mover_demand_from_receipts(
             [], tier_id=TIER, readers=readers, fallback_mem_gb=mem)
+
+
+def test_a_movers_fill_demand_is_one_receipts_share_never_a_mix(tmp_path):
+    """Each receipt bounds one mover; the maximum is over those, not across them.
+
+    A bootstrap window runs several movers at once, so its receipts report the
+    *pool's* delivery -- three copies' worth.  Reading that as one mover's rate
+    and pairing it with some other receipt's file-side rate reserves the whole
+    pool per mover, which re-serializes movers through the fill token: the same
+    failure the cpu demand fixes, arriving by another resource kind.
+    """
+
+    solo = {"action_key": "1" * 64, "tier_id": TIER, "seconds": 44.5,
+            "mb_per_s_file_side": 229.4,
+            storage_tiers.MOVER_CONCURRENCY_FIELD: 1,
+            "disk_pacing": {storage_tiers.POOL_FILL_FIELD: 166.0}}
+    shared = {"action_key": "2" * 64, "tier_id": TIER, "seconds": 44.5,
+              "mb_per_s_file_side": 300.0,
+              storage_tiers.MOVER_CONCURRENCY_FIELD: 3,
+              "disk_pacing": {storage_tiers.POOL_FILL_FIELD: 498.0}}
+    # min(229.4, 166/1) = 166 ; min(300, 498/3) = 166 ; max = 166.
+    assert storage_tiers.mover_fill_demand_from_receipts(
+        [solo, shared], tier_id=TIER) == 166
+    # An ARC-warm receipt from the same shared window is still bounded by the
+    # share, not by the 1478 MB/s the disks never produced.
+    warm = {**shared, "action_key": "3" * 64, "mb_per_s_file_side": 1477.9}
+    assert storage_tiers.mover_fill_demand_from_receipts(
+        [solo, warm], tier_id=TIER) == 166
+
+
+def test_a_receipt_without_its_concurrency_count_prices_nothing(tmp_path):
+    """The pool's delivery is unreadable as one mover's without the count."""
+
+    record = {"action_key": "1" * 64, "tier_id": TIER, "seconds": 44.5,
+              "mb_per_s_file_side": 229.4,
+              "disk_pacing": {storage_tiers.POOL_FILL_FIELD: 498.0}}
+    assert storage_tiers.mover_fill_demand_from_receipts(
+        [record], tier_id=TIER) is None
+    assert storage_tiers.mover_fill_demand_from_receipts(
+        [{**record, storage_tiers.MOVER_CONCURRENCY_FIELD: 0}],
+        tier_id=TIER) is None
+
+
+def test_a_second_submission_reuses_the_frozen_plan_rather_than_repricing(tmp_path):
+    """A frozen window is not repartitioned because a receipt landed since.
+
+    The demand is read off live receipts, so a resubmission of the same consumer
+    after one more mover filed would seal different mover keys and a different
+    plan -- and ``residency_plan.freeze`` is first-writer, so it would refuse the
+    whole submission with both bodies in hand.
+    """
+
+    from prismabuild import residency_plan as rp
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    first = _seal(tmp_path, queue)
+    rp.freeze(queue, first["plan"])
+
+    queue.record_move("9" * 64, {
+        "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
+        "seconds": 100.0, "cpu_seconds": 800.0, "peak_rss_bytes": 9 * GIB,
+        "unix": 500.0})
+    second = _seal(tmp_path, queue)
+    assert second.get("reused_frozen_plan") is True
+    assert second["plan"] == first["plan"]
+    # And freezing it again is the no-op the first-writer contract promises.
+    rp.freeze(queue, second["plan"])
+    assert second["residency"]["leads"] == rp.leads_for(first["plan"])

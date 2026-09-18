@@ -4910,6 +4910,26 @@ def residency_stage_rows(
             "order in phases; this one declares none, so there is no boundary "
             "to stage up to that is not invented here")
     tier_id = str(tier["tier_id"])
+    # A consumer that is already staged keeps the window it was frozen with.
+    # Receipts price a *new* window; they must never repartition a frozen one.
+    # The demand now depends on which receipts exist at submission, so a
+    # resubmission of the same consumer after one more mover filed would seal
+    # different mover keys and a different plan -- and ``residency_plan.freeze``
+    # is first-writer, so it would refuse the whole submission with both bodies
+    # in hand.  The frozen plan is the answer to that question, already agreed.
+    frozen = residency_plan.read(queue, consumer_action_key)
+    if frozen is not None:
+        return {
+            "plan": frozen,
+            "residency": {
+                "schema": pool.RESIDENCY_SCHEMA_V1,
+                "manifest_sha256": str(frozen["manifest_sha256"]),
+                "manifest_bytes": int(frozen["manifest_bytes"]),
+                "tier_id": str(frozen["tier_id"]),
+                "leads": residency_plan.leads_for(frozen),
+            },
+            "reused_frozen_plan": True,
+        }
     stage_root = str(tier.get("mountpoint") or "")
     if not stage_root.startswith("/"):
         raise SystemExit(

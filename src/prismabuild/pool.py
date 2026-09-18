@@ -3226,6 +3226,31 @@ class PoolQueue:
             return None
         return record
 
+    def movers_claimed_on_tier(self, tier_id: str) -> list[str]:
+        """Mover keys holding a claim on this tier at this instant.
+
+        The number a mover's receipt needs to make its own pool-side rate mean
+        anything: ``mean_pool_read_mb_s`` is what the *pool* delivered while it
+        ran, whoever was reading, so one copy's share of it is only readable
+        beside the count of copies that shared it.  A mover row is the one whose
+        residency block names a *range*; a consumer's names leads.  Claimed
+        only -- a ready mover is not reading yet.
+        """
+
+        out: list[str] = []
+        for path in _scan(self.dir(CLAIMED)):
+            item = _read_json(path)
+            residency = item.get("residency") if isinstance(item, dict) else None
+            if not isinstance(residency, dict):
+                continue
+            if "range_start_bytes" not in residency:
+                continue
+            if str(residency.get("tier_id") or "") != str(tier_id):
+                continue
+            name = path.name
+            out.append(name[:-len(".json")] if name.endswith(".json") else name)
+        return sorted(out)
+
     def move_records(self) -> list[dict[str, object]]:
         """Every filed movement receipt, oldest first by the time it records.
 
