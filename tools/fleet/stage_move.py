@@ -412,17 +412,47 @@ def arc_warm_verdict(args) -> dict[str, object]:
         return {"warm": True, "state": "warmed", "primarycache": None,
                 "reason": "--warm-after-copy always"}
     try:
-        records = pool.PoolQueue(Path(args.pool_root)).tiers()
+        queue = pool.PoolQueue(Path(args.pool_root))
+        records = queue.tiers()
     except (OSError, pool.PoolContractError) as exc:
         return {"warm": False, "state": "refused", "primarycache": None,
                 "reason": f"the tier record could not be read: {exc}"}
     for record in records:
-        if str(record.get("tier_id")) == str(args.tier_id):
-            verdict = storage_tiers.stage_arc_eligibility(record)
-            return {"warm": bool(verdict["eligible"]),
-                    "state": "warmed" if verdict["eligible"] else "refused",
+        if str(record.get("tier_id")) != str(args.tier_id):
+            continue
+        verdict = storage_tiers.stage_arc_eligibility(record)
+        if not verdict["eligible"]:
+            return {"warm": False, "state": "refused",
                     "primarycache": verdict["primarycache"],
                     "reason": str(verdict["reason"])}
+        # And a second question, because permission is not budget: does this
+        # mover hold the ARC tokens its range would occupy?  A phase sealed
+        # without an ARC leg -- one larger than the whole cache is the case
+        # that exists -- would otherwise read 134 GiB back into a 177 GiB
+        # target and evict every other phase's warm to do it, which is the
+        # eviction #638 opens on, reintroduced by its own fix.  What was
+        # reserved is what is warmed.
+        arc_tier = storage_tiers.tier_id("arc", str(record.get("host") or ""))
+        try:
+            holdings = queue.tier_holdings(str(args.action_key))
+        except (OSError, pool.PoolContractError) as exc:
+            return {"warm": False, "state": "refused",
+                    "primarycache": verdict["primarycache"],
+                    "reason": f"the tier ledger could not be read: {exc}"}
+        held = int(dict(holdings.get(arc_tier) or {}).get(
+            storage_tiers.ARC_CAPACITY_KIND, 0))
+        if held <= 0:
+            return {"warm": False, "state": "refused",
+                    "primarycache": verdict["primarycache"],
+                    "reason": (f"this mover holds no "
+                               f"{storage_tiers.ARC_CAPACITY_KIND} on {arc_tier}, "
+                               f"so its range is staged and read off the device "
+                               f"rather than warmed past what was reserved")}
+        return {"warm": True, "state": "warmed",
+                "primarycache": verdict["primarycache"],
+                "reason": (f"{verdict['reason']}; this mover holds {held} "
+                           f"{storage_tiers.ARC_CAPACITY_KIND} on {arc_tier}"),
+                "arc_gib_held": held}
     return {"warm": False, "state": "refused", "primarycache": None,
             "reason": f"no box announces the tier {args.tier_id!r}"}
 

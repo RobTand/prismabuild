@@ -3137,7 +3137,10 @@ discovered or measured rather than configured here:
   range is copied and verified, `stage_move.warm_staged` reads it back on the
   box that owns the stage, which is the one place a read fills that ARC. It
   runs after every measurement of the copy is taken, in its own `arc_warm`
-  receipt block, so a warm never prices a copy.
+  receipt block, so a warm never prices a copy. It reads back only what the
+  mover *reserved*: a phase that sealed no ARC leg warms nothing, because
+  reading 134 GiB back into a 177 GiB target would evict every other phase's
+  warm to hold one that was never admitted.
 * **`arc_gib` spent on the warmed bytes.** The ARC tier announced 233 GiB every
   cycle and nothing ever asked for a byte of it. A mover now reserves one
   `arc_gib` token per GiB of its range on the `arc:<host>` tier of the same
