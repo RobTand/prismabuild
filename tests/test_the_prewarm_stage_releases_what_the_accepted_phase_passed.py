@@ -205,3 +205,52 @@ def test_a_dry_run_does_not_sweep_a_row_that_left_the_queue(
     assert event["stage"]["orphans"][0]["deletable_entries"] == 3
     assert len(stage.objects()) == 3
     assert fleet.queue.prewarm(key)["stage"].get("swept") is None
+
+
+def test_a_resubmitted_key_starts_a_new_stage_ledger(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A swept key that stages again is a new life, and a new life is a new
+    ledger.
+
+    ``swept`` is what makes the sweep skip a row, so a receipt that carried it
+    forward into the next life would leave the band that life staged
+    unreleasable and invisible: not swept, not released by delete-behind --
+    which would start at the *previous* life's frontier -- and not even named
+    among the orphans.  The fleet re-queues a key rather than cache-hitting
+    it after a stop, so this is the ordinary way a key gets a second life.
+    """
+
+    fleet, key, stage, files = _fleet(tmp_path, monkeypatch)
+    # A budget that covers one phase: the row is warmed a window at a time,
+    # which is the shape whose second life stages anything at all.
+    one_phase = fleet.args(stage=True, stage_free_floor_bytes=0,
+                           arcstats=fleet.arcstats(size=0, c=4096, c_max=4096))
+    fleet.cycle(one_phase)
+    assert stage.objects() == ["a.pt.pbstage@0+4096"]
+    assert fleet.queue.prewarm(key)["status"] == "partial"
+
+    # It is claimed, runs, finishes: the sweep releases the band it staged.
+    fleet.claim(key).unlink()
+    swept = fleet.cycle(one_phase)
+    assert [row["action_key"] for row in swept["stage"]["orphans"]] == [key]
+    assert stage.objects() == []
+
+    # The same action is queued again, and this time the budget covers the
+    # whole manifest, so the second life stages the rest of it.
+    fleet.action("run", files, priority=10,
+                 annotations={"phases": phase_table(PHASES)},
+                 progress_phases=[name for name, _ in PHASES])
+    fleet.cycle(args(fleet))
+    assert stage.objects() == ["b.pt.pbstage@0+4096", "c.pt.pbstage@0+4096"]
+    receipt = fleet.queue.prewarm(key)["stage"]
+    assert receipt.get("swept") is not True
+    assert receipt["evicted_through_bytes"] == 0
+
+    # And when the second life leaves the queue, its band is swept like any
+    # other -- rather than sitting on the tier with a receipt that says the
+    # last life's sweep already dealt with it.
+    fleet.claim(key).unlink()
+    event = fleet.cycle(args(fleet))
+    assert [row["action_key"] for row in event["stage"]["orphans"]] == [key]
+    assert event["stage"]["orphans"][0]["status"] == "swept"
+    assert stage.objects() == []

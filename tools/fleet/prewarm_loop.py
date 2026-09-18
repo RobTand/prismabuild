@@ -3137,6 +3137,18 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         }
         if stage is not None:
             prior_stage = dict((queue.prewarm(key) or {}).get("stage") or {})
+            if prior_stage.get("swept"):
+                # A swept key that is warming again is a new life, and a new
+                # life is a new ledger.  Carrying the old one forward would
+                # leave ``swept`` standing on a receipt whose band has just
+                # been re-staged: the sweep skips a swept row forever, so the
+                # new band would never be released and would never even
+                # appear among the orphans.  The frontiers go with it -- a
+                # delete-behind that started at the last life's frontier
+                # would never reach this one's early entries.
+                for stale in ("swept", "sweep_blocked",
+                              "staged_through_bytes", "evicted_through_bytes"):
+                    prior_stage.pop(stale, None)
             record["stage"] = {
                 **prior_stage,
                 "state": stage.state,
