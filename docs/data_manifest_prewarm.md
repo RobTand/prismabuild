@@ -653,6 +653,10 @@ arrived at rather than chosen. A row whose sealed manifest can no longer be
 read cannot have its objects named, so the sweep reports it blocked instead of
 marking it swept.
 
+`--dry-run` plans the release and performs none of it: the same predicate, the
+same answer in `deletable_entries`, nothing unlinked and no frontier moved.
+Unlinking a staged object is a write, however little it looks like one.
+
 ## Deploying
 
 ### Restarting the role after a publication

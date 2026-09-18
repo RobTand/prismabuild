@@ -1059,18 +1059,22 @@ def stage_keys_wanted(entries: "list[dict[str, object]]", mount_prefix: str,
 def release_stage_band(tier: StageTier, entries: "list[dict[str, object]]",
                        mount_prefix: str, *, start: int, end: int,
                        others: "Callable[[], list[tuple[list, str, int]]]",
-                       ) -> dict[str, object]:
+                       apply: bool = True) -> dict[str, object]:
     """Delete the band another row does not still want, and say what it kept.
 
     ``others`` is called only when there is something to delete, because it
     loads manifests: a cycle with no advanced frontier must not pay for the
     rows it would have asked.
+
+    ``apply=False`` is a plan: the same predicate, the same answer, nothing
+    unlinked.  A dry run reads the box and writes nothing to it, and deleting
+    a staged object is a write however little it looks like one.
     """
 
     candidates = stage_keys_between(entries, mount_prefix, start, end)
     result: dict[str, object] = {
         "candidate_entries": len(candidates), "retained_entries": 0,
-        "released_entries": 0, "released_bytes": 0,
+        "deletable_entries": 0, "released_entries": 0, "released_bytes": 0,
     }
     if not candidates:
         return result
@@ -1080,9 +1084,12 @@ def release_stage_band(tier: StageTier, entries: "list[dict[str, object]]",
                                      other_consumed, pending)
         if not pending:
             break
+    result["retained_entries"] = len(candidates) - len(pending)
+    result["deletable_entries"] = len(pending)
+    if not apply:
+        return result
     before_entries, before_bytes = tier.released_entries, tier.released_bytes
     tier.release(sorted(pending))
-    result["retained_entries"] = len(candidates) - len(pending)
     result["released_entries"] = tier.released_entries - before_entries
     result["released_bytes"] = tier.released_bytes - before_bytes
     return result
@@ -2763,7 +2770,8 @@ def warmed_reserve(queue: pool.PoolQueue, ready: list[dict]) -> dict:
 def sweep_orphan_stage(queue: pool.PoolQueue, stage: StageTier,
                        live_keys: "set[str]",
                        others_for: "Callable[[str], object]",
-                       fallback_cas_root: "Path | None") -> list[dict[str, object]]:
+                       fallback_cas_root: "Path | None",
+                       *, apply: bool = True) -> list[dict[str, object]]:
     """Release what a row that has left the queue staged and nobody else wants.
 
     Delete-behind follows a frontier, and a row's last phase leaves no
@@ -2795,30 +2803,37 @@ def sweep_orphan_stage(queue: pool.PoolQueue, stage: StageTier,
             continue
         through = int(block.get("staged_through_bytes", 0) or 0)
         if through <= 0:
-            update_prewarm_stage(queue, key, {"swept": True})
+            if apply:
+                update_prewarm_stage(queue, key, {"swept": True})
             continue
         root = Path(str(block.get("cas_root") or fallback_cas_root or ""))
         entry = (manifest_input_of(sealed_request(root, key))
                  if root.name else None)
         manifest = load_manifest(root, entry) if entry is not None else None
         if manifest is None:
-            update_prewarm_stage(
-                queue, key,
-                {"sweep_blocked": "the sealed manifest is no longer readable"})
+            if apply:
+                update_prewarm_stage(
+                    queue, key,
+                    {"sweep_blocked":
+                     "the sealed manifest is no longer readable"})
             rows.append({"action_key": key, "status": "blocked",
                          "reason": "the sealed manifest is no longer readable"})
             continue
         outcome = release_stage_band(
             stage, manifest_read_entries(manifest),
             str(manifest.get("mount_prefix", "")),
-            start=0, end=through, others=lambda: others_for(key))
-        swept = not outcome["retained_entries"]
-        update_prewarm_stage(queue, key, {
-            "swept": swept,
-            "evicted_through_bytes": through if swept else int(
-                block.get("evicted_through_bytes", 0) or 0)})
+            start=0, end=through, others=lambda: others_for(key),
+            apply=apply)
+        swept = apply and not outcome["retained_entries"]
+        if apply:
+            update_prewarm_stage(queue, key, {
+                "swept": swept,
+                "evicted_through_bytes": through if swept else int(
+                    block.get("evicted_through_bytes", 0) or 0)})
         rows.append({"action_key": key,
-                     "status": "swept" if swept else "retained by another row",
+                     "status": ("planned" if not apply else
+                                "swept" if swept else
+                                "retained by another row"),
                      **outcome})
     return rows
 
@@ -3069,18 +3084,22 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                    str(other_manifest.get("mount_prefix", "")), 0)
 
     def release_window(key: str, manifest: dict, consumed: int) -> dict:
+        # A dry run plans the release and performs none of it.  Unlinking a
+        # staged object is a write, however little it looks like one, and
+        # ``--dry-run`` promises the box is only read.
+        apply = not args.dry_run
         prior = dict((queue.prewarm(key) or {}).get("stage") or {})
         start = int(prior.get("evicted_through_bytes", 0) or 0)
         outcome = release_stage_band(
             stage, manifest_read_entries(manifest),
             str(manifest.get("mount_prefix", "")),
             start=start, end=consumed,
-            others=lambda: other_live_rows(key))
-        if consumed > start:
+            others=lambda: other_live_rows(key), apply=apply)
+        if apply and consumed > start:
             update_prewarm_stage(queue, key,
                                  {"evicted_through_bytes": consumed})
         return {"action_key": key, "released_from_bytes": start,
-                "consumed_bytes": consumed, **outcome}
+                "consumed_bytes": consumed, "applied": apply, **outcome}
 
     for window in windows:
         if stop.is_set():
@@ -3238,7 +3257,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         live_keys |= {str(window["action_key"]) for window in windows}
         live_keys |= {str(k) for k in (reserve.get("claimed_reserved_keys") or [])}
         orphans = sweep_orphan_stage(
-            queue, stage, live_keys, other_live_rows, cas_root)
+            queue, stage, live_keys, other_live_rows, cas_root,
+            apply=not args.dry_run)
         event["stage"] = {**stage.record(), "released": stage_rows,
                           "orphans": orphans}
     return event

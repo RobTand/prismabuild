@@ -161,3 +161,47 @@ def test_a_sweep_that_cannot_name_its_objects_says_so(
     assert orphans[0]["status"] == "blocked"
     assert len(stage.objects()) == 3
     assert fleet.queue.prewarm(key)["stage"]["sweep_blocked"]
+
+
+def test_a_dry_run_plans_the_release_and_performs_none_of_it(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--dry-run`` reads the box and writes nothing to it.
+
+    Unlinking a staged object is a write, and so is moving the frontier in a
+    receipt.  A plan that quietly evicted would be worse than one that warmed:
+    it would spend the tier while claiming to spend nothing.
+    """
+
+    fleet, key, stage, _ = _fleet(tmp_path, monkeypatch)
+    fleet.cycle(args(fleet))
+    fleet.claim(key)
+    fleet.report_progress(key, "c")
+    before = stage.objects()
+
+    event = fleet.cycle(args(fleet, dry_run=True))
+
+    planned = event["stage"]["released"][0]
+    assert planned["applied"] is False
+    assert planned["deletable_entries"] == 2
+    assert planned["released_entries"] == 0
+    assert stage.objects() == before
+    assert fleet.queue.prewarm(key)["stage"]["evicted_through_bytes"] == 0
+
+    # And the real cycle still does it, so the plan was a plan and not a
+    # silent refusal.
+    fleet.cycle(args(fleet))
+    assert stage.objects() == ["c.pt.pbstage@0+4096"]
+
+
+def test_a_dry_run_does_not_sweep_a_row_that_left_the_queue(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fleet, key, stage, _ = _fleet(tmp_path, monkeypatch)
+    fleet.cycle(args(fleet))
+    fleet.claim(key).unlink()
+
+    event = fleet.cycle(args(fleet, dry_run=True))
+
+    assert event["stage"]["orphans"][0]["status"] == "planned"
+    assert event["stage"]["orphans"][0]["deletable_entries"] == 3
+    assert len(stage.objects()) == 3
+    assert fleet.queue.prewarm(key)["stage"].get("swept") is None
