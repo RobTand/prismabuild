@@ -129,6 +129,11 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "checkout through pbrun against a private queue root; a box with no "
      "checkout has no reason to run it and it must never be pointed at the "
      "live queue"),
+    ("bench_prewarm_stage_release.py",
+     "a standalone timing of the prewarm stage's release path, run from a "
+     "checkout through pbrun over a named data manifest; it carries the "
+     "pre-#589 arithmetic as its before arm, so it is a record of one "
+     "measurement rather than an operator command"),
 )
 
 #: Not code, but read by published code: the supervisor on each box reads the
