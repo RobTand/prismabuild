@@ -484,8 +484,19 @@ def window_pressure(
         # to ask it is to run the same decision with the room.
         capacity = queue.tier_ledger(tier_id).capacity().get(
             storage_tiers.capacity_kind_of(tier_id), 0)
-        unbounded = sum(int(phase["stage_gib"]) for phase in
-                        residency_plan.remaining(plan, accepted))  # type: ignore[arg-type]
+        ahead = residency_plan.remaining(plan, accepted)          # type: ignore[arg-type]
+        waiting = [phase for phase in ahead
+                   if str(phase["mover_row"]["action_key"]) in already - staged]
+        if waiting:
+            # A mover already in ``ready/`` or ``claimed/`` that holds no
+            # tokens is the plainest form of "the tier needs the tokens": it
+            # is queued and cannot be admitted.  The window will not offer it
+            # again -- it counts as published -- so asking the window what it
+            # would publish next would step straight over it.
+            need[tier_id] = max(need.get(tier_id, 0),
+                                int(waiting[0]["stage_gib"]))
+            continue
+        unbounded = sum(int(phase["stage_gib"]) for phase in ahead)
         decision = residency_plan.window(
             plan, accepted_phase=accepted,                       # type: ignore[arg-type]
             free_gib=unbounded, capacity_gib=int(capacity),

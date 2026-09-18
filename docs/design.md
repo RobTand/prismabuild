@@ -3335,11 +3335,18 @@ that overfills — and is read off the plan and the ledger rather than picked:
   The incident's shape then stalls at two phases of 744 GB rather than
   nineteen.
 * A consumer that **has** accepted a phase is rolling, and its bound is the
-  tier: `capacity − step`, so the stage keeps room for one more phase and
-  never reaches 0 B. Free capacity still binds first whenever it is smaller,
-  exactly as before, and `capacity` is the ledger's minted total rather than
-  its free remainder — a bound read off what is free would shrink as the
-  window it bounds fills it.
+  tier rather than the plan: `capacity − step`. Free capacity still binds
+  first whenever it is smaller, exactly as before, and `capacity` is the
+  ledger's minted total rather than its free remainder — a bound read off what
+  is free would shrink as the window it bounds fills it.
+
+The second bound covers run-ahead only. Total occupancy is the phases awaiting
+egress, plus the phase being read, plus run-ahead, and the first two are
+bounded by free capacity as they always were — so a rolling window can still
+reach the tier's last token between a mover landing and its egress running.
+What the bound removes is the *unrelieved* growth: a window whose release side
+has published nothing can no longer spend the tier, which is the state that
+reached 0 B and stayed there.
 
 A consumer that reported some phases and then went quiet gets the second bound
 and stalls there, not the first. Telling "quiet" from "slow" needs a clock, and

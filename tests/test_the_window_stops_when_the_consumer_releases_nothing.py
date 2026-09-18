@@ -104,11 +104,14 @@ def test_a_consumer_that_accepts_nothing_does_not_get_the_whole_tier(queue) -> N
     assert stall["accepted_phase"] is None
 
 
-def test_the_tier_keeps_room_for_one_more_phase_while_a_window_rolls(queue) -> None:
-    """A reporting consumer still may not take the tier to 0 B.
+def test_a_rolling_window_is_bounded_by_the_tier_not_by_its_plan(queue) -> None:
+    """A reporting consumer's run-ahead stops at ``capacity - step``.
 
-    The #628 marker is rewritten under the stage root and needs one block; a
-    tier at 0 B cannot give it one, and every deleter then refuses (#631).
+    Run-ahead only.  Total occupancy is the phases awaiting egress plus the
+    phase being read plus run-ahead, and the first two are bounded by free
+    capacity as they always were, so this is not a claim that a rolling window
+    never reaches the tier's last token.  It is the claim that its *unrelieved*
+    growth is bounded -- the growth that reached 0 B and stayed there.
     """
 
     plan = _plan(queue)
@@ -211,3 +214,30 @@ def test_a_phase_name_this_plan_does_not_carry_is_not_progress(queue) -> None:
     assert [phase["phase"] for phase in decision["publish"]] == [
         "phase-0000", "phase-0001"]
     assert decision["stall"]["reason"] == "no_accepted_progress"
+
+
+def test_a_published_mover_waiting_on_tokens_is_still_pressure(queue, tmp_path) -> None:
+    """The window will not offer it again, so asking the window would step over it.
+
+    A mover in `ready/` holding no tier tokens is the plainest form of "the
+    tier needs the tokens": it is queued and cannot be admitted.  It counts as
+    published, so the would-publish question #632 asks of the window answers
+    about the phase *after* it.
+    """
+
+    plan = _plan(queue)
+    residency_plan.freeze(queue, plan)
+    queue.publish(
+        action_key=CONSUMER, cas_root=queue.root / "cas",
+        checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
+        resources={"cpu": 1, "mem_gb": 1},
+        residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                   "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
+                   "leads": residency_plan.leads_for(plan)})
+    tiers = {TIER: {"tier_id": TIER, "tier": "stage",
+                    "mountpoint": str(tmp_path / "stage")}}
+    tier_loop.residency_window(queue, tiers=tiers)
+    # Published, unpinned: somebody else holds the tokens it is waiting for.
+    assert queue.item_path(pool.READY, _hexkey("mover0")).exists()
+
+    assert tier_loop.window_pressure(queue, tiers=tiers) == {TIER: PHASE_GIB[0]}
