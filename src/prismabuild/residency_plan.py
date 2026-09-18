@@ -108,6 +108,15 @@ _PLAN_KEYS = frozenset({
     # The ram tier this plan's ``ram_mover_row`` blocks name; required the
     # moment any phase carries one, and refused as a non-ram id otherwise.
     "ram_tier_id"})
+#: Which movement leg a window decision is about, and the egress row that
+#: frees it.  The stage window decides for ``mover_row``; the ram window
+#: decides for ``ram_mover_row`` (#640).  A role this table does not name is
+#: refused rather than guessed at, because a decision run against the wrong
+#: leg's keys finds nothing resident and quietly never evicts.
+_MOVEMENT_ROLES = {
+    "mover_row": "egress_row",
+    "ram_mover_row": "ram_egress_row",
+}
 
 
 class ResidencyPlanError(ValueError):
@@ -570,7 +579,8 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
            free_gib: int, capacity_gib: int | None = None,
            published: Sequence[str] = (),
            staged: Sequence[str] = (),
-           runahead_cap_gib: int | None = None) -> dict[str, object]:
+           runahead_cap_gib: int | None = None,
+           mover_role: str = "mover_row") -> dict[str, object]:
     """What the coordinator should publish and evict on this cycle.
 
     ``accepted_phase`` is the phase the consumer's progress record says it is
@@ -580,6 +590,16 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     keeps.  ``published`` names the movers already queued, claimed or terminal
     **and still holding their tokens**; ``staged`` those whose bytes are on the
     tier now.
+
+    The decision is about one movement leg, and ``mover_role`` names it:
+    ``"mover_row"`` for the stage window, ``"ram_mover_row"`` for the ram
+    window (#640).  ``published`` and ``staged`` hold that leg's own action
+    keys, so every membership test here runs against the leg's keys -- a ram
+    window fed promotion keys would find no stage key resident, never evict
+    and never recognise its own published promotions, which is the hole the
+    parameter closes.  A phase the submitter sealed without this leg has
+    nothing on the tier: published by nobody, evicted by nobody.  Each
+    entry's ``mover_row`` and ``egress_row`` are the pair the role names.
 
     A mover that is terminal but no longer pinned is deliberately absent from
     ``published``: its key is a content hash, so a second campaign over the
@@ -599,6 +619,11 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     what it is waiting for.
     """
 
+    if mover_role not in _MOVEMENT_ROLES:
+        raise ResidencyPlanError(
+            f"mover_role must be one of {sorted(_MOVEMENT_ROLES)}, "
+            f"not {mover_role!r}")
+    egress_role = _MOVEMENT_ROLES[mover_role]
     phases = list(plan["phases"])                                # type: ignore[arg-type]
     ahead = remaining(plan, accepted_phase)
     current = len(phases) - len(ahead)
@@ -607,11 +632,12 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
 
     evict = [
         {"phase": phase["name"],
-         "mover_action_key": str(phase["mover_row"]["action_key"]),
-         "egress_row": phase["egress_row"],
+         "mover_action_key": str(phase[mover_role]["action_key"]),
+         "egress_row": phase[egress_role],
          "stage_gib": phase["stage_gib"]}
         for phase in phases[:current]
-        if str(phase["mover_row"]["action_key"]) in resident
+        if mover_role in phase
+        and str(phase[mover_role]["action_key"]) in resident
     ]
 
     publish: list[dict[str, object]] = []
@@ -622,10 +648,15 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     # Everything the window already holds beyond the phase being read.  The
     # phase the consumer is inside is not run-ahead: it is the work.
     runahead = sum(int(phase["stage_gib"]) for phase in ahead[1:]
-                   if str(phase["mover_row"]["action_key"]) in already)
+                   if mover_role in phase
+                   and str(phase[mover_role]["action_key"]) in already)
     stall: dict[str, object] | None = None
     for offset, phase in enumerate(ahead):
-        key = str(phase["mover_row"]["action_key"])
+        if mover_role not in phase:
+            # Sealed without this tier's leg: nothing here to publish, hold
+            # or evict, and the stage window owns whatever it carries.
+            continue
+        key = str(phase[mover_role]["action_key"])
         if key in already:
             continue
         need = int(phase["stage_gib"])
@@ -656,7 +687,7 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
         publish.append({
             "phase": phase["name"], "mover_action_key": key,
             "start_bytes": phase["start_bytes"], "end_bytes": phase["end_bytes"],
-            "stage_gib": need, "mover_row": phase["mover_row"],
+            "stage_gib": need, "mover_row": phase[mover_role],
         })
     return {"publish": publish, "evict": evict, "stall": stall}
 

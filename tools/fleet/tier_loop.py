@@ -368,7 +368,11 @@ def _ram_window_state(
         plan, accepted_phase=consumer["accepted_phase"],
         free_gib=free, capacity_gib=capacity,
         published=sorted(already), staged=sorted(staged),
-        runahead_cap_gib=prefill_depth)
+        runahead_cap_gib=prefill_depth,
+        # The two sets name promotion keys, so the decision must test
+        # promotion keys: against stage keys its evict side would never fire
+        # and its already-published skip would never skip (#640).
+        mover_role="ram_mover_row")
     phases = {str(phase["name"]): phase for phase in plan["phases"]}
     publishable = [
         (phases[str(entry["phase"])], entry)
