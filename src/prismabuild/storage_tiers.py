@@ -335,6 +335,26 @@ def tier_id(kind: str, host: str, pool: str | None = None) -> str:
     return f"{pool}:{host}" if kind == "stage" else f"{kind}:{host}"
 
 
+def tier_kind_of(tier_id: str) -> str:
+    """``prismabuild-stage:dl380g10`` -> ``"stage"``; anything else -> ``"arc"``.
+
+    The tier id *is* the discovery key, so the kind is read off it rather than
+    carried beside it: a stage tier is named for the PB-owned pool it is, and
+    the only other tier a box offers is its ARC.  One rule, so that the demand
+    a range implies and the capacity a ledger mints can never disagree about
+    which token kind a tier deals in.
+    """
+
+    return "stage" if str(tier_id).startswith(STAGE_POOL_PREFIX) else "arc"
+
+
+def capacity_kind_of(tier_id: str) -> str:
+    """The token kind that tier's capacity is counted in."""
+
+    return (STAGE_CAPACITY_KIND if tier_kind_of(tier_id) == "stage"
+            else ARC_CAPACITY_KIND)
+
+
 def split_demand_key(key: str) -> tuple[str, str | None]:
     """``stage_gib@prismabuild-stage:dl380g10`` -> ``("stage_gib", "prismabuild-stage:dl380g10")``.
 
@@ -509,13 +529,15 @@ def residency_demand(
     tier_id: str,
     range_start_bytes: int,
     range_end_bytes: int,
-    tier: str = "stage",
+    tier: str | None = None,
     fill_mb_s_pool_side: int | None = None,
 ) -> dict[str, int]:
     """The tier demand one movement node's range implies, derived not guessed.
 
     The capacity ask is arithmetic over the manifest: the bytes between two
-    read-order boundaries, in whole GiB.  The fill ask is the rate the mover
+    read-order boundaries, in whole GiB, in whichever kind the tier id says it
+    deals in.  ``tier`` is optional and only cross-checks what the id already
+    declares.  The fill ask is the rate the mover
     intends to draw from the source pool, and it is optional because a tier
     with no attributed receipt has no fill tokens to give (the probe rule);
     when given it is **pool-side**, the only side a shared four-spindle pool
@@ -524,11 +546,12 @@ def residency_demand(
 
     if range_end_bytes <= range_start_bytes:
         raise ValueError("a residency range must be non-empty and half-open")
-    kind = {"stage": STAGE_CAPACITY_KIND, "arc": ARC_CAPACITY_KIND}.get(tier)
-    if kind is None:
-        raise ValueError(f"no capacity is reservable on the {tier!r} tier")
     if TIER_DEMAND_SEPARATOR in str(tier_id) or not tier_id:
         raise ValueError(f"malformed tier id {tier_id!r}")
+    if tier is not None and tier != tier_kind_of(tier_id):
+        raise ValueError(
+            f"tier {tier!r} disagrees with the kind {tier_id!r} declares")
+    kind = capacity_kind_of(tier_id)
     demand = {
         f"{kind}{TIER_DEMAND_SEPARATOR}{tier_id}":
             stage_tokens_for_bytes(range_end_bytes - range_start_bytes),
@@ -614,8 +637,10 @@ __all__ = [
     "ARCSTATS",
     "FILL_RECORD_FIELD",
     "manifest_phase_ranges",
+    "capacity_kind_of",
     "residency_demand",
     "stage_tokens_for_bytes",
+    "tier_kind_of",
     "ARC_CAPACITY_KIND",
     "FILL_KIND",
     "GIB",

@@ -3574,7 +3574,11 @@ class PoolQueue:
             if tier_id is None:
                 raise PoolContractError("a residency range must name the tier it lands on")
             floor = storage_tiers.stage_tokens_for_bytes(int(end) - int(start))
-            kind = f"{storage_tiers.STAGE_CAPACITY_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}"
+            # The tier id declares which token kind it deals in; the same rule
+            # ``residency_demand`` derives the demand with, so a block this
+            # refuses is never one PB's own derivation would have produced.
+            kind = (f"{storage_tiers.capacity_kind_of(str(tier_id))}"
+                    f"{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}")
             declared = int(demand.get(kind, 0))
             if declared < floor:
                 # The range is the measurement; the demand is a claim about
@@ -3610,9 +3614,21 @@ class PoolQueue:
         for lead in leads:
             record = _read_json(self.item_path(DONE, str(lead)))
             status = record.get("status") if isinstance(record, Mapping) else None
-            if status != "executed":
-                pending.append({"lead": str(lead),
-                                "status": status if status is not None else "absent"})
+            if status == "executed":
+                continue
+            if status is None:
+                # A lead that ended badly will never become resident, and a
+                # denial that could not tell that from "has not started yet"
+                # would be a denial nobody can act on.  No drop policy is
+                # implied: the item stays ready, exactly as it does while its
+                # mover is still queued.
+                for state in (FAILED, WITHDRAWN):
+                    ended = _read_json(self.item_path(state, str(lead)))
+                    if isinstance(ended, Mapping):
+                        status = str(ended.get("status") or state)
+                        break
+            pending.append({"lead": str(lead),
+                            "status": status if status is not None else "absent"})
         if pending:
             return {"state": "lead_not_resident", "pending": pending,
                     "leads": [str(lead) for lead in leads]}

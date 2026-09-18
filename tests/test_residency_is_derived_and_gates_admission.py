@@ -121,6 +121,25 @@ def test_the_range_comes_out_of_the_manifests_own_read_order() -> None:
             STAGE: 1, f"fill_mb_s_pool_side@{TIER}": 242}
 
 
+def test_the_tier_id_decides_the_capacity_kind_for_demand_and_for_refusal(
+    queue: pool.PoolQueue,
+) -> None:
+    """One rule, so a derived demand is never a demand ``publish`` refuses."""
+
+    arc = "arc:dl380g10"
+    derived = storage_tiers.residency_demand(
+        tier_id=arc, range_start_bytes=0, range_end_bytes=2 * GIB)
+    assert derived == {f"arc_gib@{arc}": 2}
+    block = dict(_residency(range_start=0, range_end=2 * GIB), tier_id=arc)
+    _publish(queue, MOVER, {"cpu": 1, **derived}, residency=block)
+    with pytest.raises(pool.PoolContractError, match=f"arc_gib@{arc}"):
+        _publish(queue, MOVER, {"cpu": 1, f"arc_gib@{arc}": 1}, residency=block)
+    # A stated tier that contradicts the id is a mistake, not a preference.
+    with pytest.raises(ValueError):
+        storage_tiers.residency_demand(
+            tier_id=arc, tier="stage", range_start_bytes=0, range_end_bytes=GIB)
+
+
 def test_a_phase_table_that_does_not_describe_this_manifest_yields_no_ranges() -> None:
     """Windowing on the wrong boundaries would reserve for bytes nobody reads."""
 
@@ -248,7 +267,11 @@ def test_every_lead_must_be_resident_not_merely_the_first(
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None
-    assert [p["lead"] for p in denial["evidence"]["residency"]["pending"]] == [SECOND_MOVER]
+    # ...and the denial says the lead ended, not that it has yet to start:
+    # a consumer waiting on a mover that will never run is a different
+    # situation from one waiting on a mover that is queued.
+    assert denial["evidence"]["residency"]["pending"] == [
+        {"lead": SECOND_MOVER, "status": "failed"}]
 
 
 def test_mutating_the_gate_out_lets_an_unserved_consumer_claim(
