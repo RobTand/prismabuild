@@ -254,3 +254,64 @@ def test_a_resubmitted_key_starts_a_new_stage_ledger(
     assert [row["action_key"] for row in event["stage"]["orphans"]] == [key]
     assert event["stage"]["orphans"][0]["status"] == "swept"
     assert stage.objects() == []
+
+
+def test_a_claimed_row_past_its_grace_keeps_the_band_it_is_reading(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A row dropped from the reserve is still a row that is running.
+
+    A claimed action that declares no progress policy stops being counted
+    against the ARC budget once its grace expires -- a budget decision, made
+    because nothing more can be learned about what it still needs.  It is not
+    a statement that the action has finished, and a sweep that read it as one
+    would delete the staged band under an action that is two hours into
+    reading it, and write ``swept`` on the receipt.
+    """
+
+    fleet = Fleet(tmp_path)
+    files = [fleet.file("a.pt", 4096), fleet.file("b.pt", 4096)]
+    key = fleet.action("run", files)
+    stage = StagePool(tmp_path)
+    stage.install(monkeypatch)
+
+    fleet.cycle(args(fleet))
+    assert len(stage.objects()) == 2
+
+    # Claimed, running, reporting nothing, well past --claim-grace-min.
+    fleet.claim(key, age_s=21 * 60)
+    event = fleet.cycle(args(fleet))
+
+    assert event["stage"]["orphans"] == []
+    assert stage.objects() == ["a.pt.pbstage@0+4096", "b.pt.pbstage@0+4096"]
+    assert fleet.queue.prewarm(key)["stage"].get("swept") is not True
+
+
+def test_a_claimed_row_with_no_window_still_holds_the_bytes_it_shares(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delete-behind asks every live row, not only the windowed ones.
+
+    A row claimed before this loop ever warmed it has no window: nothing is
+    resident for it and no phase table names a frontier, so it has read
+    nothing of what it will read.  Another row's delete-behind over the same
+    files must therefore keep every object -- which is the 469 007-of-469 008
+    overlap this campaign actually has.
+    """
+
+    fleet, key, stage, files = _fleet(tmp_path, monkeypatch)
+    # Queued behind it over the same files, and claimed before it is warmed.
+    other = fleet.action("next", files, priority=5)
+    fleet.cycle(args(fleet, lookahead=1))
+    assert len(stage.objects()) == 3
+    fleet.claim(other)
+
+    fleet.claim(key)
+    fleet.report_progress(key, "c")
+    event = fleet.cycle(args(fleet, lookahead=1))
+
+    released = event["stage"]["released"]
+    by_key = {row["action_key"]: row for row in released}
+    assert by_key[key]["candidate_entries"] == 2
+    assert by_key[key]["retained_entries"] == 2
+    assert by_key[key]["released_entries"] == 0
+    assert stage.objects() == ["a.pt.pbstage@0+4096", "b.pt.pbstage@0+4096",
+                               "c.pt.pbstage@0+4096"]

@@ -2708,6 +2708,12 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
     keys: list[str] = []
     triggers: list[dict[str, object]] = []
     windows: list[dict[str, object]] = []
+    #: Every claimed row this function saw, whatever it decided to reserve
+    #: for it.  The reserve and the window are budget questions; *live* is a
+    #: queue question, and the two skip branches below answer the first
+    #: without answering the second.  A row dropped from the reserve is still
+    #: a row that is running and still reading the bytes it was warmed.
+    live: dict[str, dict[str, object]] = {}
     for path in sorted((queue.root / pool.CLAIMED).glob("*.json")):
         try:
             record = json.loads(path.read_text())
@@ -2720,6 +2726,11 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
             continue
         key = str(record.get("action_key", path.stem))
         root = Path(str(record.get("cas_root") or cas_root))
+        # Recorded before anything below can skip this row: a claimed row is
+        # live by definition, and a row with no window has read nothing of
+        # what it holds, which is the "wants all of it" shape.
+        live.setdefault(key, {"action_key": key, "cas_root": str(root),
+                              "consumed_bytes": 0})
         request = sealed_request(root, key)
         size = declared_manifest_bytes(request)
         if not size:
@@ -2744,6 +2755,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
                             if not cyclic else None)
                 consumed = (consumed_through(phases, reported["phase"])
                             if reported is not None else 0)
+                live[key]["consumed_bytes"] = consumed
                 windows.append({
                     "action_key": key, "cas_root": str(root),
                     "status": "partial", "manifest_sha256": str(entry["sha256"]),
@@ -2788,6 +2800,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
         if released:
             triggers.append({"action_key": key, "phase": reported["phase"],
                              "released_bytes": released})
+        live[key]["consumed_bytes"] = consumed
         windows.append({
             "action_key": key, "cas_root": str(root),
             "status": str(warmed.get("status", "")),
@@ -2801,7 +2814,8 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
         })
     return {"claimed_reserved_bytes": reserved, "claimed_reserved_keys": keys,
             "claimed_released_bytes": released_total,
-            "progress_triggers": triggers, "claimed_windows": windows}
+            "progress_triggers": triggers, "claimed_windows": windows,
+            "claimed_live_rows": list(live.values())}
 
 
 def claimed_host_of(record: Mapping[str, object]) -> str:
@@ -3023,6 +3037,10 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         args.claim_grace_min * 60.0,
     )
     windows = reserve.pop("claimed_windows")
+    # Popped beside the windows, and for the same reason: neither belongs in
+    # the cycle's log line, and a new key in ``reserve`` would change the
+    # record a loop without ``--stage`` writes.
+    live_rows = reserve.pop("claimed_live_rows")
     reserve.update(warmed_reserve(queue, ready))
     protected = (reserve["claimed_reserved_bytes"]
                  + reserve["warmed_reserved_bytes"])
@@ -3194,9 +3212,15 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         A generator rather than a list: these manifests are the 469 008-entry
         kind, and holding two of them at once on the file server would cost
         the ARC this loop exists to fill.
+
+        Driven from every claimed row, not only from the ones that earned a
+        window.  A claimed row past its grace with nothing to report is
+        dropped from the *reserve*; it is still running, still reading, and
+        deleting the bytes it was warmed because a budget stopped counting
+        them would be the sweep deciding a live row is finished.
         """
 
-        for other in windows:
+        for other in live_rows:
             other_key = str(other["action_key"])
             if other_key == exclude_key:
                 continue
@@ -3396,8 +3420,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # states the tier was in and why -- #585's lesson is that a correct
         # non-action nobody recorded costs the next reader the diagnosis.
         live_keys = {str(item.get("action_key", "")) for item in ready}
-        live_keys |= {str(window["action_key"]) for window in windows}
-        live_keys |= {str(k) for k in (reserve.get("claimed_reserved_keys") or [])}
+        live_keys |= {str(row["action_key"]) for row in live_rows}
         orphans = sweep_orphan_stage(
             queue, stage, live_keys, other_live_rows, cas_root,
             apply=not args.dry_run)
