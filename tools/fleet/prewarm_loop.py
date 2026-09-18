@@ -740,6 +740,17 @@ class StageTier:
         self.reserved_bytes = 0
         self.released_bytes = 0
         self.released_entries = 0
+        #: Bytes written to a temporary that never earned a name, and the
+        #: objects they belong to.  ``staged_bytes`` counts only what was
+        #: committed, so on a tier that fills mid-window the work the cycle
+        #: actually did is invisible without these -- and whether the window
+        #: is sized wrong is exactly the question they answer.
+        self.aborted_bytes = 0
+        self.aborted_entries = 0
+        #: Seconds spent inside ``write(2)`` on the stage.  The copy happens
+        #: in the reader thread's own block cycle, so with the stage on
+        #: ``per_reader_mb_s`` reads lower; this is the field that says why.
+        self.write_seconds = 0.0
         self.errors: list[str] = []
         self.lock = threading.Lock()
 
@@ -786,11 +797,18 @@ class StageTier:
             if committed:
                 self.staged_bytes += written
                 self.staged_entries += 1
+            else:
+                self.aborted_bytes += written
+                self.aborted_entries += 1
+
+    def add_write_seconds(self, seconds: float) -> None:
+        with self.lock:
+            self.write_seconds += max(0.0, seconds)
 
     def object_path(self, key: str) -> Path:
         return Path(self.mountpoint) / key
 
-    def open_object(self, key: str) -> "StageObject | None":
+    def open_object(self, key: str, declared: int) -> "StageObject | None":
         """A temporary file for one entry, renamed into place only when whole.
 
         ``O_EXCL`` and ``O_NOFOLLOW`` on a name carrying this process and
@@ -798,6 +816,12 @@ class StageTier:
         symlink planted under the stage root is refused rather than followed.
         A partial object is never renamed, so nothing under the stage root is
         ever a short file wearing a complete name.
+
+        ``declared`` is the entry's own ``bytes``, carried here so that
+        :meth:`StageObject.commit` can refuse a rename the object's content
+        does not earn.  The key already states that number; an object whose
+        content is shorter than its name would be a lie a consumer cannot
+        detect, so the number travels with the handle that has to honour it.
         """
 
         target = self.object_path(key)
@@ -814,7 +838,8 @@ class StageTier:
             if isinstance(exc, OSError) and exc.errno in _STAGE_FULL_ERRNOS:
                 self.mark_full(f"stage pool out of space: {exc}")
             return None
-        return StageObject(self, key, handle, temporary, target)
+        return StageObject(self, key, handle, temporary, target,
+                           declared=int(declared))
 
     # -- release -------------------------------------------------------
 
@@ -853,6 +878,12 @@ class StageTier:
             "budget_bytes": self.budget_bytes,
             "staged_bytes": self.staged_bytes,
             "staged_entries": self.staged_entries,
+            # Written and then discarded: a refused rename, a tier that filled
+            # mid-entry, a read that stopped short.  Never folded into
+            # ``staged_bytes``, which is committed objects and nothing else.
+            "aborted_bytes": self.aborted_bytes,
+            "aborted_entries": self.aborted_entries,
+            "stage_write_seconds": round(self.write_seconds, 3),
             "released_bytes": self.released_bytes,
             "released_entries": self.released_entries,
             "layout": STAGE_LAYOUT,
@@ -865,12 +896,14 @@ class StageObject:
     """One entry's staged copy, in flight."""
 
     def __init__(self, tier: StageTier, key: str, handle: int,
-                 temporary: Path, target: Path) -> None:
+                 temporary: Path, target: Path, *, declared: int = 0) -> None:
         self.tier = tier
         self.key = key
         self.handle = handle
         self.temporary = temporary
         self.target = target
+        #: The byte count this object's own name declares.
+        self.declared = int(declared)
         self.written = 0
         self.reserved = 0
         self.live = True
@@ -884,23 +917,55 @@ class StageObject:
             self.abort()
             return False
         self.reserved += size
+        started = time.perf_counter()
+        moved = 0
         try:
-            os.write(self.handle, data)
+            while moved < size:
+                # ``write(2)`` is allowed to transfer fewer bytes than it was
+                # given, and on a pool that runs out partway through a request
+                # it does exactly that rather than raising.  A caller that
+                # trusted the request length would count bytes the kernel
+                # never took and then rename a short object onto a name that
+                # declares the full range.  Drain the view or fail the sink.
+                taken = os.write(self.handle, data[moved:])
+                if taken <= 0:
+                    raise OSError(errno.EIO,
+                                  "stage write accepted no bytes")
+                moved += taken
         except OSError as exc:
+            self.written += moved
+            self.tier.add_write_seconds(time.perf_counter() - started)
             self.tier.note(f"{self.key}: {exc}")
             if exc.errno in _STAGE_FULL_ERRNOS:
                 self.tier.mark_full(f"stage pool out of space: {exc}")
             self.abort()
             return False
-        self.written += size
+        self.tier.add_write_seconds(time.perf_counter() - started)
+        self.written += moved
         return True
 
     def commit(self) -> None:
-        """Rename the temporary into place; only a whole entry gets a name."""
+        """Rename the temporary into place; only a whole entry gets a name.
+
+        Whole is measured against the entry's declared ``bytes``, not against
+        what the reader thinks it handed over: the name states a byte range,
+        so an object whose content is shorter than its name is the one thing
+        this tree must never contain.
+        """
 
         if not self.live:
             return
         self.live = False
+        if self.written != self.declared:
+            self.tier.note(f"{self.key}: wrote {self.written} B of the "
+                           f"{self.declared} B its name declares")
+            try:
+                os.close(self.handle)
+            except OSError:
+                pass
+            self._discard()
+            self.tier.settle(self.reserved, self.written, committed=False)
+            return
         try:
             os.close(self.handle)
             os.replace(self.temporary, self.target)
@@ -2100,7 +2165,7 @@ class Reader:
                         stage.note(f"{os.path.basename(path)}: outside the "
                                    "manifest's mount prefix")
                     else:
-                        sink = stage.open_object(key)
+                        sink = stage.open_object(key, want_total)
                 try:
                     if not statmod.S_ISREG(os.fstat(fd).st_mode):
                         raise OSError(f"not a regular file: {path}")
