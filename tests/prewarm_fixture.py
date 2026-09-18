@@ -247,10 +247,20 @@ class StagePool:
                  health: str = "ONLINE",
                  by_id_name: str = "nvme-LT0800KEXVA_CVMD54710026800BGN",
                  device: str = "nvme9n1", mounted: bool = True,
-                 has_dataset: bool = True) -> None:
+                 has_dataset: bool = True,
+                 available: "int | None" = None,
+                 answers_available: bool = True) -> None:
         self.name = name
         self.size = size
         self.free = free
+        #: What ``zfs get -Hp available`` on the dataset answers.  Its own
+        #: number, below the pool's ``free``, because ZFS has already
+        #: withheld the pool's slop from it.  ``None`` is a dataset that
+        #: cannot answer, which is the loop's fallback path.
+        self.available = free if available is None else available
+        #: A dataset that cannot answer ``zfs get available`` at all, which is
+        #: the loop's fallback-to-pool-``free`` path.
+        self.answers_available = answers_available
         self.health = health
         self.by_id_name = by_id_name
         self.device = device
@@ -281,6 +291,10 @@ class StagePool:
             # way the loop's fallback to the pool root expects it to.
             if argv[-1] != self.dataset:
                 raise subprocess.CalledProcessError(1, argv)
+            if "available" in argv:
+                if not self.answers_available:
+                    raise subprocess.CalledProcessError(1, argv)
+                return f"{self.available}\n"
             return self.mountpoint + "\n"
         if "status" in argv:
             return (f"  pool: {self.name}\nconfig:\n\n"

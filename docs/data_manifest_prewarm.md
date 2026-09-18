@@ -609,8 +609,16 @@ exported, filled or lost between two polls changes the answer.
   rule that took idle devices would seize it.
 * Bytes are written to the pool's `prewarm` dataset when it has one, and to
   the pool's own mountpoint when it does not.
-* Capacity is the pool's own `free` less `--stage-free-floor-bytes`, read from
-  `zpool list -Hp`.
+* Capacity is the `prewarm` dataset's own `available`, read from
+  `zfs get -Hp available`. That number has already withheld the pool's slop
+  space, the dataset's quota and its reservation, so nothing further is kept
+  back and the tier's hard stop binds before the kernel's `ENOSPC` does. A
+  budget taken from `zpool list`'s pool-level `free` never binds: `free`
+  withholds none of those. When the dataset cannot answer, capacity falls back
+  to pool `free` and the floor becomes the reserve ZFS itself would have
+  withheld -- 1/32 of the pool, never below 128 MiB. The record carries
+  `capacity_bytes` and `capacity_source`, so which number was used is never a
+  guess. `--stage-free-floor-bytes` overrides the derived floor.
 * Members reach a record only as `/dev/disk/by-id` names. Device numbering on
   dl380g10 is the reverse of what the model names suggest: `nvme0n1` is the
   stage device and `nvme1n1` is the root disk. A record naming a device number
@@ -626,7 +634,7 @@ nobody wrote down is what cost the diagnosis in pb#585.
 |---|---|
 | `present` | Discovered, writable, with budget. It does not mean anything was staged. |
 | `absent` | No imported pool carries the prefix. The state on every box but the file server. |
-| `full` | The pool's `free` leaves nothing above the floor, or the budget ran out during the cycle. |
+| `full` | The discovered capacity leaves nothing above the floor, or the budget ran out during the cycle. |
 | `unreadable` | No `zpool`, no mounted directory, an unwritable one, or a health that is neither ONLINE nor DEGRADED. |
 
 A tier that fills or faults stops being written to and the warm carries on.

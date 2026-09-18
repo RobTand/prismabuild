@@ -5,9 +5,9 @@ is the one this loop has always had and the one the campaign actually reads,
 so a stage pool that fills, faults or refuses a write is recorded as ``full``
 and stepped over -- the window is read to its end either way.
 
-Capacity is the pool's own ``free`` less the floor it keeps, read every cycle.
-Nothing here is configured: add a device to the stage pool and the next cycle
-offers more.
+Capacity is the dataset's own ``available`` less whatever floor is kept, read
+every cycle.  Nothing here is configured: add a device to the stage pool and
+the next cycle offers more.
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ class OutOfSpace:
         raise OSError(errno.ENOSPC, "No space left on device")
 
 
-def test_the_budget_is_the_pools_free_space_and_it_binds(
+def test_the_budget_is_the_discovered_capacity_and_it_binds(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fleet = Fleet(tmp_path)
     key = fleet.action("row", [fleet.file("first.pt", 4096),
@@ -102,3 +102,72 @@ def test_a_partial_copy_never_earns_a_name(
     fleet.cycle(fleet.args(stage=True, stage_free_floor_bytes=0))
 
     assert list(stage.mount.rglob("*")) == []
+
+
+def test_capacity_is_the_datasets_available_not_the_pools_free(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The budget describes the thing being written to.
+
+    ``zpool list`` reports pool-level ``free``, which has withheld nothing:
+    not the pool's slop space, not the dataset's quota or reservation, not
+    the metadata the write itself costs.  A budget taken from it stops later
+    than the kernel does, so the tier's own hard stop never binds and every
+    fill ends at ENOSPC instead.
+    """
+
+    fleet = Fleet(tmp_path)
+    fleet.action("row", [fleet.file("first.pt", 4096),
+                         fleet.file("second.pt", 4096)])
+    stage = StagePool(tmp_path, size=1 << 20, free=1 << 20, available=4096)
+    stage.install(monkeypatch)
+
+    event = fleet.cycle(fleet.args(stage=True, readers=1, max_readers=1))
+
+    assert event["stage"]["capacity_bytes"] == 4096
+    assert event["stage"]["capacity_source"] == "dataset available"
+    assert event["stage"]["free_bytes"] == 1 << 20
+    # Nothing of this module's invention is kept back: ZFS already did that.
+    assert event["stage"]["free_floor_bytes"] == 0
+    assert event["stage"]["budget_bytes"] == 4096
+    assert event["stage"]["staged_bytes"] == 4096
+    assert event["stage"]["state"] == "full"
+    assert len(stage.objects()) == 1
+
+
+def test_a_dataset_that_cannot_answer_falls_back_and_says_so(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fallback is a real answer to a different question.
+
+    Pool ``free`` has not withheld the slop ZFS keeps, so the floor becomes
+    the reserve ZFS itself would have withheld -- 1/32 of the pool, never
+    below 128 MiB -- and the record names the number it used.
+    """
+
+    fleet = Fleet(tmp_path)
+    fleet.action("row", [fleet.file("row.pt", 8192)])
+    size = 64 << 30
+    stage = StagePool(tmp_path, size=size, free=size,
+                      answers_available=False)
+    stage.install(monkeypatch)
+
+    event = fleet.cycle(fleet.args(stage=True))
+
+    assert event["stage"]["capacity_source"] == "pool free"
+    assert event["stage"]["capacity_bytes"] == size
+    assert event["stage"]["free_floor_bytes"] == size >> 5
+    assert event["stage"]["budget_bytes"] == size - (size >> 5)
+    assert event["stage"]["state"] == "present"
+
+
+def test_a_stated_floor_outranks_the_derived_one(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fleet = Fleet(tmp_path)
+    fleet.action("row", [fleet.file("row.pt", 8192)])
+    StagePool(tmp_path, size=1 << 30, free=1 << 30,
+              available=1 << 30).install(monkeypatch)
+
+    event = fleet.cycle(fleet.args(stage=True,
+                                   stage_free_floor_bytes=(1 << 30) - 4096))
+
+    assert event["stage"]["free_floor_bytes"] == (1 << 30) - 4096
+    assert event["stage"]["budget_bytes"] == 4096

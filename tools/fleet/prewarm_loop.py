@@ -279,9 +279,17 @@ BY_ID = "/dev/disk/by-id"
 #: properties -- and, later, its export -- belong to the dataset rather than
 #: to the pool root; a pool without it is written at its own mountpoint.
 STAGE_DATASET = "prewarm"
-#: Free bytes the stage keeps for itself.  A ZFS pool written to its last
-#: block fragments and stops performing, and the tier exists to be fast.
-STAGE_FREE_FLOOR = 1 << 30
+#: ZFS's own reserve, in ZFS's own arithmetic, for the one case where this
+#: loop cannot ask ZFS for it.  ``zfs get available`` on a dataset has
+#: already withheld the pool's slop space -- the reserve a normal write can
+#: never consume, ``spa_slop_shift`` -- so a tier sized from ``available``
+#: needs no floor of this module's invention and takes none.  Only the
+#: fallback to pool-level ``free`` needs one, and the honest value there is
+#: the reserve ZFS itself would have withheld: 1/32 of the pool, never less
+#: than 128 MiB.  A round number picked for how it looked would be a
+#: heuristic standing where an explicit exists.
+STAGE_SLOP_SHIFT = 5
+STAGE_SLOP_MINIMUM = 128 << 20
 #: Separates a stage object's mirrored path from the byte range it holds.
 STAGE_OBJECT_MARK = ".pbstage@"
 #: Written into every stage record, because the layout *is* the consumer
@@ -619,6 +627,34 @@ def pool_mountpoint(name: str,
     return value if value.startswith("/") else None
 
 
+def dataset_available(name: str,
+                      runner: Callable[[list[str]], str] | None = None,
+                      ) -> int | None:
+    """Bytes ``name`` can still be written, as the dataset itself reports it.
+
+    The number that describes the thing being written to.  ``zpool list``'s
+    ``free`` is pool level and has withheld nothing: not the pool's slop
+    space, not this dataset's quota or reservation, not the metadata the
+    write itself will cost.  A budget taken from it never binds -- the loop
+    reaches the kernel's ENOSPC before it reaches its own hard stop, every
+    time the tier fills -- and a stop that never binds is not a stop.
+
+    ``None`` when the dataset cannot answer, which is a fact the caller
+    records rather than a number it substitutes.
+    """
+
+    try:
+        text = (runner or run_tool)(
+            [zfs_binary(), "get", "-Hp", "-o", "value", "available", name])
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        value = int(text.strip())
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
 def by_id_names(paths: "list[str] | tuple[str, ...]", *,
                 by_id: str | None = None) -> list[str]:
     """``/dev/disk/by-id`` names for ``paths``, in the order given.
@@ -721,7 +757,8 @@ class StageTier:
                  size_bytes: int = 0, free_bytes: int = 0,
                  allocated_bytes: int = 0, health: str = "",
                  free_floor_bytes: int = 0, pools: "list[str] | None" = None,
-                 dataset: str = "") -> None:
+                 dataset: str = "", capacity_bytes: int | None = None,
+                 capacity_source: str = "") -> None:
         self.state = state
         self.reason = reason
         self.name = name
@@ -734,7 +771,15 @@ class StageTier:
         self.health = health
         self.free_floor_bytes = free_floor_bytes
         self.pools = list(pools or [])
-        self.budget_bytes = max(0, free_bytes - free_floor_bytes) if mountpoint else 0
+        #: What the tier may still be given, and which number that came from.
+        #: The dataset's own ``available`` when ZFS answered, the pool's
+        #: ``free`` when it did not -- and the record says which, because a
+        #: budget and the arithmetic behind it are one fact.
+        self.capacity_bytes = (free_bytes if capacity_bytes is None
+                               else int(capacity_bytes))
+        self.capacity_source = capacity_source or "unread"
+        self.budget_bytes = (max(0, self.capacity_bytes - free_floor_bytes)
+                             if mountpoint else 0)
         self.staged_bytes = 0
         self.staged_entries = 0
         self.reserved_bytes = 0
@@ -874,6 +919,8 @@ class StageTier:
             "size_bytes": self.size_bytes,
             "free_bytes": self.free_bytes,
             "allocated_bytes": self.allocated_bytes,
+            "capacity_bytes": self.capacity_bytes,
+            "capacity_source": self.capacity_source,
             "free_floor_bytes": self.free_floor_bytes,
             "budget_bytes": self.budget_bytes,
             "staged_bytes": self.staged_bytes,
@@ -1015,15 +1062,19 @@ def discover_stage(prefix: str, *,
         directory cannot be written, or the pool's health is neither ONLINE
         nor DEGRADED.  The tier is there and cannot be used.
     ``full``
-        The pool is usable and its own ``free`` leaves nothing above the
-        floor.  Capacity comes from the pool's arithmetic, never from a
-        configured size.
+        The tier is usable and its capacity leaves nothing above the floor.
+        Capacity is the ``prewarm`` dataset's own ``available`` -- which has
+        already withheld the pool's slop, this dataset's quota and its
+        reservation -- and the pool's ``free`` only when the dataset cannot
+        answer.  Never a configured size.
     ``present``
         Usable, with budget.  It does not mean anything was staged.
     """
 
-    free_floor_bytes = (STAGE_FREE_FLOOR if free_floor_bytes is None
-                        else free_floor_bytes)
+    #: ``None`` means derived below, from whichever capacity number answers.
+    #: An operator who states a floor outranks the derivation.
+    stated_floor = free_floor_bytes
+    free_floor_bytes = 0 if stated_floor is None else int(stated_floor)
     rows = stage_pool_rows(prefix, runner=runner)
     if rows is None:
         return StageTier(state="unreadable",
@@ -1064,11 +1115,26 @@ def discover_stage(prefix: str, *,
             mountpoint=mountpoint, **common)
     leaves = pool_member_paths(name, runner=runner)
     members = by_id_names(leaves or [], by_id=by_id)
+    # Ask the dataset what it can still take.  Falling back to the pool's
+    # ``free`` is a real answer to a different question, so it is recorded as
+    # such and carries the reserve ZFS would have withheld from it.
+    available = dataset_available(dataset, runner=runner)
+    if available is None:
+        capacity, source = int(chosen["free_bytes"]), "pool free"
+        if stated_floor is None:
+            free_floor_bytes = max(
+                int(chosen["size_bytes"]) >> STAGE_SLOP_SHIFT,
+                STAGE_SLOP_MINIMUM)
+    else:
+        capacity, source = available, "dataset available"
+    common["free_floor_bytes"] = free_floor_bytes
     tier = StageTier(state="present", reason="stage pool discovered",
-                     mountpoint=mountpoint, members=members, **common)
+                     mountpoint=mountpoint, members=members,
+                     capacity_bytes=capacity, capacity_source=source,
+                     **common)
     if tier.budget_bytes <= 0:
         tier.state = "full"
-        tier.reason = (f"{name} has {tier.free_bytes} B free against a "
+        tier.reason = (f"{name} has {capacity} B of {source} against a "
                        f"{free_floor_bytes} B floor")
     return tier
 
@@ -2947,8 +3013,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
     # record has to be a fact about this cycle (#582).
     stage = (discover_stage(
         getattr(args, "stage_pool_prefix", STAGE_POOL_PREFIX),
-        free_floor_bytes=getattr(args, "stage_free_floor_bytes",
-                                 STAGE_FREE_FLOOR))
+        free_floor_bytes=getattr(args, "stage_free_floor_bytes", None))
         if stage_requested(args) else None)
     stage_rows: list[dict[str, object]] = []
     cas_root = Path(args.cas_root) if args.cas_root else None
@@ -3525,13 +3590,18 @@ def main(argv: list[str] | None = None) -> int:
                              "ever taken for being idle: on this fleet's "
                              "file server one idle NVMe still carries a "
                              "stale zfs_member signature")
-    parser.add_argument("--stage-free-floor-bytes", type=int,
-                        default=STAGE_FREE_FLOOR,
-                        help="free bytes the stage pool keeps for itself.  "
-                             "Capacity is the pool's own 'free' less this "
-                             "floor, read every cycle: a ZFS pool written to "
-                             "its last block fragments and stops being the "
-                             "fast tier it was added to be.  A pool with "
+    parser.add_argument("--stage-free-floor-bytes", type=int, default=None,
+                        help="bytes the stage keeps back, overriding what is "
+                             "derived.  Capacity is read every cycle from the "
+                             "prewarm dataset's own 'available', which has "
+                             "already withheld the pool's slop space, the "
+                             "dataset's quota and its reservation, so nothing "
+                             "further is kept back by default.  Only when the "
+                             "dataset cannot answer does capacity fall back "
+                             "to the pool's 'free', and the floor then becomes "
+                             "the reserve ZFS itself would have withheld: "
+                             "1/32 of the pool, never below 128 MiB.  The "
+                             "record says which number was used.  A tier with "
                              "nothing above the floor records 'full' and "
                              "stages nothing, which is a state, not an error")
     parser.add_argument("--once", action="store_true",
