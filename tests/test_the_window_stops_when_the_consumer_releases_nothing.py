@@ -195,3 +195,19 @@ def test_a_stalled_window_does_not_ask_the_sweep_for_room_it_will_not_use(
                               {"stage_gib": PHASE_GIB[ordinal]})
 
     assert tier_loop.window_pressure(queue, tiers=tiers) == {}
+
+
+def test_a_phase_name_this_plan_does_not_carry_is_not_progress(queue) -> None:
+    """`remaining` reads a stale name as the beginning; the bound must agree.
+
+    Otherwise another plan's phase name, or one renamed by a resubmission,
+    buys the deeper budget that only demonstrated progress earns.
+    """
+
+    decision = residency_plan.window(
+        _plan(queue), accepted_phase="phase-from-another-plan",
+        free_gib=STAGE_CAPACITY_GIB, capacity_gib=STAGE_CAPACITY_GIB)
+
+    assert [phase["phase"] for phase in decision["publish"]] == [
+        "phase-0000", "phase-0001"]
+    assert decision["stall"]["reason"] == "no_accepted_progress"

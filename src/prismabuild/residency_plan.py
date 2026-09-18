@@ -390,6 +390,24 @@ def remaining(plan: Mapping[str, object],
     return phases[names.index(accepted_phase) if accepted_phase in names else 0:]
 
 
+def accepted(plan: Mapping[str, object], accepted_phase: str | None) -> bool:
+    """Whether the consumer has accepted a phase of *this* plan.
+
+    ``remaining`` already reads a name the plan does not carry as the
+    beginning, for the reason it says: a consumer that has not said where it
+    is has not passed anything.  The run-ahead bound has to read it the same
+    way, or a stale name -- another plan's phase, a phase renamed by a
+    resubmission -- would buy the deeper budget that only demonstrated
+    progress earns.
+    """
+
+    if accepted_phase is None:
+        return False
+    phases = plan["phases"]
+    assert isinstance(phases, list)
+    return any(str(phase["name"]) == accepted_phase for phase in phases)
+
+
 def runahead_step_gib(plan: Mapping[str, object],
                       accepted_phase: str | None) -> int:
     """The largest single phase still ahead of the consumer, in tier tokens.
@@ -418,7 +436,7 @@ def runahead_budget_gib(plan: Mapping[str, object], accepted_phase: str | None,
     """
 
     step = runahead_step_gib(plan, accepted_phase)
-    if accepted_phase is None:
+    if not accepted(plan, accepted_phase):
         return step
     if capacity_gib is None:
         return None
@@ -474,6 +492,7 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
 
     publish: list[dict[str, object]] = []
     room = int(free_gib)
+    has_accepted = accepted(plan, accepted_phase)
     budget = runahead_budget_gib(plan, accepted_phase, capacity_gib=capacity_gib)
     # Everything the window already holds beyond the phase being read.  The
     # phase the consumer is inside is not run-ahead: it is the work.
@@ -497,12 +516,11 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
                 "runahead_budget_gib": budget,
                 "free_gib": int(free_gib),
                 "capacity_gib": None if capacity_gib is None else int(capacity_gib),
-                "reason": ("no_accepted_progress" if accepted_phase is None
-                           else "runahead_budget"),
+                "reason": ("runahead_budget" if has_accepted
+                           else "no_accepted_progress"),
                 "waiting_for": (
-                    "the consumer's first accepted progress record"
-                    if accepted_phase is None else
-                    f"accepted progress past {accepted_phase}"),
+                    f"accepted progress past {accepted_phase}" if has_accepted
+                    else "the consumer's first accepted progress record"),
             }
             break
         if need > room:
@@ -521,6 +539,7 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
 __all__ = [
     "RESIDENCY_PLAN_SCHEMA_V1",
     "ResidencyPlanError",
+    "accepted",
     "build_plan",
     "freeze",
     "leads_for",
