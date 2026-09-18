@@ -3301,7 +3301,70 @@ first-writer plan under `residency-plans/`. A restart republishes those same
 children rather than cutting a new partition of the read order — the decomposer's
 transaction — and the coordinator that publishes them is the `tiers` role, which
 already holds the queue and the tier ledger every cycle. How many are in flight
-is bounded by the tier's free tokens, never by a number.
+is bounded by the tier's free tokens and by the consumer's own progress, never
+by a number.
+
+### Mover run-ahead is bounded by the consumer, not only by the tier (#632)
+
+Free capacity is the only brake that acts on the **admit** side. The release
+side is driven by the consumer's accepted progress, so a consumer that
+publishes none never advances the window, never gets an egress row published,
+and stages its plan up to the last phase that fits. On 2026-09-18 the
+GLM-5.3-Flash run `ad8803aa` did exactly that: a well-formed plan of 46 phases
+and 3.60 TB against a 744 GB stage, **19 movers done and 1 egress done**, each
+phase 81–134 GB, `prismabuild-stage/prewarm` at 0 B available. The #628
+ownership marker is rewritten under that root and needs one block; it could not
+get one, so from then on every sweep and every egress refused with
+`stage_root_unregistered` (#631). A stall is recoverable and legible; a full
+dataset that cannot write its own marker is not.
+
+So `residency_plan.window` bounds **run-ahead**: the tokens the window holds
+for phases *strictly after* the one the consumer is reading. The phase it is
+inside is the work, not run-ahead. The bound is in tier tokens — the quantity
+that overfills — and is read off the plan and the ledger rather than picked:
+
+* `step` is the largest `stage_gib` still ahead of the consumer. It is the
+  same quantity `window_pressure` calls "what the tier must be able to offer",
+  and the largest rather than the next so the answer does not depend on which
+  phase happens to come first in a plan whose phases differ by 65%.
+* A consumer that has accepted **nothing** gets a run-ahead budget of `step` —
+  one phase. `N = 1` is the smallest N for which the window's own overlap
+  claim ("staging for phase k+N overlaps compute on phase k") is satisfiable,
+  and a consumer that has published nothing has given no evidence it consumes
+  at all, so a deeper prefetch is speculation on a rate nobody has measured.
+  The incident's shape then stalls at two phases of 744 GB rather than
+  nineteen.
+* A consumer that **has** accepted a phase is rolling, and its bound is the
+  tier: `capacity − step`, so the stage keeps room for one more phase and
+  never reaches 0 B. Free capacity still binds first whenever it is smaller,
+  exactly as before, and `capacity` is the ledger's minted total rather than
+  its free remainder — a bound read off what is free would shrink as the
+  window it bounds fills it.
+
+A consumer that reported some phases and then went quiet gets the second bound
+and stalls there, not the first. Telling "quiet" from "slow" needs a clock, and
+a clock is what #598 took out of this subsystem: an orphan is evicted when the
+tier needs its tokens, never because a clock said so. The only progress-free
+fact available without one is whether the consumer has ever accepted anything,
+so that is the fact the two regimes turn on.
+
+**The stall is reported.** `window` returns a `stall` descriptor — the consumer,
+the phase it is reading, the phase declined and its size, the run-ahead held
+against the budget, and what it is waiting for — and `residency_window` files it
+as a `window-stalled` event beside `mover-published` and `egress-published`. Not
+a claim denial: the consumer is not denied, it is running and reporting nothing.
+A silent stall would reproduce the incident in the other direction.
+
+**It does not fight #598's deferred eviction.** `window_pressure` now asks the
+window what it *would publish given room*, rather than reading the first phase
+the consumer has not staged. A phase the run-ahead bound has declined is not
+the tier needing tokens, and reporting it as pressure would evict a resident
+range to make room nobody is going to use — a stall no eviction can relieve.
+
+The other half of the 2026-09-18 deadlock is the consumer's: the joint run
+carries no progress-v1 transport at all, so `accepted_phase` was `None` on
+every cycle. That is PrismaQuant's, tracked at `RobTand/prismaquant#741`; this
+bound is what keeps it from costing a tier.
 
 Two consequences worth stating, because both were bugs first. A live consumer
 protects its **whole plan** from the orphan sweep, not just its leads: a pinned

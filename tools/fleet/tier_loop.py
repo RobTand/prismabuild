@@ -455,12 +455,14 @@ def window_pressure(
 ) -> dict[str, int]:
     """Per tier, the GiB a live window needs and the tier does not have free.
 
-    "The tier needs the tokens", measured rather than timed: the first phase a
-    live consumer has not made resident is the next thing that will ask for
+    "The tier needs the tokens", measured rather than timed: the next phase a
+    live consumer's window would publish is the next thing that will ask for
     capacity, and its ``stage_gib`` is what the tier must be able to offer.
     The maximum across consumers rather than the sum, because they are served
     one at a time and evicting for the sum would take back more than anything
-    is waiting for.
+    is waiting for.  *Would publish*, not *has not staged*: since #632 the
+    window also declines phases its run-ahead bound covers, and an orphan
+    evicted for one of those would be evicted for room nobody asks for.
 
     A tier no live window is waiting on is absent from the answer, and an
     orphan there stays resident -- held, counted, and ready for the next
@@ -471,13 +473,28 @@ def window_pressure(
     if consumers is None:
         consumers = _planned_consumers(queue, tiers)
     for _key, consumer, plan, tier_id in consumers:
-        _already, staged = _mover_state(queue, plan, tier_id)
-        for phase in residency_plan.remaining(
-                plan, consumer["accepted_phase"]):              # type: ignore[arg-type]
-            if str(phase["mover_row"]["action_key"]) in staged:  # type: ignore[index]
-                continue      # already on the tier; it is asking for nothing
-            need[tier_id] = max(need.get(tier_id, 0), int(phase["stage_gib"]))
-            break
+        already, staged = _mover_state(queue, plan, tier_id)
+        accepted = consumer["accepted_phase"]
+        # Asked of the window rather than of the plan (#632).  A phase the
+        # run-ahead bound has already declined is not something the tier needs
+        # tokens for, and reporting it as pressure would evict a resident range
+        # to make room nobody is going to use -- a stall no eviction can
+        # relieve, which is a deadlock of a different shape.  So the question
+        # is "would the window publish this if the room existed", and the way
+        # to ask it is to run the same decision with the room.
+        capacity = queue.tier_ledger(tier_id).capacity().get(
+            storage_tiers.capacity_kind_of(tier_id), 0)
+        unbounded = sum(int(phase["stage_gib"]) for phase in
+                        residency_plan.remaining(plan, accepted))  # type: ignore[arg-type]
+        decision = residency_plan.window(
+            plan, accepted_phase=accepted,                       # type: ignore[arg-type]
+            free_gib=unbounded, capacity_gib=int(capacity),
+            published=sorted(already), staged=sorted(staged))
+        wanted = decision["publish"]
+        assert isinstance(wanted, list)
+        if not wanted:
+            continue
+        need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
     return need
 
 
@@ -524,11 +541,29 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # the thing the tier id exists to prevent.
             continue
         already, staged = _mover_state(queue, plan, tier_id)
-        free = queue.tier_ledger(tier_id).available().get(
-            storage_tiers.capacity_kind_of(tier_id), 0)
+        ledger = queue.tier_ledger(tier_id)
+        kind = storage_tiers.capacity_kind_of(tier_id)
+        free = ledger.available().get(kind, 0)
+        # The minted total, not the free remainder: the run-ahead bound of a
+        # rolling window is a fraction of the tier, and a bound read off what
+        # is free would shrink as the window it is bounding fills it.
+        capacity = ledger.capacity().get(kind, 0)
         decision = residency_plan.window(
             plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
-            free_gib=int(free), published=sorted(already), staged=sorted(staged))
+            free_gib=int(free), capacity_gib=int(capacity),
+            published=sorted(already), staged=sorted(staged))
+        stall = decision["stall"]
+        if isinstance(stall, Mapping):
+            # Said here rather than nowhere: the incident this bound exists to
+            # prevent was invisible for hours because the only thing a stalled
+            # window printed was ``tier-cycle``.  Not a claim denial -- the
+            # consumer is not denied, it is running and reporting nothing.
+            published.append({"event": "window-stalled", "consumer": key,
+                              **{field: stall[field] for field in (
+                                  "accepted_phase", "reading_phase",
+                                  "blocked_phase", "blocked_gib", "runahead_gib",
+                                  "runahead_budget_gib", "free_gib",
+                                  "capacity_gib", "reason", "waiting_for")}})
         for phase in decision["publish"]:
             row = dict(phase["mover_row"])                 # type: ignore[arg-type]
             try:

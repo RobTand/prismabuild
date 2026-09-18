@@ -138,7 +138,10 @@ def test_an_egress_is_a_movement_node_too(queue, tmp_path, monkeypatch) -> None:
     phases = plan["phases"]
     monkeypatch.setattr(tier_loop.residency_plan, "window", lambda *a, **k: {
         "publish": [], "evict": [{"phase": "phase-0", "egress_row": phases[0]["egress_row"],
-                                  "mover_action_key": _hexkey("mover0")}]})
+                                  "mover_action_key": _hexkey("mover0")}],
+        # The window's own answer since #632; a stub that omitted it would be
+        # asserting a contract the caller no longer has.
+        "stall": None})
 
     events = tier_loop.residency_window(
         queue, tiers={TIER: {"tier_id": TIER, "tier": "stage",
