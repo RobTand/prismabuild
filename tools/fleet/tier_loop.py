@@ -214,6 +214,273 @@ def compose_map(queue: pool.PoolQueue, consumer_action_key: str) -> Path | None:
     return residency_map.write_map(path, residency_map.compose(fragments))
 
 
+def _planned_consumers(
+    queue: pool.PoolQueue, tiers: Mapping[str, Mapping[str, object]],
+) -> list[tuple[str, dict[str, object], dict[str, object], str]]:
+    """Live consumers whose frozen plan stages onto a tier this box announced.
+
+    Quietly: a plan this reader refuses is reported once, by
+    :func:`residency_window`, which is the step that has a denial to file.  A
+    second report from each of the steps below would say the same thing three
+    times per cycle.
+    """
+
+    out: list[tuple[str, dict[str, object], dict[str, object], str]] = []
+    for consumer in live_consumers(queue):
+        key = str(consumer["action_key"])
+        plan = residency_plan.read(queue, key)
+        if plan is None:
+            continue
+        tier_id = str(plan["tier_id"])
+        if tier_id not in tiers:
+            continue      # another box's stage; its own loop owns that ledger
+        out.append((key, consumer, plan, tier_id))
+    return out
+
+
+def _descriptor(manifest_sha256: str, tier_id: str, start: int, end: int) -> tuple:
+    """The identity two movers of one range share however they were sealed.
+
+    The four fields ``core.residency_descriptor`` binds.  It is deterministic,
+    which is what lets a consumer bind a mover's result before the mover runs
+    -- and is equally what lets a *later* consumer recognise its own range in a
+    copy somebody else already made.  The mover's action key cannot do this
+    job: it hashes an argv carrying ``--consumer-action-key``, so two consumers
+    of one manifest seal two different keys for the same bytes.
+    """
+
+    return (str(manifest_sha256), str(tier_id), int(start), int(end))
+
+
+def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,
+                     reserved: set[str]) -> dict[tuple, str]:
+    """Descriptor -> mover key, for resident ranges no live item still names.
+
+    Exactly the set the orphan sweep would take back: a range whose consumer
+    has finished, failed or been withdrawn, still pinned because its bytes are
+    still there.  ``reserved`` is what keeps a *running* consumer's window out
+    of it -- that is the distinction #598 said was missing, and it is read off
+    the queue's own live state rather than from a clock.
+
+    First key wins when two finished movers left the same range, so the answer
+    does not depend on directory order.
+    """
+
+    index: dict[tuple, str] = {}
+    try:
+        held = queue.tier_ledger(tier_id).held_keys()
+    except (OSError, pool.PoolContractError):
+        return index
+    for key in sorted(held):
+        if key in reserved:
+            continue
+        staged = queue.staged_range_of(key)
+        if staged is None or str(staged["tier_id"]) != tier_id:
+            continue
+        index.setdefault(
+            _descriptor(str(staged["manifest_sha256"]), tier_id,
+                        int(staged["range_start_bytes"]),
+                        int(staged["range_end_bytes"])), key)
+    return index
+
+
+def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
+          consumer_action_key: str, tier_id: str, phase: str,
+          range_start_bytes: int, range_end_bytes: int,
+          residency_root: Path) -> dict[str, object]:
+    """Hand one resident range from a finished mover to a live consumer's (#598).
+
+    No byte is copied and no instant has bytes on the stage that no key holds.
+    The order is the whole argument:
+
+    1. **The successor vouches for the same files under its own name.**  Two
+       fragments then name one range, which every reader already tolerates:
+       ``compose`` is per consumer, and the reconciliation unions them.
+    2. **The tokens change owner.**  ``ResourceLedger.transfer`` renames each
+       token between two directories under ``held/``, so the tier's occupancy
+       is the same number throughout and a crash part-way splits the
+       attribution without changing the sum.
+    3. **Only then does the old name stop accounting for the bytes.**  Dropping
+       the old fragment before the transfer would leave an egress able to
+       release tokens for bytes that are still there; dropping it after means
+       the worst an interrupted adoption leaves is a range named twice.
+    4. **The receipt the pin and the gate read.**  An adopted mover never runs,
+       so it files no terminal record; ``adopted_from`` plus the ledger is what
+       ``residency_verdict`` reads instead.
+
+    Under the old mover's transition lock, non-blocking, because the one party
+    that could be acting on the same range at the same time is its egress.
+    Declining costs a copy; proceeding against an egress mid-delete would cost
+    the consumer its bytes.
+    """
+
+    outcome: dict[str, object] = {
+        "event": "range-adoption-declined", "adopted": False,
+        "consumer": consumer_action_key, "phase": phase,
+        "tier_id": tier_id, "mover": new_key, "adopted_from": old_key,
+    }
+    ledger = queue.tier_ledger(tier_id)
+    with queue.mover_transition_lock(old_key, blocking=False) as acquired:
+        if not acquired:
+            # Its egress holds the lock, which means its bytes are going.
+            return {**outcome, "reason": "range_busy"}
+        before = ledger.holder_tokens(old_key)
+        if not before:
+            return {**outcome, "reason": "no_longer_resident"}
+        receipt = queue.move_record(old_key)
+        old_consumer = (str(receipt.get("consumer_action_key") or "")
+                        if isinstance(receipt, Mapping) else "")
+        if len(old_consumer) != 64:
+            return {**outcome, "reason": "unattributed_range"}
+        source_path = residency_map.fragment_path(
+            residency_root, old_consumer, old_key)
+        try:
+            with open(source_path) as stream:
+                source = residency_map.validate_fragment(json.load(stream))
+        except (OSError, ValueError) as exc:
+            # A fragment that is absent or unreadable cannot say which files
+            # this range is, and a range nobody can name is not one to take
+            # over.  The same refusal ``evict`` makes, for the same reason.
+            return {**outcome, "reason": "range_not_named", "error": repr(exc)}
+        residency_map.write_fragment(residency_root, residency_map.reissue(
+            source, consumer_action_key=consumer_action_key,
+            mover_action_key=new_key))
+        expected = sum(before.values())
+        moved = queue.transfer_tier_reservation(tier_id, old_key, new_key)
+        if moved != expected:
+            # The reservation is split across the two keys and the sum is
+            # unchanged, so nothing is over-admitted; the old key is still
+            # resident, so the next cycle asks again and finishes the move.
+            return {**outcome, "reason": "partial_transfer",
+                    "tokens_moved": moved, "tokens_expected": expected}
+        source_path.unlink(missing_ok=True)
+        entries = dict(source["entries"])                # type: ignore[arg-type]
+        # The successor's own phase boundaries, which the descriptor match
+        # already proved equal to the range this copy made resident.  Taken
+        # from the plan rather than re-parsed out of the old receipt, so the
+        # range the new receipt declares is the one its pin is checked against.
+        start, end = int(range_start_bytes), int(range_end_bytes)
+        queue.record_move(new_key, {
+            "consumer_action_key": consumer_action_key,
+            "tier_id": tier_id,
+            "stage_root": str(source["stage_root"]),
+            "manifest_sha256": str(source["manifest_sha256"]),
+            "range_start_bytes": start,
+            "range_end_bytes": end,
+            "range_bytes": end - start,
+            # The bytes are staged; they were staged by somebody else.  Both
+            # halves are said, because ``residency_pin_holds`` reads the first
+            # and an operator pricing the next window reads the second -- and
+            # a receipt with no ``seconds`` prices nothing, which is what an
+            # adoption should contribute to a bandwidth measurement.
+            "bytes_staged": end - start,
+            "bytes_copied": 0,
+            "entries_declared": len(entries),
+            "entries_staged": len(entries),
+            "complete": True,
+            pool.MOVE_ADOPTED_FROM_FIELD: old_key,
+            "adopted_from_consumer": old_consumer,
+            "phase": phase,
+            "host": socket.gethostname(),
+            "unix": time.time(),
+        })
+        return {**outcome, "event": "range-adopted", "adopted": True,
+                "tokens_moved": moved, "entries": len(entries),
+                "bytes_staged": end - start}
+
+
+def adopt_resident_ranges(
+    queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
+    consumers: list | None = None,
+) -> list[dict[str, object]]:
+    """Take over every resident range a live consumer's window still needs (#598).
+
+    Before the orphan sweep, deliberately: the ranges this can take are exactly
+    the ones the sweep would delete, and the campaign's shape is one probe and
+    many artifacts of one model, so the next artifact reads the same shards.
+    Rob, 2026-09-18: *"We should not be rerunning anything in bulk if
+    avoidable."*
+
+    Adoption is free of capacity: the tokens move, they are not acquired, so a
+    range is taken over on a stage with nothing free -- which is the only state
+    that matters, because a stage with room would simply have staged the copy.
+    Phases the consumer has already read past are left alone; taking those over
+    would pin bytes it will never open again.
+    """
+
+    events: list[dict[str, object]] = []
+    wanted, owners = stage_release.live_claims(queue)
+    reserved = set(wanted) | set(owners)
+    root = queue.residency_fragment_root()
+    index_by_tier: dict[str, dict[tuple, str]] = {}
+    if consumers is None:
+        consumers = _planned_consumers(queue, tiers)
+    for consumer_key, consumer, plan, tier_id in consumers:
+        if tier_id not in index_by_tier:
+            index_by_tier[tier_id] = adoptable_ranges(
+                queue, tier_id=tier_id, reserved=reserved)
+        index = index_by_tier[tier_id]
+        if not index:
+            continue
+        ledger = queue.tier_ledger(tier_id)
+        digest = str(plan["manifest_sha256"])
+        accepted = consumer["accepted_phase"]
+        for phase in residency_plan.remaining(plan, accepted):  # type: ignore[arg-type]
+            new_key = str(phase["mover_row"]["action_key"])     # type: ignore[index]
+            descriptor = _descriptor(digest, tier_id, int(phase["start_bytes"]),
+                                     int(phase["end_bytes"]))
+            old_key = index.get(descriptor)
+            if old_key is None or old_key == new_key:
+                continue
+            if ledger.holder_tokens(new_key):
+                continue      # this phase already holds tokens of its own
+            if (queue.item_path(pool.READY, new_key).exists()
+                    or queue.item_path(pool.CLAIMED, new_key).exists()):
+                continue      # its own copy is queued or running; let it finish
+            event = adopt(queue, old_key=old_key, new_key=new_key,
+                          consumer_action_key=consumer_key, tier_id=tier_id,
+                          phase=str(phase["name"]),
+                          range_start_bytes=int(phase["start_bytes"]),
+                          range_end_bytes=int(phase["end_bytes"]),
+                          residency_root=root)
+            events.append(event)
+            if event.get("adopted"):
+                index.pop(descriptor, None)
+    return events
+
+
+def window_pressure(
+    queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
+    consumers: list | None = None,
+) -> dict[str, int]:
+    """Per tier, the GiB a live window needs and the tier does not have free.
+
+    "The tier needs the tokens", measured rather than timed: the first phase a
+    live consumer has not made resident is the next thing that will ask for
+    capacity, and its ``stage_gib`` is what the tier must be able to offer.
+    The maximum across consumers rather than the sum, because they are served
+    one at a time and evicting for the sum would take back more than anything
+    is waiting for.
+
+    A tier no live window is waiting on is absent from the answer, and an
+    orphan there stays resident -- held, counted, and ready for the next
+    artifact that names it.
+    """
+
+    need: dict[str, int] = {}
+    if consumers is None:
+        consumers = _planned_consumers(queue, tiers)
+    for _key, consumer, plan, tier_id in consumers:
+        _already, staged = _mover_state(queue, plan, tier_id)
+        for phase in residency_plan.remaining(
+                plan, consumer["accepted_phase"]):              # type: ignore[arg-type]
+            if str(phase["mover_row"]["action_key"]) in staged:  # type: ignore[index]
+                continue      # already on the tier; it is asking for nothing
+            need[tier_id] = max(need.get(tier_id, 0), int(phase["stage_gib"]))
+            break
+    return need
+
+
 def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
                      now: float | None = None) -> list[dict[str, object]]:
     """Publish the next movers, retire the consumed ones, recompose the maps.
@@ -300,12 +567,22 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
 
 
 def sweep_orphans(queue: pool.PoolQueue,
-                  tiers: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
+                  tiers: Mapping[str, Mapping[str, object]],
+                  *, pressure: Mapping[str, int] | None = None,
+                  ) -> list[dict[str, object]]:
     """Take back the stage from movers no live consumer still plans to read.
 
     A consumer withdrawn between its movers finishing and its own claim would
     otherwise hold its ranges for the life of the fleet, because nothing
     publishes an egress for work nobody is waiting on.
+
+    ``pressure`` is what turns "for the life of the fleet" into "until somebody
+    needs the room" (#598).  An orphan's tokens are held the whole time it
+    waits, so the ledger still counts every resident byte and nothing is
+    admitted onto capacity that is not there -- the deferral is a *cache*, not
+    the retained-but-unpinned state #598 refused.  The reconciliation inside
+    the sweep is not deferred: bytes no key holds are not a cache, they are the
+    accounting hole #608 closed.
     """
 
     stage_roots = {
@@ -315,7 +592,7 @@ def sweep_orphans(queue: pool.PoolQueue,
     }
     if not stage_roots:
         return []
-    return stage_release.sweep(queue, stage_roots=stage_roots)
+    return stage_release.sweep(queue, stage_roots=stage_roots, pressure=pressure)
 
 
 def cycle(
@@ -393,7 +670,22 @@ def cycle(
     # the tier's *current* free capacity covers, so it must see this cycle's
     # supply rather than the last one's.
     announced_tiers = {str(record["tier_id"]): record for record in announced}
-    for event in sweep_orphans(queue, announced_tiers):
+    # Adopt, then evict under pressure, then publish.  The order is the policy
+    # (#598): a range a live consumer's window names is taken over rather than
+    # deleted and re-copied, what is left over is deleted only when a window
+    # cannot be placed without the room, and the window is published last so it
+    # sees both -- the ranges it no longer has to stage and the capacity the
+    # eviction just returned.
+    # One walk of ``ready/`` and ``claimed/`` for both steps.  The plan is
+    # frozen and an accepted phase moves in minutes, so the second reader of
+    # this list is not reading anything stale; what changes between them is the
+    # ledger, and both re-read that.
+    planned = _planned_consumers(queue, announced_tiers)
+    for event in adopt_resident_ranges(queue, tiers=announced_tiers,
+                                       consumers=planned):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
+    pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned)
+    for event in sweep_orphans(queue, announced_tiers, pressure=pressure):
         print(json.dumps({"event": "stage-orphan-evicted", **event}), flush=True)
     for event in residency_window(queue, tiers=announced_tiers, now=now):
         print(json.dumps({"unix": time.time(), **event}), flush=True)

@@ -274,6 +274,29 @@ def compose(fragments: Iterable[Mapping[str, object]]) -> dict[str, object]:
     })
 
 
+def reissue(fragment: Mapping[str, object], *, consumer_action_key: str,
+            mover_action_key: str) -> dict[str, object]:
+    """The same staged bytes, vouched for by a different mover (#598).
+
+    A later consumer whose phase names a range that is already on the tier
+    takes the range over rather than copying it, and a fragment is the only
+    document that says "this file is that mover's".  So the successor needs one
+    of its own: the same entries, under its own consumer directory and its own
+    mover name, because :func:`read_fragments` is per consumer and
+    :func:`compose` refuses fragments that disagree about whose they are.
+
+    Entries are copied unchanged on purpose.  They name the file, its length
+    and its digest, and none of the three is a fact about which mover wrote it;
+    rewriting any of them here would make the successor's map say something the
+    original copy never verified.
+    """
+
+    checked = validate_fragment(fragment)
+    return validate_fragment({**checked,
+                              "consumer_action_key": consumer_action_key,
+                              "mover_action_key": mover_action_key})
+
+
 def _write_atomic(path: Path, payload: Mapping[str, object]) -> Path:
     """Rename into place, so a reader never sees half a document."""
 
@@ -379,6 +402,7 @@ __all__ = [
     "parse_residency_map_key",
     "read_fragments",
     "read_map",
+    "reissue",
     "residency_map_key",
     "validate_entry",
     "validate_fragment",

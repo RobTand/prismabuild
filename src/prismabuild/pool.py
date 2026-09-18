@@ -169,6 +169,12 @@ POOL_MOVE_SCHEMA_V1 = "prismaquant.prismabuild.pool_move.v1"
 #: returned for it.  Filed beside the move receipts so one directory answers
 #: "what is on the stage and who holds it".
 POOL_EGRESS_SCHEMA_V1 = "prismaquant.prismabuild.pool_egress.v1"
+#: The move-receipt field naming the mover a range was taken over from (#598).
+#: A receipt carrying it copied nothing: the bytes were already on the tier and
+#: the tokens standing for them changed owner.  It is the only way to tell an
+#: adopted range from a copied one, and the gate reads it because an adopted
+#: mover has no terminal record -- it never ran.
+MOVE_ADOPTED_FROM_FIELD = "adopted_from"
 
 # The `prismaquant.` prefix is kept on purpose.  It is the namespace grammar of
 # every receipt already published to this CAS; mixing prefixes inside one store
@@ -2097,6 +2103,68 @@ class ResourceLedger:
             pass
         return moved
 
+    def transfer(self, from_key: str, to_key: str) -> int:
+        """Move one holder's whole reservation to another key.  Count moved.
+
+        The ledger operation behind adopting a resident range (#598): a later
+        consumer's mover takes over bytes that are already on the stage, so the
+        tokens standing for those bytes have to change owner **without ever
+        being free**.  Release-then-reacquire cannot do that -- between the two
+        the ledger reads capacity it does not have, and a third mover admitted
+        in that window lands on a full stage, which is the over-admission the
+        whole reservation exists to prevent.
+
+        Per token, and between two directories that are both under ``held/``,
+        exactly as :meth:`commit_acquire` moves a claimant's private handle
+        onto its action key.  That is what makes it safe to interrupt: at no
+        instant in the loop is a token countable as free, so :meth:`capacity`,
+        :meth:`held` and :meth:`available` read the same number before, during
+        and after.  A crash part-way leaves the reservation split across two
+        holders -- the sum is unchanged, nothing is lost and nothing is
+        over-admitted -- and calling it again finishes the move.
+
+        A name already present under the destination is left where it is, for
+        the reason ``commit_acquire`` gives: there is one token per index, so a
+        collision means some other incarnation's tokens are filed there, and
+        renaming over it would delete a token with no retire and no marker.
+        The short count is what the caller fails closed on.
+
+        Refuses to move *to* or *from* a claimant-private acquisition: those
+        are named for a claimant rather than an action, and their owner is not
+        decided yet.
+        """
+
+        if not from_key or not to_key or from_key == to_key:
+            return 0
+        if _is_acquisition(str(from_key)) or _is_acquisition(str(to_key)):
+            raise PoolContractError(
+                "a reservation transfer names two action keys, never a "
+                "claimant-private acquisition")
+        source = self.held_dir / str(from_key)
+        destination = self.held_dir / str(to_key)
+        if not source.is_dir():
+            return 0
+        moved = 0
+        destination.mkdir(parents=True, exist_ok=True)
+        for token in _scan(source):
+            landing = destination / token.name
+            if landing.exists():
+                continue
+            try:
+                os.rename(token, landing)
+            except OSError:
+                continue
+            # Adaptive CPU/GPU metadata travels with the tokens it describes
+            # and is not itself capacity, so it moves and is not counted --
+            # the same split ``commit_acquire`` makes.
+            if token.name not in (cpu_admission.METADATA, gpu_admission.METADATA):
+                moved += 1
+        try:
+            source.rmdir()
+        except OSError:
+            pass
+        return moved
+
     def abandon_acquire(self, handle: str) -> int:
         """Return a claimant's own private tokens.  Its tokens, nothing else."""
 
@@ -3758,6 +3826,74 @@ class PoolQueue:
                 continue
         return released
 
+    def transfer_tier_reservation(self, tier_id: str, from_key: str,
+                                  to_key: str) -> int:
+        """Hand one tier's whole reservation from one mover key to another (#598).
+
+        The bytes do not move; only the name the ledger files them under does.
+        ``ResourceLedger.transfer`` never lets a token be free in between, so
+        the tier's occupancy is the same number at every instant of the hand-
+        over -- which is the invariant the stage reservation rests on, stated
+        for a transfer rather than for a release.
+        """
+
+        return self.tier_ledger(tier_id).transfer(str(from_key), str(to_key))
+
+    def mover_transition_lock(self, mover_action_key: str, *,
+                              blocking: bool = True):
+        """Exclude two parties from deciding one staged range's ownership.
+
+        An egress deletes a mover's files and then releases its key; an
+        adoption hands the same key's tokens to a successor and then drops its
+        fragment.  Each is safe alone and neither ordering of the two is safe
+        against the other: an egress that reads the fragment before the
+        adoption and unlinks after it deletes bytes a live consumer now holds
+        tokens for, and one that reads it after would release tokens for bytes
+        that are still there.  Ordering cannot fix that, so the two exclude
+        each other on the mover's own key -- the same lock that serializes a
+        key's other ownership transitions, taken on the *mover*, because the
+        egress row's key is a different action.
+
+        The egress waits; an adoption that cannot take the lock declines and
+        the range is copied instead, which costs time and never correctness.
+        """
+
+        return self._transition_locked(str(mover_action_key), blocking=blocking)
+
+    def staged_range_of(self, mover_action_key: str) -> dict[str, object] | None:
+        """The range one mover has on a tier now, or ``None`` if it has none.
+
+        Read off the mover's own receipt, which is the only document that says
+        what a copy actually achieved, and only when that receipt records a
+        complete, unrefused copy.  The four fields are exactly the ones
+        ``core.residency_descriptor`` binds, so two movers whose answers are
+        equal have made the same bytes of the same manifest resident on the
+        same tier however they were sealed -- which is what lets a later
+        consumer's phase recognise its own range in somebody else's copy.
+        """
+
+        receipt = self.move_record(str(mover_action_key))
+        if not isinstance(receipt, Mapping) or receipt.get("refusal"):
+            return None
+        if receipt.get("complete") is not True:
+            return None
+        tier_id = receipt.get("tier_id")
+        digest = receipt.get("manifest_sha256")
+        start = receipt.get("range_start_bytes")
+        end = receipt.get("range_end_bytes")
+        if not isinstance(tier_id, str) or not tier_id:
+            return None
+        if not isinstance(digest, str) or len(digest) != 64:
+            return None
+        for value in (start, end):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return None
+        assert isinstance(start, int) and isinstance(end, int)
+        if end <= start:
+            return None
+        return {"tier_id": tier_id, "manifest_sha256": digest,
+                "range_start_bytes": start, "range_end_bytes": end}
+
     def residency_pin_holds(self, record: Mapping[str, object] | None,
                             action_key: str) -> bool:
         """Does this concluding mover keep its tier tokens past ``finish``?
@@ -4130,6 +4266,16 @@ class PoolQueue:
                                 "expected_manifest_sha256": str(wanted)})
                 continue
             if status is None:
+                if self._lead_was_adopted(residency, str(lead)):
+                    # No terminal record because it never ran: this range was
+                    # already on the tier and the coordinator handed it the
+                    # tokens instead of publishing a copy (#598).  Checked
+                    # here rather than before the ``done/`` read, so a lead
+                    # that *did* run costs the claim scan no extra read of the
+                    # shared mount -- this mount is where a claim's latency
+                    # comes from, and the adopted case is exactly the case
+                    # where that read found nothing.
+                    continue
                 # A lead that ended badly will never become resident, and a
                 # denial that could not tell that from "has not started yet"
                 # would be a denial nobody can act on.  A *drop* is filed under
@@ -4223,6 +4369,38 @@ class PoolQueue:
         residency_plan.read(self, consumer_action_key,
                             on_unreadable=refusals.append)
         return repr(refusals[0]) if refusals else None
+
+    def _lead_was_adopted(self, residency: Mapping[str, object], lead: str) -> bool:
+        """Did this lead take over a range that was already on the tier (#598)?
+
+        An adopted mover is never published and never claimed, so it files no
+        terminal record and the ``done/`` read below it answers ``absent``.
+        What it does file is a move receipt naming the mover it took the range
+        from, and what it holds is that mover's tier tokens.  Both are
+        required here: the receipt alone would let a range that has since been
+        evicted read as resident, exactly as ``executed`` alone does for a
+        mover that copied nothing.
+
+        The manifest and the tier are checked for the reason the ``executed``
+        branch checks them -- a deterministic descriptor is what lets a
+        consumer bind a result before it exists, so a receipt about some other
+        manifest is a trap the binding invites rather than an impossibility.
+        """
+
+        receipt = self.move_record(str(lead))
+        if not isinstance(receipt, Mapping):
+            return False
+        if not receipt.get(MOVE_ADOPTED_FROM_FIELD):
+            return False
+        if receipt.get("refusal") or receipt.get("complete") is not True:
+            return False
+        wanted = residency.get("manifest_sha256")
+        if wanted is not None and receipt.get("manifest_sha256") != wanted:
+            return False
+        tier_id = residency.get("tier_id")
+        if tier_id is not None and receipt.get("tier_id") != tier_id:
+            return False
+        return self._lead_is_pinned(residency, str(lead))
 
     def _lead_is_pinned(self, residency: Mapping[str, object], lead: str) -> bool:
         """Does this finished lead still hold tokens for the bytes it staged?
