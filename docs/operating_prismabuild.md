@@ -2308,6 +2308,15 @@ exit can occur before that sample sees output, leaving zero byte counts or
 metadata and files to determine what was captured. Zero bytes in that earlier
 observation do not establish either payload silence or lost logs.
 
+`launcher_alive` describes the proxy, not the work. Read
+`execution_observation.child` for the payload the resource daemon forked: its
+pids, whether any is a live process, the CPU its cgroup has been charged, and
+`silent_s`, the seconds since output was last seen. A child whose CPU is
+advancing while `silent_s` grows is the signature of a hung payload, and it is
+the state action `766d7ae5...` held for its whole 3600 s ceiling while the
+launcher reported itself alive. `source: unobserved` means the worker could not
+look; it never means nothing is running.
+
 ### Common refusals
 
 These are refusals at submission, before anything reaches the fleet.
