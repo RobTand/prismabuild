@@ -4924,9 +4924,18 @@ def residency_stage_rows(
     # per-phase read would give two phases of one plan different demands
     # because a mover finished between them.
     readers = int(args.residency_mover_readers)
+    receipts = queue.move_records()
     priced = storage_tiers.mover_demand_from_receipts(
-        queue.move_records(), tier_id=tier_id, readers=readers,
+        receipts, tier_id=tier_id, readers=readers,
         fallback_mem_gb=int(args.residency_mover_mem_gb))
+    # The pool bandwidth a mover reserves, once anything has measured it.  It
+    # is what makes concurrency a ledger decision rather than an accident: the
+    # tier mints what the disks delivered plus one probe mover's worth, and a
+    # mover that reserves nothing can never be rationed against another.  None
+    # until both sides of the bound exist, because a guessed bandwidth is the
+    # habit this replaces.
+    fill = storage_tiers.mover_fill_demand_from_receipts(
+        receipts, tier_id=tier_id)
     mover_retry_policy = {
         "max_attempts": int(args.residency_mover_max_attempts),
         # True by construction, not by the operator's say-so: ``stage_move``
@@ -4938,7 +4947,8 @@ def residency_stage_rows(
     for ordinal, span in enumerate(ranges):
         start, end = int(span["start_bytes"]), int(span["end_bytes"])
         demand = storage_tiers.residency_demand(
-            tier_id=tier_id, range_start_bytes=start, range_end_bytes=end)
+            tier_id=tier_id, range_start_bytes=start, range_end_bytes=end,
+            fill_mb_s_pool_side=fill)
         # Measured, not habitual, and above all *present*: a row without a
         # ``cpu`` key is read by ``adaptive_cpu`` as unknown CPU use and
         # refused whenever the box already holds anything
@@ -4962,7 +4972,13 @@ def residency_stage_rows(
                      "--range-end-bytes", str(end),
                      # Stated on the command, so the width the row reserves and
                      # the width the copy runs at cannot drift apart.
-                     "--readers", str(readers)],
+                     "--readers", str(readers)]
+                    + ([] if fill is None else
+                       # Carried so the receipt can say what the ledger had
+                       # promised this copy; a later cycle compares that with
+                       # what the copy achieved, and a shortfall is the
+                       # measured ceiling on how many movers the pool feeds.
+                       ["--fill-mb-s-pool-side", str(fill)]),
             demand=demand, tags=tags,
             retry_policy=mover_retry_policy,
             log_name=f"stage-move-{ordinal:04d}-{span['name']}.log")
@@ -5020,7 +5036,10 @@ def residency_stage_rows(
         # the queue traces back to a measurement rather than to a habit.  On
         # the plan, not on a row: ``tier_loop`` publishes a row as
         # ``queue.publish(**row)``, whose parameters are a closed set.
-        demand_source=priced["demand_source"])
+        demand_source={**priced["demand_source"],
+                       "fill_mb_s_pool_side": fill,
+                       "fill": ("receipts" if fill is not None
+                                else "unmeasured")})
     return {
         "plan": plan,
         "residency": {

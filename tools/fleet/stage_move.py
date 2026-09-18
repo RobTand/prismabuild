@@ -533,6 +533,12 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         # the number a next submission can declare and the controller can
         # learn down from.
         "cpu_seconds": round(cpu_used, 3),
+        # What the ledger promised this copy of the pool, beside what the pool
+        # actually delivered (``disk_pacing.mean_pool_read_mb_s``) and what
+        # this copy achieved.  The three together are what says whether the
+        # supply can grow or has found its ceiling.
+        storage_tiers.MOVER_FILL_DEMAND_FIELD: int(
+            getattr(args, "fill_mb_s_pool_side", 0) or 0),
         "host": socket.gethostname(),
         "errors": copier.errors,
         "unix": time.time(),
@@ -626,6 +632,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="local=declared, as the prewarm loop takes it")
     parser.add_argument("--block", type=int, default=prewarm_loop.BLOCK,
                         help="bytes per read; the buffer each worker holds")
+    parser.add_argument("--fill-mb-s-pool-side", type=int, default=0,
+                        help="the pool bandwidth this mover's claim reserved, "
+                             "recorded in the receipt so a later cycle can ask "
+                             "whether the pool delivered what the ledger "
+                             "promised.  0 means the claim reserved none")
     parser.add_argument("--readers", type=int, default=4,
                         help="copy depth while another client is reading the pool")
     parser.add_argument("--max-readers", type=int, default=16,

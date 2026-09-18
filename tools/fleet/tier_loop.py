@@ -310,14 +310,43 @@ def cycle(
         tokens = storage_tiers.tier_tokens(record)
         record["fill_source"] = "measured" if storage_tiers.FILL_KIND in tokens else "none"
         record["fill_records"] = len(fill_records)
-        if storage_tiers.FILL_KIND not in tokens:
-            if ready is None:
-                ready = queue.ready_items()
-            probe = probe_fill_demand(ready, tier_id)
-            if probe is not None:
-                tokens[storage_tiers.FILL_KIND] = probe
-                record["fill_source"] = "probe"
+        # The probe rule, generalised from "nothing measured yet" to "nothing
+        # has measured a ceiling yet".  ``max`` over receipts cannot by itself
+        # let a second mover run -- a supply equal to the best single delivery
+        # admits exactly the reader that produced it -- so while no receipt has
+        # fallen short of the fill it reserved, the tier offers what the pool
+        # has delivered *plus one more ready mover's own demand*, and the next
+        # receipt decides.  If the pool kept up, the delivery observed rises
+        # and so does the supply.  If it did not, that receipt is the measured
+        # ceiling and the growth stops there.  Nothing here is a number: the
+        # increment is a queued mover's sealed demand and the base is a
+        # measurement.
+        supply = storage_tiers.fill_supply_from_records(fill_records)
+        record["fill_supply"] = {key: value for key, value in supply.items()
+                                 if key != "ceiling_receipt"}
+        if supply["ceiling_receipt"]:
+            record["fill_ceiling_receipt"] = supply["ceiling_receipt"]
+        if ready is None:
+            ready = queue.ready_items()
+        probe = probe_fill_demand(ready, tier_id)
+        ceiling, best = supply["ceiling_mb_s"], supply["best_mb_s"]
+        if ceiling is not None and int(ceiling) > 0:
+            tokens[storage_tiers.FILL_KIND] = int(ceiling)
+            record["fill_source"] = "measured-ceiling"
+        elif best is not None and int(best) > 0:
+            grown = int(best) + (probe or 0)
+            tokens[storage_tiers.FILL_KIND] = grown
+            record["fill_source"] = ("measured-growing" if probe
+                                     else "measured")
+            if probe:
                 record["fill_probe_mb_s"] = probe
+        elif probe is not None:
+            tokens[storage_tiers.FILL_KIND] = probe
+            record["fill_source"] = "probe"
+            record["fill_probe_mb_s"] = probe
+        else:
+            tokens.pop(storage_tiers.FILL_KIND, None)
+            record["fill_source"] = "none"
         record["tokens"] = tokens
         # What a movement node on this tier is run *with*, discovered on the
         # box that will run it.  A mover for the dl380g10 stage is sealed by a
@@ -392,7 +421,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({
                 "event": "tier-cycle", "unix": time.time(), "host": host,
                 "tiers": [{k: r.get(k) for k in ("tier_id", "tier", "capacity_bytes",
-                                                    storage_tiers.FILL_RECORD_FIELD, "fill_source", "tokens")}
+                                                    storage_tiers.FILL_RECORD_FIELD, "fill_source",
+                                                    "fill_supply", "tokens")}
                           for r in records],
             }), flush=True)
         if args.once:
