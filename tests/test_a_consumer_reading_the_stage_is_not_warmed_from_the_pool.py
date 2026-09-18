@@ -62,7 +62,7 @@ def test_a_resident_consumer_is_not_warmed_from_the_pool(tmp_path: Path) -> None
     assert fleet.queue.prewarm(key) is None, "the pool path was warmed anyway"
     skipped = [row for row in event["skipped"] if row.get("action_key") == key]
     assert skipped, "a warm that was skipped must say so"
-    assert skipped[0]["status"] == "reads the stage"
+    assert skipped[0]["reason"] == "the consumer reads the stage"
 
 
 def test_a_consumer_still_waiting_on_its_map_is_warmed(tmp_path: Path) -> None:

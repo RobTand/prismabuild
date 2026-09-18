@@ -576,10 +576,12 @@ only on a measured campaign result.
 
 ### What it does not buy
 
-No consumer reads the stage. PrismaBuild publishes no residency map, the
-export is served from the pool path, and the ARC is keyed by the on-pool block
-pointer, so a staged copy does not warm the path a consumer reads. Staging
-today writes bytes that nobody reads back.
+No consumer reads *these* objects. Two trees live on the stage dataset and
+only one of them is read: `stage_move` (#583) copies a consumer's declared
+range and files a residency-map fragment, and the consumer opens that staged
+path once the composed map names it (#634). This loop's `--stage` objects are
+named for their byte range, no map names them, and nothing opens them, so
+staging here still writes bytes that nobody reads back.
 
 Every record says so. The `consumer` block on each stage record carries
 `reads_stage: false`, `verified_reads: null` and `effect: "copy_only"`, and
@@ -587,11 +589,26 @@ the receipt reports `staged_bytes` apart from `bytes_warmed` so the two claims
 stay separate. Turning the tier on without a consumer costs SSD writes at pool
 read rate and returns nothing.
 
-Two more facts to weigh before the default could change:
+`primarycache` on the stage dataset is `all`, set on `prismabuild-stage` on
+dl380g10 on 2026-09-18 (#638). The earlier argument for `metadata` -- the
+stage's writes go through the same ARC this loop is filling, so a staged
+window holds two copies -- named a consumer that did not exist yet. One does
+now, it reads the mover's tree, and the setting belongs to the dataset both
+trees share: a stage the ARC may not cache serves every consumer read off the
+SSD. Measured sparky to dl380g10 over the 100 Gbps RDMA link, one 5.37 GB
+file, `dd iflag=direct`, 16 streams of 256 MiB at matched concurrency:
 
-* The stage pool's writes go through the same ARC this loop is filling, so a
-  staged window holds two copies unless the stage dataset is created with
-  `primarycache=metadata`.
+| arm | throughput | share of the link |
+|---|---|---|
+| ARC miss, served from NVMe | 2,402 MB/s | 19% |
+| ARC hit, served from RAM | 10,045 MB/s | 80% |
+
+So a `--stage` window now holds a second ARC copy of itself, deliberately, and
+`tier_loop` refuses the warm out loud when a rebuilt pool has inherited
+`metadata` again.
+
+Three facts about the layout of this tree:
+
 * An entry is a byte range, so a stage object is a byte range. Each object is
   named `<relative path>.pbstage@<offset>+<bytes>`. The tree is a source for a
   residency map, not an overlay lower layer: a range written under a mirrored

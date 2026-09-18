@@ -313,6 +313,120 @@ class _Copier:
         admission.close()
 
 
+def warm_staged(paths: "list[str]", *, workers: int = 4,
+                block: int = prewarm_loop.BLOCK,
+                stop: "threading.Event | None" = None) -> dict[str, object]:
+    """Read staged files back, on the box that owns the stage.
+
+    This is the whole of cache layer 2, and it is one sentence long because
+    that is all ZFS needs: the ARC is filled by reads, the copy that wrote
+    these files is a *write*, and nothing else in PrismaBuild ever opens them
+    on this box.  Without this the staged blocks reached the ARC only
+    incidentally and left it as other shards landed -- a repeat read on
+    dl380g10 fell from 9580 to 7423 MiB/s while the range sat untouched --
+    and the consumer paid the SSD price for every one of them: 2402 MB/s
+    against 10045 MB/s on the same file at the same concurrency
+    (sparky -> dl380g10, ``dd iflag=direct``, 16 x 256 MiB, 2026-09-18).
+
+    Buffered on purpose -- no ``O_DIRECT`` -- because the point is to leave
+    the bytes in the server's cache rather than to measure the device.  A file
+    that cannot be read is an error on the receipt and never a raise: the copy
+    is published and its map is written before this runs, so a failed warm
+    costs speed and nothing else.
+    """
+
+    stop = stop or threading.Event()
+    work: queuelib.Queue = queuelib.Queue()
+    for path in paths:
+        work.put(path)
+    workers = max(1, min(int(workers), len(paths) or 1))
+    for _ in range(workers):
+        work.put(None)
+    lock = threading.Lock()
+    state = {"bytes": 0, "entries": 0}
+    errors: list[str] = []
+
+    def worker() -> None:
+        buffer = bytearray(block)
+        view = memoryview(buffer)
+        while not stop.is_set():
+            path = work.get()
+            if path is None:
+                return
+            read = 0
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            except OSError as exc:
+                with lock:
+                    if len(errors) < 20:
+                        errors.append(f"{os.path.basename(path)}: {exc}")
+                continue
+            try:
+                while not stop.is_set():
+                    chunk = os.readv(fd, [view])
+                    if not chunk:
+                        break
+                    read += chunk
+            except OSError as exc:
+                with lock:
+                    if len(errors) < 20:
+                        errors.append(f"{os.path.basename(path)}: {exc}")
+            finally:
+                os.close(fd)
+            with lock:
+                state["bytes"] += read
+                state["entries"] += 1
+
+    started = time.time()
+    threads = [threading.Thread(target=worker, daemon=True)
+               for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    elapsed = max(1e-9, time.time() - started)
+    return {"bytes": state["bytes"], "entries": state["entries"],
+            "seconds": round(elapsed, 3),
+            "mb_per_s": round(state["bytes"] / 1e6 / elapsed, 1),
+            "errors": errors}
+
+
+def arc_warm_verdict(args) -> dict[str, object]:
+    """Whether this mover warms its range, decided by the box that owns the tier.
+
+    Read off the live tier record rather than sealed into the argv, for the
+    reason ``movers_claimed_on_tier`` is read there: ``primarycache`` is a
+    fact about the dataset *now*, and a mover sealed a week ago must not carry
+    last week's answer.  Three outcomes, all of them named on the receipt --
+    the warm is refused when the ARC may not hold this dataset's data at all,
+    when the operator asked for no warm, and when the tier cannot be read,
+    because a warm spends reads and an unattested setting does not license
+    them.
+    """
+
+    mode = str(getattr(args, "warm_after_copy", "auto") or "auto")
+    if mode == "never":
+        return {"warm": False, "state": "disabled", "primarycache": None,
+                "reason": "--warm-after-copy never"}
+    if mode == "always":
+        return {"warm": True, "state": "warmed", "primarycache": None,
+                "reason": "--warm-after-copy always"}
+    try:
+        records = pool.PoolQueue(Path(args.pool_root)).tiers()
+    except (OSError, pool.PoolContractError) as exc:
+        return {"warm": False, "state": "refused", "primarycache": None,
+                "reason": f"the tier record could not be read: {exc}"}
+    for record in records:
+        if str(record.get("tier_id")) == str(args.tier_id):
+            verdict = storage_tiers.stage_arc_eligibility(record)
+            return {"warm": bool(verdict["eligible"]),
+                    "state": "warmed" if verdict["eligible"] else "refused",
+                    "primarycache": verdict["primarycache"],
+                    "reason": str(verdict["reason"])}
+    return {"warm": False, "state": "refused", "primarycache": None,
+            "reason": f"no box announces the tier {args.tier_id!r}"}
+
+
 def load_manifest(cas_root: Path, action_key: str,
                   manifest_path: str | None) -> dict[str, object]:
     """The manifest this mover moves, from its own sealed request or a file."""
@@ -568,6 +682,29 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
             args.action_key).unlink(missing_ok=True)
     elif copier.staged:
         publish(copier.staged, force=True)
+    # Layer 2, after every measurement of layer 1 has been taken.  The warm
+    # reads the stage, not the pool, so folding it into ``seconds`` or the
+    # pacer's window would price a copy by a read the pool never served --
+    # and ``fill_supply_from_records`` would then read a healthy mover as one
+    # that fell short of the bandwidth it reserved (#636).  Its own block,
+    # its own rate.
+    warm = arc_warm_verdict(args)
+    outcome = {"bytes": 0, "entries": 0, "seconds": 0.0, "mb_per_s": 0.0,
+               "errors": []}
+    if overran or not copier.staged:
+        warm = {**warm, "warm": False, "state": "skipped",
+                "reason": "nothing was published to warm"}
+    elif warm["warm"]:
+        outcome = warm_staged(
+            [str(record["stage_path"]) for record in copier.staged.values()],
+            workers=args.max_readers, block=args.block, stop=stop)
+    receipt["arc_warm"] = {
+        "state": str(warm["state"]),
+        "reason": str(warm["reason"]),
+        "primarycache": warm["primarycache"],
+        "tier_id": str(args.tier_id),
+        **outcome,
+    }
     if not copier.staged and not overran:
         receipt["refusal"] = receipt.get("refusal") or "residency_moved_nothing"
     return receipt
@@ -655,6 +792,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="copy depth while another client is reading the pool")
     parser.add_argument("--max-readers", type=int, default=16,
                         help="copy depth while the pool serves nobody but this move")
+    parser.add_argument("--warm-after-copy", choices=("auto", "always", "never"),
+                        default="auto",
+                        help="read the staged range back on this box once it is "
+                             "copied and verified, so the file server's ARC holds "
+                             "it for the consumer (#638).  'auto' asks the tier's "
+                             "own record whether its dataset may cache file data "
+                             "at all; 'never' spends no reads on it")
     parser.add_argument("--no-incremental-fragment", action="store_true",
                         help="write the fragment once at the end rather than as "
                              "entries land; the end state is the same")

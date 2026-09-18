@@ -142,19 +142,31 @@ shape of total overlap, not a leak, and it is the retained-prefix behaviour
 #583's revision-2 design argues for -- arrived at, not chosen.
 
 **What this does not establish, and must not be read as establishing:** no
-consumer reads the stage.  PrismaBuild publishes no residency map, the export
-is served from the pool path, and the ARC is keyed by the on-pool block
-pointer, so a staged copy does not warm the path a consumer reads.  Staging
-today is a copy, and every record says so in its ``consumer`` block instead
-of reporting bytes written as bytes saved.  Turning this on without a
-consumer costs SSD writes at pool read rate and returns nothing -- the same
-wear #582 counts against L2ARC.  Two more facts an operator needs before the
-default could ever flip: the stage pool's writes go through the same ARC this
-loop is filling, so staging a window holds two copies of it unless the stage
-dataset is created with ``primarycache=metadata``; and a range written under
-a mirrored file name would be a short file, which is why a stage object
-carries its byte range in its name and this tree is a residency-map source
-rather than an overlay lower layer.
+consumer reads *this* tree.  Two trees live on the stage dataset and only one
+of them is read: ``stage_move`` (#583) copies a consumer's declared range,
+files a residency-map fragment for it, and the consumer opens the staged path
+once the composed map names it (#634).  This loop's own ``--stage`` objects
+are named for their byte range under :data:`STAGE_LAYOUT`, no map names them,
+and nothing opens them -- so a copy here is still a copy, and every record
+says so in its ``consumer`` block instead of reporting bytes written as bytes
+saved.  Turning it on without a consumer costs SSD writes at pool read rate
+and returns nothing, the same wear #582 counts against L2ARC.  A range
+written under a mirrored file name would be a short file, which is why an
+object here carries its byte range in its name and this tree is a
+residency-map source rather than an overlay lower layer.
+
+**``primarycache`` on the stage dataset: ``all``, since 2026-09-18 (#638).**
+The rationale that argued for ``metadata`` -- the stage's writes go through
+the ARC this loop is filling, so a staged window holds two copies of it --
+expired when a consumer began reading the stage.  It is the mover's tree the
+consumer reads, and the setting is the dataset's, so the dataset must cache
+file data or every consumer read of a staged file reaches the SSD: measured
+sparky -> dl380g10 on one 5.37 GB file, ``dd iflag=direct``, 16 x 256 MiB at
+matched concurrency, 2402 MB/s on an ARC miss against 10045 MB/s on a hit --
+4.18x, 19% of the 100 Gbps link against 80%.  The second copy this loop's own
+staged window now holds in ARC is the price of that, paid deliberately.
+``tier_loop`` announces the setting on the tier record and refuses the warm
+out loud when a rebuilt pool has inherited ``metadata`` again.
 
 What it does not do
 -------------------
@@ -835,12 +847,20 @@ class StageTier:
     ``free``, and the delete-behind release that keeps the tier bounded.
 
     What it does **not** own is any claim that staging helped.  No consumer
-    reads the stage export today: PrismaBuild publishes no residency map, and
-    the ARC is keyed by the on-pool block pointer, so a stage copy does not
-    warm the pool path a consumer reads.  Every record this class writes says
-    that in ``consumer``, beside the bytes, because a staged byte nobody reads
-    is a copy and not a saved read -- and a receipt that reported the copy as
-    a win would be the #585 shape again, one step further up the stack.
+    reads *these* objects: they are named for their byte range under
+    :data:`STAGE_LAYOUT`, no residency map names them, and nothing opens them.
+    A consumer that reads the stage reads ``stage_move``'s tree on the same
+    dataset, by the map composed from that mover's fragments (#583, #634).
+    Every record this class writes says so in ``consumer``, beside the bytes,
+    because a staged byte nobody reads is a copy and not a saved read -- and a
+    receipt that reported the copy as a win would be the #585 shape again, one
+    step further up the stack.
+
+    The dataset itself runs ``primarycache=all`` since 2026-09-18 (#638), for
+    the mover's tree rather than for this one: a stage the ARC may not cache
+    serves every consumer read off the SSD, 2402 MB/s against 10045.  So an
+    object written here now costs a second ARC copy of the window this loop is
+    warming, which is the trade that setting makes.
     """
 
     def __init__(self, *, state: str, reason: str, name: str = "",
@@ -3041,6 +3061,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
                     "consumed_bytes": consumed, "resident_ahead": 0,
                     "phase": reported["phase"] if reported else "",
                     "claimed_host": claimed_host_of(record),
+                    "residency_state": residency_state_of(record),
                 })
                 continue
             if now - float(claimed_unix) > grace_s and not declared:
@@ -3089,11 +3110,29 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
             "resident_ahead": ahead,
             "phase": reported["phase"] if reported else "",
             "claimed_host": claimed_host_of(record),
+            "residency_state": residency_state_of(record),
         })
     return {"claimed_reserved_bytes": reserved, "claimed_reserved_keys": keys,
             "claimed_released_bytes": released_total,
             "progress_triggers": triggers, "claimed_windows": windows,
             "claimed_live_rows": list(live.values())}
+
+
+def residency_state_of(record: Mapping[str, object]) -> str:
+    """What the pool decided about this claim's residency, or ``""``.
+
+    The verdict, not the block.  ``PoolQueue.claim`` writes
+    ``residency_verdict`` onto the claim record of every action that asked for
+    residency, and only ``resident`` means the consumer is reading the stage
+    copy: a consumer whose map is not composed yet was never admitted, and one
+    whose later phases were never staged reads the pool for them exactly as it
+    always did (#638).
+    """
+
+    verdict = record.get("residency_verdict")
+    if not isinstance(verdict, Mapping):
+        return ""
+    return str(verdict.get("state") or "")
 
 
 def claimed_host_of(record: Mapping[str, object]) -> str:
@@ -3573,6 +3612,20 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             stage_rows.append(release_window(
                 key, manifest, int(window["consumed_bytes"])))
         if not partial:
+            continue
+        if window.get("residency_state") == "resident":
+            # This consumer was admitted because its window is on the stage,
+            # and it opens the staged path.  A warm of the pool path would
+            # read blocks nobody reads and evict the stage blocks it *is*
+            # reading to hold them: two different datasets, two different ARC
+            # entries, one cache (#638).  Recorded rather than silent -- a
+            # loop that quietly stops warming a running row is the shape
+            # nobody can debug.
+            event["skipped"].append({
+                "action_key": key, "reason": "the consumer reads the stage",
+                "consumed_bytes": int(window["consumed_bytes"]),
+                "residency_state": "resident",
+            })
             continue
         phases = manifest_phases(manifest) if manifest else []
         if not phases:

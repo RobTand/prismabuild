@@ -3074,7 +3074,7 @@ it, and PB had no representation of either.
 
 | Tier | Token | Capacity, read every cycle | Residency it guarantees |
 |---|---|---|---|
-| `arc` | `arc_gib` | `c_max` less `arc_meta_used` from `arcstats` | budgetary; ZFS exposes no pin |
+| `arc` | `arc_gib` | `c_max` less `arc_meta_used` from `arcstats` | budgetary; ZFS exposes no pin. Spent by a mover that warms its staged range, so the warm set is bounded by the cache (#638) |
 | `prismabuild-stage*` | `stage_gib` | the stage pool's own `size` from `zpool list -Hp` | pinned while a key holds the tokens |
 | source pool | `fill_mb_s_pool_side` | the best `disk_pacing.mean_self_read_mb_s` any move off it recorded | none; it is the source |
 
@@ -3103,6 +3103,73 @@ reads — and `storage_tiers.residency_demand` turns it into whole GiB, rounded
 up. `publish` refuses an item whose declared `stage_gib` on that tier is below
 the ceiling of its own range, so the number in a claim record traces back to a
 declared read set rather than to a habit.
+
+### The second cache layer: the stage in the file server's ARC
+
+Two layers, not one. Layer 1 is the HDD pool copied onto the SSD stage, which
+a mover does and a consumer reads through the residency map. Layer 2 is those
+staged blocks living in dl380g10's own 240 GiB ARC, so a Spark's read is
+answered out of RAM over the 100 Gbps RDMA link instead of off the SSD.
+
+Measured sparky to dl380g10 on 2026-09-18 -- one 5.37 GB file, `dd
+iflag=direct` so the client page cache cannot answer, 16 streams of 256 MiB at
+matched concurrency:
+
+| arm | throughput | share of the link |
+|---|---|---|
+| ARC miss, served from NVMe | 2,402 MB/s | 19% |
+| ARC hit, served from RAM | **10,045 MB/s** | **80%** |
+
+**4.18x at matched concurrency.** Three things make it happen, and each one is
+discovered or measured rather than configured here:
+
+* **`primarycache=all` on the stage dataset.** `metadata` -- which is what the
+  dataset carried until 2026-09-18, for a rationale that named a consumer that
+  did not exist yet -- caches no file data, so every consumer read of a staged
+  file reaches the SSD. `storage_tiers.stage_dataset` reads the setting with
+  the dataset's `available`, `discover_tiers` announces it on the tier record,
+  and `tier_loop` logs `stage-primarycache-refused` and stamps
+  `arc_warm.eligible: false` when a rebuilt pool has inherited `metadata`
+  again. The tier is still announced: layer 1 works without layer 2.
+* **A warm step in the mover.** The copy is a write, and writing a block is not
+  reading it, so stage blocks reached the ARC only incidentally -- a repeat
+  read fell from 9580 to 7423 MiB/s as other shards evicted them. After the
+  range is copied and verified, `stage_move.warm_staged` reads it back on the
+  box that owns the stage, which is the one place a read fills that ARC. It
+  runs after every measurement of the copy is taken, in its own `arc_warm`
+  receipt block, so a warm never prices a copy.
+* **`arc_gib` spent on the warmed bytes.** The ARC tier announced 233 GiB every
+  cycle and nothing ever asked for a byte of it. A mover now reserves one
+  `arc_gib` token per GiB of its range on the `arc:<host>` tier of the same
+  box, so the admitted warm set is bounded by what the cache can hold and
+  successive phases stop evicting each other. No leg is sealed when the box
+  announces no ARC tier, when the dataset may not cache data, or when the
+  phase is larger than the whole cache -- a demand nothing can satisfy is a
+  mover that never runs, and the plan's `demand_source` records which of the
+  three it was.
+
+**ARC residency is a performance tier, never a correctness gate.** ZFS exposes
+no pin and the ARC target `c` is volatile on a shared box -- it fell 99 GB
+inside one five-minute window on 2026-09-11 with no tenant asking for the
+memory. So `arc_gib` is a *budget*: it bounds how much is warmed at once and
+promises nothing about what is still there later. `PoolQueue.residency_verdict`
+keeps gating on stage residency alone, which is durable and checkable -- a file
+exists and the composed map names its mover -- and no ARC leg was added to it.
+
+`arc_gib` is **occupancy**, not a rate. The bytes sit in RAM for as long as the
+range is staged, so the tokens are held past `finish` exactly as `stage_gib` is
+and are returned when the egress deletes the range. `TIER_RATE_KINDS` holds
+`fill_mb_s_pool_side` alone for that reason (#636).
+
+**What the claim-time prewarm stopped doing.** The prewarm role warms the
+*pool* path, which is the path a consumer opened before PrismaBuild published a
+residency map. A consumer admitted on a resident window opens the staged path
+instead, and the two are different datasets with different ARC entries, so
+warming the pool for it both misses the target and evicts it. The role now
+skips that warm for a claimed row whose `residency_verdict` reads `resident`
+and records the skip. Only `resident`: a consumer whose map is not composed yet
+was never admitted, and one whose later phases were never staged reads the pool
+for them exactly as it always did.
 
 ### What a stage tier's capacity counts
 
