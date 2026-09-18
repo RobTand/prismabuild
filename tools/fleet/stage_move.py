@@ -528,9 +528,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pool-root", required=True,
                         help="the pull queue root this mover files its receipt and "
                              "its residency-map fragment under")
-    parser.add_argument("--cas-root", required=True,
+    parser.add_argument("--cas-root", default="",
                         help="the content store this mover reads its own sealed "
-                             "request and data manifest from")
+                             "request and data manifest from; not needed when "
+                             "--manifest names the file directly")
     parser.add_argument("--action-key", required=True,
                         help="this mover's own action key; its receipt and its "
                              "residency-map fragment are filed under it")
