@@ -75,6 +75,13 @@ def test_staged_bytes_are_reported_apart_from_warmed_bytes(
     # The layout is the consumer contract, and it is written down rather than
     # left for a reader of the tree to infer.
     assert "residency-map source" in record["stage"]["layout"]
-    text = json.dumps(record).lower()
+    # The only place in the receipt that may speak of a saving is the verdict
+    # that denies one.  Everywhere else the words do not appear at all, so no
+    # field can be read as a claim the stage made anything faster.
+    assert "never a saved read" in record["stage"]["consumer"]["reason"]
+    without_verdict = dict(record)
+    without_verdict["stage"] = {k: v for k, v in record["stage"].items()
+                                if k != "consumer"}
+    text = json.dumps(without_verdict).lower()
     for word in ("saved", "speedup", "faster"):
         assert word not in text

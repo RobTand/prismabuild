@@ -443,13 +443,10 @@ def pool_member_paths(
     ``None`` when the pool cannot be read at all.
     """
 
-    def _run(argv: list[str]) -> str:
-        return subprocess.run(
-            argv, check=True, text=True, timeout=30,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
-
     try:
-        text = (runner or _run)([zpool_binary(), "status", "-P", pool])
+        # One subprocess boundary for every topology question this module
+        # asks, so a caller that can answer one can answer all of them.
+        text = (runner or run_tool)([zpool_binary(), "status", "-P", pool])
     except (OSError, subprocess.SubprocessError):
         return None
 
