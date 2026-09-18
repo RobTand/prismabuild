@@ -69,8 +69,16 @@ def _plan(queue: pool.PoolQueue, *, gib_per_phase: int = 2,
             "name": f"phase-{ordinal}",
             "start_bytes": start, "end_bytes": end,
             "stage_gib": gib_per_phase,
-            "mover_row": _row(_hexkey(f"mover{ordinal}"),
-                              {STAGE_KIND: gib_per_phase, "mem_gb": 1}, queue),
+            "mover_row": {
+                **_row(_hexkey(f"mover{ordinal}"),
+                       {STAGE_KIND: gib_per_phase, "mem_gb": 1}, queue),
+                # As the submitter stamps it: the row, not only the body,
+                # because the pool reads the pin off the queue record.
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                    "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 30,
+                    "range_start_bytes": start, "range_end_bytes": end},
+            },
             "egress_row": _row(_hexkey(f"egress{ordinal}"), {"mem_gb": 1}, queue),
         })
     return residency_plan.build_plan(

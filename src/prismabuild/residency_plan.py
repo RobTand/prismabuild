@@ -110,11 +110,13 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
 def validate_plan(value: object) -> dict[str, object]:
     """Refuse a plan that is not a cover of one manifest's read order.
 
-    The three things checked are the three a coordinator cannot check later:
+    The four things checked are the four a coordinator cannot check later:
     that the phases tile the read order with no gap and no overlap (a gap is
     bytes nobody stages, an overlap is bytes two movers both publish under one
-    name), that each phase's demand is at least what its range occupies, and
-    that no two phases name one action.
+    name), that each phase's demand is at least what its range occupies, that
+    no two phases name one action, and that every mover row carries the
+    residency block its pin is read from -- a row without one stages its range
+    and then gives the tokens back, which nothing but the ledger can see.
     """
 
     if not isinstance(value, Mapping):
@@ -200,6 +202,29 @@ def validate_plan(value: object) -> dict[str, object]:
                 f"plan phase {name!r} asks the tier for "
                 f"{None if not isinstance(resources, Mapping) else resources.get(demand_kind)}"
                 f", below the {floor} GiB its range occupies")
+        # ...and it has to carry the pin the row is read for.  A mover row
+        # without a residency block publishes, claims, stages its 34 GB and
+        # then releases its tier tokens at ``finish``, because
+        # ``residency_pin_holds`` reads the queue record and finds no range to
+        # check the receipt against.  Nothing downstream can see that: the
+        # mover is ``executed``, the files are on the stage, and only the
+        # ledger disagrees -- so it is checked here, where the plan is frozen
+        # and nothing is queued yet, against the range the phase already
+        # declares rather than against itself.
+        pin = mover.get("residency")
+        if not isinstance(pin, Mapping):
+            raise ResidencyPlanError(
+                f"plan phase {name!r} has a mover row with no residency block; "
+                f"its tier tokens would be released the moment it finished")
+        if (pin.get("tier_id") != tier_id
+                or pin.get("manifest_sha256") != digest
+                or pin.get("range_start_bytes") != start
+                or pin.get("range_end_bytes") != end):
+            raise ResidencyPlanError(
+                f"plan phase {name!r} names bytes {start}..{end} of {digest[:12]} "
+                f"on {tier_id}, and its mover row pins "
+                f"{pin.get('range_start_bytes')}..{pin.get('range_end_bytes')} of "
+                f"{str(pin.get('manifest_sha256'))[:12]} on {pin.get('tier_id')}")
         checked.append({**dict(phase), "mover_row": mover,
                         "egress_row": rows["egress_row"]})
     return {**{key: value[key] for key in _PLAN_KEYS if key in value},

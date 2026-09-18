@@ -4950,7 +4950,29 @@ def residency_stage_rows(
             "name": str(span["name"]),
             "start_bytes": start, "end_bytes": end,
             "stage_gib": storage_tiers.stage_tokens_for_bytes(end - start),
-            "mover_row": publication_row(mover, args=args, queue=queue),
+            "mover_row": {
+                **publication_row(mover, args=args, queue=queue),
+                # The row, not only the sealed body.  ``residency_pin_holds``
+                # reads the *queue record* to decide whether a concluding
+                # mover keeps its tier tokens, so a row without this block
+                # ends ``executed`` and hands its tokens straight back -- the
+                # ledger reads its full supply free while 34 GB sit on the
+                # stage, which is the one invariant #583 rests on.  The
+                # consumer's block names leads; a mover's names the range it
+                # makes resident, which is what the pin is checked against.
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1,
+                    "manifest_sha256": digest,
+                    "manifest_bytes": int(entry["bytes"]),
+                    "tier_id": tier_id,
+                    "range_start_bytes": start,
+                    "range_end_bytes": end,
+                },
+            },
+            # No block on the egress: it reserves no tier capacity, and
+            # ``validate_residency`` refuses a range whose stage demand is
+            # below the range's own floor.  An egress finds its mover by
+            # ``--mover-action-key``, not by a range of its own.
             "egress_row": publication_row(egress, args=args, queue=queue),
         })
     plan = residency_plan.build_plan(

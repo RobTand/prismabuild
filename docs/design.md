@@ -3200,6 +3200,17 @@ that holds no tokens counts as unpublished, because the same manifest seals the
 same key on a second campaign and a leftover `done` record would otherwise read
 as "already staged".
 
+**The pin lives on the row, not only in the sealed body.** `residency_pin_holds`
+reads the *queue record* of a concluding mover to decide whether its tier tokens
+stay held, so a mover row published without a residency block stages its range
+and hands the tokens straight back: the mover ends `executed`, the files are on
+the stage, the ledger reads its full supply free, and the consumer's gate waits
+for a lead that can never read as pinned. Nothing but the ledger can see it.
+`pbrun` stamps each `mover_row` with the block naming that phase's range, and
+`validate_plan` refuses a frozen plan whose mover row carries no pin or pins a
+different range — the last point at which it is cheap, because after it the row
+is in the queue.
+
 ### How the map reaches the consumer
 
 `tier_loop` is the map's **single writer**: movers write one fragment each into a
