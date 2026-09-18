@@ -532,7 +532,9 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         for phase in decision["publish"]:
             row = dict(phase["mover_row"])                 # type: ignore[arg-type]
             try:
-                queue.publish(**row)
+                # A copy has no result to replay: published with recompute,
+                # or a republished range is a cache hit that stages nothing.
+                queue.publish(**row, recompute=True)
             except (pool.PoolContractError, OSError) as exc:
                 published.append({"event": "mover-publish-failed", "consumer": key,
                                   "phase": phase["phase"], "error": repr(exc)})
@@ -548,7 +550,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                     or queue.item_path(pool.CLAIMED, egress_key).exists()):
                 continue      # already asked; asking again would double the row
             try:
-                queue.publish(**row)
+                queue.publish(**row, recompute=True)   # a deletion, likewise
             except (pool.PoolContractError, OSError) as exc:
                 published.append({"event": "egress-publish-failed", "consumer": key,
                                   "phase": phase["phase"], "error": repr(exc)})

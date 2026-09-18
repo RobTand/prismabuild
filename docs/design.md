@@ -3128,6 +3128,25 @@ published one more window every cycle while the first was still copying: ten
 record that does not name the writable source (a fake, a legacy tier) is
 minted as it was.
 
+### A copy has no result to replay
+
+A mover's action key is a content hash and its receipt is filed in the CAS
+like any computation's, so republishing the same key -- the window asking for
+a range again after an egress, or after a copy that landed short -- would be
+answered by `run-local` with the old receipt as a `cache_hit` that moves no
+byte. `residency_pin_holds` rightly pins nothing for it, and the next cycle
+republishes it; nothing ever re-executes the copy (#624: the GLM run's 11 GiB
+head mover, replayed 25 times at 0.39 s each while the consumer sat `ready`
+on `lead_unpinned`). The pool cannot tell a copy from a computation by its
+key; the publisher can. The tier loop publishes every mover row and every
+egress row with `recompute=True`; `PoolQueue.publish` stamps `recompute` on
+the item, where it is not claim-scoped (a requeued movement node is still a
+movement node), and the claim launch passes it to `worker_argv`, which appends
+`--recompute`. `run-local` has carried that flag since before generation
+`2113f37bc68e`, so the frozen rows of a running campaign execute it. SLURM's
+launch is unchanged: it refuses recompute, and everything that is not a
+movement node still launches byte-identically to it.
+
 ### Where a tier ledger lives, and why it is a second root
 
 A tier ledger is an ordinary `ResourceLedger` under `tier-reservations/<tier_id>/`,
