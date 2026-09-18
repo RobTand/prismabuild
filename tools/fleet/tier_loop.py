@@ -568,6 +568,49 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
     return published
 
 
+def reclaim_idle_rates(queue: pool.PoolQueue) -> list[dict[str, object]]:
+    """Return the fill tokens of every holder that is not copying right now.
+
+    A rate is held for the duration of a transfer.  ``keep_tier`` returns it
+    at the point a copy ends, but three things can still leave one held: a
+    mover killed between its last byte and its outcome, an adoption, which
+    takes over a range's whole reservation although it moves no bytes, and
+    every holder already on the ledger from before that fix.  The symptom is
+    not subtle -- on ``prismabuild-stage:dl380g10`` on 2026-09-18, 506 of 635
+    fill units were held by seven terminal or never-published keys, leaving
+    129 against a fresh mover's demand of 188, so no mover could be admitted
+    and every stage-fed consumer waited on a lead that could not land (#636).
+
+    Claimed keys are left alone: that is exactly the reader whose rate is
+    real.  Occupancy is never touched here, whatever state its holder is in --
+    those bytes are on the device and an egress or the orphan sweep is what
+    takes them back.
+    """
+
+    events: list[dict[str, object]] = []
+    for tier_id in queue.tier_ids():
+        try:
+            ledger = queue.tier_ledger(tier_id)
+            keys = ledger.held_keys()
+        except (OSError, pool.PoolContractError):
+            continue
+        for key in sorted(keys):
+            try:
+                if queue.item_path(pool.CLAIMED, key).exists():
+                    continue
+                rates = {kind: count
+                         for kind, count in ledger.holder_tokens(key).items()
+                         if kind in pool.TIER_RATE_KINDS}
+                if not rates:
+                    continue
+                released = ledger.release_kinds(key, pool.TIER_RATE_KINDS)
+            except (OSError, pool.PoolContractError):
+                continue
+            events.append({"event": "tier-rate-reclaimed", "tier_id": tier_id,
+                           "holder": key, "released": released, "rates": rates})
+    return events
+
+
 def sweep_orphans(queue: pool.PoolQueue,
                   tiers: Mapping[str, Mapping[str, object]],
                   *, pressure: Mapping[str, int] | None = None,
@@ -646,6 +689,10 @@ def cycle(
 ) -> list[dict[str, object]]:
     """Discover, mint, announce; returns the records it announced."""
 
+    # Before minting, so this cycle's announced supply and this cycle's window
+    # both see the bandwidth a finished copy is no longer drawing (#636).
+    for event in reclaim_idle_rates(queue):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
     fill_records = receipts.read([queue.root / pool.PREWARM, queue.root / MOVER_RECEIPTS])
     tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records, now=now)
     ready: list[dict[str, object]] | None = None
