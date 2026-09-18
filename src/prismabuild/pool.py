@@ -3188,11 +3188,55 @@ class PoolQueue:
             raise PoolContractError("pool item tags must be a list")
         return all(str(t) in tags for t in required)
 
+    #: What the ready order is made of, and how each part is read.  One
+    #: definition, because two callers ask about it and a second spelling that
+    #: drifted is the permanent silent resident this guard exists to prevent:
+    #: ``ready_items`` decides whether a record can be listed, and
+    #: ``_ready_record_usable`` decides whether the sweep may file it.
+    _QUEUE_ORDER_FIELDS: tuple[tuple[str, object], ...] = (
+        ("priority", int), ("passes", int), ("published_unix", float))
+
+    @staticmethod
+    def _unorderable_queue_field(
+        record: Mapping[str, object],
+    ) -> tuple[str, object] | None:
+        """The first ordering field this record states in a foreign way."""
+
+        for name, parse in PoolQueue._QUEUE_ORDER_FIELDS:
+            value = record.get(name, 0)
+            try:
+                parse(value)                          # type: ignore[operator]
+            except (TypeError, ValueError):
+                return name, value
+        return None
+
+    @staticmethod
+    def _queue_order_of(
+        record: Mapping[str, object],
+    ) -> tuple[int, int, float] | None:
+        """This record's place in the ready order, or ``None`` if it has none.
+
+        The same three readings the sort has always used, with the raise
+        turned into an answer.  ``publish`` refuses a ``priority`` that is not
+        an integer and writes ``published_unix`` itself, so a record that
+        states either some other way was written by something that is not this
+        queue -- and the failure it used to cause was total: the sort runs
+        after the per-record parse guard, on the survivors, so one foreign
+        record took down the whole listing for every caller at once, ahead of
+        any per-item denial (#612, the site #592 left).
+        """
+
+        if PoolQueue._unorderable_queue_field(record) is not None:
+            return None
+        return (-int(record.get("priority", 0)),
+                -int(record.get("passes", 0)),
+                float(record.get("published_unix", 0.0)))
+
     def ready_items(self) -> list[dict[str, object]]:
-        out: list[dict[str, object]] = []
+        ordered: list[tuple[tuple[int, int, float], dict[str, object]]] = []
         ready = self.dir(READY)
         if not ready.is_dir():
-            return out
+            return []
         for path in sorted(ready.glob("*.json")):
             try:
                 # An item claimed out from under this listing is one this poll
@@ -3213,7 +3257,19 @@ class PoolQueue:
                 continue
             if record is not None:
                 record["passes"] = self.passes(str(record.get("action_key", "")))
-                out.append(record)
+                order = self._queue_order_of(record)
+                if order is None:
+                    # A record the queue cannot place in its own order is a
+                    # record no consumer can address, which is the defect
+                    # ``quarantine_orphans`` files -- the same route #212 gave
+                    # a record nobody can parse, one step later.  Skipping it
+                    # here is what keeps the listing, and therefore every
+                    # claim scan on every box, serving.  It is not the end of
+                    # the story: ``_ready_record_usable`` reads the same three
+                    # fields, so the sweep files this one into ``failed/``
+                    # under ``orphaned_stub``, where ``pbstatus`` counts it.
+                    continue
+                ordered.append((order, record))
         # Priority band first, then aging, then oldest.  An item that has been
         # denied admission repeatedly is not merely unlucky -- it is being
         # overtaken -- so within its band its denial count outranks its place
@@ -3225,14 +3281,13 @@ class PoolQueue:
         # tried.  Within a band a long queue still drains in the order it was
         # filled rather than by digest.  Not a scheduler; a tie-break
         # predictable enough to debug.
-        out.sort(
-            key=lambda r: (
-                -int(r.get("priority", 0)),
-                -int(r.get("passes", 0)),
-                float(r.get("published_unix", 0.0)),
-            )
-        )
-        return out
+        #
+        # The key is the one computed above rather than recomputed here, and
+        # the sort reads only the key: two records that tie would otherwise
+        # send Python on to compare the item dictionaries themselves, which is
+        # the same class of raise one layer down.
+        ordered.sort(key=lambda pair: pair[0])
+        return [record for _order, record in ordered]
 
     # -- aging ----------------------------------------------------------
 
@@ -7139,10 +7194,16 @@ class PoolQueue:
 
     @staticmethod
     def _ready_record_usable(record: Mapping[str, object], key: str) -> bool:
+        # The ordering fields are here for the same reason the addressing ones
+        # are: ``ready_items`` skips a record it cannot place in the queue's
+        # order, so such a record is never listed, never claimed, never runs
+        # and never leaves ``ready`` -- a permanent resident of the state that
+        # reports work the fleet will not do (#612).  Filing it is the point.
         return bool(
             record.get("action_key") == key
             and record.get("worker_script") and record.get("cas_root")
             and (record.get("checkout_root") or record.get("checkout_snapshot"))
+            and PoolQueue._unorderable_queue_field(record) is None
         )
 
     def _capture_ready_transition(self, path: Path, *, kind: str) -> Path | None:
@@ -7332,6 +7393,21 @@ class PoolQueue:
                 if taken is None:
                     continue
                 record, captured = taken
+                detail: dict[str, object] = {
+                    "reason": "ready record is not executable: it lacks a "
+                    "matching action_key, the worker_script/cas_root/"
+                    "checkout addressing a worker runs from, or a place in "
+                    "the queue's own order; see the reap_stale and finish() "
+                    "requeue races",
+                }
+                unorderable = self._unorderable_queue_field(record)
+                if unorderable is not None:
+                    # Named, not merely counted: whoever has to find the
+                    # writer needs the field and the value it stated, and the
+                    # original bytes are already beside this in superseded/.
+                    field, value = unorderable
+                    detail["unorderable_field"] = field
+                    detail["unorderable_value"] = repr(value)
                 record.update(
                     {
                         "schema": POOL_OUTCOME_SCHEMA_V1,
@@ -7339,12 +7415,7 @@ class PoolQueue:
                         "status": "orphaned_stub",
                         "finished_unix": _now(),
                         "finished_host": socket.gethostname(),
-                        "detail": {
-                            "reason": "ready record is not executable: it lacks a "
-                            "matching action_key or the worker_script/cas_root/"
-                            "checkout addressing a worker runs from; see the "
-                            "reap_stale and finish() requeue races",
-                        },
+                        "detail": detail,
                     }
                 )
                 # The moved bytes remain evidence. Neither a terminal ending nor
