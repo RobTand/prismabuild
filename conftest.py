@@ -20,3 +20,10 @@ if _SRC not in sys.path:
 _existing = os.environ.get("PYTHONPATH", "")
 if _SRC not in _existing.split(os.pathsep):
     os.environ["PYTHONPATH"] = os.pathsep.join(p for p in (_SRC, _existing) if p)
+
+# The per-test bound, wired here rather than in ``tests/conftest.py`` because
+# ``pytest_plugins`` is honoured only in the rootdir conftest.  It is inert
+# until ``PRISMABUILD_TEST_TIMEOUT_S`` names a bound; ``pbtest.py`` sets that
+# for every shard it builds, so a hung test fails as itself instead of holding
+# a fleet slot to the execution ceiling with nothing naming it (#600).
+pytest_plugins = ("prismabuild.pytest_test_bound",)

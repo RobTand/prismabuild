@@ -16,8 +16,9 @@ suite the same way the shard hung, so every child here runs under a
 subprocess timeout that is deliberately larger than the timeout it is
 exercising.
 
-``PRISMABUILD_TEST_TIMEOUT_S`` is the knob the suite's own conftest reads,
-spelled the same way here and there so the contract under test is one name.
+``PRISMABUILD_TEST_TIMEOUT_S`` is the knob the bound reads, spelled the same
+way here, in the plugin and in the shard ``pbtest.py`` builds, so the contract
+under test is one name.
 """
 
 from __future__ import annotations
@@ -29,6 +30,14 @@ import textwrap
 from pathlib import Path
 
 import pytest
+
+#: The plugin under test, by the name both the shard's own session and a
+#: child suite load it under. One name, so a wiring that drifts is visible.
+PLUGIN = "prismabuild.pytest_test_bound"
+
+#: This checkout's importable root, absolute because the child runs from its
+#: own directory.
+REPO_SRC = Path(__file__).resolve().parents[1] / "src"
 
 #: The timeout the child suite enforces, small enough that the case is fast
 #: and large enough that a slow box starting pytest is not mistaken for a
@@ -50,12 +59,13 @@ _HANGING_TEST = textwrap.dedent(f"""
 
 def _run_child(child_root: Path, files: dict[str, str], *,
                timeout_env: str | None,
-               subprocess_timeout_s: float) -> subprocess.CompletedProcess:
+               subprocess_timeout_s: float,
+               workers: int = 0) -> subprocess.CompletedProcess:
     """Run a private pytest child and return its completed process.
 
-    The child is the real suite machinery -- the root ``conftest.py`` and
-    the test-level one both load -- but the child is rooted at its own
-    directory, so nothing of the fleet's suite is collected or run.
+    The child runs the real bound -- the same plugin module the rootdir
+    ``conftest.py`` loads for a fleet shard -- over a suite of its own, so
+    nothing of this repository's tests is collected or run.
     """
 
     for rel, source in files.items():
@@ -68,25 +78,45 @@ def _run_child(child_root: Path, files: dict[str, str], *,
     env.pop("PRISMABUILD_TEST_TIMEOUT_S", None)
     if timeout_env is not None:
         env["PRISMABUILD_TEST_TIMEOUT_S"] = timeout_env
+    # The child is rooted at its own directory, so it loads none of this
+    # repository's conftests -- deliberately: ``tests/conftest.py`` censuses
+    # the fleet's live store at session start, and a child suite must not.
+    # It therefore needs the plugin named on its argv and an absolute
+    # ``PYTHONPATH``: the relative ``src`` a shard exports does not resolve
+    # from the child's own working directory.
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(REPO_SRC), env.get("PYTHONPATH", "")) if part)
+    # A fleet shard may be fanned out with xdist, and xdist runs each item in
+    # its worker process's main thread -- which is where a signal alarm can be
+    # armed at all. Exercised rather than assumed.
+    distribute = ["-n", str(workers)] if workers else []
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "--no-header",
-         "-p", "no:cacheprovider", str(child_root)],
+         "-p", "no:cacheprovider", "-p", PLUGIN, *distribute, str(child_root)],
         capture_output=True, text=True, timeout=subprocess_timeout_s,
         env=env, cwd=child_root,
     )
 
 
-def test_a_test_sleeping_past_the_bound_fails_naming_the_test(tmp_path: Path):
+@pytest.mark.parametrize("workers", [0, 2], ids=["single", "xdist"])
+def test_a_test_sleeping_past_the_bound_fails_naming_the_test(
+        tmp_path: Path, workers: int):
     """The red case: without a per-test bound this child passes the hanging
     test's sleep, so the session is green and the record says nothing. With
-    the bound, the same child must fail, and must say which test."""
+    the bound, the same child must fail, and must say which test.
+
+    Run both ways, because a fleet shard may be fanned out: ``-n 2`` puts the
+    item in an xdist worker process, and an alarm armed anywhere but a main
+    thread does not arm at all.
+    """
     proc = _run_child(
-        tmp_path / "named",
+        tmp_path / f"named-{workers}",
         {"test_hang.py": _HANGING_TEST},
         timeout_env=CHILD_TIMEOUT_S,
         # The child must finish well inside the outer bound: startup plus
         # the per-test timeout, with room for a loaded box.
         subprocess_timeout_s=120,
+        workers=workers,
     )
     assert proc.returncode == 1, (
         "the hanging test must fail the child session, not pass it; "
@@ -96,6 +126,31 @@ def test_a_test_sleeping_past_the_bound_fails_naming_the_test(tmp_path: Path):
         "the failure record must name the test that hung; "
         f"stdout:\n{proc.stdout}"
     )
+
+
+def test_the_name_reaches_stderr_before_the_session_can_be_killed(
+        tmp_path: Path):
+    """The summary is printed at the end of a session that may never reach it.
+
+    A bound does not promise the remaining tests fit in the lease, so the
+    shard can still be killed at its deadline with no summary written. The
+    handler writes the node id and the limit to stderr and flushes *before*
+    raising, and the pool counts those bytes into the lease's execution
+    observation while the action is alive -- which is how the name survives a
+    session that ends the way ``766d7ae5...`` ended.
+    """
+    proc = _run_child(
+        tmp_path / "streamed",
+        {"test_hang.py": _HANGING_TEST},
+        timeout_env=CHILD_TIMEOUT_S,
+        subprocess_timeout_s=120,
+    )
+    assert "test_the_hanging_test" in proc.stderr, (
+        "the node id must reach stderr as the alarm fires, not only the "
+        f"end-of-session summary; stderr:\n{proc.stderr}"
+    )
+    assert CHILD_TIMEOUT_S in proc.stderr, (
+        f"and with the limit that fired; stderr:\n{proc.stderr}")
 
 
 def test_the_bound_names_the_limit_in_the_failure(tmp_path: Path):
@@ -129,4 +184,25 @@ def test_a_passing_test_is_unaffected_by_the_bound(tmp_path: Path):
     assert proc.returncode == 0, (
         "a passing test under the bound must still pass; "
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+
+
+def test_this_suites_own_session_runs_under_the_bound_plugin(
+        pytestconfig: pytest.Config):
+    """A bound only a child suite loads would leave the shard unbounded.
+
+    The cases above name the plugin on the child's argv, which proves the
+    mechanism and nothing about the wiring. This one reads the session that is
+    running *these* tests -- the same session shape a fleet shard runs -- and
+    asks whether the plugin is registered in it. It is the assertion that
+    fails if the rootdir conftest stops loading the plugin.
+    """
+
+    assert pytestconfig.pluginmanager.hasplugin(PLUGIN), (
+        "the suite's own session must load the per-test bound; a shard whose "
+        "session lacks it holds its slot to the execution ceiling with "
+        "nothing naming the test that hung (#600)"
+    )
+    assert hasattr(pytestconfig, "_prismabuild_test_bound"), (
+        "the loaded plugin must have configured this session's bound"
     )
