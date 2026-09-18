@@ -58,7 +58,12 @@ _PHASE_KEYS = frozenset({
     "name", "start_bytes", "end_bytes", "stage_gib", "mover_row", "egress_row"})
 _PLAN_KEYS = frozenset({
     "schema", "consumer_action_key", "tier_id", "stage_root", "manifest_sha256",
-    "manifest_bytes", "phases"})
+    "manifest_bytes", "phases",
+    # Optional, and deliberately on the plan rather than on a row: the movers
+    # of one window are priced by one read of the mover receipts, and
+    # ``tier_loop`` publishes a row as ``queue.publish(**row)``, so a row key
+    # ``publish`` has no parameter for would take the whole window down.
+    "demand_source"})
 
 
 class ResidencyPlanError(ValueError):
@@ -74,7 +79,9 @@ def _action_key(value: object, *, where: str) -> str:
 
 def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
                manifest_sha256: str, manifest_bytes: int,
-               phases: Sequence[Mapping[str, object]]) -> dict[str, object]:
+               phases: Sequence[Mapping[str, object]],
+               demand_source: Mapping[str, object] | None = None,
+               ) -> dict[str, object]:
     """Assemble one consumer's plan from ranges the submitter has already sealed.
 
     ``phases`` are the manifest's own, in read order, each with the queue row
@@ -96,7 +103,7 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
             "mover_row": dict(phase["mover_row"]),      # type: ignore[arg-type]
             "egress_row": dict(phase["egress_row"]),    # type: ignore[arg-type]
         })
-    return validate_plan({
+    body: dict[str, object] = {
         "schema": RESIDENCY_PLAN_SCHEMA_V1,
         "consumer_action_key": consumer_action_key,
         "tier_id": tier_id,
@@ -104,7 +111,10 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
         "manifest_sha256": manifest_sha256,
         "manifest_bytes": int(manifest_bytes),
         "phases": built,
-    })
+    }
+    if demand_source is not None:
+        body["demand_source"] = dict(demand_source)
+    return validate_plan(body)
 
 
 def validate_plan(value: object) -> dict[str, object]:
@@ -140,6 +150,8 @@ def validate_plan(value: object) -> dict[str, object]:
     stage_root = value.get("stage_root")
     if not isinstance(stage_root, str) or not stage_root.startswith("/"):
         raise ResidencyPlanError("stage_root must be an absolute path")
+    if "demand_source" in value and not isinstance(value["demand_source"], Mapping):
+        raise ResidencyPlanError("demand_source must be an object")
     phases = value.get("phases")
     if not isinstance(phases, list) or not phases:
         raise ResidencyPlanError("a residency plan needs at least one phase")

@@ -3226,6 +3226,36 @@ class PoolQueue:
             return None
         return record
 
+    def move_records(self) -> list[dict[str, object]]:
+        """Every filed movement receipt, oldest first by the time it records.
+
+        The history a next submission prices itself from: ``mem_gb`` and
+        ``cpu`` off ``peak_rss_bytes`` and ``cpu_seconds``, fill capacity off
+        the pool-side rate.  Append-only and small (one JSON per mover), so it
+        is read whole rather than indexed.  A record that is unreadable or not
+        a move receipt is skipped, never raised: a submission must not fail
+        because one older receipt was truncated.
+        """
+
+        directory = self.root / MOVERS
+        out: list[dict[str, object]] = []
+        try:
+            paths = sorted(directory.glob("*.json"))
+        except OSError:
+            return out
+        for path in paths:
+            try:
+                record = _read_json(path, tolerate_stale=True)
+            except PoolContractError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            if record.get("schema") != POOL_MOVE_SCHEMA_V1:
+                continue
+            out.append(record)
+        out.sort(key=lambda r: float(r.get("unix", 0.0) or 0.0))
+        return out
+
     def record_move(self, action_key: str, record: Mapping[str, object]) -> Path:
         """File one movement result.
 

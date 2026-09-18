@@ -133,6 +133,24 @@ def _delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
     return {name: after[name] - before.get(name, 0) for name in sorted(after)}
 
 
+def cpu_seconds(*, usage=resource.getrusage) -> float:
+    """This process and its children's CPU seconds so far, user plus system.
+
+    Read at both ends of the copy and differenced, for the same reason
+    ``peak_rss_bytes`` is in the receipt: the next submission's ``cpu`` demand
+    should be a measurement of what a mover cost rather than a number someone
+    chose (``pb_demand_must_be_measured_not_habitual``).  Children are counted
+    because the copy's digest work is where the CPU goes and a future mover may
+    spawn it; today it is threads, which ``RUSAGE_SELF`` already covers.
+    """
+
+    total = 0.0
+    for who in (resource.RUSAGE_SELF, resource.RUSAGE_CHILDREN):
+        sample = usage(who)
+        total += float(sample.ru_utime) + float(sample.ru_stime)
+    return total
+
+
 class _Copier:
     """One range, copied in read order by a bounded set of workers."""
 
@@ -462,11 +480,13 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                         served_addresses=tuple(served["served_addresses"]),
                         served_reason=str(served["served_reason"]))
     before = proc_io()
+    cpu_before = cpu_seconds()
     started = time.time()
     copier.run(window, whole=whole, stop=stop,
                on_entry=None if args.no_incremental_fragment else publish)
     elapsed = max(1e-9, time.time() - started)
     after = proc_io()
+    cpu_used = max(0.0, cpu_seconds() - cpu_before)
     pacing = (pacer.report() if pacer is not None
               else prewarm_loop.inactive_pacing("no pacer"))
 
@@ -501,6 +521,17 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         # this should stay flat as the range grows, and a receipt that
         # says otherwise is the bug report.
         "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+        # The other half of the same story, and the one #603 is about: a
+        # mover's sha256 is CPU-bound, it declared no ``cpu`` at all, and
+        # ``adaptive_cpu`` reads an absent ``cpu`` as unknown CPU use and
+        # serializes it on an otherwise idle host
+        # (``adaptive_cpu.py`` ``unbounded_cpu_not_exclusive``).  Differenced
+        # across the copy, so the manifest read and the fragment publishes
+        # outside it are not charged to the rate.  ``cpu_seconds / seconds``
+        # is mean parallelism -- what this copy actually kept busy -- which is
+        # the number a next submission can declare and the controller can
+        # learn down from.
+        "cpu_seconds": round(cpu_used, 3),
         "host": socket.gethostname(),
         "errors": copier.errors,
         "unix": time.time(),

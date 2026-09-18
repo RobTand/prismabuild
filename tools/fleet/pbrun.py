@@ -4728,6 +4728,7 @@ def seal_movement_action(
     demand: Mapping[str, int],
     tags: Sequence[str],
     log_name: str,
+    retry_policy: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Seal one movement or egress node off the submission that needs it.
 
@@ -4758,6 +4759,15 @@ def seal_movement_action(
     params["command"] = list(command)
     params["demand"] = {str(key): int(value) for key, value in dict(demand).items()}
     params["placement"] = {"required_tags": list(tags)}
+    if retry_policy is not None:
+        # A mover's retry policy is its own, not the consumer's (#603).  The
+        # template's belongs to work that may not be safe to run twice; a mover
+        # copies into a temporary, verifies the digest against the manifest
+        # entry and then ``os.replace``s, so a second attempt either finds the
+        # bytes already right or redoes the copy that failed.  Inheriting a
+        # single-attempt policy makes one transient read error cost the whole
+        # staged range, and the window behind it.
+        params["retry_policy"] = dict(retry_policy)
     variables = dict(template["environment"]["variables"])  # type: ignore[index]
     variables.pop(CONTAINER_OWNER_ENV, None)
     variables.pop(CONTAINER_MARKER_ENV, None)
@@ -4909,16 +4919,36 @@ def residency_stage_rows(
     mover_python, mover_tool, egress_tool = movement_tools(tier)
     pool_root = str(SH / "pb-queue")
 
+    # One read of the live receipts for the whole window: every mover in it has
+    # the same structure and reads the same pool, so they price alike, and a
+    # per-phase read would give two phases of one plan different demands
+    # because a mover finished between them.
+    readers = int(args.residency_mover_readers)
+    priced = storage_tiers.mover_demand_from_receipts(
+        queue.move_records(), tier_id=tier_id, readers=readers,
+        fallback_mem_gb=int(args.residency_mover_mem_gb))
+    mover_retry_policy = {
+        "max_attempts": int(args.residency_mover_max_attempts),
+        # True by construction, not by the operator's say-so: ``stage_move``
+        # copies to ``<name>.partial``, verifies the digest, then
+        # ``os.replace``s, and files its fragment only for entries it verified.
+        "retry_safe": True,
+    }
     phases: list[dict[str, object]] = []
     for ordinal, span in enumerate(ranges):
         start, end = int(span["start_bytes"]), int(span["end_bytes"])
         demand = storage_tiers.residency_demand(
             tier_id=tier_id, range_start_bytes=start, range_end_bytes=end)
-        # Measured, not habitual: the copy is a bounded window of
-        # ``--readers`` buffers, and the live receipts carry the peak RSS it
-        # actually reached.  A mover that grew with its range would show up
-        # there rather than in a number chosen here.
-        demand["mem_gb"] = args.residency_mover_mem_gb
+        # Measured, not habitual, and above all *present*: a row without a
+        # ``cpu`` key is read by ``adaptive_cpu`` as unknown CPU use and
+        # refused whenever the box already holds anything
+        # (``unbounded_cpu_not_exclusive``), which is what ran the first live
+        # window one large mover at a time with 17 idle worker loops (#607,
+        # #603).  Both numbers come off ``pb-queue/movers/`` receipts when
+        # there are any, and ``demand_source`` on the row says which receipts
+        # were read and which field fell back to a declared bound.
+        demand["cpu"] = int(priced["cpu"])
+        demand["mem_gb"] = int(priced["mem_gb"])
         mover = seal_movement_action(
             template,
             command=[mover_python, mover_tool,
@@ -4929,8 +4959,12 @@ def residency_stage_rows(
                      "--stage-root", stage_root,
                      "--manifest-sha256", digest,
                      "--range-start-bytes", str(start),
-                     "--range-end-bytes", str(end)],
+                     "--range-end-bytes", str(end),
+                     # Stated on the command, so the width the row reserves and
+                     # the width the copy runs at cannot drift apart.
+                     "--readers", str(readers)],
             demand=demand, tags=tags,
+            retry_policy=mover_retry_policy,
             log_name=f"stage-move-{ordinal:04d}-{span['name']}.log")
         egress = seal_movement_action(
             template,
@@ -4951,7 +4985,10 @@ def residency_stage_rows(
             "start_bytes": start, "end_bytes": end,
             "stage_gib": storage_tiers.stage_tokens_for_bytes(end - start),
             "mover_row": {
-                **publication_row(mover, args=args, queue=queue),
+                **publication_row(
+                    mover, args=args, queue=queue,
+                    max_attempts=int(args.residency_mover_max_attempts),
+                    retry_safe=True),
                 # The row, not only the sealed body.  ``residency_pin_holds``
                 # reads the *queue record* to decide whether a concluding
                 # mover keeps its tier tokens, so a row without this block
@@ -4978,7 +5015,12 @@ def residency_stage_rows(
     plan = residency_plan.build_plan(
         consumer_action_key=consumer_action_key, tier_id=tier_id,
         stage_root=stage_root, manifest_sha256=digest,
-        manifest_bytes=int(entry["bytes"]), phases=phases)
+        manifest_bytes=int(entry["bytes"]), phases=phases,
+        # Which receipts priced these movers' cpu and mem_gb, so a demand in
+        # the queue traces back to a measurement rather than to a habit.  On
+        # the plan, not on a row: ``tier_loop`` publishes a row as
+        # ``queue.publish(**row)``, whose parameters are a closed set.
+        demand_source=priced["demand_source"])
     return {
         "plan": plan,
         "residency": {
@@ -5117,9 +5159,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--residency-mover-mem-gb", type=int, default=1,
-        help="memory one movement node reserves.  The copy is a bounded "
-             "read-ahead window, so this does not grow with the range; raise "
-             "it only against a mover receipt's own peak_rss_bytes",
+        help="memory one movement node reserves when no mover receipt has "
+             "measured one yet.  The copy is a bounded read-ahead window, so "
+             "this does not grow with the range; once receipts exist the row "
+             "takes the maximum peak_rss_bytes they report instead",
+    )
+    ap.add_argument(
+        "--residency-mover-readers", type=int, default=4,
+        help="paced read buffers one movement node copies through.  It is "
+             "passed to the mover and declared as its cpu demand until a "
+             "receipt's cpu_seconds measures one, so the two cannot disagree",
+    )
+    ap.add_argument(
+        "--residency-mover-max-attempts", type=int, default=3,
+        help="attempts one movement node gets, independent of --max-attempts. "
+             "A mover copies to a temporary, verifies the digest and renames, "
+             "so a retry is safe and a transient read error should not cost "
+             "the whole staged range",
     )
     ap.add_argument(
         "--checkout-snapshot-max-bytes",
@@ -5682,6 +5738,8 @@ def publication_row(
     *,
     args: argparse.Namespace,
     queue,
+    max_attempts: int | None = None,
+    retry_safe: bool | None = None,
 ) -> dict[str, object]:
     """The queue row that submits one sealed action.
 
@@ -5714,7 +5772,11 @@ def publication_row(
         "needs_gpu": bool(demand.get("gpu")),
         "priority": args.priority,
         "resources": demand,
-        "max_attempts": args.max_attempts,
+        # ``args`` for the submitter's own work; overridden only by a movement
+        # node, whose idempotence is a property of the mover rather than of
+        # what the submitter asked for (#603).
+        "max_attempts": (args.max_attempts if max_attempts is None
+                         else int(max_attempts)),
         "container_owner": str(variables[CONTAINER_OWNER_ENV]),
         "checkout_snapshot": params["checkout_snapshot"],
     }
@@ -5724,7 +5786,8 @@ def publication_row(
     # loaded runtime exposes it.  The sealed action params carry the full
     # contract in both cases.
     if "retry_safe" in inspect.signature(queue.publish).parameters:
-        row["retry_safe"] = args.retry_safe
+        row["retry_safe"] = (args.retry_safe if retry_safe is None
+                             else bool(retry_safe))
     return row
 
 

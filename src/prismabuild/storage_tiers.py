@@ -49,6 +49,7 @@ are arithmetic over it.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+import math
 import os
 from pathlib import Path
 import shutil
@@ -572,6 +573,109 @@ def stage_tokens_for_bytes(range_bytes: int) -> int:
     return -(-range_bytes // GIB)
 
 
+#: What a mover receipt must carry for a next submission to price CPU and
+#: memory off it rather than off a habit.  Named here because both the reader
+#: (``mover_demand_from_receipts``) and the writer (``stage_move``) are held to
+#: it, and a receipt that predates either field simply contributes nothing.
+MOVER_CPU_FIELD = "cpu_seconds"
+MOVER_RSS_FIELD = "peak_rss_bytes"
+
+def usable_mover_receipts(
+    records: Iterable[Mapping[str, object]], *, tier_id: str,
+) -> list[Mapping[str, object]]:
+    """The receipts of movers that actually copied onto ``tier_id``.
+
+    A refused receipt measured a refusal, and a receipt from another tier
+    measured another box's disks, so neither says anything about the next
+    mover onto this one.  ``seconds`` must be positive because every number
+    derived below is a rate over it.
+    """
+
+    out: list[Mapping[str, object]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        if str(record.get("tier_id") or "") != str(tier_id):
+            continue
+        if record.get("refusal"):
+            continue
+        seconds = record.get("seconds")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            continue
+        if not (seconds > 0):
+            continue
+        out.append(record)
+    return out
+
+
+def mover_demand_from_receipts(
+    records: Iterable[Mapping[str, object]],
+    *,
+    tier_id: str,
+    readers: int,
+    fallback_mem_gb: int,
+) -> dict[str, object]:
+    """The ``cpu`` and ``mem_gb`` a next mover declares, and where they came from.
+
+    Measured, not habitual (``pb_demand_must_be_measured_not_habitual``): the
+    numbers are the maxima over the live receipts of movers that copied onto
+    this tier.  ``cpu`` is ``ceil(cpu_seconds / seconds)`` -- the mean
+    parallelism a copy actually kept busy -- and ``mem_gb`` is
+    ``ceil(peak_rss_bytes / GiB)``.  Maxima rather than means, because the
+    demand is a reservation: a number that half the movers exceed is a
+    reservation half of them run outside.
+
+    With no receipt carrying a field there is nothing to measure, and the
+    fallback is a *declared bound* rather than a guess at usage.  For CPU that
+    bound is the mover's own structure: it copies through ``readers`` paced
+    buffers, so ``readers`` is a width the action cannot exceed once its
+    allocation pins it there, and the adaptive controller learns down from a
+    declared width.  What it must not be is absent -- an absent ``cpu`` is read
+    as *unknown* CPU use and serialized on an otherwise idle host
+    (``adaptive_cpu`` ``unbounded_cpu_not_exclusive``), which is #603 and the
+    whole of why one mover ran at a time in the first live window (#607).
+
+    Returns the two numbers plus ``demand_source``: per field, whether it was
+    measured or declared, and the receipts that were read.
+    """
+
+    if isinstance(readers, bool) or not isinstance(readers, int) or readers < 1:
+        raise ValueError("readers must be a positive whole number of buffers")
+    if isinstance(fallback_mem_gb, bool) or not isinstance(fallback_mem_gb, int) \
+            or fallback_mem_gb < 1:
+        raise ValueError("fallback_mem_gb must be a positive whole GiB")
+    usable = usable_mover_receipts(records, tier_id=tier_id)
+    cpu_keys: list[str] = []
+    mem_keys: list[str] = []
+    cpu: int | None = None
+    mem_gb: int | None = None
+    for record in usable:
+        key = str(record.get("action_key") or "")
+        seconds = float(record["seconds"])            # type: ignore[arg-type]
+        used = record.get(MOVER_CPU_FIELD)
+        if not isinstance(used, bool) and isinstance(used, (int, float)) and used > 0:
+            want = max(1, math.ceil(float(used) / seconds))
+            cpu = want if cpu is None else max(cpu, want)
+            cpu_keys.append(key)
+        rss = record.get(MOVER_RSS_FIELD)
+        if not isinstance(rss, bool) and isinstance(rss, int) and rss > 0:
+            want_mem = max(1, -(-rss // GIB))
+            mem_gb = want_mem if mem_gb is None else max(mem_gb, want_mem)
+            mem_keys.append(key)
+    return {
+        "cpu": readers if cpu is None else cpu,
+        "mem_gb": fallback_mem_gb if mem_gb is None else mem_gb,
+        "demand_source": {
+            "tier_id": str(tier_id),
+            "receipts_read": len(usable),
+            "cpu": "receipts" if cpu is not None else "declared_readers",
+            "cpu_receipts": sorted(cpu_keys),
+            "mem_gb": "receipts" if mem_gb is not None else "declared_fallback",
+            "mem_gb_receipts": sorted(mem_keys),
+        },
+    }
+
+
 def residency_demand(
     *,
     tier_id: str,
@@ -704,6 +808,10 @@ __all__ = [
     "manifest_phase_ranges",
     "capacity_kind_of",
     "residency_demand",
+    "mover_demand_from_receipts",
+    "usable_mover_receipts",
+    "MOVER_CPU_FIELD",
+    "MOVER_RSS_FIELD",
     "stage_tokens_for_bytes",
     "tier_kind_of",
     "ARC_CAPACITY_KIND",
