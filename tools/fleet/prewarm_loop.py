@@ -785,6 +785,10 @@ class StageTier:
         self.reserved_bytes = 0
         self.released_bytes = 0
         self.released_entries = 0
+        #: Objects this tier was asked to release and could not.  A sweep
+        #: that marked a row swept on top of one of these would be claiming
+        #: bytes are gone that are still on the disk.
+        self.release_failures = 0
         #: Bytes written to a temporary that never earned a name, and the
         #: objects they belong to.  ``staged_bytes`` counts only what was
         #: committed, so on a tier that fills mid-window the work the cycle
@@ -889,14 +893,34 @@ class StageTier:
     # -- release -------------------------------------------------------
 
     def release(self, keys: "list[str]") -> None:
-        """Delete staged objects, counting only the bytes actually removed."""
+        """Delete staged objects, counting only the bytes actually removed.
 
+        A tier with no mountpoint has no objects to name: ``object_path``
+        would build a path relative to this process's working directory, and
+        an unlink there is a write somewhere nobody asked for.  Refused, and
+        counted as a failure so that nothing downstream reads the empty
+        result as "already released".
+        """
+
+        if not self.mountpoint:
+            self.note(f"release refused: the tier has no mountpoint "
+                      f"({len(keys)} objects)")
+            with self.lock:
+                self.release_failures += len(keys)
+            return
         for key in keys:
             path = self.object_path(key)
             try:
                 size = path.stat().st_size
                 path.unlink()
-            except OSError:
+            except FileNotFoundError:
+                # Already gone is released: a band re-staged in a later life
+                # names objects an earlier sweep removed.
+                continue
+            except OSError as exc:
+                self.note(f"{key}: {exc}")
+                with self.lock:
+                    self.release_failures += 1
                 continue
             with self.lock:
                 self.released_bytes += size
@@ -933,6 +957,7 @@ class StageTier:
             "stage_write_seconds": round(self.write_seconds, 3),
             "released_bytes": self.released_bytes,
             "released_entries": self.released_entries,
+            "release_failures": self.release_failures,
             "layout": STAGE_LAYOUT,
             "consumer": dict(STAGE_CONSUMER),
             "errors": list(self.errors),
@@ -1210,6 +1235,7 @@ def release_stage_band(tier: StageTier, entries: "list[dict[str, object]]",
     result: dict[str, object] = {
         "candidate_entries": len(candidates), "retained_entries": 0,
         "deletable_entries": 0, "released_entries": 0, "released_bytes": 0,
+        "failed_entries": 0,
     }
     if not candidates:
         return result
@@ -1232,9 +1258,11 @@ def release_stage_band(tier: StageTier, entries: "list[dict[str, object]]",
     if not apply:
         return result
     before_entries, before_bytes = tier.released_entries, tier.released_bytes
+    before_failures = tier.release_failures
     tier.release(sorted(pending))
     result["released_entries"] = tier.released_entries - before_entries
     result["released_bytes"] = tier.released_bytes - before_bytes
+    result["failed_entries"] = tier.release_failures - before_failures
     return result
 
 
@@ -2981,7 +3009,8 @@ def sweep_orphan_stage(queue: pool.PoolQueue, stage: StageTier,
             str(manifest.get("mount_prefix", "")),
             start=0, end=through, others=lambda: others_for(key),
             apply=apply)
-        swept = apply and not outcome["retained_entries"]
+        swept = (apply and not outcome["retained_entries"]
+                 and not outcome["failed_entries"])
         if apply:
             update_prewarm_stage(queue, key, {
                 "swept": swept,
@@ -2990,7 +3019,8 @@ def sweep_orphan_stage(queue: pool.PoolQueue, stage: StageTier,
         rows.append({"action_key": key,
                      "status": ("planned" if not apply else
                                 "swept" if swept else
-                                "retained by another row"),
+                                "release failed" if outcome["failed_entries"]
+                                else "retained by another row"),
                      **outcome})
     return rows
 
@@ -3284,16 +3314,16 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             break
         key = str(window["action_key"])
         partial = window["status"] == "partial"
-        # Without a stage there is nothing to release, so a window that cannot
-        # advance is passed over exactly as it was before #582.
-        if not partial and stage is None:
+        # Without a usable stage there is nothing to release, so a window
+        # that cannot advance is passed over exactly as it was before #582.
+        if not partial and (stage is None or not stage.mountpoint):
             continue
         root = Path(str(window["cas_root"]))
         entry = manifest_input_of(sealed_request(root, key))
         if entry is None or str(entry.get("sha256")) != window["manifest_sha256"]:
             continue
         manifest = load_manifest(root, entry)
-        if stage is not None and manifest is not None:
+        if stage is not None and stage.mountpoint and manifest is not None:
             # Delete behind the accepted phase: the frontier the action's own
             # progress record moved is what releases the bytes behind it.
             stage_rows.append(release_window(
@@ -3433,9 +3463,15 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # non-action nobody recorded costs the next reader the diagnosis.
         live_keys = {str(item.get("action_key", "")) for item in ready}
         live_keys |= {str(row["action_key"]) for row in live_rows}
-        orphans = sweep_orphan_stage(
+        # A tier with no mountpoint -- ``absent`` on every box but the file
+        # server, and most ``unreadable`` ones -- has nothing to release and
+        # nowhere to release it from.  Running the release path anyway spent
+        # a manifest load per live row and then advanced a frontier as though
+        # objects had been removed.  The state is still recorded: a cycle
+        # that found no tier says so, which is the whole point of #585.
+        orphans = (sweep_orphan_stage(
             queue, stage, live_keys, other_live_rows, cas_root,
-            apply=not args.dry_run)
+            apply=not args.dry_run) if stage.mountpoint else [])
         event["stage"] = {**stage.record(), "released": stage_rows,
                           "orphans": orphans}
     return event

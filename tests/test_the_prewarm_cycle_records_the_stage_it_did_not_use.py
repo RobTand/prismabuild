@@ -167,3 +167,68 @@ def test_the_dataset_is_preferred_when_the_pool_carries_one(
 
     event = fleet.cycle(stage_args(fleet))
     assert event["stage"]["dataset"] == "prismabuild-stage/prewarm"
+
+
+def test_a_tier_with_no_mountpoint_releases_nothing_and_advances_nothing(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``absent`` is a tier, not a directory.
+
+    The release path was entered whenever a tier object existed, and an
+    ``absent`` tier has no mountpoint: every cycle then derived the whole
+    candidate list, loaded every other live row's manifest to ask what it
+    still wanted, unlinked against paths relative to the loop's own working
+    directory, and wrote the frontier forward as though objects had gone.
+    None of that is free, and the last part is a false receipt.
+    """
+
+    fleet = Fleet(tmp_path)
+    key = fleet.action("row", [fleet.file("a.pt", 4096),
+                               fleet.file("b.pt", 4096)])
+    # The tier exists first, so there is a receipt with a staged band to
+    # release, and disappears before the cycle that would release it.
+    StagePool(tmp_path).install(monkeypatch)
+    fleet.cycle(stage_args(fleet))
+    fleet.claim(key)
+    monkeypatch.setattr(prewarm_loop, "run_tool", lambda argv: "")
+
+    event = fleet.cycle(stage_args(fleet))
+
+    assert event["stage"]["state"] == "absent"
+    assert event["stage"]["released"] == []
+    assert event["stage"]["orphans"] == []
+    assert event["stage"]["released_entries"] == 0
+    assert fleet.queue.prewarm(key)["stage"]["evicted_through_bytes"] == 0
+
+
+def test_a_release_that_cannot_remove_an_object_does_not_call_it_swept(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A leak with a receipt is the only kind worth having.
+
+    ``swept`` is what makes the sweep skip a row forever, so it has to mean
+    the objects are gone.  An unlink that failed left the objects on the tier
+    and the row marked swept, which is a claim the disk contradicts.
+    """
+
+    fleet = Fleet(tmp_path)
+    key = fleet.action("row", [fleet.file("a.pt", 4096)])
+    stage = StagePool(tmp_path)
+    stage.install(monkeypatch)
+    fleet.cycle(stage_args(fleet))
+    fleet.claim(key).unlink()
+
+    real_unlink = prewarm_loop.Path.unlink
+
+    def refuse(self, *args, **kwargs):
+        if self.name.endswith(".pbstage@0+4096"):
+            raise OSError(5, "Input/output error")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(prewarm_loop.Path, "unlink", refuse)
+    event = fleet.cycle(stage_args(fleet))
+
+    orphan = event["stage"]["orphans"][0]
+    assert orphan["action_key"] == key
+    assert orphan["failed_entries"] == 1
+    assert orphan["status"] != "swept"
+    assert fleet.queue.prewarm(key)["stage"].get("swept") is False
+    assert stage.objects() == ["a.pt.pbstage@0+4096"]
