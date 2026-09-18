@@ -89,7 +89,7 @@ def _tiers(tmp_path: Path) -> dict[str, dict[str, object]]:
 
 def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
              landed: int) -> pool.PoolQueue:
-    """A consumer, its frozen plan, and the phase-0 stage range already resident."""
+    """A consumer, its frozen plan, and the first ``landed`` stage ranges resident."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
@@ -101,22 +101,25 @@ def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
         "leads": residency_plan.leads_for(plan)})
     queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_capacity_gib})
     queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
-    if landed:
-        stage_lead = _hexkey("mover0")
+    start = 0
+    for ordinal in range(landed):
+        stage_lead = _hexkey(f"mover{ordinal}")
         assert queue.tier_ledger(STAGE_TIER).acquire(
-            stage_lead, {"stage_gib": PHASE_GIB[0]})
+            stage_lead, {"stage_gib": PHASE_GIB[ordinal]})
         queue.record_move(stage_lead, {
             "consumer_action_key": CONSUMER, "tier_id": STAGE_TIER,
             "stage_root": "/stage/prewarm", "manifest_sha256": MANIFEST,
-            "range_start_bytes": 0, "range_end_bytes": PHASE_GIB[0] * GIB,
-            "bytes_staged": PHASE_GIB[0] * GIB, "complete": True,
-            "seconds": 1.0, "unix": 1000.0})
+            "range_start_bytes": start,
+            "range_end_bytes": start + PHASE_GIB[ordinal] * GIB,
+            "bytes_staged": PHASE_GIB[ordinal] * GIB, "complete": True,
+            "seconds": 1.0, "unix": 1000.0 + ordinal})
+        start += PHASE_GIB[ordinal] * GIB
     return queue
 
 
 def test_the_first_phase_is_promoted_when_its_stage_range_has_landed(
         tmp_path: Path) -> None:
-    queue = _fixture(tmp_path, ram_capacity_gib=2, landed=True)
+    queue = _fixture(tmp_path, ram_capacity_gib=2, landed=1)
 
     events = tier_loop.ram_residency_window(queue, tiers=_tiers(tmp_path))
 
@@ -131,7 +134,7 @@ def test_nothing_is_promoted_onto_a_range_the_stage_does_not_hold(
         tmp_path: Path) -> None:
     """The promotion's source is the stage; without it there is no promotion."""
 
-    queue = _fixture(tmp_path, ram_capacity_gib=8, landed=False)
+    queue = _fixture(tmp_path, ram_capacity_gib=8, landed=0)
 
     events = tier_loop.ram_residency_window(queue, tiers=_tiers(tmp_path))
 
@@ -143,9 +146,13 @@ def test_nothing_is_promoted_onto_a_range_the_stage_does_not_hold(
 def test_runahead_is_bounded_by_the_consumers_accepted_progress(
         tmp_path: Path) -> None:
     """A consumer that has accepted nothing gets one phase of run-ahead, and
-    the rest is a reported stall, exactly as the stage window decides it."""
+    the rest is a reported stall, exactly as the stage window decides it.
 
-    queue = _fixture(tmp_path, ram_capacity_gib=64, landed=True)
+    Two stage ranges have landed, so the stage-landed precondition is
+    satisfied for both; the bound is the thing declining the third.
+    """
+
+    queue = _fixture(tmp_path, ram_capacity_gib=64, landed=2)
 
     events = tier_loop.ram_residency_window(queue, tiers=_tiers(tmp_path))
 
@@ -163,7 +170,7 @@ def test_a_window_with_no_free_tokens_publishes_nothing(tmp_path: Path) -> None:
     """Free ``ram_gib`` is the bound: empty space in tmpfs, made exact through
     the ledger rather than guessed off statvfs by the publisher."""
 
-    queue = _fixture(tmp_path, ram_capacity_gib=1, landed=True)
+    queue = _fixture(tmp_path, ram_capacity_gib=1, landed=1)
 
     events = tier_loop.ram_residency_window(queue, tiers=_tiers(tmp_path))
 

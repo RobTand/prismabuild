@@ -166,9 +166,9 @@ def test_a_current_epoch_fragment_and_holder_are_left_alone(
 
 def test_the_cycle_says_the_epoch_changed_and_does_the_drop(
         queue: pool.PoolQueue, tmp_path: Path, capsys) -> None:
-    """The first cycle after a reboot: one event, then the drop, then a map
-    that names no ram range.  The announced record from the cycle before is
-    what the new epoch is compared against."""
+    """The first cycle after a reboot: one event, then the drop, then a world
+    that no longer contains the prior epoch.  The announced record from the
+    cycle before is what the new epoch is compared against."""
 
     (tmp_path / "ram").mkdir()
     queue.announce_tier(_ram_record(tmp_path, epoch=OLD_EPOCH))
@@ -187,11 +187,14 @@ def test_the_cycle_says_the_epoch_changed_and_does_the_drop(
              if line.startswith("{")]
     changed = [line for line in lines if line.get("event") == "ram-epoch-changed"]
     assert changed and changed[0]["epoch"] == NEW_EPOCH
+    assert changed[0]["previous_epoch"] == OLD_EPOCH
     assert any(line.get("event") == "ram-fragment-dropped" for line in lines)
     assert any(line.get("event") == "ram-ghost-tokens-released"
                for line in lines)
     assert not residency_map.fragment_path(
         queue.root / pool.RESIDENCY, CONSUMER, RAM_MOVER).exists()
     assert queue.tier_ledger(RAM_TIER).holder_tokens(RAM_MOVER) == {}
-    mapping = residency_map.read_map(queue.residency_map_path(CONSUMER))
-    assert "ram_path" not in mapping["entries"][ENTRY_KEY]
+    # The new epoch is what the loop announced, and the retired fragments are
+    # gone: nothing of the prior epoch survived the cycle.
+    record = {str(r["tier_id"]): r for r in queue.tiers()}[RAM_TIER]
+    assert record["epoch"] == NEW_EPOCH

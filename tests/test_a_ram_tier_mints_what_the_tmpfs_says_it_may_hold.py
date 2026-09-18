@@ -26,7 +26,6 @@ import prismabuild.storage_tiers as storage_tiers  # noqa: E402
 
 GIB = storage_tiers.GIB
 HOST = "dl380g10"
-RAM_MOUNT = "/ram/prewarm"
 #: 294 GiB, as /proc/meminfo reports it on the storage box.
 MEM_TOTAL_KB = (294 * GIB) // 1024
 #: An ARC already shrunk to make room, as arcstats reports it.
@@ -38,10 +37,20 @@ def _no_zfs(argv: list[str]) -> str:
     raise OSError(f"no {argv[0]} on this box")
 
 
-def _policy(tmp_path: Path, **over) -> dict[str, object]:
+def _mount(tmp_path: Path) -> Path:
+    """The policy's mountpoint, as a directory the test owns: the epoch
+    marker is written into the real root otherwise, and a faked
+    ``/proc/mounts`` must not license writes the mount never made."""
+
+    root = tmp_path / "ram"
+    root.mkdir(exist_ok=True)
+    return root
+
+
+def _policy(mount: Path, **over) -> dict[str, object]:
     policy: dict[str, object] = {
         "schema": storage_tiers.RAM_TIER_POLICY_SCHEMA_V1,
-        "mountpoint": RAM_MOUNT,
+        "mountpoint": str(mount),
         "ceiling_gib_max": 256,
         "window_gib_default": 112,
         "arc_floor_gib": 20,
@@ -52,13 +61,17 @@ def _policy(tmp_path: Path, **over) -> dict[str, object]:
     return policy
 
 
-def _proc_files(tmp_path: Path, *, mounts: str, memtotal_kb: int = MEM_TOTAL_KB,
+def _proc_files(tmp_path: Path, mount: Path, *,
+                options: str = "rw,noswap,size=256G",
+                memtotal_kb: int = MEM_TOTAL_KB,
                 arc_c_max: int = ARC_C_MAX, arc_meta: int = ARC_META_USED):
     """Fake /proc the way the box would answer it: mounts, meminfo, arcstats."""
 
     proc = tmp_path / "proc"
     proc.mkdir(exist_ok=True)
-    (proc / "mounts").write_text(mounts)
+    (proc / "mounts").write_text(
+        f"sysfs /sys sysfs rw 0 0\n"
+        f"tmpfs {mount} tmpfs {options} 0 0\n")
     (proc / "meminfo").write_text(f"MemTotal:  {memtotal_kb} kB\n")
     (proc / "arcstats").write_text(
         f"c_max 4 {arc_c_max}\nsize 4 {arc_c_max // 2}\n"
@@ -66,16 +79,11 @@ def _proc_files(tmp_path: Path, *, mounts: str, memtotal_kb: int = MEM_TOTAL_KB,
     return str(proc / "mounts"), str(proc / "meminfo"), str(proc / "arcstats")
 
 
-def _mounts(options: str = "rw,noswap,size=256G") -> str:
-    return (f"sysfs /sys sysfs rw 0 0\n"
-            f"tmpfs {RAM_MOUNT} tmpfs {options} 0 0\n")
-
-
-def _statvfs(*, size_gib: int, free_gib: int, frsize: int = 4096):
+def _statvfs(mount: Path, *, size_gib: int, free_gib: int, frsize: int = 4096):
     """A statvfs reader answering for the tmpfs, and raising anywhere else."""
 
     def read(path: str):
-        if path != RAM_MOUNT:
+        if path != str(mount):
             raise OSError(f"no tmpfs at {path}")
         block = GIB // frsize
         return os.statvfs_result(
@@ -85,19 +93,24 @@ def _statvfs(*, size_gib: int, free_gib: int, frsize: int = 4096):
     return read
 
 
-def _ram_tier(tmp_path: Path, *, statvfs=None, mounts: str = _mounts(),
+def _ram_tier(tmp_path: Path, *, mount: Path | None = None,
+              statvfs=None, options: str = "rw,noswap,size=256G",
               policy_over: dict | None = None) -> dict[str, object] | None:
-    proc_mounts, meminfo, arcstats = _proc_files(tmp_path, mounts=mounts)
+    mount = mount if mount is not None else _mount(tmp_path)
+    proc_mounts, meminfo, arcstats = _proc_files(tmp_path, mount,
+                                                 options=options)
     tiers = storage_tiers.discover_tiers(
         host=HOST, runner=_no_zfs, arcstats_path=arcstats,
-        ram_policy=_policy(tmp_path, **(policy_over or {})),
-        statvfs=statvfs or _statvfs(size_gib=256, free_gib=200),
+        ram_policy=_policy(mount, **(policy_over or {})),
+        statvfs=statvfs or _statvfs(mount, size_gib=256, free_gib=200),
         proc_mounts=proc_mounts, meminfo_path=meminfo)
     return tiers.get(storage_tiers.tier_id("ram", HOST))
 
 
 def test_capacity_is_what_the_mount_may_still_hold(tmp_path: Path) -> None:
-    tier = _ram_tier(tmp_path, statvfs=_statvfs(size_gib=256, free_gib=200))
+    mount = _mount(tmp_path)
+    tier = _ram_tier(tmp_path, mount=mount,
+                     statvfs=_statvfs(mount, size_gib=256, free_gib=200))
 
     assert tier is not None
     assert tier["capacity_bytes"] == 200 * GIB
@@ -107,7 +120,9 @@ def test_capacity_is_what_the_mount_may_still_hold(tmp_path: Path) -> None:
 
 
 def test_the_ceiling_is_the_mounts_own_size(tmp_path: Path) -> None:
-    tier = _ram_tier(tmp_path, statvfs=_statvfs(size_gib=256, free_gib=200))
+    mount = _mount(tmp_path)
+    tier = _ram_tier(tmp_path, mount=mount,
+                     statvfs=_statvfs(mount, size_gib=256, free_gib=200))
 
     assert tier["ceiling_bytes"] == 256 * GIB
     assert tier["size_bytes"] == tier["ceiling_bytes"]
@@ -125,22 +140,15 @@ def test_the_epoch_is_stamped_at_the_mount_and_survives_the_cycle(
     the bytes it named would make the whole identity a no-op.
     """
 
-    root = tmp_path / "ram"
-    root.mkdir()
-    epoch_path = root / storage_tiers.RAM_EPOCH_MARKER
-
-    def statvfs(path: str):
-        if path != RAM_MOUNT:
-            raise OSError(f"no tmpfs at {path}")
-        return os.statvfs_result(
-            (4096, 4096, 256 * GIB // 4096, 200 * GIB // 4096,
-             200 * GIB // 4096, 1_000_000, 900_000, 900_000, 0, 255))
+    mount = _mount(tmp_path)
+    epoch_path = mount / storage_tiers.RAM_EPOCH_MARKER
 
     def discover() -> dict[str, object]:
-        proc_mounts, meminfo, arcstats = _proc_files(tmp_path, mounts=_mounts())
+        proc_mounts, meminfo, arcstats = _proc_files(tmp_path, mount)
         tiers = storage_tiers.discover_tiers(
             host=HOST, runner=_no_zfs, arcstats_path=arcstats,
-            ram_policy=_policy(tmp_path), statvfs=statvfs,
+            ram_policy=_policy(mount),
+            statvfs=_statvfs(mount, size_gib=256, free_gib=200),
             proc_mounts=proc_mounts, meminfo_path=meminfo)
         return tiers[storage_tiers.tier_id("ram", HOST)]
 
@@ -160,7 +168,7 @@ def test_the_epoch_is_stamped_at_the_mount_and_survives_the_cycle(
 def test_the_record_announces_what_an_operator_must_check(tmp_path: Path) -> None:
     tier = _ram_tier(tmp_path)
 
-    assert tier["mountpoint"] == RAM_MOUNT
+    assert tier["mountpoint"] == str(tmp_path / "ram")
     assert tier["mount_options"] == ["rw", "noswap", "size=256G"]
     assert isinstance(tier["epoch"], str) and tier["epoch"]
     assert tier["ram_admission"]["admissible"] is True

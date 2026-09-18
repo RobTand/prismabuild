@@ -642,6 +642,13 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
                 # stage and named by no fragment, so without this line the
                 # sweep would delete the fact that lets it sweep.
                 continue
+            if (name == storage_tiers.RAM_EPOCH_MARKER and Path(base) == stage):
+                # The ram root's epoch marker, same rule one tier over
+                # (#640): unmarked, unnamed, and the one file that dates
+                # every ram range this queue admits.  Deleting it would mint
+                # a new epoch and drop every resident range the tmpfs still
+                # holds.
+                continue
             try:
                 if path.is_symlink() or not path.is_file():
                     continue

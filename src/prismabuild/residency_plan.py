@@ -91,7 +91,12 @@ _HEX = frozenset("0123456789abcdef")
 #: every other schema here refuses them: a field the writer meant and the
 #: reader ignores is the quiet half of a disagreement.
 _PHASE_KEYS = frozenset({
-    "name", "start_bytes", "end_bytes", "stage_gib", "mover_row", "egress_row"})
+    "name", "start_bytes", "end_bytes", "stage_gib", "mover_row", "egress_row",
+    # The phase's promotion onto the RAM tier (#640), optional: a promotion
+    # node and an egress node, sealed with the plan like the stage's own so
+    # the same frozen decomposition governs both tiers.  A phase without
+    # them predates the ram tier and is staged exactly as it always was.
+    "ram_mover_row", "ram_egress_row"})
 _PLAN_KEYS = frozenset({
     "schema", "consumer_action_key", "tier_id", "stage_root", "manifest_sha256",
     "manifest_bytes", "phases",
@@ -99,7 +104,10 @@ _PLAN_KEYS = frozenset({
     # of one window are priced by one read of the mover receipts, and
     # ``tier_loop`` publishes a row as ``queue.publish(**row)``, so a row key
     # ``publish`` has no parameter for would take the whole window down.
-    "demand_source"})
+    "demand_source",
+    # The ram tier this plan's ``ram_mover_row`` blocks name; required the
+    # moment any phase carries one, and refused as a non-ram id otherwise.
+    "ram_tier_id"})
 
 
 class ResidencyPlanError(ValueError):
@@ -117,6 +125,7 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
                manifest_sha256: str, manifest_bytes: int,
                phases: Sequence[Mapping[str, object]],
                demand_source: Mapping[str, object] | None = None,
+               ram_tier_id: str | None = None,
                ) -> dict[str, object]:
     """Assemble one consumer's plan from ranges the submitter has already sealed.
 
@@ -126,19 +135,27 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
     hand a mover more bytes than its tokens reserved, and
     ``storage_tiers.manifest_phase_ranges`` already refuses a phase table that
     does not describe its own manifest.
+
+    ``ram_tier_id`` names the tier the phases' ``ram_mover_row`` entries
+    promote onto, when the submitter sealed a ram leg at all.
     """
 
     built = []
     for phase in phases:
         start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
-        built.append({
+        entry: dict[str, object] = {
             "name": str(phase["name"]),
             "start_bytes": start,
             "end_bytes": end,
             "stage_gib": storage_tiers.stage_tokens_for_bytes(end - start),
             "mover_row": dict(phase["mover_row"]),      # type: ignore[arg-type]
             "egress_row": dict(phase["egress_row"]),    # type: ignore[arg-type]
-        })
+        }
+        if phase.get("ram_mover_row") is not None:
+            entry["ram_mover_row"] = dict(phase["ram_mover_row"])  # type: ignore[arg-type]
+        if phase.get("ram_egress_row") is not None:
+            entry["ram_egress_row"] = dict(phase["ram_egress_row"])  # type: ignore[arg-type]
+        built.append(entry)
     body: dict[str, object] = {
         "schema": RESIDENCY_PLAN_SCHEMA_V1,
         "consumer_action_key": consumer_action_key,
@@ -148,6 +165,8 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
         "manifest_bytes": int(manifest_bytes),
         "phases": built,
     }
+    if ram_tier_id is not None:
+        body["ram_tier_id"] = str(ram_tier_id)
     if demand_source is not None:
         body["demand_source"] = dict(demand_source)
     return validate_plan(body)
@@ -183,6 +202,17 @@ def validate_plan(value: object) -> dict[str, object]:
     tier_id = value.get("tier_id")
     if not isinstance(tier_id, str) or not tier_id:
         raise ResidencyPlanError("a residency plan must name its tier")
+    ram_tier_id = value.get("ram_tier_id")
+    if ram_tier_id is not None:
+        if not isinstance(ram_tier_id, str) or not ram_tier_id:
+            raise ResidencyPlanError("ram_tier_id must be a tier id")
+        if storage_tiers.tier_kind_of(ram_tier_id) != "ram":
+            raise ResidencyPlanError(
+                f"ram_tier_id {ram_tier_id!r} does not name a ram tier")
+    ram_demand_kind: str | None = None
+    if ram_tier_id is not None:
+        ram_demand_kind = (f"{storage_tiers.capacity_kind_of(ram_tier_id)}"
+                           f"{storage_tiers.TIER_DEMAND_SEPARATOR}{ram_tier_id}")
     stage_root = value.get("stage_root")
     if not isinstance(stage_root, str) or not stage_root.startswith("/"):
         raise ResidencyPlanError("stage_root must be an absolute path")
@@ -273,8 +303,69 @@ def validate_plan(value: object) -> dict[str, object]:
                 f"on {tier_id}, and its mover row pins "
                 f"{pin.get('range_start_bytes')}..{pin.get('range_end_bytes')} of "
                 f"{str(pin.get('manifest_sha256'))[:12]} on {pin.get('tier_id')}")
+        # The ram leg, when the plan carries one: the same two checks the
+        # stage's own row just passed, aimed at the tier the promotion lands
+        # on.  A ram mover row without a pin releases its occupancy the
+        # moment it finishes -- bytes on a roof-limited tmpfs that no token
+        # stands for are ENOSPC waiting to happen (#640).
+        ram_mover = phase.get("ram_mover_row")
+        ram_egress = phase.get("ram_egress_row")
+        if ram_egress is not None and ram_mover is None:
+            raise ResidencyPlanError(
+                f"plan phase {name!r} has a ram egress with no ram mover to free")
+        if ram_mover is not None:
+            if not isinstance(ram_mover, Mapping):
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} needs an object as ram_mover_row")
+            if ram_tier_id is None or ram_demand_kind is None:
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} carries a ram mover, but the plan "
+                    f"names no ram tier for it to promote onto")
+            ram_key = _action_key(ram_mover.get("action_key"),
+                                  where="ram_mover_row.action_key")
+            if ram_key in keys:
+                raise ResidencyPlanError("two plan rows share an action key")
+            keys.add(ram_key)
+            ram_pin = ram_mover.get("residency")
+            if not isinstance(ram_pin, Mapping):
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} has a ram mover row with no residency "
+                    f"block; its occupancy would be released the moment it "
+                    f"finished")
+            if (ram_pin.get("tier_id") != ram_tier_id
+                    or ram_pin.get("manifest_sha256") != digest
+                    or ram_pin.get("range_start_bytes") != start
+                    or ram_pin.get("range_end_bytes") != end):
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} names bytes {start}..{end} of "
+                    f"{digest[:12]} for the ram tier {ram_tier_id}, and its ram "
+                    f"mover row pins "
+                    f"{ram_pin.get('range_start_bytes')}.."
+                    f"{ram_pin.get('range_end_bytes')} of "
+                    f"{str(ram_pin.get('manifest_sha256'))[:12]} on "
+                    f"{ram_pin.get('tier_id')}")
+            ram_resources = ram_mover.get("resources")
+            if (not isinstance(ram_resources, Mapping)
+                    or int(ram_resources.get(ram_demand_kind, 0)) < floor):
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} asks the ram tier for "
+                    f"{None if not isinstance(ram_resources, Mapping) else ram_resources.get(ram_demand_kind)}"
+                    f", below the {floor} GiB its range occupies")
+            rows["ram_mover_row"] = dict(ram_mover)
+        if ram_egress is not None:
+            if not isinstance(ram_egress, Mapping):
+                raise ResidencyPlanError(
+                    f"plan phase {name!r} needs an object as ram_egress_row")
+            ram_egress_key = _action_key(ram_egress.get("action_key"),
+                                         where="ram_egress_row.action_key")
+            if ram_egress_key in keys:
+                raise ResidencyPlanError("two plan rows share an action key")
+            keys.add(ram_egress_key)
+            rows["ram_egress_row"] = dict(ram_egress)
         checked.append({**dict(phase), "mover_row": mover,
-                        "egress_row": rows["egress_row"]})
+                        "egress_row": rows["egress_row"],
+                        **{role: rows[role] for role in rows
+                           if role not in ("mover_row", "egress_row")}})
     return {**{key: value[key] for key in _PLAN_KEYS if key in value},
             "phases": checked}
 
@@ -366,12 +457,31 @@ def mover_keys(plan: Mapping[str, object]) -> list[str]:
     The orphan sweep needs this and not just the leads: a pinned mover for a
     phase the consumer has not reached is named by nothing in the queue, and a
     sweep that tested only live items' ``leads`` would evict the window it is
-    there to protect.
+    there to protect.  A plan's ram promotions are movement nodes of the same
+    plan (#640), so their keys are here too -- a pinned promotion no live item
+    names is an orphan on the ram tier exactly as its stage sibling is.
     """
 
     phases = plan["phases"]
     assert isinstance(phases, list)
-    return [str(phase["mover_row"]["action_key"]) for phase in phases]
+    out = [str(phase["mover_row"]["action_key"]) for phase in phases]
+    out += [str(phase["ram_mover_row"]["action_key"]) for phase in phases
+            if "ram_mover_row" in phase]
+    return out
+
+
+def ram_mover_keys(plan: Mapping[str, object]) -> list[str]:
+    """Every promotion node this plan will ever have, published or not.
+
+    Empty for a plan whose submitter sealed no ram leg, which is the answer
+    that leaves those consumers staged exactly as they were before the tier
+    existed.
+    """
+
+    phases = plan["phases"]
+    assert isinstance(phases, list)
+    return [str(phase["ram_mover_row"]["action_key"]) for phase in phases
+            if "ram_mover_row" in phase]
 
 
 def remaining(plan: Mapping[str, object],
@@ -426,27 +536,41 @@ def runahead_step_gib(plan: Mapping[str, object],
 
 
 def runahead_budget_gib(plan: Mapping[str, object], accepted_phase: str | None,
-                        *, capacity_gib: int | None) -> int | None:
+                        *, capacity_gib: int | None,
+                        runahead_cap_gib: int | None = None) -> int | None:
     """How many tokens the window may hold ahead of the consumer, or ``None``.
 
     ``None`` is "the tier's free capacity is the only bound", which is what a
     caller that cannot say what the tier's capacity is gets: this module will
     not invent a capacity, and a bound derived from a number nobody minted
     would be the heuristic the explicit exists to replace.
+
+    ``runahead_cap_gib`` is a declared ceiling on the same budget -- the
+    policy's ``prefill_depth``, when one is set.  It tightens the bound; it
+    never loosens it, and ``None`` keeps the two-regime semantics above.
     """
 
+    if (runahead_cap_gib is not None and (
+            isinstance(runahead_cap_gib, bool)
+            or not isinstance(runahead_cap_gib, int) or runahead_cap_gib <= 0)):
+        raise ResidencyPlanError("runahead_cap_gib must be a positive whole GiB")
     step = runahead_step_gib(plan, accepted_phase)
     if not accepted(plan, accepted_phase):
-        return step
-    if capacity_gib is None:
-        return None
-    return max(0, int(capacity_gib) - step)
+        budget = step
+    elif capacity_gib is None:
+        budget = None
+    else:
+        budget = max(0, int(capacity_gib) - step)
+    if budget is None or runahead_cap_gib is None:
+        return budget
+    return min(budget, runahead_cap_gib)
 
 
 def window(plan: Mapping[str, object], *, accepted_phase: str | None,
            free_gib: int, capacity_gib: int | None = None,
            published: Sequence[str] = (),
-           staged: Sequence[str] = ()) -> dict[str, object]:
+           staged: Sequence[str] = (),
+           runahead_cap_gib: int | None = None) -> dict[str, object]:
     """What the coordinator should publish and evict on this cycle.
 
     ``accepted_phase`` is the phase the consumer's progress record says it is
@@ -493,7 +617,8 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     publish: list[dict[str, object]] = []
     room = int(free_gib)
     has_accepted = accepted(plan, accepted_phase)
-    budget = runahead_budget_gib(plan, accepted_phase, capacity_gib=capacity_gib)
+    budget = runahead_budget_gib(plan, accepted_phase, capacity_gib=capacity_gib,
+                                runahead_cap_gib=runahead_cap_gib)
     # Everything the window already holds beyond the phase being read.  The
     # phase the consumer is inside is not run-ahead: it is the work.
     runahead = sum(int(phase["stage_gib"]) for phase in ahead[1:]
@@ -544,6 +669,7 @@ __all__ = [
     "freeze",
     "leads_for",
     "mover_keys",
+    "ram_mover_keys",
     "read",
     "remaining",
     "runahead_budget_gib",

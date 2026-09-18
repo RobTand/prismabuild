@@ -22,7 +22,6 @@ import prismabuild.storage_tiers as storage_tiers  # noqa: E402
 
 GIB = storage_tiers.GIB
 HOST = "dl380g10"
-RAM_MOUNT = "/ram/prewarm"
 RAM_TIER = storage_tiers.tier_id("ram", HOST)
 
 
@@ -31,9 +30,11 @@ def _no_zfs(argv: list[str]) -> str:
 
 
 def _discover(tmp_path: Path, *, mounts: str, statvfs) -> dict[str, object]:
+    mount = tmp_path / "ram"
+    mount.mkdir(exist_ok=True)
     proc = tmp_path / "proc"
     proc.mkdir(exist_ok=True)
-    (proc / "mounts").write_text(mounts)
+    (proc / "mounts").write_text(mounts.replace("@ram@", str(mount)))
     (proc / "meminfo").write_text(f"MemTotal:  {(294 * GIB) // 1024} kB\n")
     (proc / "arcstats").write_text(
         f"c_max 4 {22 * GIB}\nsize 4 {11 * GIB}\narc_meta_used 4 {5 * GIB}\n")
@@ -41,7 +42,7 @@ def _discover(tmp_path: Path, *, mounts: str, statvfs) -> dict[str, object]:
         host=HOST, runner=_no_zfs, arcstats_path=str(proc / "arcstats"),
         ram_policy={
             "schema": storage_tiers.RAM_TIER_POLICY_SCHEMA_V1,
-            "mountpoint": RAM_MOUNT, "ceiling_gib_max": 256,
+            "mountpoint": str(mount), "ceiling_gib_max": 256,
             "window_gib_default": 112, "arc_floor_gib": 20,
             "system_reserve_gib": 16, "prefill_depth": None,
         },
@@ -66,7 +67,7 @@ def test_a_mount_whose_statvfs_cannot_be_read_mints_nothing(
         raise OSError("ESTALE: the mount is not answering")
 
     tiers = _discover(
-        tmp_path, mounts=f"tmpfs {RAM_MOUNT} tmpfs rw,noswap,size=256G 0 0\n",
+        tmp_path, mounts="tmpfs @ram@ tmpfs rw,noswap,size=256G 0 0\n",
         statvfs=statvfs)
 
     tier = tiers[RAM_TIER]

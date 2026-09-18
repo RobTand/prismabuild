@@ -20,42 +20,40 @@ import prismabuild.storage_tiers as storage_tiers  # noqa: E402
 
 GIB = storage_tiers.GIB
 HOST = "dl380g10"
-RAM_MOUNT = "/ram/prewarm"
 
 
 def _no_zfs(argv: list[str]) -> str:
     raise OSError(f"no {argv[0]} on this box")
 
 
-def _statvfs(*, size_gib: int = 256, free_gib: int = 200):
-    def read(path: str):
-        if path != RAM_MOUNT:
+def _ram_tier(tmp_path: Path, options: str) -> dict[str, object]:
+    mount = tmp_path / "ram"
+    mount.mkdir(exist_ok=True)
+    proc = tmp_path / "proc"
+    proc.mkdir(exist_ok=True)
+    (proc / "mounts").write_text(f"tmpfs {mount} tmpfs {options} 0 0\n")
+    (proc / "meminfo").write_text(f"MemTotal:  {(294 * GIB) // 1024} kB\n")
+    (proc / "arcstats").write_text(
+        f"c_max 4 {22 * GIB}\nsize 4 {11 * GIB}\narc_meta_used 4 {5 * GIB}\n")
+
+    def statvfs(path: str):
+        if path != str(mount):
             raise OSError(f"no tmpfs at {path}")
         frsize = 4096
         block = GIB // frsize
         return os.statvfs_result(
-            (frsize, frsize, size_gib * block, free_gib * block,
-             free_gib * block, 1_000_000, 900_000, 900_000, 0, 255))
+            (frsize, frsize, 256 * block, 200 * block,
+             200 * block, 1_000_000, 900_000, 900_000, 0, 255))
 
-    return read
-
-
-def _ram_tier(tmp_path: Path, options: str) -> dict[str, object]:
-    proc = tmp_path / "proc"
-    proc.mkdir(exist_ok=True)
-    (proc / "mounts").write_text(f"tmpfs {RAM_MOUNT} tmpfs {options} 0 0\n")
-    (proc / "meminfo").write_text(f"MemTotal:  {(294 * GIB) // 1024} kB\n")
-    (proc / "arcstats").write_text(
-        f"c_max 4 {22 * GIB}\nsize 4 {11 * GIB}\narc_meta_used 4 {5 * GIB}\n")
     tiers = storage_tiers.discover_tiers(
         host=HOST, runner=_no_zfs, arcstats_path=str(proc / "arcstats"),
         ram_policy={
             "schema": storage_tiers.RAM_TIER_POLICY_SCHEMA_V1,
-            "mountpoint": RAM_MOUNT, "ceiling_gib_max": 256,
+            "mountpoint": str(mount), "ceiling_gib_max": 256,
             "window_gib_default": 112, "arc_floor_gib": 20,
             "system_reserve_gib": 16, "prefill_depth": None,
         },
-        statvfs=_statvfs(), proc_mounts=str(proc / "mounts"),
+        statvfs=statvfs, proc_mounts=str(proc / "mounts"),
         meminfo_path=str(proc / "meminfo"))
     return tiers[storage_tiers.tier_id("ram", HOST)]
 
