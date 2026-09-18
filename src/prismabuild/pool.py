@@ -4438,11 +4438,33 @@ class PoolQueue:
             # tier predates the pin and is read as it was before.
             return True
         try:
-            return bool(self.tier_ledger(tier_id).holder_tokens(lead))
+            if not self.tier_ledger(tier_id).holder_tokens(lead):
+                return False
         except PoolContractError:
             return True
         except OSError as exc:
             return getattr(exc, "errno", None) != errno.ENOENT
+        # Tokens alone are not the pin.  They are filed under the key at
+        # *claim*, before a byte is written, and only kept past ``finish``
+        # when the receipt says the range landed -- so a lead that is claimed
+        # right now holds tokens exactly like one that finished and pinned,
+        # and a ``done`` record left by an earlier generation makes the two
+        # read alike above.  2026-09-18 (#625): a consumer was admitted inside
+        # one such window onto a head range whose receipt said ``complete:
+        # false`` and whose 7 GB anchors file was never staged.  A claim-time
+        # reservation is a promise; the pin is the receipt.
+        try:
+            if self.item_path(CLAIMED, lead).exists():
+                return False
+            receipt = self.move_record(lead)
+        except PoolContractError:
+            return True
+        except OSError as exc:
+            return getattr(exc, "errno", None) != errno.ENOENT
+        # The receipt half of ``residency_pin_holds``: the copy this key's
+        # tokens stand for was complete, unrefused, and onto this tier.
+        return (isinstance(receipt, Mapping) and receipt.get("complete") is True
+                and not receipt.get("refusal") and receipt.get("tier_id") == tier_id)
 
     def _transition_locked(self, action_key: str, *, blocking: bool = True):
         """Serialize one key's ownership transitions, never independent keys."""

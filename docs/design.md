@@ -3263,7 +3263,16 @@ tokens and deletes nothing: its bytes may be there and cannot be named.
 
 A consumer is admitted only when every lead has moved its bytes **and still
 holds them**; the second half is `residency_lead_unpinned`, and a missing mover
-receipt fails it, so "no receipt" can never read as "staged".
+receipt fails it, so "no receipt" can never read as "staged". Tokens alone are
+not the pin: they are filed under the key at *claim*, before a byte is written,
+and only kept past `finish` when the receipt says the range landed, so a lead
+that is claimed right now holds tokens exactly like one that finished and
+pinned. `_lead_is_pinned` therefore also refuses a lead that is claimed and one
+whose receipt is not a complete, unrefused copy (`staged_range_of`). On
+2026-09-18 a consumer's claim scan landed inside one replay's claim window,
+read a `done: executed` record from the previous generation beside claim-time
+tokens, judged the head resident, and was admitted onto a stage missing the
+range's 7 GB anchors file (#625).
 
 There is one other way a mover's tokens may change hands, and it is a hand-over
 rather than a return: `ResourceLedger.transfer` renames each token between two
