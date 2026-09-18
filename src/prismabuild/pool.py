@@ -315,6 +315,12 @@ PREWARM = "prewarm"
 #: mover's receipt is the pool-side rate the tier mints its fill tokens from.
 MOVERS = "movers"
 
+#: Tier resources that price a transfer *rate* rather than occupancy, and so
+#: are returned the moment a copy ends even when its bytes stay on the device.
+#: Occupancy kinds are absent on purpose -- see
+#: :meth:`PoolQueue.release_tier_rate_reservations` (#636).
+TIER_RATE_KINDS = frozenset({storage_tiers.FILL_KIND})
+
 #: Where movers file their residency-map fragments, one directory per consumer
 #: and one file per mover inside it.  The composed map a consumer reads is
 #: written from these; see :mod:`prismabuild.residency_map`.
@@ -2249,6 +2255,39 @@ class ResourceLedger:
 
         return self._empty_into_free(self.held_dir / action_key)
 
+    def release_kinds(self, action_key: str, kinds: Container[str]) -> int:
+        """Return only the named kinds, leaving the holder's others held.
+
+        A residency pin is *occupancy*: those bytes are on the device and must
+        stay charged to somebody until an egress deletes them.  A fill rate is
+        not occupancy -- once a copy ends nothing is reading, so a mover that
+        keeps its pool-side bandwidth holds a share of a supply it no longer
+        draws, and the next mover is refused against a rate nobody is using
+        (#636).  The holder directory is deliberately left in place: what
+        stays is exactly what a release-by-key would have taken.
+
+        Safe to call twice, and contained per token for the reason
+        ``_empty_into_free`` is: a rename this call could not do is done by
+        the next sweep rather than costing the caller its own ending.
+        """
+
+        holder = self.held_dir / action_key
+        if not holder.is_dir():
+            return 0
+        self.free_dir.mkdir(parents=True, exist_ok=True)
+        released = 0
+        for token in _scan(holder):
+            if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
+                continue
+            if token.name.rsplit("-", 1)[0] not in kinds:
+                continue
+            try:
+                os.rename(token, self.free_dir / token.name)
+            except OSError:
+                continue
+            released += 1
+        return released
+
     def _empty_into_free(self, holder: Path) -> int:
         """Return physical tokens before removing their adaptive metadata.
 
@@ -3822,6 +3861,27 @@ class PoolQueue:
                 holdings[tier_id] = tokens
         return holdings
 
+    def release_tier_rate_reservations(self, action_key: str) -> int:
+        """Return the tier tokens that price a rate, keeping the ones that
+        price occupancy.
+
+        The kinds to *release* are enumerated rather than the kinds to keep,
+        so a tier resource added later is kept by default: keeping a token too
+        long costs admission, releasing an occupancy token early costs the
+        accounting for bytes that are still on the device, and the tier loop's
+        sweep then reads capacity that is already spent (#636, and the
+        argument ``_release_reservation`` already makes).
+        """
+
+        released = 0
+        for tier_id in self.tier_ids():
+            try:
+                released += self.tier_ledger(tier_id).release_kinds(
+                    action_key, TIER_RATE_KINDS)
+            except (OSError, PoolContractError):
+                continue
+        return released
+
     def release_tier_reservations(self, action_key: str) -> int:
         """Return every tier token filed under this action, on every tier.
 
@@ -4015,8 +4075,12 @@ class PoolQueue:
         released = self.ledger(host).release(action_key) if host is not None else 0
         if keep_tier:
             # The host tokens go -- the box is free for other work the instant
-            # the copy stops -- and the tier tokens stay, because the bytes did.
-            return released
+            # the copy stops -- and the tier tokens that price *occupancy* stay,
+            # because the bytes did.  The ones that price a *rate* do not: the
+            # copy has stopped, so the pool-side bandwidth it reserved is being
+            # drawn by nobody, and a finished mover holding it refuses the next
+            # one against a supply that is idle (#636).
+            return released + self.release_tier_rate_reservations(action_key)
         return released + self.release_tier_reservations(action_key)
 
     def mint_tier_capacity(self, tier_id: str, tokens: Mapping[str, int]) -> dict[str, object]:

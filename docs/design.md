@@ -3472,6 +3472,25 @@ the verdict denies `map_not_composed`, which leaves the item ready, ages
 nothing and takes no token; the next cycle composes and it is admitted then,
 unchanged.
 
+A tier reservation prices two different things and only one of them outlives
+the copy (#636). `stage_gib` prices *occupancy*: the bytes are on the device,
+so a mover keeps that token from `finish` until an egress deletes them, which
+is what the paragraph above about released-but-resident capacity is defending.
+`fill_mb_s_pool_side` prices the pool-side bandwidth a copy *draws*, and
+nothing draws it once the copy stops. `keep_tier` kept both, so every finished
+mover held its full rate for the life of the fleet and `tier_loop.adopt`
+carried one range's rate on to each successive consumer although adoption
+copies no bytes. Measured on `prismabuild-stage:dl380g10` on 2026-09-18: 506 of
+635 fill units held by seven terminal or never-published keys, 129 free against
+a fresh mover's demand of 188, so no mover was placeable and every stage-fed
+consumer waited on a lead that could not land. `keep_tier` now returns the rate
+kinds and keeps the occupancy kinds — enumerating the kinds to release, so a
+tier resource added later is kept by default — and `tier_loop.reclaim_idle_rates`
+returns the rate of any holder that is not currently claimed, which heals the
+ledger as it stands and closes the same hole for an adoption or a mover killed
+between its last byte and its outcome. It touches no file on the stage and no
+occupancy token.
+
 Existing is not the same as current (#634). The loop composes from the
 fragments on disk once a cycle, so a consumer whose lead pins between two
 cycles finds a map that is real, readable and missing exactly the range the
