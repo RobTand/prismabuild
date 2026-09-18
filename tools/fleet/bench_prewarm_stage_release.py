@@ -6,11 +6,14 @@ a 10 s poll, on the file server, and nothing measured it.  This is the
 standalone timing that says what it cost and what it costs now, over the real
 GLM-5.3 prepare manifest (469,008 entries) rather than a fixture.
 
-Both arms run in one process over one parsed manifest, interleaved, and the
-"before" arm is the pre-#589 arithmetic copied verbatim below so the two
-arms differ in nothing else.  The run also asserts the arms name the same
-objects, because a cheaper release that released something else would not be
-a speedup.
+Three arms, in one process over one parsed manifest, interleaved:
+``original`` is the release path exactly as it stood before the review --
+one band, one other row asked; ``before`` is the work the fixed loop does
+(F5 added a scan of the releasing row's own band) with the pre-#589
+arithmetic, so it isolates F6; ``after`` is the loop as it stands.  The
+pre-#589 functions are copied verbatim below so the arms differ in nothing
+else.  The run also asserts the arms name the same objects, because a cheaper
+release that released something else would not be a speedup.
 
 Run it through PrismaBuild on the box that pays for it::
 
@@ -84,11 +87,30 @@ def old_stage_keys_wanted(entries, mount_prefix, consumed, candidates):
 
 # ---- the two scenarios ----------------------------------------------------
 
-def before_advanced(entries, prefix, start, end):
-    """A frontier that moved, against one other row over the same bytes.
+def original_advanced(entries, prefix, start, end):
+    """The release path exactly as it stood before this PR's review.
 
-    469,007 of 469,008 entries are shared across three of these manifests, so
-    "the other row wants all of it" is the measured shape, not a corner.
+    One band, then one other row asked what it still wants.  The releasing
+    row was not asked about its own band -- that scan is what F5 added, and
+    it is why this arm is cheaper than ``before_advanced`` while doing less.
+    """
+
+    candidates = old_stage_keys_between(entries, prefix, start, end)
+    pending = set(candidates)
+    for _ in range(1):
+        if not pending:
+            break
+        pending -= old_stage_keys_wanted(entries, prefix, 0, pending)
+    return {str(key) for key in pending}, len(candidates)
+
+
+def before_advanced(entries, prefix, start, end):
+    """The same work the fixed loop does, with the old arithmetic.
+
+    F5's self-scan included, so this arm and ``after_advanced`` do the same
+    thing and differ only in how an object is named and compared.  469,007 of
+    469,008 entries are shared across three of these manifests, so "the other
+    row wants all of it" is the measured shape, not a corner.
     """
 
     candidates = old_stage_keys_between(entries, prefix, start, end)
@@ -167,15 +189,21 @@ def main(argv=None) -> int:
           f"{time.perf_counter() - started:.2f} s")
 
     frontier = (total * 2) // 3
+    original_keys, original_candidates = original_advanced(
+        entries, prefix, 0, frontier)
     before_keys, candidates = before_advanced(entries, prefix, 0, frontier)
     after_keys, after_candidates = after_advanced(entries, prefix, 0, frontier)
     assert before_keys == after_keys, "the arms name different objects"
-    print(f"  band (0, {frontier}]  candidates before={candidates} "
-          f"after={after_candidates}  released={len(before_keys)}  "
-          f"objects identical: {before_keys == after_keys}")
+    print(f"  band (0, {frontier}]  candidates original={original_candidates} "
+          f"before={candidates} after={after_candidates}  "
+          f"released={len(before_keys)}  objects identical: "
+          f"{before_keys == after_keys}  "
+          f"original names the same set: {original_keys == after_keys}")
 
     rows = []
     for repeat in range(args.repeats):
+        rows.append(("advanced original",
+                     timed(original_advanced, entries, prefix, 0, frontier)[0]))
         rows.append(("advanced before",
                      timed(before_advanced, entries, prefix, 0, frontier)[0]))
         rows.append(("advanced after",
@@ -185,16 +213,18 @@ def main(argv=None) -> int:
         rows.append(("unchanged after",
                      timed(after_unchanged, entries, prefix, frontier)[0]))
         print(f"  repeat {repeat}: " + "  ".join(
-            f"{name}={seconds:.3f}s" for name, seconds in rows[-4:]))
+            f"{name}={seconds:.3f}s" for name, seconds in rows[-5:]))
 
     print("\nbest of each arm, seconds:")
-    for name in ("advanced before", "advanced after",
+    for name in ("advanced original", "advanced before", "advanced after",
                  "unchanged before", "unchanged after"):
         best = min(seconds for label, seconds in rows if label == name)
         print(f"  {name:<18} {best:.3f}")
 
     if args.profile:
         for name, call, call_args in (
+                ("original", original_advanced,
+                 (entries, prefix, 0, frontier)),
                 ("before", before_advanced, (entries, prefix, 0, frontier)),
                 ("after", after_advanced, (entries, prefix, 0, frontier))):
             profiler = cProfile.Profile()
