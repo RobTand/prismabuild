@@ -3108,16 +3108,44 @@ declared read set rather than to a habit.
 
 A stage tier's `capacity_bytes` is the dataset's ZFS `available`: what a
 writer may still write, net of parity, slop and the bytes already on the
-dataset. Those staged bytes are held tokens (retained == held), so the ledger's
-supply is minted as **writable + held**: the tier loop adds the ledger's held
-`stage_gib` to the discovered token count and announces `writable_gib`,
-`held_gib` and `capacity_basis: "zfs available + held"` on the record. Minting
-from `available` alone counted every staged GiB twice -- free tokens fell as
-`available - held` and the window starved once staged bytes reached the pool's
-remaining free space, half the pool; on 2026-09-18 that left an 11 GiB head
-phase unrepublished behind 433 GiB held and 275 GiB writable (#621). A record
-that does not name the writable source (a fake, a legacy tier) is minted as it
-was.
+dataset. A mover takes its `stage_gib` tokens at claim and keeps them past
+`finish` only once its receipt says the whole range landed, so the tokens a
+ledger holds are two things: **landed** (a holder with a complete, unrefused
+receipt; its bytes are already subtracted from `available`) and **in flight**
+(a holder still copying, or one whose copy fell short and is about to
+release; its bytes are not). The ledger's supply is minted as **writable +
+landed** (`tier_loop.landed_and_in_flight`), and the record announces
+`writable_gib`, `landed_gib`, `in_flight_gib`, `held_gib` and
+`capacity_basis: "zfs available + landed"`.
+
+Both simpler formulas failed on `prismabuild-stage:dl380g10` on 2026-09-18.
+`available` alone counted every landed GiB twice -- free fell as
+`available - held` and the window starved at half the pool, an 11 GiB head
+phase unrepublished behind 433 GiB held and 275 GiB writable (#621).
+`available + held` counted a claimed mover's unlanded bytes as free and
+published one more window every cycle while the first was still copying: ten
+82 GiB movers admitted against 275 GiB writable, all ten ENOSPC (#623). A
+record that does not name the writable source (a fake, a legacy tier) is
+minted as it was.
+
+### A copy has no result to replay
+
+A mover's action key is a content hash and its receipt is filed in the CAS
+like any computation's, so republishing the same key -- the window asking for
+a range again after an egress, or after a copy that landed short -- would be
+answered by `run-local` with the old receipt as a `cache_hit` that moves no
+byte. `residency_pin_holds` rightly pins nothing for it, and the next cycle
+republishes it; nothing ever re-executes the copy (#624: the GLM run's 11 GiB
+head mover, replayed 25 times at 0.39 s each while the consumer sat `ready`
+on `lead_unpinned`). The pool cannot tell a copy from a computation by its
+key; the publisher can. The tier loop publishes every mover row and every
+egress row with `recompute=True`; `PoolQueue.publish` stamps `recompute` on
+the item, where it is not claim-scoped (a requeued movement node is still a
+movement node), and the claim launch passes it to `worker_argv`, which appends
+`--recompute`. `run-local` has carried that flag since before generation
+`2113f37bc68e`, so the frozen rows of a running campaign execute it. SLURM's
+launch is unchanged: it refuses recompute, and everything that is not a
+movement node still launches byte-identically to it.
 
 ### Where a tier ledger lives, and why it is a second root
 
@@ -3235,7 +3263,16 @@ tokens and deletes nothing: its bytes may be there and cannot be named.
 
 A consumer is admitted only when every lead has moved its bytes **and still
 holds them**; the second half is `residency_lead_unpinned`, and a missing mover
-receipt fails it, so "no receipt" can never read as "staged".
+receipt fails it, so "no receipt" can never read as "staged". Tokens alone are
+not the pin: they are filed under the key at *claim*, before a byte is written,
+and only kept past `finish` when the receipt says the range landed, so a lead
+that is claimed right now holds tokens exactly like one that finished and
+pinned. `_lead_is_pinned` therefore also refuses a lead that is claimed and one
+whose receipt is not a complete, unrefused copy (`staged_range_of`). On
+2026-09-18 a consumer's claim scan landed inside one replay's claim window,
+read a `done: executed` record from the previous generation beside claim-time
+tokens, judged the head resident, and was admitted onto a stage missing the
+range's 7 GB anchors file (#625).
 
 There is one other way a mover's tokens may change hands, and it is a hand-over
 rather than a return: `ResourceLedger.transfer` renames each token between two

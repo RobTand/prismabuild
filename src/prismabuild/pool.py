@@ -922,8 +922,15 @@ def worker_argv(
     action_key: str,
     cas_root: str | Path,
     checkout_root: str | Path,
+    recompute: bool = False,
 ) -> list[str]:
     """The canonical worker launch, identical to SLURM's minus its own gate.
+
+    ``recompute`` appends ``--recompute``, and only the pool transport ever
+    sets it: a movement node (a mover, an egress) is published with it because
+    its effect is bytes on a tier, not a result the CAS can replay.  SLURM
+    refuses the flag outright (``run-local --require-slurm-initial-start``),
+    so the default keeps the two launches byte-identical for everything else.
 
     ``slurm.py`` pins ``worker_argv`` to an exact list and refuses anything else,
     so that what a scheduler runs is what the action key describes.  This
@@ -944,7 +951,7 @@ def worker_argv(
         str(cas_root),
         "--checkout-root",
         str(checkout_root),
-    ]
+    ] + (["--recompute"] if recompute else [])
 
 
 def _drain(
@@ -3072,6 +3079,7 @@ class PoolQueue:
         container_owner: str | None = None,
         preempted_claim: Mapping[str, object] | None = None,
         residency: Mapping[str, object] | None = None,
+        recompute: bool = False,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -3168,6 +3176,18 @@ class PoolQueue:
         }
         if residency_block is not None:
             item["residency"] = residency_block
+        if recompute:
+            # A movement node.  Its key is a content hash and its receipt is
+            # filed in the CAS like any other, so a republish of the same key
+            # -- the window asking for a range again after an egress, or after
+            # a copy that landed short -- would be answered with the old
+            # receipt as a ``cache_hit`` that moves no bytes, and republished
+            # again next cycle, forever (2026-09-18: the GLM run's 11 GiB head
+            # mover, 25 replays at 0.39 s each, five entries never staged).
+            # The pool cannot tell a copy from a computation by its key; the
+            # publisher can, and says so here.  Not claim-scoped: a requeue
+            # of a movement node is still a movement node.
+            item["recompute"] = True
         if retry_safe is not None:
             item["retry_safe"] = retry_safe
         if container_owner is not None:
@@ -4418,11 +4438,33 @@ class PoolQueue:
             # tier predates the pin and is read as it was before.
             return True
         try:
-            return bool(self.tier_ledger(tier_id).holder_tokens(lead))
+            if not self.tier_ledger(tier_id).holder_tokens(lead):
+                return False
         except PoolContractError:
             return True
         except OSError as exc:
             return getattr(exc, "errno", None) != errno.ENOENT
+        # Tokens alone are not the pin.  They are filed under the key at
+        # *claim*, before a byte is written, and only kept past ``finish``
+        # when the receipt says the range landed -- so a lead that is claimed
+        # right now holds tokens exactly like one that finished and pinned,
+        # and a ``done`` record left by an earlier generation makes the two
+        # read alike above.  2026-09-18 (#625): a consumer was admitted inside
+        # one such window onto a head range whose receipt said ``complete:
+        # false`` and whose 7 GB anchors file was never staged.  A claim-time
+        # reservation is a promise; the pin is the receipt.
+        try:
+            if self.item_path(CLAIMED, lead).exists():
+                return False
+            receipt = self.move_record(lead)
+        except PoolContractError:
+            return True
+        except OSError as exc:
+            return getattr(exc, "errno", None) != errno.ENOENT
+        # The receipt half of ``residency_pin_holds``: the copy this key's
+        # tokens stand for was complete, unrefused, and onto this tier.
+        return (isinstance(receipt, Mapping) and receipt.get("complete") is True
+                and not receipt.get("refusal") and receipt.get("tier_id") == tier_id)
 
     def _transition_locked(self, action_key: str, *, blocking: bool = True):
         """Serialize one key's ownership transitions, never independent keys."""
@@ -9308,6 +9350,7 @@ class PoolQueue:
             action_key=key,
             cas_root=item["cas_root"],
             checkout_root=checkout_root,
+            recompute=item.get("recompute") is True,
         )
         allocation = item.get("cpu_allocation")
         if allocation is not None:

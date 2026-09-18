@@ -365,3 +365,37 @@ def test_an_unpinned_mover_still_gets_its_tokens_back(fleet) -> None:
 
     assert queue._filed_pin_holds(mover) is False
     assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 2
+
+
+def test_a_lead_that_is_claimed_right_now_is_not_pinned(fleet) -> None:
+    """Claim-time tokens are a promise; the pin is the receipt (#625).
+
+    The head mover ran once and landed short: its ``done`` record says
+    ``executed``, its receipt says ``complete: false``, its tokens went back
+    at ``finish``.  The next cycle republishes it, a worker claims it, and for
+    as long as that copy runs the ledger holds tokens under the same key.
+    The consumer's gate must still say no.
+    """
+
+    queue, mover = fleet.queue, _lead(fleet)
+    _cycle(fleet)
+    claim = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    assert claim is not None and claim["action_key"] == mover
+    queue.record_move(mover, {
+        "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": False,
+        "bytes_staged": PHASE_BYTES // 2, "entries_staged": 0,
+        "range_start_bytes": 0, "range_end_bytes": PHASE_BYTES,
+        "stage_root": str(fleet.stage),
+        "disk_pacing": {"mean_self_read_mb_s": 0.0}})
+    queue.finish(mover, status="executed", claim_snapshot=claim)
+    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
+    assert queue._lead_is_pinned(fleet.staged["residency"], mover) is False
+
+    _cycle(fleet)                                   # republished: unpinned, terminal
+    again = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    assert again is not None and again["action_key"] == mover
+    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
+
+    assert queue._lead_is_pinned(fleet.staged["residency"], mover) is False
+    verdict = queue.residency_verdict({"residency": fleet.staged["residency"]})
+    assert verdict["state"] != "resident", verdict

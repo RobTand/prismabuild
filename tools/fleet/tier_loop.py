@@ -532,7 +532,9 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         for phase in decision["publish"]:
             row = dict(phase["mover_row"])                 # type: ignore[arg-type]
             try:
-                queue.publish(**row)
+                # A copy has no result to replay: published with recompute,
+                # or a republished range is a cache hit that stages nothing.
+                queue.publish(**row, recompute=True)
             except (pool.PoolContractError, OSError) as exc:
                 published.append({"event": "mover-publish-failed", "consumer": key,
                                   "phase": phase["phase"], "error": repr(exc)})
@@ -548,7 +550,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                     or queue.item_path(pool.CLAIMED, egress_key).exists()):
                 continue      # already asked; asking again would double the row
             try:
-                queue.publish(**row)
+                queue.publish(**row, recompute=True)   # a deletion, likewise
             except (pool.PoolContractError, OSError) as exc:
                 published.append({"event": "egress-publish-failed", "consumer": key,
                                   "phase": phase["phase"], "error": repr(exc)})
@@ -595,6 +597,44 @@ def sweep_orphans(queue: pool.PoolQueue,
     return stage_release.sweep(queue, stage_roots=stage_roots, pressure=pressure)
 
 
+def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tuple[int, int]:
+    """Split a stage tier's held tokens into bytes on the dataset and bytes still coming.
+
+    A stage tier's ``capacity_bytes`` is ZFS ``available``: what may still be
+    written, net of every byte already on the dataset.  A mover takes its
+    tokens at claim, before it has written anything, and keeps them past
+    ``finish`` only once its receipt says the whole range landed
+    (``residency_pin_holds``).  So held tokens are two different things:
+
+    * **landed** -- a holder with a complete, unrefused receipt.  Its bytes are
+      already subtracted from ``available``; adding them back is what keeps
+      the supply from counting staged GiB twice (#621).
+    * **in flight** -- a holder still copying, or one whose copy fell short and
+      is about to release.  Its bytes are *not* yet in ``available``, and its
+      tokens are exactly the room the window must not hand out again.
+
+    Minting ``available + held`` treated both as landed and published one more
+    window every cycle while the first was still copying: 2026-09-18, gen
+    ``772d269c2164``, ten 82 GiB movers admitted against 275 GiB writable, all
+    ten ENOSPC (#623).  ``available + landed`` is the supply; in-flight tokens
+    stay a deduction until their bytes are on the dataset.
+    """
+    ledger = queue.tier_ledger(tier_id)
+    landed = 0
+    in_flight = 0
+    for key in ledger.held_keys():
+        tokens = int(ledger.holder_tokens(key).get(kind, 0))
+        if tokens <= 0:
+            continue
+        receipt = queue.move_record(key)
+        if (isinstance(receipt, Mapping) and receipt.get("complete") is True
+                and not receipt.get("refusal")):
+            landed += tokens
+        else:
+            in_flight += tokens
+    return landed, in_flight
+
+
 def cycle(
     queue: pool.PoolQueue,
     *,
@@ -616,19 +656,19 @@ def cycle(
         if (record.get("tier") == "stage" and kind in tokens
                 and record.get("capacity_source") == storage_tiers.WRITABLE_CAPACITY_SOURCE):
             # ``capacity_bytes`` is what ZFS will still let a writer write,
-            # net of the bytes already on the dataset -- and those bytes are
-            # exactly the tokens the movers that staged them still hold.
-            # Minting from ``available`` alone counted every staged GiB twice:
-            # the ledger retired free tokens as the dataset filled, free was
-            # ``available - held``, and the window starved at half the pool
-            # (2026-09-18: 433 GiB held, 275 GiB writable, zero free tokens,
-            # an 11 GiB head phase never republished; #621).  The supply is
-            # what is writable plus what is staged, so free tracks ``available``.
-            held = int(queue.tier_ledger(tier_id).held().get(kind, 0))
+            # net of the bytes already on the dataset.  Minting from
+            # ``available`` alone counted every staged GiB twice and starved
+            # the window at half the pool (#621); minting ``available + held``
+            # counted a claimed mover's unlanded bytes as free and admitted ten
+            # windows against one (#623).  The supply is what is writable plus
+            # what has *landed*; ``landed_and_in_flight`` draws the line.
+            landed, in_flight = landed_and_in_flight(queue, tier_id, kind)
             record["writable_gib"] = tokens[kind]
-            record["held_gib"] = held
-            record["capacity_basis"] = "zfs available + held"
-            tokens[kind] = tokens[kind] + held
+            record["held_gib"] = landed + in_flight
+            record["landed_gib"] = landed
+            record["in_flight_gib"] = in_flight
+            record["capacity_basis"] = "zfs available + landed"
+            tokens[kind] = tokens[kind] + landed
         record["fill_source"] = "measured" if storage_tiers.FILL_KIND in tokens else "none"
         record["fill_records"] = len(fill_records)
         # The probe rule, generalised from "nothing measured yet" to "nothing
