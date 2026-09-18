@@ -230,7 +230,25 @@ host gate but can still delay its own key.
 
 The pull queue orders ready items by descending priority, then descending
 admission-denial count, then oldest publication time. Aging changes order only
-within a priority band. A denied item past `STARVATION_FLOOR` may withhold its
+within a priority band.
+
+A ready record that states any of those three fields in a way the queue cannot
+read is **skipped from the listing and filed by the sweep**. `publish` refuses a
+non-integer `priority` and writes `published_unix` itself, so such a record was
+written by something that is not this queue; the ordering used to be computed in
+the sort, after the per-record parse guard, so one of them raised out of
+`ready_items` and took the whole listing — the claim scan, the prewarm loop's
+claim-order read and the supervisor view — for every caller at once, ahead of any
+per-item denial. An enumerator has no `record_denial` channel, which is why this
+site was left out of the per-item raise fixes. Skipping alone would be a second
+silence, so `_ready_record_usable` reads the same three fields from one
+definition: a record with no place in the queue's order is never listed, never
+claimed and never runs, which is exactly the unaddressable-resident defect
+`quarantine_orphans` files into `failed/` as `orphaned_stub`, where `pbstatus`
+counts it. The filed record names the offending field and the value it stated,
+and the original bytes stay beside it in `superseded/`. Values `int`/`float`
+accept keep the place they have always had: the guard turns a raise into an
+answer and changes no reading the sort already made. A denied item past `STARVATION_FLOOR` may withhold its
 host until `WITHHOLD_CEILING_S`, but higher-priority items have already been
 considered before that veto is reached. The existing withholding rule still
 protects large items within each band. Priority defaults to 0 and is queue
