@@ -5510,7 +5510,24 @@ class PoolQueue:
                                    "cancelled this generation",
                         )
                     continue
-                residency = self.residency_verdict(item)
+                # A lead's record that cannot be read -- corrupt bytes, or an
+                # ``ESTALE`` off a cold NFS handle -- must be a denial for the
+                # item naming that lead, not an escape out of the poll: this
+                # call is made before the admission try, and the caller is the
+                # worker loop, which has no handler to spare for it (#592).
+                # The wrap is here, at the one call site, rather than
+                # ``tolerate_stale`` inside the by-key readers, whose loudness
+                # is what turns a broken mount into a visible failure instead
+                # of a confident wrong verdict.
+                try:
+                    residency = self.residency_verdict(item)
+                except (OSError, PoolContractError) as exc:
+                    residency_block = item.get("residency")
+                    leads = (residency_block.get("leads")
+                             if isinstance(residency_block, Mapping) else None)
+                    self.record_denial(item, "residency_lead_record_unreadable", {
+                        "error": str(exc), "leads": leads})
+                    continue
                 if residency["state"] in ("lead_not_resident", "lead_unpinned",
                                           "map_not_composed", "map_unreadable"):
                     # Before any token is taken, and without ``record_pass``:
@@ -5530,9 +5547,33 @@ class PoolQueue:
                         item, f"residency_{residency['state']}",
                         {"residency": residency})
                     continue
-                sealed_demand = self.demand_of(item)
+                try:
+                    sealed_demand = self.demand_of(item)
+                except (TypeError, ValueError) as exc:
+                    # The same class as the tier id below, one step earlier and
+                    # for the same reason: ``publish`` refuses a ``resources``
+                    # block that is not an object of counts, so one that
+                    # reaches here arrived in a record this pool never wrote.
+                    # It is a denial for the item carrying it, not a raise out
+                    # of a poll whose only handler re-raises (#592).  ``int()``
+                    # over a foreign value raises ``TypeError`` as readily as
+                    # ``ValueError``, and ``demand_of`` raises
+                    # ``PoolContractError`` for a non-object, which is both.
+                    self.record_denial(item, "malformed_demand", {
+                        "resources": item.get("resources"), "error": str(exc)})
+                    continue
                 try:
                     demand, tier_demand = storage_tiers.split_demand(sealed_demand)
+                    # ``publish`` refuses these ids on the way in, so one that
+                    # parses to ``split_demand`` yet fails ``_check_tier_id``
+                    # arrived in a record this pool never wrote.  A foreign
+                    # writer's mistake is a denial for that item, not a raise
+                    # whose only handler re-raises and leaves every worker's
+                    # loop dead on the same record (#592).  In-memory string
+                    # checks over an already-parsed dict: nothing here adds
+                    # work to an item with no tier demand.
+                    for tier_id in tier_demand:
+                        self._check_tier_id(tier_id)
                 except ValueError as exc:
                     self.record_denial(item, "malformed_tier_demand", {
                         "demand": sealed_demand, "error": str(exc)})
