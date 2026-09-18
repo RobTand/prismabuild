@@ -3920,7 +3920,28 @@ class PoolQueue:
             return {"state": "lead_unpinned" if unpinned else "lead_not_resident",
                     "pending": pending,
                     "leads": [str(lead) for lead in leads]}
-        return {"state": "resident", "leads": [str(lead) for lead in leads]}
+        # Pinned bytes the consumer cannot find are bytes it does not read.
+        # The launcher passes ``RESIDENCY_MAP_ENV`` only when the composed map
+        # is on disk, and the loop composes it from the fragments a mover
+        # files -- so between a mover pinning its range and the next tier
+        # cycle there is a window in which every lead is resident and the map
+        # is not there yet.  Admitting in that window launches the consumer
+        # with no map, which is not a failure: it reads the pool at full cost
+        # and reports a clean run, which is exactly the outcome #583 exists to
+        # remove.  The item stays ready and is admitted on a later scan.
+        key = item.get("action_key")
+        composed: Path | None = None
+        if isinstance(key, str):
+            try:
+                composed = self.residency_map_path(key)
+            except PoolContractError:
+                composed = None
+        if composed is None or not composed.exists():
+            return {"state": "map_not_composed",
+                    "leads": [str(lead) for lead in leads],
+                    "map_path": str(composed) if composed is not None else None}
+        return {"state": "resident", "leads": [str(lead) for lead in leads],
+                "map_path": str(composed)}
 
     def _lead_is_pinned(self, residency: Mapping[str, object], lead: str) -> bool:
         """Does this finished lead still hold tokens for the bytes it staged?
@@ -5365,7 +5386,8 @@ class PoolQueue:
                         )
                     continue
                 residency = self.residency_verdict(item)
-                if residency["state"] in ("lead_not_resident", "lead_unpinned"):
+                if residency["state"] in ("lead_not_resident", "lead_unpinned",
+                                          "map_not_composed"):
                     # Before any token is taken, and without ``record_pass``:
                     # the bytes are not there, so this box should go do other
                     # work rather than age an item nothing on this box can
@@ -5374,6 +5396,9 @@ class PoolQueue:
                     # ``lead_unpinned`` is the same refusal for a lead that
                     # finished holding no tokens -- it moved nothing, it
                     # overran, or an egress has already taken its bytes back.
+                    # ``map_not_composed`` is the refusal for bytes that are
+                    # there and unreachable: without the map the action reads
+                    # the pool and says nothing went wrong.
                     self.record_denial(
                         item, f"residency_{residency['state']}",
                         {"residency": residency})

@@ -437,3 +437,69 @@ def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:
     # And it carries none of the consumer's own bounding: a copy is not the
     # work the progress policy or the profiler was asked about.
     assert pb.PROGRESS_PARAM not in first["params"]
+
+
+# -- what runs a mover, and where it is discovered --------------------------
+
+
+def test_the_tier_announces_the_interpreter_its_movers_run_under(
+    queue: pool.PoolQueue,
+) -> None:
+    """Discovered on the storage box, because that is the box movers run on.
+
+    A submitter on an aarch64 Spark sealing ``sys.executable`` would name a
+    venv that dl380g10 does not have, and the action would die at exec after
+    its tier capacity was already reserved.
+    """
+
+    def discover(**_kwargs) -> dict[str, dict[str, object]]:
+        return {TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
+                       "tier_id": TIER, "host": "dl380g10", "tier": "stage",
+                       "mountpoint": "/stage/prewarm",
+                       "capacity_bytes": 8 * storage_tiers.GIB}}
+
+    announced = tier_loop.cycle(
+        queue, host="dl380g10", source_pool="storage_pool",
+        receipts=tier_loop.ReceiptCache(), discover=discover)
+
+    record = announced[0]
+    assert record["mover_python"] == sys.executable
+    # The loop's own directory: publish_runtime writes every fleet script to
+    # ``tools/`` *and* ``tools/fleet/``, and a checkout keeps only the latter,
+    # so stage_move.py is beside tier_loop.py in either layout.
+    assert (Path(str(record["mover_tools_root"])) / "stage_move.py").is_file()
+    assert (Path(str(record["mover_tools_root"])) / "stage_release.py").is_file()
+    # ...and it survives the round trip through the announcement a submitter
+    # actually reads, rather than only the value returned here.
+    stored = {str(r["tier_id"]): r for r in queue.tiers()}[TIER]
+    assert stored["mover_python"] == record["mover_python"]
+
+
+def test_a_submitter_takes_the_interpreter_off_the_tier_not_off_itself() -> None:
+    import pbrun
+
+    tier = {"tier_id": TIER, "mover_python": "/opt/pb/bin/python3",
+            "mover_tools_root": "/mnt/shared/prismabuild-fleet/gen-7/tools"}
+
+    python, mover, egress = pbrun.movement_tools(tier)
+
+    assert python == "/opt/pb/bin/python3" != sys.executable
+    assert mover == "/mnt/shared/prismabuild-fleet/gen-7/tools/stage_move.py"
+    assert egress == "/mnt/shared/prismabuild-fleet/gen-7/tools/stage_release.py"
+
+
+@pytest.mark.parametrize("missing", ["mover_python", "mover_tools_root"])
+def test_a_tier_that_announces_neither_is_refused_rather_than_guessed(
+    missing: str,
+) -> None:
+    """The bite: drop one field and the submission refuses, naming it."""
+
+    import pbrun
+
+    tier = {"tier_id": TIER, "mover_python": "/opt/pb/bin/python3",
+            "mover_tools_root": "/gen/tools"}
+    del tier[missing]
+
+    with pytest.raises(SystemExit) as excinfo:
+        pbrun.movement_tools(tier)
+    assert missing in str(excinfo.value) and TIER in str(excinfo.value)

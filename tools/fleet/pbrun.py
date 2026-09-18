@@ -4828,6 +4828,40 @@ def resolve_stage_tier(queue, declared: str | None) -> dict[str, object]:
     return stages[0]
 
 
+def movement_tools(tier: Mapping[str, object]) -> tuple[str, str, str]:
+    """The interpreter and the two movement scripts, as the tier announces them.
+
+    Off the tier record, never off this process.  A mover runs on the box that
+    owns the stage, and the box that seals it is very often a different one of
+    a different architecture: PrismaQuant's dispatcher submits from an aarch64
+    Spark while the stage is dl380g10's.  ``sys.executable`` here names a venv
+    that does not exist there, and ``RUNTIME_ROOT`` is this process's view of
+    the generation; sealing either produces an action whose argv cannot start
+    on the only box it can be placed on -- and it would fail at exec time,
+    after the tier has already reserved its capacity.
+
+    ``tier_loop.py`` discovers both on that box and announces them beside
+    ``mountpoint``, which is the same kind of fact.  A tier that carries
+    neither is a tier announced by a generation older than this, and the
+    refusal says so rather than guessing.
+    """
+
+    tier_id = str(tier.get("tier_id") or "?")
+    python = str(tier.get("mover_python") or "")
+    root = str(tier.get("mover_tools_root") or "")
+    if not python.startswith("/") or not root.startswith("/"):
+        raise SystemExit(
+            f"pbrun: stage tier {tier_id} announces no interpreter or tool "
+            f"root for its movement nodes (mover_python={python!r}, "
+            f"mover_tools_root={root!r}).  tier_loop.py discovers both on the "
+            f"box that runs the movers; a tier last announced by a generation "
+            f"older than this one is the usual cause, and publishing the "
+            f"runtime again fixes it.  Filling them in from this process "
+            f"would seal an argv naming a python that is not on that box")
+    return (python, str(Path(root) / "stage_move.py"),
+            str(Path(root) / "stage_release.py"))
+
+
 def residency_stage_rows(
     template: Mapping[str, object],
     *,
@@ -4872,8 +4906,7 @@ def residency_stage_rows(
             f"pbrun: stage tier {tier_id} announces no mountpoint to write into")
     digest = str(entry["sha256"])
     tags = [str(tier["host"])]
-    mover_tool = str(RUNTIME_ROOT / "tools" / "fleet" / "stage_move.py")
-    egress_tool = str(RUNTIME_ROOT / "tools" / "fleet" / "stage_release.py")
+    mover_python, mover_tool, egress_tool = movement_tools(tier)
     pool_root = str(SH / "pb-queue")
 
     phases: list[dict[str, object]] = []
@@ -4888,7 +4921,7 @@ def residency_stage_rows(
         demand["mem_gb"] = args.residency_mover_mem_gb
         mover = seal_movement_action(
             template,
-            command=[sys.executable, mover_tool,
+            command=[mover_python, mover_tool,
                      "--pool-root", pool_root,
                      "--cas-root", str(SH / "cas"),
                      "--consumer-action-key", consumer_action_key,
@@ -4901,7 +4934,7 @@ def residency_stage_rows(
             log_name=f"stage-move-{ordinal:04d}-{span['name']}.log")
         egress = seal_movement_action(
             template,
-            command=[sys.executable, egress_tool,
+            command=[mover_python, egress_tool,
                      "--pool-root", pool_root,
                      "--mover-action-key", str(mover["action_key"]),
                      "--consumer-action-key", consumer_action_key,

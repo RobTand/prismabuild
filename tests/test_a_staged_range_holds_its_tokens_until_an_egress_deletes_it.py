@@ -172,8 +172,25 @@ def _finished_pinned_mover(queue) -> None:
     queue.finish(MOVER, status="executed")
 
 
+def _compose_map(queue, *, consumer: str = CONSUMER) -> Path:
+    """The composed map, which admission requires as well as the pin."""
+
+    return residency_map.write_map(
+        queue.residency_map_path(consumer),
+        residency_map.compose([{
+            "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+            "consumer_action_key": consumer, "mover_action_key": MOVER,
+            "tier_id": TIER, "stage_root": "/stage/prewarm",
+            "manifest_sha256": MANIFEST,
+            "entries": {residency_map.residency_map_key("/pool/a.bin", 0): {
+                "stage_path": "/stage/prewarm/a.bin", "bytes": 4096,
+                "offset": 0, "sha256": DIGEST}},
+        }]))
+
+
 def test_a_consumer_is_admitted_on_a_lead_that_holds_its_bytes(queue) -> None:
     _finished_pinned_mover(queue)
+    _compose_map(queue)
     _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
              residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                         "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
@@ -183,6 +200,35 @@ def test_a_consumer_is_admitted_on_a_lead_that_holds_its_bytes(queue) -> None:
 
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"]["state"] == "resident"
+
+
+def test_a_pinned_range_with_no_composed_map_is_refused(queue) -> None:
+    """Both halves, or neither: the bytes have to be there *and* addressable.
+
+    The launcher sets ``PRISMABUILD_RESIDENCY_MAP`` only when the composed map
+    exists, so a consumer admitted before the tiers loop has composed it runs
+    with no map at all -- reading the pool at full cost and finishing clean.
+    That failure is invisible in the receipt, which is the one failure mode
+    this whole change exists to remove.
+    """
+
+    _finished_pinned_mover(queue)
+    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
+             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
+                        "leads": [MOVER]})
+
+    assert queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"]) is None
+    denial = _denial(queue, CONSUMER)
+    assert denial is not None and denial["reason"] == "residency_map_not_composed"
+    # Refused without ageing the item or taking a token: the loop composes on
+    # its next cycle and the item is admitted then, unchanged.
+    assert queue.passes(CONSUMER) == 0
+    assert queue.ledger("dl380g10").holder_tokens(CONSUMER) == {}
+
+    _compose_map(queue)
+    claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    assert claimed is not None and claimed["action_key"] == CONSUMER
 
 
 def test_a_lead_that_finished_holding_nothing_is_refused(queue) -> None:
@@ -233,6 +279,7 @@ def test_a_block_that_names_no_tier_reads_as_it_did_before(queue) -> None:
                         "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
                         "leads": [MOVER]})
 
+    _compose_map(queue)
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == CONSUMER
 

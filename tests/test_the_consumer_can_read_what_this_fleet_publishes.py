@@ -148,10 +148,16 @@ def test_the_tiers_role_arguments_are_ones_the_loop_accepts() -> None:
 
     import tier_loop
 
-    parser = tier_loop.main.__globals__["argparse"].ArgumentParser
-    assert parser is not None            # the loop builds its parser in main
     roles = dict(supervise.declared_roles("dl380g10"))
     # Drive the real entry point far enough to parse, then stop: --once would
-    # discover this box's tiers, and a test may not mint anything.
-    with pytest.raises(SystemExit):
+    # discover this box's tiers, and a test may not mint anything.  The stop is
+    # a deliberate refusal on a value the parser accepts, so that an argument
+    # the parser *rejects* cannot pass this test by raising the same SystemExit
+    # argparse raises on an unknown flag -- the message is what separates them.
+    with pytest.raises(SystemExit) as accepted:
         tier_loop.main([*roles["tiers"], "--interval-s", "0"])
+    assert "--interval-s" in str(accepted.value)
+
+    with pytest.raises(SystemExit) as rejected:
+        tier_loop.main([*roles["tiers"], "--no-such-flag"])
+    assert "--interval-s" not in str(rejected.value)

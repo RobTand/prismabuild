@@ -3215,6 +3215,29 @@ question two actions and cost every staged run its CAS hit. `PRISMABUILD_ACTION_
 is how a movement node learns the key it files receipts and holds tokens under —
 a key sealed into the argv it is computed from has no fixed point.
 
+Because the variable is set only when the file exists, the residency gate
+requires the composed map as well as the pin: a consumer admitted after its
+mover pinned 34 GB but before the loop's next cycle would launch with no map,
+read the pool at full cost and file a clean receipt. That is the one failure
+this whole change exists to remove and the one nothing downstream can see, so
+the verdict denies `map_not_composed`, which leaves the item ready, ages
+nothing and takes no token; the next cycle composes and it is admitted then,
+unchanged.
+
+### What runs a mover
+
+A mover's argv names an interpreter and a script path, and both belong to the
+box that owns the stage rather than to the box that seals the action. The
+submitter is very often neither: PrismaQuant's dispatcher submits from an
+aarch64 Spark and the stage is dl380g10's, so the submitter's `sys.executable`
+names a venv that is not there and the action would die at exec — after the
+tier had already reserved its capacity. So `tier_loop` announces `mover_python`
+and `mover_tools_root` on every tier record, discovered on the box that will
+run them, beside `mountpoint`, which is the same kind of fact; `pbrun` reads
+both off the tier or refuses. `publish_runtime` writes every fleet script to
+both `tools/<name>` and `tools/fleet/<name>`, and a checkout keeps only the
+latter, so the loop's own directory holds `stage_move.py` in either layout.
+
 ### Not built here
 
 No end-to-end campaign speedup is claimed, and none is measurable until a

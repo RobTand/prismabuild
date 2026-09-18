@@ -53,6 +53,17 @@ import stage_release  # noqa: E402
 #: ``record_move`` and this loop reads them for the fill measurement.
 MOVER_RECEIPTS = pool.MOVERS
 
+#: The interpreter this loop runs under, and the directory the fleet scripts
+#: were published into beside it.  Read here rather than passed in: the loop is
+#: spawned on the storage box by the supervisor, from the published generation,
+#: so these two values are that box's own answer to "what runs a mover".
+#: ``publish_runtime`` writes every fleet script to ``tools/<name>`` *and*
+#: ``tools/fleet/<name>``, and a checkout keeps them only under
+#: ``tools/fleet/``, so the loop's own directory holds ``stage_move.py`` in
+#: either layout.
+MOVER_PYTHON = sys.executable
+MOVER_TOOLS_ROOT = str(Path(__file__).resolve().parent)
+
 
 class ReceiptCache:
     """Receipts read once per (path, mtime); the pool's fill history is append-only."""
@@ -307,6 +318,17 @@ def cycle(
                 record["fill_source"] = "probe"
                 record["fill_probe_mb_s"] = probe
         record["tokens"] = tokens
+        # What a movement node on this tier is run *with*, discovered on the
+        # box that will run it.  A mover for the dl380g10 stage is sealed by a
+        # submitter on an aarch64 Spark, whose ``sys.executable`` names a venv
+        # that does not exist here and whose generation root is reached by a
+        # path this box need not share; sealing either of them into the
+        # mover's argv produces an action that cannot start on the only box it
+        # can be placed on.  Announced beside ``mountpoint`` because it is the
+        # same kind of fact: something about this box that a submitter would
+        # otherwise have to guess.
+        record["mover_python"] = MOVER_PYTHON
+        record["mover_tools_root"] = MOVER_TOOLS_ROOT
         record["ledger"] = queue.mint_tier_capacity(tier_id, tokens)
         queue.announce_tier(record)
         announced.append(record)

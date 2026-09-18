@@ -28,7 +28,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import adaptive_cpu, pool, storage_tiers  # noqa: E402
+from prismabuild import adaptive_cpu, pool, residency_map, storage_tiers  # noqa: E402
 
 MOVER = "1" * 64
 CONSUMER = "2" * 64
@@ -204,6 +204,26 @@ def _publish_consumer(q: pool.PoolQueue, leads: list[str]) -> None:
     })
 
 
+def _compose_map(q: pool.PoolQueue, *, mover: str = MOVER) -> Path:
+    """What the tiers loop writes once a mover has filed its fragment.
+
+    Admission needs it: pinned bytes the consumer has no map to reach are
+    bytes it reads off the pool at full cost while reporting a clean run.
+    """
+
+    return residency_map.write_map(
+        q.residency_map_path(CONSUMER),
+        residency_map.compose([{
+            "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+            "consumer_action_key": CONSUMER, "mover_action_key": mover,
+            "tier_id": TIER, "stage_root": "/stage/prewarm",
+            "manifest_sha256": "a" * 64,
+            "entries": {residency_map.residency_map_key("/pool/a.bin", 0): {
+                "stage_path": "/stage/prewarm/a.bin", "bytes": 4096,
+                "offset": 0, "sha256": "d" * 64}},
+        }]))
+
+
 def test_a_consumer_waits_until_its_lead_mover_has_moved_the_bytes(
     queue: pool.PoolQueue,
 ) -> None:
@@ -224,9 +244,19 @@ def test_a_consumer_waits_until_its_lead_mover_has_moved_the_bytes(
     mover_claim = queue.claim(owner="mover", capacity={"cpu": 4})
     assert mover_claim is not None and mover_claim["action_key"] == MOVER
     queue.finish(MOVER, status="executed", claim_snapshot=mover_claim)
+
+    # ...once the loop has composed the map.  Until then the bytes are on the
+    # stage and the consumer cannot address them, which is a full-cost pool
+    # read wearing a clean receipt.
+    assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
+    denial = _denial(queue, CONSUMER)
+    assert denial is not None and denial["reason"] == "residency_map_not_composed"
+
+    composed = _compose_map(queue)
     claimed = queue.claim(owner="worker", capacity={"cpu": 4})
     assert claimed is not None and claimed["action_key"] == CONSUMER
-    assert claimed["residency_verdict"] == {"state": "resident", "leads": [MOVER]}
+    assert claimed["residency_verdict"] == {
+        "state": "resident", "leads": [MOVER], "map_path": str(composed)}
 
 
 def test_a_cache_hit_lead_moved_no_bytes_and_does_not_satisfy_the_gate(
