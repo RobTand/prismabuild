@@ -1023,10 +1023,76 @@ def _process_alive(pid: int) -> bool:
     return bool(after_comm) and after_comm[0] != "Z"
 
 
+def _observe_child(scope, *, sampled: float,
+                   last_output_unix: float | None) -> dict[str, object]:
+    """The daemon-spawned payload, seen through the cgroup it was put in.
+
+    ``resource_exec.py`` is a proxy: it hands the broker its stdio and waits on
+    the socket, and the *broker* forks the payload.  So the payload is not a
+    descendant of this worker and no process tree from here reaches it.  Action
+    ``766d7ae5e0382b755a1189d4c1c3a42407d90fdb3cea56898b02b26855908489`` is
+    what that costs: ``launcher_alive: true`` with ``stdout_bytes: 218`` for
+    the whole 3600 s ceiling, while a pytest child burned 15% of a core in a
+    futex wait.  A shard that hangs 31 s in looked exactly like one that was
+    working, for an hour.
+
+    The cgroup is what the worker and the broker's payload do have in common,
+    so it is read here: the pids in it, whether any is still a live process,
+    and the CPU the kernel has charged it.  "CPU advancing, output not" is the
+    signature the hung action had and the one a claim-loop consumer needs;
+    neither number alone says it.
+
+    Fails closed.  When there is no scope, no cgroup, or nothing readable, the
+    record is ``{"source": "unobserved", ...}`` with **no** ``alive`` field:
+    an unreadable cgroup is not an empty one, and a liveness this worker
+    cannot see is one it must not report.
+    """
+
+    if scope is None:
+        return {"source": "unobserved",
+                "detail": "action runs outside a resource scope, so no "
+                          "daemon-spawned payload exists to observe"}
+    path = getattr(scope, "cgroup_path", None)
+    if path is None:
+        return {"source": "unobserved",
+                "detail": "resource scope has no cgroup yet"}
+    errors: list[str] = []
+    try:
+        pids = resource_scope.scope_pids(Path(path), errors=errors)
+    except Exception as exc:  # a sample must never end the attempt
+        return {"source": "unobserved",
+                "errors": [f"{type(exc).__name__}: {exc}"]}
+    if errors and not pids:
+        # Refused reads and an empty group are indistinguishable from here.
+        return {"source": "unobserved", "errors": errors[-8:]}
+    record: dict[str, object] = {
+        "source": "resource-scope-cgroup",
+        # Bounded: a fan-out payload can hold thousands, and a lease is read
+        # far more often than this list is needed in full.
+        "pids": sorted(pids)[:64],
+        "pid_count": len(pids),
+        "alive": any(_process_alive(pid) for pid in pids),
+    }
+    if last_output_unix is not None:
+        record["silent_s"] = max(0.0, sampled - float(last_output_unix))
+    try:
+        counters = resource_scope.read_cgroup(Path(path))
+    except (OSError, ValueError, KeyError) as exc:
+        errors.append(f"{type(exc).__name__}: {exc}")
+    else:
+        for name in ("cpu_seconds", "cpu_user_seconds", "cpu_system_seconds"):
+            if name in counters:
+                record[name] = counters[name]
+    if errors:
+        record["errors"] = errors[-8:]
+    return record
+
+
 def _observe_execution(
     process: subprocess.Popen,
     previous: Mapping[str, object] | None = None,
     *, stdout: bytes | None = None, stderr: bytes | None = None,
+    scope=None,
 ) -> dict[str, object]:
     """Sample our child and cumulative pipe buffers, without shared I/O.
 
@@ -1034,14 +1100,20 @@ def _observe_execution(
     existence nor output is proof of useful application progress or permission
     to retry. The sample time must survive a delayed heartbeat publication.
     ``TimeoutExpired`` carries bytes even for a text-mode Popen.
+
+    ``scope`` adds the half the pipes cannot see: the payload the resource
+    daemon forked, which is nobody's descendant here.  See `_observe_child`.
     """
     before = previous or {}
     counts = {"stdout_bytes": len(stdout or b""), "stderr_bytes": len(stderr or b"")}
     alive = process.poll() is None
     sampled = _now()
     changed = any(count > before.get(name, 0) for name, count in counts.items())
+    last_output = sampled if changed else before.get("last_output_unix")
     return {"source": "launcher-pipes", "sampled_unix": sampled, "launcher_alive": alive, **counts,
-            "last_output_unix": sampled if changed else before.get("last_output_unix")}
+            "last_output_unix": last_output,
+            "child": _observe_child(scope, sampled=sampled,
+                                    last_output_unix=last_output)}
 
 
 def action_process_groups(launcher_pid: int) -> list[int]:
@@ -9055,7 +9127,7 @@ class PoolQueue:
         # Popen belongs under the same guard.
         try:
             checkpoint_started = time.monotonic()
-            observation = _observe_execution(process)
+            observation = _observe_execution(process, scope=scope)
             watch = (None if progress is None else ProgressWatch(
                 progress_path, progress_token, progress,
                 started=checkpoint_started))
@@ -9113,7 +9185,8 @@ class PoolQueue:
                 except subprocess.TimeoutExpired as exc:
                     checkpoint_started = time.monotonic()
                     observation = _observe_execution(
-                        process, observation, stdout=exc.output, stderr=exc.stderr)
+                        process, observation, stdout=exc.output,
+                        stderr=exc.stderr, scope=scope)
                     if scope is not None:
                         telemetry = self._sample_resource_scope(scope)
                         resource_failure = self._resource_failure(telemetry)

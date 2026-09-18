@@ -715,8 +715,37 @@ def _execution_observation(claim: dict, lease: dict | None, *, now: float) -> di
     note = ("launcher running" if alive else
             "launcher exited; descendant liveness unknown")
     note += ("; no output observed" if output is None else f"; output {output_age:.0f}s ago")
+    note += f"; {_child_note(value.get('child'))}"
     return {**value, "state": "fresh", "age_s": age,
             "last_output_age_s": output_age, "note": note}
+
+
+def _child_note(child: object) -> str:
+    """One clause about the payload the resource daemon forked.
+
+    The launcher's own liveness says nothing about it -- ``766d7ae5...`` held
+    a claim for an hour on ``launcher_alive: true`` while the payload sat in a
+    futex wait (#600) -- so the reader that decides whether to surface a claim
+    needs the child's own liveness, CPU and silence in the same line.  An
+    observation that predates the field, or one the worker could not take,
+    reads as unobserved: never as an absent child.
+    """
+
+    if not isinstance(child, dict):
+        return "child unobserved"
+    if child.get("source") != "resource-scope-cgroup" or "alive" not in child:
+        return "child unobserved"
+    count = child.get("pid_count")
+    clause = ("child running" if child.get("alive") else "child gone")
+    if isinstance(count, int):
+        clause += f" ({count} pid{'' if count == 1 else 's'})"
+    cpu = child.get("cpu_seconds")
+    if isinstance(cpu, (int, float)) and not isinstance(cpu, bool):
+        clause += f", cpu {float(cpu):.0f}s"
+    silent = child.get("silent_s")
+    if isinstance(silent, (int, float)) and not isinstance(silent, bool):
+        clause += f", silent {float(silent):.0f}s"
+    return clause
 
 
 def _pool_sidecar(path: Path) -> dict | None | Exception:

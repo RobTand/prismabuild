@@ -475,7 +475,19 @@ the remaining #234 requirements cannot be inferred from those passing cases.
 
 Execution heartbeats carry an optional `execution_observation`: the direct
 launcher's polled liveness, cumulative stdout/stderr bytes captured at the
-checkpoint, and the time output was last observed to grow. Observation time is
+checkpoint, and the time output was last observed to grow. The launcher is not
+the payload. Under the resource transport it is a proxy that hands the broker
+its stdio and waits on the socket, and the broker forks the work, so the
+launcher's liveness says nothing about whether the work is progressing. The
+observation therefore also carries a `child` record read from the attempt's
+cgroup: the pids in it, a per-pid kernel liveness check, the CPU the group has
+been charged split user and system, and how long it has been since output was
+seen. It fails closed. Absent scope, absent cgroup, an unreadable group, or a
+refused read beside an empty result all report `source: unobserved` and no
+liveness field at all; a group that was read and found empty reports no pids
+and a false liveness, which is a different and stronger statement. Readers
+treat a missing `child`, as an observation written before this field, as
+unobserved and never as an absent payload. Observation time is
 sampled locally before lease publication and is never refreshed merely because
 a delayed shared write completes. Lease publication also records the claim's
 publication identity. Status accepts observations only from that exact key,

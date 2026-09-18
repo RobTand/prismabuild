@@ -157,6 +157,75 @@ def replayed_output(out: str) -> str:
 #: file and holds the one reader of the default, so a shard's transport is the
 #: fleet's transport rather than a second opinion about it.
 from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
+#: The per-test bound's name and the ceiling the worker loops enforce, read
+#: from the modules that own them rather than restated here: a bound derived
+#: from a number this file copied would drift the moment either moved.
+from prismabuild import pytest_test_bound  # noqa: E402
+from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
+
+
+def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
+    """What each live worker able to take these shards says its ceiling is.
+
+    ``None`` for a box that announced no ceiling, which is "did not say" and
+    never "no limit" -- the same reading ``pool.placement_timeout_ceilings``
+    insists on, and for the same reason.  An unreadable queue answers with an
+    empty mapping: a bound is a convenience, and failing a submission because
+    the shared store was slow would be a worse trade than deriving from the
+    published default.
+    """
+
+    try:
+        offers = pool.PoolQueue().offers()
+    except Exception:
+        return {}
+    required = set(tags)
+    ceilings: dict[str, float | None] = {}
+    for offer in offers:
+        if not required <= set(offer.get("tags") or ()):
+            continue
+        announced = offer.get("timeout_ceiling_s")
+        ceilings[str(offer.get("host") or "?")] = (
+            float(announced)
+            if isinstance(announced, (int, float)) and not isinstance(announced, bool)
+            else None)
+    return ceilings
+
+
+def per_test_bound(*, timeout_s: float | None, override_s: float | None,
+                   ceilings: dict[str, float | None] | None = None) -> float:
+    """The per-test bound a shard exports, in seconds; ``0`` means none.
+
+    Derived, not chosen.  The bound exists so a hung test is *named*, and the
+    only thing that names it is pytest itself, reporting the failure before
+    the pool's deadline ends the lease.  So the largest useful bound is the
+    one that still fires inside the lease, and the margin it needs is one
+    heartbeat: ``pool.HEARTBEAT_S`` is the interval at which the lease's
+    ``execution_observation`` is refreshed, so an alarm that fires a heartbeat
+    early is one whose stderr bytes -- the node id the handler writes before
+    raising -- are counted into the record while the action is still alive.
+
+    The ceiling is the smaller of what the submitter asked for and what the
+    boxes that could claim these shards announce, which is exactly the ``min``
+    ``pool._execution_timeout`` applies.  Reading the announcement matters:
+    dl380g10 announces 3600 s, so a bound derived from the published loop
+    default of 7200 s would never have fired on the very box whose shard hung.
+    ``DEFAULT_EXECUTION_CEILING_S`` is the fallback for a fleet that announced
+    nothing, where the bound may be too generous to fire -- which leaves the
+    shard behaving exactly as it does today, never worse.
+
+    ``--test-timeout-s`` overrides it, because a shard whose duration has been
+    measured can be bounded far tighter than its ceiling, and ``0`` disables
+    the bound for a run that wants the old, unbounded behaviour.
+    """
+
+    if override_s is not None:
+        return max(0.0, float(override_s))
+    announced = [value for value in (ceilings or {}).values() if value is not None]
+    ceiling = min(announced) if announced else DEFAULT_EXECUTION_CEILING_S
+    if timeout_s is not None:
+        ceiling = min(ceiling, float(timeout_s))
+    return max(0.0, ceiling - pool.HEARTBEAT_S)
 
 
 def discover(checkout: Path, paths: list[str]) -> list[str]:
@@ -281,6 +350,13 @@ def main() -> int:
                          "or expand {shard}. Replaces pytest addopts when supplied")
     ap.add_argument("--timeout-s", type=float, default=None,
                     help="an explicit deadline for each shard; unset means none")
+    ap.add_argument("--test-timeout-s", type=float, default=None,
+                    help="per-test bound for every shard, in seconds; the "
+                         "default is derived from the shard's own execution "
+                         "ceiling and 0 disables the bound. A test that "
+                         "outlives it fails, named, instead of holding the "
+                         "shard's slot to the ceiling (#600). Tighten it only "
+                         "on a measured shard duration")
     ap.add_argument("--wait-s", type=float, default=10800.0,
                     help="how long each shard waits for the fleet to run it, "
                          "queueing included; forwarded to pbrun")
@@ -423,6 +499,17 @@ def main() -> int:
 
     pytest_workers = (["-n", str(args.workers_per_shard)]
                       if args.workers_per_shard > 1 else [])
+
+    test_bound_s = per_test_bound(
+        timeout_s=args.timeout_s, override_s=args.test_timeout_s,
+        ceilings=announced_ceilings(tags))
+    test_bound = ([f"{pytest_test_bound.TIMEOUT_ENV}={test_bound_s:g}"]
+                  if test_bound_s > 0 else [])
+    if test_bound:
+        print(f"pbtest: per-test bound {test_bound_s:g}s "
+              f"({pytest_test_bound.TIMEOUT_ENV}); a test that outlives it "
+              "fails as itself instead of holding the shard to its ceiling",
+              flush=True)
     procs = []
     for index, bucket in enumerate(buckets):
         # Built in order rather than spliced into.  The repeatable --tag used
@@ -475,7 +562,7 @@ def main() -> int:
         explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
         command = flags + [
             "--", "env", "TMPDIR=/home/rob/tmp",
-            *threads, *explicit_env,
+            *threads, *test_bound, *explicit_env,
             "PYTHONPATH=src:experiments",
             *python_entry, "-q", "--no-header",
             "-p", "no:cacheprovider", *explicit_options,

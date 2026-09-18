@@ -97,6 +97,13 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import box_capacity, core as pb, cpu_topology, pool  # noqa: E402
 from pbstatus import Deadline, bounded  # noqa: E402
 
+#: The safety ceiling a worker loop enforces on one action unless told
+#: otherwise.  Named because submitters derive from it: a shard that sets no
+#: ``--timeout-s`` of its own still runs under this, and ``pbtest.py`` sizes
+#: its per-test bound against it (#600).  A box is free to announce a lower
+#: ceiling; ``pbrun.timeout_ceiling_notice`` is what says so at submission.
+DEFAULT_EXECUTION_CEILING_S = 7200.0
+
 #: Consecutive ``serve_once`` failures before the loop gives up and lets the
 #: supervisor replace it.  Survive the items; do not survive a broken box.
 MAX_CONSECUTIVE_ERRORS = 5
@@ -600,7 +607,7 @@ def _run_loop(stop_requested):
     ap.add_argument("--once", action="store_true",
                     help="serve at most one action and exit, whether or not "
                          "the queue had anything (debug)")
-    ap.add_argument("--timeout-s", type=float, default=7200.0,
+    ap.add_argument("--timeout-s", type=float, default=DEFAULT_EXECUTION_CEILING_S,
                     help="how long a single action may run before this loop "
                          "kills it")
     ap.add_argument("--poll-s", type=float, default=10.0,
