@@ -40,7 +40,7 @@ the consumer never waits on a mover that is waiting on the consumer.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import json
 from pathlib import Path
 
@@ -266,19 +266,48 @@ def freeze(queue, plan: Mapping[str, object]) -> dict[str, object]:
     return checked
 
 
-def read(queue, consumer_action_key: str) -> dict[str, object] | None:
+def read(queue, consumer_action_key: str, *,
+         on_unreadable: Callable[[Exception], None] | None = None,
+         ) -> dict[str, object] | None:
     """One consumer's frozen plan, or ``None`` when it has none.
 
-    ``None`` is the ordinary answer -- almost no action is staged -- and a
-    plan that cannot be read or does not validate answers the same way, so a
-    corrupt file leaves the consumer reading the pool rather than stopping the
-    loop that was going to stage for somebody else.
+    ``None`` stays the ordinary answer -- almost no action is staged -- and a
+    plan that cannot be read or does not validate still answers the same way,
+    so a corrupt file leaves the consumer reading the pool rather than
+    stopping the loop that was going to stage for somebody else.
+
+    ``on_unreadable`` is how a caller tells those two apart.  It was one
+    answer for both until #615: a plan written by a generation that knows one
+    more key than this reader does is refused by ``validate_plan``, and the
+    coordinator then skipped that consumer every cycle with nothing in its
+    log -- 25 minutes of an idle GPU behind a staged head window.  *No plan*
+    is nobody's work; *a plan this reader refuses* is a consumer that will
+    never be staged for, which is a denial and belongs in a record.  The
+    callback is given the refusal, and the answer is still ``None`` so no
+    caller has to grow a second branch to stay safe.
     """
 
+    def refused(error: Exception) -> None:
+        if on_unreadable is not None:
+            on_unreadable(error)
+
     try:
-        with open(queue.residency_plan_path(consumer_action_key)) as stream:
-            return validate_plan(json.load(stream))
-    except (OSError, ValueError):
+        raw = Path(queue.residency_plan_path(consumer_action_key)).read_text()
+    except FileNotFoundError:
+        return None                       # the ordinary answer: none was filed
+    except OSError as error:
+        # A plan that is there and unreadable -- a torn write, or this mount's
+        # quarter-hourly ESTALE (#575).  Not the same as absent.
+        refused(error)
+        return None
+    except ValueError as error:
+        # ``residency_plan_path`` refuses a key that is not an action key.
+        refused(error)
+        return None
+    try:
+        return validate_plan(json.loads(raw))
+    except ValueError as error:
+        refused(error)
         return None
 
 

@@ -49,6 +49,10 @@ from prismabuild import storage_tiers  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
+#: The same generation gate ``prewarm_loop`` reads, under the same name, for
+#: the same reason: a loop holds the modules it imported for its whole life,
+#: so a fix published under a running fleet reaches none of it (#615).
+import worker_loop as runtime_gate  # noqa: E402
 
 #: One definition, in the pool: ``stage_move.py`` writes these through
 #: ``record_move`` and this loop reads them for the fill measurement.
@@ -148,7 +152,11 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
                         queue, key, float(claimed_unix))
                     if observation is not None:
                         accepted = str(observation["phase"])
-            out.append({"action_key": key, "state": state, "accepted_phase": accepted})
+            # The record itself travels beside the key: ``record_denial`` is
+            # keyed by an item's own ``published_unix`` generation, so a
+            # coordinator that carried only the key could not file one.
+            out.append({"action_key": key, "state": state,
+                        "accepted_phase": accepted, "item": item})
     return out
 
 
@@ -220,8 +228,27 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
     published: list[dict[str, object]] = []
     for consumer in live_consumers(queue):
         key = str(consumer["action_key"])
-        plan = residency_plan.read(queue, key)
+        refusals: list[Exception] = []
+        plan = residency_plan.read(queue, key, on_unreadable=refusals.append)
         if plan is None:
+            if not refusals:
+                continue      # no plan filed: this consumer is nobody's to stage
+            # A plan this reader refuses is a denial, and it used to be a
+            # ``continue`` with nothing behind it.  #609 added ``demand_source``
+            # to the plan's key set; a tier loop two generations old refused
+            # every plan carrying it and skipped its consumer every cycle, so
+            # the GLM run stage sat ready for 25 minutes behind a staged head
+            # window with an idle GPU and a log that said only ``tier-cycle``.
+            # Said twice on purpose, because two different people read them:
+            # the event for whoever is watching this box, and the claim denial
+            # for whoever runs ``pbstatus`` from anywhere.
+            error = repr(refusals[0])
+            published.append({"event": "plan-unreadable", "consumer": key,
+                              "error": error})
+            item = consumer.get("item")
+            if isinstance(item, Mapping):
+                queue.record_denial(item, "residency_plan_unreadable",
+                                    {"error": error})
             continue
         tier_id = str(plan["tier_id"])
         if tier_id not in tiers:
@@ -409,7 +436,30 @@ def main(argv: list[str] | None = None) -> int:
     queue.ensure_layout()
     host = socket.gethostname()
     receipts = ReceiptCache()
+    loaded_commit = runtime_gate.loaded_runtime_commit()
+    loaded_generation = runtime_gate._generation_at(runtime_gate.GENERATION_VERSION)
+
+    def runtime_moved() -> bool:
+        current = runtime_gate.published_commit()
+        current_generation = runtime_gate._generation_at(runtime_gate.RUNTIME_VERSION)
+        return bool((current and current != loaded_commit) or (
+            loaded_generation and current_generation
+            and loaded_generation != current_generation))
+
     while True:
+        # Read at the top of the cycle, never inside one: every mutation this
+        # loop makes is a single atomic rename, and the one composite -- the
+        # map -- is recomposed from the fragments on disk each cycle, so the
+        # boundary between two cycles is the only place there is nothing to
+        # finish.  The supervisor's ``ensure_roles`` puts the replacement back
+        # on the published generation on its next tick.
+        if runtime_moved():
+            print(json.dumps({
+                "event": "tier-runtime-moved", "unix": time.time(), "host": host,
+                "loaded": loaded_commit[:12] or "(unversioned)",
+                "published": runtime_gate.published_commit()[:12],
+            }), flush=True)
+            return 75 if args.once else 0
         started = time.monotonic()
         try:
             records = cycle(queue, host=host, source_pool=args.source_pool, receipts=receipts)

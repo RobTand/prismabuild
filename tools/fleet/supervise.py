@@ -695,6 +695,19 @@ def cycle_stale(published: str) -> list[int]:
     and the fix is never loaded.  Loops carrying the reload check exit on
     their own; this is for the generation that predates it.
 
+    **Roles too, and that is the whole of #615's first defect.**  This walked
+    ``_live_loops()``, which is worker loops only, so the single-instance
+    ``tiers`` and ``storage`` roles were reachable by no route at all: the
+    installed unit carries no ``--cycle-stale``, and ``tier_loop.py`` carried
+    no reload check either, so one kept serving bytes two publishes old while
+    every worker on the box had moved.
+
+    A role is cycled on a narrower rule than a worker, because it is a
+    singleton rather than one of a pool: only when the generation it is
+    running *differs* from the published one.  A worker respawns in a poll
+    interval and the box has others; stopping a live-generation storage role
+    costs a cycle of the service nothing else provides.
+
     Only idle loops are stopped, and only with SIGTERM: a loop mid-action
     keeps its claim and cycles when it next goes idle.  Nothing here kills
     work.
@@ -702,17 +715,77 @@ def cycle_stale(published: str) -> list[int]:
 
     if not published:
         return []
-    return _stop_idle_loops()
+    holders = _claim_holders()
+    if holders is None:
+        return []                         # NFS silence never licenses a signal
+    stopped = _stop_idle_loops(holders=holders)
+    stopped.extend(_stop_stale_roles(published, holders=holders))
+    return stopped
+
+
+def _loop_commit(pid: int, roots: list[Path],
+                 proc_root: Path | None = None) -> str:
+    """The published commit of the generation this process is running, or "".
+
+    Resolved from the script the process actually loaded rather than from
+    anything it announces: the generation root is the directory its imports
+    are pinned to for the rest of its life.  An unreadable or unrecognized
+    answer is "", and "" never licenses a signal -- missing evidence is not
+    staleness.
+    """
+
+    proc_root = PROC if proc_root is None else proc_root
+    raw = _proc_field(pid, "cmdline", proc_root)
+    if raw is None:
+        return ""
+    argv = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+    if len(argv) < 2:
+        return ""
+    script = _script_of(pid, argv, proc_root)
+    if script is None:
+        return ""
+    for root in roots:
+        if not script.is_relative_to(root):
+            continue
+        try:
+            receipt = json.loads((root / "RUNTIME_VERSION.json").read_text())
+        except (OSError, ValueError):
+            return ""
+        commit = receipt.get("commit") if isinstance(receipt, dict) else None
+        return str(commit) if isinstance(commit, str) else ""
+    return ""
+
+
+def _stop_stale_roles(published: str, proc_root: Path | None = None,
+                      holders: Collection[int] | None = None) -> list[int]:
+    """SIGTERM each idle role loop whose generation is not the published one."""
+
+    stopped: list[int] = []
+    roots = _proven_roots()
+    for _role, script in sorted(ROLE_SCRIPTS.items()):
+        for pid in _live_role_loops(script, proc_root):
+            commit = _loop_commit(pid, roots, proc_root)
+            if not commit or commit == published:
+                continue
+            stopped.extend(_stop_idle_loops(
+                [pid], proc_root, holders, script_name=script))
+    return stopped
 
 
 def _stop_idle_loops(pids: list[int] | None = None,
                      proc_root: Path | None = None,
-                     holders: Collection[int] | None = None) -> list[int]:
+                     holders: Collection[int] | None = None,
+                     script_name: str = LOOP_SCRIPT) -> list[int]:
     """SIGTERM every loop holding no action, and report which.
 
-    The one rule both reasons to cycle a loop share -- stale bytes and a
-    stale declared shape.  Only idle loops, only SIGTERM: a loop mid-action
-    keeps its claim and cycles when it next goes idle.
+    The one rule every reason to cycle a loop shares -- stale bytes, a stale
+    declared shape, a stale role.  Only idle loops, only SIGTERM: a loop
+    mid-action keeps its claim and cycles when it next goes idle.
+
+    ``script_name`` is what the ownership proof below is made against, and it
+    has to be passed for a role: the default is the worker script, so a role
+    pid handed to this function used to be dropped silently by the very check
+    that exists to stop a basename kill (#615).
     """
 
     stopped: list[int] = []
@@ -726,7 +799,7 @@ def _stop_idle_loops(pids: list[int] | None = None,
         # caller has always passed pids that came from ``_live_loops``, but a
         # future caller that does not must not be able to turn this into the
         # basename kill it used to be.
-        if not _is_fleet_loop(pid, roots, proc_root):
+        if not _is_fleet_loop(pid, roots, proc_root, script_name):
             continue
         if not _is_idle(pid, holders):
             continue
@@ -781,7 +854,8 @@ def _spawn(args: list[str], index: int) -> int:
     return proc.pid
 
 
-def _live_role_loops(script_name: str) -> list[int]:
+def _live_role_loops(script_name: str,
+                     proc_root: Path | None = None) -> list[int]:
     """This box's live children for one role script.
 
     Its own census rather than ``_live_loops`` with an argument, because a
@@ -796,7 +870,7 @@ def _live_role_loops(script_name: str) -> list[int]:
     mine = os.getpid()
     roots = _proven_roots()
     return [pid for pid in (int(t) for t in proc.stdout.split())
-            if pid != mine and _is_fleet_loop(pid, roots, None, script_name)]
+            if pid != mine and _is_fleet_loop(pid, roots, proc_root, script_name)]
 
 
 def _spawn_role(role: str, args: list[str]) -> int:

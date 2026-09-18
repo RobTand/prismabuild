@@ -4135,10 +4135,39 @@ class PoolQueue:
                     "error": str(exc),
                     "leads": [str(lead) for lead in leads]}
         if not present:
+            # Not always the ordinary race.  ``map_not_composed`` says "the
+            # tier loop has not got to it yet", which is a wait of one cycle;
+            # a plan the coordinator refuses is a map nobody will ever
+            # compose, and the two must not read the same to whoever is
+            # looking at a queue that has stopped moving (#615).
+            unreadable = self._residency_plan_refusal(key)
+            if unreadable is not None:
+                return {"state": "plan_unreadable", "map_path": str(composed),
+                        "error": unreadable,
+                        "leads": [str(lead) for lead in leads]}
             return {"state": "map_not_composed", "map_path": str(composed),
                     "leads": [str(lead) for lead in leads]}
         return {"state": "resident", "leads": [str(lead) for lead in leads],
                 "map_path": str(composed)}
+
+    def _residency_plan_refusal(self, consumer_action_key: object) -> str | None:
+        """Why this consumer's frozen plan will not validate, or ``None``.
+
+        ``None`` for the two ordinary answers -- no plan filed, or one that
+        reads -- so this only ever turns a wait into a refusal, never the
+        other way.  The import is local because ``residency_plan`` imports
+        this module: the plan schema is built on the queue's own paths, and
+        the queue needs the schema only at this one call.
+        """
+
+        if not isinstance(consumer_action_key, str):
+            return None
+        from . import residency_plan
+
+        refusals: list[Exception] = []
+        residency_plan.read(self, consumer_action_key,
+                            on_unreadable=refusals.append)
+        return repr(refusals[0]) if refusals else None
 
     def _lead_is_pinned(self, residency: Mapping[str, object], lead: str) -> bool:
         """Does this finished lead still hold tokens for the bytes it staged?
@@ -5601,7 +5630,8 @@ class PoolQueue:
                         "error": str(exc), "leads": leads})
                     continue
                 if residency["state"] in ("lead_not_resident", "lead_unpinned",
-                                          "map_not_composed", "map_unreadable"):
+                                          "map_not_composed", "map_unreadable",
+                                          "plan_unreadable"):
                     # Before any token is taken, and without ``record_pass``:
                     # the bytes are not there, so this box should go do other
                     # work rather than age an item nothing on this box can
@@ -5615,6 +5645,10 @@ class PoolQueue:
                     # the pool and says nothing went wrong.  ``map_unreadable``
                     # is the same refusal when the mount would not say either
                     # way; both leave the item ready for the next scan.
+                    # ``plan_unreadable`` is the one that does not resolve on
+                    # its own: no coordinator can compose a map from a plan it
+                    # refuses, so the item names the refusal rather than
+                    # waiting out a cycle that will not come (#615).
                     self.record_denial(
                         item, f"residency_{residency['state']}",
                         {"residency": residency})
