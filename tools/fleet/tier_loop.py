@@ -762,6 +762,27 @@ def cycle(
             record["in_flight_gib"] = in_flight
             record["capacity_basis"] = "zfs available + landed"
             tokens[kind] = tokens[kind] + landed
+        if record.get("tier") == "stage":
+            # The second cache layer's precondition, announced with the tier
+            # and refused out loud (#638).  A stage dataset whose
+            # ``primarycache`` forbids data caching serves every consumer read
+            # off the SSD -- 2402 MB/s against 10045 on the same file at the
+            # same concurrency, measured 2026-09-18 -- so the warm is refused
+            # on the record a submitter and a mover both read, and the refusal
+            # is logged because a rebuilt pool inherits the default silently.
+            # The tier is still announced: layer 1 works without layer 2, and
+            # taking staging down to fix a cache setting would cost the
+            # campaign the thing that does work.
+            verdict = storage_tiers.stage_arc_eligibility(record)
+            record["arc_warm"] = verdict
+            if verdict["primarycache"] is not None and not verdict["eligible"]:
+                print(json.dumps({
+                    "event": "stage-primarycache-refused",
+                    "unix": time.time(), "host": host, "tier_id": tier_id,
+                    "dataset": record.get("dataset"),
+                    "primarycache": verdict["primarycache"],
+                    "reason": verdict["reason"],
+                }), flush=True)
         record["fill_source"] = "measured" if storage_tiers.FILL_KIND in tokens else "none"
         record["fill_records"] = len(fill_records)
         # The probe rule, generalised from "nothing measured yet" to "nothing

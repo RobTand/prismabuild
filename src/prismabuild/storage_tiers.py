@@ -73,6 +73,13 @@ STAGE_CAPACITY_KIND = "stage_gib"
 #: ``available``: what ZFS will still let a writer write, net of what is staged.
 WRITABLE_CAPACITY_SOURCE = "zfs available"
 ARC_CAPACITY_KIND = "arc_gib"
+#: The ``primarycache`` settings under which a dataset's *file data* may live
+#: in the ARC.  ``metadata`` and ``none`` cache no data at all, so a consumer
+#: read of a staged file goes to the device however often it is repeated:
+#: measured on dl380g10, 2026-09-18, sparky reading one 5.37 GB file with
+#: ``dd iflag=direct`` at 16 x 256 MiB, an ARC miss served 2402 MB/s against
+#: 10045 MB/s on a hit -- 4.18x, 19% of the link against 80%.
+ARC_DATA_CACHE_SETTINGS = frozenset({"all"})
 #: The fill token is named for the side it is measured on, because a
 #: file-side rate and a pool-side rate differ by whatever the ARC answered
 #: -- one live receipt on dl380g10 reads 1141 MB/s file-side for 206 GB off
@@ -297,12 +304,18 @@ def stage_dataset(pool: str, *, runner: Runner | None = None) -> dict[str, objec
     ``<pool>/prewarm`` is preferred over the pool's root dataset because that
     is the dataset the design creates and the movers write into; the root is
     the fallback for a pool laid out some other way.
+
+    ``primarycache`` comes back in the same read because it is the same kind
+    of fact and costs nothing extra: it says whether the file server's ARC may
+    hold this dataset's file data at all, which is the whole of the second
+    cache layer (#638).  A box whose ``zfs list`` answers fewer columns leaves
+    it ``None`` -- unknown, which is never read as permission.
     """
 
     try:
         text = (runner or _run)([
             zfs_binary(), "list", "-Hp", "-r",
-            "-o", "name,available,mountpoint", pool,
+            "-o", "name,available,mountpoint,primarycache", pool,
         ])
     except (OSError, subprocess.SubprocessError):
         return None
@@ -314,9 +327,11 @@ def stage_dataset(pool: str, *, runner: Runner | None = None) -> dict[str, objec
         available = _int_field(fields[1])
         if available is None:
             continue
+        cache = fields[3] if len(fields) > 3 else "-"
         found[fields[0]] = {
             "dataset": fields[0], "available_bytes": available,
             "mountpoint": fields[2] if fields[2].startswith("/") else None,
+            "primarycache": None if cache in ("", "-") else cache,
         }
     for name in (f"{pool}/{STAGE_DATASET}", pool):
         record = found.get(name)
@@ -398,6 +413,37 @@ def tier_kind_of(tier_id: str) -> str:
     """
 
     return "stage" if str(tier_id).startswith(STAGE_POOL_PREFIX) else "arc"
+
+
+def stage_arc_eligibility(record: Mapping[str, object]) -> dict[str, object]:
+    """Whether this stage dataset's bytes can reach the file server's ARC.
+
+    The second cache layer is the storage box holding the staged blocks a
+    Spark reads over NFS, and ZFS's ``primarycache`` decides whether it may:
+    ``all`` caches data and metadata, ``metadata`` and ``none`` cache no file
+    data, so a consumer read of a staged file reaches the SSD every time.
+
+    Three answers, never two.  ``all`` permits the warm; ``metadata``/``none``
+    refuse it, which is a **configured** refusal and worth saying out loud;
+    and a setting this box could not read is unknown, which is not permission
+    -- a warm spends reads, and an unattested setting does not license them.
+    Returned as data rather than a bool because every consumer of it (the tier
+    record, the submitter's plan, the mover's receipt) has to say *why*.
+    """
+
+    value = record.get("primarycache")
+    setting = str(value) if isinstance(value, str) and value else None
+    if setting is None:
+        return {"eligible": False, "primarycache": None,
+                "reason": ("this box did not report the dataset's primarycache, "
+                           "and an unread setting is not permission to warm")}
+    if setting in ARC_DATA_CACHE_SETTINGS:
+        return {"eligible": True, "primarycache": setting,
+                "reason": f"primarycache={setting}: the ARC may hold this dataset's data"}
+    return {"eligible": False, "primarycache": setting,
+            "reason": (f"primarycache={setting}: the ARC holds no file data for "
+                       f"this dataset, so a warm read would land nowhere.  Set "
+                       f"primarycache=all on the stage dataset")}
 
 
 def capacity_kind_of(tier_id: str) -> str:
@@ -893,6 +939,15 @@ def residency_demand(
     with no attributed receipt has no fill tokens to give (the probe rule);
     when given it is **pool-side**, the only side a shared four-spindle pool
     can be rationed on.
+
+    The demand names the range's **durable** tier -- the SSD it lands on --
+    and nothing else.  The second cache layer's RAM budget is deliberately
+    not a leg here: a mover co-demanding the ARC's GiB would bound the
+    published SSD window by min(stage, ARC) and then, once the ARC shrinks
+    for an explicit RAM tier, throttle layer 1's read-ahead with it (#638's
+    part 3, withdrawn for that reason).  RAM occupancy is spent by the RAM
+    tier's own movement nodes when that tier exists; a warm read-back
+    authorises itself against the dataset's ``primarycache`` instead.
     """
 
     if range_end_bytes <= range_start_bytes:
@@ -971,6 +1026,11 @@ def discover_tiers(
             "capacity_source": (WRITABLE_CAPACITY_SOURCE if dataset is not None
                                 else "none (no dataset readable)"),
             "dataset": None if dataset is None else dataset["dataset"],
+            # Whether the file server's ARC may hold this dataset's file data
+            # at all: the second cache layer's own precondition, discovered
+            # with everything else rather than assumed (#638).
+            "primarycache": (dataset.get("primarycache")
+                             if dataset is not None else None),
             "pool_size_bytes": pool["size_bytes"],
             "allocated_bytes": pool["allocated_bytes"],
             "free_bytes": pool["free_bytes"],
@@ -1011,6 +1071,7 @@ __all__ = [
     "mover_fill_demand_from_receipts",
     "manifest_phase_ranges",
     "capacity_kind_of",
+    "stage_arc_eligibility",
     "residency_demand",
     "mover_demand_from_receipts",
     "usable_mover_receipts",
@@ -1019,6 +1080,7 @@ __all__ = [
     "stage_tokens_for_bytes",
     "tier_kind_of",
     "ARC_CAPACITY_KIND",
+    "ARC_DATA_CACHE_SETTINGS",
     "FILL_KIND",
     "GIB",
     "STAGE_CAPACITY_KIND",

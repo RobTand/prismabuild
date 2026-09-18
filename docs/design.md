@@ -3104,6 +3104,73 @@ up. `publish` refuses an item whose declared `stage_gib` on that tier is below
 the ceiling of its own range, so the number in a claim record traces back to a
 declared read set rather than to a habit.
 
+### The second cache layer: the stage in the file server's ARC
+
+Two layers, not one. Layer 1 is the HDD pool copied onto the SSD stage, which
+a mover does and a consumer reads through the residency map. Layer 2 is those
+staged blocks living in dl380g10's own 240 GiB ARC, so a Spark's read is
+answered out of RAM over the 100 Gbps RDMA link instead of off the SSD.
+
+Measured sparky to dl380g10 on 2026-09-18 -- one 5.37 GB file, `dd
+iflag=direct` so the client page cache cannot answer, 16 streams of 256 MiB at
+matched concurrency:
+
+| arm | throughput | share of the link |
+|---|---|---|
+| ARC miss, served from NVMe | 2,402 MB/s | 19% |
+| ARC hit, served from RAM | **10,045 MB/s** | **80%** |
+
+**4.18x at matched concurrency.** Three things make it happen, and each one is
+discovered or measured rather than configured here:
+
+* **`primarycache=all` on the stage dataset.** `metadata` -- which is what the
+  dataset carried until 2026-09-18, for a rationale that named a consumer that
+  did not exist yet -- caches no file data, so every consumer read of a staged
+  file reaches the SSD. `storage_tiers.stage_dataset` reads the setting with
+  the dataset's `available`, `discover_tiers` announces it on the tier record,
+  and `tier_loop` logs `stage-primarycache-refused` and stamps
+  `arc_warm.eligible: false` when a rebuilt pool has inherited `metadata`
+  again. The tier is still announced: layer 1 works without layer 2.
+* **A warm step in the mover.** The copy is a write, and writing a block is not
+  reading it, so stage blocks reached the ARC only incidentally -- a repeat
+  read fell from 9580 to 7423 MiB/s as other shards evicted them. After the
+  range is copied and verified, `stage_move.warm_staged` reads it back on the
+  box that owns the stage, which is the one place a read fills that ARC. It
+  runs after every measurement of the copy is taken, in its own `arc_warm`
+  receipt block, so a warm never prices a copy. Its bound is the mover's own
+  range: it reads back exactly the files it staged and nothing else on the
+  stage, and it is refused by the dataset's `primarycache` rather than by any
+  token it holds.
+* **No mover reserves `arc_gib` for the warm.** The ARC tier announced 233 GiB
+  every cycle and nothing spends it -- that is deliberate now, not the
+  accident #638 opened on. A mover co-demanding the ARC's GiB would bound the
+  published SSD window by min(stage, ARC) -- 233 GiB against 721 on dl380g10
+  -- and once the ARC shrinks to make room for an explicit RAM tier, that
+  bound would throttle layer 1's read-ahead with it. So the warm set is
+  bounded per mover by its range and unbounded across movers: successive
+  phases may evict each other's warm, which costs the *pre*-warm and never
+  the stage residency a verdict gates on. The RAM occupancy budget returns
+  with the RAM tier's own movement nodes, holding `ram_gib` the way movers
+  hold `stage_gib` today.
+
+**ARC residency is a performance tier, never a correctness gate.** ZFS exposes
+no pin and the ARC target `c` is volatile on a shared box -- it fell 99 GB
+inside one five-minute window on 2026-09-11 with no tenant asking for the
+memory. The warm fills it and promises nothing about what is still there
+later. `PoolQueue.residency_verdict` keeps gating on stage residency alone,
+which is durable and checkable -- a file exists and the composed map names its
+mover -- and no ARC leg was added to it.
+
+**What the claim-time prewarm stopped doing.** The prewarm role warms the
+*pool* path, which is the path a consumer opened before PrismaBuild published a
+residency map. A consumer admitted on a resident window opens the staged path
+instead, and the two are different datasets with different ARC entries, so
+warming the pool for it both misses the target and evicts it. The role now
+skips that warm for a claimed row whose `residency_verdict` reads `resident`
+and records the skip. Only `resident`: a consumer whose map is not composed yet
+was never admitted, and one whose later phases were never staged reads the pool
+for them exactly as it always did.
+
 ### What a stage tier's capacity counts
 
 A stage tier's `capacity_bytes` is the dataset's ZFS `available`: what a
