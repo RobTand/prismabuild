@@ -3383,12 +3383,30 @@ class PoolQueue:
         return ResourceLedger(self.root / TIER_RESERVATIONS, host=self._check_tier_id(tier_id))
 
     def tier_ids(self) -> list[str]:
-        """Every tier that has a ledger, whether or not it holds anything."""
+        """Every tier that has a ledger, whether or not it holds anything.
 
-        return sorted(
-            directory.name for directory in _scan(self.root / TIER_RESERVATIONS)
-            if directory.is_dir() and not directory.name.startswith(".")
-        )
+        Contained against every ``OSError``, not only the two ``_scan``
+        tolerates, and deliberately here rather than in ``_scan``: a host
+        ledger's scan must keep failing loudly, because a box that cannot read
+        its own reservations does not know what it holds.  This directory is
+        different.  It is brand new, it is on the shared mount, nothing touches
+        it while the feature is off, and its readers are ``finish`` and the
+        reapers -- so a ``PermissionError`` or an NFS ``ESTALE`` on a cold
+        handle would abort a conclusion *after* the claim was entombed and its
+        lease unlinked but *before* the outcome was written, and would abort a
+        whole reaper cycle on every box for as long as it persisted.  An empty
+        listing is the safe answer: release is documented safe to call twice,
+        so a token this call could not return is returned by the next release
+        on the same key or by the reaper's reclaim.
+        """
+
+        try:
+            return sorted(
+                directory.name for directory in _scan(self.root / TIER_RESERVATIONS)
+                if directory.is_dir() and not directory.name.startswith(".")
+            )
+        except OSError:
+            return []
 
     def tier_holdings(self, action_key: str) -> dict[str, dict[str, int]]:
         """The tier tokens one action holds, by tier id; empty when it holds none."""
@@ -3406,9 +3424,23 @@ class PoolQueue:
         By key and with no holder to resolve: a tier ledger has exactly one
         directory per tier, so a key can hold on several tiers without any
         of them being a second claim holder.  Safe to call twice.
+
+        Tier by tier, and each one contained: this runs inside ``finish`` and
+        the reapers, between the entombed claim and the written outcome, so a
+        shared-mount read that fails must cost one tier's tokens until the next
+        release rather than the action's own ending.  A directory name that is
+        not a tier id (``PoolContractError`` out of ``tier_ledger``) is skipped
+        for the same reason -- nothing of ours writes one, and a stray name is
+        not a reason to lose an outcome.
         """
 
-        return sum(self.tier_ledger(tier_id).release(action_key) for tier_id in self.tier_ids())
+        released = 0
+        for tier_id in self.tier_ids():
+            try:
+                released += self.tier_ledger(tier_id).release(action_key)
+            except (OSError, PoolContractError):
+                continue
+        return released
 
     def _release_reservation(self, action_key: str, *, host: str | None) -> int:
         """Give a concluded claim's capacity back: host tokens, then tier tokens.
@@ -3546,6 +3578,24 @@ class PoolQueue:
             raise PoolContractError(f"unknown residency fields: {unknown}")
         if block.get("schema") != RESIDENCY_SCHEMA_V1:
             raise PoolContractError(f"residency schema must be {RESIDENCY_SCHEMA_V1!r}")
+        # The manifest is what turns a byte range into files, and a digest is
+        # what makes two blocks provably about the same list.  ``core``'s
+        # ``residency_descriptor`` validates exactly these two fields for the
+        # mover's result; a block that declared them loosely would let the two
+        # validators disagree about one object.  The pool cannot open the
+        # manifest -- ``publish`` takes a ``cas_root`` and never reads it -- so
+        # what it enforces is the shape, and ``residency_verdict`` enforces the
+        # agreement between a consumer's block and its leads'.
+        digest = block.get("manifest_sha256")
+        if (not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)):
+            raise PoolContractError(
+                "residency.manifest_sha256 must be a 64-character lowercase digest")
+        size = block.get("manifest_bytes")
+        if isinstance(size, bool) or type(size) is not int or size <= 0:
+            raise PoolContractError(
+                "residency.manifest_bytes must be a positive integer")
         tier_id = block.get("tier_id")
         if tier_id is not None:
             cls._check_tier_id(str(tier_id))
@@ -3593,15 +3643,51 @@ class PoolQueue:
                 "a residency block must declare a range, leads, or both")
         return block
 
+    @staticmethod
+    def _residency_manifest_of(record: Mapping[str, object] | None) -> str | None:
+        """The manifest digest a record's own residency block names, if any."""
+
+        if not isinstance(record, Mapping):
+            return None
+        block = record.get("residency")
+        if not isinstance(block, Mapping):
+            return None
+        declared = block.get("manifest_sha256")
+        return str(declared) if isinstance(declared, str) else None
+
+    def _superseded_status_of(self, action_key: str) -> str | None:
+        """The newest drop filed for this key, or ``None`` if it was never dropped.
+
+        ``_file_superseded`` writes ``<key>.<unix>.<kind>.json`` under
+        ``withdrawn/superseded/``, which is deliberately invisible to every
+        reader that addresses a state directory by ``<key>.json``.  A lead
+        dropped by the terminal-claim branch, the withdrawal race or the reaper
+        therefore has no record in ``done/``, ``failed/`` or ``withdrawn/`` at
+        all, and reporting it as ``absent`` is the denial nobody can act on.
+        """
+
+        newest: tuple[str, str] | None = None
+        for path in _glob(self.superseded_dir(), f"{action_key}.*.json"):
+            record = _read_json(path)
+            if not isinstance(record, Mapping):
+                continue
+            status = record.get("status")
+            stamp = path.name
+            if newest is None or stamp > newest[0]:
+                newest = (stamp, str(status) if status is not None else "superseded")
+        return None if newest is None else newest[1]
+
     def residency_verdict(self, item: Mapping[str, object]) -> dict[str, object]:
         """Whether this item's declared bytes are resident, and why not.
 
-        ``not_requested`` for everything the fleet publishes today: the verdict
-        is written on every claim so that the non-answer is recorded as well as
-        the answer.  A lead counts as resident only when its ``done/`` record
-        says ``executed``: a ``cache_hit`` finished without moving a byte, and
-        reading its mere existence as residency is the trap a deterministic
-        descriptor invites.
+        ``not_requested`` for everything the fleet publishes today; written onto
+        the claim record whenever an item carries a block.  A lead counts as
+        resident only when its ``done/`` record says ``executed`` **and** that
+        record names the same manifest the consumer does: a ``cache_hit``
+        finished without moving a byte, and a mover that made a range of some
+        *other* manifest resident has made none of this consumer's bytes
+        resident.  Both are traps a deterministic descriptor invites, because
+        it is what lets a consumer bind a mover's result before the mover runs.
         """
 
         residency = item.get("residency")
@@ -3610,23 +3696,37 @@ class PoolQueue:
         leads = residency.get("leads") or []
         if not isinstance(leads, list) or not leads:
             return {"state": "no_leads"}
+        wanted = residency.get("manifest_sha256")
         pending: list[dict[str, object]] = []
         for lead in leads:
             record = _read_json(self.item_path(DONE, str(lead)))
             status = record.get("status") if isinstance(record, Mapping) else None
             if status == "executed":
+                declared = self._residency_manifest_of(record)
+                if wanted is None or declared is None or declared == wanted:
+                    continue
+                # The pool cannot open the manifest -- it holds records, not
+                # the CAS -- but it holds both blocks, and two blocks naming
+                # two digests are two manifests whatever the bytes say.
+                pending.append({"lead": str(lead), "status": "manifest_mismatch",
+                                "declared_manifest_sha256": declared,
+                                "expected_manifest_sha256": str(wanted)})
                 continue
             if status is None:
                 # A lead that ended badly will never become resident, and a
                 # denial that could not tell that from "has not started yet"
-                # would be a denial nobody can act on.  No drop policy is
-                # implied: the item stays ready, exactly as it does while its
-                # mover is still queued.
+                # would be a denial nobody can act on.  A *drop* is filed under
+                # ``withdrawn/superseded/`` rather than in any of the three
+                # state directories, so it is read there or it reads as absent.
+                # No drop policy is implied for the consumer: the item stays
+                # ready, exactly as it does while its mover is still queued.
                 for state in (FAILED, WITHDRAWN):
                     ended = _read_json(self.item_path(state, str(lead)))
                     if isinstance(ended, Mapping):
                         status = str(ended.get("status") or state)
                         break
+                else:
+                    status = self._superseded_status_of(str(lead))
             pending.append({"lead": str(lead),
                             "status": status if status is not None else "absent"})
         if pending:
@@ -6392,12 +6492,14 @@ class PoolQueue:
         # tokens and committing them left a private directory that no key
         # names, on a ledger no box's reaper walks.
         for tier_id in self.tier_ids():
-            swept.extend(
-                f"{TIER_RESERVATIONS}/{tier_id}/{name}"
-                for name in self.tier_ledger(tier_id).sweep_stale_acquisitions(
-                    grace_s=grace_s
-                )
-            )
+            try:
+                names = self.tier_ledger(tier_id).sweep_stale_acquisitions(grace_s=grace_s)
+            except (OSError, PoolContractError):
+                # Same containment as the release path: an unreadable tier
+                # costs this cycle that tier's sweep, never the rest of the
+                # reaper's work on every other key.
+                continue
+            swept.extend(f"{TIER_RESERVATIONS}/{tier_id}/{name}" for name in names)
         return swept
 
     def sweep_widowed_leases(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:

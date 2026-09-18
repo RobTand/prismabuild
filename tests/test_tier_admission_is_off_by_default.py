@@ -18,6 +18,7 @@ reads, writes or touches the live queue.
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 import sys
 
@@ -120,3 +121,101 @@ def test_the_residency_gate_is_inert_without_a_residency_block(
     assert queue.residency_verdict({"action_key": KEY}) == {"state": "not_requested"}
     assert queue.residency_verdict({"action_key": KEY, "residency": None}) == {
         "state": "not_requested"}
+
+
+def _tier_reads_fail(monkeypatch: pytest.MonkeyPatch, queue: pool.PoolQueue) -> None:
+    """Make every readdir of the tier root fail the way a cold NFS handle does.
+
+    Only that directory: a host ledger's scan must keep failing loudly, and a
+    test that broke both would not show which one the conclusion depends on.
+    """
+
+    real = pool._scan
+    target = (queue.root / pool.TIER_RESERVATIONS).resolve()
+
+    def scan(directory: Path):
+        if Path(directory).resolve() == target:
+            raise OSError(errno.ESTALE, "stale NFS file handle")
+        return real(directory)
+
+    monkeypatch.setattr(pool, "_scan", scan)
+
+
+def _uncontain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutate the driver: put back the unguarded scan the fix contains."""
+
+    monkeypatch.setattr(pool.PoolQueue, "tier_ids", lambda self: sorted(
+        directory.name for directory in pool._scan(self.root / pool.TIER_RESERVATIONS)
+        if directory.is_dir() and not directory.name.startswith(".")))
+
+
+def test_an_unreadable_tier_root_does_not_cost_an_action_its_outcome(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`finish` entombs the claim and unlinks the lease before it writes the
+    outcome, so anything that raises in between loses the ending.  The tier
+    release sits in that window and reads a shared directory nothing else
+    touches while the feature is off.
+    """
+
+    _publish(queue, KEY, {"cpu": 1, "mem_gb": 2})
+    claimed = queue.claim(owner="worker", capacity={"cpu": 2, "mem_gb": 4})
+    assert claimed is not None
+    _tier_reads_fail(monkeypatch, queue)
+
+    queue.finish(KEY, status="executed", claim_snapshot=claimed)
+
+    done = pool._read_json(queue.item_path(pool.DONE, KEY))
+    assert done is not None and done["status"] == "executed"
+    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.lease_path(KEY).exists()
+    # The host tokens went back: the host ledger was never the broken one.
+    assert queue.ledger().held() == {}
+    # And the helpers answer emptily rather than raising.
+    assert queue.tier_ids() == []
+    assert queue.release_tier_reservations(KEY) == 0
+
+
+def test_without_the_containment_that_finish_loses_the_outcome(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bite test: the unguarded scan is what costs the ending."""
+
+    _publish(queue, KEY, {"cpu": 1})
+    claimed = queue.claim(owner="worker", capacity={"cpu": 4})
+    assert claimed is not None
+    _tier_reads_fail(monkeypatch, queue)
+    _uncontain(monkeypatch)
+
+    with pytest.raises(OSError):
+        queue.finish(KEY, status="executed", claim_snapshot=claimed)
+    # Claim entombed, lease gone, and no outcome filed anywhere.
+    assert pool._read_json(queue.item_path(pool.DONE, KEY)) is None
+    assert pool._read_json(queue.item_path(pool.FAILED, KEY)) is None
+    assert not queue.lease_path(KEY).exists()
+
+
+def test_an_unreadable_tier_root_does_not_abort_a_reaper_cycle(
+    queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`serve_once` reaps before every claim, so a persistent failure here
+    would stop the poll on every box for as long as it persisted.
+    """
+
+    _publish(queue, KEY, {"cpu": 1})
+    claimed = queue.claim(owner="worker", capacity={"cpu": 4})
+    assert claimed is not None
+    _tier_reads_fail(monkeypatch, queue)
+
+    # Every walk that now reads the tier root returns instead of raising.
+    assert isinstance(queue.reap_stale(timeout_s=0.0), list)
+    assert queue.sweep_stale_acquisitions(grace_s=0.0) == []
+    assert isinstance(queue.sweep_widowed_leases(timeout_s=0.0), list)
+
+    # ...and each of them raises once the containment is mutated out, so the
+    # assertions above are load-bearing rather than vacuous.
+    _uncontain(monkeypatch)
+    with pytest.raises(OSError):
+        queue.reap_stale(timeout_s=0.0)
+    with pytest.raises(OSError):
+        queue.sweep_stale_acquisitions(grace_s=0.0)
