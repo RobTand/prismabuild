@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -227,3 +228,76 @@ class Fleet:
         mounts = prewarm_loop.MountMap(list(args.mount_map))
         return prewarm_loop.cycle(
             args, self.queue, mounts, threading.Event(), pacer=pacer)
+
+
+class StagePool:
+    """A stage tier the tests can state exactly: real files, fake ``zpool``.
+
+    The loop discovers its stage by asking ``zpool`` and ``zfs``, so a test
+    about that discovery has to answer as those tools answer -- byte counts
+    from ``zpool list -Hp``, a mountpoint from ``zfs get``, leaf paths from
+    ``zpool status -P`` -- and let the real parse do the rest.  The mountpoint
+    is a real directory and the members are real device nodes under a private
+    ``by-id`` tree, so a record's member names come from resolving symlinks
+    the way they do on the box.
+    """
+
+    def __init__(self, root: Path, *, name: str = "prismabuild-stage",
+                 size: int = 1 << 40, free: int = 1 << 40,
+                 health: str = "ONLINE",
+                 by_id_name: str = "nvme-LT0800KEXVA_CVMD54710026800BGN",
+                 device: str = "nvme9n1", mounted: bool = True,
+                 has_dataset: bool = True) -> None:
+        self.name = name
+        self.size = size
+        self.free = free
+        self.health = health
+        self.by_id_name = by_id_name
+        self.device = device
+        self.has_dataset = has_dataset
+        self.dataset = f"{name}/prewarm" if has_dataset else name
+        self.mount = root / "stage-mount"
+        if mounted:
+            self.mount.mkdir(parents=True, exist_ok=True)
+        self.mountpoint = str(self.mount)
+        devices = root / "devices"
+        devices.mkdir(parents=True, exist_ok=True)
+        self.device_path = devices / device
+        self.device_path.write_bytes(b"")
+        self.by_id = root / "by-id"
+        self.by_id.mkdir(parents=True, exist_ok=True)
+        link = self.by_id / by_id_name
+        if not link.exists():
+            link.symlink_to(self.device_path)
+        self.calls: list[list[str]] = []
+
+    def runner(self, argv: list[str]) -> str:
+        self.calls.append(list(argv))
+        if "list" in argv:
+            return (f"{self.name}\t{self.size}\t{self.size - self.free}\t"
+                    f"{self.free}\t{self.health}\n")
+        if "get" in argv:
+            # ``zfs get`` on a dataset that does not exist exits nonzero, the
+            # way the loop's fallback to the pool root expects it to.
+            if argv[-1] != self.dataset:
+                raise subprocess.CalledProcessError(1, argv)
+            return self.mountpoint + "\n"
+        if "status" in argv:
+            return (f"  pool: {self.name}\nconfig:\n\n"
+                    "\tNAME                 STATE\n"
+                    f"\t{self.name}          ONLINE\n"
+                    f"\t  {self.device_path}  ONLINE\n\nerrors: No known data errors\n")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    def install(self, monkeypatch) -> None:
+        """Answer the loop's own subprocess boundary, and nothing else."""
+
+        monkeypatch.setattr(prewarm_loop, "run_tool", self.runner)
+        monkeypatch.setattr(prewarm_loop, "BY_ID", str(self.by_id))
+
+    def objects(self) -> list[str]:
+        """Every staged object, as a path relative to the stage mountpoint."""
+
+        return sorted(
+            str(path.relative_to(self.mount))
+            for path in self.mount.rglob("*") if path.is_file())
