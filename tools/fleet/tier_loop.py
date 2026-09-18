@@ -818,9 +818,18 @@ def window_pressure(
         if wanted:
             need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
         # The ram leg asks the same question of the ram ledger (#640): the
-        # first phase whose stage range has landed and whose promotion is
-        # unpublished is the next thing that will ask the tmpfs for room, and
-        # its GiB is what the sweep on that tier must be able to offer.
+        # next promotion the ram window would publish is the next thing that
+        # will ask the tmpfs for room, and its GiB is what the sweep on that
+        # tier must be able to offer.  Asked of the window rather than of
+        # the plan (#642): a promotion the run-ahead bound has already
+        # declined is not something the tier needs tokens for, and reporting
+        # it as pressure would evict a resident range to make room nobody is
+        # going to use -- the same deadlock shape #632 closed on the stage
+        # side, one tier up.  So the question is "would the ram window
+        # publish this if the room existed", and the way to ask it is to run
+        # the same decision with the room, for this leg's own mover role,
+        # joined with the stage ranges that have landed (a promotion's
+        # source is the stage and nothing else, #640).
         # Held-by-nobody bytes on a roof-limited tmpfs are ENOSPC waiting to
         # happen, so an orphan there becomes an eviction candidate the
         # moment this need exists.
@@ -829,14 +838,30 @@ def window_pressure(
         if state is None:
             continue
         ram_tier_id = str(state["ram_tier_id"])
-        candidates = [
+        ram_kind = storage_tiers.capacity_kind_of(ram_tier_id)
+        ram_capacity = int(queue.tier_ledger(ram_tier_id).capacity().get(
+            ram_kind, 0))
+        ram_ahead = [
             phase for phase in residency_plan.remaining(plan, accepted)  # type: ignore[arg-type]
-            if "ram_mover_row" in phase
-            and str(phase["ram_mover_row"]["action_key"]) not in state["already"]
-            and str(phase["mover_row"]["action_key"]) in state["stage_staged"]]
-        if candidates:
+            if "ram_mover_row" in phase]
+        ram_decision = residency_plan.window(
+            plan, accepted_phase=accepted,                       # type: ignore[arg-type]
+            free_gib=sum(int(phase["stage_gib"]) for phase in ram_ahead),
+            capacity_gib=ram_capacity,
+            published=sorted(state["already"]),                  # type: ignore[arg-type]
+            staged=sorted(state["staged"]),                      # type: ignore[arg-type]
+            runahead_cap_gib=depth, mover_role="ram_mover_row")
+        ram_published = ram_decision["publish"]
+        assert isinstance(ram_published, list)
+        ram_phases = {str(phase["name"]): phase for phase in plan["phases"]}  # type: ignore[union-attr]
+        ram_wanted = [
+            entry for entry in ram_published
+            if str(entry["phase"]) in ram_phases
+            and str(ram_phases[str(entry["phase"])]["mover_row"]["action_key"])
+            in state["stage_staged"]]
+        if ram_wanted:
             need[ram_tier_id] = max(need.get(ram_tier_id, 0),
-                                    int(candidates[0]["stage_gib"]))
+                                    int(ram_wanted[0]["stage_gib"]))
     return need
 
 
