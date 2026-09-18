@@ -282,6 +282,7 @@ def test_the_sweep_spares_a_window_the_consumer_has_not_reached(queue, tmp_path)
 
     stage = tmp_path / "stage"
     stage.mkdir()
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     plan = _plan(queue)
     _claim_consumer(queue, plan)
     ahead = _hexkey("mover3")
@@ -301,6 +302,7 @@ def test_the_sweep_spares_a_window_the_consumer_has_not_reached(queue, tmp_path)
 def test_the_sweep_takes_back_a_mover_no_live_plan_names(queue, tmp_path) -> None:
     stage = tmp_path / "stage"
     stage.mkdir()
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     orphan = _hexkey("orphan")
     ledger = queue.tier_ledger(TIER)
     assert ledger.acquire(orphan, {"stage_gib": 2})
@@ -381,14 +383,14 @@ def test_a_submission_cannot_stage_onto_a_tier_the_fleet_does_not_announce(
         pbrun.resolve_stage_tier(queue, None)
 
 
-def test_more_than_one_stage_tier_is_the_operators_choice(queue) -> None:
+def test_more_than_one_stage_tier_is_the_operators_choice(queue, tmp_path) -> None:
     import pbrun
 
     for host in ("dl380g10", "elsewhere"):
         queue.announce_tier({"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                              "tier_id": f"prismabuild-stage:{host}", "tier": "stage",
                              "host": host, "capacity_bytes": 1 << 40,
-                             "mountpoint": "/stage/prewarm"})
+                             "mountpoint": str(tmp_path / "stage")})
 
     with pytest.raises(SystemExit, match="--residency-tier"):
         pbrun.resolve_stage_tier(queue, None)
@@ -397,12 +399,12 @@ def test_more_than_one_stage_tier_is_the_operators_choice(queue) -> None:
     assert named["host"] == "elsewhere"
 
 
-def test_one_announced_stage_tier_needs_no_flag(queue) -> None:
+def test_one_announced_stage_tier_needs_no_flag(queue, tmp_path) -> None:
     import pbrun
 
     queue.announce_tier({"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                          "tier_id": TIER, "tier": "stage", "host": "dl380g10",
-                         "capacity_bytes": 1 << 40, "mountpoint": "/stage/prewarm"})
+                         "capacity_bytes": 1 << 40, "mountpoint": str(tmp_path / "stage")})
 
     assert pbrun.resolve_stage_tier(queue, None)["tier_id"] == TIER
 
@@ -451,19 +453,26 @@ def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:
 
 
 def test_the_tier_announces_the_interpreter_its_movers_run_under(
-    queue: pool.PoolQueue,
+    queue: pool.PoolQueue, tmp_path: Path,
 ) -> None:
     """Discovered on the storage box, because that is the box movers run on.
 
     A submitter on an aarch64 Spark sealing ``sys.executable`` would name a
     venv that dl380g10 does not have, and the action would die at exec after
     its tier capacity was already reserved.
+
+    A temporary mountpoint, never the fleet's: this test's cycle runs the real
+    sweep, and on 2026-09-18 it ran it against ``/stage/prewarm`` on the
+    storage box (#628).
     """
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
 
     def discover(**_kwargs) -> dict[str, dict[str, object]]:
         return {TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                        "tier_id": TIER, "host": "dl380g10", "tier": "stage",
-                       "mountpoint": "/stage/prewarm",
+                       "mountpoint": str(stage),
                        "capacity_bytes": 8 * storage_tiers.GIB}}
 
     announced = tier_loop.cycle(

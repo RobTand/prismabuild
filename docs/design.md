@@ -3401,6 +3401,53 @@ pressure named still takes every orphan, which is what an operator means. And
 exactly one terminal record and an adopted mover has none; the supported way to
 return that range is its egress, which is the path the sweep already uses.
 
+### A stage root belongs to one queue (#628)
+
+Every rule above decides *what* the sweep deletes: a held key no live plan
+names, a `.partial` no live copy is producing, an unmarked file no wanted
+fragment names. None of them asked *whose* stage was being walked. On
+2026-09-18 at 16:05Z a test on the storage box announced `/stage/prewarm` to a
+queue under `tmp_path` and ran one tier cycle; that queue's fragments attributed
+nothing, the prewarm xattr marked nothing, and `stage_release.reconcile` deleted
+671 GB of staged shards in one walk while the run they were staged for was
+reading them. The bytes came back by the #624 recompute movers over the next
+two hours. The mechanism was working exactly as specified; the specification
+had no owner.
+
+**The tier loop marks its own stage before it announces it.** For every stage
+tier discovered on the loop's own host, `cycle` calls
+`stage_release.register_stage_root`, which writes
+`<mountpoint>/.prismabuild-stage.json` naming the queue by the real path of its
+root, the tier id, the host and the time (schema
+`prismabuild.stage-root.v1`), by temporary and `os.replace`. A marker that
+already names this queue is left alone. A marker naming **another queue is never
+overwritten**: two owners is the state this refuses, and an operator moves a
+marker by hand when the queue really has moved. A root the loop cannot write
+(the Sparks mount the stage read-only; a mountpoint that is not there) is
+reported, not raised: the tier is still announced, with the outcome on the
+record as `stage_root_owner` (`registered`, or the refusal string).
+
+**The three deleters refuse anything but their own.** `sweep`, `reconcile` and
+`evict` each ask `stage_root_refusal` before the first `unlink`. A marker that
+is missing (`stage_root_unregistered`), unreadable
+(`stage_root_marker_unreadable`), not a marker (`stage_root_marker_invalid`) or
+another queue's (`stage_root_belongs_to_another_queue: <root>`) refuses:
+nothing is deleted, no token is released, the fragment is kept for the owner,
+and the receipt carries the reason in `skipped` and `errors` with
+`complete: false` under the event `stage-root-refused`. `sweep` refuses once
+per tier per cycle and runs neither the held-key evictions nor the
+reconciliation; `evict` and `reconcile` refuse on the same fact for the callers
+that reach them directly, the egress action row among them. The marker itself
+is the one unmarked, unattributed file at the stage root the reconciliation
+skips: without that line the sweep would delete the fact that lets it sweep.
+
+**Tests use temporary roots, registered.** The three tests that named the real
+mountpoint now name `tmp_path`, and every fixture that drives a sweep or an
+egress registers its temporary root first, the way the loop registers the real
+one. `tests/test_a_stage_root_belongs_to_one_queue.py` holds the incident's
+exact shape — a throwaway queue, the fleet's marker already on the root, one
+cycle — and asserts nothing is deleted and the announced record says why.
+
 ### How the map reaches the consumer
 
 `tier_loop` is the map's **single writer**: movers write one fragment each into a

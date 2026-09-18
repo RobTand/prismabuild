@@ -65,6 +65,7 @@ def fleet(tmp_path: Path):
     queue.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     return queue, stage
 
 

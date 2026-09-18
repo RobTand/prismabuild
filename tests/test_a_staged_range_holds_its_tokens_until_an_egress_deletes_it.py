@@ -382,6 +382,8 @@ def test_reclaim_will_not_quietly_unpin_a_staged_range(queue) -> None:
 
 def _staged_files(tmp_path: Path, queue: pool.PoolQueue, count: int = 3) -> Path:
     stage = tmp_path / "stage"
+    stage.mkdir(exist_ok=True)
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     entries = {}
     for index in range(count):
         path = stage / "sub" / f"part-{index}.bin"
@@ -487,6 +489,7 @@ def test_a_fragment_naming_a_path_outside_the_stage_never_reaches_the_unlink(
 
     stage = tmp_path / "stage"
     stage.mkdir()
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     outside = tmp_path / "not-the-stage.bin"
     outside.write_bytes(b"keep me")
     (queue.root / pool.RESIDENCY / CONSUMER).mkdir(parents=True)
@@ -505,15 +508,18 @@ def test_a_fragment_naming_a_path_outside_the_stage_never_reaches_the_unlink(
     assert outside.exists(), "a fragment is not authority over the whole filesystem"
 
 
-def test_a_missing_fragment_still_returns_the_tokens(queue) -> None:
+def test_a_missing_fragment_still_returns_the_tokens(queue, tmp_path) -> None:
     """Otherwise a lost fragment costs the stage its capacity for good."""
 
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     _claim_mover(queue)
-    _receipt(queue)
+    _receipt(queue, stage_root=stage)
     queue.finish(MOVER, status="executed")
 
     receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
-                                  stage_root="/stage/prewarm")
+                                  stage_root=str(stage))
 
     assert receipt["complete"] is True and receipt["tokens_released"] == 2
     assert _held(queue) == {}

@@ -264,9 +264,12 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 
 @pytest.fixture()
-def stage(tmp_path: Path) -> Path:
+def stage(tmp_path: Path, queue: pool.PoolQueue) -> Path:
     path = tmp_path / "stage"
     path.mkdir()
+    # The fleet's loop registers its own stage on every cycle; a test that
+    # sweeps without a cycle first is standing in for that loop (#628).
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=path)
     return path
 
 
