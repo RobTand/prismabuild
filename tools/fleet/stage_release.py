@@ -23,16 +23,24 @@ release and before the deletes would leave bytes on a stage the ledger thinks
 is empty --- which is the failure this whole node exists to prevent.  Releasing
 last is the direction that fails safe.
 
-It runs two ways.  As an **action row** it is published by the tier loop once a
+It runs three ways.  As an **action row** it is published by the tier loop once a
 consumer's accepted phase has passed the range, and its receipt is what makes
 the eviction visible.  As a **sweep** the tier loop calls :func:`evict` directly
 for a mover that no ready or claimed item still names --- a consumer that was
-withdrawn leaves its movers holding the stage forever otherwise.
+withdrawn leaves its movers holding the stage forever otherwise.  And as a
+**reconciliation** (:func:`reconcile`, #608) the same sweep compares the stage
+root against the fragments of the movers the fleet still wants, because both
+paths above are driven from a *key*: the ledger's held keys or a receipt's, and
+bytes no key holds are invisible to either for the life of the fleet.  That is
+what a withdrawn mid-copy mover leaves --- the shards it verified and renamed
+into place, and its ``.partial`` temporaries --- and its tokens have already
+gone back by then, so nothing keyed can find it.
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -49,6 +57,27 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
+
+import prewarm_loop  # noqa: E402
+
+#: The errnos that mean "this file has no such attribute", as opposed to "this
+#: question cannot be answered here".  Linux reports ``ENODATA``; the name
+#: ``ENOATTR`` is an alias for it where it exists at all.
+_XATTR_ABSENT = frozenset(
+    value for value in (getattr(errno, "ENODATA", None),
+                        getattr(errno, "ENOATTR", None))
+    if value is not None)
+
+#: How ``stage_move`` names the file it is copying into before it verifies the
+#: digest and ``os.replace``s it into place: ``.<final name>.partial``, beside
+#: the destination.  One definition, read here, because a temporary left by a
+#: killed or withdrawn copy is nobody's and nothing else ever removes it.
+PARTIAL_PREFIX = "."
+PARTIAL_SUFFIX = ".partial"
+
+#: The event a reconciled eviction publishes, so an operator can tell bytes a
+#: mover's own fragment named from bytes nothing named at all.
+UNATTRIBUTED_EVENT = "stage-unattributed-evicted"
 
 
 def _prune_empty(directory: Path, stop: Path) -> None:
@@ -159,6 +188,11 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     the queue's own live state --- ready or claimed --- rather than a policy: a
     lead some item may still be admitted on is not an orphan, however old.
 
+    Then, per tier, :func:`reconcile` takes back what no key accounts for at
+    all.  It runs after the held-key evictions above rather than before, so it
+    reads the directory the ledger now describes rather than one eviction
+    behind it.
+
     **A live consumer protects its whole plan, not just its leads.**  The
     consumer depends on its first phase only, so a pinned mover three phases
     ahead of it is named by nothing in the queue: testing ``leads`` alone would
@@ -198,7 +232,218 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
             swept.append(evict(queue, key, consumer_action_key=consumer,
                                stage_root=stage_root,
                                residency_root=residency_root, reason="orphan-sweep"))
+        # Held keys first, then the rest of the stage: the evictions above turn
+        # held bytes into absent ones, so the reconciliation below sees the same
+        # directory the ledger now describes rather than one eviction behind it.
+        # ``wanted`` is joined with what is *still* held, because a pinned mover
+        # a live plan no longer names has just been evicted and a pinned one it
+        # does name is attribution.
+        try:
+            still_held = set(queue.tier_ledger(tier_id).held_keys())
+        except (OSError, pool.PoolContractError):
+            still_held = set()
+        reconciled = reconcile(
+            queue, tier_id=tier_id, stage_root=stage_root,
+            wanted=wanted | set(owners) | still_held,
+            residency_root=residency_root)
+        # Reported only when it has something to report.  A window in flight
+        # skips the reconciliation every cycle, and a line per cycle saying so
+        # would bury the eviction it exists to announce.
+        if (reconciled["entries_deleted"] or reconciled["errors"]
+                or reconciled["unowned_left"]):
+            swept.append(reconciled)
     return swept
+
+
+def _is_mover_partial(name: str) -> bool:
+    return name.startswith(PARTIAL_PREFIX) and name.endswith(PARTIAL_SUFFIX)
+
+
+def _marked_by_the_prewarm_stage(path: Path) -> bool | None:
+    """Whether this file is a prewarm stage object, or ``None`` if unanswerable.
+
+    The prewarm loop stages into the same pool, and its objects carry
+    ``user.pbstage.source`` set on the handle before the rename, so a completed
+    one is always marked.  ``None`` is the case that matters: a filesystem
+    without user extended attributes still stages, and there "no mark" would
+    read as "not the prewarm loop's" for every object it owns.  So the answer is
+    unknown rather than false, and the caller refuses to delete on it.
+    """
+
+    try:
+        os.getxattr(path, prewarm_loop.STAGE_SOURCE_XATTR)
+    except OSError as exc:
+        # The attribute is absent: an answer, and it is "no".
+        if exc.errno in _XATTR_ABSENT:
+            return False
+        # Anything else -- the filesystem does not carry user attributes, the
+        # call is not permitted -- is not an answer.
+        return None
+    return True
+
+
+def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str],
+                           residency_root: str | Path | None = None) -> set[str]:
+    """Every stage path a mover the fleet still wants has vouched for.
+
+    Read off the fragments, because a fragment is the only document that says
+    "this file is that mover's": the plan names ranges and the ledger names
+    keys, and neither can be compared against a directory entry.  Only the
+    fragments of ``wanted`` movers count.  A withdrawn mover's fragment is still
+    on disk -- nothing deletes it, since no egress ran -- and treating it as
+    attribution is exactly how its bytes became invisible.
+    """
+
+    root = Path(residency_root if residency_root is not None
+                else queue.root / pool.RESIDENCY)
+    out: set[str] = set()
+    try:
+        consumers = sorted(entry.name for entry in os.scandir(root) if entry.is_dir())
+    except OSError:
+        return out
+    for consumer in consumers:
+        for fragment in residency_map.read_fragments(root, consumer):
+            if str(fragment.get("mover_action_key") or "") not in wanted:
+                continue
+            for entry in dict(fragment["entries"]).values():
+                out.add(str(entry["stage_path"]))
+    return out
+
+
+def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
+              wanted: set[str], residency_root: str | Path | None = None,
+              ) -> dict[str, object]:
+    """Evict what is on the stage that nothing on the fleet accounts for.
+
+    The half of #608 the held-key sweep structurally cannot do: it walks the
+    tier ledger's held keys, so bytes no key holds are invisible to it forever.
+    A withdrawn mid-copy mover leaves exactly that -- the shards it had already
+    verified and renamed into place, and its ``.partial`` temporaries -- and its
+    tokens come back when its worker stops it, so the ledger reads its full
+    supply free over 130 GB of occupied stage.
+
+    Three rules decide, and each one is a fact rather than a policy:
+
+    * **Nothing is deleted while a mover could be writing.**  A mover ready or
+      claimed on this tier means a copy is in flight or about to be, and its
+      destination is not in any fragment until it has been verified.  So the
+      whole reconciliation is skipped for that tier, named in the receipt.  A
+      per-file test cannot replace this: a ready mover can be claimed between
+      the walk and the unlink.
+    * **A mover's own temporary is always its own.**  ``.<name>.partial`` is
+      ``stage_move``'s naming and nothing else writes it, so one that no live
+      copy is producing is the residue of a killed or withdrawn one.
+    * **Anything else must be shown to be unowned.**  The prewarm loop stages
+      into this same pool and marks its objects with ``user.pbstage.source``, so
+      an unmarked file that no wanted mover's fragment names is unowned.  Where
+      the filesystem cannot answer the xattr question at all, "unmarked" means
+      nothing, and the file is left alone with the reason in the receipt.
+
+    Ownership is checked the way ``evict`` checks it: the resolved path must be
+    under the resolved stage root.
+    """
+
+    stage = Path(stage_root)
+    receipt: dict[str, object] = {
+        "schema": pool.POOL_EGRESS_SCHEMA_V1,
+        "event": UNATTRIBUTED_EVENT,
+        "action_key": "",
+        "consumer_action_key": "",
+        "tier_id": tier_id,
+        "stage_root": str(stage),
+        "reason": "unattributed-reconcile",
+        "entries_deleted": 0,
+        "entries_already_gone": 0,
+        "bytes_deleted": 0,
+        "tokens_released": 0,
+        "partials_deleted": 0,
+        "unowned_left": 0,
+        "complete": True,
+        "errors": [],
+        "host": socket.gethostname(),
+        "unix": time.time(),
+    }
+    in_flight = movers_in_flight(queue, tier_id=tier_id)
+    if in_flight:
+        receipt["skipped"] = "movers_in_flight"
+        receipt["movers_in_flight"] = sorted(in_flight)
+        return receipt
+    try:
+        stage_resolved = stage.resolve(strict=True)
+    except OSError as exc:
+        receipt["skipped"] = f"stage_root_unreadable: {exc}"
+        receipt["complete"] = False
+        return receipt
+    attributed = attributed_stage_paths(queue, wanted=wanted,
+                                        residency_root=residency_root)
+    deleted = bytes_deleted = partials = unowned_left = 0
+    errors: list[str] = []
+    for base, _directories, names in os.walk(stage):
+        for name in sorted(names):
+            path = Path(base) / name
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                if stage_resolved not in path.resolve().parents:
+                    continue
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            if str(path) in attributed:
+                continue
+            partial = _is_mover_partial(name)
+            if not partial:
+                if prewarm_loop._STAGE_TEMPORARY.search(name):
+                    # The prewarm loop reaps its own, once per process, and a
+                    # live one belongs to a copy in flight.
+                    continue
+                marked = _marked_by_the_prewarm_stage(path)
+                if marked is None or marked:
+                    unowned_left += 1
+                    continue
+            try:
+                size = path.stat().st_size
+                os.unlink(path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            deleted += 1
+            bytes_deleted += int(size)
+            partials += 1 if partial else 0
+            _prune_empty(path.parent, stage)
+    receipt["entries_deleted"] = deleted
+    receipt["bytes_deleted"] = bytes_deleted
+    receipt["partials_deleted"] = partials
+    receipt["unowned_left"] = unowned_left
+    receipt["errors"] = errors
+    receipt["complete"] = not errors
+    return receipt
+
+
+def movers_in_flight(queue: pool.PoolQueue, *, tier_id: str) -> set[str]:
+    """Mover keys ready or claimed on this tier, i.e. copies that may be writing.
+
+    A mover row is the one whose residency block names a *range*; a consumer's
+    names leads.  Ready as well as claimed, because a ready mover can be
+    claimed between a directory walk and an unlink.
+    """
+
+    out: set[str] = set()
+    for state in (pool.READY, pool.CLAIMED):
+        for path in pool._scan(queue.dir(state)):
+            item = pool._read_json(path)
+            residency = item.get("residency") if isinstance(item, dict) else None
+            if not isinstance(residency, dict):
+                continue
+            if "range_start_bytes" not in residency:
+                continue
+            if str(residency.get("tier_id") or "") != tier_id:
+                continue
+            key = path.name[:-len(".json")] if path.name.endswith(".json") else path.name
+            out.add(key)
+    return out
 
 
 def own_action_key(declared: str | None) -> str:
