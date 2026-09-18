@@ -49,6 +49,7 @@ import json
 import os
 from pathlib import Path
 import queue as queuelib
+import resource
 import socket
 import stat as statmod
 import sys
@@ -493,6 +494,13 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         "served": {k: list(v) if isinstance(v, tuple) else v
                    for k, v in served.items()},
         "proc_io": _delta(before, after),
+        # What this mover actually cost in memory, so the next
+        # submission's ``mem_gb`` is a measurement rather than a habit
+        # (``pb_demand_must_be_measured_not_habitual``).  The copy is a
+        # bounded window -- ``--readers`` buffers of ``--block`` -- so
+        # this should stay flat as the range grows, and a receipt that
+        # says otherwise is the bug report.
+        "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
         "host": socket.gethostname(),
         "errors": copier.errors,
         "unix": time.time(),
@@ -513,6 +521,27 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     return receipt
 
 
+def own_action_key(declared: str | None) -> str:
+    """This node's own action key, from the flag or from the launcher.
+
+    A movement node files its receipt and holds its tier tokens under its own
+    key, and that key is ``canonical_sha256`` of the action body --- so a
+    ``--action-key`` sealed into the argv would be hashed into the very value
+    it states, and no fixed point exists.  The launcher sets
+    :data:`prismabuild.core.ACTION_KEY_ENV` for every action it starts, from
+    the action in hand, which is the one place the answer is already known.
+    The flag stays, because a direct run and every test needs to say which key
+    it is acting as.
+    """
+
+    key = declared or os.environ.get(pb.ACTION_KEY_ENV) or ""
+    if len(key) != 64 or any(character not in "0123456789abcdef" for character in key):
+        raise SystemExit(
+            f"pass --action-key, or run under a launcher that sets "
+            f"{pb.ACTION_KEY_ENV}; got {key!r}")
+    return key
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Every flag this tool takes, in one place a test can also ask.
 
@@ -528,12 +557,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pool-root", required=True,
                         help="the pull queue root this mover files its receipt and "
                              "its residency-map fragment under")
-    parser.add_argument("--cas-root", required=True,
+    parser.add_argument("--cas-root", default="",
                         help="the content store this mover reads its own sealed "
-                             "request and data manifest from")
-    parser.add_argument("--action-key", required=True,
+                             "request and data manifest from; not needed when "
+                             "--manifest names the file directly")
+    parser.add_argument("--action-key", default=None,
                         help="this mover's own action key; its receipt and its "
-                             "residency-map fragment are filed under it")
+                             "residency-map fragment are filed under it. "
+                             f"Defaults to {pb.ACTION_KEY_ENV}, which the "
+                             "launcher sets, because a key cannot be sealed "
+                             "into the argv it is computed from")
     parser.add_argument("--consumer-action-key", required=True,
                         help="the action these bytes are staged for")
     parser.add_argument("--tier-id", required=True,
@@ -614,6 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    args.action_key = own_action_key(args.action_key)
     if args.residency_root is None:
         args.residency_root = str(Path(args.pool_root) / pool.RESIDENCY)
 

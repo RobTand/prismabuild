@@ -72,6 +72,11 @@ FLEET_SCRIPTS = (
     # movement node itself, exec'd by an admitted action on the storage box
     # (#583).  A generation without it publishes movers nothing can run.
     "stage_move.py",
+    # ...and stage_release.py beside it, the egress node that deletes a staged
+    # range and returns its tier tokens.  The tier loop also imports it for the
+    # orphan sweep, so a generation without it leaves a withdrawn consumer's
+    # movers holding the stage with nothing able to take it back.
+    "stage_release.py",
     # The SLURM lane's two halves: the shared submit every producer routes
     # through, and the job entry it names.  A runtime published without them
     # has producers importing a module that is not there and a batch script

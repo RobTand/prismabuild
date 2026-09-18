@@ -143,6 +143,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
+from . import residency_map
 from . import storage_tiers
 from . import box_capacity
 from . import box_window
@@ -164,6 +165,10 @@ POOL_PREWARM_SCHEMA_V1 = "prismaquant.prismabuild.pool_prewarm.v1"
 #: it did.  Read by the ``tiers`` role for the fill measurement, so it carries
 #: the pacer's pool-side attribution like a prewarm record does.
 POOL_MOVE_SCHEMA_V1 = "prismaquant.prismabuild.pool_move.v1"
+#: What one egress node says it took back off a tier, and the tokens it
+#: returned for it.  Filed beside the move receipts so one directory answers
+#: "what is on the stage and who holds it".
+POOL_EGRESS_SCHEMA_V1 = "prismaquant.prismabuild.pool_egress.v1"
 
 # The `prismaquant.` prefix is kept on purpose.  It is the namespace grammar of
 # every receipt already published to this CAS; mixing prefixes inside one store
@@ -309,6 +314,11 @@ MOVERS = "movers"
 #: written from these; see :mod:`prismabuild.residency_map`.
 RESIDENCY = "residency"
 
+#: Where a consumer's frozen window plan lives: every movement node it
+#: will ever have, named before the first one is published, so a restart
+#: resumes the same decomposition instead of cutting a new one.
+RESIDENCY_PLANS = "residency-plans"
+
 #: How long each rung of a withdrawal's signal ladder waits before escalating.
 #: Matched to ``core._PROCESS_GROUP_GRACE_SECONDS``, which is the grace the
 #: launcher itself gives the action group it reaps on the way out.
@@ -330,6 +340,20 @@ OFFER_FUTURE_TOLERANCE_S = 60.0
 class OfferTiming(NamedTuple):
     age_s: float | None
     clock_skew_s: float | None
+
+
+def _residency_action_key(value: object) -> str:
+    """One action key, checked, because these two names index shared files.
+
+    The residency map and the frozen plan are named after the consumer; a
+    caller that passed a path fragment instead of a key would name a file
+    somewhere else under the shared mount.
+    """
+
+    if (not isinstance(value, str) or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)):
+        raise PoolContractError("a residency file is named by a 64-character action key")
+    return value
 
 
 def offer_timing(announced: object, *, now: float) -> OfferTiming:
@@ -2387,6 +2411,7 @@ class PoolQueue:
         (self.root / PREWARM).mkdir(parents=True, exist_ok=True)
         (self.root / MOVERS).mkdir(parents=True, exist_ok=True)
         (self.root / RESIDENCY).mkdir(parents=True, exist_ok=True)
+        (self.root / RESIDENCY_PLANS).mkdir(parents=True, exist_ok=True)
         (self.root / TIER_RESERVATIONS).mkdir(parents=True, exist_ok=True)
         (self.root / TIERS).mkdir(parents=True, exist_ok=True)
 
@@ -3222,6 +3247,65 @@ class PoolQueue:
         )
         return path
 
+    # -- residency: the map an action reads, and the plan it was cut from ---
+
+    def residency_fragment_root(self) -> Path:
+        """Where movement nodes file their fragments, one directory per consumer."""
+
+        return self.root / RESIDENCY
+
+    def residency_map_path(self, consumer_action_key: str) -> Path:
+        """The composed map an action reads its staged inputs through.
+
+        One definition, because two parties depend on this name being the same
+        string: the ``tiers`` loop is its single writer, and this launcher puts
+        it in the action's environment.  A second spelling would be a consumer
+        reading a map nobody writes, which fails by falling back to the pool --
+        that is, silently, at full cost.
+        """
+
+        return residency_map.map_path(
+            self.residency_fragment_root(),
+            _residency_action_key(consumer_action_key))
+
+    def residency_plan_path(self, consumer_action_key: str) -> Path:
+        """The frozen window plan: every mover this consumer will ever have."""
+
+        return (self.root / RESIDENCY_PLANS
+                / f"{_residency_action_key(consumer_action_key)}.json")
+
+    def residency_map_environment(self, item: Mapping[str, object]) -> dict[str, str]:
+        """``{RESIDENCY_MAP_ENV: path}`` for an action with a map to read.
+
+        Nothing for everything else, so an ordinary action launches in
+        byte-identical surroundings to before #583 existed.  The file has to
+        be there: an action told to read a map that does not exist would open
+        nothing and fall back to the pool anyway, but it would do it after
+        deciding it had been staged, and the difference is invisible in the
+        receipt.  Existence here makes the variable mean what it says.
+        """
+
+        residency = item.get("residency") if isinstance(item, Mapping) else None
+        if not isinstance(residency, Mapping) or not residency.get("leads"):
+            return {}
+        key = item.get("action_key")
+        if not isinstance(key, str):
+            return {}
+        try:
+            path = self.residency_map_path(key)
+        except PoolContractError:
+            return {}
+        try:
+            present = path.exists()
+        except OSError:
+            # Same containment as the gate: a stat that raises says nothing
+            # about the file, and naming a map this process could not stat
+            # would hand the action a path it may not be able to open either.
+            # Unset is the honest answer, and it is the one the action already
+            # knows how to act on.
+            return {}
+        return {pb.RESIDENCY_MAP_ENV: str(path)} if present else {}
+
     def record_pass(self, action_key: str) -> int:
         """Count one admission denial.
 
@@ -3492,7 +3576,71 @@ class PoolQueue:
                 continue
         return released
 
-    def _release_reservation(self, action_key: str, *, host: str | None) -> int:
+    def residency_pin_holds(self, record: Mapping[str, object] | None,
+                            action_key: str) -> bool:
+        """Does this concluding mover keep its tier tokens past ``finish``?
+
+        The invariant the whole tier reservation rests on is that **held tier
+        tokens equal bytes on the stage**, at every instant.  Releasing at
+        ``finish`` bounds concurrent copies instead: twenty-one movers of 34.4
+        GB each, run one after another, leave 722 GB on a 721 GB stage while
+        the ledger reads its full supply free at every step, and the twenty-
+        second is admitted on tokens for bytes that will ENOSPC.  So a mover
+        that staged what it declared keeps its tokens, and an egress node
+        returns them when it deletes the files.
+
+        Everything else releases, because everything else left nothing behind:
+        a failure, a timeout, a reaped lease, a withdrawal, a ``cache_hit``
+        that moved no bytes, a mover whose receipt is missing, and a mover that
+        staged fewer bytes than it declared or refused for an overrun.  The
+        receipt is the evidence and the range is the test; a status alone
+        cannot distinguish a mover that copied 34 GB from one that copied none,
+        because both end ``executed``.
+        """
+
+        if not isinstance(record, Mapping):
+            return False
+        residency = record.get("residency")
+        if not isinstance(residency, Mapping):
+            return False
+        tier_id = residency.get("tier_id")
+        start = residency.get("range_start_bytes")
+        end = residency.get("range_end_bytes")
+        if not isinstance(tier_id, str) or not isinstance(start, int) or not isinstance(end, int):
+            return False
+        if record.get("status") != "executed":
+            return False
+        receipt = self.move_record(str(action_key))
+        if not isinstance(receipt, Mapping) or receipt.get("refusal"):
+            return False
+        if receipt.get("tier_id") != tier_id or receipt.get("complete") is not True:
+            return False
+        staged = receipt.get("bytes_staged")
+        return isinstance(staged, int) and staged == end - start
+
+    def _filed_pin_holds(self, action_key: str) -> bool:
+        """Does this key's already-filed ending still pin bytes on the stage?
+
+        For the cleanup paths that have no claim record to judge -- a finish
+        tombstone whose finisher died, a lease widowed by a record that is
+        gone.  They conclude a claim whose ending is already filed, so the
+        question is not "did this claim stage anything" but "does the ending
+        that *was* filed hold tokens for bytes that are there".  Contained:
+        a read failure answers ``True``, because a cleanup that cannot see the
+        ending must not be the thing that releases its capacity.
+        """
+
+        for state in (DONE, FAILED):
+            try:
+                record = _read_json(self.item_path(state, str(action_key)))
+            except (OSError, PoolContractError):
+                return True
+            if isinstance(record, Mapping) and self.residency_pin_holds(record, str(action_key)):
+                return True
+        return False
+
+    def _release_reservation(self, action_key: str, *, host: str | None,
+                             keep_tier: bool = False) -> int:
         """Give a concluded claim's capacity back: host tokens, then tier tokens.
 
         Every path that concludes a claim -- finish, the reapers, withdrawal,
@@ -3501,9 +3649,36 @@ class PoolQueue:
         forgotten on the other.  ``host`` is the box whose ledger holds the
         claim's host tokens, or ``None`` when no box is named and there is
         nothing to release there; the tier release needs no host.
+
+        **One default is not safe for every caller, and this docstring used to
+        imply it was.**  ``keep_tier`` is off by default because a claim that
+        is *being* concluded has released nothing yet, and almost every caller
+        here is concluding one.  Three are not: they clean up after an ending
+        that already concluded, and that ending may have kept its tier tokens
+        on purpose because its bytes are on the stage.
+
+        * ``reap_stale``'s terminal-claim branch judges ``keep_tier`` on the
+          filed ``done``/``failed`` record its generation match returned.
+        * ``sweep_finish_tombstones`` and ``sweep_widowed_leases`` have no
+          claim record to judge, so they ask ``_filed_pin_holds``.
+
+        Getting this wrong does not lose a token; it loses the *attribution*.
+        Every path that reclaims stage capacity -- an egress node, the tier
+        loop's orphan sweep -- walks the tier ledger's held keys, so a key
+        released while its files are still there leaves occupancy that nothing
+        can ever charge to anyone: the ledger reads it free, the next mover is
+        admitted against capacity already spent, and the stage ENOSPCs.  The
+        window does eventually republish that mover -- ``_mover_state`` reads an
+        unpinned, unqueued mover as unpublished -- so the consumer's gate is
+        not stuck forever, but it pays a second full copy of the range and the
+        over-admission happens first.
         """
 
         released = self.ledger(host).release(action_key) if host is not None else 0
+        if keep_tier:
+            # The host tokens go -- the box is free for other work the instant
+            # the copy stops -- and the tier tokens stay, because the bytes did.
+            return released
         return released + self.release_tier_reservations(action_key)
 
     def mint_tier_capacity(self, tier_id: str, tokens: Mapping[str, int]) -> dict[str, object]:
@@ -3754,6 +3929,16 @@ class PoolQueue:
             if status == "executed":
                 declared = self._residency_manifest_of(record)
                 if wanted is None or declared is None or declared == wanted:
+                    if self._lead_is_pinned(residency, str(lead)):
+                        continue
+                    # ``executed`` is not residency once tokens are pinned.  A
+                    # mover that moved nothing, or that refused for an overrun,
+                    # ends ``executed`` exactly like one that staged 34 GB; the
+                    # difference is whether it still holds tokens, because the
+                    # pin is filed only when its receipt matches its range.
+                    # Reading the ledger rather than the receipt also covers a
+                    # mover whose bytes an egress has since deleted.
+                    pending.append({"lead": str(lead), "status": "unpinned"})
                     continue
                 # The pool cannot open the manifest -- it holds records, not
                 # the CAS -- but it holds both blocks, and two blocks naming
@@ -3780,9 +3965,75 @@ class PoolQueue:
             pending.append({"lead": str(lead),
                             "status": status if status is not None else "absent"})
         if pending:
-            return {"state": "lead_not_resident", "pending": pending,
+            # Two denials, because they mean different things to whoever reads
+            # them: a lead that has not finished may still finish, while a lead
+            # that finished holding nothing will never become resident without
+            # being republished.
+            unpinned = all(entry.get("status") == "unpinned" for entry in pending)
+            return {"state": "lead_unpinned" if unpinned else "lead_not_resident",
+                    "pending": pending,
                     "leads": [str(lead) for lead in leads]}
-        return {"state": "resident", "leads": [str(lead) for lead in leads]}
+        # Pinned bytes the consumer cannot find are bytes it does not read.
+        # The launcher passes ``RESIDENCY_MAP_ENV`` only when the composed map
+        # is on disk, and the loop composes it from the fragments a mover
+        # files -- so between a mover pinning its range and the next tier
+        # cycle there is a window in which every lead is resident and the map
+        # is not there yet.  Admitting in that window launches the consumer
+        # with no map, which is not a failure: it reads the pool at full cost
+        # and reports a clean run, which is exactly the outcome #583 exists to
+        # remove.  The item stays ready and is admitted on a later scan.
+        key = item.get("action_key")
+        composed: Path | None = None
+        if isinstance(key, str):
+            try:
+                composed = self.residency_map_path(key)
+            except PoolContractError:
+                composed = None
+        if composed is None:
+            return {"state": "map_not_composed", "map_path": None,
+                    "leads": [str(lead) for lead in leads]}
+        try:
+            present = composed.exists()
+        except OSError as exc:
+            # ``Path.exists`` answers False for ENOENT and ENOTDIR and *raises*
+            # for everything else, and everything else is what this mount
+            # does: the fleet sees RDMA remote-access errors on a roughly
+            # quarter-hour cadence (#575), and ESTALE or EIO out of a stat
+            # would leave the claim scan through an exception no caller
+            # handles -- one stalled lookup taking down a box's whole scan.
+            # A stall is not a verdict, so it becomes a denial of its own
+            # rather than either a refusal to serve or, worse, a silent
+            # admission onto a map nobody could read.
+            return {"state": "map_unreadable", "map_path": str(composed),
+                    "error": str(exc),
+                    "leads": [str(lead) for lead in leads]}
+        if not present:
+            return {"state": "map_not_composed", "map_path": str(composed),
+                    "leads": [str(lead) for lead in leads]}
+        return {"state": "resident", "leads": [str(lead) for lead in leads],
+                "map_path": str(composed)}
+
+    def _lead_is_pinned(self, residency: Mapping[str, object], lead: str) -> bool:
+        """Does this finished lead still hold tokens for the bytes it staged?
+
+        Contained, and ``True`` on a read failure that is not a missing
+        directory: a shared-mount stall must not turn a resident lead into a
+        denial and send a consumer's box off to do other work.  The gate exists
+        to refuse admission onto bytes that are not there, not to refuse it
+        whenever the mount hiccups.
+        """
+
+        tier_id = residency.get("tier_id")
+        if not isinstance(tier_id, str) or not tier_id:
+            # Nothing to check against.  A block that declares leads without a
+            # tier predates the pin and is read as it was before.
+            return True
+        try:
+            return bool(self.tier_ledger(tier_id).holder_tokens(lead))
+        except PoolContractError:
+            return True
+        except OSError as exc:
+            return getattr(exc, "errno", None) != errno.ENOENT
 
     def _transition_locked(self, action_key: str, *, blocking: bool = True):
         """Serialize one key's ownership transitions, never independent keys."""
@@ -5205,14 +5456,24 @@ class PoolQueue:
                         )
                     continue
                 residency = self.residency_verdict(item)
-                if residency["state"] == "lead_not_resident":
+                if residency["state"] in ("lead_not_resident", "lead_unpinned",
+                                          "map_not_composed", "map_unreadable"):
                     # Before any token is taken, and without ``record_pass``:
                     # the bytes are not there, so this box should go do other
                     # work rather than age an item nothing on this box can
                     # advance.  Rob, #583: schedule compute when its
                     # dependencies are met, not while it spins on I/O.
-                    self.record_denial(item, "residency_lead_not_resident", {
-                        "residency": residency})
+                    # ``lead_unpinned`` is the same refusal for a lead that
+                    # finished holding no tokens -- it moved nothing, it
+                    # overran, or an egress has already taken its bytes back.
+                    # ``map_not_composed`` is the refusal for bytes that are
+                    # there and unreachable: without the map the action reads
+                    # the pool and says nothing went wrong.  ``map_unreadable``
+                    # is the same refusal when the mount would not say either
+                    # way; both leave the item ready for the next scan.
+                    self.record_denial(
+                        item, f"residency_{residency['state']}",
+                        {"residency": residency})
                     continue
                 sealed_demand = self.demand_of(item)
                 try:
@@ -6116,7 +6377,16 @@ class PoolQueue:
                         terminal_status=outcome.get("status"),
                     )
                     self._release_reservation(
-                        key, host=holder if isinstance(holder, str) else socket.gethostname())
+                        key, host=holder if isinstance(holder, str) else socket.gethostname(),
+                        # Judged on the record that was *filed*, not on this
+                        # stale copy: the ending already concluded, and if it
+                        # kept its tier tokens the bytes are on the stage.
+                        # Releasing them here would leave occupancy nothing can
+                        # attribute -- every reclaim path (an egress, the orphan
+                        # sweep) walks the tier's held keys, so a key released
+                        # while its files remain is capacity no mechanism can
+                        # ever take back.
+                        keep_tier=self.residency_pin_holds(outcome, key))
                     path.unlink(missing_ok=True)
                     self.lease_path(key).unlink(missing_ok=True)
                     continue
@@ -6494,7 +6764,14 @@ class PoolQueue:
                             if not cleanup["complete"]:
                                 continue
                         if holders:
-                            self._release_reservation(key, host=holders[0])
+                            # The ending is already filed -- that is what made
+                            # this tombstone unrestorable -- so if it pinned a
+                            # staged range, its tier tokens are not this
+                            # cleanup's to return.  Releasing them would leave
+                            # the files on the stage with nothing holding them.
+                            self._release_reservation(
+                                key, host=holders[0],
+                                keep_tier=self._filed_pin_holds(key))
                             if self.claim_reservation_hosts(key):
                                 continue  # a partial return still needs this owner
                         lease = _read_json(self.lease_path(key))
@@ -6571,9 +6848,11 @@ class PoolQueue:
         Aged past ``timeout_s`` before removal, for the same reason
         ``reap_stale`` waits: ``claim()`` writes the lease *after* the rename,
         so a lease that briefly has no record beside it may simply be a claim
-        mid-flight in the other direction.  Any tokens still held under the key
-        go back, because a reservation outliving its holder is the starvation
-        bug's shape.
+        mid-flight in the other direction.  Host tokens still held under the
+        key go back, because a reservation outliving its holder is the
+        starvation bug's shape -- but tier tokens do not, when the key's filed
+        ending pins a staged range: those are meant to outlive the claim, and
+        releasing them leaves occupancy nothing can attribute.
         """
 
         swept: list[str] = []
@@ -6609,7 +6888,14 @@ class PoolQueue:
                 container_cleanup = self.cleanup_action_containers(record)
                 if not container_cleanup["complete"]:
                     continue
-                self._release_reservation(key, host=host)
+                # "Any tokens still held under the key go back" is right for a
+                # host ledger, where a reservation outliving its holder is the
+                # starvation bug.  It is wrong for a tier: a mover's tier
+                # tokens are *meant* to outlive its claim, from ``finish``
+                # until an egress deletes the bytes, so a widowed lease beside
+                # a filed ending that pins must leave them alone.
+                self._release_reservation(key, host=host,
+                                         keep_tier=self._filed_pin_holds(key))
                 lease.unlink(missing_ok=True)
                 swept.append(key)
         return swept
@@ -7723,8 +8009,13 @@ class PoolQueue:
             return self.attempt_path(record, attempts)
         self.lease_path(action_key).unlink(missing_ok=True)
         # Capacity is released before the item is filed, so the next worker to
-        # look sees the tokens free rather than racing this rename.
-        self._release_reservation(action_key, host=holder)
+        # look sees the tokens free rather than racing this rename.  A mover
+        # that staged what it declared keeps its *tier* tokens: they stand for
+        # bytes that are still on the stage, and only an egress that deletes
+        # them may give them back.
+        self._release_reservation(
+            action_key, host=holder,
+            keep_tier=self.residency_pin_holds(record, action_key))
         _write_json_atomic(dst, record)
         if tombstone is None:
             src.unlink(missing_ok=True)
@@ -7733,7 +8024,8 @@ class PoolQueue:
         return dst
 
     @_serialized_key
-    def reclaim_terminal_reservation(self, action_key: str) -> dict[str, object]:
+    def reclaim_terminal_reservation(self, action_key: str, *,
+                                     unpin: bool = False) -> dict[str, object]:
         """Return an orphaned reservation only when terminal state proves it.
 
         This is the bounded repair for a worker that finished on bytes which
@@ -7768,6 +8060,19 @@ class PoolQueue:
             raise PoolContractError(
                 f"refusing to reclaim {key}: terminal status is "
                 f"{state}/{terminal.get('status')}")
+
+        if not unpin and self.residency_pin_holds(terminal, key):
+            # A concluded mover whose bytes are still on the stage holds its
+            # tier tokens on purpose: they are the stage's occupancy, and
+            # returning them here would let the ledger admit a mover onto bytes
+            # this one has not released.  Repairing an orphan is the egress
+            # node's job, or ``--unpin`` when an operator knows the files are
+            # gone.
+            raise PoolContractError(
+                f"refusing to reclaim {key}: it still holds tier tokens for "
+                f"{terminal['residency']['range_end_bytes'] - terminal['residency']['range_start_bytes']}"
+                " bytes it staged; run its egress, or pass unpin=True if the "
+                "files are known to be gone")
 
         hosts = self.claim_reservation_hosts(key)
         if not hosts:
@@ -8637,7 +8942,7 @@ class PoolQueue:
             # travel in a file because this process's exit status cannot
             # carry them.
             env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
-                 **progress_environment},
+                 **progress_environment, **self.residency_map_environment(item)},
             # The launcher leads its own group so the timeout can signal the
             # group rather than the single pid.  ``kill()`` on the pid reaches
             # the launcher only, and leaves the action holding the GPU.

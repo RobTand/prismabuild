@@ -93,6 +93,26 @@ ACTION_PROGRESS_ENV = (
     ACTION_PROGRESS_HELPER_ENV,
 )
 
+#: The residency channel (#583), **mirrored** from
+#: :mod:`prismabuild.residency_map` for the same reason the progress names
+#: above are mirrored: attested worker core imports no repository module.
+#: ``tests/test_a_residency_map_names_bytes_a_mover_verified.py`` pins the two
+#: definitions to one string.
+#:
+#: Neither is sealed, and neither may be.  The map says *where a copy of the
+#: action's own inputs is*, and every entry in it carries the sha256 the
+#: manifest declared -- so an action that reads a staged copy computes what an
+#: action that reads the pool computes, byte for byte.  Sealing the map would
+#: make the same work under two different keys and cost every staged run its
+#: CAS hit; forwarding it unsealed is what keeps staging a placement decision
+#: rather than a different question.  ``ACTION_KEY_ENV`` is the action's own
+#: identity, which cannot be an argument for the actions that need it most:
+#: a movement node files its receipt and holds its tier tokens under its key,
+#: and a key inside the argv the key is computed from does not converge.
+ACTION_KEY_ENV = "PRISMABUILD_ACTION_KEY"
+RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
+ACTION_RESIDENCY_ENV = (ACTION_KEY_ENV, RESIDENCY_MAP_ENV)
+
 #: The sealed request key that declares the progress contract, and the two
 #: schema names that version it.  ``PROGRESS_PARAM`` is sealed into the action
 #: key like ``PROFILE_PARAM``: an action admitted under the progress contract
@@ -7347,6 +7367,7 @@ def run_local_action(
             str(key): str(value) for key, value in variables.items()
         }
         launch_environment.update(_progress_environment(normalized, launch_environment))
+        launch_environment.update(_residency_environment(normalized, launch_environment))
         if profile is not None:
             launch_environment.update(profile.environment(launch_environment))
             # The sealed argv is exec'd verbatim underneath what this returns.
@@ -7831,6 +7852,39 @@ def _progress_environment(
     return forwarded
 
 
+def _residency_environment(
+    action: Mapping[str, object], sealed: Mapping[str, str]
+) -> dict[str, str]:
+    """This action's own identity, and the staged copy of its inputs (#583).
+
+    Two variables, both unsealed, both harmless to an action that ignores
+    them.  ``ACTION_KEY_ENV`` is always set, because it is derived from the
+    action in hand rather than forwarded from anywhere, and because the nodes
+    that need it -- a movement node filing a receipt and holding tier tokens
+    under its own key -- cannot take it as an argument without hashing the key
+    into the argv the key is computed from.  ``RESIDENCY_MAP_ENV`` is
+    forwarded only when the launcher set it, which it does for an item whose
+    residency block names leads that have staged something.
+
+    A sealed variable of either name is a refusal rather than an overwrite,
+    the rule the progress and profile contracts already keep: an action that
+    thought it was setting its own identity would silently get somebody
+    else's.
+    """
+
+    conflicting = [name for name in ACTION_RESIDENCY_ENV if name in sealed]
+    if conflicting:
+        raise ActionContractError(
+            f"action seals {', '.join(conflicting)}, which the residency "
+            "contract must set"
+        )
+    environment = {ACTION_KEY_ENV: str(action["action_key"])}
+    forwarded = os.environ.get(RESIDENCY_MAP_ENV)
+    if forwarded:
+        environment[RESIDENCY_MAP_ENV] = forwarded
+    return environment
+
+
 def report_action_progress(
     phase: str, units_completed: float, *, unit: str | None = None
 ) -> bool:
@@ -8023,8 +8077,10 @@ def main(
 __all__ = [
     "ACTION_SCHEMA_V1",
     "ACTION_SCHEMA_V2",
+    "ACTION_KEY_ENV",
     "ACTION_PROGRESS_PATH_ENV",
     "ACTION_PROGRESS_TOKEN_ENV",
+    "RESIDENCY_MAP_ENV",
     "ACTION_STATUS_PATH_ENV",
     "PROGRESS_PARAM",
     "PROGRESS_POLICY_SCHEMA_V1",
