@@ -652,6 +652,13 @@ unknown name would otherwise create an action no worker could admit. This does
 not narrow the generic `PoolQueue` resource ledger, whose direct producers may
 define resources outside the fleet-command client contract.
 
+Storage-tier kinds are exactly such a producer-defined resource. `PoolQueue`
+understands a demand key spelled `<kind>@<tier_id>` and reserves it on a
+cluster-scoped tier ledger rather than on the executing box; `pbrun --demand`
+and campaign rows still refuse every name outside `cpu`, `gpu` and `mem_gb`, so
+no fleet-command submission can carry one. See
+[Cluster-scoped storage tiers](#cluster-scoped-storage-tiers-583).
+
 ## Work decomposition boundary
 
 Rob's 2026-09-11 design decision is to partition logical requests into small,
@@ -2992,6 +2999,103 @@ refuses the whole manifest before its first row is sealed unless every row and
 a logical request's common half carries a nonblank `data_manifest`, so a
 producer whose reads are not visible in the declaration can still require them
 to be declared.
+
+## Cluster-scoped storage tiers (#583)
+
+Off by default. Nothing the fleet publishes today carries tier demand or a
+`residency` block, no tier is minted unless a box runs the `tiers` role, and
+that role is not in `fleet_boxes.json`. With no tier ledger and no residency
+block, admission takes the path it took before: no ledger is scanned, no token
+moves, and a claim record gains no field.
+
+### The resource PB could not see
+
+`cpu`, `gpu` and `mem_gb` are reserved on the box that executes the action.
+Storage-tier residency is not: the pool lives on dl380g10 while its consumers
+run on the Sparks, so a reservation against it is a reservation against a box
+*other* than the executing one.
+
+On 2026-09-14 three concurrent export arms pinned dl380g10's HDDs at 92%
+utilisation and 522 MB/s pool-side. Withdrawing the third arm raised the other
+two from about 2.0+2.1 to 3.0+4.5 units/s: the fleet did more total work with
+fewer readers. PB admitted all three because none of the resources it counts
+were scarce. The scarce resource was cache residency and the bandwidth to fill
+it, and PB had no representation of either.
+
+### Two reservable quantities, both discovered
+
+| Tier | Token | Capacity, read every cycle | Residency it guarantees |
+|---|---|---|---|
+| `arc` | `arc_gib` | `c_max` less `arc_meta_used` from `arcstats` | budgetary; ZFS exposes no pin |
+| `prismabuild-stage*` | `stage_gib` | the stage pool's own `size` from `zpool list -Hp` | pinned while a key holds the tokens |
+| source pool | `fill_mb_s_pool_side` | the best `disk_pacing.mean_self_read_mb_s` any move off it recorded | none; it is the source |
+
+Every quantity is discovered by `src/prismabuild/storage_tiers.py` on every
+cycle, so adding an SSD or more RAM changes behaviour with no config edit: a
+stage tier is any imported ZFS pool whose name starts with `prismabuild-stage`
+(the pool name is the device's own declaration, the way a `storage_pool` label
+declares a data member), its members are bound through `/dev/disk/by-id`, and
+its capacity is the pool's own arithmetic. No tier quantity is a constant.
+
+**Bandwidth figures name their side.** The token, the demand key and the tier
+record all read `fill_mb_s_pool_side`, because a file-side rate and a pool-side
+rate differ by whatever the ARC answered. One live receipt on dl380g10 records
+1141 MB/s file-side for 206 GB off a four-spindle raidz1, which those disks
+never produced; the same action's pool-side attribution at depth 16 is
+242.5 MB/s. A tier with no pool-side-attributed receipt mints no fill tokens,
+which is the probe rule.
+
+### Demand is derived from the data manifest
+
+A movement node declares the half-open byte range of its consumer's read order
+it makes resident. The range comes out of the manifest the action already
+sealed — `storage_tiers.manifest_phase_ranges` reads the same running byte sum
+for v1 `annotations.phases` and v2 `read_plan.phases` that the prewarm role
+reads — and `storage_tiers.residency_demand` turns it into whole GiB, rounded
+up. `publish` refuses an item whose declared `stage_gib` on that tier is below
+the ceiling of its own range, so the number in a claim record traces back to a
+declared read set rather than to a habit.
+
+### Where a tier ledger lives, and why it is a second root
+
+A tier ledger is an ordinary `ResourceLedger` under `tier-reservations/<tier_id>/`,
+keyed by tier id (`prismabuild-stage:dl380g10`) instead of hostname. It is a
+second root on purpose: every directory under `reservations/` is read as a
+*box* by `claim_reservation_hosts`, and a tier that held the same key would make
+the claim's holder ambiguous and refuse every finish and reap of that action.
+
+`_claim` splits an item's demand by ledger. Host kinds are acquired as before,
+under the host admission lock. Tier kinds are acquired **after** host admission,
+so a box that cannot seat the work never touches the shared ledger, **before**
+the ready-to-claimed rename, so a claim is never won on capacity it does not
+hold, and **outside** the host admission lock, because holding box admission
+across a mount stall is the #351 shape. Either shortage abandons both, records a
+denial naming the tier and the shortage — `tier_reservation_unavailable`,
+`never_fits_tier_capacity`, `tier_unknown` — and records no pass: the shortage is
+cluster-wide, so withholding this box for it would idle a box that has other
+work. Every path that concludes a claim goes through one `_release_reservation`
+helper, so a claim that reserved on a tier cannot be concluded on one ledger and
+forgotten on the other; a dead claimant's stage tokens come back with whichever
+reaper finds the stale lease.
+
+### The residency gate
+
+An item may carry a `residency` block naming its lead movement nodes. It is
+admitted only when every lead has a `done/` record whose status is `executed`;
+otherwise the claim is denied `residency_lead_not_resident` before any token
+moves, and the box goes and does other work. A `cache_hit` lead moved no bytes
+and does not satisfy the gate — the residency descriptor is deterministic on
+purpose, so that a consumer can bind it as a CAS dependency before the mover
+runs, which is exactly what makes a cached mover look finished.
+
+### Not built here
+
+Pin lifetime beyond the claim, the egress node that unpins, the orphan sweep for
+a mover whose consumer was withdrawn, the mover and egress tools themselves, the
+residency map a consumer reads, and the submitter flag that publishes a mover
+plan. This change is the contract, the ledger, the derivation and the gate. No
+end-to-end campaign speedup is claimed by it, and none is measurable until a
+stage device exists and a consumer reads it.
 
 ## Model-level Tessera dispatch
 

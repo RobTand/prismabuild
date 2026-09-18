@@ -2417,6 +2417,62 @@ def load_data_manifest(path: str | Path) -> dict[str, object]:
     return read_data_manifest(path)[0]
 
 
+#: What a movement node produces: a statement that one byte range of one
+#: manifest's read order is resident on one tier.  Deterministic from the plan,
+#: so a consumer can bind it as a CAS dependency *before* the mover runs, which
+#: is what lets ``ActionGraph``'s content-binding check apply to residency edges
+#: unchanged (#583).
+RESIDENCY_DESCRIPTOR_SCHEMA_V1 = "prismaquant.prismabuild.residency_descriptor.v1"
+#: The tiers a movement node may name.  ``pool`` is the raidz1 the export is
+#: served from; ``stage`` is a PB-owned pool on solid-state devices; ``arc`` is
+#: the file server's ARC, a best-effort tier ZFS exposes no pin for.
+STORAGE_TIERS = frozenset({"pool", "stage", "arc"})
+_STORAGE_TIER_RE = re.compile(r"(pool|stage|arc)\Z")
+
+
+def residency_descriptor(
+    *,
+    manifest_sha256: object,
+    manifest_bytes: object,
+    tier: object,
+    range_start_bytes: object,
+    range_end_bytes: object,
+) -> dict[str, object]:
+    """The canonical result of a movement node, validated.
+
+    ``range_start_bytes``/``range_end_bytes`` are a half-open interval in the
+    manifest's own read order (v1 ``entries`` order, v2 ``read_plan`` order),
+    never file offsets: the manifest is the only thing that maps them to
+    files, and it is bound by ``manifest_sha256``.
+    """
+
+    start = _nonnegative_integer(range_start_bytes, where="residency.range_start_bytes")
+    end = _nonnegative_integer(range_end_bytes, where="residency.range_end_bytes")
+    if end <= start:
+        _fail("residency range must be non-empty and half-open (start < end)")
+    return {
+        "schema": RESIDENCY_DESCRIPTOR_SCHEMA_V1,
+        "manifest_sha256": _sha256(manifest_sha256, where="residency.manifest_sha256"),
+        "manifest_bytes": _nonnegative_integer(manifest_bytes, where="residency.manifest_bytes"),
+        "tier": _text(tier, where="residency.tier", pattern=_STORAGE_TIER_RE),
+        "range_start_bytes": start,
+        "range_end_bytes": end,
+    }
+
+
+def residency_descriptor_binding(descriptor: Mapping[str, object]) -> dict[str, object]:
+    """``{"sha256", "bytes"}`` of the descriptor's canonical bytes, for ``inputs``."""
+
+    raw = _canonical_bytes(residency_descriptor(
+        manifest_sha256=descriptor["manifest_sha256"],
+        manifest_bytes=descriptor["manifest_bytes"],
+        tier=descriptor["tier"],
+        range_start_bytes=descriptor["range_start_bytes"],
+        range_end_bytes=descriptor["range_end_bytes"],
+    ))
+    return {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+
+
 def _normalize_task(value: object) -> dict[str, object]:
     task = _exact_mapping(value, keys=_TASK_KEYS, where="action.task")
     task_class = _text(task["task_class"], where="action.task.task_class")
@@ -8035,6 +8091,10 @@ __all__ = [
     "identify_executable",
     "is_pbrun_generated_path",
     "load_data_manifest",
+    "residency_descriptor",
+    "residency_descriptor_binding",
+    "RESIDENCY_DESCRIPTOR_SCHEMA_V1",
+    "STORAGE_TIERS",
     "read_data_manifest",
     "main",
     "preflight_action",

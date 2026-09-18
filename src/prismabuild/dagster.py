@@ -28,6 +28,10 @@ from . import slurm as ps
 
 
 DAGSTER_ACTION_SPEC_SCHEMA_V1 = "prismaquant.prismabuild.dagster_action.v1"
+#: v2 adds one nullable ``movement`` field: a node that moves a manifest's
+#: bytes between storage tiers instead of computing (#583).  A v1 spec is a v2
+#: spec whose movement is null, and is still accepted as written.
+DAGSTER_ACTION_SPEC_SCHEMA_V2 = "prismaquant.prismabuild.dagster_action.v2"
 
 _ACTION_SPEC_KEYS = frozenset(
     {
@@ -39,6 +43,20 @@ _ACTION_SPEC_KEYS = frozenset(
         "retry",
     }
 )
+_ACTION_SPEC_KEYS_V2 = _ACTION_SPEC_KEYS | {"movement"}
+_MOVEMENT_KEYS = frozenset(
+    {
+        "source_tier",
+        "destination_tier",
+        "manifest_input_id",
+        "range_start_bytes",
+        "range_end_bytes",
+        "consumer_action_key",
+    }
+)
+#: The input id under which a consumer binds one movement node's residency
+#: descriptor, suffixed by the movement's ordinal in that consumer's plan.
+RESIDENCY_INPUT_PREFIX = "prismabuild.residency/"
 _RESOURCE_KEYS = frozenset(
     {
         "cpus",
@@ -193,6 +211,88 @@ class CASDependency:
         }
 
 
+@dataclass(frozen=True)
+class MovementSpec:
+    """What a movement node moves: one read-order byte range, tier to tier.
+
+    The node carries no compute: ``ActionGraph`` refuses a movement whose
+    resources ask for a GPU, because the point of the node is that the GPU is
+    free while bytes move (#583).  The range is in the manifest's own read
+    order and is bound to the manifest by ``manifest_input_id``, which must
+    name an input the mover *and* its consumer both carry with the same
+    digest, so the two nodes are provably talking about the same bytes.
+    """
+
+    source_tier: str
+    destination_tier: str
+    manifest_input_id: str
+    range_start_bytes: int
+    range_end_bytes: int
+    consumer_action_key: str
+
+    def __post_init__(self) -> None:
+        for name in ("source_tier", "destination_tier"):
+            value = getattr(self, name)
+            if type(value) is not str or value not in pb.STORAGE_TIERS:
+                raise DagsterGraphError(
+                    f"movement.{name} must be one of {sorted(pb.STORAGE_TIERS)}"
+                )
+        if self.source_tier == self.destination_tier:
+            raise DagsterGraphError("movement source and destination tiers must differ")
+        object.__setattr__(
+            self,
+            "manifest_input_id",
+            _text(
+                self.manifest_input_id,
+                where="movement.manifest_input_id",
+                pattern=_INPUT_ID_RE,
+            ),
+        )
+        start = _nonnegative_integer(
+            self.range_start_bytes, where="movement.range_start_bytes"
+        )
+        end = _nonnegative_integer(self.range_end_bytes, where="movement.range_end_bytes")
+        if end <= start:
+            raise DagsterGraphError(
+                "movement range must be non-empty and half-open (start < end)"
+            )
+        object.__setattr__(
+            self,
+            "consumer_action_key",
+            _text(
+                self.consumer_action_key,
+                where="movement.consumer_action_key",
+                pattern=_SHA256_RE,
+            ),
+        )
+
+    @classmethod
+    def from_config(cls, value: object, *, where: str) -> "MovementSpec":
+        raw = _exact_mapping(value, keys=_MOVEMENT_KEYS, where=where)
+        return cls(**raw)  # type: ignore[arg-type]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "source_tier": self.source_tier,
+            "destination_tier": self.destination_tier,
+            "manifest_input_id": self.manifest_input_id,
+            "range_start_bytes": self.range_start_bytes,
+            "range_end_bytes": self.range_end_bytes,
+            "consumer_action_key": self.consumer_action_key,
+        }
+
+    def descriptor(self, manifest: Mapping[str, object]) -> dict[str, object]:
+        """The residency descriptor this movement produces, given its manifest input."""
+
+        return pb.residency_descriptor(
+            manifest_sha256=manifest["sha256"],
+            manifest_bytes=manifest["bytes"],
+            tier=self.destination_tier,
+            range_start_bytes=self.range_start_bytes,
+            range_end_bytes=self.range_end_bytes,
+        )
+
+
 class ActionSpec:
     """A sealed action plus explicit SLURM placement and CAS dependencies.
 
@@ -209,6 +309,7 @@ class ActionSpec:
         "max_requeues",
         "poll_interval_seconds",
         "max_polls",
+        "movement",
     )
 
     def __init__(
@@ -222,6 +323,7 @@ class ActionSpec:
         max_requeues: int = 0,
         poll_interval_seconds: float = 5.0,
         max_polls: int = 17280,
+        movement: MovementSpec | None = None,
     ):
         normalized = pb.validate_action(action)
         self._action_json = json.dumps(
@@ -275,6 +377,21 @@ class ActionSpec:
             placement=placement,
             resources=resources,
         )
+        if movement is not None and not isinstance(movement, MovementSpec):
+            raise DagsterGraphError("movement must be a MovementSpec or None")
+        if movement is not None:
+            if resources.gpus:
+                raise DagsterGraphError(
+                    "a movement node must not reserve a GPU: it moves bytes so "
+                    "that compute is admitted only once they are resident"
+                )
+            inputs = {str(entry["id"]) for entry in normalized["inputs"]}
+            if movement.manifest_input_id not in inputs:
+                raise DagsterGraphError(
+                    "movement.manifest_input_id must name one of the mover's "
+                    "own sealed inputs"
+                )
+        self.movement = movement
 
     @property
     def action(self) -> dict[str, object]:
@@ -290,10 +407,22 @@ class ActionSpec:
 
     @classmethod
     def from_config(cls, action: object, value: object) -> "ActionSpec":
-        raw = _exact_mapping(value, keys=_ACTION_SPEC_KEYS, where="action spec")
-        if raw["schema"] != DAGSTER_ACTION_SPEC_SCHEMA_V1:
+        if not isinstance(value, Mapping):
+            raise DagsterGraphError("action spec must be an object")
+        schema = value.get("schema")
+        if schema == DAGSTER_ACTION_SPEC_SCHEMA_V2:
+            raw = _exact_mapping(value, keys=_ACTION_SPEC_KEYS_V2, where="action spec")
+            movement = (
+                None if raw["movement"] is None
+                else MovementSpec.from_config(raw["movement"], where="action spec.movement")
+            )
+        elif schema == DAGSTER_ACTION_SPEC_SCHEMA_V1:
+            raw = _exact_mapping(value, keys=_ACTION_SPEC_KEYS, where="action spec")
+            movement = None
+        else:
             raise DagsterGraphError(
-                f"action spec schema must be {DAGSTER_ACTION_SPEC_SCHEMA_V1!r}"
+                f"action spec schema must be {DAGSTER_ACTION_SPEC_SCHEMA_V1!r} "
+                f"or {DAGSTER_ACTION_SPEC_SCHEMA_V2!r}"
             )
         resources_raw = _exact_mapping(
             raw["resources"], keys=_RESOURCE_KEYS, where="action spec.resources"
@@ -325,11 +454,15 @@ class ActionSpec:
                 "poll_interval_seconds"
             ],
             max_polls=retry_raw["max_polls"],  # type: ignore[arg-type]
+            movement=movement,
         )
 
     def as_config(self) -> dict[str, object]:
-        return {
-            "schema": DAGSTER_ACTION_SPEC_SCHEMA_V1,
+        # A spec without movement round-trips as the v1 document it always
+        # was; only a movement node needs the v2 spelling.
+        config: dict[str, object] = {
+            "schema": (DAGSTER_ACTION_SPEC_SCHEMA_V1 if self.movement is None
+                       else DAGSTER_ACTION_SPEC_SCHEMA_V2),
             "checkout_root": str(self.checkout_root),
             "resources": {
                 "cpus": self.resources.cpus,
@@ -352,6 +485,9 @@ class ActionSpec:
                 "max_polls": self.max_polls,
             },
         }
+        if self.movement is not None:
+            config["movement"] = self.movement.as_dict()
+        return config
 
 
 class ActionGraph:
@@ -391,6 +527,11 @@ class ActionGraph:
                         "is not bound exactly in action.inputs"
                     )
 
+        for key, spec in by_key.items():
+            if spec.movement is None:
+                continue
+            _check_movement(spec, by_key)
+
         remaining = {key: len(spec.dependencies) for key, spec in by_key.items()}
         downstream: dict[str, list[str]] = {key: [] for key in by_key}
         for key, spec in by_key.items():
@@ -421,6 +562,61 @@ class ActionGraph:
             return self._by_key[action_key]
         except KeyError as exc:
             raise DagsterGraphError(f"unknown action key: {action_key}") from exc
+
+
+def _check_movement(spec: ActionSpec, by_key: Mapping[str, ActionSpec]) -> None:
+    """Refuse a movement node whose consumer edge is missing or unbound.
+
+    Three facts have to line up for a residency edge to mean anything: the
+    consumer exists; the consumer carries the same manifest input, digest for
+    digest, so the range refers to bytes the consumer will read; and the
+    consumer binds *this* mover's residency descriptor -- computed here from
+    the shared manifest input and the range -- as the CAS result of an edge to
+    this mover.  ``ActionGraph`` already checks that every edge is bound in
+    ``inputs``; this checks that the bound value is the descriptor and not
+    some other blob that happens to carry the mover's key.
+    """
+
+    movement = spec.movement
+    assert movement is not None
+    key = spec.action_key
+    consumer = by_key.get(movement.consumer_action_key)
+    if consumer is None:
+        raise DagsterGraphError(
+            f"movement {key} names an unknown consumer {movement.consumer_action_key}"
+        )
+    if consumer is spec:
+        raise DagsterGraphError(f"movement {key} names itself as its consumer")
+    mover_inputs = {str(entry["id"]): entry for entry in spec.action["inputs"]}
+    consumer_inputs = {str(entry["id"]): entry for entry in consumer.action["inputs"]}
+    manifest = mover_inputs[movement.manifest_input_id]
+    if consumer_inputs.get(movement.manifest_input_id) != manifest:
+        raise DagsterGraphError(
+            f"movement {key} and its consumer {consumer.action_key} do not "
+            f"bind the same {movement.manifest_input_id!r} input"
+        )
+    edges = [
+        dependency for dependency in consumer.dependencies
+        if dependency.upstream_action_key == key
+    ]
+    if not edges:
+        raise DagsterGraphError(
+            f"consumer {consumer.action_key} declares no dependency on its "
+            f"movement node {key}"
+        )
+    expected = pb.residency_descriptor_binding(movement.descriptor(manifest))
+    edge = edges[0]
+    if (edge.result_sha256, edge.result_bytes) != (expected["sha256"], expected["bytes"]):
+        raise DagsterGraphError(
+            f"consumer {consumer.action_key} binds movement {key} to a result "
+            "that is not that movement's residency descriptor"
+        )
+    if not edge.input_id.startswith(RESIDENCY_INPUT_PREFIX):
+        raise DagsterGraphError(
+            f"consumer {consumer.action_key} binds movement {key} under input "
+            f"{edge.input_id!r}; residency inputs are named "
+            f"{RESIDENCY_INPUT_PREFIX}<ordinal>"
+        )
 
 
 @dataclass(frozen=True)
@@ -903,6 +1099,9 @@ __all__ = [
     "BoundActionResult",
     "CASDependency",
     "DAGSTER_ACTION_SPEC_SCHEMA_V1",
+    "DAGSTER_ACTION_SPEC_SCHEMA_V2",
+    "MovementSpec",
+    "RESIDENCY_INPUT_PREFIX",
     "DagsterActionError",
     "DagsterActionRunner",
     "DagsterGraphError",

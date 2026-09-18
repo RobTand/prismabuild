@@ -600,3 +600,33 @@ The `storage` role only exists once a runtime generation carrying
 ignores the `roles` key; a supervisor running a newer one with no script logs
 `role storage not startable` and keeps supervising its worker loops.  With no
 manifest-carrying action in the queue the loop does nothing at all.
+
+## The manifest as a residency demand (#583, off by default)
+
+The same phase table this role windows on is what a storage-tier reservation is
+derived from. `storage_tiers.manifest_phase_ranges` reads it — v1
+`annotations.phases`, v2 `read_plan.phases` — and returns the half-open byte
+ranges in read order; `storage_tiers.residency_demand` turns one range into the
+whole GiB a movement node must hold on a tier. A table that does not describe
+its manifest yields no ranges, the same refusal `manifest_phases` makes here,
+because reserving on the wrong boundaries reserves for bytes nobody reads.
+
+An item may then carry a `residency` block:
+
+```json
+{"schema": "prismabuild.residency.v1",
+ "tier_id": "prismabuild-stage:dl380g10",
+ "manifest_sha256": "...", "manifest_bytes": 4096,
+ "range_start_bytes": 0, "range_end_bytes": 11496376320,
+ "leads": ["<mover action key>"]}
+```
+
+A block with a range is a movement node: `publish` refuses it unless its
+`stage_gib@<tier_id>` demand is at least that range's ceiling in GiB. A block
+with `leads` is a consumer: it is admitted only once every lead's `done/` record
+says `executed`. Both halves are optional and a block with neither refuses.
+
+This prewarm role is unaffected. It does not read the `residency` block, no
+fleet submission writes one, and no tier is minted unless a box runs the
+separate `tiers` role. See the design document's cluster-scoped storage tiers
+section.

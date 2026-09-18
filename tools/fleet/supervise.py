@@ -99,7 +99,7 @@ LOOP_SCRIPT = "worker_loop.py"
 #: no capacity, so counting it as a poller would make a box look busier than
 #: it is.  ``storage`` is the file server, which makes the next actions'
 #: declared bytes resident before anybody claims them (issue #487).
-ROLE_SCRIPTS = {"storage": "prewarm_loop.py"}
+ROLE_SCRIPTS = {"storage": "prewarm_loop.py", "tiers": "tier_loop.py"}
 
 # Worker loops are queue pollers, not CPU reservations.  Keep a couple ready
 # to claim without a process-start round trip, while the queue's admission

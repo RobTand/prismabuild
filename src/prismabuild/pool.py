@@ -143,6 +143,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
+from . import storage_tiers
 from . import box_capacity
 from . import box_window
 from . import resource_scope
@@ -261,6 +262,24 @@ WITHHOLD_CEILING_S = 900.0
 UNREADABLE_HEAD_BYTES = 2048
 
 RESERVATIONS = "reservations"
+#: Cluster-scoped ledgers, one per storage tier (#583).  A separate root,
+#: because every directory under ``reservations/`` is read as a *box* by
+#: ``claim_reservation_hosts``, and a tier that held the same key would
+#: make the claim's holder ambiguous.  A tier lives on one box but its
+#: tokens are taken by claimants on any box: a mover on dl380g10 fills a
+#: stage that a consumer on a Spark reads, and both reserve against the
+#: same ledger.
+TIER_RESERVATIONS = "tier-reservations"
+#: Where a tier loop files what it discovered about one tier, for readers.
+TIERS = "tiers"
+#: The residency block an item may carry (#583): what a movement node moves,
+#: and which movement nodes a compute node waits on.  Absent on every item the
+#: fleet publishes today, and the whole mechanism is inert without it.
+RESIDENCY_SCHEMA_V1 = "prismabuild.residency.v1"
+_RESIDENCY_KEYS = frozenset({
+    "schema", "tier_id", "manifest_sha256", "manifest_bytes",
+    "range_start_bytes", "range_end_bytes", "leads",
+})
 PASSES = "passes"
 CLAIM_DENIALS = "claim-denials.json"
 CLAIM_DENIALS_SCHEMA_V1 = "prismabuild.claim_denials.v1"
@@ -2352,6 +2371,8 @@ class PoolQueue:
         (self.root / WORKERS).mkdir(parents=True, exist_ok=True)
         (self.root / ATTEMPTS).mkdir(parents=True, exist_ok=True)
         (self.root / PREWARM).mkdir(parents=True, exist_ok=True)
+        (self.root / TIER_RESERVATIONS).mkdir(parents=True, exist_ok=True)
+        (self.root / TIERS).mkdir(parents=True, exist_ok=True)
 
     # -- what the fleet can actually run ---------------------------------
 
@@ -2869,6 +2890,7 @@ class PoolQueue:
         retry_safe: bool | None = None,
         container_owner: str | None = None,
         preempted_claim: Mapping[str, object] | None = None,
+        residency: Mapping[str, object] | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -2885,6 +2907,13 @@ class PoolQueue:
         demand = {str(k): int(v) for k, v in dict(resources or {}).items()}
         if any(v < 0 for v in demand.values()):
             raise PoolContractError("resource demand must not be negative")
+        try:
+            for tier_id in storage_tiers.split_demand(demand)[1]:
+                self._check_tier_id(tier_id)
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
+        residency_block = (
+            None if residency is None else self.validate_residency(residency, demand))
         if type(max_attempts) is not int or max_attempts < 1:
             raise PoolContractError("max_attempts must be a positive integer")
         if retry_safe is not None and type(retry_safe) is not bool:
@@ -2956,6 +2985,8 @@ class PoolQueue:
             "published_by": socket.gethostname(),
             **addressing,
         }
+        if residency_block is not None:
+            item["residency"] = residency_block
         if retry_safe is not None:
             item["retry_safe"] = retry_safe
         if container_owner is not None:
@@ -2994,7 +3025,7 @@ class PoolQueue:
     #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
     _CLAIM_SCOPED_FIELDS = (
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes", "gpu_admission",
-        "cpu_allocation",
+        "cpu_allocation", "tier_reservations", "residency_verdict",
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
@@ -3330,6 +3361,378 @@ class PoolQueue:
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
         return ResourceLedger(self.root / RESERVATIONS, host=host)
+
+    # -- storage tiers (#583) --------------------------------------------
+
+    @staticmethod
+    def _check_tier_id(tier_id: str) -> str:
+        if (not isinstance(tier_id, str) or not tier_id or tier_id.startswith(".")
+                or "/" in tier_id or storage_tiers.TIER_DEMAND_SEPARATOR in tier_id):
+            raise PoolContractError(f"invalid tier id {tier_id!r}")
+        return tier_id
+
+    def tier_ledger(self, tier_id: str) -> ResourceLedger:
+        """The cluster-scoped ledger of one storage tier.
+
+        The same ``ResourceLedger`` a box uses, keyed by tier id instead of
+        hostname and rooted under ``TIER_RESERVATIONS`` so that no reader
+        of ``reservations/`` mistakes a tier for a box.  A tier id carries
+        a ``:`` (``prismabuild-stage:dl380g10``), which no hostname does.
+        """
+
+        return ResourceLedger(self.root / TIER_RESERVATIONS, host=self._check_tier_id(tier_id))
+
+    def tier_ids(self) -> list[str]:
+        """Every tier that has a ledger, whether or not it holds anything.
+
+        Contained against every ``OSError``, not only the two ``_scan``
+        tolerates, and deliberately here rather than in ``_scan``: a host
+        ledger's scan must keep failing loudly, because a box that cannot read
+        its own reservations does not know what it holds.  This directory is
+        different.  It is brand new, it is on the shared mount, nothing touches
+        it while the feature is off, and its readers are ``finish`` and the
+        reapers -- so a ``PermissionError`` or an NFS ``ESTALE`` on a cold
+        handle would abort a conclusion *after* the claim was entombed and its
+        lease unlinked but *before* the outcome was written, and would abort a
+        whole reaper cycle on every box for as long as it persisted.  An empty
+        listing is the safe answer: release is documented safe to call twice,
+        so a token this call could not return is returned by the next release
+        on the same key or by the reaper's reclaim.
+        """
+
+        try:
+            return sorted(
+                directory.name for directory in _scan(self.root / TIER_RESERVATIONS)
+                if directory.is_dir() and not directory.name.startswith(".")
+            )
+        except OSError:
+            return []
+
+    def tier_holdings(self, action_key: str) -> dict[str, dict[str, int]]:
+        """The tier tokens one action holds, by tier id; empty when it holds none."""
+
+        holdings: dict[str, dict[str, int]] = {}
+        for tier_id in self.tier_ids():
+            tokens = self.tier_ledger(tier_id).holder_tokens(action_key)
+            if tokens:
+                holdings[tier_id] = tokens
+        return holdings
+
+    def release_tier_reservations(self, action_key: str) -> int:
+        """Return every tier token filed under this action, on every tier.
+
+        By key and with no holder to resolve: a tier ledger has exactly one
+        directory per tier, so a key can hold on several tiers without any
+        of them being a second claim holder.  Safe to call twice.
+
+        Tier by tier, and each one contained: this runs inside ``finish`` and
+        the reapers, between the entombed claim and the written outcome, so a
+        shared-mount read that fails must cost one tier's tokens until the next
+        release rather than the action's own ending.  A directory name that is
+        not a tier id (``PoolContractError`` out of ``tier_ledger``) is skipped
+        for the same reason -- nothing of ours writes one, and a stray name is
+        not a reason to lose an outcome.
+        """
+
+        released = 0
+        for tier_id in self.tier_ids():
+            try:
+                released += self.tier_ledger(tier_id).release(action_key)
+            except (OSError, PoolContractError):
+                continue
+        return released
+
+    def _release_reservation(self, action_key: str, *, host: str | None) -> int:
+        """Give a concluded claim's capacity back: host tokens, then tier tokens.
+
+        Every path that concludes a claim -- finish, the reapers, withdrawal,
+        the lost-race branches of ``_claim`` -- goes through here, so a
+        claim that reserved on a tier cannot be concluded on one ledger and
+        forgotten on the other.  ``host`` is the box whose ledger holds the
+        claim's host tokens, or ``None`` when no box is named and there is
+        nothing to release there; the tier release needs no host.
+        """
+
+        released = self.ledger(host).release(action_key) if host is not None else 0
+        return released + self.release_tier_reservations(action_key)
+
+    def mint_tier_capacity(self, tier_id: str, tokens: Mapping[str, int]) -> dict[str, object]:
+        """Make a tier's ledger say what discovery measured, up or down.
+
+        Up is ``ensure_capacity``; down is ``retire_free_capacity``, which
+        deletes free tokens only, so a mover mid-flight keeps its
+        reservation and the total falls as holders finish.  A kind that
+        discovery no longer reports is retired to zero: a stage pool that
+        was exported and is gone must stop admitting movers.
+        """
+
+        ledger = self.tier_ledger(tier_id)
+        wanted = {str(kind): int(count) for kind, count in tokens.items()}
+        if any(count < 0 for count in wanted.values()):
+            raise PoolContractError("tier capacity must not be negative")
+        ledger.ensure_capacity({kind: count for kind, count in wanted.items() if count > 0})
+        total = ledger.capacity()
+        lower = {kind: wanted.get(kind, 0) for kind in total if total[kind] > wanted.get(kind, 0)}
+        retired = ledger.retire_free_capacity(lower) if lower else {}
+        return {"tier_id": tier_id, "capacity": ledger.capacity(), "retired": retired}
+
+    def tier_record_path(self, tier_id: str) -> Path:
+        return self.root / TIERS / f"{self._check_tier_id(tier_id)}.json"
+
+    def announce_tier(self, record: Mapping[str, object]) -> Path:
+        """File what a tier loop discovered about one tier, for submitters and readers.
+
+        Not the worker offer: an offer is one record per *box*, last writer
+        wins, and a tier is not a box.  The record is advisory -- the ledger
+        is the admission authority -- and it says where the tier is mounted
+        and what its members are, which a mover needs and a ledger does not
+        carry.
+        """
+
+        tier_id = self._check_tier_id(str(record.get("tier_id", "")))
+        path = self.tier_record_path(tier_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(path, dict(record, announced_unix=_now()))
+        return path
+
+    def tiers(self) -> list[dict[str, object]]:
+        """Every announced tier record, by tier id."""
+
+        records = []
+        for path in _glob(self.root / TIERS, "*.json"):
+            record = _read_json(path)
+            if isinstance(record, dict) and record.get("tier_id") == path.stem:
+                records.append(record)
+        return records
+
+    def _begin_tier_acquire(
+        self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],
+        handles: dict[str, str],
+    ) -> dict[str, object] | None:
+        """Take every tier's tokens, or say which tier stopped it.
+
+        Tier by tier in id order, all-or-nothing per tier as ``begin_acquire``
+        already is; the caller abandons every handle in ``handles`` when this
+        returns a shortage, so all-or-nothing holds across tiers as well.
+        Deliberately outside the host admission lock: these ledgers are on
+        the shared mount, and holding host admission across a mount stall is
+        the #351 shape.  The shortage's ``reason`` is the denial the caller
+        records: a tier with no ledger at all, a tier whose whole capacity is
+        below the demand (which no waiting will fix), or one that is merely
+        busy.
+        """
+
+        for tier_id, needs in sorted(tier_demand.items()):
+            ledger = self.tier_ledger(tier_id)
+            if not ledger.base.is_dir():
+                return {"tier_id": tier_id, "reason": "tier_unknown", "demand": dict(needs)}
+            total = ledger.capacity()
+            if any(total.get(kind, 0) < need for kind, need in needs.items()):
+                return {"tier_id": tier_id, "reason": "never_fits_tier_capacity",
+                        "capacity_total": total, "demand": dict(needs)}
+            handle = ledger.begin_acquire(action_key, needs)
+            if handle is None:
+                return {"tier_id": tier_id, "reason": "tier_reservation_unavailable",
+                        "token_shortage": ledger.last_token_shortage,
+                        "capacity_total": total, "available": ledger.available(),
+                        "demand": dict(needs)}
+            handles[tier_id] = handle
+        return None
+
+    def _abandon_tier_acquire(self, handles: Mapping[str, str]) -> int:
+        """Return every claimant-private tier handle; a committed one owns nothing and is a no-op."""
+
+        return sum(self.tier_ledger(tier_id).abandon_acquire(handle)
+                   for tier_id, handle in sorted(handles.items()))
+
+    def _commit_tier_acquire(self, action_key: str, handles: Mapping[str, str]) -> int:
+        """File every tier handle under the action key; returns the tokens that moved."""
+
+        return sum(self.tier_ledger(tier_id).commit_acquire(action_key, handle)
+                   for tier_id, handle in sorted(handles.items()))
+
+    # -- residency (#583) -------------------------------------------------
+
+    @classmethod
+    def validate_residency(
+        cls, residency: Mapping[str, object], demand: Mapping[str, int],
+    ) -> dict[str, object]:
+        """Refuse a residency block that is not arithmetic over its manifest.
+
+        Two halves, either or both.  A **mover** names the byte range of the
+        manifest's read order it makes resident; its ``stage_gib`` demand on
+        that tier must be at least the range's own ceiling in GiB, so the
+        number in the claim record is a quotation from the manifest rather
+        than a number somebody typed (``pb_demand_must_be_measured_not_
+        habitual``).  A **consumer** names its lead movers; the gate admits it
+        only once each one has moved the bytes.
+
+        The manifest digest travels with both so the range is readable: a
+        range is meaningless without the list that maps it to files, and that
+        list is content-addressed in the CAS like any other input.
+        """
+
+        block = dict(residency)
+        unknown = sorted(set(block) - _RESIDENCY_KEYS)
+        if unknown:
+            raise PoolContractError(f"unknown residency fields: {unknown}")
+        if block.get("schema") != RESIDENCY_SCHEMA_V1:
+            raise PoolContractError(f"residency schema must be {RESIDENCY_SCHEMA_V1!r}")
+        # The manifest is what turns a byte range into files, and a digest is
+        # what makes two blocks provably about the same list.  ``core``'s
+        # ``residency_descriptor`` validates exactly these two fields for the
+        # mover's result; a block that declared them loosely would let the two
+        # validators disagree about one object.  The pool cannot open the
+        # manifest -- ``publish`` takes a ``cas_root`` and never reads it -- so
+        # what it enforces is the shape, and ``residency_verdict`` enforces the
+        # agreement between a consumer's block and its leads'.
+        digest = block.get("manifest_sha256")
+        if (not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)):
+            raise PoolContractError(
+                "residency.manifest_sha256 must be a 64-character lowercase digest")
+        size = block.get("manifest_bytes")
+        if isinstance(size, bool) or type(size) is not int or size <= 0:
+            raise PoolContractError(
+                "residency.manifest_bytes must be a positive integer")
+        tier_id = block.get("tier_id")
+        if tier_id is not None:
+            cls._check_tier_id(str(tier_id))
+        leads = block.get("leads") or []
+        if not isinstance(leads, list):
+            raise PoolContractError("residency.leads must be an array of action keys")
+        for lead in leads:
+            if not isinstance(lead, str) or len(lead) != 64:
+                raise PoolContractError(
+                    "residency.leads must be 64-character action keys")
+        if len(set(leads)) != len(leads):
+            raise PoolContractError("residency.leads must not repeat a key")
+        start = block.get("range_start_bytes")
+        end = block.get("range_end_bytes")
+        if (start is None) != (end is None):
+            raise PoolContractError(
+                "residency range needs both range_start_bytes and range_end_bytes")
+        if start is not None:
+            for name, value in (("range_start_bytes", start), ("range_end_bytes", end)):
+                if isinstance(value, bool) or type(value) is not int or value < 0:
+                    raise PoolContractError(
+                        f"residency.{name} must be a non-negative integer")
+            if int(end) <= int(start):
+                raise PoolContractError(
+                    "residency range must be non-empty and half-open (start < end)")
+            if tier_id is None:
+                raise PoolContractError("a residency range must name the tier it lands on")
+            floor = storage_tiers.stage_tokens_for_bytes(int(end) - int(start))
+            # The tier id declares which token kind it deals in; the same rule
+            # ``residency_demand`` derives the demand with, so a block this
+            # refuses is never one PB's own derivation would have produced.
+            kind = (f"{storage_tiers.capacity_kind_of(str(tier_id))}"
+                    f"{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}")
+            declared = int(demand.get(kind, 0))
+            if declared < floor:
+                # The range is the measurement; the demand is a claim about
+                # it.  A claim below the measurement would let a mover pin
+                # bytes the tier never counted, which is precisely the
+                # accounting #583 exists to close.
+                raise PoolContractError(
+                    f"residency demand {kind}={declared} is below the "
+                    f"{floor} GiB its declared range occupies")
+        if not leads and start is None:
+            raise PoolContractError(
+                "a residency block must declare a range, leads, or both")
+        return block
+
+    @staticmethod
+    def _residency_manifest_of(record: Mapping[str, object] | None) -> str | None:
+        """The manifest digest a record's own residency block names, if any."""
+
+        if not isinstance(record, Mapping):
+            return None
+        block = record.get("residency")
+        if not isinstance(block, Mapping):
+            return None
+        declared = block.get("manifest_sha256")
+        return str(declared) if isinstance(declared, str) else None
+
+    def _superseded_status_of(self, action_key: str) -> str | None:
+        """The newest drop filed for this key, or ``None`` if it was never dropped.
+
+        ``_file_superseded`` writes ``<key>.<unix>.<kind>.json`` under
+        ``withdrawn/superseded/``, which is deliberately invisible to every
+        reader that addresses a state directory by ``<key>.json``.  A lead
+        dropped by the terminal-claim branch, the withdrawal race or the reaper
+        therefore has no record in ``done/``, ``failed/`` or ``withdrawn/`` at
+        all, and reporting it as ``absent`` is the denial nobody can act on.
+        """
+
+        newest: tuple[str, str] | None = None
+        for path in _glob(self.superseded_dir(), f"{action_key}.*.json"):
+            record = _read_json(path)
+            if not isinstance(record, Mapping):
+                continue
+            status = record.get("status")
+            stamp = path.name
+            if newest is None or stamp > newest[0]:
+                newest = (stamp, str(status) if status is not None else "superseded")
+        return None if newest is None else newest[1]
+
+    def residency_verdict(self, item: Mapping[str, object]) -> dict[str, object]:
+        """Whether this item's declared bytes are resident, and why not.
+
+        ``not_requested`` for everything the fleet publishes today; written onto
+        the claim record whenever an item carries a block.  A lead counts as
+        resident only when its ``done/`` record says ``executed`` **and** that
+        record names the same manifest the consumer does: a ``cache_hit``
+        finished without moving a byte, and a mover that made a range of some
+        *other* manifest resident has made none of this consumer's bytes
+        resident.  Both are traps a deterministic descriptor invites, because
+        it is what lets a consumer bind a mover's result before the mover runs.
+        """
+
+        residency = item.get("residency")
+        if not isinstance(residency, Mapping):
+            return {"state": "not_requested"}
+        leads = residency.get("leads") or []
+        if not isinstance(leads, list) or not leads:
+            return {"state": "no_leads"}
+        wanted = residency.get("manifest_sha256")
+        pending: list[dict[str, object]] = []
+        for lead in leads:
+            record = _read_json(self.item_path(DONE, str(lead)))
+            status = record.get("status") if isinstance(record, Mapping) else None
+            if status == "executed":
+                declared = self._residency_manifest_of(record)
+                if wanted is None or declared is None or declared == wanted:
+                    continue
+                # The pool cannot open the manifest -- it holds records, not
+                # the CAS -- but it holds both blocks, and two blocks naming
+                # two digests are two manifests whatever the bytes say.
+                pending.append({"lead": str(lead), "status": "manifest_mismatch",
+                                "declared_manifest_sha256": declared,
+                                "expected_manifest_sha256": str(wanted)})
+                continue
+            if status is None:
+                # A lead that ended badly will never become resident, and a
+                # denial that could not tell that from "has not started yet"
+                # would be a denial nobody can act on.  A *drop* is filed under
+                # ``withdrawn/superseded/`` rather than in any of the three
+                # state directories, so it is read there or it reads as absent.
+                # No drop policy is implied for the consumer: the item stays
+                # ready, exactly as it does while its mover is still queued.
+                for state in (FAILED, WITHDRAWN):
+                    ended = _read_json(self.item_path(state, str(lead)))
+                    if isinstance(ended, Mapping):
+                        status = str(ended.get("status") or state)
+                        break
+                else:
+                    status = self._superseded_status_of(str(lead))
+            pending.append({"lead": str(lead),
+                            "status": status if status is not None else "absent"})
+        if pending:
+            return {"state": "lead_not_resident", "pending": pending,
+                    "leads": [str(lead) for lead in leads]}
+        return {"state": "resident", "leads": [str(lead) for lead in leads]}
 
     def _transition_locked(self, action_key: str, *, blocking: bool = True):
         """Serialize one key's ownership transitions, never independent keys."""
@@ -4751,7 +5154,23 @@ class PoolQueue:
                                    "cancelled this generation",
                         )
                     continue
-                demand = self.demand_of(item)
+                residency = self.residency_verdict(item)
+                if residency["state"] == "lead_not_resident":
+                    # Before any token is taken, and without ``record_pass``:
+                    # the bytes are not there, so this box should go do other
+                    # work rather than age an item nothing on this box can
+                    # advance.  Rob, #583: schedule compute when its
+                    # dependencies are met, not while it spins on I/O.
+                    self.record_denial(item, "residency_lead_not_resident", {
+                        "residency": residency})
+                    continue
+                sealed_demand = self.demand_of(item)
+                try:
+                    demand, tier_demand = storage_tiers.split_demand(sealed_demand)
+                except ValueError as exc:
+                    self.record_denial(item, "malformed_tier_demand", {
+                        "demand": sealed_demand, "error": str(exc)})
+                    continue
                 reservation_demand = dict(demand)
                 if gpu_controller is not None and demand.get("gpu"):
                     # Historical slot counts expressed sharing, not device count.
@@ -4759,6 +5178,7 @@ class PoolQueue:
                     # physical GPU; the controller keeps multi-slot work exclusive.
                     reservation_demand["gpu"] = 1
                 handle: str | None = None
+                tier_handles: dict[str, str] = {}
                 adaptive = None
                 adaptive_gpu = None
                 borrow = None
@@ -4911,6 +5331,27 @@ class PoolQueue:
                             "remote_offer": fallback_deferral,
                         })
                         continue
+                    if tier_demand:
+                        # After host admission, so a box that cannot seat the
+                        # work never touches the shared tier ledgers, and
+                        # before the rename, so a claim is never won on tier
+                        # capacity it does not hold.  No ``record_pass``: the
+                        # tier is cluster-scoped, and withholding this box for
+                        # a shortage every box shares would idle it for nothing
+                        # (Rob, #583: the box does other work meanwhile).
+                        shortage = self._begin_tier_acquire(key, tier_demand, tier_handles)
+                        if shortage is not None:
+                            self._abandon_tier_acquire(tier_handles)
+                            tier_handles.clear()
+                            if ledger is not None and handle is not None:
+                                ledger.abandon_acquire(handle)
+                                self._return_borrow(controller, borrow)
+                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            self.record_denial(item, str(shortage["reason"]), {
+                                "demand": sealed_demand, "tier_demand": tier_demand,
+                                "tier_shortage": shortage,
+                            })
+                            continue
                     # Intent precedes the claim, so a crash in between leaves evidence.
                     self._write_claim_intent(key, owner=owner)
                     src = self.item_path(READY, key)
@@ -4926,6 +5367,7 @@ class PoolQueue:
                             ledger.abandon_acquire(handle)
                             self._return_borrow(controller, borrow)
                             self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                        self._abandon_tier_acquire(tier_handles)
                         # Leave no evidence of a claim that did not happen.  The marker
                         # is written by rename, so this claimant's copy replaced
                         # whatever was there -- and if the winner wrote first, the
@@ -4948,7 +5390,7 @@ class PoolQueue:
                         continue
                     moved = _read_json(dst) or item
                     if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
-                            or self.demand_of(moved) != demand):
+                            or self.demand_of(moved) != sealed_demand):
                         # Admission described the scanned generation. A replacement
                         # may need a different host or more tokens; put it back for a
                         # fresh admission before committing this claimant's tokens.
@@ -4956,6 +5398,7 @@ class PoolQueue:
                             ledger.abandon_acquire(handle)
                             self._return_borrow(controller, borrow)
                             self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                        self._abandon_tier_acquire(tier_handles)
                         try:
                             os.link(dst, src)
                         except OSError:
@@ -4970,6 +5413,14 @@ class PoolQueue:
                             "moved_tags": moved.get("tags"), "moved_needs_gpu": moved.get("needs_gpu"),
                         })
                         continue
+                    # Tier handles commit first: a failure here leaves the host
+                    # handle uncommitted, so the guard below still abandons it,
+                    # and a committed tier token answers to the key, which every
+                    # release path returns.
+                    tier_filed = self._commit_tier_acquire(key, tier_handles)
+                    tier_wanted = sum(sum(needs.values()) for needs in tier_demand.values())
+                    incomplete = tier_filed < tier_wanted
+                    filed = 0
                     if ledger is not None and handle is not None:
                         # Won the rename, so the reservation stops belonging to this
                         # claimant and starts belonging to the action.  Every branch
@@ -4986,37 +5437,44 @@ class PoolQueue:
                                     ledger.held_dir / key / cpu_admission.METADATA) is None)
                                 or (adaptive_gpu is not None and _read_json(
                                     ledger.held_dir / key / gpu_admission.METADATA) is None)):
-                            # A stale-acquisition sweep took part of the reservation,
-                            # or tokens of an earlier incarnation are filed under this
-                            # key.  Fail closed rather than run unreserved: ``dst`` is
-                            # still byte-identical to the ready record, because the
-                            # rewrite below has not happened yet, so putting it back
-                            # restores the item exactly as it was.
+                            incomplete = True
+                    if incomplete:
+                        # A stale-acquisition sweep took part of the reservation,
+                        # or tokens of an earlier incarnation are filed under this
+                        # key.  Fail closed rather than run unreserved: ``dst`` is
+                        # still byte-identical to the ready record, because the
+                        # rewrite below has not happened yet, so putting it back
+                        # restores the item exactly as it was.
+                        if ledger is not None and handle is not None:
                             ledger.abandon_acquire(handle)
                             ledger.release(key)
                             self._return_borrow(controller, borrow)
                             self._return_gpu_probe(controller, gpu_controller, gpu_probe)
-                            # Link rather than rename.  ``publish`` writes ``ready``
-                            # unconditionally, so a re-submission of this key can
-                            # already be sitting there, and a rename would replace that
-                            # new generation with these older bytes and lose the
-                            # request.  If it is there, leave the claim for the reaper
-                            # instead: an extra reaper cycle costs one attempt, a
-                            # clobbered generation costs the whole submission.
-                            try:
-                                os.link(dst, src)
-                            except OSError:
-                                pass
-                            else:
-                                dst.unlink(missing_ok=True)
-                                self.item_path(INTENT, key).unlink(missing_ok=True)
-                            self.record_denial(item, "committed_reservation_incomplete", {
-                                "filed_tokens": filed,
-                                "expected_tokens": sum(reservation_demand.values()),
-                                "adaptive_cpu": adaptive is not None,
-                                "adaptive_gpu": adaptive_gpu is not None,
-                            })
-                            continue
+                        self._abandon_tier_acquire(tier_handles)
+                        self.release_tier_reservations(key)
+                        # Link rather than rename.  ``publish`` writes ``ready``
+                        # unconditionally, so a re-submission of this key can
+                        # already be sitting there, and a rename would replace that
+                        # new generation with these older bytes and lose the
+                        # request.  If it is there, leave the claim for the reaper
+                        # instead: an extra reaper cycle costs one attempt, a
+                        # clobbered generation costs the whole submission.
+                        try:
+                            os.link(dst, src)
+                        except OSError:
+                            pass
+                        else:
+                            dst.unlink(missing_ok=True)
+                            self.item_path(INTENT, key).unlink(missing_ok=True)
+                        self.record_denial(item, "committed_reservation_incomplete", {
+                            "filed_tokens": filed,
+                            "expected_tokens": sum(reservation_demand.values()),
+                            "tier_filed_tokens": tier_filed,
+                            "tier_expected_tokens": tier_wanted,
+                            "adaptive_cpu": adaptive is not None,
+                            "adaptive_gpu": adaptive_gpu is not None,
+                        })
+                        continue
                 except BaseException:
                     # The handle is the only name these tokens have, and it
                     # lives in this frame.  ``begin_acquire`` keeps its own
@@ -5033,6 +5491,12 @@ class PoolQueue:
                             # replace the ending that is on its way out.
                             ledger.abandon_acquire(handle)
                             self._return_borrow(controller, borrow)
+                    if tier_handles:
+                        with suppress(Exception):
+                            # Whatever ``committed`` says about the host handle: a
+                            # tier handle that was never committed owns tokens no
+                            # key names, and one that was is empty and a no-op.
+                            self._abandon_tier_acquire(tier_handles)
                     raise
                 terminal = self.terminal_outcome_covers(moved, action_key=key)
                 if terminal is not None:
@@ -5042,6 +5506,7 @@ class PoolQueue:
                     # at which the payload is definitely not executing.
                     if ledger is not None:
                         ledger.release(key)
+                    self.release_tier_reservations(key)
                     state, outcome = terminal
                     self._file_superseded(
                         moved, key=key, kind="terminal-claim", status="dropped",
@@ -5060,6 +5525,7 @@ class PoolQueue:
                     # action a full run before ``execute`` notices.
                     if ledger is not None:
                         ledger.release(key)
+                    self.release_tier_reservations(key)
                     self._file_superseded(
                         moved, key=key, kind="dropped", status="dropped",
                         dropped_unix=_now(), dropped_host=socket.gethostname(),
@@ -5100,6 +5566,13 @@ class PoolQueue:
                 if adaptive_gpu is not None:
                     claimed["gpu_admission"] = _read_json(ledger.held_dir / key / gpu_admission.METADATA)
                 claimed["reserved_on"] = socket.gethostname() if demand else None
+                if tier_demand:
+                    claimed["tier_reservations"] = {
+                        tier_id: dict(sorted(needs.items()))
+                        for tier_id, needs in sorted(tier_demand.items())
+                    }
+                if residency["state"] != "not_requested":
+                    claimed["residency_verdict"] = residency
                 # Read here, where the claim record is being written anyway,
                 # so the receipt costs no extra write and cannot race: after
                 # this point the prewarm loop has already skipped this key,
@@ -5592,9 +6065,8 @@ class PoolQueue:
                                f"under {state}",
                         terminal_status=outcome.get("status"),
                     )
-                    self.ledger(
-                        holder if isinstance(holder, str) else None
-                    ).release(key)
+                    self._release_reservation(
+                        key, host=holder if isinstance(holder, str) else socket.gethostname())
                     path.unlink(missing_ok=True)
                     self.lease_path(key).unlink(missing_ok=True)
                     continue
@@ -5609,7 +6081,8 @@ class PoolQueue:
                     if not mine or tombstone is None:
                         continue
                     self.lease_path(key).unlink(missing_ok=True)
-                    self.ledger(holder if isinstance(holder, str) else None).release(key)
+                    self._release_reservation(
+                        key, host=holder if isinstance(holder, str) else socket.gethostname())
                     tombstone.unlink(missing_ok=True)
                     continue
                 # The filename is the identity; a record that disagrees with it, or
@@ -5683,7 +6156,8 @@ class PoolQueue:
                         # than state.
                         continue
                     self.lease_path(key).unlink(missing_ok=True)
-                    self.ledger(holder if isinstance(holder, str) else None).release(key)
+                    self._release_reservation(
+                        key, host=holder if isinstance(holder, str) else socket.gethostname())
                     try:
                         _write_json_atomic(destination, record)
                     except OSError:
@@ -5776,7 +6250,8 @@ class PoolQueue:
                 self.lease_path(key).unlink(missing_ok=True)
                 # Whatever the outcome, the dead claimant's capacity goes back.  A
                 # reservation outliving its holder is the starvation bug's shape.
-                self.ledger(holder if isinstance(holder, str) else None).release(key)
+                self._release_reservation(
+                    key, host=holder if isinstance(holder, str) else socket.gethostname())
                 try:
                     _write_json_atomic(destination, record)
                 except OSError:
@@ -5969,7 +6444,7 @@ class PoolQueue:
                             if not cleanup["complete"]:
                                 continue
                         if holders:
-                            self.ledger(holders[0]).release(key)
+                            self._release_reservation(key, host=holders[0])
                             if self.claim_reservation_hosts(key):
                                 continue  # a partial return still needs this owner
                         lease = _read_json(self.lease_path(key))
@@ -6013,6 +6488,18 @@ class PoolQueue:
                     grace_s=grace_s
                 )
             )
+        # Tier ledgers too: a claimant that died between taking a tier's
+        # tokens and committing them left a private directory that no key
+        # names, on a ledger no box's reaper walks.
+        for tier_id in self.tier_ids():
+            try:
+                names = self.tier_ledger(tier_id).sweep_stale_acquisitions(grace_s=grace_s)
+            except (OSError, PoolContractError):
+                # Same containment as the release path: an unreadable tier
+                # costs this cycle that tier's sweep, never the rest of the
+                # reaper's work on every other key.
+                continue
+            swept.extend(f"{TIER_RESERVATIONS}/{tier_id}/{name}" for name in names)
         return swept
 
     def sweep_widowed_leases(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
@@ -6072,8 +6559,7 @@ class PoolQueue:
                 container_cleanup = self.cleanup_action_containers(record)
                 if not container_cleanup["complete"]:
                     continue
-                if host is not None:
-                    self.ledger(host).release(key)
+                self._release_reservation(key, host=host)
                 lease.unlink(missing_ok=True)
                 swept.append(key)
         return swept
@@ -7018,8 +7504,7 @@ class PoolQueue:
             if not mine or tombstone is None:
                 return self.item_path(WITHDRAWN, action_key)
             self.lease_path(action_key).unlink(missing_ok=True)
-            if holder is not None:
-                self.ledger(holder).release(action_key)
+            self._release_reservation(action_key, host=holder)
             tombstone.unlink(missing_ok=True)
             return self.item_path(WITHDRAWN, action_key)
         if record is None:
@@ -7051,8 +7536,7 @@ class PoolQueue:
             # ambiguous.  The snapshot carries ``published_unix``, which is
             # what makes the question askable here at all.
             snapshot = dict(effective_record)
-            if holder is not None:
-                self.ledger(holder).release(action_key)
+            self._release_reservation(action_key, host=holder)
             self.lease_path(action_key).unlink(missing_ok=True)
             try:
                 covered = self.terminal_outcome_covers(
@@ -7190,8 +7674,7 @@ class PoolQueue:
         self.lease_path(action_key).unlink(missing_ok=True)
         # Capacity is released before the item is filed, so the next worker to
         # look sees the tokens free rather than racing this rename.
-        if holder is not None:
-            self.ledger(holder).release(action_key)
+        self._release_reservation(action_key, host=holder)
         _write_json_atomic(dst, record)
         if tombstone is None:
             src.unlink(missing_ok=True)
@@ -7238,7 +7721,11 @@ class PoolQueue:
 
         hosts = self.claim_reservation_hosts(key)
         if not hosts:
-            return {"action_key": key, "released": 0, "hosts": []}
+            # No box holds it; a tier still may (a mover's stage tokens), and
+            # an operator asking for a terminal key's reservation back means
+            # those too.
+            return {"action_key": key, "released": self.release_tier_reservations(key),
+                    "hosts": []}
         if len(hosts) != 1:
             raise PoolContractError(
                 f"refusing to reclaim {key}: reservation is held on {hosts}")
@@ -7253,7 +7740,7 @@ class PoolQueue:
                 f"refusing to reclaim {key}: container lifecycle verification "
                 "is required")
 
-        released = self.ledger(hosts[0]).release(key)
+        released = self._release_reservation(key, host=hosts[0])
         return {"action_key": key, "released": released, "hosts": hosts}
 
     # -- operator decisions ---------------------------------------------
@@ -8417,8 +8904,7 @@ class PoolQueue:
         if tombstone is None or not mine:
             return
         self.lease_path(key).unlink(missing_ok=True)
-        if host is not None:
-            self.ledger(host).release(key)
+        self._release_reservation(key, host=host)
         destination = self._shape_as_ready_item(record, action_key=key)
         record["maintenance_deferred_unix"] = _now()
         _write_json_atomic(tombstone, record)
