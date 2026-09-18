@@ -1741,6 +1741,19 @@ class HoldLedger:
             else:
                 self.idle_s += seconds
 
+    def snapshot(self) -> dict[str, float | int]:
+        """A mark to diff against: what this cycle started with.
+
+        The ledger outlives a cycle by design, so a cycle that wants to
+        report its own hold time diffs the ending against this mark
+        rather than reading the lifetime totals (#575).
+        """
+
+        with self._lock:
+            return {"holds": self.holds, "held_s": self.held_s,
+                    "idle_s": self.idle_s, "active_s": self.active_s,
+                    "samples": self.samples}
+
 
 class DiskPacer:
     """Hold the reader while a client is reading and the pool is hurting.
@@ -3333,6 +3346,69 @@ def stage_requested(args) -> bool:
     return bool(getattr(args, "stage", False))
 
 
+def attribution_row(action_key: str, trigger: str,
+                    pacing: Mapping[str, object]) -> dict[str, object]:
+    """One warmed row's client attribution, for the cycle event (#575, #585).
+
+    The same split the row's own receipt carries -- whose reads counted as
+    *self*, what everyone else read, and whether the telemetry behind the
+    verdict was even there -- picked out so a cycle that held nothing still
+    says why.  One entry per row, never merged: two rows warmed for two
+    different boxes keep their own ``served_host``, so a cycle serving a
+    claimed window beside a ready row cannot read as a single verdict.
+    """
+
+    return {
+        "action_key": action_key,
+        "trigger": trigger,
+        "served_host": pacing["served_host"],
+        "served_attribution": pacing["served_attribution"],
+        "self_read_mb_s": pacing["self_read_mb_s"],
+        "other_read_mb_s": pacing["other_read_mb_s"],
+        "mean_self_read_mb_s": pacing["mean_self_read_mb_s"],
+        "mean_pool_read_mb_s": pacing["mean_pool_read_mb_s"],
+        "telemetry_state": pacing["telemetry_state"],
+        "missing_devices": list(pacing["missing_devices"]),
+        "samples": pacing["samples"],
+        "holds": pacing["holds"],
+        "held_seconds": pacing["held_seconds"],
+    }
+
+
+def cycle_client_attribution(
+        rows: list[dict[str, object]], pacer: DiskPacer,
+        mark: Mapping[str, float | int]) -> dict[str, object]:
+    """The cycle's own pacing verdict, stamped whether it held or not (#585).
+
+    ``rows`` is one :func:`attribution_row` per window warmed this cycle, in
+    the order it was warmed.  The hold counters are this cycle's diff against
+    ``mark`` -- the ledger outlives the cycle, so its lifetime totals would
+    answer "since the role started" to a reader asking "this poll".  A cycle
+    that warmed nothing reports no rows and no holds: with ``pacing_active``
+    beside it on the event, "nothing to read" stays visibly different from
+    "pacing was off", and a row read blind stays visibly different from a row
+    read alone, because its entry says ``missing`` where the other's says
+    ``complete``.  Only rows warmed *this* cycle appear: the pacer is shared,
+    and stamping its current verdict for a row it warmed on an earlier cycle
+    would certify a read that never happened.
+    """
+
+    ledger = pacer.ledger.snapshot()
+    states = sorted({str(row["telemetry_state"]) for row in rows})
+    missing = sorted({str(device) for row in rows
+                      for device in row["missing_devices"]})
+    return {
+        "rows": rows,
+        "holds": ledger["holds"] - mark["holds"],
+        "held_seconds": round(ledger["held_s"] - mark["held_s"], 3),
+        "held_while_clients_idle_s": round(ledger["idle_s"] - mark["idle_s"], 3),
+        "held_while_clients_active_s": round(
+            ledger["active_s"] - mark["active_s"], 3),
+        "telemetry_states": states,
+        "missing_devices": missing,
+    }
+
+
 def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
           pacer: DiskPacer | None = None) -> dict:
     ready = queue.ready_items()
@@ -3392,6 +3468,12 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         "advanced": [],
         "skipped": [],
     }
+    #: One attribution entry per window warmed below, in warm order, for the
+    #: cycle-level verdict (#575, #585).  The pacer is shared across rows, so
+    #: only rows warmed *this* cycle may appear: anything else would certify
+    #: a read that never happened.
+    paced_rows: list[dict[str, object]] = []
+    ledger_mark = pacer.ledger.snapshot()
 
     cycle_spent = 0
 
@@ -3478,6 +3560,11 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                            "headroom_nominal", "headroom_effective")},
             **result,
         }
+        # The row's verdict, picked out for the cycle event while it is still
+        # this row's: the next ``begin_row`` resets these counters, so reading
+        # them at cycle end would stamp the last row's numbers on every row.
+        paced_rows.append(attribution_row(
+            key, trigger, record["disk_pacing"]))
         if stage is not None:
             prior_stage = dict((queue.prewarm(key) or {}).get("stage") or {})
             if prior_stage.get("swept"):
@@ -3659,7 +3746,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             k: record[k] for k in
             ("action_key", "status", "manifest_bytes", "warmed_bytes",
              "bytes_warmed", "warmed_through_phase", "trigger", "seconds",
-             "mb_per_s")
+             "mb_per_s", "disk_pacing")
         })
 
     taken = 0
@@ -3771,6 +3858,11 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             apply=not args.dry_run) if stage.mountpoint else [])
         event["stage"] = {**stage.record(), "released": stage_rows,
                           "orphans": orphans}
+    # The verdict, whether it held or not (#575, #585).  A cycle that paced
+    # correctly and held nothing is the common case now, and without this it
+    # reads exactly like a pacer that never saw a client at all.
+    event["client_attribution"] = cycle_client_attribution(
+        paced_rows, pacer, ledger_mark)
     return event
 
 

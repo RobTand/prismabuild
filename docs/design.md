@@ -3038,6 +3038,18 @@ progress does not establish an irreversible manifest frontier.  A disk hold
 also requires active NFS client reads and a read-await or backlog breach;
 unreadable disk telemetry remains a fail-closed hold and unreadable client
 telemetry is treated as active.
+Every cycle event stamps `client_attribution` whether it held or not (#575,
+#585): one entry per window warmed that cycle, in warm order, each naming its
+own `served_host`, `served_attribution`, self/other read rates,
+`telemetry_state` and `missing_devices`, plus the cycle's own hold counters
+diffed against the role-lifetime ledger.  The claimed-window advances carry
+their `disk_pacing` on the event beside the ready rows.  Rows are never
+merged -- a cycle serving a claimed window beside a ready row reports two
+verdicts, and a cycle that warmed nothing reports no rows, which beside
+`pacing_active` reads as "nothing to read" rather than "pacing was off".
+Only rows warmed that cycle appear: the pacer is shared, and stamping its
+current verdict for an earlier cycle's row would certify a read that never
+happened.
 `pbcampaign` warns when a row's declared `argv` or `env` names a path under the
 shared mount and the row carries no `data_manifest`.  That scan is best-effort
 over the declaration only, so the warning says the row may read cold and a
