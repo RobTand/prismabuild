@@ -16,6 +16,7 @@ names any more is swept.
 """
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 import sys
@@ -229,6 +230,83 @@ def test_a_pinned_range_with_no_composed_map_is_refused(queue) -> None:
     _compose_map(queue)
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == CONSUMER
+
+
+def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
+    queue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ESTALE out of the map's stat is a denial, never an exception.
+
+    ``Path.exists`` answers ``False`` for ENOENT and ENOTDIR and *raises* for
+    everything else -- and everything else is what this mount does: the fleet
+    sees RDMA remote-access errors on a roughly quarter-hour cadence (#575).
+    An escaping OSError does not deny one item, it ends the whole claim scan
+    on that box, which is the #592 failure again one layer up.  The mount is
+    the thing mutated here, because the mount is the input under test.
+    """
+
+    _finished_pinned_mover(queue)
+    _compose_map(queue)
+    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
+             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
+                        "leads": [MOVER]})
+    real = pool.PoolQueue.residency_map_path
+
+    class _StalledPath:
+        def __init__(self, path: Path) -> None:
+            self._path = path
+
+        def __str__(self) -> str:
+            return str(self._path)
+
+        def exists(self) -> bool:
+            raise OSError(errno.ESTALE, "Stale file handle")
+
+    monkeypatch.setattr(pool.PoolQueue, "residency_map_path",
+                        lambda self, key: _StalledPath(real(self, key)))
+
+    # The claim returns, rather than raising out of the scan...
+    assert queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"]) is None
+    denial = _denial(queue, CONSUMER)
+    assert denial is not None and denial["reason"] == "residency_map_unreadable"
+    verdict = denial["evidence"]["residency"]
+    assert "Stale file handle" in verdict["error"]
+    assert verdict["map_path"] == str(real(queue, CONSUMER))
+    # ...and it is a stall, not a verdict: nothing aged, nothing taken.
+    assert queue.passes(CONSUMER) == 0
+    assert queue.ledger("dl380g10").holder_tokens(CONSUMER) == {}
+
+    # The mount comes back and the same item is admitted, unchanged.
+    monkeypatch.setattr(pool.PoolQueue, "residency_map_path", real)
+    claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    assert claimed is not None and claimed["action_key"] == CONSUMER
+    assert claimed["residency_verdict"]["state"] == "resident"
+
+
+def test_a_stalled_mount_leaves_the_map_out_of_the_launch_environment(
+    queue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The launcher stats the same file, and must not die on it either."""
+
+    real = pool.PoolQueue.residency_map_path
+
+    class _StalledPath:
+        def __str__(self) -> str:
+            return "/stalled"
+
+        def exists(self) -> bool:
+            raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(pool.PoolQueue, "residency_map_path",
+                        lambda self, key: _StalledPath())
+    item = {"action_key": CONSUMER, "residency": {"leads": [MOVER]}}
+
+    # Unset, rather than a path this process could not stat: an action told to
+    # read a map it cannot open would decide it had been staged and then read
+    # the pool anyway, which is the difference the receipt cannot show.
+    assert queue.residency_map_environment(item) == {}
+    monkeypatch.setattr(pool.PoolQueue, "residency_map_path", real)
 
 
 def test_a_lead_that_finished_holding_nothing_is_refused(queue) -> None:

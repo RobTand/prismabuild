@@ -3295,7 +3295,16 @@ class PoolQueue:
             path = self.residency_map_path(key)
         except PoolContractError:
             return {}
-        return {pb.RESIDENCY_MAP_ENV: str(path)} if path.exists() else {}
+        try:
+            present = path.exists()
+        except OSError:
+            # Same containment as the gate: a stat that raises says nothing
+            # about the file, and naming a map this process could not stat
+            # would hand the action a path it may not be able to open either.
+            # Unset is the honest answer, and it is the one the action already
+            # knows how to act on.
+            return {}
+        return {pb.RESIDENCY_MAP_ENV: str(path)} if present else {}
 
     def record_pass(self, action_key: str) -> int:
         """Count one admission denial.
@@ -3936,10 +3945,27 @@ class PoolQueue:
                 composed = self.residency_map_path(key)
             except PoolContractError:
                 composed = None
-        if composed is None or not composed.exists():
-            return {"state": "map_not_composed",
-                    "leads": [str(lead) for lead in leads],
-                    "map_path": str(composed) if composed is not None else None}
+        if composed is None:
+            return {"state": "map_not_composed", "map_path": None,
+                    "leads": [str(lead) for lead in leads]}
+        try:
+            present = composed.exists()
+        except OSError as exc:
+            # ``Path.exists`` answers False for ENOENT and ENOTDIR and *raises*
+            # for everything else, and everything else is what this mount
+            # does: the fleet sees RDMA remote-access errors on a roughly
+            # quarter-hour cadence (#575), and ESTALE or EIO out of a stat
+            # would leave the claim scan through an exception no caller
+            # handles -- one stalled lookup taking down a box's whole scan.
+            # A stall is not a verdict, so it becomes a denial of its own
+            # rather than either a refusal to serve or, worse, a silent
+            # admission onto a map nobody could read.
+            return {"state": "map_unreadable", "map_path": str(composed),
+                    "error": str(exc),
+                    "leads": [str(lead) for lead in leads]}
+        if not present:
+            return {"state": "map_not_composed", "map_path": str(composed),
+                    "leads": [str(lead) for lead in leads]}
         return {"state": "resident", "leads": [str(lead) for lead in leads],
                 "map_path": str(composed)}
 
@@ -5387,7 +5413,7 @@ class PoolQueue:
                     continue
                 residency = self.residency_verdict(item)
                 if residency["state"] in ("lead_not_resident", "lead_unpinned",
-                                          "map_not_composed"):
+                                          "map_not_composed", "map_unreadable"):
                     # Before any token is taken, and without ``record_pass``:
                     # the bytes are not there, so this box should go do other
                     # work rather than age an item nothing on this box can
@@ -5398,7 +5424,9 @@ class PoolQueue:
                     # overran, or an egress has already taken its bytes back.
                     # ``map_not_composed`` is the refusal for bytes that are
                     # there and unreachable: without the map the action reads
-                    # the pool and says nothing went wrong.
+                    # the pool and says nothing went wrong.  ``map_unreadable``
+                    # is the same refusal when the mount would not say either
+                    # way; both leave the item ready for the next scan.
                     self.record_denial(
                         item, f"residency_{residency['state']}",
                         {"residency": residency})
