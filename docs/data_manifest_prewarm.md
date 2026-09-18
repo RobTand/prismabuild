@@ -563,6 +563,96 @@ snapshot: the window advances after the claim, so the sidecar under
 uses `setdefault`.  An action nobody warmed carries no `prewarm` key at all,
 because "nobody looked" and "warmed nothing" are different facts.
 
+## The stage tier (#582) -- opt-in, and off
+
+`--stage` gives the window read a second destination: a copy on a ZFS pool
+whose name starts with `prismabuild-stage`. Everything else is the loop you
+have just read -- the same `Reader`, the same `DiskPacer`, the same window
+arithmetic and the same ARC budget.
+
+Without the flag nothing in this section runs. No `zpool` is asked, no
+directory is created, and a receipt carries no stage field. The default flips
+only on a measured campaign result.
+
+### What it does not buy
+
+No consumer reads the stage. PrismaBuild publishes no residency map, the
+export is served from the pool path, and the ARC is keyed by the on-pool block
+pointer, so a staged copy does not warm the path a consumer reads. Staging
+today writes bytes that nobody reads back.
+
+Every record says so. The `consumer` block on each stage record carries
+`reads_stage: false`, `verified_reads: null` and `effect: "copy_only"`, and
+the receipt reports `staged_bytes` apart from `bytes_warmed` so the two claims
+stay separate. Turning the tier on without a consumer costs SSD writes at pool
+read rate and returns nothing.
+
+Two more facts to weigh before the default could change:
+
+* The stage pool's writes go through the same ARC this loop is filling, so a
+  staged window holds two copies unless the stage dataset is created with
+  `primarycache=metadata`.
+* An entry is a byte range, so a stage object is a byte range. Each object is
+  named `<relative path>.pbstage@<offset>+<bytes>`. The tree is a source for a
+  residency map, not an overlay lower layer: a range written under a mirrored
+  file name would be a short file that an overlay would serve as the whole
+  thing.
+
+### Discovery
+
+The tier is rediscovered every cycle, never remembered. A pool created,
+exported, filled or lost between two polls changes the answer.
+
+* The pool is any imported pool whose name starts with `--stage-pool-prefix`.
+  The name is the declaration. The rule is deliberately not "any unused SSD":
+  `nvme0n1p1` on dl380g10 still carries a stale `zfs_member` signature, and a
+  rule that took idle devices would seize it.
+* Bytes are written to the pool's `prewarm` dataset when it has one, and to
+  the pool's own mountpoint when it does not.
+* Capacity is the pool's own `free` less `--stage-free-floor-bytes`, read from
+  `zpool list -Hp`.
+* Members reach a record only as `/dev/disk/by-id` names. Device numbering on
+  dl380g10 is the reverse of what the model names suggest: `nvme0n1` is the
+  stage device and `nvme1n1` is the root disk. A record naming a device number
+  would hand an operator the wrong disk.
+
+### The four states
+
+Every cycle records one of them, with its reason, whether or not anything was
+staged -- including a cycle with an empty queue. A correct non-action that
+nobody wrote down is what cost the diagnosis in pb#585.
+
+| State | Meaning |
+|---|---|
+| `present` | Discovered, writable, with budget. It does not mean anything was staged. |
+| `absent` | No imported pool carries the prefix. The state on every box but the file server. |
+| `full` | The pool's `free` leaves nothing above the floor, or the budget ran out during the cycle. |
+| `unreadable` | No `zpool`, no mounted directory, an unwritable one, or a health that is neither ONLINE nor DEGRADED. |
+
+A tier that fills or faults stops being written to and the warm carries on.
+Losing the second destination never costs the first.
+
+### Release
+
+Release is delete-behind-the-accepted-phase: the frontier a running action's
+progress record moves is what frees the bytes behind it, which is the signal
+that already releases ARC reserve. Two guards make it safe:
+
+* A staged object is deleted only when no other queued row still wants it.
+  Three measured GLM-5.3-Flash prepare manifests share 469,007 of 469,008
+  entries, so a release that asked only the row in front of it would delete
+  the bytes the row behind it has not reached.
+* A row that has left the queue has its whole band swept, read back from the
+  receipt the warm wrote. A last phase leaves no frontier behind it, and the
+  loop keeps no memory across a restart.
+
+A cycle with several queued rows over the same bytes can therefore release
+nothing and report `full`. That is the measured shape of total overlap, not a
+leak, and it is the retained-prefix behaviour the #583 design argues for --
+arrived at rather than chosen. A row whose sealed manifest can no longer be
+read cannot have its objects named, so the sweep reports it blocked instead of
+marking it swept.
+
 ## Deploying
 
 ### Restarting the role after a publication
