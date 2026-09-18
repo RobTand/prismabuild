@@ -44,6 +44,8 @@ import os
 from pathlib import Path
 import tempfile
 
+from . import storage_tiers
+
 #: The environment variable naming the composed map, injected by the launcher.
 RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
 #: What one mover writes about the range it staged.
@@ -52,14 +54,19 @@ RESIDENCY_MAP_FRAGMENT_SCHEMA_V1 = "prismaquant.prismabuild.residency_map_fragme
 RESIDENCY_MAP_SCHEMA_V1 = "prismaquant.prismabuild.residency_map.v1"
 
 _HEX = frozenset("0123456789abcdef")
-_ENTRY_KEYS = frozenset({"stage_path", "bytes", "offset", "sha256"})
+#: ``ram_path`` is optional and names the tmpfs copy of an entry the stage
+#: already vouches for (#640); it is the overlay's half of the entry.
+_ENTRY_KEYS = frozenset({"stage_path", "bytes", "offset", "sha256", "ram_path"})
+#: The epoch a ram fragment landed under; required on the ram tier only,
+#: because a ram range nobody can place in time is not resident.
 _FRAGMENT_KEYS = frozenset({
     "schema", "consumer_action_key", "mover_action_key", "tier_id",
-    "stage_root", "manifest_sha256", "entries",
+    "stage_root", "manifest_sha256", "entries", "epoch",
 })
+#: The ram overlay's header: which tier, under which root, in which epoch.
 _MAP_KEYS = frozenset({
     "schema", "tier_id", "stage_root", "manifest_sha256", "leads",
-    "generation", "entries",
+    "generation", "entries", "ram_tier_id", "ram_root", "ram_epoch",
 })
 
 
@@ -127,7 +134,14 @@ def _action_key(value: object, *, where: str) -> str:
     return value
 
 
-def validate_entry(key: object, value: object, *, stage_root: str) -> dict[str, object]:
+def _epoch(value: object, *, where: str) -> str:
+    if not isinstance(value, str) or not value or "/" in value:
+        raise ResidencyMapError(f"{where} must be a non-empty string with no '/'")
+    return value
+
+
+def validate_entry(key: object, value: object, *, stage_root: str,
+                   ram_root: str | None = None) -> dict[str, object]:
     """One staged range: where it is, how long it is, and what it hashes to.
 
     ``sha256`` is required even though a data manifest may carry ``null`` on
@@ -135,6 +149,12 @@ def validate_entry(key: object, value: object, *, stage_root: str) -> dict[str, 
     of calibration captures costs more than the residency it buys; a *copy* is
     different.  The map's whole claim is that these bytes are the manifest's
     bytes, on another device, and a copy nobody hashed cannot make it.
+
+    ``ram_path`` is optional and only ever names the tmpfs copy of an entry
+    the stage already vouches for (#640): same key, same digest, a second
+    servant.  It must live under the map's ``ram_root``, because a map that
+    could name a path outside the announced ram tier is a map that could
+    redirect a consumer's read anywhere.
     """
 
     _, offset = parse_residency_map_key(str(key))
@@ -153,25 +173,45 @@ def validate_entry(key: object, value: object, *, stage_root: str) -> dict[str, 
     if declared != offset:
         raise ResidencyMapError(
             f"entry {key!r} offset {declared} disagrees with its key")
-    return {
+    checked: dict[str, object] = {
         "stage_path": stage_path,
         "bytes": _positive(value.get("bytes"), where=f"entry {key!r} bytes"),
         "offset": offset,
         "sha256": _digest(value.get("sha256"), where=f"entry {key!r} sha256"),
     }
+    ram_path = value.get("ram_path")
+    if ram_path is not None:
+        if ram_root is None:
+            raise ResidencyMapError(
+                f"entry {key!r} names a ram_path, but the map announces no ram root")
+        checked_ram = _absolute(ram_path, where=f"entry {key!r} ram_path")
+        if not (checked_ram == ram_root
+                or checked_ram.startswith(ram_root.rstrip("/") + "/")):
+            raise ResidencyMapError(
+                f"entry {key!r} ram_path must live under {ram_root!r}")
+        checked["ram_path"] = checked_ram
+    return checked
 
 
-def _entries(raw: object, *, stage_root: str) -> dict[str, dict[str, object]]:
+def _entries(raw: object, *, stage_root: str,
+             ram_root: str | None = None) -> dict[str, dict[str, object]]:
     if not isinstance(raw, Mapping):
         raise ResidencyMapError("entries must be an object")
     out: dict[str, dict[str, object]] = {}
     for key, value in raw.items():
-        out[str(key)] = validate_entry(key, value, stage_root=stage_root)
+        out[str(key)] = validate_entry(key, value, stage_root=stage_root,
+                                       ram_root=ram_root)
     return out
 
 
 def validate_fragment(value: object) -> dict[str, object]:
-    """What one mover says it staged, checked."""
+    """What one mover says it staged, checked.
+
+    A fragment of the ram tier must carry the epoch it landed under: the
+    tmpfs empties on reboot while this fragment survives on the shared mount,
+    and an undated ram range is a range nobody can place in time -- which is
+    the one thing a residency claim may never be (#640).
+    """
 
     if not isinstance(value, Mapping):
         raise ResidencyMapError("a residency map fragment must be an object")
@@ -185,7 +225,14 @@ def validate_fragment(value: object) -> dict[str, object]:
     tier_id = value.get("tier_id")
     if not isinstance(tier_id, str) or not tier_id or "/" in tier_id:
         raise ResidencyMapError("fragment tier_id must be a tier id")
-    return {
+    epoch = value.get("epoch")
+    if epoch is not None:
+        epoch = _epoch(epoch, where="fragment epoch")
+    if tier_id.startswith(storage_tiers.RAM_TIER_PREFIX) and epoch is None:
+        raise ResidencyMapError(
+            "a fragment of the ram tier must carry the epoch it landed under: "
+            "a ram range nobody can place in time is not resident")
+    checked: dict[str, object] = {
         "schema": RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": _action_key(
             value.get("consumer_action_key"), where="fragment consumer_action_key"),
@@ -197,10 +244,20 @@ def validate_fragment(value: object) -> dict[str, object]:
             value.get("manifest_sha256"), where="fragment manifest_sha256"),
         "entries": _entries(value.get("entries"), stage_root=stage_root),
     }
+    if epoch is not None:
+        checked["epoch"] = epoch
+    return checked
 
 
 def validate_map(value: object) -> dict[str, object]:
-    """What the consumer reads, checked with the same rules as a fragment."""
+    """What the consumer reads, checked with the same rules as a fragment.
+
+    A map that names ram paths must announce the tier, the root and the epoch
+    they were laid under in its header: those three are what a reader compares
+    against the announced ram tier to tell a current overlay from a stale one
+    (#640), and an entry that could carry a ram path without them could
+    carry one nobody can date.
+    """
 
     if not isinstance(value, Mapping):
         raise ResidencyMapError("a residency map must be an object")
@@ -213,13 +270,30 @@ def validate_map(value: object) -> dict[str, object]:
     tier_id = value.get("tier_id")
     if not isinstance(tier_id, str) or not tier_id or "/" in tier_id:
         raise ResidencyMapError("residency map tier_id must be a tier id")
+    ram_root = value.get("ram_root")
+    if ram_root is not None:
+        ram_root = _absolute(ram_root, where="residency map ram_root")
+    ram_tier_id = value.get("ram_tier_id")
+    if ram_tier_id is not None and (not isinstance(ram_tier_id, str)
+                                    or not ram_tier_id or "/" in ram_tier_id):
+        raise ResidencyMapError("residency map ram_tier_id must be a tier id")
+    ram_epoch = value.get("ram_epoch")
+    if ram_epoch is not None:
+        ram_epoch = _epoch(ram_epoch, where="residency map ram_epoch")
     leads = value.get("leads")
     if not isinstance(leads, list):
         raise ResidencyMapError("residency map leads must be an array of action keys")
     checked = [_action_key(lead, where="residency map leads") for lead in leads]
     if len(set(checked)) != len(checked):
         raise ResidencyMapError("residency map leads must not repeat a key")
-    return {
+    entries = _entries(value.get("entries"), stage_root=stage_root,
+                       ram_root=ram_root)
+    if any("ram_path" in entry for entry in entries.values()) and (
+            ram_root is None or ram_tier_id is None or ram_epoch is None):
+        raise ResidencyMapError(
+            "a residency map naming ram paths must announce its ram tier, "
+            "root and epoch")
+    out: dict[str, object] = {
         "schema": RESIDENCY_MAP_SCHEMA_V1,
         "tier_id": tier_id,
         "stage_root": stage_root,
@@ -231,8 +305,14 @@ def validate_map(value: object) -> dict[str, object]:
         # count of composed fragments, which only grows for one consumer.
         "generation": _nonnegative(
             value.get("generation"), where="residency map generation"),
-        "entries": _entries(value.get("entries"), stage_root=stage_root),
+        "entries": entries,
     }
+    for field, checked_value in (("ram_tier_id", ram_tier_id),
+                                 ("ram_root", ram_root),
+                                 ("ram_epoch", ram_epoch)):
+        if checked_value is not None:
+            out[field] = checked_value
+    return out
 
 
 def compose(fragments: Iterable[Mapping[str, object]]) -> dict[str, object]:
@@ -295,6 +375,64 @@ def reissue(fragment: Mapping[str, object], *, consumer_action_key: str,
     return validate_fragment({**checked,
                               "consumer_action_key": consumer_action_key,
                               "mover_action_key": mover_action_key})
+
+
+def overlay_ram(mapping: Mapping[str, object],
+                fragments: Iterable[Mapping[str, object]], *,
+                ram_tier_id: str, ram_root: str,
+                ram_epoch: str) -> dict[str, object]:
+    """Lay a ram tier's fragments over the stage map they serve (#640).
+
+    ``compose`` refuses fragments that disagree about the tier, so a ram
+    fragment is never composed *into* the stage map; it is laid over it.  An
+    entry keeps the stage path it already had and gains ``ram_path``: the
+    same ``(path, offset)`` identity, the same digest, the bytes on the tmpfs
+    under the same content-addressed name.  A consumer prefers the ram copy
+    and falls back to the staged copy the map already vouched for, which is
+    what makes a stale ram entry a cache miss rather than an ENOENT.
+
+    A ram fragment whose key the stage map does not carry is skipped rather
+    than raised on: the two windows may disagree for a cycle -- a crash
+    between the two egresses is the shape -- and refusing the whole compose
+    would send the consumer to the pool for every entry, where skipping it
+    leaves the map exactly as wide as the stage's own vouching.  A ram copy
+    that disagrees with the stage's bytes or digest refuses, because picking
+    either would make the map a guess about which bytes are the manifest's.
+    """
+
+    checked = [validate_fragment(fragment) for fragment in fragments]
+    base = validate_map(mapping)
+    entries = {key: dict(entry) for key, entry in base["entries"].items()}
+    laid = 0
+    for fragment in checked:
+        if str(fragment["tier_id"]) != str(ram_tier_id):
+            raise ResidencyMapError(
+                f"an overlay fragment names tier {fragment['tier_id']!r}, "
+                f"not the announced {ram_tier_id!r}")
+        if str(fragment.get("epoch") or "") != str(ram_epoch):
+            raise ResidencyMapError(
+                "an overlay fragment must carry the epoch it is being laid "
+                "under; a prior epoch's range is not resident")
+        for key, entry in fragment["entries"].items():      # type: ignore[union-attr]
+            existing = entries.get(str(key))
+            if existing is None:
+                continue
+            if (entry["bytes"] != existing["bytes"]
+                    or entry["sha256"] != existing["sha256"]):
+                raise ResidencyMapError(
+                    f"the ram copy of {key!r} is not the copy the stage "
+                    f"vouches for: {entry} against {existing}")
+            if "ram_path" in existing and existing["ram_path"] != entry["stage_path"]:
+                raise ResidencyMapError(
+                    f"two ram movers staged {key!r} differently: "
+                    f"{existing['ram_path']} and {entry['stage_path']}")
+            existing["ram_path"] = entry["stage_path"]
+            laid += 1
+    if not laid:
+        return base
+    return validate_map({**base, "ram_tier_id": str(ram_tier_id),
+                         "ram_root": str(ram_root), "ram_epoch": str(ram_epoch),
+                         "entries": entries})
 
 
 def _write_atomic(path: Path, payload: Mapping[str, object]) -> Path:
@@ -399,6 +537,7 @@ __all__ = [
     "fragment_path",
     "lookup",
     "map_path",
+    "overlay_ram",
     "parse_residency_map_key",
     "read_fragments",
     "read_map",

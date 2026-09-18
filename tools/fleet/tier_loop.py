@@ -4,16 +4,18 @@
 One loop per file-serving box, spawned by ``supervise.py`` under the
 ``tiers`` role.  Every cycle it discovers the tiers again -- the ARC from
 ``arcstats``, stage pools by the ``prismabuild-stage`` name prefix, the
-source pool's members from ``zpool status`` -- learns the pool's fill
-bandwidth from the receipts of reads off it, and makes each tier's ledger
-say exactly that: ``mint_tier_capacity`` grows and shrinks the token supply
-to the discovered number, so adding a device to the stage pool offers more
-on the next cycle and exporting the pool offers nothing.  Rob, 2026-09-17:
-*"as the topology of my drives changes, prismabuild will be able to
-automatically adapt."*
+ram tier by the tmpfs mounted at the policy's mountpoint (#640) -- learns
+the pool's fill bandwidth from the receipts of reads off it, and makes each
+tier's ledger say exactly that: ``mint_tier_capacity`` grows and shrinks the
+token supply to the discovered number, so adding a device to the stage pool
+offers more on the next cycle and exporting the pool offers nothing.  Rob,
+2026-09-17: *"as the topology of my drives changes, prismabuild will be able
+to automatically adapt."*
 
 Nothing here is a capacity constant.  The two arguments name *which* pool
-the export is served from and how often to look; every quantity is read.
+the export is served from and how often to look; every quantity is read --
+and the ram tier's one declared file is read fresh every cycle too, so a
+published policy change is picked up between cycles without a remount.
 
 **The probe rule.**  Fill tokens come from receipts that carry the pacer's
 pool-side delivery (``disk_pacing.mean_pool_read_mb_s``: the sum over the
@@ -33,6 +35,7 @@ import argparse
 import json
 from pathlib import Path
 from collections.abc import Mapping
+import os
 import socket
 import sys
 import time
@@ -68,6 +71,35 @@ MOVER_RECEIPTS = pool.MOVERS
 #: either layout.
 MOVER_PYTHON = sys.executable
 MOVER_TOOLS_ROOT = str(Path(__file__).resolve().parent)
+
+
+def load_ram_policy() -> dict[str, object] | None:
+    """The ram tier's declared sizing, read fresh on every cycle.
+
+    The policy is a file in this loop's own directory, published with the
+    runtime the way ``fleet_boxes.json`` is, so a change to it is a publish
+    rather than an ssh: the next cycle reads the new numbers, mints from the
+    mount's own ``statvfs`` again, and the window follows.  ``None`` -- no
+    file, or one this reader refuses -- discovers no ram tier, exactly as a
+    box with no tmpfs does.
+    """
+
+    here = Path(__file__).resolve().parent
+    for candidate in (here / storage_tiers.RAM_POLICY_FILE,
+                      here.parent / storage_tiers.RAM_POLICY_FILE):
+        policy = storage_tiers.read_ram_policy(candidate)
+        if policy is not None:
+            return policy
+    return None
+
+
+def _prefill_depth(policy: Mapping[str, object] | None) -> int | None:
+    """The policy's declared run-ahead cap, or ``None`` for the #633 semantics."""
+
+    depth = (policy or {}).get("prefill_depth")
+    if (isinstance(depth, int) and not isinstance(depth, bool) and depth > 0):
+        return depth
+    return None
 
 
 class ReceiptCache:
@@ -187,7 +219,257 @@ def _mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
     return published, staged
 
 
-def compose_map(queue: pool.PoolQueue, consumer_action_key: str) -> Path | None:
+def _ram_mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
+                     ram_tier_id: str) -> tuple[set[str], set[str]]:
+    """Which of a plan's promotions count as published, and which are in the tmpfs.
+
+    The same ledger-answered question :func:`_mover_state` asks of the stage,
+    asked of the ram tier: a promotion holding ``ram_gib`` is resident by
+    definition -- held tokens equal bytes on the tmpfs at every instant --
+    and a terminal promotion holding nothing counts as unpublished, so a
+    reboot's ghost is republished rather than read as staged.
+    """
+
+    ledger = queue.tier_ledger(ram_tier_id)
+    published: set[str] = set()
+    staged: set[str] = set()
+    for key in residency_plan.ram_mover_keys(plan):
+        pinned = bool(ledger.holder_tokens(key))
+        if pinned:
+            staged.add(key)
+        if (queue.item_path(pool.READY, key).exists()
+                or queue.item_path(pool.CLAIMED, key).exists()
+                or pinned):
+            published.add(key)
+    return published, staged
+
+
+def drop_prior_ram_epochs(
+        queue: pool.PoolQueue,
+        tiers: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
+    """Drop every ram fragment and ghost token the current epoch does not cover.
+
+    tmpfs empties on reboot; the fragments and the ledger on the shared mount
+    survive it.  Without this step the first cycle after a reboot would
+    compose a map still naming ram paths whose bytes are gone, and the ledger
+    would count tokens for ranges that no longer exist -- the new window
+    starved by ghosts, which is the one failure the direction names
+    ("starvation is the failure to avoid").
+
+    The epoch each announced ram tier carries is the only one that counts.  A
+    fragment read raw rather than through ``validate_fragment``, so a fragment
+    that no longer validates -- a corrupt epoch, a hand-edit -- is dropped with
+    the rest rather than lingering invisibly.  A held key whose receipt carries
+    a different epoch, and which nothing has claimed, has tokens standing for
+    bytes the reboot deleted; they come back here, because an egress never
+    will.  A ram tier that is not announced at all has no current epoch, so
+    every fragment of it is a prior one and every unclaimed holder is a ghost
+    (#640).
+    """
+
+    current = {
+        str(tier_id): str(record.get("epoch") or "")
+        for tier_id, record in tiers.items()
+        if record.get("tier") == "ram"}
+    events: list[dict[str, object]] = []
+    root = queue.residency_fragment_root()
+    try:
+        consumers = sorted(entry.name for entry in os.scandir(root)
+                           if entry.is_dir())
+    except OSError:
+        consumers = []
+    for consumer in consumers:
+        try:
+            names = sorted(entry.name for entry in os.scandir(root / consumer)
+                           if entry.is_file() and entry.name.endswith(".json"))
+        except OSError:
+            continue
+        for name in names:
+            path = root / consumer / name
+            try:
+                with open(path) as stream:
+                    raw = json.load(stream)
+            except (OSError, ValueError):
+                continue      # not ours to interpret; compose already skips it
+            if not isinstance(raw, Mapping):
+                continue
+            tier_id = str(raw.get("tier_id") or "")
+            if not tier_id.startswith(storage_tiers.RAM_TIER_PREFIX):
+                continue
+            epoch = str(raw.get("epoch") or "")
+            live = current.get(tier_id, "")
+            if live and epoch == live:
+                continue
+            path.unlink(missing_ok=True)
+            events.append({"event": "ram-fragment-dropped", "tier_id": tier_id,
+                           "consumer": consumer, "epoch": epoch or None,
+                           "current_epoch": live or None})
+    for tier_id in queue.tier_ids():
+        if not tier_id.startswith(storage_tiers.RAM_TIER_PREFIX):
+            continue
+        live = current.get(tier_id, "")
+        try:
+            ledger = queue.tier_ledger(tier_id)
+            held = sorted(ledger.held_keys())
+        except (OSError, pool.PoolContractError):
+            continue
+        for key in held:
+            if queue.item_path(pool.CLAIMED, key).exists():
+                # A promotion claimed right now holds tokens for a copy that
+                # is running; its receipt will date it, and the next cycle
+                # judges it then.
+                continue
+            receipt = queue.move_record(key)
+            epoch = (str(receipt.get("epoch") or "")
+                     if isinstance(receipt, Mapping) else "")
+            if live and epoch == live:
+                continue
+            released = queue.release_tier_reservations(key)
+            events.append({"event": "ram-ghost-tokens-released",
+                           "tier_id": tier_id, "holder": key,
+                           "epoch": epoch or None, "released": released})
+    return events
+
+
+def _ram_window_state(
+        queue: pool.PoolQueue, consumer: Mapping[str, object],
+        plan: Mapping[str, object], tiers: Mapping[str, Mapping[str, object]],
+        *, prefill_depth: int | None) -> dict[str, object] | None:
+    """One consumer's ram decision inputs, or ``None`` when it has no ram leg.
+
+    The stage window's own question, asked of the ram ledger: what fits, what
+    the run-ahead bound covers, and -- the one bound that is a dependency
+    rather than a size -- which phases' stage ranges have landed, because a
+    promotion's source is the stage and nothing else.
+    """
+
+    ram_tier_id = plan.get("ram_tier_id")
+    if not isinstance(ram_tier_id, str) or not ram_tier_id:
+        return None
+    if not residency_plan.ram_mover_keys(plan):
+        return None
+    record = tiers.get(ram_tier_id)
+    if record is None or record.get("tier") != "ram":
+        # Another box's ram tier, or none announced: its own loop owns that
+        # ledger and will publish this window.
+        return None
+    if str(plan["tier_id"]) not in tiers:
+        # The stage tier is another box's, and so is the ram tier that sits
+        # in front of it.
+        return None
+    already, staged = _ram_mover_state(queue, plan, ram_tier_id)
+    _stage_published, stage_staged = _mover_state(
+        queue, plan, str(plan["tier_id"]))
+    ledger = queue.tier_ledger(ram_tier_id)
+    kind = storage_tiers.capacity_kind_of(ram_tier_id)
+    free = int(ledger.available().get(kind, 0))
+    capacity = int(ledger.capacity().get(kind, 0))
+    decision = residency_plan.window(
+        plan, accepted_phase=consumer["accepted_phase"],
+        free_gib=free, capacity_gib=capacity,
+        published=sorted(already), staged=sorted(staged),
+        runahead_cap_gib=prefill_depth,
+        # The two sets name promotion keys, so the decision must test
+        # promotion keys: against stage keys its evict side would never fire
+        # and its already-published skip would never skip (#640).
+        mover_role="ram_mover_row")
+    phases = {str(phase["name"]): phase for phase in plan["phases"]}
+    publishable = [
+        (phases[str(entry["phase"])], entry)
+        for entry in decision["publish"]
+        if str(entry["phase"]) in phases
+        and "ram_mover_row" in phases[str(entry["phase"])]
+        and str(phases[str(entry["phase"])]["mover_row"]["action_key"])
+        in stage_staged]
+    return {"ram_tier_id": ram_tier_id, "decision": decision,
+            "phases": phases, "publishable": publishable,
+            "already": already, "staged": staged,
+            "stage_staged": stage_staged, "free_gib": free}
+
+
+def ram_residency_window(
+        queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
+        now: float | None = None) -> list[dict[str, object]]:
+    """Publish the next ram promotions, retire the consumed ones, first.
+
+    The stage window's own semantics, pointed at the ram ledger: admission
+    needs free ``ram_gib`` -- Rob's instinct, "empty space in tmpfs", made
+    exact through the ledger -- bounded by the #633 run-ahead budget on the
+    consumer's accepted progress, in the plan's read order.  The ram egress
+    of a phase the consumer has passed is published here, *before* the stage
+    window publishes its own, so on a box that runs them in queue order the
+    tokens that bound the smaller tier come back before the bytes that feed
+    it leave (#640).
+    """
+
+    events: list[dict[str, object]] = []
+    ram_tiers = {tier_id: record for tier_id, record in tiers.items()
+                 if record.get("tier") == "ram"}
+    if not ram_tiers:
+        return events
+    depth = _prefill_depth(load_ram_policy())
+    for consumer in live_consumers(queue):
+        key = str(consumer["action_key"])
+        plan = residency_plan.read(queue, key)
+        if plan is None:
+            continue      # a plan this reader refuses is reported once, below
+        state = _ram_window_state(queue, consumer, plan, tiers,
+                                  prefill_depth=depth)
+        if state is None:
+            continue
+        ram_tier_id = str(state["ram_tier_id"])
+        decision = state["decision"]
+        stall = decision["stall"]
+        if isinstance(stall, Mapping):
+            events.append({
+                "event": "ram-window-stalled", "consumer": key,
+                **{field: stall[field] for field in (
+                    "accepted_phase", "reading_phase", "blocked_phase",
+                    "blocked_gib", "runahead_gib", "runahead_budget_gib",
+                    "free_gib", "capacity_gib", "reason", "waiting_for")},
+                "tier_id": ram_tier_id})
+        for phase, entry in state["publishable"]:
+            row = dict(phase["ram_mover_row"])
+            try:
+                # A copy has no result to replay, for the same reason the
+                # stage's own rows carry it.
+                queue.publish(**row, recompute=True)
+            except (pool.PoolContractError, OSError) as exc:
+                events.append({"event": "ram-mover-publish-failed",
+                               "consumer": key, "phase": entry["phase"],
+                               "error": repr(exc)})
+                continue
+            events.append({"event": "ram-mover-published", "consumer": key,
+                           "phase": entry["phase"],
+                           "action_key": str(row["action_key"]),
+                           "tier_id": ram_tier_id,
+                           "ram_gib": int(entry["stage_gib"])})
+        for entry in decision["evict"]:
+            phase = state["phases"].get(str(entry["phase"]))
+            if phase is None or "ram_egress_row" not in phase:
+                continue
+            row = dict(phase["ram_egress_row"])
+            egress_key = str(row["action_key"])
+            if (queue.item_path(pool.READY, egress_key).exists()
+                    or queue.item_path(pool.CLAIMED, egress_key).exists()):
+                continue      # already asked; asking again would double the row
+            try:
+                queue.publish(**row, recompute=True)   # a deletion, likewise
+            except (pool.PoolContractError, OSError) as exc:
+                events.append({"event": "ram-egress-publish-failed",
+                               "consumer": key, "phase": entry["phase"],
+                               "error": repr(exc)})
+                continue
+            events.append({"event": "ram-egress-published", "consumer": key,
+                           "phase": entry["phase"], "action_key": egress_key,
+                           "mover": str(phase["ram_mover_row"]["action_key"]),
+                           "tier_id": ram_tier_id})
+    return events
+
+
+def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
+                ram_tiers: Mapping[str, Mapping[str, object]] | None = None,
+                ) -> Path | None:
     """Write one consumer's residency map from its movers' fragments.
 
     **The single writer.**  Movers write one fragment each, into a file only
@@ -200,18 +482,47 @@ def compose_map(queue: pool.PoolQueue, consumer_action_key: str) -> Path | None:
     in both directions: a mover adds one when it finishes, an egress removes
     one when it deletes the bytes, and a map that still named an evicted range
     would send the consumer to a path that is gone.
+
+    A consumer's ram fragments are laid **over** the stage map rather than
+    composed into it (#640): ``compose`` refuses fragments that disagree
+    about the tier, and the ram tier's job is to serve the entries the stage
+    already vouched for.  Only fragments carrying the epoch the ram tier
+    announces now are laid -- the drop below removed the others, and this is
+    the belt to that braces.
     """
 
-    fragments = residency_map.read_fragments(
-        queue.residency_fragment_root(), consumer_action_key)
+    root = queue.residency_fragment_root()
+    fragments = residency_map.read_fragments(root, consumer_action_key)
+    stage_fragments = [
+        fragment for fragment in fragments
+        if not str(fragment.get("tier_id", "")).startswith(
+            storage_tiers.RAM_TIER_PREFIX)]
+    ram_fragments = [
+        fragment for fragment in fragments
+        if str(fragment.get("tier_id", "")).startswith(
+            storage_tiers.RAM_TIER_PREFIX)]
     path = queue.residency_map_path(consumer_action_key)
-    if not fragments:
+    if not stage_fragments:
         # Nothing staged (yet, or any more).  Removing the map is what puts the
         # consumer back on the pool; leaving a stale one would point it at
         # deleted files, which reads as corruption rather than as a cache miss.
         path.unlink(missing_ok=True)
         return None
-    return residency_map.write_map(path, residency_map.compose(fragments))
+    mapping = residency_map.compose(stage_fragments)
+    if ram_fragments:
+        tier_id = str(ram_fragments[0]["tier_id"])
+        record = (ram_tiers or {}).get(tier_id)
+        if (record is not None and record.get("tier") == "ram"
+                and isinstance(record.get("epoch"), str)):
+            epoch = str(record["epoch"])
+            live = [fragment for fragment in ram_fragments
+                    if str(fragment.get("epoch") or "") == epoch]
+            if live:
+                mapping = residency_map.overlay_ram(
+                    mapping, live, ram_tier_id=tier_id,
+                    ram_root=str(record.get("mountpoint") or ""),
+                    ram_epoch=epoch)
+    return residency_map.write_map(path, mapping)
 
 
 def _planned_consumers(
@@ -472,6 +783,7 @@ def window_pressure(
     need: dict[str, int] = {}
     if consumers is None:
         consumers = _planned_consumers(queue, tiers)
+    depth = _prefill_depth(load_ram_policy())
     for _key, consumer, plan, tier_id in consumers:
         already, staged = _mover_state(queue, plan, tier_id)
         accepted = consumer["accepted_phase"]
@@ -503,9 +815,28 @@ def window_pressure(
             published=sorted(already), staged=sorted(staged))
         wanted = decision["publish"]
         assert isinstance(wanted, list)
-        if not wanted:
+        if wanted:
+            need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
+        # The ram leg asks the same question of the ram ledger (#640): the
+        # first phase whose stage range has landed and whose promotion is
+        # unpublished is the next thing that will ask the tmpfs for room, and
+        # its GiB is what the sweep on that tier must be able to offer.
+        # Held-by-nobody bytes on a roof-limited tmpfs are ENOSPC waiting to
+        # happen, so an orphan there becomes an eviction candidate the
+        # moment this need exists.
+        state = _ram_window_state(queue, consumer, plan, tiers,
+                                  prefill_depth=depth)
+        if state is None:
             continue
-        need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
+        ram_tier_id = str(state["ram_tier_id"])
+        candidates = [
+            phase for phase in residency_plan.remaining(plan, accepted)  # type: ignore[arg-type]
+            if "ram_mover_row" in phase
+            and str(phase["ram_mover_row"]["action_key"]) not in state["already"]
+            and str(phase["mover_row"]["action_key"]) in state["stage_staged"]]
+        if candidates:
+            need[ram_tier_id] = max(need.get(ram_tier_id, 0),
+                                    int(candidates[0]["stage_gib"]))
     return need
 
 
@@ -605,7 +936,9 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                               "phase": phase["phase"], "action_key": egress_key,
                               "mover": phase["mover_action_key"]})
         try:
-            compose_map(queue, key)
+            compose_map(queue, key, ram_tiers={
+                tier_id: record for tier_id, record in tiers.items()
+                if record.get("tier") == "ram"})
         except (residency_map.ResidencyMapError, OSError) as exc:
             # A map that cannot be composed leaves the previous one in place
             # and the consumer on the pool: slower, never wrong.
@@ -665,7 +998,11 @@ def sweep_orphans(queue: pool.PoolQueue,
 
     A consumer withdrawn between its movers finishing and its own claim would
     otherwise hold its ranges for the life of the fleet, because nothing
-    publishes an egress for work nobody is waiting on.
+    publishes an egress for work nobody is waiting on.  The ram tier's
+    orphans are eviction candidates on the same terms (#640): held-by-nobody
+    bytes on a roof-limited tmpfs are ENOSPC waiting to happen, and a failed
+    promotion's landed partials and a dead consumer's unclaimed promotions
+    are exactly the ownership discipline the stage's own sweep enforces.
 
     ``pressure`` is what turns "for the life of the fleet" into "until somebody
     needs the room" (#598).  An orphan's tokens are held the whole time it
@@ -679,7 +1016,7 @@ def sweep_orphans(queue: pool.PoolQueue,
     stage_roots = {
         tier_id: str(record.get("mountpoint") or "")
         for tier_id, record in tiers.items()
-        if record.get("tier") == "stage" and record.get("mountpoint")
+        if record.get("tier") in ("stage", "ram") and record.get("mountpoint")
     }
     if not stage_roots:
         return []
@@ -740,7 +1077,17 @@ def cycle(
     for event in reclaim_idle_rates(queue):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     fill_records = receipts.read([queue.root / pool.PREWARM, queue.root / MOVER_RECEIPTS])
-    tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records, now=now)
+    # The ram tier's declared sizing, read fresh: a published policy change is
+    # picked up between cycles without a remount, and a rare operator remount
+    # is picked up by the statvfs read inside the same cycle (#640).
+    ram_policy = load_ram_policy()
+    tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records,
+                     now=now, ram_policy=ram_policy)
+    # The records this box announced last cycle, read before this cycle
+    # overwrites them: the ram tier's epoch is compared against its own
+    # previous announcement, so a change is said once rather than inferred.
+    earlier: dict[str, dict[str, object]] = {
+        str(record.get("tier_id")): record for record in queue.tiers()}
     ready: list[dict[str, object]] | None = None
     announced: list[dict[str, object]] = []
     for tier_id, record in sorted(tiers.items()):
@@ -782,6 +1129,50 @@ def cycle(
                     "dataset": record.get("dataset"),
                     "primarycache": verdict["primarycache"],
                     "reason": verdict["reason"],
+                }), flush=True)
+        if record.get("tier") == "ram":
+            # The tmpfs's own arithmetic, mirroring the stage's (#640):
+            # ``capacity_bytes`` is statvfs ``f_bavail`` -- what the mount may
+            # still hold -- so minting from it alone would count every landed
+            # GiB twice exactly as ``available`` alone did (#621), and the
+            # supply is what is writable plus what has *landed*, capped by the
+            # policy's window.  In-flight tokens stay a deduction until their
+            # bytes are in the tmpfs.  A refused mount mints nothing at all --
+            # ``tier_tokens`` already withheld its ``ram_gib`` -- and the
+            # refusal is logged here with every number it named, because a
+            # mis-sized tmpfs is an operator's decision to change and a silent
+            # one is a decision nobody can see.
+            window = record.get("window_gib")
+            if (kind in tokens and isinstance(window, int)
+                    and not isinstance(window, bool) and window > 0):
+                landed, in_flight = landed_and_in_flight(queue, tier_id, kind)
+                record["writable_gib"] = tokens[kind]
+                record["held_gib"] = landed + in_flight
+                record["landed_gib"] = landed
+                record["in_flight_gib"] = in_flight
+                record["capacity_basis"] = (
+                    "statvfs f_bavail + landed, capped by the policy window")
+                tokens[kind] = min(tokens[kind] + landed, window)
+            admission = record.get("ram_admission")
+            if isinstance(admission, Mapping) and not admission.get("admissible"):
+                print(json.dumps({
+                    "event": "ram-admission-refused",
+                    "unix": time.time(), "host": host, "tier_id": tier_id,
+                    "ram_admission": admission,
+                }), flush=True)
+            previous = earlier.get(tier_id)
+            previous_epoch = (str(previous.get("epoch") or "")
+                              if isinstance(previous, Mapping) else "")
+            if (previous is not None
+                    and previous_epoch != str(record.get("epoch") or "")):
+                # The one event an operator must never miss: every prior-epoch
+                # fragment is about to be dropped, and every ghost token is
+                # about to come back.
+                print(json.dumps({
+                    "event": "ram-epoch-changed",
+                    "unix": time.time(), "host": host, "tier_id": tier_id,
+                    "epoch": record.get("epoch"),
+                    "previous_epoch": previous_epoch or None,
                 }), flush=True)
         record["fill_source"] = "measured" if storage_tiers.FILL_KIND in tokens else "none"
         record["fill_records"] = len(fill_records)
@@ -834,15 +1225,17 @@ def cycle(
         # otherwise have to guess.
         record["mover_python"] = MOVER_PYTHON
         record["mover_tools_root"] = MOVER_TOOLS_ROOT
-        if (record.get("tier") == "stage" and record.get("mountpoint")
+        if (record.get("tier") in ("stage", "ram") and record.get("mountpoint")
                 and str(record.get("host") or "") == host):
-            # This box's own stage is marked as this queue's before the tier
-            # is announced, so the sweep below and every egress row sealed
-            # against the announcement find the root owned (#628).  A stage
-            # another box announces is that box's loop's to mark; a root that
-            # is read-only here or already another queue's is announced with
-            # the refusal on the record, and the sweep refuses on the same
-            # fact rather than deleting under it.
+            # This box's own stage -- and its own tmpfs -- are marked as this
+            # queue's before the tier is announced, so the sweep below and
+            # every egress row sealed against the announcement find the root
+            # owned (#628).  A tier another box announces is that box's loop's
+            # to mark; a root that is read-only here or already another
+            # queue's is announced with the refusal on the record, and the
+            # sweep refuses on the same fact rather than deleting under it.
+            # The ram root carries the epoch marker beside this one; both are
+            # the root's own identity, and ``reconcile`` skips them by name.
             record["stage_root_owner"] = stage_release.register_stage_root(
                 queue, tier_id=tier_id, stage_root=str(record["mountpoint"]))
         record["ledger"] = queue.mint_tier_capacity(tier_id, tokens)
@@ -852,6 +1245,14 @@ def cycle(
     # the tier's *current* free capacity covers, so it must see this cycle's
     # supply rather than the last one's.
     announced_tiers = {str(record["tier_id"]): record for record in announced}
+    # The epoch drop before anything reads a fragment: a prior epoch's range
+    # is not resident, so the adoption, the pressure, the sweep and the maps
+    # below all see a world that no longer contains it (#640).  The drop is
+    # idempotent -- a steady cycle finds nothing to drop -- and it holds:
+    # nothing reads as ram-resident until a promotion lands under the current
+    # epoch.
+    for event in drop_prior_ram_epochs(queue, announced_tiers):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
     # Adopt, then evict under pressure, then publish.  The order is the policy
     # (#598): a range a live consumer's window names is taken over rather than
     # deleted and re-copied, what is left over is deleted only when a window
@@ -869,6 +1270,12 @@ def cycle(
     pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned)
     for event in sweep_orphans(queue, announced_tiers, pressure=pressure):
         print(json.dumps({"event": "stage-orphan-evicted", **event}), flush=True)
+    # The ram window before the stage's, so a phase's ram egress is published
+    # before its stage egress: the tokens that bound the smaller tier come
+    # back first, and a ram range never outlives the stage range that feeds
+    # it (#640).
+    for event in ram_residency_window(queue, tiers=announced_tiers, now=now):
+        print(json.dumps({"unix": time.time(), **event}), flush=True)
     for event in residency_window(queue, tiers=announced_tiers, now=now):
         print(json.dumps({"unix": time.time(), **event}), flush=True)
     # A tier this box announced before and no longer discovers is retired:
@@ -881,7 +1288,7 @@ def cycle(
         ledger = queue.mint_tier_capacity(tier_id, {})
         queue.announce_tier({
             "schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier_id": tier_id, "host": host,
-            "tier": "stage" if tier_id.startswith(storage_tiers.STAGE_POOL_PREFIX) else "arc",
+            "tier": storage_tiers.tier_kind_of(tier_id),
             "capacity_bytes": 0, "retired": True, "ledger": ledger,
             "sampled_unix": time.time() if now is None else now,
         })

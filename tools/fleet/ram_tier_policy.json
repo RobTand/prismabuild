@@ -1,0 +1,9 @@
+{
+  "schema": "prismabuild.ram_tier_policy.v1",
+  "mountpoint": "/ram/prewarm",
+  "ceiling_gib_max": 256,
+  "window_gib_default": 112,
+  "arc_floor_gib": 20,
+  "system_reserve_gib": 16,
+  "prefill_depth": null
+}

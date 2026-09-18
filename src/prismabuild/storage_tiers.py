@@ -37,24 +37,37 @@ Three tiers, each answering a different question:
     measures.  ZFS exposes no pin, so a reservation here is a budget, exactly
     as the prewarm role's ``arc_headroom`` treats it.
 
+``ram``
+    An explicit tmpfs the operator mounts on the storage box (#640), filled
+    and evicted by the DAG rather than warmed reactively.  The mount is the
+    tier: capacity is its own ``statvfs``, the ceiling is its own ``size=``,
+    the epoch is a marker file at its root that dies with it on reboot, and
+    an inadmissible mount (no ``noswap``, an unreadable ``statvfs``, a
+    ceiling that cannot coexist with the ARC floor and the system reserve)
+    mints nothing.  Sizing is declared in a versioned policy the tier loop
+    reads every cycle, so a change is a publish rather than an ssh.
+
 Tokens are minted from these numbers by whichever loop owns the tier's
 ledger (``tier_loop.py``), in the units :func:`tier_tokens` names: one
-``stage_gib`` or ``arc_gib`` token per GiB, one ``fill_mb_s_pool_side`` token
-per pool-side MB/s.  A demand against a tier is *derived* from the action's
-own data manifest by :func:`residency_demand`, never typed by hand: the
-manifest declares the exact read set, so the bytes a range needs resident
-are arithmetic over it.
+``stage_gib``, ``arc_gib`` or ``ram_gib`` token per GiB, one
+``fill_mb_s_pool_side`` token per pool-side MB/s.  A demand against a tier
+is *derived* from the action's own data manifest by
+:func:`residency_demand`, never typed by hand: the manifest declares the
+exact read set, so the bytes a range needs resident are arithmetic over it.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+import json
 import math
 import os
 from pathlib import Path
+import secrets
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 
 TIER_RECORD_SCHEMA_V1 = "prismabuild.storage_tier.v1"
@@ -90,6 +103,25 @@ FILL_KIND = "fill_mb_s_pool_side"
 #: The record field the tier publishes it under, same spelling as the token.
 FILL_RECORD_FIELD = "fill_mb_s_pool_side"
 TIER_DEMAND_SEPARATOR = "@"
+
+#: The explicit RAM tier (#640): a tmpfs the operator mounts on the storage
+#: box, filled and evicted by the DAG.  Its id is ``ram:<host>``, and the
+#: prefix is what every reader of a tier id or a fragment uses to tell its
+#: business from the stage's and the ARC's.
+RAM_TIER_PREFIX = "ram:"
+RAM_CAPACITY_KIND = "ram_gib"
+#: The policy file that declares the tier's sizing, read fresh by the tier
+#: loop every cycle.  Named here so the loop, the publisher and the tests
+#: agree on one place.
+RAM_POLICY_FILE = "ram_tier_policy.json"
+RAM_TIER_POLICY_SCHEMA_V1 = "prismabuild.ram_tier_policy.v1"
+#: The file a mounted tmpfs carries at its root, holding the epoch that
+#: dates every range the tier admits.  It is written at bootstrap by the
+#: tier loop and dies with the tmpfs on reboot, which is the whole
+#: mechanism: an epoch that survived the bytes it named would make the
+#: identity a no-op.
+RAM_EPOCH_MARKER = ".prismabuild-ram-epoch.json"
+RAM_EPOCH_MARKER_SCHEMA_V1 = "prismabuild.ram_epoch.v1"
 
 
 def zpool_binary() -> str:
@@ -389,6 +421,284 @@ def arc_tier(stats: Mapping[str, int]) -> dict[str, object] | None:
     }
 
 
+# ------------------------------------------------------------- the RAM tier
+
+
+def read_ram_policy(path: str | Path) -> dict[str, object] | None:
+    """The ram tier's declared sizing, or ``None`` when it is not there to read.
+
+    ``None`` is the honest answer for a generation that predates the file: it
+    discovers no ram tier, exactly as a box with no tmpfs does.  A file that
+    is there and does not validate answers the same way, because a policy
+    this reader refuses is a policy whose numbers it cannot name in a
+    refusal -- and the refusal is where the numbers matter.
+    """
+
+    try:
+        with open(path) as stream:
+            value = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    if value.get("schema") != RAM_TIER_POLICY_SCHEMA_V1:
+        return None
+    mountpoint = value.get("mountpoint")
+    if not isinstance(mountpoint, str) or not mountpoint.startswith("/"):
+        return None
+    policy: dict[str, object] = {"schema": RAM_TIER_POLICY_SCHEMA_V1,
+                                 "mountpoint": mountpoint}
+    for field in ("ceiling_gib_max", "window_gib_default", "arc_floor_gib",
+                  "system_reserve_gib"):
+        number = value.get(field)
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            return None
+        policy[field] = number
+    depth = value.get("prefill_depth")
+    if depth is not None and (isinstance(depth, bool) or not isinstance(depth, int)
+                              or depth <= 0):
+        return None
+    policy["prefill_depth"] = depth
+    if set(value) != set(policy):
+        # A field the writer meant and the reader ignores is the quiet half
+        # of a disagreement about how big the tier may be.
+        return None
+    return policy
+
+
+def ram_mount_options(mountpoint: str, *,
+                      proc_mounts: str = "/proc/mounts") -> list[str] | None:
+    """The tmpfs mounted at ``mountpoint``'s own options, or ``None``.
+
+    ``None`` is the answer that announces nothing: no tmpfs at the policy's
+    mountpoint means no ram tier, the same way no imported stage pool means
+    no stage tier.  The *last* matching line wins, because a remount appends
+    to ``/proc/mounts`` and the newer line is the mount that answers now.
+    The filesystem must be ``tmpfs``: a bind mount or another filesystem at
+    the same path is not the ramdisk, whatever its options say.
+    """
+
+    try:
+        with open(proc_mounts) as stream:
+            text = stream.read()
+    except OSError:
+        return None
+    options: list[str] | None = None
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 4 or fields[1] != mountpoint or fields[2] != "tmpfs":
+            continue
+        options = fields[3].split(",")
+    return options
+
+
+def meminfo_total_bytes(path: str = "/proc/meminfo") -> int | None:
+    """``MemTotal`` as bytes, or ``None`` when the box would not say."""
+
+    try:
+        with open(path) as stream:
+            for line in stream:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def read_ram_epoch(root: str | Path) -> dict[str, object] | None:
+    """The epoch a mounted tmpfs carries, read-only, or ``None``.
+
+    The promotion node reads this: it must never *create* an epoch, because
+    the tier loop is the single writer of the tier's identity and a mover
+    that minted its own would date its own bytes.  A marker that is absent,
+    unreadable or not the object this module writes all answer ``None``,
+    which the mover refuses on -- a promotion nobody can place in time is
+    not one to stage.
+    """
+
+    try:
+        with open(Path(root) / RAM_EPOCH_MARKER) as stream:
+            marker = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(marker, Mapping):
+        return None
+    if marker.get("schema") != RAM_EPOCH_MARKER_SCHEMA_V1:
+        return None
+    epoch = marker.get("epoch")
+    if not isinstance(epoch, str) or not epoch or "/" in epoch:
+        return None
+    return {"schema": RAM_EPOCH_MARKER_SCHEMA_V1, "epoch": epoch,
+            "unix": marker.get("unix"), "host": marker.get("host")}
+
+
+def ensure_ram_epoch(root: str | Path, *, host: str,
+                     now: float | None = None) -> dict[str, object] | None:
+    """Read the mounted tmpfs's epoch, stamping one at bootstrap if it has none.
+
+    The stamp is mount time plus a random nonce, so two mounts never share an
+    epoch even within one clock tick -- a reboot and an operator's remount
+    are the same event to this mechanism, and both must read as one.  Written
+    by temporary and ``os.replace`` like every other fleet record, so a
+    reader never sees half a marker.  ``None`` when the root cannot be
+    written: a tier whose epoch cannot be stamped cannot date its ranges,
+    and admits nothing.
+    """
+
+    marker = read_ram_epoch(root)
+    if marker is not None:
+        return marker
+    sampled = int(time.time() if now is None else now)
+    marker = {"schema": RAM_EPOCH_MARKER_SCHEMA_V1,
+              "epoch": f"{sampled}-{secrets.token_hex(8)}",
+              "unix": sampled, "host": host}
+    path = Path(root) / RAM_EPOCH_MARKER
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle, temporary = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.")
+        try:
+            with os.fdopen(handle, "w") as stream:
+                json.dump(marker, stream, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            raise
+    except OSError:
+        return None
+    return marker
+
+
+def _ram_numbers(*, ceiling_bytes: int, mem_total: int | None,
+                 arc: Mapping[str, int], policy: Mapping[str, object],
+                 ) -> dict[str, object]:
+    """Every number a ram refusal must name, in the shape the record carries."""
+
+    arc_floor = max(int(policy["arc_floor_gib"]) * GIB, int(arc.get("arc_meta_used", 0)))
+    reserve = int(policy["system_reserve_gib"]) * GIB
+    committed = max(int(arc.get("c_max", 0)), arc_floor)
+    return {
+        "ceiling_bytes": ceiling_bytes,
+        "mem_total_bytes": mem_total,
+        "arc_c_max": arc.get("c_max"),
+        "arc_size": arc.get("size"),
+        "arc_meta_used": arc.get("arc_meta_used"),
+        # The declared floor and the metadata the ARC cannot drop, whichever
+        # is larger: a floor the box is already above is not a floor.
+        "arc_floor_bytes": arc_floor,
+        "system_reserve_bytes": reserve,
+        "allowed_ceiling_bytes": (None if mem_total is None
+                                  else max(0, mem_total - committed - reserve)),
+    }
+
+
+def ram_admission(*, ceiling_bytes: int, mount_options: list[str] | None,
+                  policy: Mapping[str, object], mem_total: int | None,
+                  arc: Mapping[str, int]) -> dict[str, object]:
+    """Whether the warm path may admit against this mount, and why not.
+
+    Three refusals, each fail-closed and each naming the numbers:
+
+    * **``noswap`` is absent.** A swappable tmpfs can page the "resident"
+      bytes out, and a consumer whose gate says resident then pays a swap
+      read behind a claim of RAM -- the correctness lie this tier exists to
+      end.
+    * **The ceiling is over the policy's maximum.** The policy records the
+      largest ceiling the operator sanctioned; a bigger mount is a decision
+      nobody published.
+    * **The ceiling cannot coexist with the ARC and the system reserve.**
+      ``size=`` is a limit on file bytes, not an allocation, so a tmpfs whose
+      roof plus the ARC's own permission plus the reserve exceeds
+      ``MemTotal`` never reaches its ENOSPC -- the OOM killer arrives first,
+      which is fail-random rather than fail-closed.  The ARC counts at
+      whichever is larger: the ``c_max`` it is permitted now (the runbook's
+      shrink is an operational precondition, and the guard refuses until it
+      is done) or the floor it may never be shrunk past.
+    """
+
+    numbers = _ram_numbers(ceiling_bytes=ceiling_bytes, mem_total=mem_total,
+                           arc=arc, policy=policy)
+    if mount_options is not None and "noswap" not in mount_options:
+        return {"admissible": False, "reason": "ram_mount_not_noswap", **numbers}
+    if ceiling_bytes > int(policy["ceiling_gib_max"]) * GIB:
+        return {"admissible": False, "reason": "ram_ceiling_exceeds_policy_max",
+                **numbers}
+    if mem_total is None:
+        return {"admissible": False, "reason": "ram_meminfo_unreadable", **numbers}
+    allowed = numbers["allowed_ceiling_bytes"]
+    assert isinstance(allowed, int)
+    if ceiling_bytes > allowed:
+        return {"admissible": False, "reason": "ram_ceiling_exceeds_memtotal_floor",
+                **numbers}
+    return {"admissible": True, "reason": None, **numbers}
+
+
+def ram_tier(policy: Mapping[str, object], *, host: str,
+             statvfs: Callable[[str], os.statvfs_result] = os.statvfs,
+             proc_mounts: str = "/proc/mounts",
+             meminfo_path: str = "/proc/meminfo",
+             arcstats_path: str = ARCSTATS,
+             stats: Mapping[str, int] | None = None,
+             now: float | None = None) -> dict[str, object] | None:
+    """The ram tier record, or ``None`` when the mount is absent.
+
+    Capacity is the tmpfs's own ``statvfs`` -- ``f_bavail x f_frsize``, what
+    the mount may still hold -- never ``MemAvailable``, which moves with
+    other tenants' habits and is not placed RAM.  The ceiling is the mount's
+    own ``f_blocks x f_frsize``, the roof where a full ``noswap`` tmpfs
+    answers ENOSPC.  A mount whose ``statvfs`` cannot be read is announced
+    rather than hidden: capacity zero, the refusal on the record, no tokens
+    minted, so an operator reading the announced record sees a tmpfs that is
+    not answering rather than a tier that quietly vanished.
+    """
+
+    mountpoint = str(policy["mountpoint"])
+    options = ram_mount_options(mountpoint, proc_mounts=proc_mounts)
+    if options is None:
+        return None
+    epoch = ensure_ram_epoch(mountpoint, host=host, now=now)
+    arc = dict(stats) if stats is not None else read_arcstats(arcstats_path)
+    mem_total = meminfo_total_bytes(meminfo_path)
+    try:
+        sampled = statvfs(mountpoint)
+        ceiling = int(sampled.f_blocks) * int(sampled.f_frsize)
+        capacity = int(sampled.f_bavail) * int(sampled.f_frsize)
+        error = None
+    except OSError as exc:
+        ceiling = capacity = 0
+        error = str(exc)
+    if error is not None:
+        admission: dict[str, object] = {
+            **_ram_numbers(ceiling_bytes=0, mem_total=mem_total, arc=arc,
+                           policy=policy),
+            "admissible": False, "reason": "ram_statvfs_unreadable", "error": error}
+    elif epoch is None:
+        admission = {**ram_admission(ceiling_bytes=ceiling, mount_options=options,
+                                     policy=policy, mem_total=mem_total, arc=arc),
+                     "admissible": False, "reason": "ram_epoch_unwritable"}
+    else:
+        admission = ram_admission(ceiling_bytes=ceiling, mount_options=options,
+                                  policy=policy, mem_total=mem_total, arc=arc)
+    return {
+        "schema": TIER_RECORD_SCHEMA_V1,
+        "tier": "ram",
+        "tier_id": tier_id("ram", host),
+        "host": host,
+        "mountpoint": mountpoint,
+        "mount_options": options,
+        "epoch": None if epoch is None else str(epoch["epoch"]),
+        "size_bytes": ceiling,
+        "ceiling_bytes": ceiling,
+        "capacity_bytes": capacity,
+        "window_gib": int(policy["window_gib_default"]),
+        "ram_admission": admission,
+        "sampled_unix": time.time() if now is None else now,
+    }
+
+
 def tier_id(kind: str, host: str, pool: str | None = None) -> str:
     """``prismabuild-stage:dl380g10`` for a stage pool; ``arc:dl380g10`` for the ARC.
 
@@ -403,16 +713,23 @@ def tier_id(kind: str, host: str, pool: str | None = None) -> str:
 
 
 def tier_kind_of(tier_id: str) -> str:
-    """``prismabuild-stage:dl380g10`` -> ``"stage"``; anything else -> ``"arc"``.
+    """``prismabuild-stage:dl380g10`` -> ``"stage"``; ``ram:dl380g10`` -> ``"ram"``;
+    anything else -> ``"arc"``.
 
     The tier id *is* the discovery key, so the kind is read off it rather than
-    carried beside it: a stage tier is named for the PB-owned pool it is, and
-    the only other tier a box offers is its ARC.  One rule, so that the demand
+    carried beside it: a stage tier is named for the PB-owned pool it is, a
+    ram tier for the prefix PB's own policy gave it, and the only other tier
+    a box offers is its ARC.  One rule, so that the demand
     a range implies and the capacity a ledger mints can never disagree about
     which token kind a tier deals in.
     """
 
-    return "stage" if str(tier_id).startswith(STAGE_POOL_PREFIX) else "arc"
+    text = str(tier_id)
+    if text.startswith(STAGE_POOL_PREFIX):
+        return "stage"
+    if text.startswith(RAM_TIER_PREFIX):
+        return "ram"
+    return "arc"
 
 
 def stage_arc_eligibility(record: Mapping[str, object]) -> dict[str, object]:
@@ -449,8 +766,12 @@ def stage_arc_eligibility(record: Mapping[str, object]) -> dict[str, object]:
 def capacity_kind_of(tier_id: str) -> str:
     """The token kind that tier's capacity is counted in."""
 
-    return (STAGE_CAPACITY_KIND if tier_kind_of(tier_id) == "stage"
-            else ARC_CAPACITY_KIND)
+    kind = tier_kind_of(tier_id)
+    if kind == "stage":
+        return STAGE_CAPACITY_KIND
+    if kind == "ram":
+        return RAM_CAPACITY_KIND
+    return ARC_CAPACITY_KIND
 
 
 def split_demand_key(key: str) -> tuple[str, str | None]:
@@ -713,6 +1034,21 @@ def tier_tokens(record: Mapping[str, object]) -> dict[str, int]:
     if isinstance(capacity, int) and not isinstance(capacity, bool) and capacity > 0:
         if tier == "stage":
             tokens[STAGE_CAPACITY_KIND] = capacity // GIB
+        elif tier == "ram":
+            # Admitted capacity only, and never past the policy's window: a
+            # refused mount (``ram_admission`` on the record) mints nothing
+            # however much statvfs reported, and a window smaller than the
+            # mount is what PB actually fills.  The ceiling is a roof, not a
+            # target.
+            admission = record.get("ram_admission")
+            if isinstance(admission, Mapping) and admission.get("admissible") is True:
+                window = record.get("window_gib")
+                gib = capacity // GIB
+                if (isinstance(window, int) and not isinstance(window, bool)
+                        and window > 0):
+                    gib = min(gib, window)
+                if gib > 0:
+                    tokens[RAM_CAPACITY_KIND] = gib
         elif tier == "arc":
             tokens[ARC_CAPACITY_KIND] = capacity // GIB
     fill = record.get(FILL_RECORD_FIELD)
@@ -946,7 +1282,9 @@ def residency_demand(
     published SSD window by min(stage, ARC) and then, once the ARC shrinks
     for an explicit RAM tier, throttle layer 1's read-ahead with it (#638's
     part 3, withdrawn for that reason).  RAM occupancy is spent by the RAM
-    tier's own movement nodes when that tier exists; a warm read-back
+    tier's own movement nodes when that tier exists -- a promotion node's
+    demand names ``ram:<host>`` through this same function, one leg per node,
+    the withdrawn plumbing aimed at the right actor -- and a warm read-back
     authorises itself against the dataset's ``primarycache`` instead.
     """
 
@@ -980,6 +1318,10 @@ def discover_tiers(
     source_pool: str | None = None,
     fill_records: Iterable[Mapping[str, object]] = (),
     now: float | None = None,
+    ram_policy: Mapping[str, object] | None = None,
+    statvfs: Callable[[str], os.statvfs_result] = os.statvfs,
+    proc_mounts: str = "/proc/mounts",
+    meminfo_path: str = "/proc/meminfo",
 ) -> dict[str, dict[str, object]]:
     """Every tier this box offers, keyed by tier id, read fresh.
 
@@ -988,6 +1330,11 @@ def discover_tiers(
     ``fill_records`` are the receipts of moves off that pool, from which the
     fill capacity is learned.  A box with no ``zpool`` and no ``arcstats``
     returns ``{}``: it offers no tier, and that is the true answer.
+
+    ``ram_policy`` is the RAM tier's declared sizing (``read_ram_policy``
+    validated it); ``None`` discovers no ram tier, and so does a policy whose
+    mountpoint carries no tmpfs -- the mount is the tier, the way an imported
+    pool is a stage tier.
     """
 
     host = host or socket.gethostname()
@@ -1045,7 +1392,8 @@ def discover_tiers(
             FILL_RECORD_FIELD: fill,
             "sampled_unix": sampled,
         }
-    arc = arc_tier(read_arcstats(arcstats_path))
+    arc_stats = read_arcstats(arcstats_path)
+    arc = arc_tier(arc_stats)
     if arc is not None:
         identity = tier_id("arc", host)
         tiers[identity] = {
@@ -1058,6 +1406,13 @@ def discover_tiers(
             FILL_RECORD_FIELD: fill,
             "sampled_unix": sampled,
         }
+    if ram_policy is not None:
+        record = ram_tier(
+            ram_policy, host=host, statvfs=statvfs, proc_mounts=proc_mounts,
+            meminfo_path=meminfo_path, arcstats_path=arcstats_path,
+            stats=arc_stats, now=now)
+        if record is not None:
+            tiers[str(record["tier_id"])] = record
     return tiers
 
 
@@ -1083,6 +1438,12 @@ __all__ = [
     "ARC_DATA_CACHE_SETTINGS",
     "FILL_KIND",
     "GIB",
+    "RAM_CAPACITY_KIND",
+    "RAM_EPOCH_MARKER",
+    "RAM_EPOCH_MARKER_SCHEMA_V1",
+    "RAM_POLICY_FILE",
+    "RAM_TIER_POLICY_SCHEMA_V1",
+    "RAM_TIER_PREFIX",
     "STAGE_CAPACITY_KIND",
     "STAGE_POOL_PREFIX",
     "TIER_DEMAND_SEPARATOR",
@@ -1090,10 +1451,17 @@ __all__ = [
     "arc_tier",
     "by_id_names",
     "discover_tiers",
+    "ensure_ram_epoch",
     "fill_rate_from_records",
+    "meminfo_total_bytes",
     "pool_member_devices",
     "pool_member_paths",
+    "ram_admission",
+    "ram_mount_options",
+    "ram_tier",
     "read_arcstats",
+    "read_ram_epoch",
+    "read_ram_policy",
     "split_demand",
     "split_demand_key",
     "stage_pools",

@@ -4838,8 +4838,40 @@ def resolve_stage_tier(queue, declared: str | None) -> dict[str, object]:
     return stages[0]
 
 
-def movement_tools(tier: Mapping[str, object]) -> tuple[str, str, str]:
+def resolve_ram_tier(queue, stage_tier: Mapping[str, object],
+                     ) -> dict[str, object] | None:
+    """The ram tier that sits in front of this stage, from what the fleet says.
+
+    Discovered rather than configured, because the tiers are: the promotion
+    node runs on the box that owns the stage, so the ram tier that feeds the
+    same consumers is that box's, and a ram tier on another host is another
+    stage's leg.  None is the ordinary answer -- no tmpfs mounted, or a
+    generation predating the policy -- and it seals no ram leg, exactly as a
+    submission before the tier existed did.
+    """
+
+    host = str(stage_tier.get("host") or "")
+    rams = [record for record in queue.tiers()
+            if record.get("tier") == "ram" and not record.get("retired")
+            and str(record.get("host") or "") == host]
+    if not rams:
+        return None
+    if len(rams) > 1:
+        raise SystemExit(
+            "pbrun: more than one ram tier is live on "
+            f"{host or 'the stage host'}: the policy declares one mountpoint, "
+            f"and the fleet announces {sorted(str(r.get('tier_id')) for r in rams)}")
+    return rams[0]
+
+
+def movement_tools(tier: Mapping[str, object], *,
+                   mover: str = "stage_move.py") -> tuple[str, str, str]:
     """The interpreter and the two movement scripts, as the tier announces them.
+
+    ``mover`` names the movement node's script -- ``stage_move.py`` for a
+    stage tier's pool-to-stage copy, ``ram_promote.py`` for the ram tier's
+    stage-to-tmpfs promotion (#640); the egress node is ``stage_release.py``
+    for both, pointed at whichever root the row names.
 
     Off the tier record, never off this process.  A mover runs on the box that
     owns the stage, and the box that seals it is very often a different one of
@@ -4868,8 +4900,7 @@ def movement_tools(tier: Mapping[str, object]) -> tuple[str, str, str]:
             f"older than this one is the usual cause, and publishing the "
             f"runtime again fixes it.  Filling them in from this process "
             f"would seal an argv naming a python that is not on that box")
-    return (python, str(Path(root) / "stage_move.py"),
-            str(Path(root) / "stage_release.py"))
+    return (python, str(Path(root) / mover), str(Path(root) / "stage_release.py"))
 
 
 def residency_stage_rows(
@@ -4938,6 +4969,26 @@ def residency_stage_rows(
     tags = [str(tier["host"])]
     mover_python, mover_tool, egress_tool = movement_tools(tier)
     pool_root = str(SH / "pb-queue")
+    # The ram leg, when a ram tier sits in front of this stage (#640): a
+    # promotion node and an egress node per phase, sealed here with the rest
+    # of the plan, because an action key is a hash and the coordinator cannot
+    # publish children the submitter never sealed.  ``auto`` is the default so
+    # the tier turns on with the mount; ``off`` is the A/B's other arm.
+    ram_tier = None
+    if str(getattr(args, "residency_ram", "auto") or "auto") == "auto":
+        ram_tier = resolve_ram_tier(queue, tier)
+    ram_tier_id = None
+    ram_root = ""
+    ram_python = ram_tool = ram_egress_tool = ""
+    if ram_tier is not None:
+        ram_tier_id = str(ram_tier["tier_id"])
+        ram_root = str(ram_tier.get("mountpoint") or "")
+        if not ram_root.startswith("/"):
+            raise SystemExit(
+                f"pbrun: ram tier {ram_tier_id} announces no mountpoint to "
+                f"promote into")
+        ram_python, ram_tool, ram_egress_tool = movement_tools(
+            ram_tier, mover="ram_promote.py")
 
     # One read of the live receipts for the whole window: every mover in it has
     # the same structure and reads the same pool, so they price alike, and a
@@ -5016,7 +5067,69 @@ def residency_stage_rows(
             log_name=f"stage-release-{ordinal:04d}-{span['name']}.log")
         for action in (mover, egress):
             cas.publish_action_request(action)
-        phases.append({
+        ram_mover_row = None
+        ram_egress_row = None
+        if ram_tier_id is not None:
+            # The withdrawn #639 part 3's plumbing, aimed at the right actor:
+            # one occupancy leg per movement node, ``ram_gib`` on the ram tier,
+            # priced off the promotion receipts exactly the way a stage
+            # mover's demand is priced off its own.
+            ram_demand = storage_tiers.residency_demand(
+                tier_id=ram_tier_id, range_start_bytes=start,
+                range_end_bytes=end)
+            ram_priced = storage_tiers.mover_demand_from_receipts(
+                receipts, tier_id=ram_tier_id, readers=readers,
+                fallback_mem_gb=int(args.residency_mover_mem_gb))
+            ram_demand["cpu"] = int(ram_priced["cpu"])
+            ram_demand["mem_gb"] = int(ram_priced["mem_gb"])
+            ram_mover = seal_movement_action(
+                template,
+                command=[ram_python, ram_tool,
+                         "--pool-root", pool_root,
+                         "--cas-root", str(SH / "cas"),
+                         "--consumer-action-key", consumer_action_key,
+                         "--tier-id", ram_tier_id,
+                         "--ram-root", ram_root,
+                         "--source-stage-root", stage_root,
+                         "--manifest-sha256", digest,
+                         "--range-start-bytes", str(start),
+                         "--range-end-bytes", str(end),
+                         "--readers", str(readers)],
+                demand=ram_demand, tags=tags,
+                retry_policy=mover_retry_policy,
+                log_name=f"ram-promote-{ordinal:04d}-{span['name']}.log")
+            ram_egress = seal_movement_action(
+                template,
+                command=[ram_python, ram_egress_tool,
+                         "--pool-root", pool_root,
+                         "--mover-action-key", str(ram_mover["action_key"]),
+                         "--consumer-action-key", consumer_action_key,
+                         "--stage-root", ram_root],
+                # No tier demand, for the same reason as the stage's egress.
+                demand={"mem_gb": 1}, tags=tags,
+                log_name=f"ram-release-{ordinal:04d}-{span['name']}.log")
+            cas.publish_action_request(ram_mover)
+            cas.publish_action_request(ram_egress)
+            ram_mover_row = {
+                **publication_row(
+                    ram_mover, args=args, queue=queue,
+                    max_attempts=int(args.residency_mover_max_attempts),
+                    retry_safe=True),
+                # The pin the ram window and the pin check read: a promotion
+                # row without it releases its occupancy the moment it
+                # finishes -- bytes on a roof-limited tmpfs that no token
+                # stands for are ENOSPC waiting to happen (#640).
+                "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1,
+                    "manifest_sha256": digest,
+                    "manifest_bytes": int(entry["bytes"]),
+                    "tier_id": ram_tier_id,
+                    "range_start_bytes": start,
+                    "range_end_bytes": end,
+                },
+            }
+            ram_egress_row = publication_row(ram_egress, args=args, queue=queue)
+        phase_record = {
             "name": str(span["name"]),
             "start_bytes": start, "end_bytes": end,
             "stage_gib": storage_tiers.stage_tokens_for_bytes(end - start),
@@ -5047,11 +5160,16 @@ def residency_stage_rows(
             # below the range's own floor.  An egress finds its mover by
             # ``--mover-action-key``, not by a range of its own.
             "egress_row": publication_row(egress, args=args, queue=queue),
-        })
+        }
+        if ram_mover_row is not None:
+            phase_record["ram_mover_row"] = ram_mover_row
+            phase_record["ram_egress_row"] = ram_egress_row
+        phases.append(phase_record)
     plan = residency_plan.build_plan(
         consumer_action_key=consumer_action_key, tier_id=tier_id,
         stage_root=stage_root, manifest_sha256=digest,
         manifest_bytes=int(entry["bytes"]), phases=phases,
+        ram_tier_id=ram_tier_id,
         # Which receipts priced these movers' cpu and mem_gb, so a demand in
         # the queue traces back to a measurement rather than to a habit.  On
         # the plan, not on a row: ``tier_loop`` publishes a row as
@@ -5195,6 +5313,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--residency-tier", default=None,
         help="which announced stage tier to stage onto; only needed when the "
              "fleet announces more than one",
+    )
+    ap.add_argument(
+        "--residency-ram", choices=("auto", "off"), default="auto",
+        help="seal a ram leg onto the residency plan: one promotion node and "
+             "one egress node per phase, copying each landed stage range into "
+             "the ram tier the storage box announces (#640).  'auto' seals the "
+             "leg when a ram tier is live on the stage's own host, which is "
+             "the tier turning on with the mount; 'off' is the A/B's other "
+             "arm.  A plan already frozen keeps the leg it was frozen with",
     )
     ap.add_argument(
         "--residency-mover-mem-gb", type=int, default=1,

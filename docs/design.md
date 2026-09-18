@@ -3076,6 +3076,7 @@ it, and PB had no representation of either.
 |---|---|---|---|
 | `arc` | `arc_gib` | `c_max` less `arc_meta_used` from `arcstats` | budgetary; ZFS exposes no pin |
 | `prismabuild-stage*` | `stage_gib` | the stage pool's own `size` from `zpool list -Hp` | pinned while a key holds the tokens |
+| `ram` | `ram_gib` | the tmpfs mount's own `statvfs` `f_bavail`, capped by the policy window (#640) | pinned while a key holds the tokens |
 | source pool | `fill_mb_s_pool_side` | the best `disk_pacing.mean_self_read_mb_s` any move off it recorded | none; it is the source |
 
 Every quantity is discovered by `src/prismabuild/storage_tiers.py` on every
@@ -3149,9 +3150,9 @@ discovered or measured rather than configured here:
   bound would throttle layer 1's read-ahead with it. So the warm set is
   bounded per mover by its range and unbounded across movers: successive
   phases may evict each other's warm, which costs the *pre*-warm and never
-  the stage residency a verdict gates on. The RAM occupancy budget returns
+  the stage residency a verdict gates on. The RAM occupancy budget returned
   with the RAM tier's own movement nodes, holding `ram_gib` the way movers
-  hold `stage_gib` today.
+  hold `stage_gib` today — the section above this one.
 
 **ARC residency is a performance tier, never a correctness gate.** ZFS exposes
 no pin and the ARC target `c` is volatile on a shared box -- it fell 99 GB
@@ -3170,6 +3171,129 @@ skips that warm for a claimed row whose `residency_verdict` reads `resident`
 and records the skip. Only `resident`: a consumer whose map is not composed yet
 was never admitted, and one whose later phases were never staged reads the pool
 for them exactly as it always did.
+
+### The RAM tier: explicit placement, mount-epoch identity (#640)
+
+The interim layer above warms the ARC by reading the stage back, which is
+caused rather than hoped for — but the ARC is still a cache PB cannot pin,
+cannot evict on purpose, and cannot refuse on identity. The RAM tier is the
+directed replacement: **an explicit tmpfs on the storage box, filled and
+evicted by PrismaBuild's DAG**, memory PB owns outright. Measured sparky →
+dl380g10 over the same 100 Gbps RDMA link, tmpfs over NFS served
+**11,866 MB/s — 93% of the link** — against the ARC's 80% and the NVMe
+stage's 19%, and `noswap` is live on the box's kernel
+(`7.0.0-31-generic`), so a `mount -t tmpfs -o size=<N>,noswap` cannot page
+out and overfill is **ENOSPC — fail-closed**. L2ARC is out of the design
+entirely (0 hits in 20,780 lookups): it only holds the ARC's past.
+
+**The mount is the tier; the policy is the sizing.** A `ram:<host>` tier is
+discovered from the tmpfs mounted at the policy's mountpoint: capacity is
+the mount's own `statvfs` (`f_bavail × f_frsize` — never `MemAvailable`,
+which moves with other tenants' habits and is not placed RAM), the ceiling
+is its own `size=`, and the record announces `mountpoint`, `mount_options`,
+`size_bytes`, `ceiling_bytes` and `epoch`. The numbers PB is allowed to
+decide live in one versioned file, `tools/fleet/ram_tier_policy.json`,
+published with the runtime the way `fleet_boxes.json` is and read fresh by
+the tier loop every cycle: `ceiling_gib_max` (256), `window_gib_default`
+(112 — the midpoint of the directed 96–128 GiB, a streaming window and
+never a phase container: the largest phase is 134.2 GiB), `arc_floor_gib`
+(20), `system_reserve_gib` (16), and `prefill_depth` (`null` — the #633
+run-ahead semantics; a positive GiB caps them). **A change to it is a
+publish, not an ssh:** the next cycle mints from the mount's own `statvfs`
+again, so a declared policy change or a rare operator remount is picked up
+between cycles automatically. The ceiling is a roof, not a target; the
+policy-minted window below it is what PB actually fills, and the minted
+supply is `writable + landed`, capped at the window — the #621/#623
+arithmetic, one tier over.
+
+**Three refusals, each fail-closed and each naming its numbers.** The mount
+absent: announce nothing — free RAM is not placed RAM. `statvfs` unreadable:
+announce the tier with capacity zero and the refusal on the record, minting
+nothing, so an operator sees a tmpfs that is not answering rather than a
+tier that quietly vanished. And the floor guard: the tier refuses while
+`ceiling + max(arc_c_max, arc_floor, arc_meta_used) + system_reserve >
+MemTotal`, read live from `/proc/meminfo` and `arcstats`. `size=` is a limit
+on file bytes, not an allocation, so a tmpfs whose roof plus the ARC's own
+permission plus the reserve exceeds `MemTotal` never reaches its ENOSPC —
+the OOM killer arrives first, which is fail-random rather than fail-closed;
+the runbook's `zfs_arc_max` shrink is an operational precondition, and the
+guard refuses until it is done. The ARC floor itself is the larger of the
+policy's declared floor and the metadata the ARC cannot drop. **The tmpfs
+must be mounted `noswap`:** the options are announced, and a mount without
+it refuses the warm-path admission outright — a swappable tmpfs can page
+"resident" bytes out, and a consumer whose gate says resident would then
+pay a swap read behind a claim of RAM, which is the correctness lie this
+tier exists to end.
+
+**Mount-epoch identity — the rule the whole safety argument rests on.**
+tmpfs empties on reboot; the ledger and the residency-map fragments on the
+shared mount survive. Without an epoch, a reboot would leave a map naming
+ram paths whose bytes are gone and a ledger counting tokens for ranges that
+no longer exist — a RAM gate *less* safe than the ARC budget it replaces.
+So the tier loop stamps an epoch (mount time plus a random nonce) into a
+marker file at the tmpfs root at bootstrap; the marker dies with the mount,
+and every promotion's fragment and receipt carries the epoch it landed
+under — a ram fragment without one does not validate at all. On the first
+cycle after a change the loop logs `ram-epoch-changed`, **drops every
+prior-epoch fragment**, and returns the ghost tokens of held keys whose
+receipts date them to a prior epoch — their bytes were deleted by the
+reboot, not by an egress, and holding them would starve the new window,
+which is the one failure the direction names ("starvation is the failure to
+avoid"). A mount that is gone entirely is the same rule one step further:
+there is no current epoch, so every ram fragment is a prior one. Until
+fresh ranges land, nothing reads as ram-resident, and `residency_verdict`
+denies `ram_epoch_stale` whenever a composed map's ram epoch is not the one
+the tier announces now — the same one-cycle wait as `map_not_composed`.
+
+**The promotion node, and the occupancy it holds.** Stage→ram promotion is
+a movement node like the stage's own: `ram_promote.py` copies a *landed*
+stage range into the tmpfs under the same content-addressed names, with the
+same digests, drawing no pool bandwidth and pacing nothing — its source is
+the stage on the same box, which is why the ram window publishes a promotion
+only for a phase whose stage range has landed. Pool→ram directly is
+refused (`ram_source_stage_absent`): the SSD stage stays the durable tier a
+verdict gates on, and ram is a performance tier in front of it. The plan
+grows two optional rows per phase — `ram_mover_row`, `ram_egress_row` —
+sealed by the submitter beside the stage's own (`--residency-ram auto`,
+the default, seals the leg when a ram tier is live on the stage's host;
+`off` is the A/B's other arm; a plan already frozen keeps the leg it was
+frozen with). A promotion holds `ram_gib` the way a mover holds
+`stage_gib`: from claim, past finish — the pin, read off its receipt — and
+back only when an egress deletes its files, because held tokens equal bytes
+on the tmpfs at every instant and held-by-nobody bytes on a roof-limited
+tmpfs are ENOSPC waiting to happen. The withdrawn #639 part-3 plumbing — a
+second tier leg on `storage_tiers.residency_demand`, occupancy
+classification, release at egress — transfers intact, aimed at the right
+actor: one occupancy leg per movement node.
+
+**The window, the sweep, and the egress order.** Promotion scheduling is
+the stage window's own semantics, pointed at the ram ledger: admission
+needs free `ram_gib` — Rob's instinct, "empty space in tmpfs", made exact
+through the ledger — bounded by the #633 run-ahead budget on the consumer's
+accepted progress (`prefill_depth` may cap it), in the plan's read order,
+and reported as `ram-window-stalled` when it declines. When the consumer's
+progress passes a phase, the ram egress row is published *before* the stage
+egress in the same cycle: a ram range that outlives its stage range is a
+promotion whose source is gone. Orphaned ram bytes — a failed promotion's
+landed partials, a dead consumer's unclaimed promotions — are eviction
+candidates when the tier needs its tokens, on the same ownership discipline
+as the stage sweep: `window_pressure` asks the ram leg the same
+"what would it publish given room" question, and the sweep, egress and
+reconciliation treat the ram root like any owned root, skipping the epoch
+marker the way they skip the ownership marker.
+
+**Serving.** The consumer reads the ram tier through an NFS export of the
+tmpfs — an explicit `fsid=` in `/etc/exports`, which tmpfs supplies none of,
+and read-only like `/stage/prewarm` (the operator's runbook, in #640, carries
+the exact lines; PB does not touch the box). The composed map is still one
+document: `compose` refuses fragments that disagree about the tier, so the
+ram fragments are laid *over* the stage map (`residency_map.overlay_ram`),
+and an entry keeps the stage path it already had while gaining `ram_path`
+— same `(path, offset)` key, same digest, the bytes on the tmpfs under the
+same name. A consumer prefers the ram copy and falls back to the staged
+copy the map already vouched for, which is what makes a stale ram entry a
+cache miss rather than an ENOENT. The map's header names the ram tier, root
+and epoch, which is what the verdict compares.
 
 ### What a stage tier's capacity counts
 
@@ -3686,11 +3810,24 @@ latter, so the loop's own directory holds `stage_move.py` in either layout.
 No end-to-end campaign speedup is claimed, and none is measurable until a
 consumer reads the stage.
 
+The RAM tier's 93%-of-the-link measurement (11,866 MB/s, tmpfs over NFS/RDMA)
+is a *medium* measurement, not a served claim: no consumer has yet read a
+promoted range through a composed map, so no end-to-end arm of the A/B the
+issue names exists. The claim this build makes is placement, identity and
+occupancy; the 93% is the evidence bar the A/B has to clear, not a number it
+has produced.
+
 Reuse of a resident prefix *across artifacts* is built (#598) and described
 above; what is still not claimed is a measured saving. No end-to-end campaign
 number is available until a second artifact of one model runs against a stage
 the first one filled, and the 731.5 GB figure is the cost of the copy that was
 repeated, not evidence that the adoption avoided it.
+
+Ram ranges are not adopted (#598's hand-over, one tier over): a finished
+consumer's ram fragments become eviction candidates under pressure like any
+orphan, and a successor re-promotes from the stage — a cheap copy at the
+tier's own speed — rather than inheriting tokens. Nothing measured asked for
+the hand-over yet.
 
 Still not built: nothing decides *which* orphan is worth keeping when several
 could be evicted. The order is the oldest receipt first, which is deterministic

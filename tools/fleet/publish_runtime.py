@@ -77,6 +77,11 @@ FLEET_SCRIPTS = (
     # orphan sweep, so a generation without it leaves a withdrawn consumer's
     # movers holding the stage with nothing able to take it back.
     "stage_release.py",
+    # ...and ram_promote.py, the ram tier's movement node (#640): it copies a
+    # landed stage range into the tmpfs and files the fragment that carries
+    # the epoch.  A generation without it leaves the ram window publishing
+    # promotions nothing can run.
+    "ram_promote.py",
     # The SLURM lane's two halves: the shared submit every producer routes
     # through, and the job entry it names.  A runtime published without them
     # has producers importing a module that is not there and a batch script
@@ -145,10 +150,14 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "measurement rather than an operator command"),
 )
 
-#: Not code, but read by published code: the supervisor on each box reads the
-#: fleet's declared shape from here, so a runtime published without it starts
-#: no workers at all.
-FLEET_DATA = ("fleet_boxes.json",)
+#: Not code, but read by published code.  The supervisor on each box reads
+#: the fleet's declared shape from ``fleet_boxes.json``, so a runtime
+#: published without it starts no workers at all.  The tier loop reads the
+#: ram tier's declared sizing from ``ram_tier_policy.json`` every cycle
+#: (#640), so a change to it is a publish rather than an ssh -- and a
+#: generation published without it discovers no ram tier, which is the
+#: honest answer for a runtime that predates the tier.
+FLEET_DATA = ("fleet_boxes.json", "ram_tier_policy.json")
 
 # These originate at tools/, without a second tools/fleet/ spelling. The
 # torch helper is copied by consumers following the published profile guide.

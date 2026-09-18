@@ -4459,6 +4459,28 @@ class PoolQueue:
                     "missing_leads": missing,
                     "generation": document.get("generation"),
                     "leads": [str(lead) for lead in leads]}
+        # A ram overlay is resident only within the epoch it landed under
+        # (#640).  tmpfs empties on reboot while the map survives, so a map
+        # still naming ram paths is compared against the epoch the ram tier
+        # announces *now*; a mismatch is the same one-cycle wait as
+        # ``map_not_composed``, because the loop drops every prior-epoch
+        # fragment and recomposes from what survives.  A map that names no
+        # ram range never asks the question: the stage residency the verdict
+        # has always gated on is durable and checkable, and the ram tier is a
+        # performance tier in front of it.
+        ram_epoch = document.get("ram_epoch")
+        if isinstance(ram_epoch, str) and ram_epoch:
+            ram_tier_id = str(document.get("ram_tier_id") or "")
+            announced_epoch = None
+            for record in self.tiers():
+                if (str(record.get("tier_id")) == ram_tier_id
+                        and record.get("tier") == "ram"):
+                    announced_epoch = str(record.get("epoch") or "")
+                    break
+            if announced_epoch != ram_epoch:
+                return {"state": "ram_epoch_stale", "map_path": str(composed),
+                        "ram_tier_id": ram_tier_id, "ram_epoch": ram_epoch,
+                        "leads": [str(lead) for lead in leads]}
         return {"state": "resident", "leads": [str(lead) for lead in leads],
                 "map_path": str(composed)}
 
