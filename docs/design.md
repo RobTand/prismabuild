@@ -3472,6 +3472,21 @@ the verdict denies `map_not_composed`, which leaves the item ready, ages
 nothing and takes no token; the next cycle composes and it is admitted then,
 unchanged.
 
+Existing is not the same as current (#634). The loop composes from the
+fragments on disk once a cycle, so a consumer whose lead pins between two
+cycles finds a map that is real, readable and missing exactly the range the
+gate just waited for — and the faster the mover, the more certain that is,
+because admission waits for the pin and the pin is what the composed document
+does not know about yet. Measured on action `26dfde9dd764`: the claim record
+named one lead, the map named four others, and 90.4% of the payload came off
+the pool under a receipt saying `resident`. `compose` already records the
+movers whose fragments it merged, so the verdict reads the document and denies
+`map_stale`, naming the missing leads, whenever a lead is not among them. It is
+the same one-cycle wait as `map_not_composed` and must read differently from it,
+because a queue that has stopped moving is diagnosed from which of the two it
+is sitting on. An adopted range files a fragment under its own mover key, so a
+window nobody had to copy satisfies this without a special case.
+
 ### A plan the coordinator cannot read
 
 `residency_plan.read` answers `None` both when no plan was filed and when the

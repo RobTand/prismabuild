@@ -394,3 +394,42 @@ def test_publish_refuses_a_block_whose_manifest_fields_are_not_a_manifest(
     with pytest.raises(pool.PoolContractError, match="manifest_sha256"):
         _publish(queue, CONSUMER, {"cpu": 1}, residency={
             "schema": pool.RESIDENCY_SCHEMA_V1, "leads": [MOVER]})
+
+
+def test_a_map_composed_before_the_lead_landed_does_not_admit(
+    queue: pool.PoolQueue,
+) -> None:
+    """A map that exists is not yet a map that answers (#634).
+
+    The loop composes on its own cycle, so between a lead pinning its range
+    and the next cycle the document on disk is real, readable and missing
+    exactly the range admission just certified.  Measured on action
+    ``26dfde9dd764``: the claim record named one lead, the map it was handed
+    named four others, and 90.4% of the payload came off the pool under a
+    receipt that said ``resident``.
+    """
+
+    _publish_consumer(queue, [MOVER])
+    _publish(queue, MOVER, {"cpu": 1})
+    mover_claim = queue.claim(owner="mover", capacity={"cpu": 4})
+    assert mover_claim is not None and mover_claim["action_key"] == MOVER
+    queue.finish(MOVER, status="executed", claim_snapshot=mover_claim)
+
+    # The previous cycle's map: composed from somebody else's fragment, so it
+    # is a valid document that cannot address this consumer's first bytes.
+    stale = _compose_map(queue, mover=SECOND_MOVER)
+    assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
+    denial = _denial(queue, CONSUMER)
+    assert denial is not None and denial["reason"] == "residency_map_stale"
+    assert denial["evidence"]["residency"]["missing_leads"] == [MOVER]
+    assert denial["evidence"]["residency"]["map_path"] == str(stale)
+    # A wait, not a refusal: no tokens taken, no pass aged.
+    assert queue.ledger().held() == {}
+    assert queue.passes(CONSUMER) == 0
+
+    # The loop recomposes and the same consumer goes straight in.
+    composed = _compose_map(queue)
+    claimed = queue.claim(owner="worker", capacity={"cpu": 4})
+    assert claimed is not None and claimed["action_key"] == CONSUMER
+    assert claimed["residency_verdict"] == {
+        "state": "resident", "leads": [MOVER], "map_path": str(composed)}

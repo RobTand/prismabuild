@@ -4368,6 +4368,33 @@ class PoolQueue:
                         "leads": [str(lead) for lead in leads]}
             return {"state": "map_not_composed", "map_path": str(composed),
                     "leads": [str(lead) for lead in leads]}
+        # A map that exists is not yet a map that answers.  The loop composes
+        # once a cycle from the fragments on disk, so between a lead pinning
+        # its range and the next cycle the document is real, readable, and
+        # missing exactly the range this gate just certified -- and the faster
+        # the mover, the more certain that is, because admission waits for the
+        # pin and the pin is what the composed map does not know about yet.
+        # Admitting there is the full-cost pool read wearing a clean receipt
+        # that ``map_not_composed`` exists to prevent (#634).  ``compose``
+        # names the movers whose fragments it merged, so the map answers this
+        # itself; an adopted lead files a fragment under its own key too, so
+        # the ranges nobody had to copy are in that list as well.
+        try:
+            document = residency_map.read_map(composed)
+        except (OSError, residency_map.ResidencyMapError) as exc:
+            # Same reasoning as ``map_unreadable`` above: a document this
+            # reader cannot parse is not a verdict either way, and must not
+            # take the box's whole claim scan down with it.
+            return {"state": "map_unreadable", "map_path": str(composed),
+                    "error": str(exc),
+                    "leads": [str(lead) for lead in leads]}
+        composed_leads = set(document.get("leads") or ())
+        missing = [str(lead) for lead in leads if str(lead) not in composed_leads]
+        if missing:
+            return {"state": "map_stale", "map_path": str(composed),
+                    "missing_leads": missing,
+                    "generation": document.get("generation"),
+                    "leads": [str(lead) for lead in leads]}
         return {"state": "resident", "leads": [str(lead) for lead in leads],
                 "map_path": str(composed)}
 
@@ -5905,8 +5932,8 @@ class PoolQueue:
                         "error": str(exc), "leads": leads})
                     continue
                 if residency["state"] in ("lead_not_resident", "lead_unpinned",
-                                          "map_not_composed", "map_unreadable",
-                                          "plan_unreadable"):
+                                          "map_not_composed", "map_stale",
+                                          "map_unreadable", "plan_unreadable"):
                     # Before any token is taken, and without ``record_pass``:
                     # the bytes are not there, so this box should go do other
                     # work rather than age an item nothing on this box can
@@ -5920,6 +5947,10 @@ class PoolQueue:
                     # the pool and says nothing went wrong.  ``map_unreadable``
                     # is the same refusal when the mount would not say either
                     # way; both leave the item ready for the next scan.
+                    # ``map_stale`` is the third of that family: the map is
+                    # there and readable but was composed before this item's
+                    # lead landed, so it addresses every range but the one the
+                    # gate just waited for (#634).
                     # ``plan_unreadable`` is the one that does not resolve on
                     # its own: no coordinator can compose a map from a plan it
                     # refuses, so the item names the refusal rather than
